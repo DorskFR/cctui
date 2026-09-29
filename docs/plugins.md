@@ -107,6 +107,8 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
   "cctuiApi": 1,
   "icon": "eye",
   "web": "web/index.js",
+  "page": { "title": "Review", "icon": "eye" },
+  "styles": ["web/app.css"],
   "skills": ["yubisashi"],
   "settings": [
     { "key": "host", "label": "Bind address", "env": "YUBI_HOST", "type": "string" }
@@ -118,6 +120,16 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
 - `cctuiApi` must be `1`; other majors are refused.
 - `web` and every `skills` entry are relative paths inside the folder;
   `skills/<name>/SKILL.md` must exist.
+- `page` (optional): a full-page surface at `/apps/<id>`, `{ "title": "Review",
+  "icon": "eye" }`. `title` must be non-empty; `icon` is an optional Tsumikit
+  icon name for the nav entry. A `page` **requires `web`** — the module is what
+  exports the page component — and a manifest with one but not the other is
+  refused at install.
+- `styles` (optional): stylesheets the host loads globally alongside the `web`
+  bundle, as plugin-folder-relative paths (`["web/app.css"]`). Each is validated
+  exactly like `web`: relative, inside the plugin folder (no `..`, no absolute
+  path, no hidden segment) and it must exist. They are served by the same
+  `GET /plugins/{id}/{path}` static route as everything else.
 - `settings` (optional): each entry declares a per-user string value. `env`
   must match `^[A-Z][A-Z0-9_]{0,63}$` and may not be a reserved name
   (`PATH`, `HOME`, `SHELL`, `USER`, `NODE_OPTIONS`, `LD_*`, `DYLD_*`,
@@ -184,6 +196,13 @@ or an over-long value is a `400`. An unknown plugin id is a `404`.
   plugin enabled. Secrets are filtered out twice: once when the values are read
   and again when the response is built.
 - `backend` — `true` when the plugin declares one.
+
+It also passes the page surface through:
+
+- `page` — the manifest's `{ title, icon }` verbatim, or `null`.
+- `styles` — each manifest entry resolved to `/plugins/<id>/<path>?v=<sha8>`,
+  reusing the `web` bundle's content hash so a plugin upgrade busts the CSS cache
+  with the module. Empty when the manifest declares none.
 
 ## Plugin backends
 
@@ -293,7 +312,7 @@ responsible for its own fan-out; cctui does not broadcast between them.
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
-| `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `enabled`, `settings` declarations and the caller's `config` values |
+| `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `page`, `styles` (resolved the same way), `enabled`, `settings` declarations and the caller's `config` values |
 | `ANY /api/v1/plugins/{id}/backend/{*path}` | bearer or cookie, read | proxy to the plugin's backend with signed identity headers; streams, incl. SSE |
 | `POST /api/v1/plugins/rescan` | admin | re-read the plugins directory |
 | `GET /api/v1/admin/plugins` | admin | `AdminPluginInfo[]`: every plugin, installed or from the directory, with its instance toggle |

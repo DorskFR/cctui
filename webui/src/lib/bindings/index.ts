@@ -135,6 +135,7 @@ export type * from './PluginInstallRequest';
 export type * from './PluginInstanceSetting';
 export type * from './PluginInstanceSettings';
 export type * from './PluginInstanceSettingsRequest';
+export type * from './PluginPage';
 export type * from './PluginProxySecret';
 export type * from './PluginSetting';
 export type * from './PluginSource';

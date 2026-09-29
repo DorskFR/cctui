@@ -231,6 +231,8 @@ mod tests {
             icon: None,
             web: None,
             skills: vec![],
+            page: None,
+            styles: vec![],
             settings: vec![],
             instance_settings: vec![
                 decl("upstream", "url", false),

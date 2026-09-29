@@ -31,6 +31,12 @@ pub struct PluginManifest {
     pub web: Option<String>,
     #[serde(default)]
     pub skills: Vec<String>,
+    /// A full-page surface at `/apps/<id>`; needs `web`, which exports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<PluginPage>,
+    /// Stylesheets the host loads globally alongside the `web` bundle.
+    #[serde(default)]
+    pub styles: Vec<String>,
     /// Per-user settings the plugin asks for; values are exported into agent
     /// sessions as `env`.
     #[serde(default)]
@@ -42,6 +48,16 @@ pub struct PluginManifest {
     /// proxy at `/api/v1/plugins/<id>/backend/*`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<PluginBackend>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPage {
+    pub title: String,
+    /// Tsumikit icon name for the nav entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -177,6 +193,8 @@ pub enum ManifestError {
     BadInstanceSetting(String, String, &'static str),
     #[error("plugin `{0}`: backend is invalid: {1}")]
     BadBackend(String, &'static str),
+    #[error("plugin `{0}` declares a `page` but no `web` module to export it from")]
+    PageWithoutWeb(String),
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -226,6 +244,22 @@ pub fn validate_manifest(
         }
         if !exists(web) {
             return Err(ManifestError::Missing(id, web.clone()));
+        }
+    }
+    if manifest.page.is_some() && manifest.web.is_none() {
+        return Err(ManifestError::PageWithoutWeb(id));
+    }
+    if let Some(page) = &manifest.page
+        && page.title.trim().is_empty()
+    {
+        return Err(ManifestError::EmptyField(id, "page.title"));
+    }
+    for style in &manifest.styles {
+        if !safe_relative(style) {
+            return Err(ManifestError::BadPath(id, style.clone()));
+        }
+        if !exists(style) {
+            return Err(ManifestError::Missing(id, style.clone()));
         }
     }
     for skill in &manifest.skills {
@@ -686,9 +720,10 @@ pub mod test_support {
 mod tests {
     use super::test_support::write_plugin;
     use super::{
-        ManifestError, PluginBackend, PluginInstanceSetting, PluginManifest, PluginRegistry,
-        PluginSetting, PluginSource, enabled_ids, load_plugin, mime_for, plugin_config, plugin_env,
-        resolve_static, safe_relative, scan_dir, valid_id, validate_manifest,
+        ManifestError, PluginBackend, PluginInstanceSetting, PluginManifest, PluginPage,
+        PluginRegistry, PluginSetting, PluginSource, enabled_ids, load_plugin, mime_for,
+        plugin_config, plugin_env, resolve_static, safe_relative, scan_dir, valid_id,
+        validate_manifest,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -703,6 +738,8 @@ mod tests {
             icon: None,
             web: None,
             skills: vec![],
+            page: None,
+            styles: vec![],
             settings: vec![],
             instance_settings: vec![],
             backend: None,
@@ -828,6 +865,68 @@ mod tests {
             validate_manifest(&m, "p", &|_| false),
             Err(ManifestError::BadInstanceSetting(..))
         ));
+    }
+
+    #[test]
+    fn a_page_needs_a_web_module_and_styles_must_stay_inside_the_plugin() {
+        let page = || PluginPage { title: "Review".to_owned(), icon: Some("eye".to_owned()) };
+
+        let mut m = manifest("p");
+        m.page = Some(page());
+        assert_eq!(
+            validate_manifest(&m, "p", &|_| true),
+            Err(ManifestError::PageWithoutWeb("p".into())),
+            "a page with no bundle could never mount"
+        );
+
+        let mut m = manifest("p");
+        m.web = Some("web/index.js".into());
+        m.page = Some(page());
+        m.styles = vec!["web/app.css".into()];
+        assert_eq!(validate_manifest(&m, "p", &|_| true), Ok(()));
+
+        let mut m = manifest("p");
+        m.web = Some("web/index.js".into());
+        m.page = Some(PluginPage { title: "  ".to_owned(), icon: None });
+        assert!(matches!(
+            validate_manifest(&m, "p", &|_| true),
+            Err(ManifestError::EmptyField(_, "page.title"))
+        ));
+
+        for style in ["../evil.css", "/abs.css", ".hidden/x.css", "a/../b.css"] {
+            let mut m = manifest("p");
+            m.styles = vec![style.to_owned()];
+            assert!(
+                matches!(validate_manifest(&m, "p", &|_| true), Err(ManifestError::BadPath(..))),
+                "{style}"
+            );
+        }
+
+        let mut m = manifest("p");
+        m.styles = vec!["web/missing.css".into()];
+        assert!(matches!(validate_manifest(&m, "p", &|_| false), Err(ManifestError::Missing(..))));
+    }
+
+    #[test]
+    fn a_manifest_round_trips_the_page_and_styles_in_camel_case() {
+        let raw = r#"{"id":"p","name":"N","version":"1","cctuiApi":1,"web":"web/index.js",
+            "page":{"title":"Review","icon":"eye"},"styles":["web/app.css"]}"#;
+        let m: PluginManifest = serde_json::from_str(raw).unwrap();
+        let page = m.page.as_ref().unwrap();
+        assert_eq!(page.title, "Review");
+        assert_eq!(page.icon.as_deref(), Some("eye"));
+        assert_eq!(m.styles, vec!["web/app.css"]);
+        assert_eq!(validate_manifest(&m, "p", &|_| true), Ok(()));
+
+        let back = serde_json::to_value(&m).unwrap();
+        assert_eq!(back["page"]["title"], "Review");
+        assert_eq!(back["styles"][0], "web/app.css");
+
+        let bare: PluginManifest =
+            serde_json::from_str(r#"{"id":"p","name":"N","version":"1","cctuiApi":1}"#).unwrap();
+        assert!(bare.page.is_none());
+        assert!(bare.styles.is_empty());
+        assert!(serde_json::to_value(&bare).unwrap().get("page").is_none());
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::auth::AuthContext;
 use std::collections::BTreeMap;
 
 use crate::plugins::{
-    Plugin, PluginInstanceSetting, PluginSetting, enabled_ids, mime_for, plugin_config,
+    Plugin, PluginInstanceSetting, PluginPage, PluginSetting, enabled_ids, mime_for, plugin_config,
     resolve_static,
 };
 use crate::state::AppState;
@@ -32,6 +32,10 @@ pub struct PluginInfo {
     pub icon: Option<String>,
     /// `/plugins/<id>/<web>?v=<sha8>`, absent for skills-only plugins.
     pub web: Option<String>,
+    /// Present when the plugin contributes a full page at `/apps/<id>`.
+    pub page: Option<PluginPage>,
+    /// Stylesheets to load with the module, as `/plugins/<id>/<path>?v=<sha8>`.
+    pub styles: Vec<String>,
     pub skills: Vec<String>,
     /// From the caller's settings `plugins.enabled[id]`.
     pub enabled: bool,
@@ -67,6 +71,15 @@ pub fn plugin_info(
             let v = plugin.web_hash.as_deref().unwrap_or("0");
             format!("/plugins/{}/{web}?v={v}", m.id)
         }),
+        page: m.page.clone(),
+        styles: m
+            .styles
+            .iter()
+            .map(|style| {
+                let v = plugin.web_hash.as_deref().unwrap_or("0");
+                format!("/plugins/{}/{style}?v={v}", m.id)
+            })
+            .collect(),
         skills: m.skills.clone(),
         enabled,
         settings: m.settings.clone(),
@@ -259,8 +272,35 @@ mod tests {
             "a secret instance value never reaches a user"
         );
         let json = serde_json::to_value(&infos[1]).unwrap();
+        assert!(json["page"].is_null());
+        assert_eq!(json["styles"].as_array().map(Vec::len), Some(0));
         assert_eq!(json["instanceSettings"][0]["key"], "upstream");
         assert_eq!(json["instanceSettingValues"]["upstream"], "https://up.example");
+    }
+
+    #[test]
+    fn a_page_and_its_styles_are_passed_through_cache_busted() {
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(
+            root.path(),
+            "cc",
+            r#","page":{"title":"Review","icon":"eye"},"styles":["web/style.css"]"#,
+        );
+        let plugins = vec![load_plugin(&root.path().join("cc")).unwrap()];
+        let infos = list_for(&plugins, None, &std::collections::BTreeMap::new());
+        let info = &infos[0];
+        let page = info.page.as_ref().expect("page passed through");
+        assert_eq!(page.title, "Review");
+        assert_eq!(page.icon.as_deref(), Some("eye"));
+        assert_eq!(info.styles.len(), 1);
+        let style = &info.styles[0];
+        assert!(style.starts_with("/plugins/cc/web/style.css?v="), "{style}");
+        let web = info.web.as_deref().unwrap();
+        assert_eq!(
+            style.rsplit("?v=").next(),
+            web.rsplit("?v=").next(),
+            "styles reuse the web bundle's cache-buster"
+        );
     }
 
     #[tokio::test]
