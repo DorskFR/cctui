@@ -237,9 +237,10 @@ pub fn codex_catalog(skills: &[MirroredSkill]) -> Option<String> {
     Some(out)
 }
 
-/// What one session's enabled plugins contribute to its agent, resolved once
-/// at launch: `env` for every adapter, `roots` for an agent that discovers
-/// skills from directories, `catalog` for one that does not.
+/// What one session's enabled plugins contribute to its agent.
+///
+/// Resolved once at launch: `env` for every adapter, `roots` for an agent that
+/// discovers skills from directories, `catalog` for one that does not.
 #[derive(Debug, Default, Clone)]
 pub struct SessionSkills {
     pub env: BTreeMap<String, String>,
@@ -307,8 +308,9 @@ static BY_SESSION: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, SessionSkills>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Remember what a launch resolved, keyed by the id the agent is really known
-/// by. A hibernated session resumes without a fresh gateway-env pull, and the
+/// Remember what a launch resolved, keyed by the id the agent is known by.
+///
+/// A hibernated session resumes without a fresh gateway-env pull, and the
 /// skills are not persisted anywhere, so this is all a resume has.
 pub fn remember_skills(session_id: &str, skills: &SessionSkills) {
     if let Ok(mut map) = BY_SESSION.lock() {

@@ -778,11 +778,14 @@ mod tests {
             "http://localhost:8700",
             b"k",
         );
-        let id = "abcdefghijklmnopqrstuvwx";
-        assert_eq!(reg.url_for(id), format!("http://cctui-pv-{id}.localhost:8700"));
+        let preview = "abcdefghijklmnopqrstuvwx";
+        assert_eq!(reg.url_for(preview), format!("http://cctui-pv-{preview}.localhost:8700"));
         assert_eq!(
-            reg.host().unwrap().id_from_host(&format!("cctui-pv-{id}.localhost:8700")).as_deref(),
-            Some(id),
+            reg.host()
+                .unwrap()
+                .id_from_host(&format!("cctui-pv-{preview}.localhost:8700"))
+                .as_deref(),
+            Some(preview),
             "the Host header carries that port back"
         );
     }
