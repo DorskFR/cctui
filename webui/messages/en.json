@@ -405,6 +405,8 @@
 	"conversation_pins_aria": "Pinned messages",
 	"conversation_pins_empty": "No pinned messages yet",
 	"conversation_pins_no_excerpt": "(no text)",
+	"conversation_quote_label": "Quote reply",
+	"conversation_quote_title": "Quote this message in the composer",
 	"conversation_renamed": "Renamed",
 	"conversation_resend_title": "Resend this message ({reason})",
 	"conversation_resume_dispatched": "Resume dispatched",

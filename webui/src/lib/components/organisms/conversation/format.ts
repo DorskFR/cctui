@@ -406,3 +406,31 @@ export function lineMarkdown(ln: Line): string {
 	}
 	return t;
 }
+
+// Markdown blockquote of a message, ready to splice into the composer: every
+// line prefixed with `> ` (blank ones with a bare `>`), trailing whitespace
+// dropped, closed by a blank line so the reply starts outside the quote.
+export function quoteMarkdown(text: string): string {
+	const body = text.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+	if (!body) return '';
+	const quoted = body
+		.split('\n')
+		.map((l) => (l.trim() === '' ? '>' : `> ${l}`))
+		.join('\n');
+	return `${quoted}\n\n`;
+}
+
+// Splice a block into a draft at the caret, keeping a blank line before it
+// (the block supplies its own trailing one) and leaving the caret after it.
+export function insertAtCaret(
+	draft: string,
+	caret: number | undefined,
+	block: string
+): { text: string; caret: number } {
+	const at = Math.max(0, Math.min(draft.length, caret ?? draft.length));
+	const before = draft.slice(0, at);
+	const after = draft.slice(at);
+	const pre = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+	const head = before + pre + block;
+	return { text: head + after, caret: head.length };
+}

@@ -405,6 +405,8 @@
 	"conversation_pins_aria": "Messages épinglés",
 	"conversation_pins_empty": "Aucun message épinglé",
 	"conversation_pins_no_excerpt": "(sans texte)",
+	"conversation_quote_label": "Répondre en citant",
+	"conversation_quote_title": "Citer ce message dans le composeur",
 	"conversation_renamed": "Renommé",
 	"conversation_resend_title": "Renvoyer ce message ({reason})",
 	"conversation_resume_dispatched": "Reprise lancée",
