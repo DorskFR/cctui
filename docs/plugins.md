@@ -116,12 +116,26 @@ resolved `env` (declared name → the owner's value, empty values omitted).
 The daemon mirrors the skill files from `GET /plugins/<id>/skills/<file>` into
 `$XDG_CONFIG_HOME/cctui/plugins/<id>/<hash>/` (override with
 `CCTUI_PLUGIN_CACHE_DIR`) as a Claude Code plugin (`.claude-plugin/plugin.json`
-+ `skills/`) and launches the worker with one `--plugin-dir` per plugin. The
-flag rides the respawn flags too, so `/clear`, `/compact` and CLI upgrades
-keep the skills. A mirror is fetched once per hash; a plugin that fails to
-mirror is skipped, never blocking the launch.
++ `skills/`). A mirror is fetched once per hash; a plugin that fails to mirror
+is skipped, never blocking the launch.
 
-The env values are exported into the worker's environment after the gateway
+Each harness is then handed the mirror through the only channel it has for
+per-session skills:
+
+- **Claude Code**: one `--plugin-dir` per plugin. The flag rides the respawn
+  flags too, so `/clear`, `/compact` and CLI upgrades keep the skills.
+- **Codex**: one shared `codex app-server` serves every session on the machine,
+  so nothing process-global may be used (`skills/extraRoots/set` would leak one
+  user's skills to all of them). Instead each `thread/{start,resume,fork}`
+  carries a `<cctui_skills>` catalog — name, description and `SKILL.md` path per
+  skill — as `developerInstructions`, and the thread's shell env as
+  `config.shell_environment_policy.set`. Codex persists neither, so both ride
+  every resume and fork.
+- **opencode**: `opencode serve` runs per session, so the mirrors are listed as
+  `skills.paths` in the session's generated `opencode.json` and the env goes on
+  the serve process.
+
+The env values are exported into the session's environment after the gateway
 env, never overriding a key already set, and re-validated against the same
 name rules. Every agent session also gets `CCTUI_WEB_ORIGIN` (the scheme and
 authority of the server the daemon talks to) so a skill can address the webui
@@ -140,7 +154,10 @@ still win), and the wildcard TLS cert must cover it.
 Inside a session, `cctui-daemon preview open --port <n>` registers the port and
 prints the preview URL; `preview close --port <n>` drops it. Previews also close
 when the session ends or that daemon disconnects. The session id comes from
-`CCTUI_SESSION_ID`, which every agent session now gets.
+`--session` or `CCTUI_SESSION_ID`, which Claude Code, Codex and opencode
+sessions all get. Its value is the id the server keyed the session on at launch,
+which for Codex and opencode is not the thread/session id the harness later
+mints; the daemon aliases one onto the other, so both resolve.
 
 Requests whose `Host` matches the pattern are handled before the regular router:
 the server looks up the preview id and tunnels the request down that daemon's

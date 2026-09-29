@@ -829,9 +829,15 @@ impl<'a> EventLoop<'a> {
         let local_id = self.thread.local_id.clone();
         let (parent_local_id, relation) =
             child_linkage(&session.launch, session.parent_local_id.as_deref());
+        // Tools of this thread were told the launch key as `CCTUI_SESSION_ID`
+        // — the id the server bound the session row to — and the thread id it
+        // really is only exists now.
+        if let Some(key) = super::session::alias_key(&session.skills, &local_id) {
+            crate::agenttool::bind_session_alias(key, &local_id);
+        }
+        crate::plugins::remember_skills(&local_id, &session.skills);
         // A `CctuiAgent` call from this session arrives keyed by the launch
-        // key baked into the relay argv; the thread id it really is only
-        // exists now.
+        // key baked into the relay argv.
         if let Some(agent_mcp) = &session.agent_mcp {
             crate::agenttool::bind_session_alias(agent_mcp.session_key(), &local_id);
             crate::adapters::agent_mcp::remember(&local_id, agent_mcp);
@@ -1121,6 +1127,7 @@ impl<'a> EventLoop<'a> {
                 record,
                 local_id,
                 retry,
+                session.skills.clone(),
                 session.events.clone(),
                 session.live.clone(),
                 session.registry.clone(),

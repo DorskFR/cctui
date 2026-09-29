@@ -96,6 +96,10 @@ pub struct CodexSession {
     /// the session spawn rights. `None` means the tool is absent — a session
     /// without a capability must not be able to see it.
     pub(super) agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
+    /// Plugin skills and cctui's own vars for this thread: env for its shell
+    /// tool plus the catalog it reads skills from. Empty for a session whose
+    /// owner enabled no plugins.
+    pub(super) skills: crate::plugins::SessionSkills,
     pub(super) events: mpsc::Sender<AdapterEvent>,
     pub(super) live: LiveSessionRegistry,
     pub(super) registry: SessionRegistry,
@@ -109,6 +113,12 @@ impl CodexSession {
         agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
     ) -> Self {
         self.agent_mcp = agent_mcp;
+        self
+    }
+
+    #[must_use]
+    pub fn with_skills(mut self, skills: crate::plugins::SessionSkills) -> Self {
+        self.skills = skills;
         self
     }
 
@@ -137,6 +147,7 @@ impl CodexSession {
             spawn_key,
             parent_local_id,
             agent_mcp: None,
+            skills: crate::plugins::SessionSkills::none(),
             events,
             live,
             registry,
@@ -168,6 +179,7 @@ impl CodexSession {
             spawn_key: None,
             parent_local_id: None,
             agent_mcp: None,
+            skills: crate::plugins::SessionSkills::none(),
             events,
             live,
             registry,
@@ -196,6 +208,7 @@ impl CodexSession {
             spawn_key: None,
             parent_local_id: None,
             agent_mcp: None,
+            skills: crate::plugins::SessionSkills::none(),
             events,
             live,
             registry,
@@ -253,7 +266,9 @@ impl CodexSession {
     }
 
     pub(super) fn thread_config(&self, shared: bool) -> ThreadConfig {
-        let config = ThreadConfig::new(&self.env, self.cfg.service_tier.as_deref());
+        let config = ThreadConfig::new(&self.env, self.cfg.service_tier.as_deref())
+            .with_tool_env(self.skills.env.clone())
+            .with_developer_instructions(self.skills.catalog.clone());
         if shared { config.with_overlay(shared_overlay(&self.cfg, &self.env)) } else { config }
     }
 
@@ -334,6 +349,21 @@ impl CodexSession {
         }
         tracing::warn!(%local_id, ?cmd, "codex: dropping buffered command — app-server gone");
     }
+}
+
+/// The launch key to alias onto `thread_id`: the id this thread's tools were
+/// told they belong to, whenever codex minted a different one. Independent of
+/// the `CctuiAgent` relay — `cctui-daemon preview open` needs the alias too.
+#[must_use]
+pub(super) fn alias_key<'a>(
+    skills: &'a crate::plugins::SessionSkills,
+    thread_id: &str,
+) -> Option<&'a str> {
+    skills
+        .env
+        .get(crate::preview::SESSION_ID_VAR)
+        .map(String::as_str)
+        .filter(|key| !key.is_empty() && *key != thread_id)
 }
 
 /// Only an explicit kill removes the durable record; a crash keeps it
@@ -515,10 +545,12 @@ pub fn resume_relay(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_resumed_session(
     record: SessionRecord,
     thread_id: &str,
     commands: Vec<SessionCommand>,
+    skills: crate::plugins::SessionSkills,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -549,7 +581,8 @@ pub fn spawn_resumed_session(
         registry,
         shutdown,
     )
-    .with_agent_mcp(relay);
+    .with_agent_mcp(relay)
+    .with_skills(skills);
     tokio::spawn(async move {
         if let Err(err) = session.run().await {
             tracing::error!(%err, "codex resumed app-server session ended in error");
@@ -858,6 +891,7 @@ mod tests {
             spawn_key: None,
             parent_local_id: None,
             agent_mcp: None,
+            skills: crate::plugins::SessionSkills::none(),
             events,
             live: LiveSessionRegistry::default(),
             registry: SessionRegistry::default(),
@@ -878,6 +912,50 @@ mod tests {
         assert_eq!(method, "thread/resume");
         assert_eq!(req["params"]["config"]["service_tier"], "fast");
         assert_eq!(req["params"]["serviceTier"], "fast");
+    }
+
+    fn skills_of(session_id: &str, catalog: &str) -> crate::plugins::SessionSkills {
+        crate::plugins::SessionSkills {
+            env: std::collections::BTreeMap::from([(
+                crate::preview::SESSION_ID_VAR.to_owned(),
+                session_id.to_owned(),
+            )]),
+            roots: Vec::new(),
+            catalog: Some(catalog.to_owned()),
+        }
+    }
+
+    /// `preview open` resolves the launch key, so the alias cannot depend on
+    /// the session also having the `CctuiAgent` relay.
+    #[test]
+    fn the_launch_key_is_aliased_onto_the_thread_id_without_a_relay() {
+        let skills = skills_of("launch-key-9", "<cctui_skills>x</cctui_skills>");
+        assert_eq!(alias_key(&skills, "thread_0199real"), Some("launch-key-9"));
+        assert_eq!(alias_key(&skills, "launch-key-9"), None, "no alias onto itself");
+        assert_eq!(alias_key(&crate::plugins::SessionSkills::none(), "thread_0199real"), None);
+    }
+
+    /// Codex persists neither the catalog nor the shell env, so a resume that
+    /// omits them silently drops the session's skills and its own id.
+    #[test]
+    fn a_resumed_session_re_supplies_its_catalog_and_tool_env() {
+        let mut session = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            None,
+        );
+        session.skills = skills_of("launch-key-9", "<cctui_skills>yubisashi</cctui_skills>");
+        let (req, method) = session.stdio_thread_request();
+        assert_eq!(method, "thread/resume");
+        assert_eq!(req["params"]["developerInstructions"], "<cctui_skills>yubisashi</cctui_skills>");
+        assert_eq!(
+            req["params"]["config"]["shell_environment_policy"]["set"]
+                [crate::preview::SESSION_ID_VAR],
+            "launch-key-9"
+        );
+        assert!(
+            !req["params"]["config"]["model_providers"].is_object(),
+            "an unbound session still declares no provider"
+        );
     }
 
     #[test]
