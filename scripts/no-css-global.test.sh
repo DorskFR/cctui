@@ -20,6 +20,8 @@ git init -q -b main
 git config user.email t@example.com
 git config user.name t
 git config commit.gpgsign false
+# An inherited hooksPath (lefthook) would print on every scratch commit.
+git config core.hooksPath /dev/null
 mkdir -p webui/src
 write() {
   mkdir -p "$(dirname "$1")"
@@ -49,14 +51,19 @@ check "range mode fails on an added occurrence" \
 check "range mode reports the added count only" \
   bash -c '"$1" main...feature 2>&1 | grep -q "added count is 1"' _ "$guard"
 
-git revert -q --no-edit HEAD
+drop() {
+  git rm -q "$1"
+  git commit -qm "drops $1"
+}
+
+drop webui/src/New.svelte
 write webui/src/Two.svelte "<style>${G}.a) span ${G}.b) { color: red; }</style>"
 git add -A
 git commit -qm 'adds two globals on one line'
 check "multiple occurrences on one added line all count" \
   bash -c '"$1" main...feature 2>&1 | grep -q "added count is 2"' _ "$guard"
 
-git revert -q --no-edit HEAD
+drop webui/src/Two.svelte
 check "removing an occurrence does not fail the range" \
   bash -c '"$1" main...feature >/dev/null 2>&1' _ "$guard"
 
