@@ -151,7 +151,7 @@ mod tests {
         let (limit, now) = (limit(), Instant::now());
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         let _first = limit.acquire(a, 1, now).unwrap();
-        assert!(limit.acquire(b, 1, now).is_some());
+        let _second = limit.acquire(b, 1, now).expect("a second key gets its own allowance");
         assert_eq!(limit.live(a), 1);
         assert_eq!(limit.live(b), 1);
     }
