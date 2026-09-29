@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { ws } from '$lib/ws.svelte';
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
+	import { setUploadCaps } from '$lib/uploadCaps.svelte';
 	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -31,6 +32,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	let updateOpen = $state(false);
 	const instanceName = $derived(version.data?.instance_name ?? null);
 	$effect(() => notify.setInstanceName(instanceName));
+	$effect(() => setUploadCaps(version.data?.upload_caps));
 
 	// Global "needs input" watcher. Header is always mounted inside
 	// the query provider, so it's the natural home for the cross-route watcher.

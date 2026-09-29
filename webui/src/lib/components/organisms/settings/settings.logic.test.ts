@@ -10,8 +10,11 @@ import {
 	normalizeForFilter,
 	pageForHash,
 	pagerNeighbours,
+	pagesInScope,
 	SETTINGS_PAGES,
-	settingsHref
+	SETTINGS_SCOPES,
+	settingsHref,
+	settingsScope
 } from './settings.logic';
 
 function tree(): HTMLElement {
@@ -75,7 +78,8 @@ describe('page map', () => {
 	it('keeps old /settings#anchor deep links working', () => {
 		expect(pageForHash('#security')).toBe('security');
 		expect(pageForHash('passkeys')).toBe('security');
-		expect(pageForHash('#Storage')).toBe('instance');
+		expect(pageForHash('#Storage')).toBe('sessions');
+		expect(pageForHash('#passkey-sign-in')).toBe('instance');
 		expect(pageForHash('#self-update')).toBe('instance');
 		expect(pageForHash('#upstreams')).toBe('instance');
 		expect(pageForHash('#spawn-limits')).toBe('instance');
@@ -83,6 +87,14 @@ describe('page map', () => {
 		expect(pageForHash('')).toBe(DEFAULT_SETTINGS_PAGE);
 		expect(pageForHash(null)).toBe(DEFAULT_SETTINGS_PAGE);
 		expect(pageForHash('#whatever')).toBe(DEFAULT_SETTINGS_PAGE);
+	});
+
+	it('groups every page under exactly one scope, you before instance', () => {
+		const grouped = SETTINGS_SCOPES.flatMap(pagesInScope);
+		expect(grouped).toEqual([...SETTINGS_PAGES]);
+		expect(settingsScope('appearance')).toBe('you');
+		expect(settingsScope('guides')).toBe('you');
+		expect(settingsScope('instance')).toBe('instance');
 	});
 
 	it('pages in order, with no neighbour past either end', () => {

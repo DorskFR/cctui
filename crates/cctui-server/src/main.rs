@@ -234,6 +234,8 @@ async fn init_bus(
 async fn start_background_tasks(state: &AppState) {
     routes::server_settings::refresh_upstream_allowlist(&state.pool).await;
     tokio::spawn(routes::server_settings::upstream_allowlist_task(state.pool.clone()));
+    routes::server_settings::refresh_upload_caps(state).await;
+    tokio::spawn(routes::server_settings::upload_caps_task(state.clone()));
 
     // Slow upstream release probe feeding `/version.latest_version`;
     // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
@@ -764,6 +766,8 @@ mod tests {
             "PUT /admin/instance/self-update Bearer Scope(Admin)",
             "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
             "PUT /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "GET /admin/instance/upload-caps Bearer Scope(Admin)",
+            "PUT /admin/instance/upload-caps Bearer Scope(Admin)",
             "GET /admin/instance/upstream-hosts Bearer Scope(Admin)",
             "PUT /admin/instance/upstream-hosts Bearer Scope(Admin)",
             "DELETE /admin/machines/{id} Bearer Scope(Admin)",

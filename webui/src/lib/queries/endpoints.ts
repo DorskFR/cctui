@@ -51,6 +51,9 @@ import type { SelfUpdateTargetInfo } from "@bindings/SelfUpdateTargetInfo";
 import type { SelfUpdateTargetRequest } from "@bindings/SelfUpdateTargetRequest";
 import type { SpawnDefaults } from "@bindings/SpawnDefaults";
 import type { SpawnDefaultsInfo } from "@bindings/SpawnDefaultsInfo";
+import type { UploadCaps } from "@bindings/UploadCaps";
+import type { UploadCapsInfo } from "@bindings/UploadCapsInfo";
+import type { UploadCapsRequest } from "@bindings/UploadCapsRequest";
 import type { UpstreamHostsInfo } from "@bindings/UpstreamHostsInfo";
 import type { UpstreamHostsRequest } from "@bindings/UpstreamHostsRequest";
 import type { HarnessAutoupdateInfo } from "@bindings/HarnessAutoupdateInfo";
@@ -130,6 +133,13 @@ export const endpoints = {
   /** `null` fields fall back to env, then the built-in default (admin). */
   setSpawnDefaults: (settings: SpawnDefaults) =>
     api.put<SpawnDefaultsInfo>("/admin/instance/spawn-defaults", settings),
+  /** Effective per-upload caps plus the boot-time ceiling (admin). */
+  uploadCaps: () => api.get<UploadCapsInfo>("/admin/instance/upload-caps"),
+  /** `null` restores the built-in caps (admin). */
+  setUploadCaps: (caps: UploadCaps | null) =>
+    api.put<UploadCapsInfo>("/admin/instance/upload-caps", {
+      caps,
+    } satisfies UploadCapsRequest),
   upstreamHosts: () => api.get<UpstreamHostsInfo>("/admin/instance/upstream-hosts"),
   /** `null` resets the list to the env seed (admin). */
   setUpstreamHosts: (hosts: string[] | null) =>

@@ -12,6 +12,7 @@ import {
 	rewriteFileTokens
 } from '$lib/attachments';
 import { attachmentDraftSync, dropMissingTokens } from '$lib/attachmentStore';
+import { uploadCaps } from '$lib/uploadCaps.svelte';
 import { imageAttachments } from '$lib/imageAttachments.svelte';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
@@ -42,7 +43,7 @@ export class ComposerAttachments {
 	// Key of the session whose attachments are loaded; null while a restore is
 	// in flight so a session switch never writes the old list under the new key.
 	#key = $state<string | null>(null);
-	error = $derived(fileCapError(this.files));
+	error = $derived(fileCapError(this.files, uploadCaps));
 
 	constructor(o: ComposerAttachmentsOpts) {
 		this.#o = o;

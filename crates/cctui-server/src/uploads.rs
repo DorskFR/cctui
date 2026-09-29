@@ -16,14 +16,35 @@ use base64::Engine;
 use cctui_proto::adapter::BootstrapFile;
 use cctui_proto::api::ApiError;
 
-/// Upload caps. The bytes ride the server→daemon WS leg as base64 inside a
-/// single JSON frame, so this is deliberately an "attach a screenshot / small
-/// doc" budget, not bulk transfer. A route's `DefaultBodyLimit` should be set
-/// above [`MAX_TOTAL_BYTES`] so an over-cap upload is rejected here with a clear
-/// 413 rather than a generic body-limit error.
-pub const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
-pub const MAX_TOTAL_BYTES: usize = 20 * 1024 * 1024;
-pub const MAX_FILES: usize = 10;
+/// Built-in upload caps, used when the instance has none stored. The bytes ride
+/// the server→daemon WS leg as base64 inside a single JSON frame, so this is
+/// deliberately an "attach a screenshot / small doc" budget, not bulk transfer.
+/// A route's `DefaultBodyLimit` must stay above the effective total cap so an
+/// over-cap upload is rejected here with a clear 413 rather than a generic
+/// body-limit error.
+pub const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+pub const MAX_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_FILES: u32 = 10;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct UploadCaps {
+    pub max_files: u32,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub max_file_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub max_total_bytes: u64,
+}
+
+impl Default for UploadCaps {
+    fn default() -> Self {
+        Self {
+            max_files: MAX_FILES,
+            max_file_bytes: MAX_FILE_BYTES,
+            max_total_bytes: MAX_TOTAL_BYTES,
+        }
+    }
+}
 
 type ApiErr = (StatusCode, Json<ApiError>);
 
@@ -70,11 +91,14 @@ pub struct RawUpload {
 /// per-file / total / count caps. Any part with a `filename` is a file; a part
 /// named `request` is captured as `request_json`; other non-file parts are
 /// ignored.
-pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUploads, ApiErr> {
+pub async fn parse_upload_multipart(
+    mut multipart: Multipart,
+    caps: UploadCaps,
+) -> Result<ParsedUploads, ApiErr> {
     let mut files: Vec<BootstrapFile> = Vec::new();
     let mut request_json: Option<String> = None;
     let mut raw: Vec<RawUpload> = Vec::new();
-    let mut total_bytes = 0usize;
+    let mut total_bytes = 0u64;
 
     while let Some(field) = multipart
         .next_field()
@@ -90,16 +114,18 @@ pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUp
                 .bytes()
                 .await
                 .map_err(|e| bad_request(format!("reading upload {name:?}: {e}")))?;
-            if bytes.len() > MAX_FILE_BYTES {
+            if bytes.len() as u64 > caps.max_file_bytes {
                 return Err(too_large(format!(
-                    "file {name:?} is {} bytes; per-file cap is {MAX_FILE_BYTES}",
-                    bytes.len()
+                    "file {name:?} is {} bytes; per-file cap is {}",
+                    bytes.len(),
+                    caps.max_file_bytes
                 )));
             }
-            total_bytes += bytes.len();
-            if total_bytes > MAX_TOTAL_BYTES {
+            total_bytes += bytes.len() as u64;
+            if total_bytes > caps.max_total_bytes {
                 return Err(too_large(format!(
-                    "uploads exceed the {MAX_TOTAL_BYTES}-byte total cap"
+                    "uploads exceed the {}-byte total cap",
+                    caps.max_total_bytes
                 )));
             }
             files.push(BootstrapFile {
@@ -107,8 +133,8 @@ pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUp
                 content_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
             });
             raw.push(RawUpload { name, bytes, content_type });
-            if files.len() > MAX_FILES {
-                return Err(too_large(format!("too many files; cap is {MAX_FILES}")));
+            if files.len() as u64 > u64::from(caps.max_files) {
+                return Err(too_large(format!("too many files; cap is {}", caps.max_files)));
             }
         } else if field_name.as_deref() == Some("request") {
             let raw = field
@@ -129,6 +155,88 @@ mod tests {
 
     fn err_status(raw: &str) -> StatusCode {
         sanitize_upload_name(raw).unwrap_err().0
+    }
+
+    const BOUNDARY: &str = "capsboundary";
+
+    async fn multipart_of(files: &[(&str, usize)]) -> Multipart {
+        use axum::extract::FromRequest;
+        let mut body = String::new();
+        for (name, size) in files {
+            body.push_str(&format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"f\"; filename=\"{name}\"\r\n\r\n{}\r\n",
+                "x".repeat(*size)
+            ));
+        }
+        body.push_str(&format!("--{BOUNDARY}--\r\n"));
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
+            .body(axum::body::Body::from(body))
+            .expect("request");
+        Multipart::from_request(req, &()).await.expect("multipart")
+    }
+
+    /// `Ok(file count)` or `Err((status, message))` — neither `ParsedUploads`
+    /// nor `ApiErr` is `Debug`, so the assertions work on plain values.
+    async fn parse(
+        files: &[(&str, usize)],
+        caps: UploadCaps,
+    ) -> Result<usize, (StatusCode, String)> {
+        match parse_upload_multipart(multipart_of(files).await, caps).await {
+            Ok(p) => Ok(p.files.len()),
+            Err((status, Json(e))) => Err((status, e.error)),
+        }
+    }
+
+    #[test]
+    fn built_in_caps_are_the_default() {
+        let d = UploadCaps::default();
+        assert_eq!(d.max_files, 10);
+        assert_eq!(d.max_file_bytes, 5 * 1024 * 1024);
+        assert_eq!(d.max_total_bytes, 20 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn uploads_within_the_configured_caps_pass() {
+        let caps = UploadCaps { max_files: 2, max_file_bytes: 10, max_total_bytes: 20 };
+        assert_eq!(parse(&[("a.txt", 10), ("b.txt", 10)], caps).await, Ok(2));
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_configured_per_file_cap_is_413() {
+        let caps = UploadCaps { max_files: 10, max_file_bytes: 8, max_total_bytes: 1024 };
+        let (status, msg) = parse(&[("a.txt", 9)], caps).await.expect_err("over cap");
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(msg.contains("per-file cap is 8"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn more_files_than_the_configured_count_cap_is_413() {
+        let caps = UploadCaps { max_files: 1, max_file_bytes: 1024, max_total_bytes: 1024 };
+        let (status, msg) = parse(&[("a.txt", 1), ("b.txt", 1)], caps).await.expect_err("over cap");
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(msg.contains("cap is 1"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn crossing_the_configured_total_cap_is_413() {
+        let caps = UploadCaps { max_files: 10, max_file_bytes: 1024, max_total_bytes: 15 };
+        let (status, msg) = parse(&[("a.txt", 10), ("b.txt", 10)], caps).await.expect_err("over cap");
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(msg.contains("15-byte total cap"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn defaults_reproduce_the_previous_behaviour() {
+        let caps = UploadCaps::default();
+        assert_eq!(parse(&[("a.bin", 4 * 1024 * 1024)], caps).await, Ok(1));
+        let (over_file, _) =
+            parse(&[("a.bin", 5 * 1024 * 1024 + 1)], caps).await.expect_err("over cap");
+        assert_eq!(over_file, StatusCode::PAYLOAD_TOO_LARGE);
+        let eleven: Vec<(&str, usize)> = (0..11).map(|_| ("a.txt", 1)).collect();
+        let (over_count, _) = parse(&eleven, caps).await.expect_err("over cap");
+        assert_eq!(over_count, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[test]

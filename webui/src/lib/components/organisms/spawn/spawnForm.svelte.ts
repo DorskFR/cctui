@@ -30,6 +30,7 @@ import {
 } from '$lib/drafts';
 import { recordProfileUse, PROFILE_USES } from '$lib/spawnMemory';
 import { attachFiles, removeFileByName, fileCapError } from '$lib/attachments';
+import { uploadCaps } from '$lib/uploadCaps.svelte';
 import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
 import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '$lib/followup';
 import { settings } from '$lib/settings.svelte';
@@ -157,7 +158,7 @@ export class SpawnForm {
 	);
 
 	badEnvKeys = $derived(this.envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim())));
-	fileError = $derived(fileCapError(this.files));
+	fileError = $derived(fileCapError(this.files, uploadCaps));
 	secretsValid = $derived(
 		this.badEnvKeys.length === 0 && !this.fileError && this.images.pending.length === 0
 	);
