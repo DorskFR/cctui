@@ -29,7 +29,7 @@
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
   import Avatar from "./Avatar.svelte";
-  import PrStateIcon, { stateColor } from "./PrStateIcon.svelte";
+  import PrStateIcon, { stateToneColor } from "./PrStateIcon.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
   let query = $state("");
@@ -150,7 +150,7 @@
             {#each group.entries as e (`${e.owner}/${e.repo}#${e.pull.number}`)}
               <li
                 class:approved={isApproved(e.pull)}
-                style:--marker={stateColor(prStateOf(e.pull))}
+                style:--marker={stateToneColor(prStateOf(e.pull))}
               >
                 <Button
                   variant="ghost"

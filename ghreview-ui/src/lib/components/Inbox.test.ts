@@ -103,10 +103,10 @@ describe("Inbox", () => {
     mountInbox();
     await settleUntil(() => document.querySelector(".list li svg") !== null);
 
-    expect(document.querySelector(".list li svg")?.getAttribute("aria-label")).toBe("open");
-    expect(document.querySelector(".list li svg")?.getAttribute("fill")).toBe(
-      "var(--gh-fg-muted)",
-    );
+    const icon = document.querySelector(".list li svg") as SVGElement;
+    expect(icon.getAttribute("aria-label")).toBe("open");
+    expect(icon.getAttribute("data-tsu")).toBe("Icon");
+    expect(icon.getAttribute("style")).toContain("color: var(--gh-fg-muted)");
 
     client.setQueryData(keys.pull("o", "r", 7), envelope("closed", true));
     await settleUntil(
