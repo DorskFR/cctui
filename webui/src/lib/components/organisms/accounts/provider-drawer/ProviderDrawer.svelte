@@ -236,6 +236,7 @@
 						bind:baseUrl={edit.baseUrl}
 						bind:credential={edit.credential}
 						bind:authScheme={edit.authScheme}
+						bind:usageProbe={edit.usageProbe}
 						bind:settings={edit.settings}
 						{moveTargets}
 						moveFamily={p.family}

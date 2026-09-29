@@ -1954,5 +1954,7 @@
   "provider_status_minor": "dégradé",
   "provider_status_major": "panne partielle",
   "provider_status_critical": "panne majeure",
-  "provider_status_account_badge": "{provider} en amont : {detail}"
+  "provider_status_account_badge": "{provider} en amont : {detail}",
+  "accounts_field_usage_probe": "Sonde de consommation",
+  "accounts_usage_probe_help": "Lit le quota propre à ce point d'accès pour que la clé obtienne de vraies fenêtres, un rythme et une limite souple. Sans sonde, elle reste non mesurée."
 }

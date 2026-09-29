@@ -295,6 +295,10 @@ pub struct ProviderInfo {
     /// the proxy path. NULL ⇒ no throttling.
     #[cfg_attr(feature = "ts", ts(as = "Option<crate::routes::gateway::RateLimits>"))]
     pub rate_limits: Option<serde_json::Value>,
+    /// Quota probe from the server's registry used to measure this
+    /// compatible-endpoint credential. NULL ⇒ unmeasured (no windows, so no pace
+    /// and no soft limit).
+    pub usage_probe: Option<String>,
 }
 
 /// API view of an account identity: name, owner, timestamps, and its
@@ -383,7 +387,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             p.request_count, p.bytes_transferred, \
             p.soft_limits_json AS soft_limits, p.usage_notices, p.header_pin, \
             p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
-            p.provider_settings, p.rate_limits_json AS rate_limits, \
+            p.provider_settings, p.rate_limits_json AS rate_limits, p.usage_probe, \
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
              + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
               AS total_tokens, \
@@ -556,6 +560,11 @@ pub struct ProviderSpec {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<crate::routes::gateway::RateLimits>", optional))]
     pub rate_limits: Option<serde_json::Value>,
+    /// Quota probe from the server's registry that measures this credential.
+    /// Compatible endpoints only; absent ⇒ unmeasured.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "string", optional))]
+    pub usage_probe: Option<String>,
 }
 
 /// `POST /api/v1/accounts` payload: the identity fields, plus an
@@ -718,6 +727,12 @@ pub struct UpdateProvider {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<crate::routes::gateway::RateLimits>", optional))]
     pub rate_limits: Option<serde_json::Value>,
+    /// Replacement quota probe id. Provided → replaces it (an empty string
+    /// clears it, leaving the credential unmeasured); absent → unchanged. Must
+    /// name a registered probe.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "string", optional))]
+    pub usage_probe: Option<String>,
 }
 
 /// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` payload:
@@ -1076,6 +1091,7 @@ struct ProviderWrite {
     settings_json: Option<serde_json::Value>,
     provider_settings: Option<serde_json::Value>,
     rate_limits_json: Option<serde_json::Value>,
+    usage_probe: Option<String>,
 }
 
 /// Validate a [`ProviderSpec`] into a [`ProviderWrite`] (shared by the one-shot
@@ -1198,7 +1214,35 @@ async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, Ap
         settings_json,
         provider_settings,
         rate_limits_json: build_rate_limits_json(spec.rate_limits.as_ref())?,
+        usage_probe: validate_usage_probe(spec.usage_probe.as_deref(), compatible)?,
     })
+}
+
+/// A stored `usage_probe` must name a registered probe, and only a
+/// compatible-endpoint credential can carry one — a native subscription has a
+/// real usage API and a probe there would silently shadow it. An empty string
+/// clears the column.
+fn validate_usage_probe(
+    raw: Option<&str>,
+    compatible: bool,
+) -> Result<Option<String>, AppError> {
+    let Some(id) = raw.map(str::trim) else { return Ok(None) };
+    if id.is_empty() {
+        return Ok(None);
+    }
+    if !compatible {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "usage_probe is only settable on a compatible provider",
+        ));
+    }
+    if crate::usage_probe::probe(id).is_none() {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("unknown usage_probe; expected one of {}", crate::usage_probe::ids().join("|")),
+        ));
+    }
+    Ok(Some(id.to_owned()))
 }
 
 /// Gateway settings must be a JSON object — the gateway deep-merges them over
@@ -1228,8 +1272,8 @@ async fn insert_provider(
         "INSERT INTO account_providers \
             (user_id, account_id, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, base_url, models, auth_scheme, model_aliases, \
-             soft_limits_json, settings_json, provider_settings, rate_limits_json) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+             soft_limits_json, settings_json, provider_settings, rate_limits_json, usage_probe) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
          RETURNING id",
     )
     .bind(user_id)
@@ -1246,6 +1290,7 @@ async fn insert_provider(
     .bind(&w.settings_json)
     .bind(&w.provider_settings)
     .bind(&w.rate_limits_json)
+    .bind(&w.usage_probe)
     .fetch_one(conn)
     .await
 }
@@ -1631,7 +1676,8 @@ const UPDATE_PROVIDER_SQL: &str = "UPDATE account_providers SET \
             provider_settings = CASE WHEN $14 THEN $15 ELSE provider_settings END, \
             rate_limits_json = CASE WHEN $16 THEN $17 ELSE rate_limits_json END, \
             usage_notices = CASE WHEN $18 THEN $19 ELSE usage_notices END, \
-            header_pin = COALESCE($20, header_pin) \
+            header_pin = COALESCE($20, header_pin), \
+            usage_probe = CASE WHEN $21 THEN $22 ELSE usage_probe END \
          WHERE id = $1 AND account_id = $2 \
            AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
          RETURNING id";
@@ -1732,6 +1778,8 @@ pub async fn update_provider(
     };
     let rate_limits_provided = req.rate_limits.is_some();
     let rate_limits_json = build_rate_limits_json(req.rate_limits.as_ref())?;
+    let usage_probe_provided = req.usage_probe.is_some();
+    let usage_probe = validate_usage_probe(req.usage_probe.as_deref(), compatible)?;
     let usage_notices_provided = req.usage_notices.is_some();
     let usage_notices =
         crate::routes::gateway::usage_notices::UsageNotices::build_json(req.usage_notices.as_ref())
@@ -1758,6 +1806,8 @@ pub async fn update_provider(
         .bind(usage_notices_provided)
         .bind(&usage_notices)
         .bind(req.header_pin)
+        .bind(usage_probe_provided)
+        .bind(&usage_probe)
         .fetch_optional(&state.pool)
         .await?;
     if updated.is_none() {
@@ -2601,7 +2651,7 @@ pub async fn all_accounts_usage(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountUsageEntry>>, AppError> {
     let rows: Vec<UsageProviderRow> = sqlx::query_as(
-        "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND p.provider IN ('anthropic', 'openai', 'fireworks')          ORDER BY a.name, p.family",
+        "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND (p.provider IN ('anthropic', 'openai', 'fireworks') OR p.usage_probe IS NOT NULL)          ORDER BY a.name, p.family",
     )
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
@@ -2846,6 +2896,22 @@ mod tests {
 
     fn update_provider(json: serde_json::Value) -> UpdateProvider {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn a_usage_probe_must_name_a_registered_probe_on_a_compatible_credential() {
+        assert_eq!(validate_usage_probe(None, true).unwrap(), None);
+        assert_eq!(validate_usage_probe(Some(""), true).unwrap(), None);
+        assert_eq!(validate_usage_probe(Some("  "), true).unwrap(), None);
+        assert_eq!(
+            validate_usage_probe(Some("openrouter"), true).unwrap(),
+            Some("openrouter".to_owned())
+        );
+        assert!(validate_usage_probe(Some("zai"), true).is_err());
+        // A native subscription has a real usage API; a probe there would shadow it.
+        assert!(validate_usage_probe(Some("openrouter"), false).is_err());
+        // Clearing it is fine on any provider — there is nothing to shadow.
+        assert_eq!(validate_usage_probe(Some(""), false).unwrap(), None);
     }
 
     #[test]

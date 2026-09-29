@@ -38,3 +38,11 @@ export const PROVIDER_KINDS = [
 ] as const;
 
 export type ProviderKind = (typeof PROVIDER_KINDS)[number]["value"];
+
+/** Quota probes the server's registry serves, for the `usage_probe` picker.
+ *  Mirrors `usage_probe::ids()`; the server rejects anything it does not know. */
+export const USAGE_PROBES = [
+  { value: "", label: "None (unmeasured)" },
+  { value: "openrouter", label: "OpenRouter (credits)" },
+  { value: "litellm", label: "LiteLLM (virtual-key budget)" },
+] as const;

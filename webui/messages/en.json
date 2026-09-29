@@ -1954,5 +1954,7 @@
   "provider_status_minor": "degraded",
   "provider_status_major": "partial outage",
   "provider_status_critical": "major outage",
-  "provider_status_account_badge": "{provider} upstream: {detail}"
+  "provider_status_account_badge": "{provider} upstream: {detail}",
+  "accounts_field_usage_probe": "Usage probe",
+  "accounts_usage_probe_help": "Reads this endpoint's own quota so the credential gets real windows, a pace and a soft limit. Without one it stays unmeasured."
 }

@@ -51,6 +51,7 @@ mod store;
 mod update_check;
 mod uploads;
 mod usage_history;
+mod usage_probe;
 mod webauthn;
 mod webhook;
 mod ws;
