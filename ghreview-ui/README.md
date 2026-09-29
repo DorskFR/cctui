@@ -11,6 +11,55 @@ webui's tooling (Svelte 5 runes, `@tanstack/svelte-query`, biome, vitest) and ow
 its own minimal CSS with design tokens (every color is a CSS custom property in
 `src/tokens.css`; **CCT-607** formalized four themes and syntax palettes).
 
+## Three ways this app runs
+
+| mode | entry | backend reached by |
+|---|---|---|
+| standalone (dev) | `src/main.ts` → `App.svelte` | direct `fetch` + `Authorization: Bearer` |
+| embedded (legacy) | `src/Review.svelte` | injected `baseUrl` + bearer |
+| **cctui plugin** | `src/plugin.ts` → `ReviewPage.svelte` | `HostContext.pluginFetch` through the signed proxy |
+
+All three share `Shell.svelte`; only the transport and the router differ.
+
+## Plugin mode
+
+`src/plugin.ts` default-exports `{ cctuiApi: 1, page: ReviewPage }`. The host mounts
+`ReviewPage` with `PageProps { basePath, path, navigate }` and sets `HostContext`
+under `HOST_CONTEXT_KEY` in Svelte context (see `src/lib/plugin/host.ts`).
+
+- **Transport** — `ReviewPage` installs a `GhreviewTransport` (see
+  `src/lib/api/config.ts`) whose `fetch` is `HostContext.pluginFetch`, so every
+  `/v1/...` call goes to `/api/v1/plugins/ghreview/backend/v1/...` with cookie auth.
+  **No bearer token exists in plugin mode**, and a stale standalone token in
+  `localStorage` cannot leak into a request: the `Authorization` header is only set
+  on the transport-less branch. SSE is an `EventSource` on the same proxy path.
+- **Routing** — the host owns the URL. `ReviewPage` calls `router.adopt({ navigate })`
+  and `router.setPath(path)`, so the router stops reading `window.location` and
+  pushing history; navigations go back out through `PageProps.navigate`.
+- **Backend gate** — the page probes `/v1/health` through the proxy on mount. Until
+  an admin sets the plugin's `backendUrl` instance setting, and whenever the
+  backend is down, the page shows one "not configured or not reachable" state with
+  the observed status and a Retry, instead of a wall of failing queries.
+- **GitHub accounts** — PAT add/remove lives in the app now
+  (`src/lib/components/GithubAccounts.svelte`, route `/accounts`), not in webui.
+
+### Packaging
+
+```sh
+bun run build:plugin      # → dist/plugin/{plugin.json,web/} and dist/ghreview-<ver>.tgz
+```
+
+`scripts/build-plugin.ts` runs `vite.plugin.config.ts` (Svelte and Tsumikit stay
+external, resolved from the host's `/plugin-runtime/*`), writes `plugin.json`
+(`id: ghreview`, `page`, `backend.upstreamSetting: "backendUrl"`,
+`instanceSettings`, `styles`, `skills` when `skills/gh-review/SKILL.md` exists) and
+tars the folder. It fails if the bundle or the stylesheet is missing, or if the
+archive exceeds the server's 5 MB limit.
+
+Component CSS is injected at mount, but the plain stylesheet imports (tokens,
+embed, markdown, syntax) cannot be — they build to one `web/index.css` that the
+manifest declares in `styles[]` for the host to link.
+
 ## Standalone vs embedded
 
 The same code runs two ways, selected by whether an embedder injects a runtime

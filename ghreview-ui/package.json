@@ -8,6 +8,7 @@
     "preinstall": "case \"$npm_config_user_agent\" in bun*) exit 0 ;; esac; [ \"$INIT_CWD\" = \"$PWD\" ] || exit 0; echo '' >&2; echo 'ghreview-ui is a bun project (bun.lock, no package-lock.json).' >&2; echo 'Run: bun install' >&2; echo '' >&2; exit 1",
     "dev": "vite",
     "build": "vite build",
+    "build:plugin": "bun scripts/build-plugin.ts",
     "preview": "vite preview --host",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "biome check .",

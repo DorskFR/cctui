@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePullApiUrl, pullPath } from "./route";
+import { parseRoute, parsePullApiUrl, pullPath } from "./route";
 
 describe("parsePullApiUrl", () => {
   it("parses a GitHub API PR url", () => {
@@ -30,5 +30,25 @@ describe("parsePullApiUrl", () => {
   it("round-trips into pullPath", () => {
     const p = parsePullApiUrl("https://api.github.com/repos/a/b/pulls/3");
     expect(p && pullPath(p.owner, p.repo, p.number)).toBe("/a/b/pull/3");
+  });
+});
+
+describe("parseRoute", () => {
+  it("routes the accounts view", () => {
+    expect(parseRoute("/accounts")).toEqual({ name: "accounts" });
+    expect(parseRoute("/accounts/")).toEqual({ name: "accounts" });
+  });
+
+  it("still routes the views it had before", () => {
+    expect(parseRoute("/")).toEqual({ name: "root" });
+    expect(parseRoute("/inbox")).toEqual({ name: "inbox" });
+    expect(parseRoute("/subscriptions")).toEqual({ name: "subscriptions" });
+    expect(parseRoute("/o/r/pull/7")).toEqual({
+      name: "pull",
+      owner: "o",
+      repo: "r",
+      number: 7,
+    });
+    expect(parseRoute("/nope")).toEqual({ name: "notfound", path: "/nope" });
   });
 });

@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/svelte-query";
-import { baseUrl, getToken } from "./config";
+import { baseUrl, getToken, transport } from "./config";
 import { keys } from "./queries";
 import type { SseEvent } from "./types";
 
@@ -47,12 +47,17 @@ export interface SseHandle {
   close(): void;
 }
 
-export function subscribeSse(client: QueryClient, onEvent?: SseListener): SseHandle {
+export function eventsUrl(): string {
+  const proxy = transport();
+  if (proxy) return proxy.eventsUrl();
   const token = getToken();
   const url = new URL(`${baseUrl()}/v1/events`, window.location.origin);
   if (token) url.searchParams.set("access_token", token);
+  return url.toString();
+}
 
-  const source = new EventSource(url.toString());
+export function subscribeSse(client: QueryClient, onEvent?: SseListener): SseHandle {
+  const source = new EventSource(eventsUrl());
   const named = [
     "pr.updated",
     "pr.viewed_state.updated",

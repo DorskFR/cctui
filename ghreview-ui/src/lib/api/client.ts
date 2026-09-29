@@ -1,5 +1,5 @@
 import type { components } from "../../generated/api";
-import { baseUrl, getToken, handleAuthFailure } from "./config";
+import { baseUrl, getToken, handleAuthFailure, transport } from "./config";
 import type {
   ActivityList,
   MergeMethod,
@@ -29,6 +29,9 @@ type Schemas = components["schemas"];
 export type Subscription = Schemas["Subscription"];
 export type SubscriptionKind = Subscription["kind"];
 export type GithubRepo = Schemas["GithubRepo"];
+export type AccountSummary = Schemas["AccountSummary"];
+export type AccountCreate = Schemas["AccountCreate"];
+export type AccountList = Schemas["AccountList"];
 
 export class ApiError extends Error {
   constructor(
@@ -41,14 +44,20 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function send(path: string, init: RequestInit, headers: Headers): Promise<Response> {
+  const proxy = transport();
+  if (proxy) return proxy.fetch(path, { ...init, headers });
   const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(`${baseUrl()}${path}`, { ...init, headers });
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
   if (init?.body) headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const res = await fetch(`${baseUrl()}${path}`, { ...init, headers });
+  const res = await send(path, init ?? {}, headers);
   if (!res.ok) {
     let code = "http_error";
     let message = `${res.status} ${res.statusText}`;
@@ -110,6 +119,13 @@ export async function collectCursorPages<T>(
 
 export const api = {
   status: () => request<StatusPayload>("/v1/status"),
+
+  accounts: () => request<AccountList>("/v1/accounts"),
+
+  addAccount: (body: AccountCreate) =>
+    request<AccountSummary>("/v1/accounts", { method: "POST", body: JSON.stringify(body) }),
+
+  removeAccount: (id: string) => request<void>(`/v1/accounts/${seg(id)}`, { method: "DELETE" }),
 
   repos: (account?: string, limit?: number, cursor?: string) =>
     request<RepoPage>(`/v1/repos${qs({ account, limit, cursor })}`),
