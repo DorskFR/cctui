@@ -102,7 +102,7 @@ impl LiveDirs {
                     since: now,
                 });
                 entry.cwd = canonical(dir);
-                entry.harness = adapter_id.to_owned();
+                adapter_id.clone_into(&mut entry.harness);
             }
             // Only an already-registered session is updated: a status carries no
             // working dir, so there is nothing to match a new entry on.
@@ -225,11 +225,11 @@ pub fn notice(neighbours: &[Neighbour], now: Instant) -> Option<String> {
     }
     line.push_str(".\n");
     let whose = if n == 1 { "Its" } else { "Their" };
-    let _ = write!(
+    let _ = writeln!(
         line,
         "  {whose} uncommitted changes are not yours: do not revert, stash, reset, or commit \
          files you did not touch; do not switch branches. Use a git worktree if you need \
-         isolation.\n"
+         isolation."
     );
     Some(line)
 }
