@@ -22,6 +22,7 @@ use chrono::Utc;
 use crate::state::AppState;
 
 mod bumps;
+mod conn_limit;
 mod connection;
 mod daemon_lost;
 mod decode;

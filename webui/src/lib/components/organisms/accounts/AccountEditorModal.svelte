@@ -12,9 +12,8 @@
 	import { safeHref } from '$lib/safeHref';
 	import { isStaticCredential, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
-	import EmojiPicker from '$lib/components/molecules/EmojiPicker.svelte';
 	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
-	import { Button, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
+	import { Button, Disclosure, EmojiPicker, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { availableKinds } from './account-editor.logic';
 
@@ -271,7 +270,13 @@
 					<Field label={m.account_emoji_label()}>
 						<div class="emoji-field">
 							<AccountAvatar {emoji} {name} id={name} size={24} />
-							<EmojiPicker value={emoji} onselect={(v) => (emoji = v)} />
+							<EmojiPicker
+								value={emoji}
+								onselect={(v) => (emoji = v)}
+								label={m.emoji_picker_open()}
+								searchLabel={m.emoji_picker_search()}
+								emptyLabel={m.emoji_picker_empty()}
+							/>
 							<Input
 								bind:value={emoji}
 								placeholder={m.account_emoji_placeholder()}
@@ -378,10 +383,10 @@
 						</Text>
 					{/if}
 					{#if editor?.mode !== 'reauth'}
-						<details bind:open={showAdvanced} class="adv">
-							<summary>
+						<Disclosure bind:open={showAdvanced}>
+							{#snippet header()}
 								<Text tone="muted" size="sm">{m.accounts_adv_refresh_summary()}</Text>
-							</summary>
+							{/snippet}
 							<div class="adv-fld">
 								<Field label={m.accounts_refresh_token_label()}>
 									<Input
@@ -391,7 +396,7 @@
 									/>
 								</Field>
 							</div>
-						</details>
+						</Disclosure>
 					{/if}
 				{/if}
 
@@ -424,9 +429,6 @@
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-	}
-	.adv summary {
-		cursor: pointer;
 	}
 	.adv-fld {
 		margin-top: var(--sp-2);

@@ -32,18 +32,22 @@ export const META_TAGS = [
 	'Stop hook feedback:',
 	'# Autonomous loop'
 ];
-// Markers are matched at the start of ANY line, not only the start of the turn:
-// the harness routinely prefixes its own sentence before the wrapper it injects,
-// which a prefix-only test never sees. Line-anchored rather than a bare
+// Markers count only in the head of the turn: the harness prefixes at most its
+// own sentence before the wrapper it injects, which a prefix-only test never
+// sees, while a human pasting a transcript or an export quotes markers
+// arbitrarily deep and must stay a human turn. Line-anchored rather than a bare
 // substring scan so a human quoting `<system-reminder>` inside a sentence stays
-// a human turn. Mirrors `user_text_is_meta` in the daemon's transcript parser.
+// human too. Mirrors `user_text_is_meta` in the daemon's transcript parser.
+const META_HEAD_LINES = 4;
 export function looksMeta(text: string): boolean {
 	return (
 		isSyntheticImageNotice(text) ||
-		text.split('\n').some((line) => {
-			const t = line.trimStart();
-			return META_TAGS.some((m) => t.startsWith(m));
-		})
+		text
+			.split('\n')
+			.map((line) => line.trim())
+			.filter((line) => line !== '')
+			.slice(0, META_HEAD_LINES)
+			.some((line) => META_TAGS.some((m) => line.startsWith(m)))
 	);
 }
 
@@ -405,4 +409,32 @@ export function lineMarkdown(ln: Line): string {
 		return `${label}\`\`\`\n${t}\n\`\`\``;
 	}
 	return t;
+}
+
+// Markdown blockquote of a message, ready to splice into the composer: every
+// line prefixed with `> ` (blank ones with a bare `>`), trailing whitespace
+// dropped, closed by a blank line so the reply starts outside the quote.
+export function quoteMarkdown(text: string): string {
+	const body = text.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+	if (!body) return '';
+	const quoted = body
+		.split('\n')
+		.map((l) => (l.trim() === '' ? '>' : `> ${l}`))
+		.join('\n');
+	return `${quoted}\n\n`;
+}
+
+// Splice a block into a draft at the caret, keeping a blank line before it
+// (the block supplies its own trailing one) and leaving the caret after it.
+export function insertAtCaret(
+	draft: string,
+	caret: number | undefined,
+	block: string
+): { text: string; caret: number } {
+	const at = Math.max(0, Math.min(draft.length, caret ?? draft.length));
+	const before = draft.slice(0, at);
+	const after = draft.slice(at);
+	const pre = before === '' || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+	const head = before + pre + block;
+	return { text: head + after, caret: head.length };
 }

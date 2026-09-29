@@ -6,6 +6,6 @@
 export type HookEvent = { 
 /**
  * Hook line kind: `ask`, `resolved`, `plan`, `plan_resolved`,
- * `perm-request`.
+ * `perm-request`, `turn_end`.
  */
 kind: string, };

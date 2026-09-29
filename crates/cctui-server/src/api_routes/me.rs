@@ -35,8 +35,24 @@ pub(super) fn register(r: Routes) -> Routes {
     .add(
         &[Method::POST],
         "/settings/rescrub",
-        "Re-apply the secret-scrub list to your stored events.",
-        post(routes::settings::rescrub_settings),
+        "Start a privacy scan over your stored events; returns its job.",
+        post(routes::privacy_scan::start),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET],
+        "/settings/rescrub",
+        "Your most recent privacy scan job, running or finished.",
+        get(routes::privacy_scan::latest),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::POST],
+        "/settings/rescrub/cancel",
+        "Cancel your running privacy scan.",
+        post(routes::privacy_scan::cancel),
         Authn::Bearer,
         Authenticated,
     )

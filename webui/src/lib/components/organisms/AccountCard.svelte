@@ -8,7 +8,7 @@
 	import { exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
 	import { accountHandleDrag } from '$lib/components/organisms/accounts/handleDrag.svelte';
 	import { providerLabel } from '$lib/providers';
-	import { Button, Checkbox, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
+	import { Badge, Button, Checkbox, Icon, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -189,16 +189,19 @@
 			</span>
 		{/if}
 		{#each redirects as r (r.id)}
-			<span class="redirect-badge">
+			<Badge
+				size="sm"
+				removable={!!onclearredirect}
+				actionLabel={m.accounts_redirect_clear()}
+				onremove={() => onclearredirect?.(r.id)}
+				style="border-radius:var(--r-sm);flex-wrap:wrap;white-space:normal;gap:var(--sp-2)"
+			>
 				<Text as="span" tone="faint" size="xs">{r.family}</Text>
 				<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
 				{#if r.until}
 					<Text as="span" tone="faint" size="xs">{m.accounts_until()} <Timestamp value={r.until} mode="relative" tone="inherit" /></Text>
 				{/if}
-				{#if onclearredirect}
-					<IconButton icon="x" label={m.accounts_redirect_clear()} inline size={12} onclick={() => onclearredirect(r.id)} />
-				{/if}
-			</span>
+			</Badge>
 		{/each}
 		<span class="spacer"></span>
 		{#if compact}
@@ -352,17 +355,6 @@
 	}
 	.spacer {
 		flex: 1;
-	}
-	.redirect-badge {
-		display: inline-flex;
-		align-items: center;
-		flex-wrap: wrap;
-		min-width: 0;
-		gap: var(--sp-2);
-		padding: 0 var(--sp-2);
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		background: var(--bg);
 	}
 	.redirect-form {
 		display: flex;

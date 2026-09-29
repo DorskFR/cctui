@@ -134,7 +134,7 @@ impl Adapter for CodexAdapter {
 /// started outside cctui, while the app-server command pump drives sessions
 /// that cctui spawns. They share a [`SessionRegistry`] so the log-tail skips
 /// rollout files an app-server session already owns (no double-ingest).
-async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
+async fn run_default(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     let app_cfg = AppServerConfig::from_value(&ctx.config);
     let registry: SessionRegistry = SessionRegistry::default();
     let live: LiveSessionRegistry = LiveSessionRegistry::default();
@@ -195,6 +195,12 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
 
     let log_handle = tokio::spawn(log.run());
 
+    let pty_watch_handle = ctx.pty_watch.take().map(|watches| {
+        let pump =
+            pty_view::PtyWatchPump::new(live.clone(), ctx.events.clone(), ctx.shutdown.clone());
+        tokio::spawn(pump.run(watches))
+    });
+
     let pump = CommandPump {
         events: ctx.events.clone(),
         live,
@@ -205,10 +211,12 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
         machine_key: ctx.machine_key,
         marks,
         shared,
-        pty_views: pty_view::RingViewManager::default(),
     };
     pump.run(ctx.commands).await;
     log_handle.abort();
+    if let Some(h) = pty_watch_handle {
+        h.abort();
+    }
     if let Some(h) = inventory_handle {
         h.abort();
     }
@@ -228,7 +236,6 @@ struct CommandPump {
     machine_key: Option<String>,
     marks: log_tail::ResumeMarks,
     shared: daemon::SharedDaemon,
-    pty_views: pty_view::RingViewManager,
 }
 
 #[async_trait::async_trait]
@@ -363,15 +370,6 @@ impl SessionDriver for CommandPump {
         announce_resume_marks(&self.registry, &self.events, &marks).await;
         Ok(Handled::Deferred)
     }
-
-    async fn watch_pty(&mut self, local_id: String, watch: bool) -> CommandOutcome {
-        if watch {
-            self.pty_views.watch(local_id, self.live.clone(), self.events.clone(), &self.shutdown);
-        } else {
-            self.pty_views.unwatch(&local_id);
-        }
-        Ok(Handled::Deferred)
-    }
 }
 
 impl CommandPump {
@@ -469,6 +467,15 @@ impl CommandPump {
                 return;
             }
         };
+        // Keyed by the launch key, not the thread id codex has yet to mint:
+        // `register_thread` binds it as an alias so the id the tools were told
+        // keeps resolving.
+        let skills = crate::plugins::resolve_session_skills(
+            self.server.as_ref(),
+            &launch_key,
+            &launch.plugins,
+        )
+        .await;
         // The CommandResult for `command_id` is deferred to the session
         // driver: it reports ok only after `thread/start` succeeds.
         let cfg = self.launch_cfg(spec, launch.settings.as_ref());
@@ -503,7 +510,8 @@ impl CommandPump {
         .with_agent_mcp(crate::adapters::agent_mcp::AgentMcp::for_capability(
             &launch_key,
             launch.spawn_capability.as_ref(),
-        ));
+        ))
+        .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
                 tracing::error!(%err, "codex app-server session ended in error");
@@ -526,15 +534,16 @@ impl CommandPump {
         // pre-minted + bound the gateway token to (falling back to the parent
         // thread id when absent), and fail closed on an account-bound fork
         // with empty env — same contract as Spawn.
-        let (env, served_settings) = match resolve_launch(
+        let launch_key = session_id.clone().unwrap_or_else(|| parent_local_id.clone());
+        let (env, served_settings, plugins) = match resolve_launch(
             self.server.as_ref(),
             self.machine_key.as_ref(),
-            &session_id.clone().unwrap_or_else(|| parent_local_id.clone()),
+            &launch_key,
             &spec.env,
         )
         .await
         {
-            Ok(launch) => (launch.env, launch.settings),
+            Ok(launch) => (launch.env, launch.settings, launch.plugins),
             Err(err) => {
                 tracing::error!(%err, "codex fork: refusing env-less launch");
                 self.reject(command_id, err.to_string()).await;
@@ -542,6 +551,9 @@ impl CommandPump {
             }
         };
         let cfg = self.launch_cfg(spec, served_settings.as_ref());
+        let skills =
+            crate::plugins::resolve_session_skills(self.server.as_ref(), &launch_key, &plugins)
+                .await;
         // Stage fork attachments, fatal on failure — same contract as spawn.
         let stage_id = session_id.unwrap_or_else(|| parent_local_id.clone());
         let attachments =
@@ -566,7 +578,8 @@ impl CommandPump {
             self.live.clone(),
             self.registry.clone(),
             self.shutdown.clone(),
-        );
+        )
+        .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
                 tracing::error!(%err, "codex app-server fork ended in error");
@@ -840,10 +853,20 @@ async fn dispatch(
             // A thread rediscovered from `thread/list` is seeded env-less, so its
             // first resume would 401 for an account-bound session; re-pull under
             // the same fail-closed contract as spawn/fork.
+            // Skills are not persisted: a resume on this daemon recalls what
+            // the launch resolved, and a rediscovered thread re-derives them
+            // from the same pull that re-mints its credential.
+            let mut skills = crate::plugins::recall_skills(local_id).unwrap_or_default();
             if resume_needs_env_pull(&record.env) {
                 match resolve_launch(server, machine_key, local_id, &record.env).await {
                     Ok(launch) => {
                         let settings = launch.settings;
+                        skills = crate::plugins::resolve_session_skills(
+                            server,
+                            local_id,
+                            &launch.plugins,
+                        )
+                        .await;
                         record.env = launch.env;
                         record.spawn_relay = record.spawn_relay
                             || launch.spawn_capability.as_ref().is_some_and(|c| !c.is_empty());
@@ -866,6 +889,7 @@ async fn dispatch(
                 record,
                 local_id,
                 vec![command],
+                skills,
                 events.clone(),
                 live.clone(),
                 registry.clone(),
@@ -1048,6 +1072,10 @@ impl AdapterFactory for CodexFactory {
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
         Box::new(CodexAdapter)
     }
+    /// The uds mode has no session registry to stream rings from.
+    fn pty_watch(&self, config: &serde_json::Value) -> bool {
+        !uses_uds_mode(config)
+    }
 }
 
 #[cfg(test)]
@@ -1068,7 +1096,6 @@ pub(crate) async fn run_command_pump_for_test(
         server: None,
         machine_key: None,
         marks: log_tail::ResumeMarks::default(),
-        pty_views: pty_view::RingViewManager::default(),
     };
     pump.run(commands).await;
 }

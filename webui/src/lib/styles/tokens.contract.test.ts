@@ -7,8 +7,6 @@ import { describe, expect, it } from 'vitest';
 // fallback silently becomes the rendered value when `--x` is not a kit token —
 // so the fallback, not the token, is what ships.
 const ALLOWED = new Set([
-	// A fixed preview swatch of one named theme, deliberately theme-independent.
-	'src/lib/components/molecules/ThemeModePicker.svelte',
 	// A mask gradient: the colour is an alpha channel, not a surface.
 	'src/lib/components/organisms/conversation/ThinkingBubble.svelte'
 ]);

@@ -147,6 +147,14 @@ pub struct ThreadConfig {
     /// its command line. Empty on stdio; on a shared app-server there is no
     /// per-session process, so they ride the per-thread overlay instead.
     pub overlay: Vec<(String, String)>,
+    /// Env for the thread's own shell tool. Kept out of [`Self::env`], which
+    /// decides shared-server eligibility: anything beyond the gateway keys
+    /// there demotes the session to a private stdio child.
+    pub tool_env: std::collections::BTreeMap<String, String>,
+    /// Per-thread instructions, the only channel a shared app-server has for
+    /// a skill catalog scoped to one session. Codex persists none of it, so it
+    /// rides every start, resume and fork.
+    pub developer_instructions: Option<String>,
 }
 
 impl ThreadConfig {
@@ -159,12 +167,26 @@ impl ThreadConfig {
             env: env.clone(),
             service_tier: normalize_service_tier(service_tier),
             overlay: Vec::new(),
+            tool_env: std::collections::BTreeMap::new(),
+            developer_instructions: None,
         }
     }
 
     #[must_use]
     pub fn with_overlay(mut self, overlay: Vec<(String, String)>) -> Self {
         self.overlay = overlay;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_env(mut self, tool_env: std::collections::BTreeMap<String, String>) -> Self {
+        self.tool_env = tool_env;
+        self
+    }
+
+    #[must_use]
+    pub fn with_developer_instructions(mut self, instructions: Option<String>) -> Self {
+        self.developer_instructions = instructions.filter(|i| !i.trim().is_empty());
         self
     }
 
@@ -186,6 +208,13 @@ impl ThreadConfig {
         if let Some(tier) = &self.service_tier {
             map.insert("serviceTier".to_owned(), json!(tier));
             config["service_tier"] = json!(tier);
+        }
+        if !self.tool_env.is_empty() {
+            config["shell_environment_policy"] = json!({"set": self.tool_env});
+        }
+        if let Some(instructions) = &self.developer_instructions {
+            map.insert("developerInstructions".to_owned(), json!(instructions));
+            config["developer_instructions"] = json!(instructions);
         }
         if config.as_object().is_some_and(|c| !c.is_empty()) {
             map.insert("config".to_owned(), config);
@@ -743,6 +772,65 @@ mod tests {
         assert_eq!(params["config"]["approval_policy"], "never");
         assert_eq!(params["config"]["mcp_servers.cctui.args"], json!(["a", "b"]));
         assert!(params["config"].get("broken").is_none());
+    }
+
+    /// The tool env and the skill catalog are per-thread state codex persists
+    /// nowhere, so every thread op has to carry them.
+    #[test]
+    fn start_resume_and_fork_all_carry_the_tool_env_and_the_skill_catalog() {
+        let tool_env: std::collections::BTreeMap<String, String> = [
+            ("CCTUI_SESSION_ID".to_owned(), "launch-key-1".to_owned()),
+            ("CCTUI_WEB_ORIGIN".to_owned(), "https://cctui.example".to_owned()),
+            ("YUBI_HOST".to_owned(), "10.0.0.5".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let catalog = "<cctui_skills>\n- yubisashi: pick\n</cctui_skills>".to_owned();
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None)
+            .with_tool_env(tool_env)
+            .with_developer_instructions(Some(catalog.clone()));
+        for params in [
+            tc.start_params("/repo"),
+            tc.resume_params("tid", "/repo"),
+            tc.fork_params("p", "/repo"),
+        ] {
+            let set = &params["config"]["shell_environment_policy"]["set"];
+            assert_eq!(set["CCTUI_SESSION_ID"], "launch-key-1");
+            assert_eq!(set["CCTUI_WEB_ORIGIN"], "https://cctui.example");
+            assert_eq!(set["YUBI_HOST"], "10.0.0.5");
+            assert_eq!(params["developerInstructions"], catalog.as_str());
+            assert_eq!(params["config"]["developer_instructions"], catalog.as_str());
+        }
+    }
+
+    /// The gateway credential must never reach `env`'s shared-eligibility
+    /// check through this channel.
+    #[test]
+    fn the_tool_env_leaves_the_gateway_env_untouched() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-D".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        assert!(
+            super::super::config::shared_eligible(&env, false),
+            "the fixture must be a shared-eligible gateway env, or this proves nothing"
+        );
+        let tc = ThreadConfig::new(&env, None).with_tool_env(
+            std::iter::once(("CCTUI_SESSION_ID".to_owned(), "k".to_owned())).collect(),
+        );
+        assert_eq!(tc.env, env);
+        assert!(super::super::config::shared_eligible(&tc.env, false));
+    }
+
+    #[test]
+    fn a_session_without_plugins_sends_neither_key() {
+        let params = ThreadConfig::new(&std::collections::BTreeMap::new(), None)
+            .with_developer_instructions(Some("   ".to_owned()))
+            .start_params("/repo");
+        assert!(params.get("developerInstructions").is_none());
+        assert!(params.get("config").is_none(), "an empty overlay sends no config at all");
     }
 
     #[test]

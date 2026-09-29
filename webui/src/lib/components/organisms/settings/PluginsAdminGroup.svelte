@@ -3,14 +3,19 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import { endpoints, qk, useAdminPlugins } from '$lib/queries';
+	import { endpoints, qk, useAdminPluginCatalog, useAdminPlugins } from '$lib/queries';
 	import type { AdminPluginInfo } from '@bindings/AdminPluginInfo';
+	import type { CatalogPluginInfo } from '@bindings/CatalogPluginInfo';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	const plugins = useAdminPlugins(() => true);
+	let { isAdmin = false }: { isAdmin?: boolean } = $props();
+
+	const plugins = useAdminPlugins(() => isAdmin);
+	const catalog = useAdminPluginCatalog(() => isAdmin);
 	const qc = useQueryClient();
 	const list = $derived(plugins.data ?? []);
+	const available = $derived(catalog.data ?? []);
 
 	let url = $state('');
 	let busy = $state(false);
@@ -19,14 +24,26 @@
 		busy = true;
 		try {
 			await work();
-			await qc.invalidateQueries({ queryKey: qk.adminPlugins });
-			await qc.invalidateQueries({ queryKey: qk.plugins });
+			await refresh();
 			toasts.ok(done);
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			busy = false;
 		}
+	}
+
+	async function refresh() {
+		await qc.invalidateQueries({ queryKey: qk.adminPlugins });
+		await qc.invalidateQueries({ queryKey: qk.adminPluginCatalog });
+		await qc.invalidateQueries({ queryKey: qk.plugins });
+	}
+
+	function installFromCatalog(entry: CatalogPluginInfo) {
+		void run(
+			() => endpoints.installPluginFromCatalog(entry.id),
+			m.settings_plugins_admin_catalog_done({ name: entry.name, version: entry.version })
+		);
 	}
 
 	function installFromUrl() {
@@ -58,7 +75,7 @@
 </script>
 
 <div id="instance-plugins" data-journey="plugins-admin">
-	<SettingGroup title={m.settings_nav_plugins()}>
+	<SettingGroup title={m.settings_plugins_group_manage()}>
 		<SettingRow label={m.settings_plugins_admin_label()} help={m.settings_plugins_admin_help()} server admin wide selfLabelled>
 			<div class="plugins">
 				{#if plugins.isError}
@@ -104,6 +121,68 @@
 						{/each}
 					</ul>
 				{/if}
+			</div>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_plugins_admin_catalog_label()}
+			help={m.settings_plugins_admin_catalog_help()}
+			server
+			admin
+			wide
+			selfLabelled
+		>
+			<div class="plugins" data-journey="plugins-catalog">
+				{#if catalog.isError}
+					<EmptyState size="compact" tone="danger" icon="warning" title={m.settings_plugins_admin_catalog_failed()} />
+				{:else if catalog.isPending}
+					<EmptyState size="compact" loading title={m.common_loading()} />
+				{:else if available.length === 0}
+					<Text size="sm" tone="faint" data-journey="plugins-catalog-empty">{m.settings_plugins_admin_catalog_empty()}</Text>
+				{:else}
+					<ul>
+						{#each available as entry (entry.id)}
+							<li data-journey="plugin-catalog-row" data-plugin={entry.id}>
+								<div class="who">
+									<Text size="sm" weight="medium">{entry.name}</Text>
+									<Text size="xs" tone="faint">{entry.description}</Text>
+									<Text size="xs" tone="faint" variant="code" data-journey="plugin-catalog-version">{entry.id} · {entry.version}</Text>
+								</div>
+								{#if entry.homepage}
+									<a href={entry.homepage} target="_blank" rel="noreferrer noopener" data-journey="plugin-catalog-homepage">
+										<Text size="xs" tone="accent">{m.settings_plugins_admin_catalog_homepage()}</Text>
+									</a>
+								{/if}
+								<Button
+									size="sm"
+									variant={entry.update_available ? 'primary' : 'ghost'}
+									disabled={busy || (entry.installed_version !== null && !entry.update_available)}
+									data-journey="plugin-catalog-install"
+									data-plugin={entry.id}
+									onclick={() => installFromCatalog(entry)}
+								>
+									{#if entry.update_available}
+										{m.settings_plugins_admin_catalog_update({ version: entry.version })}
+									{:else if entry.installed_version !== null}
+										{m.settings_plugins_admin_catalog_up_to_date()}
+									{:else}
+										{m.settings_plugins_admin_catalog_install()}
+									{/if}
+								</Button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_plugins_admin_manual_label()}
+			help={m.settings_plugins_admin_manual_help()}
+			server
+			admin
+			wide
+			selfLabelled
+		>
+			<div class="plugins">
 				<div class="add">
 					<Input
 						bind:value={url}

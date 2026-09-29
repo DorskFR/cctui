@@ -289,7 +289,14 @@ impl Pump {
                     return;
                 }
             };
-        let env = launch.env;
+        let skills =
+            crate::plugins::resolve_session_skills(self.server.as_ref(), &key, &launch.plugins)
+                .await;
+        // The gateway env wins: a plugin must not be able to reroute the model.
+        let mut env = launch.env;
+        for (name, value) in &skills.env {
+            env.entry(name.clone()).or_insert_with(|| value.clone());
+        }
         let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
             &key,
             launch.spawn_capability.as_ref(),
@@ -314,6 +321,7 @@ impl Pump {
             command_id,
             parent_local_id: spec.parent_local_id.clone(),
             agent_mcp,
+            skill_roots: skills.roots,
         };
         let session = OpenCodeSession::new(
             params,
@@ -599,6 +607,7 @@ mod reconnect_tests {
         let ctx = AdapterCtx {
             events,
             commands,
+            pty_watch: None,
             shutdown: shutdown.clone(),
             config: serde_json::Value::Null,
             server: None,

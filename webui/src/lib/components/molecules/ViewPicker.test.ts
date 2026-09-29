@@ -24,10 +24,11 @@ describe('square toolbar pickers ride the kit Button control/square contract', (
 	});
 
 
-	it('ViewPicker in the menu is one full-width row that flips the view', () => {
+	it('ViewPicker in the menu is one full-width kit Button row that flips the view', () => {
 		comp = mount(ViewPicker, { target: document.body, props: { cardView: false, menu: true } });
-		const row = document.querySelector('button.menu-row') as HTMLButtonElement;
+		const row = document.querySelector('button.btn[data-journey="view"]') as HTMLButtonElement;
 		expect(row).not.toBeNull();
+		expect(row.className).toContain('btn-block');
 		expect(document.querySelectorAll('button')).toHaveLength(1);
 		expect(row.textContent).toContain('Cards');
 		row.click();

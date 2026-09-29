@@ -1,8 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { rescrubCategoryRows, rescrubScopeSince } from "./rescrub.logic";
-import type { RescrubReport } from "@bindings/RescrubReport";
+import {
+  rescrubCategoryRows,
+  rescrubIdentifierWarnings,
+  rescrubIsRunning,
+  rescrubProgress,
+  rescrubSampleLines,
+  rescrubScopeSince,
+} from "./rescrub.logic";
+import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
+import type { ScanCategory } from "@bindings/ScanCategory";
 
 const NOW = new Date("2026-09-08T12:00:00.000Z");
+
+const category = (over: Partial<ScanCategory> = {}): ScanCategory => ({
+  category: "github_token",
+  count: 1,
+  samples: [],
+  identifier_warning: false,
+  ...over,
+});
+
+const job = (over: Partial<PrivacyScanJob> = {}): PrivacyScanJob => ({
+  id: "job-1",
+  status: "running",
+  dry_run: true,
+  cancel_requested: false,
+  rows_total: 100,
+  rows_scanned: 20,
+  rows_changed: 3,
+  substitutions: 6,
+  by_category: {},
+  categories: [],
+  error: null,
+  created_at: NOW.toISOString(),
+  finished_at: null,
+  ...over,
+});
 
 describe("rescrubScopeSince", () => {
   it("leaves all history unbounded", () => {
@@ -16,23 +49,55 @@ describe("rescrubScopeSince", () => {
 });
 
 describe("rescrubCategoryRows", () => {
-  const report = (by_category: Record<string, number>): RescrubReport => ({
-    dry_run: true,
-    rows_scanned: 10,
-    rows_changed: 3,
-    substitutions: 6,
-    by_category,
-  });
-
   it("has nothing to show before a scan", () => {
     expect(rescrubCategoryRows(null)).toEqual([]);
   });
 
-  it("leads with whatever leaked most, breaking ties by name", () => {
-    expect(rescrubCategoryRows(report({ jwt: 1, secret_field: 4, cctui_token: 1 }))).toEqual([
-      { category: "secret_field", count: 4 },
-      { category: "cctui_token", count: 1 },
-      { category: "jwt", count: 1 },
-    ]);
+  it("keeps the server's ordering", () => {
+    const categories = [category({ category: "secret_field", count: 4 }), category()];
+    expect(rescrubCategoryRows(job({ categories }))).toEqual(categories);
+  });
+});
+
+describe("rescrubProgress", () => {
+  it("is determinate once the estimate is known", () => {
+    expect(rescrubProgress(job())).toEqual({ value: 20, max: 100 });
+  });
+
+  it("falls back to indeterminate with no estimate or an overrun", () => {
+    expect(rescrubProgress(null)).toBeNull();
+    expect(rescrubProgress(job({ rows_total: null }))).toBeNull();
+    expect(rescrubProgress(job({ rows_total: 0 }))).toBeNull();
+    expect(rescrubProgress(job({ rows_total: 10, rows_scanned: 11 }))).toBeNull();
+  });
+});
+
+describe("rescrubIsRunning", () => {
+  it("is true only while the job runs", () => {
+    expect(rescrubIsRunning(null)).toBe(false);
+    expect(rescrubIsRunning(job())).toBe(true);
+    expect(rescrubIsRunning(job({ status: "completed" }))).toBe(false);
+    expect(rescrubIsRunning(job({ status: "cancelled" }))).toBe(false);
+  });
+});
+
+describe("rescrubIdentifierWarnings", () => {
+  it("names the categories the server flagged", () => {
+    const categories = [
+      category({ category: "mytoken", identifier_warning: true }),
+      category(),
+    ];
+    expect(rescrubIdentifierWarnings(job({ categories }))).toEqual(["mytoken"]);
+    expect(rescrubIdentifierWarnings(null)).toEqual([]);
+  });
+});
+
+describe("rescrubSampleLines", () => {
+  it("pairs each match with its context", () => {
+    const c = category({
+      samples: [{ text: "input_token", context: "the …count was 3", value_follows: false }],
+    });
+    expect(rescrubSampleLines(c)).toEqual(["input_token   the …count was 3"]);
+    expect(rescrubSampleLines(category())).toEqual([]);
   });
 });

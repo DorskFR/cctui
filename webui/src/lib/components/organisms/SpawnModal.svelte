@@ -1,5 +1,9 @@
 <script lang="ts">
-	import { AutoGrid, Button, Callout, Dropzone, Modal, resizeHandle } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, Dropzone, Modal, SplitButton, resizeHandle } from '@dorsk/tsumikit';
+	import ScheduleCustomModal from './conversation/ScheduleCustomModal.svelte';
+	import { scheduleMenuItems } from './conversation/scheduleMenu';
+	import { parseCustom, toLocalInput } from './conversation/scheduleTimes';
+	import { toasts } from '$lib/toast.svelte';
 	import { isSubmitChord } from '$lib/platform';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
@@ -53,6 +57,37 @@
 		autosaveDelay: () => autosaveDelay,
 		docked: () => !!docked
 	});
+
+	let customOpen = $state(false);
+	let customValue = $state('');
+	// The presets are relative to now, so a form left open past a cutoff
+	// (e.g. "later today") must not keep offering a time that has passed.
+	let now = $state(Date.now());
+	$effect(() => {
+		const t = setInterval(() => (now = Date.now()), 60_000);
+		return () => clearInterval(t);
+	});
+	const scheduleItems = $derived(
+		scheduleMenuItems({
+			now,
+			canSchedule: sf.draftValid && !sf.busy,
+			onpreset: (at) => void sf.scheduleLaunch(at),
+			oncustom: () => {
+				customValue = toLocalInput(new Date(Date.now() + 3_600_000));
+				customOpen = true;
+			}
+		})
+	);
+
+	function scheduleCustom() {
+		const at = parseCustom(customValue, new Date());
+		if (!at) {
+			toasts.error(m.composer_schedule_custom_invalid());
+			return;
+		}
+		customOpen = false;
+		void sf.scheduleLaunch(at);
+	}
 
 	/** Whether the form holds anything the user would miss. */
 	export function isDirty(): boolean {
@@ -160,19 +195,49 @@
 		{/if}
 	</span>
 	<span class="foot-primary">
-		<Button
-			data-journey="submit"
-			variant="primary"
-			grow
-			loading={sf.busy}
-			disabled={sf.busy || !sf.valid}
-			title={sf.disabledReason}
-			onclick={sf.submit}
-		>
-			{sf.spawnLabel}
-		</Button>
+		<!-- No machines: nothing to schedule either, and only a plain Button can
+		     carry the disabled reason as its own title. -->
+		{#if sf.target === 'machine' && !sf.noMachines}
+			<SplitButton
+				data-journey="submit"
+				variant="primary"
+				caret="half"
+				style="width: 100%"
+				placement="top-end"
+				label={m.spawn_schedule_menu()}
+				items={scheduleItems}
+				loading={sf.busy}
+				disabled={sf.busy || !sf.valid}
+				menuDisabled={!sf.draftValid}
+				title={sf.disabledReason}
+				onclick={sf.submit}
+			>
+				{sf.spawnLabel}
+			</SplitButton>
+		{:else}
+			<Button
+				data-journey="submit"
+				variant="primary"
+				grow
+				loading={sf.busy}
+				disabled={sf.busy || !sf.valid}
+				title={sf.disabledReason}
+				onclick={sf.submit}
+			>
+				{sf.spawnLabel}
+			</Button>
+		{/if}
 	</span>
 {/snippet}
+
+{#if customOpen}
+	<ScheduleCustomModal
+		now={Date.now()}
+		bind:value={customValue}
+		onconfirm={scheduleCustom}
+		onclose={() => (customOpen = false)}
+	/>
+{/if}
 
 <style>
 	.stack {

@@ -3,6 +3,7 @@
 	// bottom it is the fixed phone bar; in the header it is the same items laid
 	// out the same way. Which one shows is the nav position setting.
 	import { page } from '$app/state';
+	import { Badge } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { useSessions } from '$lib/queries';
 	import { settings } from '$lib/settings.svelte';
@@ -35,8 +36,14 @@
 			<NavLink href={it.href} aria-current={active ? 'page' : undefined}>
 				<span class="cell" class:active>
 					<span class="ico"
-						>{it.icon}{#if it.href === '/sessions' && unread > 0}<span class="unread-badge"
-								>{unread > 99 ? '99+' : unread}</span
+						>{it.icon}{#if it.href === '/sessions' && unread > 0}<span class="unread"
+								><Badge
+									size="xs"
+									numeric
+									tone="danger"
+									style="--badge-bg: var(--danger); --badge-fg: var(--text-on-accent); --badge-border: var(--danger)"
+									>{unread > 99 ? '99+' : unread}</Badge
+								></span
 							>{/if}</span
 					>
 					<span class="lbl">{it.label}</span>
@@ -112,20 +119,10 @@
 		line-height: 1;
 		position: relative;
 	}
-	.unread-badge {
+	.unread {
 		position: absolute;
 		top: -0.4rem;
 		left: 60%;
-		min-width: 1rem;
-		height: 1rem;
-		padding: 0 0.22rem;
-		border-radius: 999px;
-		background: var(--danger);
-		color: var(--text-on-accent);
-		font-size: 0.62rem;
-		font-weight: var(--fw-semibold);
-		line-height: 1rem;
-		text-align: center;
 		pointer-events: none;
 	}
 	.cell.active {

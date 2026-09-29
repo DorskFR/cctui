@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Text, Timestamp } from '@dorsk/tsumikit';
+	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { MessagePin } from '@bindings/MessagePin';
 	import type { Line } from './types';
 	import { pinExcerpt, pinRole } from './pins';
@@ -31,18 +31,22 @@
 	{/if}
 	{#each rows as { pin, line } (pin.seq)}
 		<div class="pin-row">
-			<button type="button" class="pin-jump" onclick={() => onjump(pin.seq)}>
-				<span class="role-dot" style={`--dot: var(--role-${pinRole(line)})`}></span>
-				<Timestamp value={line?.ts ?? Date.parse(pin.created_at)} mode="time" tone="faint" size="xs" />
-				<span class="excerpt">{pinExcerpt(line)}</span>
-			</button>
-			<button
-				type="button"
-				class="pin-remove"
-				aria-label={m.conversation_unpin_label()}
+			<Button variant="ghost" size="sm" block onclick={() => onjump(pin.seq)}>
+				<span class="jump-inner">
+					<span class="role-dot" style={`--dot: var(--role-${pinRole(line)})`}></span>
+					<Timestamp value={line?.ts ?? Date.parse(pin.created_at)} mode="time" tone="faint" size="xs" />
+					<span class="excerpt">{pinExcerpt(line)}</span>
+				</span>
+			</Button>
+			<IconButton
+				inline
+				glyphSize={14}
+				icon="x"
+				hoverDanger
+				label={m.conversation_unpin_label()}
 				title={m.conversation_unpin_title()}
-				onclick={() => onunpin(pin.seq)}>✕</button
-			>
+				onclick={() => onunpin(pin.seq)}
+			/>
 		</div>
 	{/each}
 </div>
@@ -59,27 +63,20 @@
 		padding: var(--sp-2);
 	}
 	.pin-row {
-		display: flex;
+		display: grid;
+		grid-template-columns: 1fr auto;
 		align-items: center;
 		gap: var(--sp-1);
 	}
-	.pin-jump {
-		flex: 1;
+	.jump-inner {
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
+		width: 100%;
 		min-width: 0;
-		padding: var(--sp-1) var(--sp-2);
-		background: none;
-		border: none;
-		border-radius: var(--r-2, 6px);
 		color: var(--text);
 		font-size: var(--fs-xs);
 		text-align: left;
-		cursor: pointer;
-	}
-	.pin-jump:hover {
-		background: var(--bg-elevated-2);
 	}
 	.role-dot {
 		flex: none;
@@ -95,16 +92,5 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		color: var(--text-muted);
-	}
-	.pin-remove {
-		flex: none;
-		padding: 0 var(--sp-1);
-		background: none;
-		border: none;
-		color: var(--text-faint);
-		cursor: pointer;
-	}
-	.pin-remove:hover {
-		color: var(--danger);
 	}
 </style>

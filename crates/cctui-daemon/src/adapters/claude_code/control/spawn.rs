@@ -110,7 +110,7 @@ impl Driver {
         // keeps its ask/permission/Stop hooks AND picks up the (possibly
         // refreshed) per-account settings the env pull re-served.
         // `whip` is recovered from the settings file the original spawn wrote for
-        // this `short` (its `hooks.Stop` block is whip-only) — cold resume has no
+        // this `short` (its Stop hook runs `whip-stop-hook`) — cold resume has no
         // `spec` to read it from directly, and defaulting false would silently
         // downgrade a 🐎 session's enforcement profile.
         let whip = detect_whip_from_settings(short);
@@ -403,11 +403,13 @@ impl Driver {
             cwd,
             &staged,
             launch_env.spawn_capability.as_ref().filter(|_| agent_tool),
+            &crate::neighbours::cwd_neighbours(cwd, Some(session_id)),
         );
         let prompt = match spec.prompt.as_deref().map(str::trim) {
             Some(b) if !b.is_empty() => format!("{session_context}\n\n{b}"),
             _ => session_context,
         };
+        self.note_delivered(session_id, &prompt);
         let req = launch::dispatch_request(
             &ids,
             cwd,
@@ -584,6 +586,9 @@ impl Driver {
         )
         .map(|p| p.to_string_lossy().into_owned());
         let prompt = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
+        if let Some(prompt) = prompt {
+            self.note_delivered(session_id, prompt);
+        }
 
         // Remember the parent BEFORE dispatching so the roster-discovery emit
         // (which can race in on the very next poll) finds the link.

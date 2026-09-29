@@ -88,8 +88,11 @@ const STALL_PHRASES: &[&str] = &[
 /// `phrases_path` is the per-session whip phrase override file the
 /// daemon writes at spawn. Absent / unreadable / malformed → the compiled
 /// [`STALL_PHRASES`] defaults, so the zero-config path is unchanged.
+/// `sock` is the daemon hook socket: a stop this hook lets through is a real
+/// turn end and is reported there, so whip sessions get the same authoritative
+/// signal as every other session without installing a second `Stop` hook.
 #[must_use]
-pub fn run(phrases_path: Option<&std::path::Path>) -> i32 {
+pub fn run(phrases_path: Option<&std::path::Path>, sock: Option<&std::path::Path>) -> i32 {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return 0;
@@ -98,7 +101,19 @@ pub fn run(phrases_path: Option<&std::path::Path>) -> i32 {
         Ok(v) => v,
         Err(_) => return 0,
     };
+    let code = decide(&payload, phrases_path);
+    if code == 0
+        && let (Some(sock), Some(session_id)) =
+            (sock, payload.get("session_id").and_then(Value::as_str))
+    {
+        crate::askhook::report_turn_end(sock, session_id);
+    }
+    code
+}
 
+/// The exit code for `payload`: `0` allows the stop, `2` blocks it and emits
+/// guidance on stderr.
+fn decide(payload: &Value, phrases_path: Option<&std::path::Path>) -> i32 {
     // Already blocked this stop once — let it through to avoid a loop.
     if payload.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false) {
         return 0;

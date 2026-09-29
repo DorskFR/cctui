@@ -63,6 +63,13 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // A `Stop` hook must stay silent on stdout: anything printed there is read
+    // back as a hook decision.
+    if event == "stop" {
+        report_turn_end(sock, session_id);
+        return Ok(());
+    }
+
     let tool_name = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
 
     if tool_name == "EnterPlanMode" {
@@ -149,6 +156,19 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         println!("{decision}");
     }
     Ok(())
+}
+
+/// Report a finished turn to the daemon.
+///
+/// The `Stop` hook is the only authoritative turn-end signal a claude session
+/// has — every other path (transcript tail, quiet window) is inference. Failures
+/// are logged and swallowed: the turn ends regardless of whether the daemon
+/// heard about it.
+pub fn report_turn_end(sock: &Path, session_id: &str) {
+    let line = json!({ "kind": "turn_end", "session_id": session_id });
+    if let Err(err) = send(sock, &line.to_string()) {
+        eprintln!("cctui-daemon stop-hook: could not reach daemon at {}: {err}", sock.display());
+    }
 }
 
 /// Handle the `perm` (`PreToolUse` permission) hook event.
@@ -479,6 +499,25 @@ mod tests {
         connect_trusted(&path).expect("own-uid socket and peer are trusted");
         handle.join().unwrap().unwrap();
         assert!(connect_trusted(&tmp.path().join("missing.sock")).is_err());
+    }
+
+    #[test]
+    fn report_turn_end_sends_one_turn_end_line() {
+        use std::io::BufRead as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("d.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(stream).read_line(&mut line).unwrap();
+            line
+        });
+        report_turn_end(&path, "sess-1");
+        let line = handle.join().unwrap();
+        let v: Value = serde_json::from_str(line.trim()).expect("one JSON line");
+        assert_eq!(v["kind"], "turn_end");
+        assert_eq!(v["session_id"], "sess-1");
     }
 
     #[test]

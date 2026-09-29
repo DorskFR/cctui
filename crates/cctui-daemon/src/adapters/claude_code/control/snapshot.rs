@@ -80,7 +80,7 @@ impl Driver {
         self.roster = plan.now_shorts;
     }
 
-    async fn adopt_started(&mut self, job: &LiveSnapshot) {
+    async fn adopt_started(&self, job: &LiveSnapshot) {
         let session_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
         self.short_by_session.insert(session_id.clone(), job.short.clone());
         // If this short was just forked or spawned as a subagent,
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(loc1.offset_key, "sess-1");
         assert_eq!(loc1.local_id, "sess-1");
         let path1 = loc1.path.clone();
-        assert_eq!(d.short_by_session.get("sess-1").map(String::as_str), Some("deadbeef"));
+        assert_eq!(d.short_by_session.get("sess-1").as_deref(), Some("deadbeef"));
 
         let mut s2 = snap("deadbeef", "working", None);
         s2.session_id = Some("sess-2".into());
@@ -825,8 +825,8 @@ mod tests {
         assert_ne!(loc2.path, path1, "transcript path should move to the new session id");
         assert_eq!(loc2.local_id, "sess-1", "local_id stays stable across the reset");
         // Both ids resolve to the worker for command dispatch.
-        assert_eq!(d.short_by_session.get("sess-2").map(String::as_str), Some("deadbeef"));
-        assert_eq!(d.short_by_session.get("sess-1").map(String::as_str), Some("deadbeef"));
+        assert_eq!(d.short_by_session.get("sess-2").as_deref(), Some("deadbeef"));
+        assert_eq!(d.short_by_session.get("sess-1").as_deref(), Some("deadbeef"));
     }
 
     #[tokio::test]

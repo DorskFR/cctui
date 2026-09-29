@@ -30,6 +30,7 @@
 <SplitButton
 	variant="primary"
 	size="sm"
+	caret="half"
 	label={m.composer_schedule_menu()}
 	{items}
 	placement="top-end"

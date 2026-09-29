@@ -32,6 +32,7 @@ use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
 use crate::adapter_runtime::{CommandOutcome, Handled, SessionDriver};
 
+mod delivered;
 mod diagnose;
 mod removal;
 mod reply;
@@ -399,8 +400,9 @@ pub struct Driver {
     /// Reverse lookup: `local_id` (`session_id`) → worker `short`. Built
     /// from list snapshots so command dispatch can target the right
     /// worker even though the server identifies sessions by their
-    /// `session_id`.
-    short_by_session: HashMap<String, String>,
+    /// `session_id`. Shared with the pty-watch pump, which resolves shorts
+    /// off the command path.
+    short_by_session: super::roster::SessionRoster,
     /// Per-session transcript byte offsets, persisted across daemon
     /// restarts to avoid replay.
     offsets: OffsetStore,
@@ -485,6 +487,9 @@ pub struct Driver {
     /// `Mutex` because the reply path takes `&self` while the poll loop holds
     /// `&mut self`.
     pending_turns: std::sync::Mutex<HashMap<String, PendingTurn>>,
+    /// Fingerprints of text this daemon delivered per session, so a transcript
+    /// user line it wrote is never mistaken for harness-injected text.
+    delivered: delivered::Delivered,
     /// Parent session id remembered per freshly-forked child `short`.
     /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
     /// later by the poll loop when the short first appears in the roster — that
@@ -722,7 +727,7 @@ impl Driver {
             session_to_local: Arc::new(Mutex::new(HashMap::new())),
             offsets,
             transcript_locations: HashMap::new(),
-            short_by_session: HashMap::new(),
+            short_by_session: super::roster::SessionRoster::default(),
             subagents: HashMap::new(),
             ended_subagents: HashSet::new(),
             kickstarter,
@@ -738,6 +743,7 @@ impl Driver {
             acked_marks: HashMap::new(),
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             pending_turns: std::sync::Mutex::new(HashMap::new()),
+            delivered: delivered::Delivered::default(),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             server: None,
             machine_key: None,
@@ -799,6 +805,14 @@ impl Driver {
     /// listener to maintain.
     pub fn hook_log(&self) -> super::HookLog {
         self.hook_log.clone()
+    }
+
+    /// Clone handles the pty-watch pump needs to serve a `WatchPty` without
+    /// going through this driver's serial command loop.
+    pub(super) fn pty_watch_pump(
+        &self,
+    ) -> (super::pty_view::PtyViewManager, super::roster::SessionRoster) {
+        (self.pty_view.clone(), self.short_by_session.clone())
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -981,7 +995,6 @@ impl Driver {
     fn resolve_short(&self, local_id: &str) -> anyhow::Result<String> {
         self.short_by_session
             .get(local_id)
-            .cloned()
             .ok_or_else(|| anyhow::anyhow!("unknown session {local_id}"))
     }
 
@@ -994,7 +1007,7 @@ impl Driver {
     /// best-effort rather than erroring.
     fn resolve_short_for_removal(&self, local_id: &str) -> anyhow::Result<String> {
         if let Some(short) = self.short_by_session.get(local_id) {
-            return Ok(short.clone());
+            return Ok(short);
         }
         let candidate = local_id.split('-').next().unwrap_or(local_id);
         JobShort::parse(candidate)
@@ -1121,9 +1134,10 @@ impl Driver {
         };
         let targets: Vec<String> = self
             .short_by_session
-            .iter()
-            .filter(|(_, short)| self.roster.contains(*short))
-            .map(|(local_id, _)| local_id.clone())
+            .entries()
+            .into_iter()
+            .filter(|(_, short)| self.roster.contains(short))
+            .map(|(local_id, _)| local_id)
             .collect();
         let mut renewed = 0usize;
         for local_id in &targets {
@@ -1150,7 +1164,7 @@ impl Driver {
     /// belong to an older turn, and stamping them with whatever turn happens
     /// to be in flight mints a row the server sees as new.
     async fn emit_fresh(&self, evt: AdapterEvent) {
-        let _ = self.events.send(self.stamp_turn(evt)).await;
+        let _ = self.events.send(self.unmask_delivered(self.stamp_turn(evt))).await;
     }
 
     /// Give a user event the id of the turn cctui injected, when one is still
@@ -1224,15 +1238,6 @@ impl SessionDriver for Driver {
 
     async fn diagnose(&mut self, local_id: String, request_id: uuid::Uuid) -> CommandOutcome {
         self.handle_diagnose(&local_id, request_id).await?;
-        Ok(Handled::Done)
-    }
-
-    async fn watch_pty(&mut self, local_id: String, watch: bool) -> CommandOutcome {
-        match self.resolve_short(&local_id) {
-            Ok(short) if watch => self.pty_view.watch(local_id, short),
-            Ok(short) => self.pty_view.unwatch(&short),
-            Err(err) => tracing::debug!(%err, watch, "watch_pty for unknown session; ignoring"),
-        }
         Ok(Handled::Done)
     }
 

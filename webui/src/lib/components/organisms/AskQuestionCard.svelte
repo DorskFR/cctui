@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import { Badge, Button, Heading, Input, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Heading, Input, OptionButton, RadioGroup, Text } from '@dorsk/tsumikit';
+	import type { RadioOption } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	interface Opt {
@@ -89,6 +90,24 @@
 		focused[qi] = oi;
 	}
 
+	const radioOptions = (q: Question): RadioOption[] =>
+		q.options.map((o, oi) => ({
+			value: String(oi),
+			label: o.label,
+			description: o.description,
+			disabled: !live
+		}));
+
+	const singleValue = (qi: number) => {
+		const [first] = [...chosen[qi]];
+		return first === undefined ? undefined : String(first);
+	};
+
+	function pickValue(qi: number, v: string | undefined) {
+		if (v === undefined) return;
+		pick(qi, Number(v));
+	}
+
 	const answeredAll = $derived(
 		questions.every((_, qi) => chosen[qi].size > 0 || other[qi].trim().length > 0)
 	);
@@ -131,22 +150,30 @@
 			</div>
 			<div class="q-body" class:split={hasPreview}>
 				<div class="opts">
-					{#each q.options as o, oi (oi)}
-						<button
-							type="button"
-							class="opt"
-							class:sel={chosen[qi].has(oi)}
-							disabled={!live}
-							onclick={() => pick(qi, oi)}
-							onmouseenter={() => (focused[qi] = oi)}
-						>
-							<span class="mark">{chosen[qi].has(oi) ? (q.multiSelect ? '☑' : '◉') : q.multiSelect ? '☐' : '○'}</span>
-							<span class="opt-text">
-								<span class="opt-label">{o.label}</span>
-								{#if o.description}<span class="opt-desc">{o.description}</span>{/if}
-							</span>
-						</button>
-					{/each}
+					{#if q.multiSelect}
+						{#each q.options as o, oi (oi)}
+							<OptionButton
+								block
+								align="start"
+								value={String(oi)}
+								description={o.description}
+								selected={chosen[qi].has(oi)}
+								disabled={!live}
+								onclick={() => pick(qi, oi)}
+								onfocuschange={(v) => (focused[qi] = Number(v))}
+							>
+								{o.label}
+							</OptionButton>
+						{/each}
+					{:else}
+						<RadioGroup
+							variant="rows"
+							label={q.question}
+							options={radioOptions(q)}
+							bind:value={() => singleValue(qi), (v) => pickValue(qi, v)}
+							onfocuschange={(v) => (focused[qi] = Number(v))}
+						/>
+					{/if}
 					<div class="other">
 						<span class="mark">✎</span>
 						<Input
@@ -217,45 +244,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
-	}
-	.opt {
-		display: flex;
-		gap: var(--sp-2);
-		align-items: flex-start;
-		text-align: left;
-		padding: var(--sp-2);
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		background: var(--bg-elevated-2);
-		color: var(--text);
-		cursor: pointer;
-		width: 100%;
-	}
-	.opt:hover:not(:disabled) {
-		border-color: var(--c-violet);
-	}
-	.opt.sel {
-		border-color: var(--c-violet);
-		background: color-mix(in srgb, var(--c-violet) 14%, var(--bg-elevated-2));
-	}
-	.opt:disabled {
-		cursor: default;
+		--opt-accent: var(--c-violet);
 	}
 	.mark {
 		flex: 0 0 auto;
 		font-size: var(--fs-sm);
-	}
-	.opt-text {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-	.opt-label {
-		font-weight: 500;
-	}
-	.opt-desc {
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
 	}
 	.other {
 		display: flex;

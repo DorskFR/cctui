@@ -3,6 +3,8 @@ import type { PluginInfo } from "../plugins/types";
 import type { AdminPluginInfo } from "@bindings/AdminPluginInfo";
 import type { PluginEnableRequest } from "@bindings/PluginEnableRequest";
 import type { PluginInstallRequest } from "@bindings/PluginInstallRequest";
+import type { PluginCatalogInstallRequest } from "@bindings/PluginCatalogInstallRequest";
+import type { CatalogPluginInfo } from "@bindings/CatalogPluginInfo";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { PoolUsageView } from "@bindings/PoolUsageView";
@@ -61,7 +63,7 @@ import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { RescrubRequest } from "@bindings/RescrubRequest";
-import type { RescrubReport } from "@bindings/RescrubReport";
+import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
@@ -201,6 +203,12 @@ export const endpoints = {
   /** Install or upgrade a plugin from an https archive URL (admin). */
   installPluginFromUrl: (url: string) =>
     api.post<AdminPluginInfo>("/admin/plugins", { url } satisfies PluginInstallRequest),
+  /** The published plugin catalog, annotated with what is installed (admin). */
+  adminPluginCatalog: () => api.get<CatalogPluginInfo[]>("/admin/plugins/catalog"),
+  /** Install or upgrade a published plugin; the server resolves its URL and
+   * sha256 from its own catalog (admin). */
+  installPluginFromCatalog: (catalog: string) =>
+    api.post<AdminPluginInfo>("/admin/plugins", { catalog } satisfies PluginCatalogInstallRequest),
   /** Install or upgrade a plugin from an uploaded `.tar.gz` (admin). */
   installPluginUpload: (file: File) => {
     const form = new FormData();
@@ -373,6 +381,13 @@ export const endpoints = {
    *  draft row is removed and a live session is born from the daemon. */
   launchDraft: (sessionId: string, env: Record<string, string> = {}) =>
     api.post<SpawnResponse>(`/sessions/${sessionId}/launch`, { env }),
+  /** Queue a draft to launch at `launchAt` (RFC3339, at most 30 days out),
+   *  replacing any schedule already on it. */
+  scheduleDraftLaunch: (sessionId: string, launchAt: string) =>
+    api.post<void>(`/sessions/${sessionId}/schedule-launch`, { launch_at: launchAt }),
+  /** Drop a draft's queued launch, keeping the draft. */
+  cancelDraftLaunch: (sessionId: string) =>
+    api.post<void>(`/sessions/${sessionId}/cancel-launch`, {}),
   /** Discard (delete) a draft session row. */
   discardDraft: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/discard`, {}),
@@ -422,10 +437,16 @@ export const endpoints = {
     api.get<SettingsCatalogResponse>(
       `/accounts/settings-catalog?family=${encodeURIComponent(family)}`,
     ),
-  /** Apply the current detector set to already-stored transcripts. `dry_run`
-   *  reports counts and writes nothing; a real pass is irreversible. */
-  rescrubSettings: (req: RescrubRequest) =>
-    api.post<RescrubReport>("/settings/rescrub", req),
+  /** Start a privacy scan over already-stored transcripts. `dry_run` reports
+   *  counts and writes nothing; a real pass is irreversible. Returns the job;
+   *  progress arrives through `privacyScanJob`. */
+  startRescrub: (req: RescrubRequest) =>
+    api.post<PrivacyScanJob>("/settings/rescrub", req),
+  /** The caller's most recent scan, so reopening the page re-attaches to a job
+   *  still running on some replica. */
+  privacyScanJob: () => api.get<PrivacyScanJob | null>("/settings/rescrub"),
+  cancelRescrub: () =>
+    api.post<PrivacyScanJob | null>("/settings/rescrub/cancel"),
   createAccount: (body: CreateAccount) =>
     api.post<OAuthAccount>("/accounts", body),
   updateAccount: (id: string, body: UpdateAccount) =>

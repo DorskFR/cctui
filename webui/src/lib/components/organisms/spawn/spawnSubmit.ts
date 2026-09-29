@@ -57,6 +57,33 @@ export async function saveDraft(sf: SpawnForm) {
 	sf.finish();
 }
 
+/** Save the form as a draft and queue it to launch at `at`. The draft is the
+ *  unit of scheduling: the server relaunches it through the normal spawn path,
+ *  and a failed launch leaves it in place. */
+export async function scheduleLaunch(sf: SpawnForm, at: Date) {
+	sf.cancelAutosave();
+	const body = sf.draftBody();
+	let draftId = sf.draftId;
+	if (draftId) await sf.actions.updateDraft(draftId, body);
+	else {
+		const res = await sf.actions.spawn({ ...body, save_draft: true }, []);
+		draftId = String(res.command_id);
+		sf.draftId = draftId;
+	}
+	await sf.actions.scheduleDraftLaunch(draftId, at.toISOString());
+	drafts.set(LAST_MACHINE, sf.form.machine_id);
+	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
+	toasts.ok(
+		m.spawn_toast_scheduled({
+			when: at.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+		})
+	);
+	// The draft row now owns the payload; dropping the local slot keeps a later
+	// form for the same cwd from restoring a schedule the user already placed.
+	sf.draftId = null;
+	sf.finish();
+}
+
 async function spawnProbe(sf: SpawnForm, sessionId: string): Promise<SpawnProbeHit | null> {
 	const { sessions } = await sf.labelApi.listSessions();
 	return sessions.find((s) => s.id === sessionId) ?? null;

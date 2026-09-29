@@ -50,7 +50,10 @@ impl PreviewHost {
             anyhow::bail!("CCTUI_PREVIEW_HOST needs a suffix after `{{id}}` (a domain)");
         }
         if prefix.contains('/') || suffix.contains('/') || pattern.contains(':') {
-            anyhow::bail!("CCTUI_PREVIEW_HOST is a bare host pattern, without scheme or port");
+            anyhow::bail!(
+                "CCTUI_PREVIEW_HOST is a bare host pattern, without scheme or port; the port is \
+                 taken from CCTUI_EXTERNAL_URL"
+            );
         }
         Ok(Self { prefix: prefix.to_owned(), suffix: suffix.to_owned() })
     }
@@ -70,6 +73,28 @@ impl PreviewHost {
     pub fn host_for(&self, id: &str) -> String {
         format!("{}{id}{}", self.prefix, self.suffix)
     }
+}
+
+/// The `:port` of `external_url`, or `""` when it is the scheme's default.
+///
+/// A preview is served by this same server on this same port, so a self-hosted
+/// instance on `http://localhost:8700` must hand out
+/// `http://cctui-pv-<id>.localhost:8700` — port 80 reaches nothing.
+#[must_use]
+pub fn external_port(external_url: &str) -> String {
+    let Some((scheme, rest)) = external_url.trim().split_once("://") else {
+        return String::new();
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit('@').next().unwrap_or_default();
+    let Some((_, port)) = authority.rsplit_once(':') else {
+        return String::new();
+    };
+    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return String::new();
+    }
+    let default = if scheme.eq_ignore_ascii_case("http") { "80" } else { "443" };
+    if port == default { String::new() } else { format!(":{port}") }
 }
 
 #[must_use]
@@ -148,7 +173,7 @@ impl OpenError {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
-            Self::Disabled => "previews are not enabled on this server".to_owned(),
+            Self::Disabled => cctui_proto::ws::PREVIEWS_DISABLED.to_owned(),
             Self::Limit => format!("session already has {MAX_PER_SESSION} open previews"),
             Self::Port => format!("previews only tunnel ports >= {MIN_PORT}"),
             Self::Taken => "that session and port belong to another user".to_owned(),
@@ -196,7 +221,7 @@ impl Registry {
     pub fn url_for(&self, id: &str) -> String {
         let scheme = if self.external_url.starts_with("http://") { "http" } else { "https" };
         let host = self.host.as_ref().map_or_else(|| id.to_owned(), |h| h.host_for(id));
-        format!("{scheme}://{host}")
+        format!("{scheme}://{host}{}", external_port(&self.external_url))
     }
 
     /// Register (or return the already open) preview for `session_id:port`.
@@ -728,12 +753,72 @@ mod tests {
     }
 
     #[test]
-    fn url_scheme_follows_external_url() {
+    fn url_scheme_and_port_follow_external_url() {
         let reg = Registry::new(
             Some(PreviewHost::parse("pv-{id}.local").unwrap()),
             "http://localhost:8700",
             b"k",
         );
-        assert_eq!(reg.url_for("abcdefghijklmnop"), "http://pv-abcdefghijklmnop.local");
+        assert_eq!(reg.url_for("abcdefghijklmnop"), "http://pv-abcdefghijklmnop.local:8700");
+
+        let ingress = Registry::new(
+            Some(PreviewHost::parse("pv-{id}.example.test").unwrap()),
+            "https://cctui.example.test",
+            b"k",
+        );
+        assert_eq!(ingress.url_for("abcdefghijklmnop"), "https://pv-abcdefghijklmnop.example.test");
+    }
+
+    /// `*.localhost` resolves to loopback in every browser, so a local server
+    /// needs no DNS or certificate — only its own port.
+    #[test]
+    fn the_localhost_pattern_hands_out_a_reachable_url() {
+        let reg = Registry::new(
+            Some(PreviewHost::parse("cctui-pv-{id}.localhost").unwrap()),
+            "http://localhost:8700",
+            b"k",
+        );
+        let preview = "abcdefghijklmnopqrstuvwx";
+        assert_eq!(reg.url_for(preview), format!("http://cctui-pv-{preview}.localhost:8700"));
+        assert_eq!(
+            reg.host()
+                .unwrap()
+                .id_from_host(&format!("cctui-pv-{preview}.localhost:8700"))
+                .as_deref(),
+            Some(preview),
+            "the Host header carries that port back"
+        );
+    }
+
+    #[test]
+    fn the_external_port_is_dropped_only_when_it_is_the_scheme_default() {
+        assert_eq!(external_port("http://localhost:8700"), ":8700");
+        assert_eq!(external_port("https://cctui.example.test:8443/"), ":8443");
+        assert_eq!(external_port("http://cctui.example.test:80"), "");
+        assert_eq!(external_port("https://cctui.example.test:443"), "");
+        assert_eq!(external_port("https://cctui.example.test"), "");
+        assert_eq!(external_port("https://user:pw@cctui.example.test:9000/p"), ":9000");
+        assert_eq!(external_port("not a url"), "");
+        assert_eq!(external_port(""), "");
+    }
+
+    #[test]
+    fn a_host_pattern_takes_no_port_of_its_own() {
+        let err = PreviewHost::parse("cctui-pv-{id}.localhost:8700").unwrap_err().to_string();
+        assert!(err.contains("CCTUI_EXTERNAL_URL"), "got: {err}");
+        assert!(PreviewHost::parse("cctui-pv-{id}.localhost").is_ok());
+    }
+
+    /// A disabled instance must say so; a caller that only sees an empty
+    /// preview list polls for something that can never appear.
+    #[test]
+    fn a_disabled_registry_refuses_with_the_shared_message() {
+        let off = Registry::new(None, "http://localhost:8700", b"k");
+        assert!(!off.enabled());
+        assert_eq!(
+            OpenError::Disabled.message(),
+            cctui_proto::ws::PREVIEWS_DISABLED,
+            "`yubi dev` and the pane match this message verbatim"
+        );
     }
 }

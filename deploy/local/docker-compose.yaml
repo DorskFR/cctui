@@ -57,6 +57,10 @@ services:
       CCTUI_UPSTREAM_ALLOWED_HOSTS: ${CCTUI_UPSTREAM_ALLOWED_HOSTS:-}
       # Runtime plugins (docs/plugins.md): folders dropped into ./plugins.
       CCTUI_PLUGINS_DIR: /plugins
+      # Dev-server previews (docs/plugins.md). `*.localhost` resolves to
+      # loopback in every browser, so this needs no DNS and no certificate;
+      # the port comes from CCTUI_EXTERNAL_URL.
+      CCTUI_PREVIEW_HOST: ${CCTUI_PREVIEW_HOST:-cctui-pv-{id}.localhost}
     volumes:
       - ./plugins:/plugins:ro
     ports:

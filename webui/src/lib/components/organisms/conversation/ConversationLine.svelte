@@ -2,7 +2,7 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Checkbox, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import LineActions from './LineActions.svelte';
 	import LineDelivery from './LineDelivery.svelte';
 	import LineFooter from './LineFooter.svelte';
@@ -34,7 +34,8 @@
 		onbookmark,
 		bookmarked = false,
 		pluginActions = [],
-		onpluginaction
+		onpluginaction,
+		onquote
 	}: {
 		ln: Line;
 		archived: boolean;
@@ -64,7 +65,14 @@
 		/** Buttons runtime plugins contribute to this (assistant) line. */
 		pluginActions?: PluginActionButton[];
 		onpluginaction?: (a: PluginActionButton) => void;
+		/** Quote this line into the composer; omit to hide the action. */
+		onquote?: (ln: Line, selection: string | null) => void;
 	} = $props();
+
+	// An archived session has no composer to quote into.
+	const quotable = $derived(
+		!!onquote && !archived && !selectMode && ln.role !== 'thinking' && ln.role !== 'marker'
+	);
 
 	// An optimistic user echo carries a synthetic `maxSeq + 1` seq that no server
 	// row backs, so it must not be pinnable until the send is confirmed.
@@ -100,14 +108,14 @@
 >
 	<div class="lmeta row">
 		{#if selectMode && forkAnchor}
-			<input
-				type="checkbox"
-				class="fork-select-check"
-				checked={selectedForFork}
-				aria-label={m.fork_select_message_aria()}
-				title={m.fork_select_message_title()}
-				onchange={() => ontoggleselect?.(forkAnchor)}
-			/>
+			<span class="fork-check" title={m.fork_select_message_title()}>
+				<Checkbox
+					checked={selectedForFork}
+					label={m.fork_select_message_aria()}
+					labelHidden
+					onchange={() => ontoggleselect?.(forkAnchor)}
+				/>
+			</span>
 		{/if}
 		{#if ln.role === 'assistant' && ln.turn !== undefined}
 			<Tooltip text={`turn ${ln.turn}`}>
@@ -139,6 +147,7 @@
 			{oncopymarkdown}
 			{onbookmark}
 			{bookmarked}
+			onquote={quotable ? onquote : undefined}
 		/>
 	</div>
 	{#if ln.role === 'thinking'}
@@ -206,6 +215,10 @@
 		gap: var(--sp-2);
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
+	}
+	.fork-check {
+		display: inline-flex;
+		align-items: center;
 	}
 	.who {
 		text-transform: uppercase;

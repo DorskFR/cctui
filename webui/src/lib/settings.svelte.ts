@@ -6,8 +6,8 @@ import {
   locale as localeStore,
   type Locale,
 } from "./locale.svelte";
-import { themeMode } from "./themeMode.svelte";
-import { preferenceFrom, type ThemeChoice } from "./themeMode";
+import { theme } from "./theme.svelte";
+import { preferenceFrom, type ThemeChoice } from "@dorsk/tsumikit";
 import { fontScale, nearestLevel } from "./fontscale.svelte";
 import { notify } from "./notify.svelte";
 import type { SettingsPayload } from "@bindings/SettingsPayload";
@@ -881,15 +881,9 @@ class Settings {
   // singleton AND records the value here, and `load()` replays the blob back
   // into the singletons via `applyDisplay`.
   /** A picker choice: `auto`, or a theme id (which also becomes the memory of
-   *  its light/dark slot). Persists the whole preference plus the resolved id. */
+   *  its light/dark slot). The store's `onchange` mirrors it into the blob. */
   setTheme(choice: string) {
-    const p = themeMode.choose(choice);
-    this.setDisplay({
-      theme: themeMode.resolved,
-      themeMode: p.mode,
-      lightTheme: p.light,
-      darkTheme: p.dark,
-    });
+    theme.choose(choice);
   }
 
   setFontScaleLevel(levelId: string) {
@@ -910,7 +904,7 @@ class Settings {
 
   private applyDisplay() {
     const d = this.state.display;
-    themeMode.hydrate(preferenceFrom(d, themeMode.slotOf));
+    theme.hydrate(preferenceFrom(d, theme.slotOf));
     fontScale.set(nearestLevel(d.fontScale));
     notify.applyPersisted(d.notifyEnabled, d.notifySound);
   }
@@ -1146,3 +1140,11 @@ class Settings {
 }
 
 export const settings = new Settings();
+
+theme.onchange = (pref) =>
+  settings.setDisplay({
+    theme: theme.resolved,
+    themeMode: pref.mode,
+    lightTheme: pref.light,
+    darkTheme: pref.dark,
+  });

@@ -4,7 +4,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PluginInfo } from '$lib/plugins/types';
 
 const query = vi.hoisted(() => ({ data: undefined as PluginInfo[] | undefined, isPending: true, isError: false }));
-vi.mock('$lib/queries', () => ({ usePlugins: () => query }));
+const adminQuery = vi.hoisted(() => ({ data: [] as unknown[], isPending: false, isError: false }));
+const adminGate = vi.hoisted(() => vi.fn<(enabled: () => boolean) => typeof adminQuery>());
+vi.mock('$lib/queries', () => ({
+	usePlugins: () => query,
+	useAdminPlugins: (enabled: () => boolean) => adminGate(enabled),
+	useAdminPluginCatalog: (enabled: () => boolean) => adminGate(enabled),
+	endpoints: {
+		installPluginFromUrl: vi.fn(async () => ({})),
+		installPluginUpload: vi.fn(async () => ({})),
+		installPluginFromCatalog: vi.fn(async () => ({})),
+		setPluginInstanceEnabled: vi.fn(async () => ({})),
+		uninstallPlugin: vi.fn(async () => undefined)
+	},
+	qk: { plugins: ['plugins'], adminPlugins: ['admin', 'plugins'], adminPluginCatalog: ['admin', 'plugins', 'catalog'] }
+}));
+vi.mock('@tanstack/svelte-query', () => ({
+	useQueryClient: () => ({ invalidateQueries: vi.fn(async () => undefined) })
+}));
 
 import PluginsSection from './PluginsSection.svelte';
 import { settings } from '$lib/settings.svelte';
@@ -14,11 +31,13 @@ afterEach(() => {
 	if (comp) unmount(comp);
 	comp = null;
 	document.body.innerHTML = '';
+	vi.clearAllMocks();
 });
 
-function render(data: PluginInfo[] | undefined, over: Partial<typeof query> = {}) {
+function render(data: PluginInfo[] | undefined, over: Partial<typeof query> = {}, isAdmin = false) {
 	Object.assign(query, { data, isPending: data === undefined, isError: false }, over);
-	comp = mount(PluginsSection, { target: document.body });
+	adminGate.mockReturnValue(adminQuery);
+	comp = mount(PluginsSection, { target: document.body, props: { isAdmin } });
 	flushSync();
 }
 
@@ -41,8 +60,27 @@ describe('PluginsSection', () => {
 		render([]);
 		const empty = document.querySelector('[data-journey="plugins-empty"]');
 		expect(empty?.textContent).toContain('CCTUI_PLUGINS_DIR');
-		expect(empty?.textContent).toContain('Instance');
+		expect(empty?.textContent).toContain('on this page');
 		expect(document.querySelector('[data-journey="plugin-switch"]')).toBeNull();
+	});
+	it('renders the admin block above the user list for admins', () => {
+		settings.setPluginEnabled('yubisashi', false);
+		render([plugin()], {}, true);
+		const admin = document.querySelector('[data-journey="plugins-admin"]');
+		const userSwitch = document.querySelector('[data-journey="plugin-switch"]');
+		expect(admin).not.toBeNull();
+		expect(userSwitch).not.toBeNull();
+		if (!admin || !userSwitch) throw new Error('unreachable');
+		expect(admin.compareDocumentPosition(userSwitch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(adminGate).toHaveBeenCalled();
+		expect(adminGate.mock.calls.every(([enabled]) => enabled())).toBe(true);
+	});
+	it('hides the admin block from non-admins and never enables the admin queries', () => {
+		settings.setPluginEnabled('yubisashi', false);
+		render([plugin()]);
+		expect(document.querySelector('[data-journey="plugins-admin"]')).toBeNull();
+		expect(document.querySelector('[data-journey="plugin-admin-url"]')).toBeNull();
+		expect(adminGate.mock.calls.some(([enabled]) => enabled())).toBe(false);
 	});
 	it('lists what the server reports with a switch bound to settings', () => {
 		settings.setPluginEnabled('yubisashi', false);

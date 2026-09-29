@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
 	import { insertBlock } from './insertText';
+	import { insertAtCaret, quoteMarkdown } from './format';
 	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
 	import { errMessage } from '$lib/api';
 	import type { SessionListItem } from '@bindings/SessionListItem';
@@ -208,6 +209,23 @@
 		if (!el) return;
 		el.focus();
 		el.setSelectionRange(next.caret, next.caret);
+	}
+
+	/** Quote a message into the draft as a Markdown blockquote, keeping whatever
+	 *  is already typed and leaving the caret under the quote. */
+	export async function insertQuote(text: string) {
+		const block = quoteMarkdown(text);
+		if (!block) return;
+		const el = scroll.textarea;
+		const caret = el && document.activeElement === el ? el.selectionStart : undefined;
+		const next = insertAtCaret(input, caret, block);
+		input = next.text;
+		resetHistoryNav();
+		await tick();
+		if (!el) return;
+		el.focus();
+		el.setSelectionRange(next.caret, next.caret);
+		el.scrollIntoView({ block: 'nearest' });
 	}
 
 	/** A plugin pane's message: goes out through the same path as a typed one,

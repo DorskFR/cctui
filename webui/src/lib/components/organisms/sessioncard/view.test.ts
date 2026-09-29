@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { titleOf } from './view';
+import { scheduledLaunchOf, titleOf } from './view';
 
 const session = (over: Partial<SessionListItem>): SessionListItem =>
 	({ id: 'a1e5bd0f2c3d4e5f6', labels: [], working_dir: '/home/me/cctui', ...over }) as SessionListItem;
@@ -22,5 +22,24 @@ describe('titleOf', () => {
 	it('names a top-level session from its working dir', () => {
 		expect(titleOf(session({ name: null }), false)).toBe('cctui');
 		expect(titleOf(session({ name: null, working_dir: '' }), false)).toBe('a1e5bd0f2c3d4e5f6');
+	});
+});
+
+describe('scheduledLaunchOf', () => {
+	it('is null for a draft with no queued launch', () => {
+		expect(scheduledLaunchOf(session({ launch_at: null }))).toBeNull();
+		expect(scheduledLaunchOf(session({}))).toBeNull();
+	});
+
+	it('reads the queued launch time and its last failure', () => {
+		const at = '2026-10-02T07:30:00Z';
+		const got = scheduledLaunchOf(session({ launch_at: at, launch_error: 'machine offline' }));
+		expect(got?.at.toISOString()).toBe(new Date(at).toISOString());
+		expect(got?.error).toBe('machine offline');
+		expect(got?.label).not.toBe('');
+	});
+
+	it('ignores an unparseable launch time rather than rendering Invalid Date', () => {
+		expect(scheduledLaunchOf(session({ launch_at: 'never' }))).toBeNull();
 	});
 });

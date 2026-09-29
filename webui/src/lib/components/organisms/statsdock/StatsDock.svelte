@@ -4,7 +4,7 @@
 	import { useVersion } from '$lib/queries';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
-	import { Button, Text } from '@dorsk/tsumikit';
+	import { Button, Disclosure, Text } from '@dorsk/tsumikit';
 	import { resizeHandle } from '@dorsk/tsumikit';
 	import AccountUsageList from './AccountUsageList.svelte';
 	import PoolUsageList from './PoolUsageList.svelte';
@@ -41,14 +41,23 @@
 	const version = useVersion();
 	let updateOpen = $state(false);
 
-	const sections = [
-		{ key: 'pools', title: () => m.stats_dock_pools(), open: true },
-		{ key: 'accounts', title: () => m.stats_dock_accounts(), open: true },
-		{ key: 'tokens', title: () => m.home_token_usage(), open: true },
-		{ key: 'overview', title: () => m.home_overview_title(), open: true },
-		{ key: 'history', title: () => m.stats_dock_window_history(), open: false },
-		{ key: 'usage', title: () => m.home_usage_title(), open: false }
-	];
+	const sections = $derived([
+		{ key: 'pools', title: m.stats_dock_pools() },
+		{ key: 'accounts', title: m.stats_dock_accounts() },
+		{ key: 'tokens', title: m.home_token_usage() },
+		{ key: 'overview', title: m.home_overview_title() },
+		{ key: 'history', title: m.stats_dock_window_history() },
+		{ key: 'usage', title: m.home_usage_title() }
+	]);
+
+	let open = $state<Record<string, boolean>>({
+		pools: true,
+		accounts: true,
+		tokens: true,
+		overview: true,
+		history: false,
+		usage: false
+	});
 </script>
 
 <svelte:window bind:innerWidth={viewportWidth} />
@@ -87,24 +96,28 @@
 	<div class="dock-head">{m.stats_dock_title()}</div>
 	<div class="dock-body">
 		{#each sections as s (s.key)}
-			<details class="section" open={s.open}>
-				<summary>{s.title()}</summary>
-				<div class="section-body">
-					{#if s.key === 'pools'}
-						<PoolUsageList />
-					{:else if s.key === 'accounts'}
-						<AccountUsageList />
-					{:else if s.key === 'tokens'}
-						<TokenWindows />
-					{:else if s.key === 'overview'}
-						<OverviewTiles />
-					{:else if s.key === 'history'}
-						<WindowHistory />
-					{:else}
-						<UsageCharts />
-					{/if}
-				</div>
-			</details>
+			<div class="section">
+				<Disclosure bind:open={open[s.key]}>
+					{#snippet header()}
+						<span class="sec-title">{s.title}</span>
+					{/snippet}
+					<div class="section-body">
+						{#if s.key === 'pools'}
+							<PoolUsageList />
+						{:else if s.key === 'accounts'}
+							<AccountUsageList />
+						{:else if s.key === 'tokens'}
+							<TokenWindows />
+						{:else if s.key === 'overview'}
+							<OverviewTiles />
+						{:else if s.key === 'history'}
+							<WindowHistory />
+						{:else}
+							<UsageCharts />
+						{/if}
+					</div>
+				</Disclosure>
+			</div>
 		{/each}
 	</div>
 	{#if version.data}
@@ -244,9 +257,7 @@
 	.section:last-child {
 		border-bottom: 0;
 	}
-	.section summary {
-		cursor: pointer;
-		padding: var(--sp-2) 0;
+	.sec-title {
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-semibold);
 		text-transform: uppercase;

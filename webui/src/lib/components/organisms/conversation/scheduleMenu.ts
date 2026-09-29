@@ -5,16 +5,17 @@ import { m } from '$lib/paraglide/messages';
 export interface ScheduleMenuOpts {
 	now: number;
 	canSchedule: boolean;
-	scheduledCount: number;
 	onpreset: (at: Date) => void;
 	oncustom: () => void;
-	onlist: () => void;
+	/** Omitted where there is no pending list to jump to (the spawn modal). */
+	scheduledCount?: number;
+	onlist?: () => void;
 }
 
 const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-/** Items of the Send split-button's schedule menu: the presets, a custom
- *  time, and a jump to the pending list. */
+/** Items of a schedule split-button's menu: the presets, a custom time, and —
+ *  when `onlist` is given — a jump to the pending list. */
 export function scheduleMenuItems(o: ScheduleMenuOpts): MenuItem[] {
 	const presets: MenuItem[] = schedulePresets(new Date(o.now)).map((p) => ({
 		label:
@@ -27,17 +28,21 @@ export function scheduleMenuItems(o: ScheduleMenuOpts): MenuItem[] {
 		disabled: !o.canSchedule,
 		onselect: () => o.onpreset(p.at)
 	}));
-	return [
+	const items: MenuItem[] = [
 		...presets,
 		{
 			label: m.composer_schedule_custom(),
 			disabled: !o.canSchedule,
 			onselect: o.oncustom
-		},
-		{
-			label: m.composer_schedule_list({ count: String(o.scheduledCount) }),
-			disabled: o.scheduledCount === 0,
-			onselect: o.onlist
 		}
 	];
+	if (o.onlist) {
+		const count = o.scheduledCount ?? 0;
+		items.push({
+			label: m.composer_schedule_list({ count: String(count) }),
+			disabled: count === 0,
+			onselect: o.onlist
+		});
+	}
+	return items;
 }

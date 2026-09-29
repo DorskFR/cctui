@@ -170,7 +170,8 @@ pub struct GatewayEnvResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_capability: Option<SpawnCapability>,
     /// Runtime plugins the session owner enabled that ship skills. The daemon
-    /// mirrors each one under its cache and passes it as `--plugin-dir`.
+    /// mirrors each one under its cache and hands it to the agent through
+    /// whatever channel that harness has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<SessionPlugin>,
 }
@@ -332,6 +333,12 @@ pub struct SessionListItem {
     pub keepalive: Option<KeepaliveState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_keepalive_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Draft only: when the queued launch is due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Draft only: the last launch attempt's failure, kept until it succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_error: Option<String>,
 }
 
 /// Cache keep-alive: one tick every `interval_secs` while idle, stopping after
@@ -509,6 +516,13 @@ pub struct MessageRequest {
     /// RFC3339, at most 30 days ahead; the request is queued and returns 202.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliver_at: Option<String>,
+}
+
+/// `launch_at`: RFC3339, at most 30 days ahead.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ScheduleLaunchRequest {
+    pub launch_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

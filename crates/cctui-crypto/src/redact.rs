@@ -794,6 +794,221 @@ pub fn redact_json_stats(
     stats
 }
 
+/// How many example matches are kept per category for the scan preview.
+pub const SAMPLES_PER_CATEGORY: usize = 5;
+/// How many matches per category are inspected for the identifier heuristic
+/// before the collector stops looking; the ratio is stable well before this.
+pub const SAMPLE_EXAMINE_CAP: usize = 200;
+/// Characters of surrounding text kept on each side of a sampled match.
+const SAMPLE_CONTEXT: usize = 40;
+
+/// One example match, as shown in the scan preview.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sample {
+    /// The matched text with any value it carries masked. A bare match is kept
+    /// whole only when it cannot itself be a secret, so a user can see their
+    /// pattern hit `access_token` without the sample becoming a credential.
+    pub text: String,
+    /// Surrounding text, itself redacted so a neighbouring secret cannot ride
+    /// along into the preview.
+    pub context: String,
+    /// A `=` or `:` with a value follows the match.
+    pub value_follows: bool,
+}
+
+/// Example matches for one category plus the tallies behind
+/// [`CategorySamples::looks_like_identifiers`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CategorySamples {
+    pub samples: Vec<Sample>,
+    pub examined: usize,
+    pub with_value: usize,
+}
+
+impl CategorySamples {
+    /// Most inspected matches were bare names with no value after them — the
+    /// signature of a `\w+_token`-style pattern hitting identifiers.
+    #[must_use]
+    pub const fn looks_like_identifiers(&self) -> bool {
+        self.examined >= 3 && self.with_value * 2 < self.examined
+    }
+
+    const fn done(&self) -> bool {
+        self.examined >= SAMPLE_EXAMINE_CAP
+    }
+}
+
+/// Collect example matches per category from `value`.
+///
+/// Accumulates into `out` so a caller can sample across many rows under one
+/// budget. Read-only: unlike [`redact_json_stats`] it never rewrites the
+/// document.
+pub fn collect_samples(
+    value: &Value,
+    patterns: &CompiledPatterns,
+    out: &mut BTreeMap<String, CategorySamples>,
+) {
+    if patterns.is_empty() {
+        return;
+    }
+    sample_walk(value, patterns, out);
+}
+
+fn sample_walk(
+    value: &Value,
+    patterns: &CompiledPatterns,
+    out: &mut BTreeMap<String, CategorySamples>,
+) {
+    match value {
+        Value::String(s) => sample_string(s, patterns, out),
+        Value::Array(arr) => {
+            for v in arr {
+                sample_walk(v, patterns, out);
+            }
+        }
+        Value::Object(obj) => {
+            for v in obj.values() {
+                sample_walk(v, patterns, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sample_string(
+    input: &str,
+    patterns: &CompiledPatterns,
+    out: &mut BTreeMap<String, CategorySamples>,
+) {
+    if input.len() > MAX_FIELD_LEN {
+        return;
+    }
+    let candidates: Vec<usize> = patterns.prefilter.as_ref().map_or_else(
+        || (0..patterns.patterns.len()).collect(),
+        |set| set.matches(input).into_iter().collect(),
+    );
+    for c in candidates.into_iter().filter_map(|i| patterns.patterns.get(i)) {
+        let entry = out.entry(c.category.clone()).or_default();
+        if entry.done() {
+            continue;
+        }
+        for caps in c.re.captures_iter(input) {
+            let Some(g) = caps.get(c.group).or_else(|| caps.get(0)) else { continue };
+            let has_value = value_follows(&input[g.end()..]);
+            entry.examined += 1;
+            if has_value {
+                entry.with_value += 1;
+            }
+            if entry.samples.len() < SAMPLES_PER_CATEGORY {
+                entry.samples.push(Sample {
+                    text: sample_text(c, g.as_str()),
+                    context: sample_context(input, g.start(), g.end(), patterns),
+                    value_follows: has_value,
+                });
+            }
+            if entry.done() {
+                break;
+            }
+        }
+    }
+}
+
+/// A sample is stored and returned over the API, so it must never carry a
+/// credential: whatever part of a match is a *value* is masked, whatever part
+/// names it is kept. A match shaped `name=value` keeps `name=` and masks the
+/// rest; a bare match is kept whole only when it cannot itself be a secret —
+/// which is what makes an `input_token` identifier hit legible in the preview.
+fn sample_text(c: &Compiled, matched: &str) -> String {
+    if let Some((start, end)) = inner_value_span(matched) {
+        let (name, value, rest) = (&matched[..start], &matched[start..end], &matched[end..]);
+        return format!("{name}{}{rest}", mask_value(value));
+    }
+    if c.high_entropy || looks_like_secret_value(matched) {
+        return mask_token(matched);
+    }
+    matched.to_owned()
+}
+
+fn mask_token(v: &str) -> String {
+    let head: String = v.chars().take(4).collect();
+    format!("{head}… ({} chars)", v.chars().count())
+}
+
+fn mask_value(v: &str) -> String {
+    let n = v.chars().count();
+    if n <= 6 {
+        return format!("… ({n} chars)");
+    }
+    let head: String = v.chars().take(2).collect();
+    format!("{head}… ({n} chars)")
+}
+
+fn sample_context(input: &str, start: usize, end: usize, patterns: &CompiledPatterns) -> String {
+    let before = &input[floor_boundary(input, start.saturating_sub(SAMPLE_CONTEXT))..start];
+    let tail = &input[end..];
+    let after = &tail[..ceil_boundary(tail, SAMPLE_CONTEXT.min(tail.len()))];
+    // A detector that matched only the key (`\w+_token`) leaves the credential
+    // itself sitting in the context window; mask it there too.
+    let after = match value_span(tail) {
+        Some((s, e)) if s < after.len() => {
+            let rest = if e < after.len() { &after[e..] } else { "" };
+            format!("{}{}{}", &after[..s], mask_value(&tail[s..e]), rest)
+        }
+        _ => after.to_owned(),
+    };
+    let mut ctx = String::with_capacity(before.len() + after.len() + 3);
+    ctx.push_str(before);
+    ctx.push('…');
+    ctx.push_str(&after);
+    let mut sink = BTreeMap::new();
+    let ctx = redact_string(&ctx, patterns, &mut sink).unwrap_or(ctx);
+    ctx.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+const fn floor_boundary(s: &str, mut i: usize) -> usize {
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+const fn ceil_boundary(s: &str, mut i: usize) -> usize {
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+const SEP_PADDING: [char; 5] = [' ', '\t', '"', '\'', '\\'];
+const VALUE_END: [char; 9] = [' ', '\t', '\n', '\r', '"', '\'', ',', '}', ']'];
+
+fn padding_len(s: &str) -> usize {
+    s.len() - s.trim_start_matches(&SEP_PADDING[..]).len()
+}
+
+/// The span of the value `after` assigns, if it assigns one (`token: "x"`,
+/// `TOKEN=x`). A bare identifier in prose, or a key with nothing after it, has
+/// no such span.
+fn value_span(after: &str) -> Option<(usize, usize)> {
+    let lead = padding_len(after);
+    let rest = after.get(lead..)?.strip_prefix(['=', ':'])?;
+    let start = lead + 1 + padding_len(rest);
+    let tail = after.get(start..).filter(|t| !t.is_empty())?;
+    let end = start + tail.find(&VALUE_END[..]).unwrap_or(tail.len());
+    (end > start).then_some((start, end))
+}
+
+/// The same span, found inside a match that carries its own `name=value`.
+fn inner_value_span(matched: &str) -> Option<(usize, usize)> {
+    let sep = matched.find(['=', ':']).filter(|&i| i > 0)?;
+    let (start, end) = value_span(matched.get(sep..)?)?;
+    Some((sep + start, sep + end))
+}
+
+fn value_follows(after: &str) -> bool {
+    value_span(after).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,5 +1394,111 @@ mod tests {
         assert!(start.elapsed().as_secs() < 5, "redaction too slow");
         assert_eq!(n, 1);
         assert!(v.as_str().unwrap().contains("[REDACTED:github_token"));
+    }
+
+    fn custom(regex: &str) -> CompiledPatterns {
+        compile(true, &[("mytoken".to_owned(), regex.to_owned())], KEY)
+    }
+
+    #[test]
+    fn samples_keep_context_and_abbreviate_high_entropy_matches() {
+        let doc = json!({
+            "cmd": "curl -H \"Authorization: Bearer ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123\" https://api"
+        });
+        let mut out = BTreeMap::new();
+        collect_samples(&doc, &p(), &mut out);
+        let gh = out.get("github_token").expect("github_token sampled");
+        assert_eq!(gh.samples.len(), 1);
+        let s = &gh.samples[0];
+        assert!(!s.text.contains("MNOPQRSTUVWX"), "{}", s.text);
+        assert!(s.text.starts_with("ghp_"), "{}", s.text);
+        assert!(s.context.contains("Authorization"), "{}", s.context);
+        assert!(!s.context.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"), "{}", s.context);
+    }
+
+    #[test]
+    fn samples_are_capped_per_category_but_keep_counting_for_the_heuristic() {
+        let line = (0..40).map(|i| format!("input_token{i} here")).collect::<Vec<_>>().join(" ");
+        let mut out = BTreeMap::new();
+        collect_samples(&json!(line), &custom(r"\w+_token\d+"), &mut out);
+        let c = out.get("mytoken").unwrap();
+        assert_eq!(c.samples.len(), SAMPLES_PER_CATEGORY);
+        assert_eq!(c.examined, 40);
+        assert_eq!(c.with_value, 0);
+        assert!(c.looks_like_identifiers());
+    }
+
+    #[test]
+    fn identifier_heuristic_clears_when_matches_carry_values() {
+        let doc = json!({
+            "a": "export MY_token=s3cret-value",
+            "b": "{\"other_token\": \"s3cret-value\"}",
+            "c": "set app_token = s3cret-value"
+        });
+        let mut out = BTreeMap::new();
+        collect_samples(&doc, &custom(r"\w+_token"), &mut out);
+        let c = out.get("mytoken").unwrap();
+        assert_eq!((c.examined, c.with_value), (3, 3));
+        assert!(!c.looks_like_identifiers());
+        assert!(c.samples.iter().all(|s| s.value_follows));
+    }
+
+    #[test]
+    fn identifier_heuristic_needs_a_few_matches_before_it_warns() {
+        let mut out = BTreeMap::new();
+        collect_samples(&json!("mentions input_token once"), &custom(r"\w+_token"), &mut out);
+        let c = out.get("mytoken").unwrap();
+        assert_eq!((c.examined, c.with_value), (1, 0));
+        assert!(!c.looks_like_identifiers());
+    }
+
+    const SAMPLE_SECRET: &str = "s3cretvalue123XY";
+
+    #[test]
+    fn a_user_pattern_never_keeps_the_value_it_matched() {
+        let doc = json!({ "a": format!("MY_token={SAMPLE_SECRET}") });
+
+        let mut key_only = BTreeMap::new();
+        collect_samples(&doc, &custom(r"\w+_token"), &mut key_only);
+        let c = key_only.get("mytoken").expect("sampled");
+        assert_eq!(c.samples[0].text, "MY_token");
+        assert!(c.samples[0].value_follows);
+        assert!(!format!("{key_only:?}").contains(SAMPLE_SECRET), "{key_only:?}");
+
+        let mut with_value = BTreeMap::new();
+        collect_samples(&doc, &custom(r"\w+_token=\S+"), &mut with_value);
+        let c = with_value.get("mytoken").expect("sampled");
+        assert_eq!(c.samples[0].text, "MY_token=s3… (16 chars)");
+        assert!(!format!("{with_value:?}").contains(SAMPLE_SECRET), "{with_value:?}");
+    }
+
+    #[test]
+    fn a_bare_match_is_kept_whole_only_when_it_cannot_be_a_secret() {
+        let mut high = BTreeMap::new();
+        collect_samples(&json!("token ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123 sent"), &p(), &mut high);
+        assert_eq!(high["github_token"].samples[0].text, "ghp_… (32 chars)");
+
+        let mut opaque = BTreeMap::new();
+        let opaque_doc = json!("value Ax9Kd7Rb5Nv8Hc3Ju6Ye here");
+        collect_samples(&opaque_doc, &custom("[A-Za-z0-9]{20}"), &mut opaque);
+        assert_eq!(opaque["mytoken"].samples[0].text, "Ax9K… (20 chars)");
+
+        let mut names = BTreeMap::new();
+        collect_samples(
+            &json!("the input_token count and the access_token list"),
+            &custom(r"\w+_token"),
+            &mut names,
+        );
+        let texts: Vec<&str> = names["mytoken"].samples.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["input_token", "access_token"]);
+    }
+
+    #[test]
+    fn collect_samples_does_not_mutate_and_is_a_noop_when_disabled() {
+        let doc = json!({ "text": "ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123" });
+        let mut out = BTreeMap::new();
+        collect_samples(&doc, &CompiledPatterns::disabled(), &mut out);
+        assert!(out.is_empty());
+        assert_eq!(doc["text"], json!("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"));
     }
 }

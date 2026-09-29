@@ -6,6 +6,8 @@ const firstGroup = (name: string) => ({ css: `[data-journey="${name}"]`, nth: 0 
 const GROUP_SORT = firstGroup('group-sort');
 const GROUP_HIDE = firstGroup('group-hide');
 const VIEW = firstGroup('view');
+// The kit's `Menu` forwards no `data-journey` to the trigger it renders.
+const SECTIONS_TOGGLE = { css: '[data-journey="sections"] [aria-haspopup="menu"]', nth: 0 } as const;
 
 export default defineJourney({
 	id: 'sessions-list',
@@ -50,7 +52,7 @@ export default defineJourney({
 		},
 		{
 			id: 'sections',
-			target: 'sections/toggle',
+			target: SECTIONS_TOGGLE,
 			do: { kind: 'click' },
 			say: {
 				title: { en: 'Choose which groups you see', fr: 'Choisir les groupes affichés' },

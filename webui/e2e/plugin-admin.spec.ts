@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { localToken } from '../scripts/local-token.mjs';
 
-// Settings › Instance › Plugins (admin) and the user Settings › Plugins list,
+// Settings › Plugins: the admin Manage block and the user list on the same page,
 // against a mocked admin plugin API: install from URL, instance toggle,
 // uninstall, and the user-side rule that only instance-enabled plugins show
 // with their settings form gated behind the personal switch.
@@ -30,18 +30,34 @@ const userInfo = (p: AdminPlugin) => ({
 	config: {}
 });
 
+const catalogPosts: { catalog: string }[] = [];
+
 function mockAdminApi(page: Page, initial: AdminPlugin[]) {
+	catalogPosts.length = 0;
 	const state = { plugins: initial, calls: [] as string[] };
 	const admin = '**/api/v1/admin/plugins';
 	page.route(admin, async (route) => {
 		const req = route.request();
 		state.calls.push(`${req.method()} ${new URL(req.url()).pathname}`);
 		if (req.method() === 'POST') {
-			const body = req.postDataJSON() as { url: string };
+			const body = req.postDataJSON() as { url?: string; catalog?: string };
+			if (body.catalog) {
+				catalogPosts.push({ catalog: body.catalog });
+				const fromCatalog: AdminPlugin = {
+					id: body.catalog,
+					name: 'Catalogged',
+					description: 'Published and pinned.',
+					version: '3.0.0',
+					source: 'installed',
+					enabled: false
+				};
+				state.plugins = [...state.plugins.filter((p) => p.id !== fromCatalog.id), fromCatalog];
+				return route.fulfill({ json: fromCatalog });
+			}
 			const installed: AdminPlugin = {
 				id: 'fromurl',
 				name: 'From URL',
-				description: body.url,
+				description: body.url ?? '',
 				version: '2.0.0',
 				source: 'installed',
 				enabled: false
@@ -67,6 +83,23 @@ function mockAdminApi(page: Page, initial: AdminPlugin[]) {
 	page.route('**/api/v1/plugins', (route) =>
 		route.fulfill({ json: state.plugins.filter((p) => p.enabled).map(userInfo) })
 	);
+	page.route(`${admin}/catalog`, (route) => {
+		state.calls.push('GET /api/v1/admin/plugins/catalog');
+		const installed = state.plugins.find((p) => p.id === 'catalogged');
+		return route.fulfill({
+			json: [
+				{
+					id: 'catalogged',
+					name: 'Catalogged',
+					description: 'Published and pinned.',
+					version: '3.0.0',
+					homepage: 'https://example.com/catalogged',
+					installed_version: installed?.version ?? null,
+					update_available: installed !== undefined && installed.version !== '3.0.0'
+				}
+			]
+		});
+	});
 	return state;
 }
 
@@ -77,7 +110,7 @@ async function login(page: Page) {
 
 const row = (page: Page, id: string) => page.locator(`[data-journey="plugin-admin-row"][data-plugin="${id}"]`);
 
-test.describe('instance plugins (admin)', () => {
+test.describe('plugins page (admin)', () => {
 	test.use({ viewport: { width: 1440, height: 900 } });
 
 	test('lists sources, toggles instance-wide, installs from URL and uninstalls', async ({ page }) => {
@@ -86,7 +119,7 @@ test.describe('instance plugins (admin)', () => {
 			{ id: 'demo', name: 'Demo', description: 'd', version: '0.0.1', source: 'installed', enabled: false },
 			{ id: 'local', name: 'Local', description: 'l', version: '0.0.2', source: 'directory', enabled: true }
 		]);
-		await page.goto('/settings/instance');
+		await page.goto('/settings/plugins');
 		const group = page.locator('[data-journey="plugins-admin"]');
 		await expect(group).toBeVisible();
 		await expect(row(page, 'demo')).toContainText('0.0.1');
@@ -105,10 +138,22 @@ test.describe('instance plugins (admin)', () => {
 		await expect(row(page, 'fromurl')).toContainText('2.0.0');
 		expect(state.calls).toContain('POST /api/v1/admin/plugins');
 
+		const catalogButton = page.locator('[data-journey="plugin-catalog-install"][data-plugin="catalogged"]');
+		await expect(catalogButton).toHaveText('Install');
+		await catalogButton.click();
+		await expect(row(page, 'catalogged')).toContainText('3.0.0');
+		await expect(catalogButton).toHaveText('Installed');
+		await expect(catalogButton).toBeDisabled();
+		expect(state.calls).toContain('GET /api/v1/admin/plugins/catalog');
+		expect(catalogPosts).toEqual([{ catalog: 'catalogged' }]);
+
 		page.once('dialog', (d) => d.accept());
 		await row(page, 'fromurl').locator('[data-journey="plugin-admin-uninstall"]').click();
 		await expect(row(page, 'fromurl')).toHaveCount(0);
 		expect(state.calls).toContain('DELETE /api/v1/admin/plugins/fromurl');
+
+		await page.goto('/settings/instance');
+		await expect(page.locator('[data-journey="plugins-admin"]')).toHaveCount(0);
 	});
 
 	test('users only see instance-enabled plugins, with the form behind their own switch', async ({ page }) => {

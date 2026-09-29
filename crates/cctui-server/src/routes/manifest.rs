@@ -23,7 +23,7 @@ use crate::state::AppState;
 /// upstream repo; set `CCTUI_REPO` to point at a fork's releases.
 const DEFAULT_REPO: &str = "DorskFR/cctui";
 
-fn repo() -> String {
+pub fn repo() -> String {
     std::env::var("CCTUI_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_string())
 }
 

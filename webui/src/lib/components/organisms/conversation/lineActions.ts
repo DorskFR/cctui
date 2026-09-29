@@ -11,6 +11,17 @@ export async function copyLineMarkdown(ln: Line) {
 	await copyText(lineMarkdown(ln), m.conversation_copied_markdown());
 }
 
+export function bubbleSelection(bubble: Element | null): string | null {
+	if (!bubble) return null;
+	const sel = window.getSelection?.();
+	if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+	const text = sel.toString().trim();
+	if (!text) return null;
+	if (!sel.anchorNode || !sel.focusNode) return null;
+	if (!bubble.contains(sel.anchorNode) || !bubble.contains(sel.focusNode)) return null;
+	return text;
+}
+
 // Save a single message as a PNG, rendered with the current theme.
 // We snapshot the live `.line` node (so theme colors come for free), filtering
 // out the hover action buttons, and bake the page background in so transparent

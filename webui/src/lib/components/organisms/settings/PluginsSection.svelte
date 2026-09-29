@@ -7,9 +7,12 @@
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import PluginSettingsForm from '$lib/components/molecules/PluginSettingsForm.svelte';
+	import PluginsAdminGroup from './PluginsAdminGroup.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { usePlugins } from '$lib/queries';
 	import { m } from '$lib/paraglide/messages';
+
+	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 
 	const plugins = usePlugins();
 	const list = $derived(plugins.data ?? []);
@@ -19,6 +22,9 @@
 	{#snippet descriptionSlot()}
 		<Text size="sm" tone="faint">{m.settings_plugins_intro()}</Text>
 	{/snippet}
+	{#if isAdmin}
+		<PluginsAdminGroup {isAdmin} />
+	{/if}
 	{#if plugins.isError}
 		<EmptyState size="compact" tone="danger" icon="warning" title={m.settings_plugins_load_failed()} />
 	{:else if plugins.isPending}
@@ -32,7 +38,7 @@
 			data-journey="plugins-empty"
 		/>
 	{:else}
-		<SettingGroup>
+		<SettingGroup title={m.settings_plugins_group_yours()}>
 			{#each list as plugin (plugin.id)}
 				<SettingRow label={plugin.name}>
 					{#snippet helpSlot()}

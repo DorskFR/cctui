@@ -12,6 +12,18 @@
 	onpointerdown={(e) => e.stopPropagation()}
 	onclick={(e) => e.stopPropagation()}
 >
+	{#if view.scheduled}
+		<span
+			class="scheduled"
+			class:failed={!!view.scheduled.error}
+			title={view.scheduled.error ?? undefined}
+			data-journey="draft-scheduled"
+		>
+			{view.scheduled.error
+				? m.sessions_draft_launch_failed({ error: view.scheduled.error })
+				: m.sessions_draft_launches_at({ when: view.scheduled.label })}
+		</span>
+	{/if}
 	<Button
 		size="sm"
 		variant="primary"
@@ -19,8 +31,13 @@
 		disabled={view.draftLaunching}
 		onclick={() => actions.onLaunch?.(view.s)}
 	>
-		{m.sessions_launch()}
+		{view.scheduled ? m.sessions_launch_now() : m.sessions_launch()}
 	</Button>
+	{#if view.scheduled}
+		<Button size="sm" onclick={() => actions.onCancelSchedule?.(view.s)}>
+			{m.sessions_draft_cancel_schedule()}
+		</Button>
+	{/if}
 	<Button size="sm" onclick={() => actions.onEdit?.(view.s)}>{m.common_edit()}</Button>
 	<Button size="sm" variant="danger" onclick={() => actions.onDiscard?.(view.s)}>{m.sessions_discard()}</Button>
 </span>
@@ -31,5 +48,13 @@
 		align-items: center;
 		gap: var(--sp-1);
 		flex: none;
+	}
+	.scheduled {
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+	.scheduled.failed {
+		color: var(--danger);
 	}
 </style>

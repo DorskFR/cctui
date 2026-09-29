@@ -109,7 +109,7 @@ pub struct EffectiveState {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HookEvent {
     /// Hook line kind: `ask`, `resolved`, `plan`, `plan_resolved`,
-    /// `perm-request`.
+    /// `perm-request`, `turn_end`.
     pub kind: String,
 }
 

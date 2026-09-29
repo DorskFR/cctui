@@ -19,7 +19,6 @@
 	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
 	import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
 	import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
-	import PluginsAdminGroup from './PluginsAdminGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '$lib/queries';
 	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
@@ -232,7 +231,6 @@
 		<HarnessUpdateGroup />
 		<SpawnLimitsGroup />
 		<UpstreamHostsGroup />
-		<PluginsAdminGroup />
 	{/if}
 
 	<StorageSection />

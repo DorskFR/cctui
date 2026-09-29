@@ -5,6 +5,11 @@ use ts_rs::TS;
 use crate::adapter::{AdapterCommand, AdapterEvent, BootstrapFile};
 use crate::api::DaemonAdapterConfig;
 
+/// How a server with no `CCTUI_PREVIEW_HOST` refuses a preview. Matched
+/// verbatim by the daemon CLI and the webui, which explain the setup rather
+/// than waiting for a preview that can never appear.
+pub const PREVIEWS_DISABLED: &str = "previews are disabled on this instance";
+
 // --- Daemon → Server ---
 
 /// Exactly one of `data` (base64, up to [`READ_FILE_INLINE_BYTES`]) or

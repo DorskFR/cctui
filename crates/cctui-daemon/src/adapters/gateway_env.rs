@@ -83,13 +83,16 @@ pub async fn resolve_env(
     resolve_launch(adapter, server, machine_key, local_id, hint, required_keys).await.map(|l| l.env)
 }
 
-/// `settings` and `spawn_capability` are `None` whenever the env came from
-/// `hint` rather than a successful pull.
+/// `settings`, `spawn_capability` and `plugins` are empty/`None` whenever the
+/// env came from `hint` rather than a successful pull.
 #[derive(Debug, Default, Clone)]
 pub struct LaunchEnv {
     pub env: BTreeMap<String, String>,
     pub settings: Option<serde_json::Value>,
     pub spawn_capability: Option<cctui_proto::api::SpawnCapability>,
+    /// Runtime plugins the session owner enabled, each with the skill files to
+    /// mirror and the env to export.
+    pub plugins: Vec<cctui_proto::api::SessionPlugin>,
 }
 
 pub async fn resolve_launch(
@@ -107,8 +110,9 @@ pub async fn resolve_launch(
         Ok(resp) => {
             let settings = resp.settings.clone();
             let spawn_capability = resp.spawn_capability.clone();
+            let plugins = resp.plugins.clone();
             let env = launch_env_decision(adapter, local_id, &resp, hint, required_keys)?;
-            Ok(LaunchEnv { env, settings, spawn_capability })
+            Ok(LaunchEnv { env, settings, spawn_capability, plugins })
         }
         Err(e) => {
             tracing::warn!(
@@ -206,5 +210,51 @@ mod tests {
         let hint = env_of(&[("FOO", "bar")]);
         let got = resolve_env("codex", None, None, "s1", &hint, OPENAI_GATEWAY_KEYS).await.unwrap();
         assert_eq!(got, hint);
+    }
+
+    /// The pull is the only source of a session's enabled plugins.
+    #[tokio::test]
+    async fn the_pull_hands_the_enabled_plugins_to_every_adapter() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let _ = sock.read(&mut [0u8; 4096]).unwrap();
+            let body = serde_json::to_string(&GatewayEnvResponse {
+                account_bound: true,
+                env: env_of(&[("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]),
+                plugins: vec![cctui_proto::api::SessionPlugin {
+                    id: "yubisashi".into(),
+                    version: "0.5.3".into(),
+                    skills_hash: "abcdef".into(),
+                    files: vec!["yubisashi/SKILL.md".into()],
+                    env: BTreeMap::new(),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+            let _ = write!(
+                sock,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+
+        let server = crate::client::ServerClient::new(format!("http://{addr}"));
+        let launch = super::resolve_launch(
+            "codex",
+            Some(&server),
+            Some(&"machine-key".to_owned()),
+            "s1",
+            &BTreeMap::new(),
+            OPENAI_GATEWAY_KEYS,
+        )
+        .await
+        .expect("a fully routed env");
+        assert_eq!(launch.plugins.len(), 1);
+        assert_eq!(launch.plugins[0].id, "yubisashi");
+        assert_eq!(launch.env.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
     }
 }

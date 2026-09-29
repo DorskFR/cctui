@@ -24,9 +24,9 @@
 	import { settings } from '$lib/settings.svelte';
 	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
-	import type { ViewOpts } from './conversation/types';
+	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
-	import { mergeEventSources } from './conversation/format';
+	import { lineMarkdown, mergeEventSources } from './conversation/format';
 	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { SearchHitStepper } from './conversation/searchHits.svelte';
@@ -169,6 +169,11 @@
 		planPreamble: () => stream.plan?.preamble
 	});
 	const lines = $derived(renderer.lines);
+	function revealHead(categories: MsgCategory[]): void {
+		const msgFilter = { ...view.msgFilter };
+		for (const c of categories) msgFilter[c] = true;
+		view = { ...view, msgFilter };
+	}
 	$effect(() => {
 		void lines.length;
 		void plugins.ready.length;
@@ -276,6 +281,11 @@
 		if (archived) return;
 		stream.discardOptimistic(ts);
 		composer?.loadDraft(text);
+	}
+
+	function quoteLine(ln: Line, selection: string | null) {
+		if (archived) return;
+		void composer?.insertQuote(selection ?? lineMarkdown(ln));
 	}
 
 	const bookmarks = new BookmarkSaver({ id: () => id, sessionName: () => session.name ?? null });
@@ -393,6 +403,8 @@
 				canFetchOlder={earlier.canFetch}
 				fetchingOlder={earlier.fetching}
 				onfetcholder={earlier.fetchEarlier}
+				headHidden={renderer.headHidden}
+				onrevealhead={revealHead}
 				{archived}
 				askPreambleHtml={renderer.askPreambleHtml}
 				planPreambleHtml={renderer.planPreambleHtml}
@@ -410,6 +422,7 @@
 				isBookmarked={bookmarks.isBookmarked}
 				pluginActionsFor={(ln) => plugins.actionsFor(ln)}
 				onpluginaction={(a) => plugins.openWith(a.pluginId, a.params)}
+				onquote={quoteLine}
 			/>
 
 			<ActivityBanner {stream} {archived} />

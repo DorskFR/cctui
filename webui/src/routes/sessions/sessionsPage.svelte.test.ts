@@ -74,6 +74,7 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 		deleteLabel: vi.fn(),
 		launchDraft: vi.fn(async () => {}),
 		discardDraft: vi.fn(async () => {}),
+		cancelDraftLaunch: vi.fn(async () => {}),
 		updateDraft: vi.fn(async () => {}),
 		spawn: vi.fn(async () => ({ command_id: 7 }))
 	};
@@ -453,6 +454,21 @@ describe('SessionsPage — spawn form and drafts', () => {
 		expect(sp.launchingDraft).toBeNull();
 		await sp.discardDraft(d);
 		expect(actions.discardDraft).toHaveBeenCalledWith('d');
+	});
+
+	it('cancels a scheduled launch without touching the draft', async () => {
+		const { sp, actions, deps } = make();
+		const d = session({
+			id: 'd',
+			status: 'draft',
+			machine_id: 'm',
+			working_dir: '/w',
+			launch_at: '2026-10-02T07:30:00Z'
+		});
+		await sp.cancelDraftSchedule(d);
+		expect(actions.cancelDraftLaunch).toHaveBeenCalledWith('d');
+		expect(actions.discardDraft).not.toHaveBeenCalled();
+		expect(deps.spawnSlot.clear).not.toHaveBeenCalled();
 	});
 
 	it('edits a draft straight away when the form holds nothing else', () => {

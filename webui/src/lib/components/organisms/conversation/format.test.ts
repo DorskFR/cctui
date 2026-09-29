@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseTodos, todoProgress } from './format';
+import { insertAtCaret, parseTodos, quoteMarkdown, todoProgress } from './format';
 import type { AskQuestion, Line } from './types';
 
 // The Conversation Drawer must render the combined message list in strict
@@ -122,5 +122,65 @@ describe('todoProgress', () => {
 	it('is null for an absent or empty list', () => {
 		expect(todoProgress(null)).toBeNull();
 		expect(todoProgress([])).toBeNull();
+	});
+});
+
+describe('quoteMarkdown', () => {
+	it('prefixes every line and closes with a blank line', () => {
+		expect(quoteMarkdown('first line\n\nsecond line')).toBe('> first line\n>\n> second line\n\n');
+	});
+
+	it('drops trailing whitespace and newlines of the source', () => {
+		expect(quoteMarkdown('hello\n\n   \n')).toBe('> hello\n\n');
+	});
+
+	it('normalizes CRLF', () => {
+		expect(quoteMarkdown('a\r\nb')).toBe('> a\n> b\n\n');
+	});
+
+	it('keeps code fences quoted line by line', () => {
+		expect(quoteMarkdown('```sh\nls -l\n```')).toBe('> ```sh\n> ls -l\n> ```\n\n');
+	});
+
+	it('is empty for blank input', () => {
+		expect(quoteMarkdown('')).toBe('');
+		expect(quoteMarkdown('  \n ')).toBe('');
+	});
+});
+
+describe('insertAtCaret', () => {
+	const block = '> q\n\n';
+
+	it('becomes the whole draft when empty', () => {
+		expect(insertAtCaret('', undefined, block)).toEqual({ text: block, caret: block.length });
+	});
+
+	it('appends with a blank line when the caret is absent', () => {
+		expect(insertAtCaret('typed', undefined, block).text).toBe('typed\n\n> q\n\n');
+	});
+
+	it('splices at the caret, blank-line separated on both sides', () => {
+		const r = insertAtCaret('beforeafter', 6, block);
+		expect(r.text).toBe('before\n\n> q\n\nafter');
+		expect(r.caret).toBe('before\n\n> q\n\n'.length);
+	});
+
+	it('does not stack blank lines that are already there', () => {
+		expect(insertAtCaret('a\n\n', undefined, block).text).toBe('a\n\n> q\n\n');
+		expect(insertAtCaret('a\n', undefined, block).text).toBe('a\n\n> q\n\n');
+	});
+
+	it('inserts at the start without a leading blank line', () => {
+		expect(insertAtCaret('rest', 0, block).text).toBe('> q\n\nrest');
+	});
+
+	it('clamps a caret past the end', () => {
+		expect(insertAtCaret('x', 99, block).text).toBe('x\n\n> q\n\n');
+	});
+
+	it('stacks successive quotes instead of replacing them', () => {
+		const first = insertAtCaret('', undefined, block);
+		const second = insertAtCaret(first.text, first.caret, '> r\n\n');
+		expect(second.text).toBe('> q\n\n> r\n\n');
 	});
 });

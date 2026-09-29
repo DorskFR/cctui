@@ -1,14 +1,19 @@
 <script lang="ts">
-	// Read-only live terminal. Mounts xterm.js, tells the server to
-	// watch the session's PTY while open, and writes relayed bytes straight into
-	// the terminal. Nothing is stored: a fresh daemon attach repaints the current
-	// screen on open, so a late viewer still sees the live frame. Never sends
-	// input upstream — strictly a video feed.
+	// Read-only live terminal. Asks the server to watch the session's PTY, loads
+	// xterm.js in parallel, and writes relayed bytes into the terminal. Nothing is
+	// stored server-side: a fresh daemon attach repaints the current screen on
+	// open, so a late viewer still sees the live frame. Never sends input
+	// upstream — strictly a video feed.
 	import { onMount } from 'svelte';
+	import { IconButton } from '@dorsk/tsumikit';
 	import { ws } from '$lib/ws.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { resolveTerminalFont, resolveTerminalBg, BUNDLED_TERMINAL_FONT } from './terminalFont';
 	import { fitScale, PHONE_QUERY } from './terminalFit';
+	import { PtyStream, loadTerminalFont } from './terminalStream.svelte';
+
+	// Past this the pane opens with fallback-font metrics rather than staying blank.
+	const FONT_LOAD_CAP_MS = 500;
 
 	// The daemon's held/viewer attach is fixed at 120x40 (ATTACH_COLS/ROWS); size
 	// the viewport to match so the geometry never fights the PTY.
@@ -18,7 +23,7 @@
 	let { sessionId, onclose }: { sessionId: string; onclose: () => void } = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
-	let live = $state(false);
+	const stream = new PtyStream();
 	let fit = $state<HTMLDivElement | null>(null);
 	let available = $state(0);
 	let natural = $state({ width: 0, height: 0 });
@@ -35,25 +40,27 @@
 		mq.addEventListener('change', onMq);
 		let disposed = false;
 		let term: import('@xterm/xterm').Terminal | null = null;
-		let offPty: (() => void) | null = null;
+
+		// Ask before xterm/fonts are ready: the repaint that follows the daemon
+		// attach is the only frame carrying the current screen. Chunks that beat
+		// the terminal are buffered and flushed by `attach`.
+		const offPty = ws.onPty(sessionId, stream.push);
+		ws.watchPty(sessionId);
 
 		// xterm and its CSS are browser-only; adapter-static SSRs, so load lazily.
 		void (async () => {
-			const [{ Terminal }] = await Promise.all([
-				import('@xterm/xterm'),
-				import('@xterm/xterm/css/xterm.css'),
-				import('$lib/styles/terminal-font.css')
+			const [[{ Terminal }]] = await Promise.all([
+				Promise.all([
+					import('@xterm/xterm'),
+					import('@xterm/xterm/css/xterm.css'),
+					import('$lib/styles/terminal-font.css')
+				]),
+				// Measure glyph width only after the bundled font is loaded, else
+				// xterm sizes cells from a fallback font and glyphs come out
+				// spaced-out. Capped, and never `document.fonts.ready` — that waits
+				// on every pending font on the page.
+				loadTerminalFont(BUNDLED_TERMINAL_FONT, FONT_LOAD_CAP_MS)
 			]);
-			if (disposed || !host) return;
-
-			// Measure glyph width only after the bundled font is loaded, else xterm
-			// sizes cells from a fallback font and glyphs come out spaced-out.
-			try {
-				await document.fonts.load(`12px "${BUNDLED_TERMINAL_FONT}"`);
-				await document.fonts.ready;
-			} catch {
-				/* fonts API unavailable — fall through with the resolved stack */
-			}
 			if (disposed || !host) return;
 
 			term = new Terminal({
@@ -68,16 +75,14 @@
 			});
 			term.open(host);
 			if (fit) natural = { width: fit.offsetWidth, height: fit.offsetHeight };
-			offPty = ws.onPty(sessionId, (bytes) => term?.write(bytes));
-			ws.watchPty(sessionId);
-			live = true;
+			stream.attach(term);
 		})();
 
 		return () => {
 			disposed = true;
-			live = false;
 			mq.removeEventListener('change', onMq);
-			offPty?.();
+			offPty();
+			stream.detach();
 			ws.unwatchPty(sessionId);
 			term?.dispose();
 		};
@@ -87,10 +92,18 @@
 <div class="term-pane">
 	<div class="term-head">
 		<span class="term-title">
-			<span class="term-dot" class:on={live}></span>
-			{live ? m.conversation_terminal_readonly_live() : m.conversation_terminal_readonly()}
+			<span class="term-dot" class:on={stream.live}></span>
+			{stream.live
+				? m.conversation_terminal_readonly_live()
+				: m.conversation_terminal_connecting()}
 		</span>
-		<button type="button" class="term-close" onclick={onclose} aria-label={m.conversation_terminal_close_aria()}>✕</button>
+		<IconButton
+			inline
+			glyphSize={14}
+			icon="x"
+			label={m.conversation_terminal_close_aria()}
+			onclick={onclose}
+		/>
 	</div>
 	<div class="term-host" bind:clientWidth={available}>
 		<div class="term-sizer" class:scaled style:height={scaled ? `${natural.height * scale}px` : undefined}>
@@ -139,13 +152,6 @@
 	.term-dot.on {
 		background: var(--ok);
 		box-shadow: 0 0 6px var(--ok);
-	}
-	.term-close {
-		border: none;
-		background: transparent;
-		color: var(--text-muted);
-		cursor: pointer;
-		font-size: var(--fs-sm);
 	}
 	.term-host {
 		overflow: auto;

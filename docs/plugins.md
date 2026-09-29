@@ -11,7 +11,8 @@ into the user's repository.
 Two gates, both required before a user sees anything:
 
 1. **Instance** — an admin installs the plugin and turns it on in
-   Settings → Instance → Plugins. `GET /api/v1/plugins` only ever returns
+   Settings → Plugins (the admin-only **Manage** block at the top of the page).
+   `GET /api/v1/plugins` only ever returns
    instance-enabled plugins.
 2. **User** — each user flips their own switch in Settings → Plugins. The
    per-plugin settings form only renders once that switch is on.
@@ -41,6 +42,50 @@ equals the manifest `id`. Limits: 5 MB compressed, 20 MB extracted, 500 entries.
 Entries that are absolute, escape the root, or are symlinks are refused, and
 `plugin.json` is validated exactly as a directory plugin is. Installing a
 different version of an existing id upgrades it in place.
+
+## Published catalog
+
+`plugins/catalog.json` in this repo lists the plugins we publish, each pinned to
+an exact release asset:
+
+```json
+{
+  "version": 1,
+  "plugins": [
+    {
+      "id": "yubisashi",
+      "name": "Review",
+      "description": "Point at your running app and hand comments to the agent",
+      "version": "0.5.2",
+      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.5.2/yubisashi-0.5.2.tgz",
+      "sha256": "3aa31bb529f23a306854f2282192b8597904268855627c58048d7b162ff072ac",
+      "homepage": "https://github.com/DorskFR/yubisashi"
+    }
+  ]
+}
+```
+
+Settings → Plugins shows these under **Available** with one button each:
+*Install*, *Update to X* when the catalog is ahead of the installed version, or
+*Installed*. A catalog install is still off for the instance until the admin
+flips its switch.
+
+`POST /api/v1/admin/plugins` with `{"catalog": "<id>"}` resolves the `url` and
+`sha256` from the **server's** catalog — a client-supplied url is ignored — and
+refuses the archive unless its bytes hash to the pinned digest. The `url` must
+point at an archive in the layout above; an npm tarball does not work, because
+its files sit under `package/`.
+
+Publishing a new version is a PR that bumps `version`, `url` and `sha256`. The
+release workflow re-downloads every entry and re-checks its digest
+(`scripts/check-plugin-catalog.sh`), so a wrong hash never reaches a release.
+
+`CCTUI_PLUGIN_CATALOG_URL` says where the server reads the catalog from.
+Unset — the normal case — it is the raw `plugins/catalog.json` on the repo's
+`main` branch (`CCTUI_REPO` picks the repo), so a new plugin appears without a
+cctui release. The answer is cached for an hour, the fetch goes through the same
+SSRF guard as a URL install, and a copy embedded at build time serves offline
+instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
 
 ## Folder layout
 
@@ -86,7 +131,8 @@ different version of an existing id upgrades it in place.
 | `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `enabled`, `settings` declarations and the caller's `config` values |
 | `POST /api/v1/plugins/rescan` | admin | re-read the plugins directory |
 | `GET /api/v1/admin/plugins` | admin | `AdminPluginInfo[]`: every plugin, installed or from the directory, with its instance toggle |
-| `POST /api/v1/admin/plugins` | admin | install or upgrade from `{url}` or a multipart `file` |
+| `GET /api/v1/admin/plugins/catalog` | admin | `CatalogPluginInfo[]`: the published catalog, annotated with `installed_version` and `update_available` |
+| `POST /api/v1/admin/plugins` | admin | install or upgrade from `{catalog}`, `{url}` or a multipart `file` |
 | `PATCH /api/v1/admin/plugins/{id}` | admin | `{enabled}`, the instance-wide toggle |
 | `DELETE /api/v1/admin/plugins/{id}` | admin | uninstall (directory plugins cannot be removed) |
 | `GET /plugins/{id}/{path}` | none | static files from the plugin: traversal-safe, typed by extension, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache` + `ETag` |
@@ -116,12 +162,26 @@ resolved `env` (declared name → the owner's value, empty values omitted).
 The daemon mirrors the skill files from `GET /plugins/<id>/skills/<file>` into
 `$XDG_CONFIG_HOME/cctui/plugins/<id>/<hash>/` (override with
 `CCTUI_PLUGIN_CACHE_DIR`) as a Claude Code plugin (`.claude-plugin/plugin.json`
-+ `skills/`) and launches the worker with one `--plugin-dir` per plugin. The
-flag rides the respawn flags too, so `/clear`, `/compact` and CLI upgrades
-keep the skills. A mirror is fetched once per hash; a plugin that fails to
-mirror is skipped, never blocking the launch.
++ `skills/`). A mirror is fetched once per hash; a plugin that fails to mirror
+is skipped, never blocking the launch.
 
-The env values are exported into the worker's environment after the gateway
+Each harness is then handed the mirror through the only channel it has for
+per-session skills:
+
+- **Claude Code**: one `--plugin-dir` per plugin. The flag rides the respawn
+  flags too, so `/clear`, `/compact` and CLI upgrades keep the skills.
+- **Codex**: one shared `codex app-server` serves every session on the machine,
+  so nothing process-global may be used (`skills/extraRoots/set` would leak one
+  user's skills to all of them). Instead each `thread/{start,resume,fork}`
+  carries a `<cctui_skills>` catalog — name, description and `SKILL.md` path per
+  skill — as `developerInstructions`, and the thread's shell env as
+  `config.shell_environment_policy.set`. Codex persists neither, so both ride
+  every resume and fork.
+- **opencode**: `opencode serve` runs per session, so the mirrors are listed as
+  `skills.paths` in the session's generated `opencode.json` and the env goes on
+  the serve process.
+
+The env values are exported into the session's environment after the gateway
 env, never overriding a key already set, and re-validated against the same
 name rules. Every agent session also gets `CCTUI_WEB_ORIGIN` (the scheme and
 authority of the server the daemon talks to) so a skill can address the webui
@@ -133,14 +193,33 @@ A plugin pane can frame a dev server running next to the agent — on any machin
 including a k8s worker — without exposing a port.
 
 Set `CCTUI_PREVIEW_HOST` on the server to a pattern containing `{id}`, e.g.
-`cctui-pv-{id}.dorsk.dev`. Unset = feature off, and every preview route 404s.
-Routing in front of the server must send `*.dorsk.dev` to it (exact hostnames
-still win), and the wildcard TLS cert must cover it.
+`cctui-pv-{id}.dorsk.dev`. Unset = feature off: `preview open` fails with
+`previews are disabled on this instance` and the session API answers
+`503` with that message, so a pane says so instead of waiting for a preview
+that can never appear. Routing in front of the server must send `*.dorsk.dev`
+to it (exact hostnames still win), and the wildcard TLS cert must cover it.
+
+The pattern is a bare host, without scheme or port; the port comes from
+`CCTUI_EXTERNAL_URL`, so a server reached at `http://localhost:8700` hands out
+`http://cctui-pv-<id>.localhost:8700`.
+
+### Previews on localhost (self-hosted, no DNS, no TLS)
+
+`CCTUI_PREVIEW_HOST=cctui-pv-{id}.localhost` is all a local instance needs:
+browsers resolve every `*.localhost` name to loopback themselves, so there is
+no wildcard DNS record and no certificate to issue, and the preview is served
+by the same server on the same port. The local stack (`deploy/local`) sets it
+by default. A browser also needs the preview origin in the page's
+`frame-src` to frame it — `deploy/local/nginx.conf` allows
+`http://*.localhost:*`.
 
 Inside a session, `cctui-daemon preview open --port <n>` registers the port and
 prints the preview URL; `preview close --port <n>` drops it. Previews also close
 when the session ends or that daemon disconnects. The session id comes from
-`CCTUI_SESSION_ID`, which every agent session now gets.
+`--session` or `CCTUI_SESSION_ID`, which Claude Code, Codex and opencode
+sessions all get. Its value is the id the server keyed the session on at launch,
+which for Codex and opencode is not the thread/session id the harness later
+mints; the daemon aliases one onto the other, so both resolve.
 
 Requests whose `Host` matches the pattern are handled before the regular router:
 the server looks up the preview id and tunnels the request down that daemon's

@@ -5,6 +5,7 @@
 //! `skills/` tree fetched from the server's public `/plugins/<id>/skills/<file>`
 //! route; a `.ready` marker makes a finished mirror reusable across launches.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -13,6 +14,10 @@ use cctui_proto::api::SessionPlugin;
 use crate::client::ServerClient;
 
 const READY_MARKER: &str = ".ready";
+
+/// Codex budgets its own skill list at a small fraction of the context, so a
+/// long description is cut rather than allowed to crowd the prompt.
+const MAX_DESCRIPTION: usize = 300;
 
 /// `CCTUI_PLUGIN_CACHE_DIR`, else `$XDG_CONFIG_HOME/cctui/plugins`
 /// (`~/.config/cctui/plugins`).
@@ -147,10 +152,183 @@ pub async fn plugin_dirs(server: &ServerClient, plugins: &[SessionPlugin]) -> Ve
     out
 }
 
+/// A mirrored skill as an agent without directory-based skill discovery needs
+/// it: the frontmatter identity plus the absolute `SKILL.md` to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirroredSkill {
+    pub name: String,
+    pub description: String,
+    pub path: PathBuf,
+}
+
+/// The YAML frontmatter block of a `SKILL.md`, without its `---` fences.
+fn frontmatter(text: &str) -> Option<&str> {
+    let rest = text.trim_start_matches('\u{feff}').strip_prefix("---")?;
+    let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n'))?;
+    let end = rest.find("\n---")?;
+    Some(&rest[..end])
+}
+
+fn unquote(value: &str) -> String {
+    let value = value.trim();
+    for quote in ['"', '\''] {
+        if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
+            return value[1..value.len() - 1].to_owned();
+        }
+    }
+    value.to_owned()
+}
+
+fn frontmatter_field(text: &str, field: &str) -> Option<String> {
+    frontmatter(text)?.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim() == field).then(|| unquote(value))
+    })
+}
+
+fn truncated(mut value: String) -> String {
+    if value.chars().count() > MAX_DESCRIPTION {
+        let cut = value.char_indices().nth(MAX_DESCRIPTION).map_or(value.len(), |(i, _)| i);
+        value.truncate(cut);
+        value.push('…');
+    }
+    value
+}
+
+/// Read one mirrored `skills/<folder>/SKILL.md`. Anything that is not a
+/// top-level `SKILL.md` is reference material the skill itself pulls in.
+async fn mirrored_skill(dir: &Path, file: &str) -> Option<MirroredSkill> {
+    let rel = Path::new(file);
+    if rel.file_name().and_then(std::ffi::OsStr::to_str) != Some("SKILL.md") {
+        return None;
+    }
+    let folder = rel.parent()?.file_name()?.to_str()?.to_owned();
+    let path = dir.join("skills").join(rel);
+    let text = tokio::fs::read_to_string(&path).await.ok()?;
+    let name = frontmatter_field(&text, "name").filter(|n| !n.is_empty()).unwrap_or(folder);
+    let description = truncated(frontmatter_field(&text, "description").unwrap_or_default());
+    Some(MirroredSkill { name, description, path })
+}
+
+/// The skill catalog for an agent that cannot be pointed at a skills
+/// directory: name, description and the `SKILL.md` to read, the same
+/// progressive disclosure a native skill list gives.
+#[must_use]
+pub fn codex_catalog(skills: &[MirroredSkill]) -> Option<String> {
+    use std::fmt::Write as _;
+
+    if skills.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "<cctui_skills>\nThe following skills are available to this session. When a task matches \
+         a description, read the SKILL.md at the path before acting and follow it.\n",
+    );
+    for skill in skills {
+        let _ = writeln!(
+            out,
+            "- {}: {} (path: {})",
+            skill.name,
+            skill.description,
+            skill.path.display()
+        );
+    }
+    out.push_str("</cctui_skills>");
+    Some(out)
+}
+
+/// What one session's enabled plugins contribute to its agent.
+///
+/// Resolved once at launch: `env` for every adapter, `roots` for an agent that
+/// discovers skills from directories, `catalog` for one that does not.
+#[derive(Debug, Default, Clone)]
+pub struct SessionSkills {
+    pub env: BTreeMap<String, String>,
+    pub roots: Vec<PathBuf>,
+    pub catalog: Option<String>,
+}
+
+impl SessionSkills {
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { env: BTreeMap::new(), roots: Vec::new(), catalog: None }
+    }
+}
+
+/// Mirror `plugins` and build the per-session skill/env contribution.
+///
+/// Never fails: a plugin whose skills cannot be fetched is logged and skipped,
+/// so the env (`CCTUI_SESSION_ID`, `CCTUI_WEB_ORIGIN`) still reaches the agent.
+pub async fn resolve_session_skills(
+    server: Option<&ServerClient>,
+    session_id: &str,
+    plugins: &[SessionPlugin],
+) -> SessionSkills {
+    let mut out = SessionSkills::default();
+    if let Some(server) = server {
+        crate::childenv::with_web_origin(&mut out.env, server.base_url());
+    }
+    crate::childenv::with_session_id(&mut out.env, session_id);
+    export_env(&mut out.env, plugins);
+    if plugins.is_empty() {
+        return out;
+    }
+    let (Some(server), Some(root)) = (server, cache_root()) else {
+        tracing::warn!("no server or plugin cache dir; skipping plugin skills");
+        return out;
+    };
+    mirror_into(&mut out, server, &root, plugins).await;
+    out
+}
+
+async fn mirror_into(
+    out: &mut SessionSkills,
+    server: &ServerClient,
+    root: &Path,
+    plugins: &[SessionPlugin],
+) {
+    let mut skills = Vec::new();
+    for plugin in plugins {
+        match mirror_plugin(server, root, plugin).await {
+            Ok(dir) => {
+                out.roots.push(dir.join("skills"));
+                for file in &plugin.files {
+                    if let Some(skill) = mirrored_skill(&dir, file).await {
+                        skills.push(skill);
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(id = %plugin.id, "plugin skills unavailable: {e:#}"),
+        }
+    }
+    out.catalog = codex_catalog(&skills);
+}
+
+static BY_SESSION: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, SessionSkills>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Remember what a launch resolved, keyed by the id the agent is known by.
+///
+/// A hibernated session resumes without a fresh gateway-env pull, and the
+/// skills are not persisted anywhere, so this is all a resume has.
+pub fn remember_skills(session_id: &str, skills: &SessionSkills) {
+    if let Ok(mut map) = BY_SESSION.lock() {
+        map.insert(session_id.to_owned(), skills.clone());
+    }
+}
+
+#[must_use]
+pub fn recall_skills(session_id: &str) -> Option<SessionSkills> {
+    BY_SESSION.lock().ok().and_then(|map| map.get(session_id).cloned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_root, claude_manifest, export_env, file_url, mirror_plugin, plugin_dir, safe_file,
+        MirroredSkill, SessionSkills, cache_root, claude_manifest, codex_catalog, export_env,
+        file_url, frontmatter_field, mirror_into, mirror_plugin, mirrored_skill, plugin_dir,
+        recall_skills, remember_skills, resolve_session_skills, safe_file, truncated,
     };
     use crate::client::ServerClient;
     use cctui_proto::api::SessionPlugin;
@@ -299,5 +477,138 @@ mod tests {
         let err = mirror_plugin(&server, root.path(), &plugin(&["yubisashi/SKILL.md"])).await;
         assert!(err.is_err(), "unreachable server -> error");
         assert!(!root.path().join("yubisashi/abcdef0123456789").exists());
+    }
+
+    #[test]
+    fn frontmatter_fields_are_read_quoted_or_bare() {
+        let doc = "---\nname: yubisashi\ndescription: \"Use when the user wants to review\"\n---\n\n# Body\ndescription: not frontmatter\n";
+        assert_eq!(frontmatter_field(doc, "name").as_deref(), Some("yubisashi"));
+        assert_eq!(
+            frontmatter_field(doc, "description").as_deref(),
+            Some("Use when the user wants to review")
+        );
+        assert_eq!(frontmatter_field(doc, "license"), None);
+        assert_eq!(frontmatter_field("# no frontmatter\nname: x\n", "name"), None);
+        assert_eq!(
+            frontmatter_field("---\r\nname: 'single'\r\n---\r\n", "name").as_deref(),
+            Some("single")
+        );
+    }
+
+    #[test]
+    fn a_long_description_is_cut_on_a_char_boundary() {
+        let short = "é".repeat(10);
+        assert_eq!(truncated(short.clone()), short);
+        let long = "é".repeat(400);
+        let cut = truncated(long);
+        assert_eq!(cut.chars().count(), 301, "300 chars plus the ellipsis");
+        assert!(cut.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn a_mirrored_skill_reports_its_frontmatter_identity_and_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills/yubisashi");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(
+            skills.join("SKILL.md"),
+            "---\nname: yubisashi\ndescription: Point at the UI\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(skills.join("notes.md"), "reference").unwrap();
+
+        let skill = mirrored_skill(dir.path(), "yubisashi/SKILL.md").await.expect("skill");
+        assert_eq!(skill.name, "yubisashi");
+        assert_eq!(skill.description, "Point at the UI");
+        assert_eq!(skill.path, skills.join("SKILL.md"));
+
+        assert!(
+            mirrored_skill(dir.path(), "yubisashi/notes.md").await.is_none(),
+            "reference material is not a skill"
+        );
+        assert!(mirrored_skill(dir.path(), "SKILL.md").await.is_none(), "no folder, no skill");
+        assert!(mirrored_skill(dir.path(), "absent/SKILL.md").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_skill_without_frontmatter_falls_back_to_its_folder_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills/yubisashi");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(skills.join("SKILL.md"), "no frontmatter here").unwrap();
+        let skill = mirrored_skill(dir.path(), "yubisashi/SKILL.md").await.expect("skill");
+        assert_eq!(skill.name, "yubisashi");
+        assert_eq!(skill.description, "");
+    }
+
+    #[test]
+    fn the_catalog_lists_one_line_per_skill_and_is_empty_for_none() {
+        assert_eq!(codex_catalog(&[]), None);
+        let catalog = codex_catalog(&[MirroredSkill {
+            name: "yubisashi".to_owned(),
+            description: "Point at the UI".to_owned(),
+            path: std::path::PathBuf::from("/c/yubisashi/h/skills/yubisashi/SKILL.md"),
+        }])
+        .expect("catalog");
+        assert!(catalog.starts_with("<cctui_skills>"));
+        assert!(catalog.ends_with("</cctui_skills>"));
+        assert!(catalog.contains(
+            "- yubisashi: Point at the UI (path: /c/yubisashi/h/skills/yubisashi/SKILL.md)"
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_skills_carry_the_env_the_roots_and_the_catalog() {
+        let base = serve(1);
+        let server = ServerClient::new(base.clone());
+        let cache = tempfile::tempdir().unwrap();
+
+        let mut p = plugin(&["yubisashi/SKILL.md"]);
+        p.env = std::collections::BTreeMap::from([("YUBI_HOST".to_owned(), "10.0.0.5".to_owned())]);
+        let mut skills = resolve_session_skills(Some(&server), "sess-1", &[]).await;
+        mirror_into(&mut skills, &server, cache.path(), &[p.clone()]).await;
+        export_env(&mut skills.env, &[p]);
+
+        assert_eq!(
+            skills.env.get(crate::preview::SESSION_ID_VAR).map(String::as_str),
+            Some("sess-1")
+        );
+        assert_eq!(
+            skills.env.get(crate::childenv::WEB_ORIGIN_VAR).map(String::as_str),
+            Some(base.as_str())
+        );
+        assert_eq!(skills.env.get("YUBI_HOST").map(String::as_str), Some("10.0.0.5"));
+        assert_eq!(skills.roots, vec![cache.path().join("yubisashi/abcdef0123456789/skills")]);
+        let catalog = skills.catalog.expect("a mirrored skill yields a catalog");
+        assert!(catalog.contains("yubisashi"));
+    }
+
+    #[tokio::test]
+    async fn a_session_without_plugins_still_learns_its_own_id() {
+        let skills = resolve_session_skills(None, "sess-2", &[]).await;
+        assert_eq!(
+            skills.env.get(crate::preview::SESSION_ID_VAR).map(String::as_str),
+            Some("sess-2")
+        );
+        assert!(skills.roots.is_empty());
+        assert_eq!(skills.catalog, None);
+    }
+
+    #[test]
+    fn remembered_skills_are_what_a_resume_recalls() {
+        assert!(recall_skills("thread_0199absent").is_none());
+        let skills = SessionSkills {
+            env: std::collections::BTreeMap::from([(
+                "CCTUI_SESSION_ID".to_owned(),
+                "launch-key-1".to_owned(),
+            )]),
+            roots: vec![std::path::PathBuf::from("/c/p/h/skills")],
+            catalog: Some("<cctui_skills>x</cctui_skills>".to_owned()),
+        };
+        remember_skills("thread_0199remember", &skills);
+        let got = recall_skills("thread_0199remember").expect("remembered");
+        assert_eq!(got.env, skills.env);
+        assert_eq!(got.roots, skills.roots);
+        assert_eq!(got.catalog, skills.catalog);
     }
 }

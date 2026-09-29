@@ -1,16 +1,14 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
-	import { Button, Icon } from '@dorsk/tsumikit';
+	import { Badge, Icon, Popover } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { clickOutside } from '$lib/clickOutside';
 	import LabelMenu from './LabelMenu.svelte';
 
 	// One square toolbar button that opens a popover of label toggles; a session
-	// shows when it carries ANY selected label (OR semantics). The menu
-	// body is the shared LabelMenu molecule; this wrapper owns the
-	// trigger, the count badge and the open/close (clickOutside). `selected` is
-	// bindable so the parent owns persistence. Renders nothing until at least one
-	// label exists, so the caller doesn't have to guard.
+	// shows when it carries ANY selected label (OR semantics). The panel body is
+	// the shared LabelMenu molecule; this wrapper owns the trigger and its count.
+	// `selected` is bindable so the parent owns persistence. Renders nothing until
+	// at least one label exists, so the caller doesn't have to guard.
 	let {
 		labels,
 		selected = $bindable(),
@@ -28,7 +26,15 @@
 		onDelete?: (labelId: string) => void | Promise<void>;
 	} = $props();
 
-	let open = $state(false);
+	const title = $derived(
+		selected.size > 0
+			? m.sessions_filtering_by_labels({ count: selected.size })
+			: m.sessions_filter_by_label()
+	);
+
+	// The kit keeps a popover's panel mounted after its first open, so LabelMenu's
+	// mount-time autofocus only fires once; every reopen refocuses explicitly.
+	let panel = $state<LabelMenu>();
 
 	function toggle(l: Label) {
 		const next = new Set(selected);
@@ -39,67 +45,49 @@
 </script>
 
 {#if labels.length > 0}
-	<div class="label-filter" class:menu-row={menu} use:clickOutside={() => (open = false)}>
-		{#if menu}
-			<Button
-				variant="ghost"
-				size="sm"
-				block
-				style="justify-content:flex-start"
-				tone={selected.size > 0 ? 'accent' : 'none'}
-				title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
-				aria-haspopup="true"
-				aria-expanded={open}
-				aria-pressed={selected.size > 0}
-				onclick={() => (open = !open)}
-			>
+	<div class="label-filter" class:menu-row={menu}>
+		<Popover
+			label={m.sessions_filter_by_label()}
+			placement="bottom-end"
+			role="menu"
+			haspopup="menu"
+			{title}
+			variant={menu ? 'ghost' : undefined}
+			size={menu ? 'sm' : undefined}
+			block={menu}
+			tone={menu && selected.size > 0 ? 'accent' : 'none'}
+			count={menu ? undefined : selected.size}
+			style={menu ? 'justify-content:flex-start' : '--pop-box: var(--control-height)'}
+			onopen={() => panel?.focusSearch()}
+		>
+			{#snippet trigger()}
 				<Icon name="tag" size={18} />
-				<span>{m.sessions_filter_by_label()}</span>
-				{#if selected.size > 0}<span class="menu-count" aria-hidden="true">{selected.size}</span>{/if}
-			</Button>
-		{:else}
-			<Button
-				square
-				aria-label={m.sessions_filter_by_label()}
-				title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
-				aria-haspopup="true"
-				aria-expanded={open}
-				aria-pressed={selected.size > 0}
-				onclick={() => (open = !open)}
-			>
-				<Icon name="tag" size={18} />
-			</Button>
-			{#if selected.size > 0}<span class="count-badge" aria-hidden="true">{selected.size}</span>{/if}
-		{/if}
-		{#if open}
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div
-				class="menu"
-				role="menu"
-				aria-label={m.sessions_labels_menu()}
-				tabindex="-1"
-				onkeydown={(e) => {
-					if (e.key === 'Escape') open = false;
-				}}
-			>
-				<LabelMenu
-					{labels}
-					selectedIds={selected}
-					cap={5}
-					autofocus
-					onToggle={toggle}
-					onClear={() => (selected = new Set())}
-					{onUpdate}
-					{onDelete}
-				/>
-			</div>
-		{/if}
+				{#if menu}
+					<span>{m.sessions_filter_by_label()}</span>
+					{#if selected.size > 0}
+						<span class="menu-count">
+							<Badge size="xs" numeric tone="accent">{selected.size}</Badge>
+						</span>
+					{/if}
+				{/if}
+			{/snippet}
+			<LabelMenu
+				bind:this={panel}
+				{labels}
+				selectedIds={selected}
+				cap={5}
+				autofocus
+				onToggle={toggle}
+				onClear={() => (selected = new Set())}
+				{onUpdate}
+				{onDelete}
+			/>
+		</Popover>
 	</div>
 {/if}
 
 <style>
 	.label-filter {
-		position: relative;
 		display: inline-flex;
 		align-items: center;
 		flex: none;
@@ -111,45 +99,7 @@
 		width: 100%;
 	}
 	.menu-count {
-		margin-left: auto;
-		min-width: 1.25rem;
-		height: 1.25rem;
-		padding: 0 0.35rem;
-		border-radius: 999px;
-		background: var(--accent);
-		color: var(--bg);
-		font-size: 0.7rem;
-		font-weight: var(--fw-semibold);
-		line-height: 1.25rem;
-		text-align: center;
-	}
-	.count-badge {
-		position: absolute;
-		top: -0.35rem;
-		right: -0.35rem;
-		min-width: 1rem;
-		height: 1rem;
-		padding: 0 0.25rem;
-		border-radius: 999px;
-		background: var(--accent);
-		color: var(--bg);
-		font-size: 0.62rem;
-		font-weight: var(--fw-semibold);
-		line-height: 1rem;
-		text-align: center;
-		pointer-events: none;
-	}
-	.menu {
-		position: absolute;
-		top: calc(100% + var(--sp-1));
-		right: 0;
-		z-index: 40;
-		display: flex;
-		flex-direction: column;
-		padding: var(--sp-1);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		background: var(--bg-elevated);
-		box-shadow: var(--shadow-lg);
+		display: inline-flex;
+		margin-inline-start: auto;
 	}
 </style>

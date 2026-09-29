@@ -29,6 +29,7 @@ mod openapi;
 mod outbound;
 mod pace;
 mod plugin_archive;
+mod plugin_catalog;
 mod plugin_store;
 mod plugins;
 mod policy;
@@ -38,6 +39,7 @@ mod preview;
 mod registry;
 mod routes;
 mod scheduled_messages;
+mod scheduled_spawns;
 mod session_emoji;
 mod settings_catalog;
 mod skill_store;
@@ -683,6 +685,7 @@ async fn reaper_task(state: AppState) {
 
         auto_resume::sweep(&state).await;
         scheduled_messages::sweep(&state).await;
+        scheduled_spawns::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
     }
@@ -766,6 +769,7 @@ mod tests {
             "PUT /admin/passkeys/auto-prompt Bearer Scope(Admin)",
             "GET /admin/plugins Bearer Scope(Admin)",
             "POST /admin/plugins Bearer Scope(Admin)",
+            "GET /admin/plugins/catalog Bearer Scope(Admin)",
             "DELETE /admin/plugins/{id} Bearer Scope(Admin)",
             "PATCH /admin/plugins/{id} Bearer Scope(Admin)",
             "GET /admin/users Bearer Scope(Admin)",
@@ -856,6 +860,7 @@ mod tests {
             r#"GET /sessions/{id}/bindings Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/blobs/{hash} Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/brief Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/cancel-launch Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/conversation Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/deregister Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,
@@ -885,6 +890,7 @@ mod tests {
             r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/schedule-launch Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
@@ -892,7 +898,9 @@ mod tests {
             r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
             "GET /settings Bearer Authenticated",
             "PUT /settings Bearer Authenticated",
+            "GET /settings/rescrub Bearer Authenticated",
             "POST /settings/rescrub Bearer Authenticated",
+            "POST /settings/rescrub/cancel Bearer Authenticated",
             "GET /skills/index Bearer Authenticated",
             "GET /skills/{name} Bearer Authenticated",
             "PUT /skills/{name} Bearer Authenticated",
