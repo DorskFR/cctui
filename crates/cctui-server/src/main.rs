@@ -23,6 +23,7 @@ mod langfuse;
 mod live_sessions;
 mod machine_liveness;
 mod machine_resources;
+mod metrics;
 mod normalize;
 mod ntfy;
 mod openapi;
@@ -321,6 +322,11 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
 fn outer_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        // Prometheus scrape. Self-authenticating (same token scheme as
+        // `/api/v1`, unless `CCTUI_METRICS_PUBLIC` opts out), so it sits here
+        // rather than under the `/api/v1` auth layer: a scrape config expects
+        // `/metrics` at the root.
+        .route("/metrics", get(routes::metrics::metrics))
         // Self-describing API surface. Both are unauthenticated meta
         // routes — like `/health` — because they expose ONLY the public shape of
         // the API (paths/methods/auth model/summaries), never any data. An agent

@@ -21,7 +21,6 @@ pub struct AppState {
     pub registry: SharedRegistry,
     pub permission_store: SharedPermissionStore,
     pub bus: Bus,
-    #[allow(dead_code)]
     pub auth_config: AuthConfig,
     /// `None` when no secure public URL is configured; passkey routes then
     /// answer "unavailable".
