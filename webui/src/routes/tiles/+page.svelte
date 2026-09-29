@@ -20,7 +20,7 @@
 
 	const sessions = useSessions(() => false);
 	const qc = useQueryClient();
-	const rows = $derived(sessions.data ?? []);
+	const rows = $derived(sessions.data?.sessions ?? []);
 
 	const tiles = new TilesWorkspace({
 		store: { get: (k) => drafts.get(k), set: (k, v) => drafts.set(k, v) },

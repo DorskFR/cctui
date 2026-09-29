@@ -34,7 +34,6 @@
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ConversationSearch } from './conversation/convSearch.svelte';
 	import ConversationSearchBar from './conversation/ConversationSearchBar.svelte';
-	import { buildConversationSearchSchema } from './conversation/searchSchema';
 	import { ForkController } from './conversation/fork.svelte';
 	import { ForkSelection } from './conversation/forkSelect.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
@@ -226,8 +225,7 @@
 	// the paged tail, so a `mark.search-hit` count can never be the total.
 	const search = new ConversationSearch({
 		id: () => id,
-		schema: buildConversationSearchSchema(() => search.tools),
-		fetchHits: (sid, q) => endpoints.conversationSearch(sid, q),
+		fetchHits: (sid: string, q: string) => endpoints.conversationSearch(sid, q),
 		ensureSeqVisible: (seq) => pins.ensureSeqVisible(seq),
 		onerror: (e) => toasts.error(errMessage(e))
 	});

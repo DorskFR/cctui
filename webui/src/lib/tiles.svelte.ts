@@ -39,7 +39,12 @@ export class TilesWorkspace {
 	/** What the grid renders when the viewport is wide enough: one tile while
 	 *  maximised, every tile otherwise. */
 	visible = $derived(this.maximized ? [this.maximized] : this.ids);
-	full = $derived(this.ids.length >= this.#d.maxTiles());
+
+	/** A getter, not `$derived`: a field initializer cannot read the deps the
+	 *  constructor has yet to assign. */
+	get full(): boolean {
+		return this.ids.length >= this.#d.maxTiles();
+	}
 
 	constructor(d: TilesDeps) {
 		this.#d = d;

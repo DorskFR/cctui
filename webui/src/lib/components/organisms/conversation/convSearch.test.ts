@@ -4,9 +4,6 @@ import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ConversationHit } from '@bindings/ConversationHit';
 import type { ConversationSearchResponse } from '@bindings/ConversationSearchResponse';
 import { ConversationSearch, eventSearchText } from './convSearch.svelte';
-import { buildConversationSearchSchema } from './searchSchema';
-
-const schema = buildConversationSearchSchema(() => ['Bash', 'Read']);
 
 function hit(seq: number): ConversationHit {
 	return { seq, ts: seq * 1000, role: 'assistant', tool: null, snippet: `snippet ${seq}` };
@@ -31,7 +28,6 @@ function ctl(over: Partial<{ res: ConversationSearchResponse; fail: boolean }> =
 	});
 	const search = new ConversationSearch({
 		id: () => 's1',
-		schema,
 		fetchHits,
 		ensureSeqVisible: async (seq) => {
 			visited.push(seq);
