@@ -789,9 +789,11 @@ mod tests {
         let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None)
             .with_tool_env(tool_env)
             .with_developer_instructions(Some(catalog.clone()));
-        for params in
-            [tc.start_params("/repo"), tc.resume_params("tid", "/repo"), tc.fork_params("p", "/repo")]
-        {
+        for params in [
+            tc.start_params("/repo"),
+            tc.resume_params("tid", "/repo"),
+            tc.fork_params("p", "/repo"),
+        ] {
             let set = &params["config"]["shell_environment_policy"]["set"];
             assert_eq!(set["CCTUI_SESSION_ID"], "launch-key-1");
             assert_eq!(set["CCTUI_WEB_ORIGIN"], "https://cctui.example");

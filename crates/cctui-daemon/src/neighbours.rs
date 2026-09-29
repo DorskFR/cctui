@@ -87,7 +87,8 @@ impl LiveDirs {
         let Ok(mut sessions) = self.sessions.lock() else { return };
         match event {
             AdapterEvent::SessionStarted { local_id, meta } => {
-                let Some(dir) = meta.working_dir.as_deref().map(str::trim).filter(|d| !d.is_empty())
+                let Some(dir) =
+                    meta.working_dir.as_deref().map(str::trim).filter(|d| !d.is_empty())
                 else {
                     return;
                 };
@@ -113,7 +114,8 @@ impl LiveDirs {
                     if let Some(intent) = text(intent.as_deref()) {
                         entry.intent = Some(intent);
                     }
-                    if let Some(status) = text(state.as_deref()).or_else(|| text(tempo.as_deref())) {
+                    if let Some(status) = text(state.as_deref()).or_else(|| text(tempo.as_deref()))
+                    {
                         entry.status = Some(status);
                     }
                 }
@@ -215,12 +217,8 @@ pub fn notice(neighbours: &[Neighbour], now: Instant) -> Option<String> {
     let n = neighbours.len();
     let plural = if n == 1 { "session" } else { "sessions" };
     let mut line = format!("shared cwd: {n} other live {plural} in this directory: ");
-    let listed = neighbours
-        .iter()
-        .take(LIST_CAP)
-        .map(|nb| nb.render(now))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let listed =
+        neighbours.iter().take(LIST_CAP).map(|nb| nb.render(now)).collect::<Vec<_>>().join(", ");
     line.push_str(&listed);
     if n > LIST_CAP {
         let _ = write!(line, ", +{} more", n - LIST_CAP);
@@ -366,10 +364,7 @@ mod tests {
 
         dirs.observe(
             "claude-code",
-            &AdapterEvent::SessionEnded {
-                local_id: "gone".into(),
-                reason: EndReason::Completed,
-            },
+            &AdapterEvent::SessionEnded { local_id: "gone".into(), reason: EndReason::Completed },
         );
         dirs.observe("claude-code", &status("asleep", "hibernated", "done", None));
         assert!(dirs.neighbours(&cwd, None).is_empty(), "neither is holding the tree any more");
@@ -456,7 +451,10 @@ mod tests {
             .map(|i| neighbour(&format!("s{i}"), Some(&format!("agent {i}")), 30, now))
             .collect();
         let text = notice(&all, now).expect("a notice");
-        assert!(text.starts_with("shared cwd: 4 other live sessions in this directory: "), "{text}");
+        assert!(
+            text.starts_with("shared cwd: 4 other live sessions in this directory: "),
+            "{text}"
+        );
         for name in ["agent 1", "agent 2", "agent 3"] {
             assert!(text.contains(name), "{text}");
         }

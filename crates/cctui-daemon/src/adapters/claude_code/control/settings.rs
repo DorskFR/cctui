@@ -120,8 +120,7 @@ pub(super) fn detect_whip_from_settings(short: &str) -> bool {
 }
 
 fn stop_block_is_whip(stop: Option<&serde_json::Value>) -> bool {
-    stop.and_then(|s| serde_json::to_string(s).ok())
-        .is_some_and(|s| s.contains("whip-stop-hook"))
+    stop.and_then(|s| serde_json::to_string(s).ok()).is_some_and(|s| s.contains("whip-stop-hook"))
 }
 
 /// The directory holding the per-session settings, mcp-config and whip-phrase

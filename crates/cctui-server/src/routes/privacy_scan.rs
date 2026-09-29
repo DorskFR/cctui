@@ -455,11 +455,13 @@ async fn sweep(state: &AppState, spec: &JobSpec) -> Result<&'static str, SweepEr
         secret_scrub_of(&data).patterns.into_iter().map(|p| (p.name, p.regex)).collect();
     // The defaults always apply on an explicit re-scrub, regardless of the live
     // `secretScrubEnabled` toggle.
-    let patterns = Arc::new(tokio::task::spawn_blocking(move || {
-        cctui_crypto::redact::compile(true, &user, &cctui_crypto::vault_key())
-    })
-    .await
-    .unwrap_or_else(|_| cctui_crypto::redact::CompiledPatterns::disabled()));
+    let patterns = Arc::new(
+        tokio::task::spawn_blocking(move || {
+            cctui_crypto::redact::compile(true, &user, &cctui_crypto::vault_key())
+        })
+        .await
+        .unwrap_or_else(|_| cctui_crypto::redact::CompiledPatterns::disabled()),
+    );
 
     let total: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM stream_events se JOIN sessions s ON s.id = se.session_id \

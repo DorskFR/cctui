@@ -129,8 +129,7 @@ mod tests {
     fn a_delivered_spawn_prompt_is_human_even_without_a_turn_id() {
         let (d, _rx) = driver();
         let quoted = "line\n".repeat(200);
-        let pasted =
-            format!("**User:** hello\n{quoted}<task-notification>x</task-notification>");
+        let pasted = format!("**User:** hello\n{quoted}<task-notification>x</task-notification>");
         d.note_delivered("sess-1", &pasted);
         assert_eq!(meta_of(&d.unmask_delivered(user(&pasted, None))), Some(false));
         // Trailing-whitespace / CRLF drift must not break the match.

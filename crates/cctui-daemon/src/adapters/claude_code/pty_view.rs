@@ -304,11 +304,8 @@ impl PtyViewTask {
         let data = base64::engine::general_purpose::STANDARD.encode(frame);
         let event = AdapterEvent::PtyChunk { local_id: self.local_id.clone(), data };
         if first {
-            return match tokio::time::timeout(
-                FIRST_FRAME_SEND_TIMEOUT,
-                self.events.send(event),
-            )
-            .await
+            return match tokio::time::timeout(FIRST_FRAME_SEND_TIMEOUT, self.events.send(event))
+                .await
             {
                 Ok(Ok(())) => {
                     tracing::info!(
@@ -475,11 +472,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         parts.roster.insert("sess-1".to_owned(), "aaaaaaaa".to_owned());
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(
-            parts.views.watches.watching(),
-            0,
-            "a cancelled pending watch must not start"
-        );
+        assert_eq!(parts.views.watches.watching(), 0, "a cancelled pending watch must not start");
 
         parts.shutdown.cancel();
         let _ = handle.await;
@@ -632,7 +625,9 @@ mod tests {
         });
         assert!(task.emit(b"repaint", true).await, "the first frame must not be dropped");
         let (first, second) = drain.await.unwrap();
-        assert!(matches!(first, Some(AdapterEvent::PtyChunk { local_id, .. }) if local_id == "other"));
+        assert!(
+            matches!(first, Some(AdapterEvent::PtyChunk { local_id, .. }) if local_id == "other")
+        );
         let expected = base64::engine::general_purpose::STANDARD.encode(b"repaint");
         match second {
             Some(AdapterEvent::PtyChunk { local_id, data }) => {

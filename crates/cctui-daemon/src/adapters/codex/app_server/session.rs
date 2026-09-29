@@ -946,7 +946,10 @@ mod tests {
         session.skills = skills_of("launch-key-9", "<cctui_skills>yubisashi</cctui_skills>");
         let (req, method) = session.stdio_thread_request();
         assert_eq!(method, "thread/resume");
-        assert_eq!(req["params"]["developerInstructions"], "<cctui_skills>yubisashi</cctui_skills>");
+        assert_eq!(
+            req["params"]["developerInstructions"],
+            "<cctui_skills>yubisashi</cctui_skills>"
+        );
         assert_eq!(
             req["params"]["config"]["shell_environment_policy"]["set"]
                 [crate::preview::SESSION_ID_VAR],

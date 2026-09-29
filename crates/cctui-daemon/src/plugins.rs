@@ -188,10 +188,7 @@ fn frontmatter_field(text: &str, field: &str) -> Option<String> {
 
 fn truncated(mut value: String) -> String {
     if value.chars().count() > MAX_DESCRIPTION {
-        let cut = value
-            .char_indices()
-            .nth(MAX_DESCRIPTION)
-            .map_or(value.len(), |(i, _)| i);
+        let cut = value.char_indices().nth(MAX_DESCRIPTION).map_or(value.len(), |(i, _)| i);
         value.truncate(cut);
         value.push('…');
     }

@@ -370,7 +370,6 @@ impl SessionDriver for CommandPump {
         announce_resume_marks(&self.registry, &self.events, &marks).await;
         Ok(Handled::Deferred)
     }
-
 }
 
 impl CommandPump {
@@ -862,9 +861,12 @@ async fn dispatch(
                 match resolve_launch(server, machine_key, local_id, &record.env).await {
                     Ok(launch) => {
                         let settings = launch.settings;
-                        skills =
-                            crate::plugins::resolve_session_skills(server, local_id, &launch.plugins)
-                                .await;
+                        skills = crate::plugins::resolve_session_skills(
+                            server,
+                            local_id,
+                            &launch.plugins,
+                        )
+                        .await;
                         record.env = launch.env;
                         record.spawn_relay = record.spawn_relay
                             || launch.spawn_capability.as_ref().is_some_and(|c| !c.is_empty());
