@@ -17,3 +17,12 @@ export const useAdminPlugins = (enabled: () => boolean) =>
     queryFn: () => endpoints.adminPlugins(),
     enabled: enabled(),
   }));
+
+/** The published catalog, annotated with installed versions (admin). */
+export const useAdminPluginCatalog = (enabled: () => boolean) =>
+  createQuery(() => ({
+    queryKey: qk.adminPluginCatalog,
+    queryFn: () => endpoints.adminPluginCatalog(),
+    enabled: enabled(),
+    staleTime: 5 * 60_000,
+  }));

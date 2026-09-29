@@ -29,7 +29,7 @@ import SecuritySection from './SecuritySection.svelte';
 	<MacrosSection />
 </div>
 <div class="pg" class:on={current === 'plugins'} data-settings-page="plugins" data-journey="page" data-journey-key="plugins">
-	<PluginsSection />
+	<PluginsSection {isAdmin} />
 </div>
 <div class="pg" class:on={current === 'execution'} data-settings-page="execution" data-journey="page" data-journey-key="execution">
 	<ExecutionSection />

@@ -83,6 +83,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/check-ci-green.sh "${{ github.repository }}" "${{ needs.meta.outputs.sha }}"
 
+  plugin-catalog:
+    name: plugin catalog resolves
+    needs: [meta]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          sparse-checkout: |
+            plugins
+            scripts
+
+      - name: Guard its own schema rules
+        run: bash scripts/check-plugin-catalog.test.sh
+
+      - name: Every entry resolves and matches its sha256
+        run: bash scripts/check-plugin-catalog.sh
+
   build:
     name: build ${{ matrix.os }}-${{ matrix.arch }}
     needs: [meta]
@@ -207,7 +227,7 @@ jobs:
           path: image-bins/
 
   release:
-    needs: [meta, ci-green, build]
+    needs: [meta, ci-green, plugin-catalog, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -349,7 +369,7 @@ jobs:
 
   images-push:
     name: push ${{ matrix.image }}
-    needs: [meta, ci-green, build, images]
+    needs: [meta, ci-green, plugin-catalog, build, images]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
