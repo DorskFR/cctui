@@ -2275,8 +2275,11 @@ mod tests {
 
     #[test]
     fn a_pasted_transcript_quoting_a_marker_deep_down_stays_human() {
-        let quoted: String =
-            (0..195).map(|i| format!("**User:** turn {i}\n**Assistant:** ok\n")).collect();
+        use std::fmt::Write as _;
+        let mut quoted = String::new();
+        for i in 0..195 {
+            writeln!(quoted, "**User:** turn {i}\n**Assistant:** ok").unwrap();
+        }
         let text = format!(
             "We reached 1M context, take over please\n{quoted}\
              <task-notification>a job finished</task-notification>\n"

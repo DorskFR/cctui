@@ -62,7 +62,7 @@ fn fingerprint(text: &str) -> Option<Fingerprint> {
 }
 
 impl Fingerprint {
-    fn matches(self, other: Self) -> bool {
+    const fn matches(self, other: Self) -> bool {
         self.full == other.full || matches!((self.head, other.head), (Some(a), Some(b)) if a == b)
     }
 }
