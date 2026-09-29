@@ -419,7 +419,7 @@
 	"conversation_soft_limit_reached": "⏳ Soft limit reached on {account}.",
 	"conversation_switch_account": "Switch account",
 	"conversation_terminal_close_aria": "Close terminal",
-	"conversation_terminal_readonly": "Terminal (read-only…)",
+	"conversation_terminal_connecting": "Terminal (connecting…)",
 	"conversation_terminal_readonly_live": "Terminal (read-only, live)",
 	"conversation_terminal_title": "Read-only live view of the session's terminal",
 	"conversation_transcript_downloaded": "Transcript downloaded",

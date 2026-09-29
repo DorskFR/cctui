@@ -559,6 +559,21 @@ impl Supervisor {
                 self.reconcile(adapters, running, event_tx, shutdown);
             }
             DaemonFrameDown::Command { adapter_id, command } => {
+                if let cctui_proto::adapter::AdapterCommand::WatchPty { local_id, watch } =
+                    command.as_ref()
+                    && let Some(pty_watch_tx) =
+                        running.get(&adapter_id).and_then(|r| r.pty_watch_tx.as_ref())
+                {
+                    match pty_watch_tx.try_send((local_id.clone(), *watch)) {
+                        Ok(()) => tracing::info!(
+                            %adapter_id, %local_id, watch, "pty watch routed off the command path"
+                        ),
+                        Err(err) => tracing::warn!(
+                            %adapter_id, %local_id, watch, %err, "pty watch dropped"
+                        ),
+                    }
+                    return;
+                }
                 // `try_send`, never `send().await`: this runs inside the
                 // transport `select!`, alongside the keepalive ping and the
                 // socket read. Awaiting a full adapter channel here stalls
@@ -800,6 +815,7 @@ impl Supervisor {
                 Some(self.client.clone()),
                 Some(self.machine_key.clone()),
                 &self.connected,
+                factory.pty_watch(&cfg.config),
             );
             let adapter = factory.build(cfg.config.clone());
             let adapter_id_for_pump = id.clone();
@@ -836,6 +852,7 @@ impl Supervisor {
                     // next reconcile can detect a change.
                     config: cfg.config,
                     commands_tx: channels.commands_tx,
+                    pty_watch_tx: channels.pty_watch_tx,
                     tasks: vec![pump, driver],
                 },
             );
@@ -962,6 +979,10 @@ struct AdapterRunning {
     config: serde_json::Value,
     /// Command sink the supervisor routes server `Command` frames into.
     commands_tx: mpsc::Sender<cctui_proto::adapter::AdapterCommand>,
+    /// Out-of-band sink for `WatchPty`, so a live view can't be rejected with
+    /// "command queue is full" or wait behind a 30s socket round-trip. `None`
+    /// for adapters without a live view.
+    pty_watch_tx: Option<mpsc::Sender<crate::adapter_runtime::PtyWatch>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -1570,6 +1591,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
                 commands_tx,
+                pty_watch_tx: None,
                 tasks: Vec::new(),
             },
         );
@@ -1607,6 +1629,100 @@ mod tests {
         }
     }
 
+    /// A live view must never share the command queue's fate: with the command
+    /// queue full, `WatchPty` still lands — on `pty_watch_tx`.
+    #[tokio::test]
+    async fn watch_pty_bypasses_a_full_command_queue() {
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let (commands_tx, _commands_rx) = mpsc::channel(1);
+        commands_tx
+            .try_send(cctui_proto::adapter::AdapterCommand::ResumeMarks { marks: vec![] })
+            .unwrap();
+        let (pty_watch_tx, mut pty_watch_rx) = mpsc::channel(4);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+        running.insert(
+            "claude-code".to_owned(),
+            AdapterRunning {
+                shutdown: CancellationToken::new(),
+                config: serde_json::json!({}),
+                commands_tx,
+                pty_watch_tx: Some(pty_watch_tx),
+                tasks: Vec::new(),
+            },
+        );
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let frame = cctui_proto::ws::DaemonFrameDown::Command {
+            adapter_id: "claude-code".to_owned(),
+            command: Box::new(cctui_proto::adapter::AdapterCommand::WatchPty {
+                local_id: "sess-1".to_owned(),
+                watch: true,
+            }),
+        };
+        let handled = supervisor.handle_frame(
+            frame,
+            &mut running,
+            &event_tx,
+            &frame_up_tx,
+            &mut scrub,
+            &shutdown,
+        );
+        tokio::time::timeout(Duration::from_secs(5), handled)
+            .await
+            .expect("handle_frame must not block");
+        assert_eq!(pty_watch_rx.try_recv().unwrap(), ("sess-1".to_owned(), true));
+        assert!(event_rx.try_recv().is_err(), "no rejection result for a routed watch");
+    }
+
+    /// An adapter with no live view keeps the command path, so `WatchPty`
+    /// still answers "unsupported" rather than silently vanishing.
+    #[tokio::test]
+    async fn watch_pty_without_a_pty_watch_channel_stays_on_the_command_path() {
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let (commands_tx, mut commands_rx) = mpsc::channel(4);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+        running.insert(
+            "opencode".to_owned(),
+            AdapterRunning {
+                shutdown: CancellationToken::new(),
+                config: serde_json::json!({}),
+                commands_tx,
+                pty_watch_tx: None,
+                tasks: Vec::new(),
+            },
+        );
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let frame = cctui_proto::ws::DaemonFrameDown::Command {
+            adapter_id: "opencode".to_owned(),
+            command: Box::new(cctui_proto::adapter::AdapterCommand::WatchPty {
+                local_id: "sess-1".to_owned(),
+                watch: true,
+            }),
+        };
+        supervisor
+            .handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown)
+            .await;
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(cctui_proto::adapter::AdapterCommand::WatchPty { watch: true, .. })
+        ));
+    }
+
     #[tokio::test]
     async fn a_transcript_ack_reaches_the_named_adapter_and_an_unknown_frame_is_ignored() {
         let (commands_tx, mut commands_rx) = mpsc::channel(8);
@@ -1618,6 +1734,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
                 commands_tx,
+                pty_watch_tx: None,
                 tasks: Vec::new(),
             },
         );
@@ -1675,6 +1792,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
                 commands_tx,
+                pty_watch_tx: None,
                 tasks: Vec::new(),
             },
         );
@@ -1748,6 +1866,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
                 commands_tx,
+                pty_watch_tx: None,
                 tasks: Vec::new(),
             },
         );

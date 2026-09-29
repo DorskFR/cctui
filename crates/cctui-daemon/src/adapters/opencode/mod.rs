@@ -599,6 +599,7 @@ mod reconnect_tests {
         let ctx = AdapterCtx {
             events,
             commands,
+            pty_watch: None,
             shutdown: shutdown.clone(),
             config: serde_json::Value::Null,
             server: None,

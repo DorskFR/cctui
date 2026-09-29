@@ -28,6 +28,7 @@ mod launch;
 mod mode;
 mod oneshot;
 mod pty_view;
+mod roster;
 mod session_registry;
 mod socket;
 pub(crate) mod state;
@@ -122,12 +123,18 @@ impl Adapter for ClaudeCodeAdapter {
 /// The default `claude daemon` control-socket path: build the control driver,
 /// spawn the shared ask/permission hook listener, and run. Behavior is
 /// byte-for-byte the bg path.
-async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
+async fn start_bg(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     tracing::info!("claude-code adapter starting in claude-daemon mode");
     let cfg = control::DriverConfig::from_value(&ctx.config);
+    let pty_watch = ctx.pty_watch.take();
     let driver = control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
         // Gateway-env launch chokepoint source.
         .with_server(ctx.server.clone(), ctx.machine_key.clone());
+    if let Some(watches) = pty_watch {
+        let (views, roster) = driver.pty_watch_pump();
+        let pump = pty_view::PtyWatchPump::new(views, roster, ctx.shutdown.clone());
+        tokio::spawn(pump.run(watches));
+    }
     // The `AskUserQuestion` PreToolUse hook delivers the pending
     // question here over the daemon's local socket. The hook reports claude's
     // live `session_id`; the driver's shared map translates it to the stable
@@ -544,6 +551,10 @@ impl AdapterFactory for ClaudeCodeFactory {
     }
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
         Box::new(ClaudeCodeAdapter)
+    }
+    /// Only the `claude daemon` path owns a PTY to relay.
+    fn pty_watch(&self, config: &serde_json::Value) -> bool {
+        Mode::from_config(config) == Mode::Bg
     }
 }
 

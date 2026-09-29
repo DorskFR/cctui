@@ -399,8 +399,9 @@ pub struct Driver {
     /// Reverse lookup: `local_id` (`session_id`) → worker `short`. Built
     /// from list snapshots so command dispatch can target the right
     /// worker even though the server identifies sessions by their
-    /// `session_id`.
-    short_by_session: HashMap<String, String>,
+    /// `session_id`. Shared with the pty-watch pump, which resolves shorts
+    /// off the command path.
+    short_by_session: super::roster::SessionRoster,
     /// Per-session transcript byte offsets, persisted across daemon
     /// restarts to avoid replay.
     offsets: OffsetStore,
@@ -722,7 +723,7 @@ impl Driver {
             session_to_local: Arc::new(Mutex::new(HashMap::new())),
             offsets,
             transcript_locations: HashMap::new(),
-            short_by_session: HashMap::new(),
+            short_by_session: super::roster::SessionRoster::default(),
             subagents: HashMap::new(),
             ended_subagents: HashSet::new(),
             kickstarter,
@@ -799,6 +800,14 @@ impl Driver {
     /// listener to maintain.
     pub fn hook_log(&self) -> super::HookLog {
         self.hook_log.clone()
+    }
+
+    /// Clone handles the pty-watch pump needs to serve a `WatchPty` without
+    /// going through this driver's serial command loop.
+    pub(super) fn pty_watch_pump(
+        &self,
+    ) -> (super::pty_view::PtyViewManager, super::roster::SessionRoster) {
+        (self.pty_view.clone(), self.short_by_session.clone())
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -981,7 +990,6 @@ impl Driver {
     fn resolve_short(&self, local_id: &str) -> anyhow::Result<String> {
         self.short_by_session
             .get(local_id)
-            .cloned()
             .ok_or_else(|| anyhow::anyhow!("unknown session {local_id}"))
     }
 
@@ -994,7 +1002,7 @@ impl Driver {
     /// best-effort rather than erroring.
     fn resolve_short_for_removal(&self, local_id: &str) -> anyhow::Result<String> {
         if let Some(short) = self.short_by_session.get(local_id) {
-            return Ok(short.clone());
+            return Ok(short);
         }
         let candidate = local_id.split('-').next().unwrap_or(local_id);
         JobShort::parse(candidate)
@@ -1121,9 +1129,10 @@ impl Driver {
         };
         let targets: Vec<String> = self
             .short_by_session
-            .iter()
-            .filter(|(_, short)| self.roster.contains(*short))
-            .map(|(local_id, _)| local_id.clone())
+            .entries()
+            .into_iter()
+            .filter(|(_, short)| self.roster.contains(short))
+            .map(|(local_id, _)| local_id)
             .collect();
         let mut renewed = 0usize;
         for local_id in &targets {
@@ -1224,15 +1233,6 @@ impl SessionDriver for Driver {
 
     async fn diagnose(&mut self, local_id: String, request_id: uuid::Uuid) -> CommandOutcome {
         self.handle_diagnose(&local_id, request_id).await?;
-        Ok(Handled::Done)
-    }
-
-    async fn watch_pty(&mut self, local_id: String, watch: bool) -> CommandOutcome {
-        match self.resolve_short(&local_id) {
-            Ok(short) if watch => self.pty_view.watch(local_id, short),
-            Ok(short) => self.pty_view.unwatch(&short),
-            Err(err) => tracing::debug!(%err, watch, "watch_pty for unknown session; ignoring"),
-        }
         Ok(Handled::Done)
     }
 

@@ -170,6 +170,7 @@ fn ctx(config: serde_json::Value) -> (AdapterCtx, Harness) {
     let ctx = AdapterCtx {
         events: events_tx,
         commands: commands_rx,
+        pty_watch: None,
         shutdown: shutdown.clone(),
         config,
         server: None,
