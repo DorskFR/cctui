@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
-import { mount, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SpawnModal from "./SpawnModal.svelte";
 import { spawnSlotKey } from "$lib/drafts";
 import { attachmentStore } from "$lib/attachmentStore";
 import { schedulePresets } from "./conversation/scheduleTimes";
 
-const machineList = [
+let machineList: Array<Record<string, unknown>> = [
   {
     id: "m-uuid-1",
     name: "box",
@@ -66,6 +66,15 @@ const SLOT = spawnSlotKey("m-uuid-1", "/w");
 let component: ReturnType<typeof mount> | undefined;
 
 beforeEach(async () => {
+  machineList = [
+    {
+      id: "m-uuid-1",
+      name: "box",
+      display_name: "box",
+      kind: "persistent",
+      hue: null,
+    },
+  ];
   localStorage.clear();
   await attachmentStore.clearAll();
   spawn.mockReset().mockResolvedValue({
@@ -127,35 +136,50 @@ const caret = () =>
   document.querySelector<HTMLButtonElement>(
     'button[aria-label="More spawn options"]',
   );
-const menuItem = (text: string) =>
-  [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].find((b) =>
-    (b.textContent ?? "").includes(text),
+
+// happy-dom implements no Popover API, so the caret's click never opens the
+// panel: drive its `toggle` by hand, the way PromptHistoryMenu.test.ts does.
+async function openMenu() {
+  const trigger = caret();
+  if (!trigger) throw new Error("caret did not render");
+  // An id is not necessarily a valid CSS selector, so resolve it by id.
+  const target = trigger.getAttribute("popovertarget");
+  const panel = (target ? document.getElementById(target) : null) ??
+    document.querySelector("[popover]");
+  if (!panel) throw new Error("panel did not render");
+  (panel as HTMLElement & { hidePopover?: () => void }).hidePopover = () => {};
+  panel.dispatchEvent(
+    Object.assign(new Event("toggle"), { newState: "open" }),
   );
+  await tick();
+  flushSync();
+  const menu = document.querySelector('[role="menu"]');
+  if (!menu) throw new Error("menu did not render");
+  return menu;
+}
+
+const items = () => [
+  ...document.querySelectorAll<HTMLElement>(
+    '[role="menu"] [role="menuitem"]',
+  ),
+];
+const menuItem = (text: string) =>
+  items().find((b) => (b.textContent ?? "").includes(text));
 
 describe("SpawnModal schedule split-button", () => {
   it("offers the composer's presets on the Spawn caret", async () => {
     await open();
     await typeInto(field("sp-prompt"), "do the thing");
-    const trigger = caret();
-    expect(trigger).toBeTruthy();
-    trigger?.click();
-    await tick();
-    const labels = [
-      ...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]'),
-    ].map((b) => b.textContent ?? "");
+    await openMenu();
     // One entry per preset plus the custom time; no pending-message list here.
-    expect(labels).toHaveLength(schedulePresets(new Date()).length + 1);
+    expect(items()).toHaveLength(schedulePresets(new Date()).length + 1);
   });
 
   it("saves the draft and queues it at the picked preset", async () => {
     await open();
     await typeInto(field("sp-prompt"), "do the thing");
-    caret()?.click();
-    await tick();
-    const first = [
-      ...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]'),
-    ][0];
-    first.click();
+    await openMenu();
+    items()[0].click();
     await tick(120);
 
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -171,8 +195,7 @@ describe("SpawnModal schedule split-button", () => {
   it("opens the composer's custom-time picker, not a copy of it", async () => {
     await open();
     await typeInto(field("sp-prompt"), "do the thing");
-    caret()?.click();
-    await tick();
+    await openMenu();
     menuItem("Custom")?.click();
     await tick();
     expect(
@@ -181,14 +204,15 @@ describe("SpawnModal schedule split-button", () => {
     expect(scheduleDraftLaunch).not.toHaveBeenCalled();
   });
 
-  it("keeps a plain Spawn button on the dispatch target", async () => {
+  it("falls back to a plain titled Spawn button with no machines", async () => {
+    machineList = [];
     await open();
-    const radio = document.querySelector<HTMLInputElement>(
-      'input[type="radio"][value="dispatch"]',
-    );
-    if (!radio) return;
-    radio.click();
-    await tick();
     expect(caret()).toBeNull();
+    const reason = "No machines enrolled — enroll one from the Overview page.";
+    const spawn = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Launch"),
+    );
+    expect(spawn?.disabled).toBe(true);
+    expect(spawn?.title).toBe(reason);
   });
 });

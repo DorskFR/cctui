@@ -195,7 +195,9 @@
 		{/if}
 	</span>
 	<span class="foot-primary">
-		{#if sf.target === 'machine'}
+		<!-- No machines: nothing to schedule either, and only a plain Button can
+		     carry the disabled reason as its own title. -->
+		{#if sf.target === 'machine' && !sf.noMachines}
 			<SplitButton
 				data-journey="submit"
 				variant="primary"
