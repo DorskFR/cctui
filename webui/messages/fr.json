@@ -770,6 +770,7 @@
 	"journey_need_user": "votre propre fiche utilisateur",
 	"journey_next": "Suivant",
 	"journey_not_ready_machines_online": "Il vous faut d’abord une machine en ligne.",
+	"journey_not_ready_sessions": "Il vous faut d’abord au moins une session à rechercher.",
 	"journey_not_ready_sessions_live": "Il vous faut d’abord une session en cours.",
 	"journey_press": "Appuyez sur",
 	"journey_step": "Étape {i} sur {n}",

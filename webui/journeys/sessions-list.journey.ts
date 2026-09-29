@@ -1,145 +1,95 @@
 import { defineJourney } from '@dorsk/journey';
 
-// A section header renders per group, so a bare path is ambiguous and throws.
-// `nth` indexes the visible matches and exists only on the locator form.
-const firstGroup = (name: string) => ({ css: `[data-journey="${name}"]`, nth: 0 }) as const;
-const GROUP_SORT = firstGroup('group-sort');
-const GROUP_HIDE = firstGroup('group-hide');
-const VIEW = firstGroup('view');
-// The kit's `Menu` forwards no `data-journey` to the trigger it renders.
-const SECTIONS_TOGGLE = { css: '[data-journey="sections"] [aria-haspopup="menu"]', nth: 0 } as const;
+const SESSIONS = '/sessions';
 
 export default defineJourney({
 	id: 'sessions-list',
 	title: { en: 'Read the fleet at a glance', fr: 'Lire la flotte d’un coup d’œil' },
 	description: { en: 'The sessions list groups every agent by what it needs from you.', fr: 'La liste des sessions regroupe chaque agent selon ce qu’il attend de vous.' },
-	route: '/sessions',
+	route: SESSIONS,
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark', 'light', 'gruvbox'] },
 	level: 'checked',
 	steps: [
 		{
 			id: 'list',
-			route: '/sessions',
+			route: SESSIONS,
 			target: 'session-list',
 			say: {
-				title: { en: 'Every session, grouped', fr: 'Chaque session, regroupée' },
-				body: {
-					en: 'Agents are grouped by what they need from you — the ones waiting on an answer rise to the top, so a long fleet still reads in one glance.',
-					fr: 'Les agents sont regroupés selon ce qu’ils attendent de vous — ceux en attente de réponse remontent en tête, pour qu’une longue flotte se lise d’un seul coup d’œil.'
-				}
+				title: { en: 'Grouped by what it needs from you', fr: 'Regroupé selon ce qu’il attend de vous' },
+				body: { en: 'This is the one screen you will keep open. Agents are not listed by age but by what they are waiting for: anything blocked on an answer from you rises to the top, so a fleet of thirty still reads in one glance.', fr: 'C’est l’écran que vous garderez ouvert. Les agents ne sont pas listés par ancienneté mais selon ce qu’ils attendent : tout ce qui est bloqué sur une réponse de vous remonte en tête, pour qu’une flotte de trente se lise d’un coup d’œil.' }
 			},
-			expect: [{ visible: 'session-list' }, { visible: 'search' }]
-		},
-		{
-			id: 'list-fixture',
-			qaOnly: true,
-			target: 'section[blocked]',
-			expect: [{ count: ['session', { min: 4 }] }, { visible: 'section[blocked]' }],
+			expect: [{ visible: 'session-list' }, { visible: 'search' }],
 			capture: 'list'
 		},
 		{
-			id: 'search',
-			target: 'search',
+			id: 'anatomy',
+			target: 'session-list',
 			say: {
-				title: { en: 'Narrow the list as you type', fr: 'Réduire la liste à mesure que vous tapez' },
-				body: {
-					en: 'Plain words match titles and prompts. Add a field — machine, label, status — to cut straight to a slice of the fleet instead of scrolling it.',
-					fr: 'Les mots simples cherchent dans les titres et les prompts. Ajoutez un champ — machine, étiquette, statut — pour atteindre directement une partie de la flotte au lieu de la parcourir.'
-				}
+				title: { en: 'What one row tells you', fr: 'Ce que dit une ligne' },
+				body: { en: 'Each row carries the session’s title, the machine it runs on, the folder it works in, how long since it last did anything, and what it has spent. That is enough to decide whether it needs you without opening it.', fr: 'Chaque ligne porte le titre de la session, la machine qui l’exécute, le dossier où elle travaille, le temps écoulé depuis sa dernière action et ce qu’elle a dépensé. De quoi décider si elle a besoin de vous sans l’ouvrir.' }
 			},
-			expect: [{ visible: 'search' }],
-			capture: 'search'
+			capture: 'anatomy'
 		},
 		{
 			id: 'sections',
-			target: SECTIONS_TOGGLE,
-			do: { kind: 'click' },
+			target: 'sections',
 			say: {
-				title: { en: 'Choose which groups you see', fr: 'Choisir les groupes affichés' },
-				body: {
-					en: 'Each group is an independent switch. Turning off the ones you are not working in is what keeps the list short once the fleet grows.',
-					fr: 'Chaque groupe est un interrupteur indépendant. Désactiver ceux sur lesquels vous ne travaillez pas est ce qui garde la liste courte quand la flotte grandit.'
-				}
+				title: { en: 'Turn whole groups off', fr: 'Désactiver des groupes entiers' },
+				body: { en: 'Behind this button every group is an independent switch — live, blocked, in review, done, archived, and a starred group of your own. Switching off the ones you are not working in is what keeps the list short as the fleet grows.', fr: 'Derrière ce bouton, chaque groupe est un interrupteur indépendant — en cours, bloqué, en revue, terminé, archivé, plus un groupe de favoris. Désactiver ceux sur lesquels vous ne travaillez pas garde la liste courte quand la flotte grandit.' }
 			},
-			expect: [{ visible: 'sections/option[live]' }, { visible: 'sections/option[archived]' }]
-		},
-		{
-			id: 'starred',
-			target: 'sections/option[starred]',
-			say: {
-				title: { en: 'Keep the ones that matter in reach', fr: 'Garder à portée celles qui comptent' },
-				body: {
-					en: 'Starred sessions get their own group above everything else — the fastest way to pin the two or three runs you actually care about today.',
-					fr: 'Les sessions favorites forment leur propre groupe, au-dessus du reste — le moyen le plus rapide d’épingler les deux ou trois exécutions qui comptent aujourd’hui.'
-				}
-			},
-			expect: [{ visible: 'sections/option[starred]' }],
+			expect: [{ visible: 'sections' }],
 			capture: 'sections'
 		},
 		{
 			id: 'options',
 			target: 'options',
-			do: { kind: 'click' },
-			say: {
-				title: { en: 'Change how the list is drawn', fr: 'Changer la façon dont la liste est dessinée' },
-				body: {
-					en: 'The secondary controls live behind this button so the search bar keeps its width. Everything here is a view setting — it never touches the sessions themselves.',
-					fr: 'Les contrôles secondaires vivent derrière ce bouton pour que la barre de recherche garde sa largeur. Tout ici est un réglage d’affichage — rien n’agit sur les sessions elles-mêmes.'
-				}
-			},
-			expect: [{ visible: 'display-options' }]
-		},
-		{
-			id: 'grouping',
-			target: 'display-options/dimension[group]',
 			say: {
 				title: { en: 'Group by whatever you are debugging', fr: 'Regrouper selon ce que vous déboguez' },
-				body: {
-					en: 'Group by machine when you suspect one box, by project when you are context-switching. Colour-by tints the cards on a second dimension, so you can read both at once.',
-					fr: 'Regroupez par machine quand vous soupçonnez une machine, par projet quand vous jonglez entre contextes. La couleur teinte les cartes sur une seconde dimension, pour lire les deux à la fois.'
-				}
+				body: { en: 'This holds the view settings. Group by machine when you suspect one box, by project when you are context-switching; colour-by tints the rows on a second dimension so you can read both at once. None of it touches the sessions themselves.', fr: 'Ce bouton contient les réglages d’affichage. Regroupez par machine quand vous soupçonnez une machine, par projet quand vous jonglez entre contextes ; la couleur teinte les lignes sur une seconde dimension pour lire les deux à la fois. Rien n’agit sur les sessions elles-mêmes.' }
 			},
-			expect: [{ visible: 'display-options/dimension[color]' }],
+			expect: [{ visible: 'options' }],
 			capture: 'options'
 		},
 		{
 			id: 'view',
-			target: VIEW,
+			when: { viewport: 'desktop' },
+			target: 'view',
+			do: { kind: 'click' },
+			say: {
+				title: { en: 'Try it: dense rows or roomy cards', fr: 'Essayez : lignes denses ou cartes aérées' },
+				body: { en: 'Click it. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits — click again if you prefer the other.', fr: 'Cliquez. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Votre choix est conservé d’une visite à l’autre — recliquez si vous préférez l’autre.' }
+			},
+			capture: 'view'
+		},
+		{
+			id: 'density-mobile',
+			when: { viewport: 'mobile' },
+			target: 'options',
 			say: {
 				title: { en: 'Dense rows or roomy cards', fr: 'Lignes denses ou cartes aérées' },
-				body: {
-					en: 'Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. The choice sticks between visits.',
-					fr: 'Les lignes affichent plus de la flotte à l’écran ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Le choix est conservé d’une visite à l’autre.'
-				}
-			},
-			expect: [{ visible: VIEW }]
+				body: { en: 'On a narrow screen the density switch moves in here with the other view settings. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity.', fr: 'Sur écran étroit, le réglage de densité rejoint ici les autres options d’affichage. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité.' }
+			}
 		},
 		{
-			id: 'group-sort',
-			optional: true,
-			target: GROUP_SORT,
+			id: 'search',
+			target: 'search',
+			do: { kind: 'fill', value: { $param: 'var.query' } },
 			say: {
-				title: { en: 'Each group sorts on its own', fr: 'Chaque groupe se trie séparément' },
-				body: {
-					en: 'Sort by last activity to see what just moved, by name when you are looking for one you already know. The order applies to every group at once.',
-					fr: 'Triez par dernière activité pour voir ce qui vient de bouger, par nom quand vous cherchez une session que vous connaissez déjà. L’ordre s’applique à tous les groupes.'
-				}
+				title: { en: 'And you can always just type', fr: 'Et vous pouvez toujours taper' },
+				body: { en: 'Type anything here and the list narrows as you go. There is a whole query language behind this box — conditions on machine, label and status — and a later guide is devoted to it.', fr: 'Tapez n’importe quoi ici et la liste se réduit à mesure. Il y a tout un langage de requête derrière cette boîte — conditions sur machine, libellé et statut — et un guide ultérieur y est consacré.' }
 			},
-			expect: [{ visible: GROUP_SORT }]
+			capture: 'search'
 		},
 		{
-			id: 'group-actions',
-			optional: true,
-			target: GROUP_HIDE,
+			id: 'clear',
+			target: 'search',
+			do: { kind: 'fill', value: { $param: 'var.blank' } },
 			say: {
-				title: { en: 'Collapse or clear a whole group', fr: 'Replier ou vider un groupe entier' },
-				body: {
-					en: 'The eye folds a group away without losing it. Beside it, archive retires every session in that group in one move — how a finished batch leaves the list for good.',
-					fr: 'L’œil replie un groupe sans le perdre. À côté, l’archivage retire toutes les sessions du groupe d’un seul geste — c’est ainsi qu’un lot terminé quitte la liste définitivement.'
-				}
+				title: { en: 'Empty it to get everyone back', fr: 'Videz-la pour tout retrouver' },
+				body: { en: 'Clear the box and the whole fleet returns, grouped as before. Nothing you did here changed a single session — this screen is a lens, never a lever.', fr: 'Videz la boîte et toute la flotte revient, regroupée comme avant. Rien de ce que vous avez fait ici n’a modifié une session — cet écran est une lentille, jamais un levier.' }
 			},
-			expect: [{ visible: GROUP_HIDE }],
-			capture: 'group'
+			expect: [{ visible: 'session-list' }],
+			capture: 'cleared'
 		}
 	]
 });

@@ -113,12 +113,14 @@ export const PUBLIC_JOURNEYS: readonly string[] = [
  *  what a guide is allowed to start is the curriculum's call, not a probe's. */
 export const READINESS: Record<string, string> = {
 	'spawn-session': 'machines.online',
-	'follow-session': 'sessions.live'
+	'follow-session': 'sessions.live',
+	'search-sessions': 'sessions'
 };
 
 const READINESS_HINTS: Record<string, () => string> = {
 	'machines.online': () => m.journey_not_ready_machines_online(),
-	'sessions.live': () => m.journey_not_ready_sessions_live()
+	'sessions.live': () => m.journey_not_ready_sessions_live(),
+	sessions: () => m.journey_not_ready_sessions()
 };
 
 export function readinessHint(id: string): string | undefined {

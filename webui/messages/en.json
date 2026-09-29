@@ -770,6 +770,7 @@
 	"journey_need_user": "your own user record",
 	"journey_next": "Next",
 	"journey_not_ready_machines_online": "You need a machine online first.",
+	"journey_not_ready_sessions": "You need at least one session to search first.",
 	"journey_not_ready_sessions_live": "You need a running session first.",
 	"journey_press": "Press",
 	"journey_step": "Step {i} of {n}",
