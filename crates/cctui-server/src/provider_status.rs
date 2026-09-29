@@ -178,9 +178,7 @@ impl ProviderStatusCache {
     /// The reading for one family; `Unknown` when the poller has none.
     #[must_use]
     pub fn get(&self, family: &str) -> ProviderStatus {
-        self.slots
-            .get(family)
-            .map_or_else(|| ProviderStatus::unknown(family), |s| s.status.clone())
+        self.slots.get(family).map_or_else(|| ProviderStatus::unknown(family), |s| s.status.clone())
     }
 
     /// Every polled family, in a stable order.

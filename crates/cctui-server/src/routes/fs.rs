@@ -281,8 +281,11 @@ async fn find_link_owner(
     .await?;
     for (sid, machine, status, registered_at, last_heartbeat) in rows {
         let Some(machine_id) = machine else { continue };
-        let (session_status, liveness) =
-            crate::routes::sessions::resolve_status_liveness(&status, registered_at, last_heartbeat);
+        let (session_status, liveness) = crate::routes::sessions::resolve_status_liveness(
+            &status,
+            registered_at,
+            last_heartbeat,
+        );
         if session_status == SessionStatus::Archived || liveness == Liveness::Dead {
             continue;
         }
@@ -831,9 +834,7 @@ mod tests {
             None,
             "nothing is linked yet"
         );
-        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(path)))
-            .await
-            .unwrap();
+        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(path))).await.unwrap();
         assert_eq!(
             find_link_owner(&f.pool, &f.owner, path, &viewer).await.unwrap(),
             Some(LinkedFileOwner { session_id: f.session.clone(), machine_id: f.machine }),
@@ -861,7 +862,11 @@ mod tests {
             "an archived owner is as unreadable here as on its own route"
         );
 
-        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&viewer).execute(&f.pool).await.unwrap();
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&viewer)
+            .execute(&f.pool)
+            .await
+            .unwrap();
         cleanup(&f).await;
     }
 
