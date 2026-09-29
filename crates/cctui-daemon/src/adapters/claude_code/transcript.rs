@@ -1053,6 +1053,9 @@ const META_MARKERS: [&str; 12] = [
     "# Autonomous loop",
 ];
 
+/// How deep into a turn a [`META_MARKERS`] hit still identifies harness text.
+const META_HEAD_LINES: usize = 4;
+
 /// Claude echoes an ingested image back as a *user* turn of pure bookkeeping.
 /// The wording changes between releases (`[Image: source: …]`,
 /// `[Image: original 1440x3120, displayed at 923x2000. …]`, `[Image #2]`), so
@@ -1073,19 +1076,21 @@ fn is_image_notice_turn(text: &str) -> bool {
 /// message rather than human input, decided solely from the message body
 /// (`text`). See [`META_MARKERS`] for why Claude's `isMeta` flag is ignored.
 ///
-/// Markers are matched at the start of ANY line, not only the start of the
-/// turn: the harness routinely prefixes its own sentence before the wrapper it
-/// injects, which a prefix-only test never sees. Line-anchored rather than a
-/// bare substring scan so a human quoting `<system-reminder>` inside a sentence
-/// stays a human turn.
+/// Markers count only at the HEAD of the turn — the first
+/// [`META_HEAD_LINES`] non-blank lines. The harness prefixes at most its own
+/// sentence before the wrapper it injects, so a prefix-only test misses it,
+/// while a human pasting a transcript or an export quotes markers arbitrarily
+/// deep and must stay human. Line-anchored rather than a bare substring scan so
+/// a human quoting `<system-reminder>` inside a sentence stays human too.
 fn user_text_is_meta(text: &str) -> bool {
     if is_image_notice_turn(text) {
         return true;
     }
-    text.lines().any(|line| {
-        let t = line.trim_start();
-        META_MARKERS.iter().any(|m| t.starts_with(m))
-    })
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(META_HEAD_LINES)
+        .any(|line| META_MARKERS.iter().any(|m| line.starts_with(m)))
 }
 
 /// Extract the summary text from a `/compact` line. The content lives under
@@ -2258,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn meta_markers_match_mid_text_not_only_at_the_start() {
+    fn meta_markers_match_in_the_head_of_the_turn_not_only_on_line_one() {
         // The case that fails a prefix-only test: the harness prefixes its own
         // sentence before the wrapper it injects.
         assert!(user_text_is_meta(
@@ -2266,6 +2271,28 @@ mod tests {
         ));
         assert!(user_text_is_meta("preamble\n  <system-reminder>hi</system-reminder>"));
         assert!(user_text_is_meta("<system-reminder>hi</system-reminder>"));
+    }
+
+    #[test]
+    fn a_pasted_transcript_quoting_a_marker_deep_down_stays_human() {
+        let quoted: String =
+            (0..195).map(|i| format!("**User:** turn {i}\n**Assistant:** ok\n")).collect();
+        let text = format!(
+            "We reached 1M context, take over please\n{quoted}\
+             <task-notification>a job finished</task-notification>\n"
+        );
+        assert!(!user_text_is_meta(&text));
+    }
+
+    #[test]
+    fn a_marker_past_the_head_of_the_turn_does_not_flip_it() {
+        let text = "please read this\nit is long\nand rambling\nbut mine\n\
+             <system-reminder>x</system-reminder>";
+        assert!(!user_text_is_meta(text));
+        // Blank lines do not count against the head budget.
+        let padded = "Another session sent a message:\n\n\n\
+             <task-notification>x</task-notification>";
+        assert!(user_text_is_meta(padded));
     }
 
     #[test]

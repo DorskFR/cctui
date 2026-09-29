@@ -32,18 +32,22 @@ export const META_TAGS = [
 	'Stop hook feedback:',
 	'# Autonomous loop'
 ];
-// Markers are matched at the start of ANY line, not only the start of the turn:
-// the harness routinely prefixes its own sentence before the wrapper it injects,
-// which a prefix-only test never sees. Line-anchored rather than a bare
+// Markers count only in the head of the turn: the harness prefixes at most its
+// own sentence before the wrapper it injects, which a prefix-only test never
+// sees, while a human pasting a transcript or an export quotes markers
+// arbitrarily deep and must stay a human turn. Line-anchored rather than a bare
 // substring scan so a human quoting `<system-reminder>` inside a sentence stays
-// a human turn. Mirrors `user_text_is_meta` in the daemon's transcript parser.
+// human too. Mirrors `user_text_is_meta` in the daemon's transcript parser.
+const META_HEAD_LINES = 4;
 export function looksMeta(text: string): boolean {
 	return (
 		isSyntheticImageNotice(text) ||
-		text.split('\n').some((line) => {
-			const t = line.trimStart();
-			return META_TAGS.some((m) => t.startsWith(m));
-		})
+		text
+			.split('\n')
+			.map((line) => line.trim())
+			.filter((line) => line !== '')
+			.slice(0, META_HEAD_LINES)
+			.some((line) => META_TAGS.some((m) => line.startsWith(m)))
 	);
 }
 

@@ -408,6 +408,7 @@ impl Driver {
             Some(b) if !b.is_empty() => format!("{session_context}\n\n{b}"),
             _ => session_context,
         };
+        self.note_delivered(session_id, &prompt);
         let req = launch::dispatch_request(
             &ids,
             cwd,
@@ -584,6 +585,9 @@ impl Driver {
         )
         .map(|p| p.to_string_lossy().into_owned());
         let prompt = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
+        if let Some(prompt) = prompt {
+            self.note_delivered(session_id, prompt);
+        }
 
         // Remember the parent BEFORE dispatching so the roster-discovery emit
         // (which can race in on the very next poll) finds the link.

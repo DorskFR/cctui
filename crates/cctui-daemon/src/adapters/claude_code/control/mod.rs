@@ -32,6 +32,7 @@ use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
 use crate::adapter_runtime::{CommandOutcome, Handled, SessionDriver};
 
+mod delivered;
 mod diagnose;
 mod removal;
 mod reply;
@@ -485,6 +486,9 @@ pub struct Driver {
     /// `Mutex` because the reply path takes `&self` while the poll loop holds
     /// `&mut self`.
     pending_turns: std::sync::Mutex<HashMap<String, PendingTurn>>,
+    /// Fingerprints of text this daemon delivered per session, so a transcript
+    /// user line it wrote is never mistaken for harness-injected text.
+    delivered: delivered::Delivered,
     /// Parent session id remembered per freshly-forked child `short`.
     /// `fork` dispatches a new worker but the `SessionStarted` for it is emitted
     /// later by the poll loop when the short first appears in the roster — that
@@ -738,6 +742,7 @@ impl Driver {
             acked_marks: HashMap::new(),
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             pending_turns: std::sync::Mutex::new(HashMap::new()),
+            delivered: delivered::Delivered::default(),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             server: None,
             machine_key: None,
@@ -1150,7 +1155,7 @@ impl Driver {
     /// belong to an older turn, and stamping them with whatever turn happens
     /// to be in flight mints a row the server sees as new.
     async fn emit_fresh(&self, evt: AdapterEvent) {
-        let _ = self.events.send(self.stamp_turn(evt)).await;
+        let _ = self.events.send(self.unmask_delivered(self.stamp_turn(evt))).await;
     }
 
     /// Give a user event the id of the turn cctui injected, when one is still

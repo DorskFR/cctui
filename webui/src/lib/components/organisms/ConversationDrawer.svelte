@@ -24,7 +24,7 @@
 	import { settings } from '$lib/settings.svelte';
 	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
-	import type { ViewOpts } from './conversation/types';
+	import type { MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
 	import { mergeEventSources } from './conversation/format';
 	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
@@ -169,6 +169,11 @@
 		planPreamble: () => stream.plan?.preamble
 	});
 	const lines = $derived(renderer.lines);
+	function revealHead(categories: MsgCategory[]): void {
+		const msgFilter = { ...view.msgFilter };
+		for (const c of categories) msgFilter[c] = true;
+		view = { ...view, msgFilter };
+	}
 	$effect(() => {
 		void lines.length;
 		void plugins.ready.length;
@@ -393,6 +398,8 @@
 				canFetchOlder={earlier.canFetch}
 				fetchingOlder={earlier.fetching}
 				onfetcholder={earlier.fetchEarlier}
+				headHidden={renderer.headHidden}
+				onrevealhead={revealHead}
 				{archived}
 				askPreambleHtml={renderer.askPreambleHtml}
 				planPreambleHtml={renderer.planPreambleHtml}
