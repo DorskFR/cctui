@@ -470,10 +470,12 @@ mod tests {
             network_access: true,
             ..AppServerConfig::default()
         };
-        assert!(ask.managed_overrides().contains(&(
-            "sandbox_workspace_write.network_access".to_owned(),
-            "true".to_owned()
-        )));
+        assert!(
+            ask.managed_overrides().contains(&(
+                "sandbox_workspace_write.network_access".to_owned(),
+                "true".to_owned()
+            ))
+        );
 
         for cfg in [
             AppServerConfig { network_access: false, ..ask.clone() },

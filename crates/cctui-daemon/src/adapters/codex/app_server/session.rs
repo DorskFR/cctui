@@ -1035,10 +1035,7 @@ mod tests {
             assert_eq!((want_sandbox, want_approval), (sandbox, approval));
             for launch in [
                 SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() },
-                SessionLaunch::Resume {
-                    thread_id: "tid".to_owned(),
-                    initial_commands: Vec::new(),
-                },
+                SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
                 SessionLaunch::Fork {
                     parent_thread_id: "tid".to_owned(),
                     prompt: None,
