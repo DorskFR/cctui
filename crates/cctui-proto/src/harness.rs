@@ -101,7 +101,7 @@ pub struct HarnessOutcome {
 ///
 /// Codex's Linux sandbox is bubblewrap, and host policy can break it outright:
 /// on Ubuntu 24.04+ `kernel.apparmor_restrict_unprivileged_userns=1` with no
-/// bwrap AppArmor profile makes every sandboxed command fail. Codex reports the
+/// bwrap `AppArmor` profile makes every sandboxed command fail. Codex reports the
 /// sandbox as healthy in that state, so cctui probes it itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -110,7 +110,7 @@ pub enum CodexSandbox {
     /// A sandboxed command ran.
     Ok,
     /// Recognized as the host refusing unprivileged user namespaces, which an
-    /// AppArmor profile for `bwrap` fixes.
+    /// `AppArmor` profile for `bwrap` fixes.
     UsernsDenied { detail: String },
     /// The probe failed for some other reason.
     Unknown { detail: String },

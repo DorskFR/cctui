@@ -7,9 +7,7 @@ use std::sync::{Arc, OnceLock};
 use cctui_proto::diagnose::{TrafficError, TrafficFrame};
 
 use crate::adapters::traffic_rings::merge_by_ts;
-pub use crate::adapters::traffic_rings::{
-    TRANSPORT_SHARED, TRANSPORT_STDIO, TrafficRings as DiagnoseRings,
-};
+pub use crate::adapters::traffic_rings::{TRANSPORT_SHARED, TrafficRings as DiagnoseRings};
 
 /// Format the retained stderr tail for inclusion in a crash detail. Empty
 /// when nothing was captured.
@@ -40,6 +38,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::adapters::traffic_rings::TRANSPORT_STDIO;
 
     #[test]
     fn a_session_snapshot_merges_the_shared_connection_tail_oldest_first() {

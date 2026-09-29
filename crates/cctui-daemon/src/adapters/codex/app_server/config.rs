@@ -47,8 +47,12 @@ pub struct AppServerConfig {
     pub sandbox_fallback: SandboxFallback,
 }
 
-/// `codex_sandbox_fallback` in `daemon.toml`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// `codex_sandbox_fallback` in `daemon.toml`. Serialized because it rides
+/// [`AppServerConfig`] into the durable per-session record.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum SandboxFallback {
     #[default]
     Error,
