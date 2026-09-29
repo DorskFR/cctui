@@ -48,7 +48,7 @@ failed `CommandResult`. That much of the shape is genuinely shared.
 | `ResumeMarks` / `AckMarks` | yes | yes | no | per-harness | Transcript offset bookkeeping; opencode streams over SSE and keeps none. |
 | `PermissionResponse` | yes | yes | yes | per-harness | |
 | `Diagnose` | yes | yes | yes | per-harness | Report *shape* is shared (`cctui_proto::diagnose`); every field is filled per harness, and opencode answers `n.a.` for most of them. |
-| `WatchPty` (live terminal) | yes | yes | no | neutral channel, per-harness body | `AdapterCtx::pty_watch` and `adapters/pty_watch.rs` are neutral; `pty_view.rs` exists for claude and codex only. `AdapterFactory::pty_watch` declares participation. |
+| `WatchPty` (live terminal) | yes | yes | yes | neutral channel, per-harness body | `AdapterCtx::pty_watch`, `adapters/pty_watch.rs` and `adapters/ring_view.rs` are neutral; codex and opencode supply only a traffic snapshot, claude streams its PTY. `AdapterFactory::pty_watch` declares participation. |
 
 ## Launch-time capabilities
 
@@ -76,11 +76,13 @@ failed `CommandResult`. That much of the shape is genuinely shared.
 | Start time across a daemon restart | yes | yes | n.a. | per-harness | claude re-reads it from the worker's own `state.json`; codex persists it in its durable registry (`codex/persist.rs`). opencode sessions are torn down on re-exec, so none survives to have an age. |
 | Durable session registry | yes | yes | **no** | per-harness | claude's workers are separate processes discovered by roster; codex snapshots `SessionRegistry` to `codex-sessions.json`; opencode keeps `LiveRegistry` in memory and kills `opencode serve` on re-exec. |
 | Re-announce on reconnect | yes | yes | yes | neutral contract, per-harness body | `AdapterCtx::connected` fires per connection; each adapter re-announces its own live sessions. |
-| Turn-end detection | yes | no | no | claude-only | `childwatch::note_turn_end` is called only from `claude_code/mod.rs`. codex and opencode fall back to `childwatch`'s neutral `observe` heuristics. |
+| Turn-end signal to clients | yes | yes | yes | **neutral** | `adapters/turn_end.rs`, gated on the server's `turn_end` capability: claude from its Stop hook, codex from `turn/completed`, opencode from `session.idle`. |
+| Turn-end for subagent follow | yes | no | no | claude-only | `childwatch::note_turn_end` is called only from `claude_code/mod.rs`; codex and opencode children fall back to `childwatch`'s `observe` heuristics. |
 | Subagent follow (`CctuiAgent`) | yes | yes | yes | **neutral** | `agenttool.rs` + `childwatch.rs`; adapters contribute only `parent_local_id` on `SessionStarted`. |
 | Ask / plan / permission prompts | yes | yes | yes | neutral events, per-harness source | `AdapterEvent::Ask`/`Permission` are neutral; claude sources them from `askhook`, codex from app-server notifications, opencode from SSE. |
 | Stop hooks / whip | yes | no | no | claude-only | `whipstop.rs` is a claude hook binary; nothing equivalent exists for the other two. |
-| Diagnose rings + redaction | n.a. | yes | no | per-harness | `DiagnoseRings` lives inside `codex/app_server`. |
+| Diagnose rings + redaction | n.a. | yes | yes | **neutral** | `adapters/traffic_rings.rs`, transport-tagged per entry; codex records JSON-RPC and stderr, opencode records HTTP, SSE and stderr. |
+| Harness sandbox health | n.a. | yes | n.a. | per-harness | codex probes bubblewrap at adapter start, reports it on the machine and fails `auto` spawns fast; the other harnesses have no sandbox of their own. |
 | Transcript backfill | yes | yes | no | per-harness | |
 | Live status / tempo classification | yes | yes | yes | neutral event, per-harness body | |
 
@@ -106,9 +108,11 @@ failed `CommandResult`. That much of the shape is genuinely shared.
    and `claude_code/control/settings.rs::stage_uploads` do the same job with
    the same contract. Claude should call the neutral one.
 
-4. **Turn-end is a claude-only signal.** `childwatch` has a precise
-   `note_turn_end` for claude and heuristics for everyone else, so subagent
-   follow is measurably better for one harness than the other two.
+4. **Subagent follow knows the precise turn end only for claude.** Clients
+   now get a turn-end signal from all three harnesses, but `childwatch`'s
+   `note_turn_end` is still fed only by claude; codex and opencode children
+   are followed by heuristics. Feeding it from `adapters/turn_end.rs` would
+   close this.
 
 5. **Two version gates, one idea.** `claude_code/version_gate.rs` and
    `codex/codex_version_gate.rs` are independent implementations of "the
@@ -120,6 +124,5 @@ failed `CommandResult`. That much of the shape is genuinely shared.
    rather than pretending the mapping is total.
 
 7. **Diagnose is a shared report shape filled three ways.** The proto type is
-   neutral; almost every field is per-harness, and opencode answers `n.a.` for
-   most of them. The ring buffer + redaction that makes codex's report useful
-   is not reachable from the other adapters.
+   neutral and codex and opencode now share one ring buffer with redaction,
+   but the rest of each report is still filled per harness.
