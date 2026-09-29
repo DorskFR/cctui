@@ -32,8 +32,9 @@ const DEFAULT_RELAY_WAIT_SECS: u64 = 8;
 /// for. A relay is either up in seconds or not coming.
 const MAX_RELAY_WAIT_SECS: u64 = 60;
 
-/// Seconds the launch may wait for the session's MCP relay, as
-/// `CCTUI_MCP_READY_WAIT_SECS` sets it. `0` disables the gate for every
+/// Seconds the launch may wait for the session's MCP relay.
+///
+/// Set by `CCTUI_MCP_READY_WAIT_SECS`, where `0` disables the gate for every
 /// harness. Read only here and by claude-code's `SessionStart` hook, so the
 /// knob has exactly one production reader per delivery path.
 #[must_use]
@@ -79,7 +80,7 @@ pub struct Preflight {
 
 impl Preflight {
     #[must_use]
-    pub fn new(events: mpsc::Sender<AdapterEvent>, model: Option<String>) -> Self {
+    pub const fn new(events: mpsc::Sender<AdapterEvent>, model: Option<String>) -> Self {
         Self {
             events,
             model,
@@ -133,7 +134,7 @@ impl Preflight {
 
     /// Override the relay wait a [`Self::with_relay`] resolved.
     #[must_use]
-    pub fn with_relay_wait(mut self, wait: Duration) -> Self {
+    pub const fn with_relay_wait(mut self, wait: Duration) -> Self {
         self.relay_wait = wait;
         self
     }
