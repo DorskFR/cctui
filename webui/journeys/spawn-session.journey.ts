@@ -1,6 +1,8 @@
 import { defineJourney, param } from '@dorsk/journey';
 
 const SESSIONS = '/sessions';
+// The kit's `Menu` forwards no `data-journey` to the trigger it renders.
+const SECTIONS_TOGGLE = { css: '[data-journey="sections"] [aria-haspopup="menu"]', nth: 0 } as const;
 
 export default defineJourney({
 	id: 'spawn-session',
@@ -92,7 +94,7 @@ export default defineJourney({
 			id: 'sections',
 			route: SESSIONS,
 			optional: true,
-			target: 'sections/toggle',
+			target: SECTIONS_TOGGLE,
 			do: { kind: 'click' },
 			say: {
 				title: { en: 'Choose what the list shows', fr: 'Choisir ce qu’affiche la liste' },

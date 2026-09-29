@@ -10,8 +10,8 @@
 	// trigger or popover shell — used by both the per-session picker (LabelBadge)
 	// and the list-wide filter (LabelFilter): a filter/search Input over a
 	// LabelList, plus the LabelEditModal so the pencil works wherever the menu
-	// appears. Each caller keeps its own trigger + open/close
-	// (LabelFilter's IconButton + clickOutside, LabelBadge's Popover).
+	// appears. Each caller keeps its own trigger + open/close, via the kit's
+	// Popover.
 	//
 	// A row is the filter's checkbox + the picker's hue-tinted Badge chip. The
 	// per-row edit pencil shows when `onUpdate` is given; "Create" when `onCreate`

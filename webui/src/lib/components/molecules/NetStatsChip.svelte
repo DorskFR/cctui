@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { net, formatBytes, wireTotals, type WireTotals } from '$lib/netstats.svelte';
-	import { clickOutside } from '$lib/clickOutside';
-	import { Text } from '@dorsk/tsumikit';
+	import { Popover, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let open = $state(false);
@@ -12,16 +11,18 @@
 	const topRoutes = $derived(open ? net.routes().slice(0, 8) : []);
 </script>
 
-<div class="netstats" use:clickOutside={() => (open = false)}>
-	<button
-		type="button"
-		class="net-chip"
-		title={m.net_stats_title()}
-		aria-expanded={open}
-		onclick={() => (open = !open)}
-	>
+<Popover
+	bind:open
+	label={m.net_stats_title()}
+	placement="bottom-end"
+	title={m.net_stats_title()}
+	bare
+	style="--pop-trigger-pad: 0 var(--sp-1)"
+	panelStyle="min-width:280px;max-width:min(90vw,32rem);padding:var(--sp-2) var(--sp-3)"
+>
+	{#snippet trigger()}
 		<Text size="xs" tone="faint" variant="code">↓ {formatBytes(net.total)}</Text>
-	</button>
+	{/snippet}
 	{#if open}
 		<div class="net-panel">
 			<div class="net-head"><Text size="xs" weight="bold">{m.net_stats_title()}</Text></div>
@@ -50,31 +51,10 @@
 			{/if}
 		</div>
 	{/if}
-</div>
+</Popover>
 
 <style>
-	.netstats {
-		position: relative;
-	}
-	.net-chip {
-		border: none;
-		background: none;
-		padding: 0 var(--sp-1);
-		cursor: pointer;
-		white-space: nowrap;
-	}
 	.net-panel {
-		position: absolute;
-		top: calc(100% + 6px);
-		right: 0;
-		z-index: var(--z-header);
-		min-width: 280px;
-		max-width: 90vw;
-		padding: var(--sp-2) var(--sp-3);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-2, 6px);
-		background: var(--bg-elevated-2);
-		box-shadow: var(--shadow-md);
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
