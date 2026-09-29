@@ -18,6 +18,7 @@ pub(super) fn build_session_context(
     cwd: &str,
     staged: &[String],
     capability: Option<&cctui_proto::api::SpawnCapability>,
+    neighbours: &[crate::neighbours::Neighbour],
 ) -> String {
     let mut b = String::from("<session-context>\n");
     if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
@@ -37,6 +38,9 @@ pub(super) fn build_session_context(
         let _ = writeln!(b, "permission-mode: {}", mode.normalized_label());
     }
     let _ = writeln!(b, "cwd: {cwd}");
+    if let Some(shared) = crate::neighbours::notice(neighbours, std::time::Instant::now()) {
+        b.push_str(&shared);
+    }
     if !spec.env.is_empty() {
         let names = spec.env.keys().cloned().collect::<Vec<_>>().join(", ");
         let _ = writeln!(b, "env (names only): {names}");
@@ -336,10 +340,13 @@ fn ensure_hook_settings_in(
         }],
     });
     let pre_hooks = json!([hook("pre"), perm_hook, plan_guard]);
-    // The whip Stop hook gets the user's phrase override via a
-    // per-session file it reads with `--phrases`; absent/cleared → the hook falls
-    // back to its compiled defaults, so a stale file from a prior spawn is removed.
-    let whip_stop_command = if whip {
+    // The whip Stop hook gets the user's phrase override via a per-session file
+    // it reads with `--phrases`; absent/cleared → the hook falls back to its
+    // compiled defaults, so a stale file from a prior spawn is removed.
+    // Exactly one `Stop` hook per session: the whip hook reports the turn end
+    // itself when it lets the stop through, so a second reporter would also fire
+    // on a stop whip just blocked.
+    let stop_hooks = if whip {
         let arg = whip_phrases.filter(|v| !v.is_null()).map_or_else(
             || {
                 remove_whip_phrases_in(root, short);
@@ -351,21 +358,9 @@ fn ensure_hook_settings_in(
                     .unwrap_or_default()
             },
         );
-        format!(
-            "{} whip-stop-hook --sock {}{arg}",
-            shell_quote(&exe),
-            shell_quote(&sock)
-        )
-    } else {
-        String::new()
-    };
-    // Exactly one `Stop` hook per session: whip's reports the turn end itself
-    // when it lets the stop through, so a second reporter would double-count and
-    // would also fire on a stop whip just blocked.
-    let stop_hooks = if whip {
-        json!([{
-            "hooks": [{ "type": "command", "command": whip_stop_command, "timeout": 10 }],
-        }])
+        let command =
+            format!("{} whip-stop-hook --sock {}{arg}", shell_quote(&exe), shell_quote(&sock));
+        json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 10 }] }])
     } else {
         json!([{
             "hooks": [{
@@ -910,6 +905,65 @@ mod tests {
         assert!(stage_uploads("sid", &serde_json::Value::Null).unwrap().is_empty());
     }
 
+    fn bare_spec() -> cctui_proto::adapter::SessionSpec {
+        cctui_proto::adapter::SessionSpec {
+            service_tier: None,
+            adapter_id: cctui_proto::adapter::AdapterId::new("claude-code"),
+            working_dir: Some("/work/cctui".to_owned()),
+            prompt: None,
+            name: None,
+            permission_mode: None,
+            effort: None,
+            model: None,
+            env: std::collections::BTreeMap::new(),
+            bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
+        }
+    }
+
+    fn neighbour(label: &str) -> crate::neighbours::Neighbour {
+        crate::neighbours::Neighbour {
+            local_id: label.to_owned(),
+            harness: "claude-code".to_owned(),
+            label: Some(label.to_owned()),
+            status: Some("working".to_owned()),
+            since: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn session_context_omits_the_shared_cwd_line_when_the_session_is_alone() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[]);
+        assert!(block.contains("cwd: /work/cctui"));
+        assert!(!block.contains("shared cwd"), "no neighbours means no line at all: {block}");
+    }
+
+    #[test]
+    fn session_context_warns_about_one_session_sharing_the_cwd() {
+        let block = build_session_context(
+            &bare_spec(),
+            "/work/cctui",
+            &[],
+            None,
+            std::slice::from_ref(&neighbour("wave-3 integrator")),
+        );
+        assert!(block.contains("shared cwd: 1 other live session in this directory: "), "{block}");
+        assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
+        assert!(block.contains("Its uncommitted changes are not yours"), "{block}");
+        assert!(block.ends_with("</session-context>"));
+    }
+
+    #[test]
+    fn session_context_lists_three_sharers_and_counts_the_rest() {
+        let all: Vec<crate::neighbours::Neighbour> =
+            (1..=4).map(|i| neighbour(&format!("agent {i}"))).collect();
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &all);
+        assert!(block.contains("shared cwd: 4 other live sessions in this directory: "), "{block}");
+        assert!(block.contains("agent 3"), "{block}");
+        assert!(!block.contains("agent 4"), "{block}");
+        assert!(block.contains("+1 more."), "{block}");
+    }
+
     #[test]
     fn session_context_block_lists_env_names_not_values() {
         use cctui_proto::adapter::{AdapterId, PermissionMode, SessionSpec};
@@ -929,7 +983,7 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         };
-        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None);
+        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[]);
         assert!(block.starts_with("<session-context>\n"));
         assert!(block.ends_with("</session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
@@ -962,7 +1016,7 @@ mod tests {
             parent_local_id: None,
         };
         let cap = cctui_proto::api::SpawnCapability::machine_default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap));
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), &[]);
         assert!(block.contains("mcp__cctui__CctuiAgent"));
         assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
         assert!(block.contains("per-child budget ceiling: $20"));
@@ -976,7 +1030,7 @@ mod tests {
         assert!(block.ends_with("</session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty));
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[]);
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
     }

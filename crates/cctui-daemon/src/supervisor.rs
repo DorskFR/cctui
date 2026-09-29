@@ -367,6 +367,7 @@ impl Supervisor {
                         // completion; this is the one point every adapter's
                         // events pass through.
                         crate::childwatch::global().observe(&event);
+                        crate::neighbours::global().observe(adapter_id.as_str(), &event);
                         // Must stay after `observe`: the turn-tail signal needs
                         // the event even though it has nothing to persist.
                         if is_textless_thinking(&event) {
