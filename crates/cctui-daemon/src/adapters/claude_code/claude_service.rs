@@ -39,18 +39,11 @@ const PLIST_TEMPLATE: &str =
 /// — no restart, so live session jobs survive the refresh. Best-effort — the
 /// caller logs failures and retries; a still-missing socket surfaces as the
 /// usual poll/dispatch error.
-#[cfg(target_os = "macos")]
 pub(super) fn ensure(claude_bin: &str) -> Result<()> {
-    macos::ensure(claude_bin)
-}
-#[cfg(target_os = "linux")]
-pub(super) fn ensure(claude_bin: &str) -> Result<()> {
-    linux::ensure(claude_bin)
-}
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(super) fn ensure(claude_bin: &str) -> Result<()> {
-    let _ = claude_bin;
-    anyhow::bail!("claude daemon service: unsupported OS")
+    if !manager_usable() {
+        anyhow::bail!("{BLOCKED}");
+    }
+    os::ensure(claude_bin)
 }
 
 /// Bring an already-installed managed unit up to the bundled template, e.g.
@@ -60,66 +53,44 @@ pub(super) fn ensure(claude_bin: &str) -> Result<()> {
 /// only: never installs, starts or restarts anything, so live session jobs are
 /// untouched. Returns whether the unit was rewritten. Linux only; the launchd
 /// plist is only (re)written when the agent is not loaded.
-#[cfg(target_os = "linux")]
 pub(super) fn refresh_installed(claude_bin: &str) -> Result<bool> {
-    linux::refresh_installed(claude_bin)
-}
-#[cfg(not(target_os = "linux"))]
-pub(super) fn refresh_installed(claude_bin: &str) -> Result<bool> {
-    let _ = claude_bin;
-    Ok(false)
+    if !manager_usable() {
+        return Ok(false);
+    }
+    os::refresh_installed(claude_bin)
 }
 
 /// Whether the managed service is currently the thing running the daemon. A
 /// daemon started some other way (`origin: foreground`) survives a unit
 /// restart untouched, so the caller must pick a different remedy.
-#[cfg(target_os = "macos")]
 pub(super) fn service_active() -> bool {
-    macos::is_loaded()
-}
-#[cfg(target_os = "linux")]
-pub(super) fn service_active() -> bool {
-    linux::is_active()
-}
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(super) const fn service_active() -> bool {
-    false
+    manager_usable() && os::service_active()
 }
 
 /// Restart the managed claude-daemon service. Callers must have established
 /// that no worker is running: this tears the supervisor down.
-#[cfg(target_os = "macos")]
 pub(super) fn restart(claude_bin: &str) -> Result<()> {
-    macos::restart(claude_bin)
+    if !manager_usable() {
+        anyhow::bail!("{BLOCKED}");
+    }
+    os::restart(claude_bin)
 }
-#[cfg(target_os = "linux")]
-pub(super) fn restart(claude_bin: &str) -> Result<()> {
-    linux::restart(claude_bin)
-}
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(super) fn restart(claude_bin: &str) -> Result<()> {
-    let _ = claude_bin;
-    anyhow::bail!("claude daemon service: unsupported OS")
+
+const BLOCKED: &str = "the OS user service manager is not usable in this build";
+
+/// A test build must never write the developer's real systemd unit or launchd
+/// plist, nor run `systemctl --user` / `launchctl`: every entry point here
+/// routes through this gate.
+const fn manager_usable() -> bool {
+    !cfg!(test)
 }
 
 /// Whether an OS user service manager is usable here. Worker containers have
 /// no systemd (`/run/systemd/system` absent, no user bus for `systemctl
 /// --user`): the kickstarter must then spawn `claude daemon run` as
 /// a direct child instead of calling [`ensure`].
-#[cfg(target_os = "linux")]
 pub(super) fn manager_available() -> bool {
-    if std::env::var_os("SYSTEMD_OFFLINE").is_some_and(|v| v == "1") {
-        return false;
-    }
-    std::path::Path::new("/run/systemd/system").is_dir()
-}
-#[cfg(target_os = "macos")]
-pub(super) fn manager_available() -> bool {
-    true
-}
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(super) fn manager_available() -> bool {
-    false
+    manager_usable() && os::manager_available()
 }
 
 /// Resolve `claude_bin` to an absolute path. Service-manager `ExecStart` /
@@ -160,6 +131,34 @@ fn render_plist(claude_bin: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
+use linux as os;
+#[cfg(target_os = "macos")]
+use macos as os;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+use unsupported as os;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod unsupported {
+    use anyhow::{Result, bail};
+
+    pub(super) fn ensure(_claude_bin: &str) -> Result<()> {
+        bail!("claude daemon service: unsupported OS")
+    }
+    pub(super) fn refresh_installed(_claude_bin: &str) -> Result<bool> {
+        Ok(false)
+    }
+    pub(super) const fn service_active() -> bool {
+        false
+    }
+    pub(super) fn restart(_claude_bin: &str) -> Result<()> {
+        bail!("claude daemon service: unsupported OS")
+    }
+    pub(super) const fn manager_available() -> bool {
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
 mod linux {
     use super::{UNIT_NAME, render_unit};
     use anyhow::{Context, Result, bail};
@@ -171,7 +170,18 @@ mod linux {
         Ok(base.join("systemd").join("user"))
     }
 
-    pub(super) fn is_active() -> bool {
+    pub(super) fn manager_available() -> bool {
+        if std::env::var_os("SYSTEMD_OFFLINE").is_some_and(|v| v == "1") {
+            return false;
+        }
+        std::path::Path::new("/run/systemd/system").is_dir()
+    }
+
+    pub(super) fn service_active() -> bool {
+        is_active()
+    }
+
+    fn is_active() -> bool {
         Command::new("systemctl")
             .args(["--user", "is-active", "--quiet", UNIT_NAME])
             .status()
@@ -278,7 +288,19 @@ mod macos {
         format!("gui/{}/{PLIST_LABEL}", uid())
     }
 
-    pub(super) fn is_loaded() -> bool {
+    pub(super) const fn manager_available() -> bool {
+        true
+    }
+
+    pub(super) fn refresh_installed(_claude_bin: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    pub(super) fn service_active() -> bool {
+        is_loaded()
+    }
+
+    fn is_loaded() -> bool {
         Command::new("launchctl")
             .args(["print", &service_target()])
             .output()
@@ -408,5 +430,28 @@ mod tests {
     #[test]
     fn resolve_keeps_absolute_paths() {
         assert_eq!(resolve_claude_bin("/opt/homebrew/bin/claude"), "/opt/homebrew/bin/claude");
+    }
+
+    #[test]
+    fn test_builds_never_reach_the_real_user_service_manager() {
+        assert!(!manager_usable());
+        assert!(!manager_available());
+        assert!(!service_active());
+        assert!(ensure("no-such-claude").is_err());
+        assert!(restart("no-such-claude").is_err());
+        assert_eq!(refresh_installed("no-such-claude").ok(), Some(false));
+    }
+
+    #[test]
+    fn the_real_unit_is_untouched_by_a_refresh_attempt() {
+        let Some(unit) =
+            dirs::config_dir().map(|d| d.join("systemd").join("user").join(UNIT_NAME))
+        else {
+            return;
+        };
+        let before = std::fs::metadata(&unit).and_then(|m| m.modified()).ok();
+        assert_eq!(refresh_installed("/tmp/no-such-claude").ok(), Some(false));
+        let after = std::fs::metadata(&unit).and_then(|m| m.modified()).ok();
+        assert_eq!(before, after, "{} must not be rewritten by tests", unit.display());
     }
 }

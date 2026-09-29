@@ -79,6 +79,11 @@ pub struct DriverConfig {
     /// injected `--settings` hook command targets the same path the daemon
     /// binds.
     pub hook_socket_path: PathBuf,
+    /// Whether this driver may boot and supervise the on-demand `claude
+    /// daemon` at all — install/start/cycle the OS user service, or spawn
+    /// `claude daemon run` as a direct child. Tests set false so neither the
+    /// real user service manager nor a real claude process is ever reached.
+    pub supervise_daemon: bool,
 }
 
 impl Default for DriverConfig {
@@ -93,6 +98,7 @@ impl Default for DriverConfig {
             skip_backfill: false,
             claude_bin: "claude".to_string(),
             hook_socket_path: super::resolve_legacy_socket_path(&serde_json::Value::Null),
+            supervise_daemon: true,
         }
     }
 }
@@ -123,6 +129,9 @@ impl DriverConfig {
         }
         if let Some(s) = v.get("claude_bin").and_then(serde_json::Value::as_str) {
             cfg.claude_bin = s.to_string();
+        }
+        if let Some(b) = v.get("supervise_daemon").and_then(serde_json::Value::as_bool) {
+            cfg.supervise_daemon = b;
         }
         cfg.hook_socket_path = super::resolve_legacy_socket_path(v);
         cfg
@@ -706,7 +715,7 @@ impl Driver {
             .offsets_path
             .clone()
             .map_or_else(|| OffsetStore::open(None), |p| OffsetStore::open(Some(p)));
-        let kickstarter = Kickstarter::new(cfg.claude_bin.clone());
+        let kickstarter = Kickstarter::new(cfg.claude_bin.clone(), cfg.supervise_daemon);
         let version_gate = super::version_gate::VersionGate::new(cfg.claude_bin.clone());
         let attach = super::attach::AttachManager::new(cfg.discovery.clone(), shutdown.clone());
         let pty_view = super::pty_view::PtyViewManager::new(
@@ -1040,7 +1049,7 @@ impl Driver {
     /// machine whose supervisor never goes down keeps the old unit, since
     /// `ensure` only runs when the socket is missing. Best-effort.
     async fn refresh_managed_unit(&self) {
-        if !super::claude_service::manager_available() {
+        if !self.cfg.supervise_daemon || !super::claude_service::manager_available() {
             return;
         }
         let bin = self.cfg.claude_bin.clone();
@@ -1061,7 +1070,7 @@ impl Driver {
 
         // The direct-spawn fallback (containers) is excluded: those workers run
         // `--no-auto-update`, so they never drift, and we keep no pid to stop.
-        if !super::claude_service::manager_available() {
+        if !self.cfg.supervise_daemon || !super::claude_service::manager_available() {
             return;
         }
         if let Some(Decision::Cycle { running, local, escalated: _ }) =

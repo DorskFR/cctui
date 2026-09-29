@@ -114,6 +114,7 @@ pub(super) fn driver() -> (Driver, mpsc::Receiver<AdapterEvent>) {
         skip_backfill: true,
         claude_bin: "claude".to_string(),
         hook_socket_path: tmp.join("hook.sock"),
+        supervise_daemon: false,
     };
     (Driver::new(cfg, tx, cmd_rx, CancellationToken::new()), rx)
 }

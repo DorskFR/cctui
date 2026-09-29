@@ -50,17 +50,22 @@ fn boot(
 /// Rate-limited launcher for the on-demand `claude daemon`.
 pub(super) struct Kickstarter {
     claude_bin: String,
+    supervise: bool,
     manager_available: bool,
     last: Mutex<Option<Instant>>,
 }
 
 impl Kickstarter {
-    pub(super) fn new(claude_bin: String) -> Self {
-        Self::with_manager(claude_bin, super::claude_service::manager_available())
+    pub(super) fn new(claude_bin: String, supervise: bool) -> Self {
+        Self::with_manager(claude_bin, supervise, super::claude_service::manager_available())
     }
 
-    const fn with_manager(claude_bin: String, manager_available: bool) -> Self {
-        Self { claude_bin, manager_available, last: Mutex::new(None) }
+    const fn with_manager(claude_bin: String, supervise: bool, manager_available: bool) -> Self {
+        Self { claude_bin, supervise, manager_available, last: Mutex::new(None) }
+    }
+
+    fn should_boot(&self, now: Instant, force: bool) -> bool {
+        self.supervise && self.gate(now, force)
     }
 
     /// Gate one attempt: record `now` and report whether enough time has
@@ -86,7 +91,7 @@ impl Kickstarter {
     /// runs on a blocking pool; must be called from within a Tokio runtime.
     /// Returns immediately (no `.await`) — the caller polls for the socket.
     pub(super) fn kick(&self, force: bool) {
-        if !self.gate(Instant::now(), force) {
+        if !self.should_boot(Instant::now(), force) {
             return;
         }
         let claude_bin = self.claude_bin.clone();
@@ -144,7 +149,7 @@ mod tests {
 
     #[test]
     fn gate_permits_first_then_backs_off() {
-        let k = Kickstarter::with_manager("claude".into(), true);
+        let k = Kickstarter::with_manager("claude".into(), true, true);
         let t0 = Instant::now();
         // First unforced attempt always permitted.
         assert!(k.gate(t0, false));
@@ -156,7 +161,7 @@ mod tests {
 
     #[test]
     fn gate_force_always_permits_and_records() {
-        let k = Kickstarter::with_manager("claude".into(), true);
+        let k = Kickstarter::with_manager("claude".into(), true, true);
         let t0 = Instant::now();
         assert!(k.gate(t0, true));
         // Forced again immediately: still permitted...
@@ -204,6 +209,21 @@ mod tests {
     }
 
     #[test]
+    fn supervision_disabled_boots_nothing_at_all() {
+        let k = Kickstarter::with_manager("claude".into(), false, true);
+        assert!(!k.should_boot(Instant::now(), true), "forced kick must still boot nothing");
+        assert!(!k.should_boot(Instant::now(), false));
+        let k = Kickstarter::with_manager("claude".into(), false, false);
+        assert!(!k.should_boot(Instant::now(), true));
+    }
+
+    #[test]
+    fn supervision_enabled_boots_normally() {
+        let k = Kickstarter::with_manager("claude".into(), true, true);
+        assert!(k.should_boot(Instant::now(), false));
+    }
+
+    #[test]
     fn direct_command_runs_claude_daemon_run_detached_with_augmented_path() {
         let cmd = direct_command("/opt/homebrew/bin/claude");
         let std = cmd.as_std();
@@ -239,7 +259,7 @@ mod tests {
                 .expect("chmod stub");
         }
 
-        let k = Kickstarter::with_manager(stub.to_string_lossy().into_owned(), false);
+        let k = Kickstarter::with_manager(stub.to_string_lossy().into_owned(), true, false);
         k.kick(true);
 
         for _ in 0..100 {

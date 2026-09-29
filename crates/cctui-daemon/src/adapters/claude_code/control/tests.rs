@@ -2,6 +2,17 @@ use super::test_support::*;
 use super::*;
 
 #[test]
+fn supervise_daemon_defaults_on_and_is_disablable_by_config() {
+    assert!(DriverConfig::default().supervise_daemon);
+    assert!(DriverConfig::from_value(&serde_json::json!({})).supervise_daemon);
+    assert!(
+        !DriverConfig::from_value(&serde_json::json!({"supervise_daemon": false}))
+            .supervise_daemon
+    );
+    assert!(!driver().0.cfg.supervise_daemon, "the test driver must never supervise");
+}
+
+#[test]
 fn reseed_interval_defaults_and_honors_override() {
     assert_eq!(reseed_interval_from(None), Duration::from_hours(1));
     assert_eq!(reseed_interval_from(Some("120".into())), Duration::from_mins(2));
