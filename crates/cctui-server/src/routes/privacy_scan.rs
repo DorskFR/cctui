@@ -36,9 +36,6 @@ use crate::state::AppState;
 /// id-keyset batch size for the sweep.
 const BATCH: i64 = 500;
 
-/// A `running` row whose worker died with its pod is reaped after this, so a
-/// lost pod cannot wedge the user's one-scan-at-a-time slot.
-const STALE_AFTER: &str = "10 minutes";
 
 #[derive(Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -51,7 +48,7 @@ pub struct RescrubRequest {
     pub since: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ScanSample {
     /// Any value the match carries is masked; a bare match is kept whole only
@@ -135,9 +132,25 @@ type JobRow = (
     Option<chrono::DateTime<chrono::Utc>>,
 );
 
-const JOB_COLUMNS: &str = "id, status, dry_run, cancel_requested, rows_total, rows_scanned, \
-                           rows_changed, substitutions, by_category, samples, error, created_at, \
-                           finished_at";
+/// sqlx 0.9 takes only `&'static str`, so the shared column list is spliced at
+/// compile time instead of being formatted in.
+macro_rules! job_query {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, status, dry_run, cancel_requested, rows_total, rows_scanned, ",
+            "rows_changed, substitutions, by_category, samples, error, created_at, ",
+            "finished_at FROM privacy_scan_jobs ",
+            $tail
+        )
+    };
+}
+
+/// A `running` row whose worker died with its pod is reaped after this, so a
+/// lost pod cannot wedge the user's one-scan-at-a-time slot.
+const REAP_STALE: &str = "UPDATE privacy_scan_jobs \
+     SET status = 'failed', error = 'interrupted', finished_at = now() \
+     WHERE user_id = $1 AND status = 'running' \
+       AND updated_at < now() - interval '10 minutes'";
 
 fn to_job(row: JobRow) -> PrivacyScanJob {
     let (
@@ -194,10 +207,7 @@ fn to_job(row: JobRow) -> PrivacyScanJob {
 
 async fn load(pool: &PgPool, id: Uuid) -> Result<Option<PrivacyScanJob>, sqlx::Error> {
     let row: Option<JobRow> =
-        sqlx::query_as(&format!("SELECT {JOB_COLUMNS} FROM privacy_scan_jobs WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
+        sqlx::query_as(job_query!("WHERE id = $1")).bind(id).fetch_optional(pool).await?;
     Ok(row.map(to_job))
 }
 
@@ -252,14 +262,12 @@ pub async fn latest(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Option<PrivacyScanJob>>, StatusCode> {
     reap_stale(&state.pool, ctx.user_id).await.map_err(db_error)?;
-    let row: Option<JobRow> = sqlx::query_as(&format!(
-        "SELECT {JOB_COLUMNS} FROM privacy_scan_jobs WHERE user_id = $1 \
-         ORDER BY created_at DESC LIMIT 1"
-    ))
-    .bind(ctx.user_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(db_error)?;
+    let row: Option<JobRow> =
+        sqlx::query_as(job_query!("WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1"))
+            .bind(ctx.user_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(db_error)?;
     Ok(Json(row.map(to_job)))
 }
 
@@ -282,14 +290,7 @@ pub async fn cancel(
 }
 
 async fn reap_stale(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query(&format!(
-        "UPDATE privacy_scan_jobs \
-         SET status = 'failed', error = 'interrupted', finished_at = now() \
-         WHERE user_id = $1 AND status = 'running' AND updated_at < now() - interval '{STALE_AFTER}'"
-    ))
-    .bind(user_id)
-    .execute(pool)
-    .await?;
+    sqlx::query(REAP_STALE).bind(user_id).execute(pool).await?;
     Ok(())
 }
 

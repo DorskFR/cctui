@@ -545,7 +545,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        AppState, AuthContext, Extension, Json, SettingsPayload, State, StatusCode, Value,
+        AppState, AuthContext, Extension, Json, SettingsPayload, State, StatusCode,
         clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_plugins,
         clamp_secret_scrub, clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
         harness_mode_to_adapter_token, put_settings, secret_scrub_of, whip_stop_phrases_of,
