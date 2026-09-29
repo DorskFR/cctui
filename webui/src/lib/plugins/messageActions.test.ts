@@ -9,6 +9,7 @@ const info = (id: string, icon: string | null = null): PluginInfo => ({
 	version: '1',
 	icon,
 	web: `/plugins/${id}/web/index.js`,
+	page: null,
 	skills: [],
 	enabled: true,
 	settings: [],

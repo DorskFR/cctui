@@ -14,6 +14,14 @@ export function enabledWebPlugins(list: readonly PluginInfo[], enabled: Record<s
 	return list.filter((p) => p.web && enabled[p.id] === true);
 }
 
+/** Enabled plugins declaring a full-page surface, in server list order. */
+export function enabledPagePlugins(
+	list: readonly PluginInfo[],
+	enabled: Record<string, boolean>
+): PluginInfo[] {
+	return enabledWebPlugins(list, enabled).filter((p) => !!p.page);
+}
+
 export class PluginModuleError extends Error {}
 
 /** The default export of a plugin's `web/index.js`, checked against the
@@ -28,6 +36,9 @@ export function validatePluginModule(loaded: unknown): CctuiPluginModule {
 	}
 	if (m.sessionPane !== undefined && typeof m.sessionPane !== 'function') {
 		throw new PluginModuleError('sessionPane is not a component');
+	}
+	if (m.page !== undefined && typeof m.page !== 'function') {
+		throw new PluginModuleError('page is not a component');
 	}
 	if (m.messageActions !== undefined && typeof m.messageActions !== 'function') {
 		throw new PluginModuleError('messageActions is not a function');

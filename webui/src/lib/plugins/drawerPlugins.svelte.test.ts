@@ -12,6 +12,7 @@ const info = (id: string, web: string | null = `/plugins/${id}/web/index.js`): P
 	version: '1',
 	icon: 'eye',
 	web,
+	page: null,
 	skills: [],
 	enabled: true,
 	settings: [],

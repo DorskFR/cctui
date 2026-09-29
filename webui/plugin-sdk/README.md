@@ -14,7 +14,7 @@ bundle. Self-contained: it only depends on `svelte`, `@sveltejs/vite-plugin-svel
 ```
 
 `plugin.json` declares `id`, `name`, `description`, `version`, `cctuiApi: 1`,
-optional `icon` (a Tsumikit icon name), `web`, `skills` and `settings`
+optional `icon` (a Tsumikit icon name), `web`, `page`, `skills` and `settings`
 (`[{ key, label, env, type: "string" }]`, rendered as a form in
 Settings → Plugins; values reach the user's sessions as the declared env var).
 
@@ -25,10 +25,12 @@ Settings → Plugins; values reach the user's sessions as the declared env var).
 ```ts
 import type { CctuiPluginModule } from '@dorsk/cctui-plugin-sdk/types';
 import Pane from './Pane.svelte';
+import AppPage from './AppPage.svelte';
 
 export default {
 	cctuiApi: 1,
 	sessionPane: Pane,
+	page: AppPage,
 	messageActions: (msg) =>
 		/^yubisashi: (https?:\S+)/m.test(msg.text)
 			? [{ label: 'Open in Review', icon: 'eye', params: { url: RegExp.$1 }, open: 'sessionPane', autoOpen: true }]
@@ -38,10 +40,18 @@ export default {
 
 - `sessionPane` is mounted with `PaneProps` (`session`, `composer`, `params`, `onclose`)
   in a resizable column beside the conversation drawer.
+- `page` is mounted with `PageProps` (`basePath`, `path`, `navigate`) as a whole
+  screen at `/apps/<id>`, once the manifest declares `page: { title, icon }`. It
+  gets a nav entry for every user who switched the plugin on. Route on `path`
+  (plugin-relative, always rooted at `/`) and call `navigate(path)` instead of
+  touching `history`: the host owns the URL, so back/forward and deep links work
+  and `path` simply re-renders. `navigate` refuses an absolute URL.
 - `messageActions` runs for every assistant line; each returned action is a
   button on that line that opens the pane with `params`. `autoOpen: true` asks
   the host to open the pane itself, once per (session, params), for the newest line.
-- The host sets a Svelte context under `HOST_CONTEXT_KEY` (`{ cctuiApi, origin }`).
+- The host sets a Svelte context under `HOST_CONTEXT_KEY` above both surfaces.
+  `cctuiApi` is the contract major (`1`); `cctuiApiMinor` counts the additive
+  extensions the host has, so feature-check anything beyond `{ cctuiApi, origin }`.
 
 ## Building
 

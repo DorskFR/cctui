@@ -20,6 +20,8 @@ export const PLUGIN_RUNTIME_MODULES: Record<string, string> = {
  *  was written against and the host refuses any other. */
 export const CCTUI_PLUGIN_API = 1;
 
+export const CCTUI_PLUGIN_API_MINOR = 1;
+
 const ENTRY_PREFIX = 'plugin-runtime/';
 
 type Bundle = Rollup.OutputBundle;
@@ -61,6 +63,7 @@ function shim(entryFile: string, css: string[]): string {
 
 export interface PluginRuntimeManifest {
 	cctuiApi: number;
+	cctuiApiMinor: number;
 	svelte: string;
 	tsumikit: string;
 }
@@ -85,6 +88,7 @@ function installedVersion(pkg: string): string {
 export function runtimeManifest(): PluginRuntimeManifest {
 	return {
 		cctuiApi: CCTUI_PLUGIN_API,
+		cctuiApiMinor: CCTUI_PLUGIN_API_MINOR,
 		svelte: installedVersion('svelte'),
 		tsumikit: installedVersion('@dorsk/tsumikit')
 	};

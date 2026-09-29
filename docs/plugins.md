@@ -124,7 +124,7 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
   "icon": "eye" }`. `title` must be non-empty; `icon` is an optional Tsumikit
   icon name for the nav entry. A `page` **requires `web`** — the module is what
   exports the page component — and a manifest with one but not the other is
-  refused at install.
+  refused at install. The module must export `page`.
 - `styles` (optional): stylesheets the host loads globally alongside the `web`
   bundle, as plugin-folder-relative paths (`["web/app.css"]`). Each is validated
   exactly like `web`: relative, inside the plugin folder (no `..`, no absolute
@@ -218,7 +218,7 @@ identity to the backend with a signature.
 
 `upstreamSetting` must name a declared instance setting of type `url` that is
 **not** secret — the admin has to be able to see and edit it. A manifest that
-breaks either rule is refused at install.
+breaks either rule is refused at install. The module must export `page`.
 
 ### The route
 

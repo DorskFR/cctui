@@ -24,7 +24,8 @@ vi.mock('$lib/queries', () => ({
 	useAllAccountsUsage: () => ({ data: [] }),
 	useProviderStatus: () => ({ data: [] }),
 	useRedirectChips: () => ({ data: [] }),
-	useMachineResources: () => ({ data: [] })
+	useMachineResources: () => ({ data: [] }),
+	usePlugins: () => ({ data: [] })
 }));
 vi.mock('@tanstack/svelte-query', () => ({
 	useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() })

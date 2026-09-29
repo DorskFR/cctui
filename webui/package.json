@@ -19,6 +19,7 @@
     "pretest": "npm run codegen:ensure",
     "test": "vitest run",
     "lint": "biome lint .",
+    "plugins:local": "vite build --config ../deploy/local/plugins/pagedemo/vite.config.ts",
     "journey:compile": "journey compile --public -o src/lib/journeys.generated.json",
     "journey:seed": "bash ../deploy/local/fixture/seed.sh",
     "journey:auth": "node scripts/journey-auth.mjs",

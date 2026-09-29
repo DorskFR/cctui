@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+	enabledPagePlugins,
 	enabledWebPlugins,
 	isPluginId,
 	loadPluginModule,
@@ -16,6 +17,7 @@ const info = (over: Partial<PluginInfo> = {}): PluginInfo => ({
 	version: '1.0.0',
 	icon: null,
 	web: '/plugins/demo/web/index.js?v=abcd1234',
+	page: null,
 	skills: [],
 	enabled: false,
 	settings: [],
@@ -43,10 +45,21 @@ describe('enabledWebPlugins', () => {
 	});
 });
 
+describe('enabledPagePlugins', () => {
+	it('keeps only switched-on plugins declaring a page surface', () => {
+		const list = [
+			info({ id: 'paged', page: { title: 'Paged', icon: null } }),
+			info({ id: 'pane-only' }),
+			info({ id: 'off', page: { title: 'Off', icon: null } })
+		];
+		expect(enabledPagePlugins(list, { paged: true, 'pane-only': true }).map((p) => p.id)).toEqual(['paged']);
+	});
+});
+
 describe('validatePluginModule', () => {
 	const pane = () => {};
 	it('accepts a v1 module', () => {
-		const mod = { default: { cctuiApi: 1, sessionPane: pane, messageActions: () => [] } };
+		const mod = { default: { cctuiApi: 1, sessionPane: pane, page: pane, messageActions: () => [] } };
 		expect(validatePluginModule(mod)).toBe(mod.default);
 		expect(validatePluginModule({ default: { cctuiApi: 1 } })).toEqual({ cctuiApi: 1 });
 	});
@@ -59,6 +72,7 @@ describe('validatePluginModule', () => {
 	it('refuses malformed contributions', () => {
 		expect(() => validatePluginModule({ default: { cctuiApi: 1, sessionPane: {} } })).toThrow(/sessionPane/);
 		expect(() => validatePluginModule({ default: { cctuiApi: 1, messageActions: 'x' } })).toThrow(/messageActions/);
+		expect(() => validatePluginModule({ default: { cctuiApi: 1, page: {} } })).toThrow(/page/);
 	});
 });
 

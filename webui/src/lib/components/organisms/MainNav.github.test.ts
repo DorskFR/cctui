@@ -8,7 +8,10 @@ vi.mock('$lib/config', () => ({ ghreviewUrl }));
 const { listGhreviewAccounts } = vi.hoisted(() => ({ listGhreviewAccounts: vi.fn() }));
 vi.mock('$lib/ghreview', () => ({ listGhreviewAccounts }));
 
-vi.mock('$lib/queries', () => ({ useSessions: () => ({ data: { sessions: [] } }) }));
+vi.mock('$lib/queries', () => ({
+	useSessions: () => ({ data: { sessions: [] } }),
+	usePlugins: () => ({ data: [] })
+}));
 vi.mock('$app/state', () => ({ page: { url: new URL('https://app.test/sessions') } }));
 
 import MainNav from './MainNav.svelte';

@@ -1,0 +1,10 @@
+{
+  "id": "pagedemo",
+  "name": "Page demo",
+  "description": "Fixture plugin for the full-page surface: its own router under /apps/pagedemo.",
+  "version": "0.1.0",
+  "cctuiApi": 1,
+  "icon": "grid",
+  "web": "web/index.js",
+  "page": { "title": "Page demo", "icon": "grid" }
+}

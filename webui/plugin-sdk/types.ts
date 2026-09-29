@@ -5,6 +5,8 @@ import type { IconName } from '@dorsk/tsumikit';
 import type { Component } from 'svelte';
 
 export const CCTUI_PLUGIN_API = 1;
+/** Additive members only; the host accepts any minor, a plugin feature-checks. */
+export const CCTUI_PLUGIN_API_MINOR = 1;
 
 /** The session a plugin pane is opened next to. */
 export interface PluginSession {
@@ -35,6 +37,15 @@ export interface PaneProps {
 	onclose: () => void;
 }
 
+/** Props the host mounts a `page` with. The plugin routes on `path` (always
+ *  starting with `/`) and calls `navigate` instead of touching `history`, so the
+ *  host keeps the SvelteKit URL — `${basePath}${path}` — in sync. */
+export interface PageProps {
+	basePath: string;
+	path: string;
+	navigate(path: string): void;
+}
+
 /** A conversation message handed to `messageActions`. */
 export interface PluginMessage {
 	role: string;
@@ -57,6 +68,7 @@ export const HOST_CONTEXT_KEY = 'cctui:host';
 
 export interface HostContext {
 	cctuiApi: number;
+	cctuiApiMinor?: number;
 	/** The webui origin, what a skill needs as `--parent-origin`. */
 	origin: string;
 }
@@ -64,6 +76,7 @@ export interface HostContext {
 export interface CctuiPluginModule {
 	cctuiApi: typeof CCTUI_PLUGIN_API;
 	sessionPane?: Component<PaneProps>;
+	page?: Component<PageProps>;
 	messageActions?: (msg: PluginMessage) => MessageAction[];
 }
 
@@ -80,6 +93,7 @@ export const PLUGIN_RUNTIME_PATHS: Record<string, string> = {
 /** What `/plugin-runtime/manifest.json` reports about the host. */
 export interface PluginRuntimeManifest {
 	cctuiApi: number;
+	cctuiApiMinor?: number;
 	svelte: string;
 	tsumikit: string;
 }
