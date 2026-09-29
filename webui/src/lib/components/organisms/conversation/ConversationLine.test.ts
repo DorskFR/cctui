@@ -190,3 +190,60 @@ describe('quote reply action', () => {
 		sel?.removeAllRanges();
 	});
 });
+
+describe('fork select checkbox', () => {
+	const forkLine = line({ role: 'assistant', messageId: 'msg-1' });
+
+	async function renderSelect(over: Record<string, unknown> = {}) {
+		const ontoggleselect = vi.fn();
+		comp = mount(ConversationLine, {
+			target: document.body,
+			props: {
+				ln: forkLine,
+				archived: false,
+				onretry: vi.fn(),
+				onedit: vi.fn(),
+				onsaveimage: vi.fn(),
+				oncopymarkdown: vi.fn(),
+				forkable: true,
+				selectMode: true,
+				ontoggleselect,
+				...over
+			}
+		});
+		await flush();
+		return {
+			ontoggleselect,
+			box: document.querySelector<HTMLInputElement>('.fork-check input[type="checkbox"]')
+		};
+	}
+
+	it('renders a kit checkbox carrying the accessible name and the row title', async () => {
+		const { box } = await renderSelect();
+		expect(box).not.toBeNull();
+		expect(box?.closest('[data-tsu="Checkbox"]')).not.toBeNull();
+		expect(document.querySelector('.fork-check')?.getAttribute('title')).toBe(
+			'Include this message in the fork selection'
+		);
+		expect(document.querySelector('.fork-check')?.textContent).toContain(
+			'Select this message for fork'
+		);
+	});
+
+	it('reflects the selected state and reports toggles', async () => {
+		const { box, ontoggleselect } = await renderSelect({ selectedForFork: true });
+		expect(box?.checked).toBe(true);
+		box?.click();
+		await flush();
+		expect(ontoggleselect).toHaveBeenCalledWith('msg-1');
+	});
+
+	it('uses no raw checkbox input', () => {
+		expect(lineSource).not.toContain('type="checkbox"');
+	});
+
+	it('stays hidden outside select mode', async () => {
+		await renderSelect({ selectMode: false });
+		expect(document.querySelector('.fork-check')).toBeNull();
+	});
+});

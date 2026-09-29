@@ -5,6 +5,7 @@
 	// open, so a late viewer still sees the live frame. Never sends input
 	// upstream — strictly a video feed.
 	import { onMount } from 'svelte';
+	import { IconButton } from '@dorsk/tsumikit';
 	import { ws } from '$lib/ws.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { resolveTerminalFont, resolveTerminalBg, BUNDLED_TERMINAL_FONT } from './terminalFont';
@@ -96,7 +97,13 @@
 				? m.conversation_terminal_readonly_live()
 				: m.conversation_terminal_connecting()}
 		</span>
-		<button type="button" class="term-close" onclick={onclose} aria-label={m.conversation_terminal_close_aria()}>✕</button>
+		<IconButton
+			inline
+			glyphSize={14}
+			icon="x"
+			label={m.conversation_terminal_close_aria()}
+			onclick={onclose}
+		/>
 	</div>
 	<div class="term-host" bind:clientWidth={available}>
 		<div class="term-sizer" class:scaled style:height={scaled ? `${natural.height * scale}px` : undefined}>
@@ -145,13 +152,6 @@
 	.term-dot.on {
 		background: var(--ok);
 		box-shadow: 0 0 6px var(--ok);
-	}
-	.term-close {
-		border: none;
-		background: transparent;
-		color: var(--text-muted);
-		cursor: pointer;
-		font-size: var(--fs-sm);
 	}
 	.term-host {
 		overflow: auto;

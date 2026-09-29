@@ -2,7 +2,7 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Checkbox, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import LineActions from './LineActions.svelte';
 	import LineDelivery from './LineDelivery.svelte';
 	import LineFooter from './LineFooter.svelte';
@@ -108,14 +108,14 @@
 >
 	<div class="lmeta row">
 		{#if selectMode && forkAnchor}
-			<input
-				type="checkbox"
-				class="fork-select-check"
-				checked={selectedForFork}
-				aria-label={m.fork_select_message_aria()}
-				title={m.fork_select_message_title()}
-				onchange={() => ontoggleselect?.(forkAnchor)}
-			/>
+			<span class="fork-check" title={m.fork_select_message_title()}>
+				<Checkbox
+					checked={selectedForFork}
+					label={m.fork_select_message_aria()}
+					labelHidden
+					onchange={() => ontoggleselect?.(forkAnchor)}
+				/>
+			</span>
 		{/if}
 		{#if ln.role === 'assistant' && ln.turn !== undefined}
 			<Tooltip text={`turn ${ln.turn}`}>
@@ -215,6 +215,14 @@
 		gap: var(--sp-2);
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
+	}
+	.fork-check {
+		display: inline-flex;
+		align-items: center;
+	}
+	.fork-check :global(.box) {
+		width: 0.9rem;
+		height: 0.9rem;
 	}
 	.who {
 		text-transform: uppercase;

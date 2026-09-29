@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Per-message action cluster at the right of the meta row: pin, save-as-image,
 	// copy-as-Markdown, quote-reply, bookmark. Excluded from the saved image.
-	import { Icon, IconButton } from '@dorsk/tsumikit';
+	import { IconButton } from '@dorsk/tsumikit';
 	import { bubbleSelection } from './lineActions';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
@@ -41,15 +41,16 @@
 
 <span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
 	{#if pinnable}
-		<button
-			type="button"
-			class="pin-btn"
-			class:on={pinned}
-			aria-pressed={pinned}
-			aria-label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
+		<IconButton
+			inline
+			glyphSize={16}
+			icon="pin"
+			pressed={pinned}
+			style="--btn-on: var(--warn)"
+			label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
 			title={pinned ? m.conversation_unpin_title() : m.conversation_pin_title()}
-			onclick={() => onpin?.(ln)}><Icon name="pin" size={16} filled={pinned} /></button
-		>
+			onclick={() => onpin?.(ln)}
+		/>
 	{/if}
 	<!-- Copy-as-Markdown uses the same markdown glyph as the
 	     conversation-level copy; save-as-image uses a
@@ -87,14 +88,16 @@
 		/>
 	{/if}
 	{#if onbookmark}
-		<button
-			type="button"
-			class="bookmark"
-			class:saved={bookmarked}
-			aria-label={m.bookmarks_line_label()}
+		<IconButton
+			inline
+			glyphSize={14}
+			emoji="◈"
+			pressed={bookmarked}
+			style="--btn-on: var(--role-assistant)"
+			label={m.bookmarks_line_label()}
 			title={bookmarked ? m.bookmarks_line_saved_title() : m.bookmarks_line_title()}
-			onclick={() => onbookmark?.(ln)}>◈</button
-		>
+			onclick={() => onbookmark?.(ln)}
+		/>
 	{/if}
 </span>
 
@@ -104,38 +107,5 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
-	}
-	/* The pin stays visible once set — it marks the line in the flow, so it
-	   cannot be a hover-only affordance like the copy buttons. */
-	.pin-btn {
-		display: inline-flex;
-		align-items: center;
-		padding: 0 var(--sp-1);
-		background: none;
-		border: none;
-		line-height: 1;
-		color: var(--text-faint);
-		cursor: pointer;
-	}
-	.pin-btn:hover,
-	.pin-btn.on {
-		color: var(--warn);
-	}
-	.line-actions .bookmark {
-		display: inline-flex;
-		align-items: center;
-		padding: var(--sp-1);
-		background: none;
-		border: 0;
-		line-height: 1;
-		cursor: pointer;
-		font-size: var(--fs-sm);
-		color: var(--text-muted);
-	}
-	.line-actions .bookmark:hover {
-		color: var(--text);
-	}
-	.line-actions .bookmark.saved {
-		color: var(--role-assistant);
 	}
 </style>
