@@ -383,17 +383,19 @@
 						</Text>
 					{/if}
 					{#if editor?.mode !== 'reauth'}
-						<Disclosure bind:open={showAdvanced} class="adv" panelClass="adv-fld">
+						<Disclosure bind:open={showAdvanced}>
 							{#snippet header()}
 								<Text tone="muted" size="sm">{m.accounts_adv_refresh_summary()}</Text>
 							{/snippet}
-							<Field label={m.accounts_refresh_token_label()}>
-								<Input
-									type="password"
-									bind:value={refreshToken}
-									placeholder={m.accounts_refresh_token_placeholder()}
-								/>
-							</Field>
+							<div class="adv-fld">
+								<Field label={m.accounts_refresh_token_label()}>
+									<Input
+										type="password"
+										bind:value={refreshToken}
+										placeholder={m.accounts_refresh_token_placeholder()}
+									/>
+								</Field>
+							</div>
 						</Disclosure>
 					{/if}
 				{/if}
@@ -428,7 +430,7 @@
 		align-items: center;
 		gap: var(--sp-2);
 	}
-	:global(.adv .adv-fld) {
+	.adv-fld {
 		margin-top: var(--sp-2);
 	}
 	.spacer {

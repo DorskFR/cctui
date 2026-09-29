@@ -19,48 +19,48 @@
 </script>
 
 {#if progress}
-	<Disclosure
-		class="tasks"
-		buttonClass="strip"
-		chevron="start"
-		{open}
-		onchange={(v) => {
-			open = v;
-			setTaskPanelOpen(sessionId, v);
-		}}
-	>
-		{#snippet header()}
-			<span class="strip-text">
-				<span class="title">{m.tasks_heading()}</span>
-				<span class="count">{progress.done}/{progress.total}</span>
-				{#if progress.inProgress}
-					<span class="now" title={progress.inProgress.activeForm ?? progress.inProgress.content}>
-						{progress.inProgress.activeForm ?? progress.inProgress.content}
-					</span>
-				{/if}
-			</span>
-		{/snippet}
-		<ul class="list">
-			{#each progress.items as t, i (i)}
-				<li class="task" class:done={t.status === 'completed'} class:active={t.status === 'in_progress'}>
-					<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
-					<span class="subject" title={t.content}>{t.content}</span>
-					<span class="status">{label[t.status]()}</span>
-					{#if t.blockedBy?.length}
-						<span class="blocked" title={t.blockedBy.join(', ')}>
-							{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
+	<div class="tasks">
+		<Disclosure
+			chevron="start"
+			{open}
+			onchange={(v) => {
+				open = v;
+				setTaskPanelOpen(sessionId, v);
+			}}
+		>
+			{#snippet header()}
+				<span class="strip-text">
+					<span class="title">{m.tasks_heading()}</span>
+					<span class="count">{progress.done}/{progress.total}</span>
+					{#if progress.inProgress}
+						<span class="now" title={progress.inProgress.activeForm ?? progress.inProgress.content}>
+							{progress.inProgress.activeForm ?? progress.inProgress.content}
 						</span>
 					{/if}
-				</li>
-			{/each}
-		</ul>
-	</Disclosure>
+				</span>
+			{/snippet}
+			<ul class="list">
+				{#each progress.items as t, i (i)}
+					<li class="task" class:done={t.status === 'completed'} class:active={t.status === 'in_progress'}>
+						<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
+						<span class="subject" title={t.content}>{t.content}</span>
+						<span class="status">{label[t.status]()}</span>
+						{#if t.blockedBy?.length}
+							<span class="blocked" title={t.blockedBy.join(', ')}>
+								{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
+							</span>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		</Disclosure>
+	</div>
 {/if}
 
 <style>
 	/* `flex: none` plus the per-span truncation keeps a long subject or a long
 	   activeForm from widening the drawer or wrapping the strip onto a 2nd line. */
-	:global(.tasks) {
+	.tasks {
 		flex: none;
 		min-width: 0;
 		max-width: 100%;
@@ -68,17 +68,14 @@
 		font-size: var(--fs-xs);
 		overflow: hidden;
 	}
-	:global(.tasks .strip) {
-		min-width: 0;
-		padding: var(--sp-1) var(--sp-2);
-		color: var(--text-muted);
-		font-size: inherit;
-	}
 	.strip-text {
 		display: flex;
 		align-items: baseline;
 		gap: var(--sp-2);
 		min-width: 0;
+		color: var(--text-muted);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-normal);
 	}
 	.title {
 		flex: none;

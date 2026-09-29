@@ -108,16 +108,20 @@
 					})}
 			/>
 		</SettingRow>
-		<Disclosure class="defaults" data-setting-row buttonClass="defaults-summary" panelClass="chips">
-			{#snippet header()}
-				<Text size="sm" tone="muted">
-					{m.settings_whip_defaults_count({ count: BUILTIN_STALL_PHRASES.length })}
-				</Text>
-			{/snippet}
-			{#each BUILTIN_STALL_PHRASES as p (p)}
-				<Badge mono size="sm" border>{p}</Badge>
-			{/each}
-		</Disclosure>
+		<div class="defaults" data-setting-row>
+			<Disclosure>
+				{#snippet header()}
+					<Text size="sm" tone="muted">
+						{m.settings_whip_defaults_count({ count: BUILTIN_STALL_PHRASES.length })}
+					</Text>
+				{/snippet}
+				<div class="chips">
+					{#each BUILTIN_STALL_PHRASES as p (p)}
+						<Badge mono size="sm" border>{p}</Badge>
+					{/each}
+				</div>
+			</Disclosure>
+		</div>
 	</SettingGroup>
 </SettingSection>
 
@@ -133,13 +137,10 @@
 		gap: var(--sp-1);
 		text-align: left;
 	}
-	:global(.defaults) {
+	.defaults {
 		border-top: 1px solid var(--border);
 	}
-	:global(.defaults-summary) {
-		padding: var(--sp-2) var(--sp-4);
-	}
-	:global(.defaults .chips) {
+	.chips {
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--sp-1);
