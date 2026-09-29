@@ -30,6 +30,15 @@ describe("provider status", () => {
     expect(indicatorTone(null)).toBeNull();
   });
 
+  it("renders nothing when the fetch never answered", () => {
+    // A failed or absent /provider-status leaves `data` undefined; the indicator
+    // reads that as unknown, which is not a badge.
+    expect(degraded(undefined)).toEqual([]);
+    expect(worstIndicator(undefined)).toBeNull();
+    expect(indicatorTone(worstIndicator(undefined))).toBeNull();
+    expect(statusForProvider(undefined, "anthropic")).toBeNull();
+  });
+
   it("keeps only the degraded families", () => {
     const list = [
       status({ family: "anthropic", indicator: "none" }),

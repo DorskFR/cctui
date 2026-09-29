@@ -3253,6 +3253,8 @@ mod tests {
                     .bind(false)
                     .bind(None::<serde_json::Value>)
                     .bind(header_pin)
+                    .bind(false)
+                    .bind(None::<String>)
                     .fetch_optional(&pool)
                     .await
                     .expect("patch provider");
