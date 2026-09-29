@@ -94,3 +94,131 @@ pub async fn stamp_last_used(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    async fn test_pool(test_name: &str) -> Option<PgPool> {
+        let url = crate::routes::gateway::test_db_url(test_name)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    /// A session with one live gateway token bound to a fresh account.
+    async fn session_with_token(pool: &PgPool) -> (String, Uuid) {
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("tok-{uid}"))
+            .bind(format!("htok-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mtok-{machine}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        let account: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(uid)
+                .bind(format!("tok-account-{uid}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        let provider: Uuid = sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider) \
+             VALUES ($1, $2, 'anthropic') RETURNING id",
+        )
+        .bind(uid)
+        .bind(account)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
+             VALUES ($1, $2, $2, $3, '/w', 'archived')",
+        )
+        .bind(&sid)
+        .bind(machine)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(format!("hash-{}", Uuid::new_v4()))
+        .bind(&sid)
+        .bind(provider)
+        .execute(pool)
+        .await
+        .unwrap();
+        (sid, provider)
+    }
+
+    /// The contract the archive path relies on: the credential stops working,
+    /// but the row stays and still names the account, so a resumed session
+    /// re-mints instead of launching with an empty gateway env.
+    #[tokio::test]
+    async fn revoking_a_session_keeps_the_row_and_its_account() {
+        let Some(pool) = test_pool("revoking_a_session_keeps_the_row_and_its_account").await else {
+            return;
+        };
+        let (sid, provider) = session_with_token(&pool).await;
+
+        super::revoke_by_session(&pool, &sid).await.unwrap();
+
+        let (live, total, bound): (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE revoked_at IS NULL), count(*), max(account_id::text) \
+             FROM session_tokens WHERE session_id = $1",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(live, 0, "no live token survives the revocation");
+        assert_eq!(total, 1, "the row is kept, not deleted");
+        assert_eq!(bound, Some(provider.to_string()), "the revoked row still names the account");
+    }
+
+    /// `archive_one` and the stale sweep can both reach the same session, and a
+    /// re-archive must not re-stamp `revoked_at`: the first revocation is when
+    /// the credential actually died.
+    #[tokio::test]
+    async fn revoking_twice_keeps_the_first_timestamp() {
+        let Some(pool) = test_pool("revoking_twice_keeps_the_first_timestamp").await else {
+            return;
+        };
+        let (sid, _) = session_with_token(&pool).await;
+
+        super::revoke_by_session(&pool, &sid).await.unwrap();
+        let first: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT revoked_at FROM session_tokens WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        super::revoke_by_session(&pool, &sid).await.unwrap();
+        let second: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT revoked_at FROM session_tokens WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(first, second);
+    }
+}
