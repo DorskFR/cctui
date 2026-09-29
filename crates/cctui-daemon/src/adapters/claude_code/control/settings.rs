@@ -18,6 +18,7 @@ pub(super) fn build_session_context(
     cwd: &str,
     staged: &[String],
     capability: Option<&cctui_proto::api::SpawnCapability>,
+    neighbours: &[crate::neighbours::Neighbour],
 ) -> String {
     let mut b = String::from("<session-context>\n");
     if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
@@ -37,6 +38,9 @@ pub(super) fn build_session_context(
         let _ = writeln!(b, "permission-mode: {}", mode.normalized_label());
     }
     let _ = writeln!(b, "cwd: {cwd}");
+    if let Some(shared) = crate::neighbours::notice(neighbours, std::time::Instant::now()) {
+        b.push_str(&shared);
+    }
     if !spec.env.is_empty() {
         let names = spec.env.keys().cloned().collect::<Vec<_>>().join(", ");
         let _ = writeln!(b, "env (names only): {names}");
@@ -101,10 +105,10 @@ pub fn stage_mid_chat_files(
 }
 
 /// Recover a session's whip posture from the per-session settings file the
-/// original spawn wrote for `short`. The whip profile is the only one
-/// that emits a top-level `hooks.Stop` block (the `whip-stop-hook`), so its
-/// presence is a reliable discriminator. Used by cold resume, which has no
-/// `spec` to read `permission_mode` from. Absent/unreadable file → not whip.
+/// original spawn wrote for `short`. Every session registers a `hooks.Stop`
+/// block, so the discriminator is the `whip-stop-hook` command inside it. Used
+/// by cold resume, which has no `spec` to read `permission_mode` from.
+/// Absent/unreadable file → not whip.
 pub(super) fn detect_whip_from_settings(short: &str) -> bool {
     let Some(path) = hook_settings_path(&format!("hook-settings-{short}.json")) else {
         return false;
@@ -112,22 +116,41 @@ pub(super) fn detect_whip_from_settings(short: &str) -> bool {
     std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get("hooks").and_then(|h| h.get("Stop")).cloned())
-        .is_some()
+        .is_some_and(|v| stop_block_is_whip(v.pointer("/hooks/Stop")))
 }
 
-pub(super) fn hook_settings_path(file: &str) -> Option<PathBuf> {
+fn stop_block_is_whip(stop: Option<&serde_json::Value>) -> bool {
+    stop.and_then(|s| serde_json::to_string(s).ok())
+        .is_some_and(|s| s.contains("whip-stop-hook"))
+}
+
+/// The directory holding the per-session settings, mcp-config and whip-phrase
+/// files. The `*_in` writers take it as an argument because mutating the process
+/// env is unsound under the threaded test runner.
+pub(super) fn config_root() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("cctui").join(file))
+    Some(base.join("cctui"))
+}
+
+pub(super) fn hook_settings_path(file: &str) -> Option<PathBuf> {
+    Some(config_root()?.join(file))
 }
 
 /// Write the per-session whip phrase override file the `whip-stop-hook`
 /// reads via `--phrases`, returning its path. `None` (unwritable) → the caller
 /// launches the hook without the arg, so it uses its compiled defaults.
 pub(super) fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Option<PathBuf> {
-    let path = hook_settings_path(&format!("whip-phrases-{short}.json"))?;
+    write_whip_phrases_in(&config_root()?, short, block)
+}
+
+fn write_whip_phrases_in(
+    root: &std::path::Path,
+    short: &str,
+    block: &serde_json::Value,
+) -> Option<PathBuf> {
+    let path = root.join(format!("whip-phrases-{short}.json"));
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
         tracing::warn!(%err, "whip-stop: cannot create phrases dir");
         return None;
@@ -144,9 +167,13 @@ pub(super) fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Opti
 /// Delete a stale whip phrase file for `short` so a spawn after the user cleared
 /// the override falls back to the compiled defaults. Best-effort.
 pub(super) fn remove_whip_phrases(short: &str) {
-    if let Some(path) = hook_settings_path(&format!("whip-phrases-{short}.json")) {
-        let _ = std::fs::remove_file(path);
+    if let Some(root) = config_root() {
+        remove_whip_phrases_in(&root, short);
     }
+}
+
+fn remove_whip_phrases_in(root: &std::path::Path, short: &str) {
+    let _ = std::fs::remove_file(root.join(format!("whip-phrases-{short}.json")));
 }
 
 /// Recursively deep-merge `overlay` into `base`, with `overlay` winning at every
@@ -234,7 +261,34 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
     whip_phrases: Option<&serde_json::Value>,
     agent_relay_session: Option<&str>,
 ) -> Option<PathBuf> {
-    let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
+    ensure_hook_settings_in(
+        &config_root()?,
+        sock,
+        whip,
+        short,
+        account_settings,
+        gateway_env,
+        model,
+        effort,
+        whip_phrases,
+        agent_relay_session,
+    )
+}
+
+#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+fn ensure_hook_settings_in(
+    root: &std::path::Path,
+    sock: &std::path::Path,
+    whip: bool,
+    short: &str,
+    account_settings: Option<&serde_json::Value>,
+    gateway_env: &std::collections::BTreeMap<String, String>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    whip_phrases: Option<&serde_json::Value>,
+    agent_relay_session: Option<&str>,
+) -> Option<PathBuf> {
+    let path = root.join(format!("hook-settings-{short}.json"));
     let exe = std::env::current_exe()
         .map_err(|err| tracing::warn!(%err, "ask-hook: cannot resolve current_exe"))
         .ok()?;
@@ -286,40 +340,41 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
         }],
     });
     let pre_hooks = json!([hook("pre"), perm_hook, plan_guard]);
-    // The whip Stop hook gets the user's phrase override via a
-    // per-session file it reads with `--phrases`; absent/cleared → the hook falls
-    // back to its compiled defaults, so a stale file from a prior spawn is removed.
-    let whip_stop_command = if whip {
+    // The whip Stop hook gets the user's phrase override via a per-session file
+    // it reads with `--phrases`; absent/cleared → the hook falls back to its
+    // compiled defaults, so a stale file from a prior spawn is removed.
+    // Exactly one `Stop` hook per session: the whip hook reports the turn end
+    // itself when it lets the stop through, so a second reporter would also fire
+    // on a stop whip just blocked.
+    let stop_hooks = if whip {
         let arg = whip_phrases.filter(|v| !v.is_null()).map_or_else(
             || {
-                remove_whip_phrases(short);
+                remove_whip_phrases_in(root, short);
                 String::new()
             },
             |v| {
-                write_whip_phrases(short, v)
+                write_whip_phrases_in(root, short, v)
                     .map(|p| format!(" --phrases {}", shell_quote(&p.to_string_lossy())))
                     .unwrap_or_default()
             },
         );
-        format!("{} whip-stop-hook{arg}", shell_quote(&exe))
+        let command =
+            format!("{} whip-stop-hook --sock {}{arg}", shell_quote(&exe), shell_quote(&sock));
+        json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 10 }] }])
     } else {
-        String::new()
-    };
-    let mut hooks = if whip {
-        json!({
-            "PreToolUse": pre_hooks,
-            "PostToolUse": [hook("post")],
-            "Stop": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": whip_stop_command,
-                    "timeout": 10,
-                }],
+        json!([{
+            "hooks": [{
+                "type": "command",
+                "command": ask_hook_command(&exe, "stop", &sock, false),
+                "timeout": 5,
             }],
-        })
-    } else {
-        json!({ "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] })
+        }])
     };
+    let mut hooks = json!({
+        "PreToolUse": pre_hooks,
+        "PostToolUse": [hook("post")],
+        "Stop": stop_hooks,
+    });
     // Claude Code connects its MCP servers while the session starts, so a turn-1
     // `CctuiAgent` call can beat the relay's `initialize`.
     if let Some(block) = agent_relay_session.and_then(|session| {
@@ -409,10 +464,19 @@ pub(in crate::adapters::claude_code) fn ensure_agent_mcp_config(
     session_id: &str,
     capability: Option<&cctui_proto::api::SpawnCapability>,
 ) -> Option<PathBuf> {
+    ensure_agent_mcp_config_in(&config_root()?, short, session_id, capability)
+}
+
+fn ensure_agent_mcp_config_in(
+    root: &std::path::Path,
+    short: &str,
+    session_id: &str,
+    capability: Option<&cctui_proto::api::SpawnCapability>,
+) -> Option<PathBuf> {
     if capability.is_none_or(cctui_proto::api::SpawnCapability::is_empty) {
         return None;
     }
-    let path = hook_settings_path(&format!("mcp-agent-{short}.json"))?;
+    let path = root.join(format!("mcp-agent-{short}.json"));
     let exe = std::env::current_exe()
         .map_err(|err| tracing::warn!(%err, "CctuiAgent: cannot resolve current_exe"))
         .ok()?;
@@ -536,6 +600,145 @@ mod tests {
         };
         assert!(path.contains(&short));
         std::fs::remove_file(&path).ok();
+    }
+
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn hook_settings_land_0600_under_the_injected_root_on_create_and_rewrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("nested").join("cctui");
+        let env = env_of(&[("ANTHROPIC_AUTH_TOKEN", "cctui_s_bearer")]);
+        let write = || {
+            ensure_hook_settings_in(
+                &root,
+                std::path::Path::new("/run/hook.sock"),
+                false,
+                "aaaaaaa1",
+                None,
+                &env,
+                Some("opus"),
+                Some("high"),
+                None,
+                None,
+            )
+            .expect("the injected root is writable")
+        };
+
+        let path = write();
+        assert_eq!(path, root.join("hook-settings-aaaaaaa1.json"));
+        assert_eq!(mode_of(&path), 0o600, "the gateway bearer token must never be readable");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], json!("cctui_s_bearer"));
+        assert!(written["hooks"]["PreToolUse"].is_array());
+
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(write(), path);
+        assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
+    }
+
+    #[test]
+    fn every_session_installs_exactly_one_stop_hook() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cctui");
+        let sock = std::path::Path::new("/run/hook.sock");
+        let write = |whip: bool, short: &str| {
+            let path = ensure_hook_settings_in(
+                &root,
+                sock,
+                whip,
+                short,
+                None,
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("written");
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()
+        };
+
+        let plain = write(false, "ddddddd4");
+        let stop = plain["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "one Stop group");
+        let hooks = stop[0]["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1, "one Stop hook, never a second reporter");
+        let command = hooks[0]["command"].as_str().unwrap();
+        assert!(command.contains("ask-hook --event stop"), "{command}");
+        assert!(command.contains("/run/hook.sock"), "{command}");
+        assert!(!command.contains("whip-stop-hook"), "{command}");
+        assert!(!stop_block_is_whip(plain.pointer("/hooks/Stop")));
+
+        let whip = write(true, "eeeeeee5");
+        let hooks = whip["hooks"]["Stop"][0]["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1, "whip reports the turn end itself, so it stays alone");
+        let command = hooks[0]["command"].as_str().unwrap();
+        assert!(command.contains("whip-stop-hook --sock '/run/hook.sock'"), "{command}");
+        assert!(!command.contains("ask-hook"), "{command}");
+        assert!(
+            stop_block_is_whip(whip.pointer("/hooks/Stop")),
+            "the whip discriminator is the command, not the block's presence"
+        );
+    }
+
+    #[test]
+    fn whip_hook_settings_and_phrases_stay_inside_the_injected_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cctui");
+        let phrases = json!({ "mode": "extend", "phrases": ["pour une autre session"] });
+        let path = ensure_hook_settings_in(
+            &root,
+            std::path::Path::new("/run/hook.sock"),
+            true,
+            "bbbbbbb2",
+            None,
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            Some(&phrases),
+            None,
+        )
+        .expect("written");
+        assert_eq!(mode_of(&path), 0o600);
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let stop = written["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(stop.contains("whip-stop-hook"), "{stop}");
+        let phrases_path = root.join("whip-phrases-bbbbbbb2.json");
+        assert!(phrases_path.exists(), "the override file rides the injected root too");
+        assert!(stop.contains(&phrases_path.to_string_lossy().into_owned()), "{stop}");
+    }
+
+    #[test]
+    fn agent_mcp_config_lands_0600_under_the_injected_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cctui");
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["claude-code".to_owned()],
+            ..Default::default()
+        };
+        assert!(
+            ensure_agent_mcp_config_in(&root, "ccccccc3", "sess-3", None).is_none(),
+            "no capability writes no file"
+        );
+        let path = ensure_agent_mcp_config_in(&root, "ccccccc3", "sess-3", Some(&cap))
+            .expect("the injected root is writable");
+        assert_eq!(path, root.join("mcp-agent-ccccccc3.json"));
+        assert_eq!(mode_of(&path), 0o600, "the relay session key must never be readable");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["mcpServers"]["cctui"]["args"][2], json!("sess-3"));
+
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        ensure_agent_mcp_config_in(&root, "ccccccc3", "sess-3", Some(&cap)).expect("rewritten");
+        assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
     }
 
     #[test]
@@ -702,6 +905,65 @@ mod tests {
         assert!(stage_uploads("sid", &serde_json::Value::Null).unwrap().is_empty());
     }
 
+    fn bare_spec() -> cctui_proto::adapter::SessionSpec {
+        cctui_proto::adapter::SessionSpec {
+            service_tier: None,
+            adapter_id: cctui_proto::adapter::AdapterId::new("claude-code"),
+            working_dir: Some("/work/cctui".to_owned()),
+            prompt: None,
+            name: None,
+            permission_mode: None,
+            effort: None,
+            model: None,
+            env: std::collections::BTreeMap::new(),
+            bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
+        }
+    }
+
+    fn neighbour(label: &str) -> crate::neighbours::Neighbour {
+        crate::neighbours::Neighbour {
+            local_id: label.to_owned(),
+            harness: "claude-code".to_owned(),
+            label: Some(label.to_owned()),
+            status: Some("working".to_owned()),
+            since: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn session_context_omits_the_shared_cwd_line_when_the_session_is_alone() {
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[]);
+        assert!(block.contains("cwd: /work/cctui"));
+        assert!(!block.contains("shared cwd"), "no neighbours means no line at all: {block}");
+    }
+
+    #[test]
+    fn session_context_warns_about_one_session_sharing_the_cwd() {
+        let block = build_session_context(
+            &bare_spec(),
+            "/work/cctui",
+            &[],
+            None,
+            std::slice::from_ref(&neighbour("wave-3 integrator")),
+        );
+        assert!(block.contains("shared cwd: 1 other live session in this directory: "), "{block}");
+        assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
+        assert!(block.contains("Its uncommitted changes are not yours"), "{block}");
+        assert!(block.ends_with("</session-context>"));
+    }
+
+    #[test]
+    fn session_context_lists_three_sharers_and_counts_the_rest() {
+        let all: Vec<crate::neighbours::Neighbour> =
+            (1..=4).map(|i| neighbour(&format!("agent {i}"))).collect();
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &all);
+        assert!(block.contains("shared cwd: 4 other live sessions in this directory: "), "{block}");
+        assert!(block.contains("agent 3"), "{block}");
+        assert!(!block.contains("agent 4"), "{block}");
+        assert!(block.contains("+1 more."), "{block}");
+    }
+
     #[test]
     fn session_context_block_lists_env_names_not_values() {
         use cctui_proto::adapter::{AdapterId, PermissionMode, SessionSpec};
@@ -721,7 +983,7 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         };
-        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None);
+        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[]);
         assert!(block.starts_with("<session-context>\n"));
         assert!(block.ends_with("</session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
@@ -754,7 +1016,7 @@ mod tests {
             parent_local_id: None,
         };
         let cap = cctui_proto::api::SpawnCapability::machine_default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap));
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), &[]);
         assert!(block.contains("mcp__cctui__CctuiAgent"));
         assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
         assert!(block.contains("per-child budget ceiling: $20"));
@@ -768,7 +1030,7 @@ mod tests {
         assert!(block.ends_with("</session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty));
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[]);
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
     }

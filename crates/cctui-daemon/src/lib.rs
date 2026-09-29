@@ -34,6 +34,7 @@ pub mod launchgate;
 pub mod listdirs;
 pub mod mcp;
 pub mod mcpready;
+pub mod neighbours;
 pub mod offsets;
 pub mod plugins;
 pub mod preview;

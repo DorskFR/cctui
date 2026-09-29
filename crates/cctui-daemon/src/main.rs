@@ -116,6 +116,9 @@ enum Cmd {
         /// at spawn. Absent/unreadable → the compiled default phrase list.
         #[arg(long)]
         phrases: Option<PathBuf>,
+        /// Daemon socket the allowed stop is reported to as a turn end.
+        #[arg(long)]
+        sock: Option<PathBuf>,
     },
     /// Check for a newer release, swap the binary in place, and restart
     /// the daemon service (if one is running) so it picks up the new binary.
@@ -448,8 +451,8 @@ async fn main() -> anyhow::Result<()> {
             cctui_daemon::mcp::wait_ready(&session, &sock, std::time::Duration::from_secs(timeout));
             Ok(())
         }
-        Cmd::WhipStopHook { phrases } => {
-            std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref()))
+        Cmd::WhipStopHook { phrases, sock } => {
+            std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref(), sock.as_deref()))
         }
     }
 }
