@@ -404,8 +404,9 @@ impl CommandPump {
 
     /// Per-spawn permission posture: override the host default `sandbox_mode`
     /// and `approval_policy`. None → keep the `daemon.toml` defaults (which a
-    /// no-userns host sets to full-access). `auto` keeps the workspace sandbox
-    /// but disables approval prompts (`approval=never`). Effort (codex:
+    /// no-userns host sets to full-access). The mapping lives in
+    /// `PermissionMode::codex_sandbox_approval` and is the only one: every
+    /// spawn path, dispatched children included, arrives here. Effort (codex:
     /// low/medium/high/xhigh), model family and service tier likewise.
     fn launch_cfg(
         &self,
@@ -414,9 +415,10 @@ impl CommandPump {
     ) -> AppServerConfig {
         let mut cfg = self.app_cfg.clone();
         if let Some(mode) = spec.permission_mode {
-            let (sandbox, approval) = mode.codex_sandbox_approval();
+            let (sandbox, approval, network) = mode.codex_sandbox_approval();
             sandbox.clone_into(&mut cfg.sandbox_mode);
             approval.clone_into(&mut cfg.approval_policy);
+            cfg.network_access = network;
         }
         if let Some(effort) = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
             cfg.reasoning_effort = Some(effort.to_owned());

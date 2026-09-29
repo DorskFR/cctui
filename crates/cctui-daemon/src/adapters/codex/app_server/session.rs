@@ -268,7 +268,8 @@ impl CodexSession {
     pub(super) fn thread_config(&self, shared: bool) -> ThreadConfig {
         let config = ThreadConfig::new(&self.env, self.cfg.service_tier.as_deref())
             .with_tool_env(self.skills.env.clone())
-            .with_developer_instructions(self.skills.catalog.clone());
+            .with_developer_instructions(self.skills.catalog.clone())
+            .with_permissions(&self.cfg.approval_policy, &self.cfg.sandbox_mode);
         if shared { config.with_overlay(shared_overlay(&self.cfg, &self.env)) } else { config }
     }
 
@@ -1011,11 +1012,62 @@ mod tests {
         assert_eq!(method, "thread/resume");
         let config = &req["params"]["config"];
         assert_eq!(config["model"], "gpt-5.5");
-        assert_eq!(config["approval_policy"], "never");
-        assert_eq!(config["sandbox_mode"], "workspace-write");
         assert_eq!(config["service_tier"], "fast");
+        assert!(config.get("approval_policy").is_none());
+        assert!(config.get("sandbox_mode").is_none());
+        assert_eq!(req["params"]["approvalPolicy"], "never");
+        assert_eq!(req["params"]["sandbox"], "workspace-write");
         let (stdio, _) = session.stdio_thread_request();
         assert!(stdio["params"]["config"].get("model").is_none(), "stdio keeps them on -c");
+    }
+
+    /// The posture has no config path at all — a stdio child gets it from the
+    /// same native params, not from its `-c` flags.
+    #[test]
+    fn start_resume_and_fork_all_carry_the_native_posture_for_every_mode() {
+        for (mode, sandbox, approval) in [
+            (cctui_proto::adapter::PermissionMode::Ask, "workspace-write", "untrusted"),
+            (cctui_proto::adapter::PermissionMode::Auto, "workspace-write", "on-request"),
+            (cctui_proto::adapter::PermissionMode::Yolo, "danger-full-access", "never"),
+            (cctui_proto::adapter::PermissionMode::Whip, "danger-full-access", "never"),
+        ] {
+            let (want_sandbox, want_approval, want_net) = mode.codex_sandbox_approval();
+            assert_eq!((want_sandbox, want_approval), (sandbox, approval));
+            for launch in [
+                SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() },
+                SessionLaunch::Resume {
+                    thread_id: "tid".to_owned(),
+                    initial_commands: Vec::new(),
+                },
+                SessionLaunch::Fork {
+                    parent_thread_id: "tid".to_owned(),
+                    prompt: None,
+                    name: None,
+                    attachments: Vec::new(),
+                },
+            ] {
+                let mut session = session_with_tier(launch, None);
+                session.cfg.sandbox_mode = want_sandbox.to_owned();
+                session.cfg.approval_policy = want_approval.to_owned();
+                session.cfg.network_access = want_net;
+                for shared in [false, true] {
+                    let (req, _) = session.thread_request(&session.thread_config(shared));
+                    let params = &req["params"];
+                    assert_eq!(params["approvalPolicy"], approval, "{mode:?} shared={shared}");
+                    assert_eq!(params["sandbox"], sandbox, "{mode:?} shared={shared}");
+                    let config = &params["config"];
+                    assert!(config.get("approval_policy").is_none(), "{mode:?}");
+                    assert!(config.get("sandbox_mode").is_none(), "{mode:?}");
+                }
+                let shared_config =
+                    &session.thread_request(&session.thread_config(true)).0["params"]["config"];
+                assert_eq!(
+                    shared_config.get("sandbox_workspace_write.network_access").is_some(),
+                    want_net && want_sandbox == "workspace-write",
+                    "{mode:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -95,9 +95,9 @@ pub async fn run_thread_lifecycle(
     }
     let mut cmd = Command::new(&app.bin);
     cmd.arg("app-server")
-        // No turn is started, so sandbox mode only matters because codex
-        // refuses to boot when it cannot create the bwrap namespace on some
-        // kernels — pass the configured (host-default) mode through.
+        // This process runs no turn; the mode rides along only so codex boots
+        // identically to a session app-server. Never `approval_policy` here:
+        // `"untrusted"` as config aborts startup.
         .arg("-c")
         .arg(format!("sandbox_mode=\"{}\"", app.sandbox_mode))
         .env("PATH", crate::childenv::child_path())
