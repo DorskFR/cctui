@@ -444,8 +444,7 @@ mod tests {
 
     #[test]
     fn the_real_unit_is_untouched_by_a_refresh_attempt() {
-        let Some(unit) =
-            dirs::config_dir().map(|d| d.join("systemd").join("user").join(UNIT_NAME))
+        let Some(unit) = dirs::config_dir().map(|d| d.join("systemd").join("user").join(UNIT_NAME))
         else {
             return;
         };

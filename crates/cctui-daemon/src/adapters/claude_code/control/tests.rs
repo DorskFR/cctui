@@ -6,8 +6,7 @@ fn supervise_daemon_defaults_on_and_is_disablable_by_config() {
     assert!(DriverConfig::default().supervise_daemon);
     assert!(DriverConfig::from_value(&serde_json::json!({})).supervise_daemon);
     assert!(
-        !DriverConfig::from_value(&serde_json::json!({"supervise_daemon": false}))
-            .supervise_daemon
+        !DriverConfig::from_value(&serde_json::json!({"supervise_daemon": false})).supervise_daemon
     );
     assert!(!driver().0.cfg.supervise_daemon, "the test driver must never supervise");
 }
