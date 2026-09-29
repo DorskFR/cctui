@@ -316,15 +316,30 @@ fn map_error_notification(local_id: &str, v: &Value) -> Incoming {
     })
 }
 
-/// Map `turn/completed` whose `turn.status == "failed"` → failed
-/// [`AdapterEvent::Status`] carrying the turn error message.
-/// Successful turns stay ignored: idle status arrives via
-/// `thread/status/changed`.
 fn map_turn_completed(local_id: &str, v: &Value) -> Incoming {
+    turn_completion(local_id, v, crate::adapters::turn_end::supported())
+}
+
+/// Map `turn/completed` whose `turn.status == "failed"` → failed
+/// [`AdapterEvent::Status`] carrying the turn error message. A successful turn
+/// is codex's authoritative turn end; against a server that cannot take one it
+/// stays ignored, since idle status arrives via `thread/status/changed` anyway.
+fn turn_completion(local_id: &str, v: &Value, turn_end_supported: bool) -> Incoming {
     if v.pointer("/params/turn/status").map_or(TurnStatus::Unknown, parse_status)
         != TurnStatus::Failed
     {
-        return Incoming::Traced { method: "turn/completed".to_owned(), reason: "turn not failed" };
+        return crate::adapters::turn_end::signal(
+            local_id,
+            chrono::Utc::now().timestamp(),
+            turn_end_supported,
+        )
+        .map_or_else(
+            || Incoming::Traced {
+                method: "turn/completed".to_owned(),
+                reason: "turn not failed",
+            },
+            Incoming::Event,
+        );
     }
     let detail = v
         .pointer("/params/turn/error/message")
@@ -809,6 +824,34 @@ mod tests {
         let v = json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
             "id": "u", "items": [], "status": "completed"}}});
         assert!(matches!(classify("t", &v), Incoming::Traced { .. }));
+    }
+
+    #[test]
+    fn a_successful_turn_completed_is_codexs_turn_end_signal() {
+        let v = json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
+            "id": "u", "items": [], "status": "completed"}}});
+        match turn_completion("t", &v, true) {
+            Incoming::Event(AdapterEvent::TurnEnd { local_id, ts }) => {
+                assert_eq!(local_id, "t");
+                assert!(ts.is_some_and(|ts| ts > 0));
+            }
+            other => panic!("expected a TurnEnd, got {other:?}"),
+        }
+        // An older server takes nothing and keeps its status poll.
+        assert!(matches!(turn_completion("t", &v, false), Incoming::Traced { .. }));
+    }
+
+    /// A failed turn keeps its failed Status — one `Incoming` carries one
+    /// event, and the error is the more useful of the two.
+    #[test]
+    fn a_failed_turn_still_reports_the_failure_not_a_turn_end() {
+        let v = json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
+            "id": "u", "items": [], "status": "failed",
+            "error": {"message": "boom"}}}});
+        assert!(matches!(
+            turn_completion("t", &v, true),
+            Incoming::Event(AdapterEvent::Status { .. })
+        ));
     }
 
     #[test]

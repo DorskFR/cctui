@@ -19,11 +19,26 @@ pub fn signal(local_id: &str, ts: i64, server_supports: bool) -> Option<AdapterE
     server_supports.then(|| AdapterEvent::TurnEnd { local_id: local_id.to_owned(), ts: Some(ts) })
 }
 
+/// Whether the connected server accepts the signal at all.
+#[must_use]
+pub fn supported() -> bool {
+    crate::servercaps::server_supports(TURN_END)
+}
+
 /// Send the turn-end signal if the server understands it. Best-effort: a full
 /// or closed channel costs nothing but the ~2s poll latency this saves.
 pub async fn emit(events: &tokio::sync::mpsc::Sender<AdapterEvent>, local_id: &str) {
-    let supported = crate::servercaps::server_supports(TURN_END);
-    let Some(event) = signal(local_id, chrono::Utc::now().timestamp(), supported) else {
+    emit_gated(events, local_id, supported()).await;
+}
+
+/// [`emit`] for a caller that snapshotted [`supported`] earlier — a session
+/// holding it as state, rather than re-reading the global per turn.
+pub async fn emit_gated(
+    events: &tokio::sync::mpsc::Sender<AdapterEvent>,
+    local_id: &str,
+    server_supports: bool,
+) {
+    let Some(event) = signal(local_id, chrono::Utc::now().timestamp(), server_supports) else {
         return;
     };
     let _ = events.send(event).await;
