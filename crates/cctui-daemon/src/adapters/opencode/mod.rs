@@ -4,6 +4,7 @@ pub mod client;
 pub mod config;
 pub mod events;
 pub mod normalize;
+mod pty_view;
 pub mod session;
 
 use cctui_proto::adapter::AdapterEvent;
@@ -71,7 +72,20 @@ async fn command_pump(cfg: OpenCodeConfig, ctx: AdapterCtx) {
 }
 
 async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
-    let AdapterCtx { events, mut commands, shutdown, server, machine_key, mut connected, .. } = ctx;
+    let AdapterCtx {
+        events,
+        mut commands,
+        shutdown,
+        server,
+        machine_key,
+        mut connected,
+        pty_watch,
+        ..
+    } = ctx;
+    let _watch_handle = pty_watch.map(|watches| {
+        let pump = pty_view::PtyWatchPump::new(live.clone(), events.clone(), shutdown.clone());
+        tokio::spawn(pump.run(watches))
+    });
     let mut pump = Pump { cfg, events, shutdown, server, machine_key, live };
     let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut connect_closed = false;
@@ -417,7 +431,14 @@ async fn diagnose(
     )
     .unwrap_or(i64::MAX);
     let live_present = live.lock().await.contains_key(local_id);
-    let verdict = if live_present { "live" } else { "unknown session" };
+    let snapshot = session_snapshot(live, local_id).await;
+    let verdict = match snapshot.as_ref() {
+        Some(s) if s.in_flight => "working",
+        Some(_) => "live",
+        None if live_present => "live",
+        None => "unknown session",
+    };
+    let opencode = opencode_section(snapshot.as_ref(), live_present);
 
     SessionDiagnose {
         local_id: local_id.to_owned(),
@@ -449,6 +470,61 @@ async fn diagnose(
             now_ms,
         ),
         codex: None,
+        opencode: Some(opencode),
+    }
+}
+
+/// Ask the live driver for its snapshot. A session that exists but cannot
+/// answer within the poll window yields `None`, and the section falls back to
+/// what the registry alone knows.
+async fn session_snapshot(
+    live: &LiveRegistry,
+    local_id: &str,
+) -> Option<session::OpenCodeLiveSnapshot> {
+    let tx = live.lock().await.get(local_id).map(|s| s.commands.clone())?;
+    let (reply, mut rx) = mpsc::channel(1);
+    tx.send(SessionCommand::Diagnose { reply }).await.ok()?;
+    tokio::time::timeout(crate::adapters::ring_view::POLL_INTERVAL, rx.recv()).await.ok().flatten()
+}
+
+fn opencode_section(
+    snapshot: Option<&session::OpenCodeLiveSnapshot>,
+    live_present: bool,
+) -> cctui_proto::diagnose::OpenCodeDiagnose {
+    let pinned = client::OPENCODE_PINNED_VERSION.to_owned();
+    let Some(snap) = snapshot else {
+        return cctui_proto::diagnose::OpenCodeDiagnose {
+            server_url: None,
+            server_pid: None,
+            pinned_version: pinned,
+            server_version: None,
+            version_matches: None,
+            live: live_present,
+            owned_sessions: Vec::new(),
+            turn_status: "unknown".to_owned(),
+            sse_connected: false,
+            last_sse_event_ms: None,
+            pending_permissions: Vec::new(),
+            protocol_errors: Vec::new(),
+            stderr_tail: Vec::new(),
+            rpc_tail: Vec::new(),
+        };
+    };
+    cctui_proto::diagnose::OpenCodeDiagnose {
+        server_url: snap.server_url.clone(),
+        server_pid: snap.server_pid,
+        version_matches: snap.server_version.as_ref().map(|v| v.contains(&pinned)),
+        pinned_version: pinned,
+        server_version: snap.server_version.clone(),
+        live: live_present,
+        owned_sessions: snap.owned_sessions.clone(),
+        turn_status: if snap.in_flight { "working" } else { "idle" }.to_owned(),
+        sse_connected: snap.sse_connected,
+        last_sse_event_ms: snap.last_sse_event_ms,
+        pending_permissions: snap.pending_permissions.clone(),
+        protocol_errors: snap.protocol_errors.clone(),
+        stderr_tail: snap.stderr_tail.clone(),
+        rpc_tail: snap.rpc_tail.clone(),
     }
 }
 
@@ -464,6 +540,9 @@ impl AdapterFactory for OpenCodeFactory {
     }
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
         Box::new(OpenCodeAdapter)
+    }
+    fn pty_watch(&self, _config: &serde_json::Value) -> bool {
+        true
     }
 }
 
@@ -549,6 +628,126 @@ mod reconnect_tests {
             },
         );
         live
+    }
+
+    /// A registry entry whose driver answers `Diagnose` with a snapshot of the
+    /// traffic it has seen.
+    async fn registry_answering_diagnose(
+        local_id: &str,
+        snapshot: session::OpenCodeLiveSnapshot,
+    ) -> LiveRegistry {
+        let live = registry_with(local_id).await;
+        let (tx, mut rx) = mpsc::channel(4);
+        if let Some(entry) = live.lock().await.get_mut(local_id) {
+            entry.commands = tx;
+        }
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                if let SessionCommand::Diagnose { reply } = cmd {
+                    let _ = reply.send(snapshot.clone()).await;
+                }
+            }
+        });
+        live
+    }
+
+    fn snapshot_with_traffic() -> session::OpenCodeLiveSnapshot {
+        session::OpenCodeLiveSnapshot {
+            server_url: Some("http://127.0.0.1:41234".to_owned()),
+            server_pid: Some(4242),
+            server_version: Some(client::OPENCODE_PINNED_VERSION.to_owned()),
+            owned_sessions: vec!["ses_live".to_owned()],
+            in_flight: true,
+            sse_connected: true,
+            last_sse_event_ms: Some(1_700_000_000_000),
+            pending_permissions: vec!["perm_1".to_owned()],
+            protocol_errors: vec![cctui_proto::diagnose::TrafficError {
+                ts_ms: 1_700_000_000_000,
+                message: "GET /event: 502 Bad Gateway".to_owned(),
+                transport: "sse".to_owned(),
+            }],
+            stderr_tail: vec![cctui_proto::diagnose::TrafficStderrLine {
+                ts_ms: 1_700_000_000_000,
+                line: "serve listening".to_owned(),
+            }],
+            rpc_tail: vec![cctui_proto::diagnose::TrafficFrame {
+                ts_ms: 1_700_000_000_000,
+                direction: "out".to_owned(),
+                label: "POST /session/ses_live/prompt_async".to_owned(),
+                json: "{}".to_owned(),
+                transport: "http".to_owned(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn the_report_carries_the_live_driver_traffic() {
+        let live = registry_answering_diagnose("ses_live", snapshot_with_traffic()).await;
+
+        let report = diagnose(&live, "ses_live", None, None).await;
+        let oc = report.opencode.expect("no opencode section");
+
+        assert_eq!(oc.server_pid, Some(4242));
+        assert_eq!(oc.turn_status, "working");
+        assert_eq!(oc.version_matches, Some(true));
+        assert!(oc.live && oc.sse_connected);
+        assert_eq!(oc.pending_permissions, vec!["perm_1".to_owned()]);
+        assert_eq!(oc.rpc_tail[0].transport, "http");
+        assert_eq!(oc.protocol_errors[0].transport, "sse");
+        assert_eq!(oc.stderr_tail[0].line, "serve listening");
+        assert_eq!(report.effective_state.value.expect("no state").verdict, "working");
+    }
+
+    /// An unknown session still gets a section, so the panel can say "not live"
+    /// rather than rendering nothing at all.
+    #[tokio::test]
+    async fn an_unknown_session_reports_a_not_live_section() {
+        let live = LiveRegistry::default();
+
+        let oc = diagnose(&live, "ses_gone", None, None).await.opencode.expect("no section");
+
+        assert!(!oc.live);
+        assert_eq!(oc.turn_status, "unknown");
+        assert_eq!(oc.pinned_version, client::OPENCODE_PINNED_VERSION);
+        assert!(oc.rpc_tail.is_empty());
+    }
+
+    /// A watch must produce `PtyChunk` text; opencode has no PTY, so the rings
+    /// rendered as lines are the live view.
+    #[tokio::test]
+    async fn a_watch_streams_the_traffic_as_pty_chunks() {
+        use base64::Engine as _;
+
+        let live = registry_answering_diagnose("ses_live", snapshot_with_traffic()).await;
+        let (events, mut rx) = mpsc::channel(8);
+        let (watch_tx, watch_rx) = mpsc::channel(4);
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let pump = tokio::spawn(
+            pty_view::PtyWatchPump::new(live, events, shutdown.clone()).run(watch_rx),
+        );
+
+        watch_tx.send(("ses_live".to_owned(), true)).await.expect("pump accepts watches");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("no PtyChunk within 5s")
+            .expect("pump stopped");
+
+        match event {
+            AdapterEvent::PtyChunk { local_id, data } => {
+                assert_eq!(local_id, "ses_live");
+                let text = String::from_utf8(
+                    base64::engine::general_purpose::STANDARD.decode(data).expect("not base64"),
+                )
+                .expect("not utf8");
+                assert!(text.contains("[http] -> POST /session/ses_live/prompt_async"), "{text}");
+                assert!(text.contains("[sse] !! GET /event: 502"), "{text}");
+                assert!(text.contains("stderr  serve listening"), "{text}");
+            }
+            other => panic!("expected PtyChunk, got {other:?}"),
+        }
+
+        shutdown.cancel();
+        pump.await.expect("pump panicked");
     }
 
     #[tokio::test]

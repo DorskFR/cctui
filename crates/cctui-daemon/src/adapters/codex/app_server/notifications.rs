@@ -186,6 +186,34 @@ fn notice_event(local_id: &str, method: &str, level: &str, params: Option<&Value
     }
 }
 
+/// The userns marker in a completed command's output, when that output is a
+/// bwrap failure this host's policy explains.
+pub(super) fn sandbox_failure_marker(event: &AdapterEvent) -> Option<&'static str> {
+    let AdapterEvent::ToolUse { payload, .. } = event else { return None };
+    if payload.get("type").and_then(Value::as_str) != Some("commandExecution") {
+        return None;
+    }
+    let output = payload.get("aggregatedOutput").and_then(Value::as_str)?;
+    crate::adapters::codex::sandbox_probe::bwrap_failure(output)
+}
+
+/// The synthetic notice for a sandbox that failed on this host. Codex has no
+/// notification for it — the failure only ever shows up as a command's output —
+/// so it is minted here in the same shape a real one takes.
+pub(super) fn sandbox_failure_notice(local_id: &str, marker: &str) -> AdapterEvent {
+    AdapterEvent::Message {
+        local_id: local_id.to_owned(),
+        payload: json!({
+            "type": "codexNotice",
+            "level": "warning",
+            "method": "sandbox/failed",
+            "text": format!("{} ({marker})", cctui_proto::harness::CODEX_SANDBOX_FIX),
+            "params": json!({ "marker": marker }),
+        }),
+        turn_id: None,
+    }
+}
+
 /// Best-effort human summary of a notice: the schema's `message` field where
 /// there is one, else a compact rendering of the params.
 fn notice_text(method: &str, params: Option<&Value>) -> String {
@@ -474,6 +502,67 @@ fn map_name(local_id: &str, v: &Value) -> Incoming {
 mod tests {
     use super::super::rpc::classify;
     use super::*;
+
+    fn command_item(output: &str) -> AdapterEvent {
+        AdapterEvent::ToolUse {
+            local_id: "t1".to_owned(),
+            payload: json!({
+                "id": "c1",
+                "type": "commandExecution",
+                "command": "ls",
+                "status": "completed",
+                "aggregatedOutput": output,
+            }),
+        }
+    }
+
+    const LOOPBACK: &str = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted";
+
+    #[test]
+    fn a_bwrap_userns_failure_in_a_command_output_is_detected() {
+        assert_eq!(sandbox_failure_marker(&command_item(LOOPBACK)), Some("loopback: Failed RTM_NEWADDR"));
+    }
+
+    /// Only a real bwrap failure raises the alarm: an ordinary command, a
+    /// command that merely prints the string, and a non-command item must not.
+    #[test]
+    fn nothing_else_is_mistaken_for_a_sandbox_failure() {
+        assert!(sandbox_failure_marker(&command_item("total 0\n")).is_none());
+        assert!(
+            sandbox_failure_marker(&command_item("grep: loopback: Failed RTM_NEWADDR")).is_none()
+        );
+        assert!(
+            sandbox_failure_marker(&AdapterEvent::ToolUse {
+                local_id: "t1".to_owned(),
+                payload: json!({ "type": "fileChange", "aggregatedOutput": LOOPBACK }),
+            })
+            .is_none()
+        );
+        assert!(
+            sandbox_failure_marker(&AdapterEvent::Message {
+                local_id: "t1".to_owned(),
+                payload: json!({ "type": "commandExecution", "aggregatedOutput": LOOPBACK }),
+                turn_id: None,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_notice_carries_the_fix_and_reads_as_a_warning() {
+        match sandbox_failure_notice("t1", "loopback: Failed RTM_NEWADDR") {
+            AdapterEvent::Message { local_id, payload, .. } => {
+                assert_eq!(local_id, "t1");
+                assert_eq!(payload["type"], "codexNotice");
+                assert_eq!(payload["level"], "warning");
+                assert_eq!(payload["method"], "sandbox/failed");
+                let text = payload["text"].as_str().expect("text");
+                assert!(text.contains("AppArmor"), "{text}");
+                assert!(text.contains("RTM_NEWADDR"), "{text}");
+            }
+            other => panic!("expected Message, got {other:?}"),
+        }
+    }
 
     #[test]
     fn codex_status_fixtures_parse_into_enums() {

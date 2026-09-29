@@ -23,6 +23,7 @@ use super::client::{
 use super::config::{ModelRef, SessionHome, session_config};
 use super::events::{OcEvent, SseDecoder, StatusKind, status_kind};
 use super::normalize::{self, Kind};
+use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TRANSPORT_SSE, TrafficRings};
 
 /// A just-started server accepts the connection before its handlers are wired
 /// and never answers that first request; probes are bounded so the startup poll
@@ -48,6 +49,9 @@ pub enum SessionCommand {
     Kill { session_id: String },
     Fork { parent: String, prompt: Option<String>, name: Option<String>, command_id: Option<Uuid> },
     Permission { session_id: String, request_id: String, allow: bool },
+    /// Gather a point-in-time snapshot of the live driver's internal state for
+    /// the adapter-neutral diagnose report and return it on `reply`.
+    Diagnose { reply: mpsc::Sender<OpenCodeLiveSnapshot> },
 }
 
 impl SessionCommand {
@@ -55,9 +59,64 @@ impl SessionCommand {
     pub const fn command_id(&self) -> Option<Uuid> {
         match self {
             Self::Prompt { command_id, .. } | Self::Fork { command_id, .. } => *command_id,
-            Self::Kill { .. } | Self::Permission { .. } => None,
+            Self::Kill { .. } | Self::Permission { .. } | Self::Diagnose { .. } => None,
         }
     }
+}
+
+/// Point-in-time snapshot of a live opencode session's driver state, gathered
+/// on demand for the diagnose report and the live view.
+#[derive(Debug, Clone, Default)]
+pub struct OpenCodeLiveSnapshot {
+    pub server_url: Option<String>,
+    pub server_pid: Option<u32>,
+    pub server_version: Option<String>,
+    pub owned_sessions: Vec<String>,
+    pub in_flight: bool,
+    pub sse_connected: bool,
+    pub last_sse_event_ms: Option<i64>,
+    pub pending_permissions: Vec<String>,
+    pub protocol_errors: Vec<cctui_proto::diagnose::TrafficError>,
+    pub stderr_tail: Vec<cctui_proto::diagnose::TrafficStderrLine>,
+    pub rpc_tail: Vec<cctui_proto::diagnose::TrafficFrame>,
+}
+
+/// Liveness of the `GET /event` stream, shared with the pump task: the whole
+/// adapter goes quiet when that stream is down, and "no events" has to be
+/// distinguishable from "no traffic at all".
+#[derive(Debug, Default)]
+pub struct SseStatus {
+    connected: std::sync::atomic::AtomicBool,
+    last_event_ms: std::sync::atomic::AtomicI64,
+}
+
+impl SseStatus {
+    fn set_connected(&self, connected: bool) {
+        self.connected.store(connected, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn note_event(&self) {
+        self.last_event_ms.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn connected(&self) -> bool {
+        self.connected.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn last_event_ms(&self) -> Option<i64> {
+        let ms = self.last_event_ms.load(std::sync::atomic::Ordering::Relaxed);
+        (ms > 0).then_some(ms)
+    }
+}
+
+fn now_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 /// Adapter-level knobs from `adapters_enabled.config`.
@@ -172,6 +231,12 @@ pub struct OpenCodeSession {
     oneshot: bool,
     saw_assistant: bool,
     in_flight: bool,
+    rings: Arc<TrafficRings>,
+    sse: Arc<SseStatus>,
+    server_url: Option<String>,
+    server_pid: Option<u32>,
+    server_version: Option<String>,
+    pending_permissions: HashSet<String>,
 }
 
 impl OpenCodeSession {
@@ -198,6 +263,12 @@ impl OpenCodeSession {
             oneshot,
             saw_assistant: false,
             in_flight: false,
+            rings: Arc::new(TrafficRings::new(TRANSPORT_HTTP)),
+            sse: Arc::new(SseStatus::default()),
+            server_url: None,
+            server_pid: None,
+            server_version: None,
+            pending_permissions: HashSet::new(),
         }
     }
 
@@ -289,12 +360,13 @@ impl OpenCodeSession {
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("spawn `{} serve`", self.params.cfg.bin))?;
-        drain_child_logs(&mut child);
+        self.server_pid = child.id();
+        drain_child_logs(&mut child, &self.rings);
 
-        let client = Arc::new(OpenCodeClient::new(
-            format!("http://{}:{port}", self.params.cfg.hostname),
-            password,
-        ));
+        let base = format!("http://{}:{port}", self.params.cfg.hostname);
+        self.server_url = Some(base.clone());
+        let client =
+            Arc::new(OpenCodeClient::new(base, password).observed(Arc::clone(&self.rings)));
         self.await_health(&client).await?;
 
         let session = client
@@ -328,7 +400,7 @@ impl OpenCodeSession {
         }
 
         let (evt_tx, mut evt_rx) = mpsc::channel(256);
-        let mut stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone()));
+        let mut stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone(), Arc::clone(&self.sse)));
 
         if let Some(preflight) = &self.params.preflight {
             preflight.run_bound(&session.id).await;
@@ -382,7 +454,7 @@ impl OpenCodeSession {
                     stream.abort();
                     let (tx, rx) = mpsc::channel(256);
                     evt_rx = rx;
-                    stream = tokio::spawn(pump_sse(client.clone(), tx, self.shutdown.clone()));
+                    stream = tokio::spawn(pump_sse(client.clone(), tx, self.shutdown.clone(), Arc::clone(&self.sse)));
                 }
             }
         }
@@ -457,13 +529,18 @@ impl OpenCodeSession {
         crate::preamble::merge(preamble, (!body.is_empty()).then_some(body))
     }
 
-    async fn await_health(&self, client: &OpenCodeClient) -> Result<()> {
+    async fn await_health(&mut self, client: &OpenCodeClient) -> Result<()> {
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_millis(self.params.cfg.startup_timeout_ms);
         let mut last: Option<String> = None;
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, client.health()).await {
-                Ok(Ok(h)) if h.healthy => return Ok(()),
+                Ok(Ok(h)) if h.healthy => {
+                    if !h.version.is_empty() {
+                        self.server_version = Some(h.version);
+                    }
+                    return Ok(());
+                }
                 Ok(Ok(h)) => last = Some(format!("unhealthy (version {})", h.version)),
                 Ok(Err(err)) => last = Some(err.to_string()),
                 Err(_) => last = Some("health probe timed out".to_owned()),
@@ -642,13 +719,38 @@ impl OpenCodeSession {
                 {
                     tracing::warn!(%err, %session_id, "opencode permission response failed");
                 }
+                self.pending_permissions.remove(&request_id);
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionResolved { local_id: session_id, request_id })
                     .await;
             }
+            SessionCommand::Diagnose { reply } => {
+                let _ = reply.send(self.snapshot()).await;
+            }
         }
         true
+    }
+
+    fn snapshot(&self) -> OpenCodeLiveSnapshot {
+        let mut owned_sessions: Vec<String> = self.owned.iter().cloned().collect();
+        owned_sessions.sort();
+        let mut pending_permissions: Vec<String> =
+            self.pending_permissions.iter().cloned().collect();
+        pending_permissions.sort();
+        OpenCodeLiveSnapshot {
+            server_url: self.server_url.clone(),
+            server_pid: self.server_pid,
+            server_version: self.server_version.clone(),
+            owned_sessions,
+            in_flight: self.in_flight,
+            sse_connected: self.sse.connected(),
+            last_sse_event_ms: self.sse.last_event_ms(),
+            pending_permissions,
+            protocol_errors: self.rings.protocol_errors(),
+            stderr_tail: self.rings.stderr_tail(),
+            rpc_tail: self.rings.rpc_tail(),
+        }
     }
 
     async fn on_fork(
@@ -769,6 +871,7 @@ impl OpenCodeSession {
                     .await;
             }
             OcEvent::PermissionAsked { properties } => {
+                self.pending_permissions.insert(properties.id.clone());
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionRequest {
@@ -781,6 +884,7 @@ impl OpenCodeSession {
                 let _ = client;
             }
             OcEvent::PermissionReplied { properties } => {
+                self.pending_permissions.remove(&properties.id);
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionResolved {
@@ -882,6 +986,7 @@ async fn pump_sse(
     client: Arc<OpenCodeClient>,
     out: mpsc::Sender<OcEvent>,
     shutdown: CancellationToken,
+    sse: Arc<SseStatus>,
 ) {
     use futures_util::StreamExt;
 
@@ -891,18 +996,32 @@ async fn pump_sse(
         }
         match client.events().await {
             Ok(resp) => {
+                sse.set_connected(true);
                 let mut decoder = SseDecoder::new();
                 let mut stream = resp.bytes_stream();
                 loop {
                     tokio::select! {
-                        () = shutdown.cancelled() => return,
+                        () = shutdown.cancelled() => {
+                            sse.set_connected(false);
+                            return;
+                        }
                         chunk = stream.next() => {
                             let Some(chunk) = chunk else { break };
                             let Ok(bytes) = chunk else { break };
                             for data in decoder.push(&String::from_utf8_lossy(&bytes)) {
+                                sse.note_event();
+                                if let Some(rings) = client.rings() {
+                                    rings.note_frame(
+                                        TRANSPORT_SSE,
+                                        "in",
+                                        &sse_label(&data),
+                                        &data,
+                                    );
+                                }
                                 match serde_json::from_str::<OcEvent>(&data) {
                                     Ok(evt) => {
                                         if out.send(evt).await.is_err() {
+                                            sse.set_connected(false);
                                             return;
                                         }
                                     }
@@ -914,11 +1033,30 @@ async fn pump_sse(
                         }
                     }
                 }
+                sse.set_connected(false);
+                if let Some(rings) = client.rings() {
+                    rings.note_protocol_error_on(TRANSPORT_SSE, "event stream closed");
+                }
             }
-            Err(err) => tracing::warn!(%err, "opencode event stream unavailable"),
+            Err(err) => {
+                sse.set_connected(false);
+                tracing::warn!(%err, "opencode event stream unavailable");
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+}
+
+/// The event `type`, so a ring line reads `session.idle` rather than the first
+/// 400 characters of its payload.
+fn sse_label(data: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("event")
+        .to_owned()
 }
 
 /// How long `opencode serve` gets to exit on SIGTERM before the group is
@@ -970,19 +1108,23 @@ fn signal_group_pid(pgid: i32, signal: rustix::process::Signal) {
     }
 }
 
-fn drain_child_logs(child: &mut tokio::process::Child) {
+fn drain_child_logs(child: &mut tokio::process::Child, rings: &Arc<TrafficRings>) {
     if let Some(stdout) = child.stdout.take() {
+        let rings = Arc::clone(rings);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                rings.note_stderr(&line);
                 tracing::debug!(target: "opencode_serve", "{line}");
             }
         });
     }
     if let Some(stderr) = child.stderr.take() {
+        let rings = Arc::clone(rings);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                rings.note_stderr(&line);
                 tracing::debug!(target: "opencode_serve_stderr", "{line}");
             }
         });
@@ -1036,6 +1178,78 @@ mod tests {
     fn free_port_is_bindable() {
         let port = free_port("127.0.0.1").unwrap();
         assert!(port > 0);
+    }
+
+    #[test]
+    fn an_sse_frame_is_labelled_by_its_event_type() {
+        assert_eq!(sse_label(r#"{"type":"session.idle","properties":{}}"#), "session.idle");
+        assert_eq!(sse_label("not json"), "event");
+        assert_eq!(sse_label(r#"{"properties":{}}"#), "event");
+    }
+
+    /// The two paths must be distinguishable in one tail: HTTP calls flowing
+    /// while the event stream is dead is exactly the failure this tagging
+    /// exists to expose.
+    #[test]
+    fn http_calls_and_sse_events_land_on_one_ring_under_their_own_transports() {
+        let rings = TrafficRings::new(TRANSPORT_HTTP);
+        rings.note_frame(TRANSPORT_HTTP, "out", "POST /session/ses_1/prompt_async", "{}");
+        rings.note_frame(TRANSPORT_SSE, "in", "session.idle", r#"{"type":"session.idle"}"#);
+        rings.note_protocol_error_on(TRANSPORT_SSE, "event stream closed");
+
+        let tail = rings.rpc_tail();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].transport, TRANSPORT_HTTP);
+        assert_eq!(tail[0].label, "POST /session/ses_1/prompt_async");
+        assert_eq!(tail[1].transport, TRANSPORT_SSE);
+        assert_eq!(rings.protocol_errors()[0].transport, TRANSPORT_SSE);
+    }
+
+    /// A tool's output is echoed into the SSE ring verbatim, so a
+    /// user-configured pattern that the builtins do not know must still be
+    /// masked before it reaches the diagnose report.
+    #[test]
+    fn a_user_configured_pattern_is_redacted_out_of_an_sse_tool_output() {
+        crate::adapters::traffic_rings::set_ring_scrub(&[(
+            "acme_key".to_owned(),
+            "ACME-[0-9]{6}".to_owned(),
+        )]);
+        let rings = TrafficRings::new(TRANSPORT_HTTP);
+        let event = serde_json::json!({
+            "type": "message.part.updated",
+            "properties": {
+                "sessionID": "ses_1",
+                "part": {
+                    "type": "tool",
+                    "state": { "status": "completed", "output": "printenv: ACME-424242" }
+                }
+            }
+        })
+        .to_string();
+        rings.note_frame(TRANSPORT_SSE, "in", &sse_label(&event), &event);
+
+        let frame = &rings.rpc_tail()[0];
+        assert!(!frame.json.contains("ACME-424242"), "{}", frame.json);
+        assert!(frame.json.contains("[REDACTED:acme_key"), "{}", frame.json);
+        assert_eq!(frame.label, "message.part.updated");
+
+        crate::adapters::traffic_rings::set_ring_scrub(&[]);
+    }
+
+    #[test]
+    fn sse_status_reports_connection_and_last_event() {
+        let sse = SseStatus::default();
+        assert!(!sse.connected());
+        assert!(sse.last_event_ms().is_none());
+
+        sse.set_connected(true);
+        sse.note_event();
+        assert!(sse.connected());
+        assert!(sse.last_event_ms().is_some_and(|ms| ms > 0));
+
+        sse.set_connected(false);
+        assert!(!sse.connected());
+        assert!(sse.last_event_ms().is_some(), "a drop must not erase the last event");
     }
 
     /// End-to-end against a real `opencode` binary: point `CCTUI_OPENCODE_BIN`

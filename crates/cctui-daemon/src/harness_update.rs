@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapters::claude_code::version_gate as claude_gate;
 use crate::adapters::codex::codex_version_gate::{self as codex_gate, CodexVersionGate, Decision};
+use crate::adapters::codex::sandbox_probe;
 
 const TICK: Duration = Duration::from_mins(1);
 const UPDATE_TIMEOUT: Duration = Duration::from_mins(10);
@@ -58,6 +59,7 @@ pub fn report() -> HarnessReport {
         versions: state.versions.clone(),
         outcomes: state.outcomes.values().cloned().collect(),
         managed_by_image: in_worker_pod(),
+        codex_sandbox: sandbox_probe::last(),
     }
 }
 
@@ -247,6 +249,11 @@ impl Runner {
         };
         record(harness, outcome);
         self.refresh_versions(harness).await;
+        if harness == HARNESS_CODEX {
+            // An update moves the binary, which is the only thing that can
+            // change the verdict; the probe is cached against its realpath.
+            sandbox_probe::refresh(&self.codex_bin).await;
+        }
     }
 
     async fn refresh_versions(&self, harness: &str) {

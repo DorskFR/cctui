@@ -1122,7 +1122,7 @@ fn stage_files_result(
 fn compile_scrub(cfg: &SecretScrubConfig) -> CompiledPatterns {
     let user: Vec<(String, String)> =
         cfg.patterns.iter().map(|p| (p.name.clone(), p.regex.clone())).collect();
-    crate::adapters::codex::app_server::set_ring_scrub(&user);
+    crate::adapters::traffic_rings::set_ring_scrub(&user);
     redact::compile(cfg.enabled, &user, &cctui_crypto::vault_key())
 }
 
@@ -1700,7 +1700,7 @@ mod tests {
         let mut running: std::collections::HashMap<String, AdapterRunning> =
             std::collections::HashMap::new();
         running.insert(
-            "opencode".to_owned(),
+            "no-live-view".to_owned(),
             AdapterRunning {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
@@ -1711,7 +1711,7 @@ mod tests {
         );
         let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
         let frame = cctui_proto::ws::DaemonFrameDown::Command {
-            adapter_id: "opencode".to_owned(),
+            adapter_id: "no-live-view".to_owned(),
             command: Box::new(cctui_proto::adapter::AdapterCommand::WatchPty {
                 local_id: "sess-1".to_owned(),
                 watch: true,

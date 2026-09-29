@@ -97,6 +97,48 @@ pub struct HarnessOutcome {
     pub at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Result of the daemon's codex sandbox probe.
+///
+/// Codex's Linux sandbox is bubblewrap, and host policy can break it outright:
+/// on Ubuntu 24.04+ `kernel.apparmor_restrict_unprivileged_userns=1` with no
+/// bwrap AppArmor profile makes every sandboxed command fail. Codex reports the
+/// sandbox as healthy in that state, so cctui probes it itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CodexSandbox {
+    /// A sandboxed command ran.
+    Ok,
+    /// Recognized as the host refusing unprivileged user namespaces, which an
+    /// AppArmor profile for `bwrap` fixes.
+    UsernsDenied { detail: String },
+    /// The probe failed for some other reason.
+    Unknown { detail: String },
+}
+
+impl CodexSandbox {
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Ok => None,
+            Self::UsernsDenied { detail } | Self::Unknown { detail } => Some(detail),
+        }
+    }
+}
+
+/// The message a user needs when a spawn is refused or a badge is shown. Kept
+/// here rather than in the webui because the daemon puts it on the failed
+/// `CommandResult` too.
+pub const CODEX_SANDBOX_FIX: &str =
+    "codex's sandbox (bubblewrap) cannot start on this host: AppArmor blocks unprivileged user \
+     namespaces for bwrap. Install an AppArmor profile for bwrap, or set \
+     kernel.apparmor_restrict_unprivileged_userns=0. See docs/codex-sandbox.md";
+
 /// Heartbeat block. `policy` echoes what the daemon currently holds so the
 /// server resends [`crate::ws::DaemonFrameDown::HarnessUpdatePolicy`] only on
 /// a difference, and only to a daemon that can parse it.
@@ -112,6 +154,10 @@ pub struct HarnessReport {
     /// A worker pod: the harness comes from the image and is never updated in place.
     #[serde(default)]
     pub managed_by_image: bool,
+    /// Last codex sandbox probe on this machine. `None` from a daemon that does
+    /// not probe, or before the first probe has run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_sandbox: Option<CodexSandbox>,
 }
 
 impl HarnessReport {
@@ -164,6 +210,31 @@ mod tests {
     fn partial_json_fills_defaults() {
         let p: HarnessUpdatePolicy = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert_eq!(p, on(DEFAULT_INTERVAL_HOURS));
+    }
+
+    /// The tag and the variant names are the wire contract the webui binding
+    /// matches on.
+    #[test]
+    fn the_sandbox_verdict_round_trips_on_its_state_tag() {
+        let denied = CodexSandbox::UsernsDenied { detail: "bwrap: loopback".to_owned() };
+        let json = serde_json::to_string(&denied).unwrap();
+        assert!(json.contains(r#""state":"userns_denied""#), "{json}");
+        assert_eq!(serde_json::from_str::<CodexSandbox>(&json).unwrap(), denied);
+        assert_eq!(serde_json::to_string(&CodexSandbox::Ok).unwrap(), r#"{"state":"ok"}"#);
+
+        assert!(CodexSandbox::Ok.is_ok());
+        assert!(CodexSandbox::Ok.detail().is_none());
+        assert_eq!(denied.detail(), Some("bwrap: loopback"));
+        assert!(!CodexSandbox::Unknown { detail: "x".to_owned() }.is_ok());
+    }
+
+    /// A daemon too old to probe sends no field, and the report must still parse.
+    #[test]
+    fn a_report_without_a_sandbox_verdict_still_parses() {
+        let report: HarnessReport =
+            serde_json::from_str(r#"{"versions":{},"outcomes":[]}"#).unwrap();
+        assert!(report.codex_sandbox.is_none());
+        assert!(!serde_json::to_string(&report).unwrap().contains("codex_sandbox"));
     }
 
     #[test]

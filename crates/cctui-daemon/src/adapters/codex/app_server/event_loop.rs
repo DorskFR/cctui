@@ -190,6 +190,7 @@ struct EventLoop<'a> {
     stop: Option<Stop>,
     retry_after_hibernate: Option<SessionCommand>,
     thread: ThreadState,
+    sandbox_notice_sent: bool,
 }
 
 impl<'a> EventLoop<'a> {
@@ -217,6 +218,7 @@ impl<'a> EventLoop<'a> {
             stop: None,
             retry_after_hibernate: None,
             thread: ThreadState::default(),
+            sandbox_notice_sent: false,
         }
     }
 
@@ -503,9 +505,9 @@ impl<'a> EventLoop<'a> {
             pid: self.child.as_ref().and_then(Child::id),
             active_turn_id: self.thread.active_turn.id().map(str::to_owned),
             pending_rpc_methods: self.pending_rpcs.pending_methods(),
-            protocol_errors: self.rings.protocol_errors_with_shared(),
+            protocol_errors: super::diagnose::protocol_errors_with_shared(self.rings),
             stderr_tail: self.rings.stderr_tail(),
-            rpc_tail: self.rings.rpc_tail_with_shared(),
+            rpc_tail: super::diagnose::rpc_tail_with_shared(self.rings),
             rollout_path: self.thread.rollout_path.clone(),
             rollout_size_bytes: self
                 .thread
@@ -625,9 +627,12 @@ impl<'a> EventLoop<'a> {
         Flow::Continue
     }
 
-    async fn on_notification(&self, notification: Incoming) {
+    async fn on_notification(&mut self, notification: Incoming) {
         match notification {
             Incoming::Event(evt) => {
+                if let Some(notice) = self.sandbox_notice(&evt) {
+                    self.events().send(notice).await.ok();
+                }
                 self.events().send(evt).await.ok();
             }
             Incoming::Traced { method, reason } => {
@@ -640,6 +645,20 @@ impl<'a> EventLoop<'a> {
             }
             _ => {}
         }
+    }
+
+    /// A stale probe, or a host policy change mid-session, still has to be
+    /// visible: a command whose output is a bwrap userns failure says the
+    /// sandbox is broken here, whatever the probe concluded at start-up. Once
+    /// per session — every command after the first would repeat it.
+    fn sandbox_notice(&mut self, event: &AdapterEvent) -> Option<AdapterEvent> {
+        if self.sandbox_notice_sent {
+            return None;
+        }
+        let marker = super::notifications::sandbox_failure_marker(event)?;
+        self.sandbox_notice_sent = true;
+        self.rings.note_protocol_error(&format!("codex sandbox failed on this host: {marker}"));
+        Some(super::notifications::sandbox_failure_notice(&self.thread.local_id, marker))
     }
 
     async fn on_response(&mut self, id: i64, response: &Value) -> Result<Flow> {

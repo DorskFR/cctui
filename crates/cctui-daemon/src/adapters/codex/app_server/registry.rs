@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cctui_proto::diagnose::{CodexProtocolError, CodexRpcFrame, CodexStderrLine};
+use cctui_proto::diagnose::{TrafficError, TrafficFrame, TrafficStderrLine};
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
@@ -67,9 +67,9 @@ pub struct CodexLiveSnapshot {
     pub pid: Option<u32>,
     pub active_turn_id: Option<String>,
     pub pending_rpc_methods: Vec<String>,
-    pub protocol_errors: Vec<CodexProtocolError>,
-    pub stderr_tail: Vec<CodexStderrLine>,
-    pub rpc_tail: Vec<CodexRpcFrame>,
+    pub protocol_errors: Vec<TrafficError>,
+    pub stderr_tail: Vec<TrafficStderrLine>,
+    pub rpc_tail: Vec<TrafficFrame>,
     pub rollout_path: Option<String>,
     pub rollout_size_bytes: Option<u64>,
 }

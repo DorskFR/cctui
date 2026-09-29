@@ -1,11 +1,11 @@
-//! Codex's live view: the adapter-neutral ring viewer, fed by the app-server
+//! `OpenCode`'s live view: the adapter-neutral ring viewer, fed by the session
 //! driver's `SessionCommand::Diagnose` snapshot.
 
 use cctui_proto::adapter::AdapterEvent;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::app_server::{LiveSessionRegistry, SessionCommand};
+use super::session::{LiveRegistry, SessionCommand};
 use crate::adapter_runtime::PtyWatch;
 use crate::adapters::ring_view::{POLL_INTERVAL, RingViewManager, TrafficSnapshot};
 
@@ -13,14 +13,14 @@ use crate::adapters::ring_view::{POLL_INTERVAL, RingViewManager, TrafficSnapshot
 /// served while the serial command loop is busy with a turn.
 pub(super) struct PtyWatchPump {
     views: RingViewManager,
-    live: LiveSessionRegistry,
+    live: LiveRegistry,
     events: mpsc::Sender<AdapterEvent>,
     shutdown: CancellationToken,
 }
 
 impl PtyWatchPump {
     pub(super) fn new(
-        live: LiveSessionRegistry,
+        live: LiveRegistry,
         events: mpsc::Sender<AdapterEvent>,
         shutdown: CancellationToken,
     ) -> Self {
@@ -34,9 +34,6 @@ impl PtyWatchPump {
                 watch = watches.recv() => {
                     let Some((local_id, watch)) = watch else { return };
                     if watch {
-                        // No roster to resolve: the poll simply finds nothing
-                        // until the session is up, so a watch ahead of its
-                        // session needs no pending set.
                         let live = self.live.clone();
                         self.views.watch(
                             local_id,
@@ -56,8 +53,8 @@ impl PtyWatchPump {
     }
 }
 
-async fn snapshot(live: &LiveSessionRegistry, local_id: &str) -> Option<TrafficSnapshot> {
-    let tx = live.lock().await.get(local_id).cloned()?;
+pub(super) async fn snapshot(live: &LiveRegistry, local_id: &str) -> Option<TrafficSnapshot> {
+    let tx = live.lock().await.get(local_id).map(|s| s.commands.clone())?;
     let (reply, mut rx) = mpsc::channel(1);
     tx.send(SessionCommand::Diagnose { reply }).await.ok()?;
     let snap = tokio::time::timeout(POLL_INTERVAL, rx.recv()).await.ok().flatten()?;
