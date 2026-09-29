@@ -196,10 +196,11 @@ impl ChildSnapshot {
             return Assessment::Finished(self.outcome());
         }
         // A `Stop` hook is the harness itself saying the turn is over, so it
-        // outranks every inference below. The grace only covers the transcript
-        // poll landing the final text after the hook fired.
+        // outranks every inference below. It can beat the transcript poll that
+        // carries the turn's last message, and the text in hand is then
+        // pre-tool-call narration: the grace covers that lag.
         if let Some(at) = self.turn_end_at
-            && (self.final_text.is_some() || now.duration_since(at) >= DONE_TEXT_GRACE)
+            && (self.text_is_turn_tail() || now.duration_since(at) >= DONE_TEXT_GRACE)
         {
             return Assessment::Finished(self.outcome());
         }
@@ -1082,6 +1083,41 @@ mod tests {
         watch.observe(&msg("child-1", "assistant", "tests pass"));
         watch.note_turn_end("child-1");
         assert_eq!(finished(&h).unwrap().final_text.as_deref(), Some("tests pass"));
+    }
+
+    #[test]
+    fn a_stop_hook_beating_the_final_text_does_not_hand_back_the_narration() {
+        // acceptance: observed live — narration flagged `tool_use`, a Bash
+        // call, then the real answer; the hook fired before the transcript
+        // poll relayed it and the follow returned the narration.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "do the thing"));
+        watch.observe(&msg_stopping(
+            "child-1",
+            "Running environment command: cargo test",
+            "tool_use",
+        ));
+        watch.observe(&tool_use("child-1", "Bash"));
+        watch.note_turn_end("child-1");
+        assert!(finished(&h).is_none(), "the narration is not the turn's answer");
+        watch.observe(&msg_stopping("child-1", "the real answer", "end_turn"));
+        assert_eq!(finished(&h).unwrap().final_text.as_deref(), Some("the real answer"));
+    }
+
+    #[test]
+    fn a_stop_hook_left_with_only_narration_still_ends_at_the_grace() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg_stopping("child-1", "Running the tests now.", "tool_use"));
+        watch.observe(&tool_use("child-1", "Bash"));
+        watch.note_turn_end("child-1");
+        let snap = h.snapshot().unwrap();
+        let later = Instant::now() + DONE_TEXT_GRACE + Duration::from_secs(1);
+        let Assessment::Finished(out) = snap.assess(later) else {
+            panic!("the wait must not hang when the final text never lands")
+        };
+        assert_eq!(out.final_text.as_deref(), Some("Running the tests now."));
     }
 
     #[test]
