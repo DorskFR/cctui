@@ -258,12 +258,16 @@ mod tests {
         tmp
     }
 
-    /// A linked worktree of `repo`, checked out at a new branch.
-    fn worktree_of(repo: &Path, name: &str) -> PathBuf {
+    /// A linked worktree of `repo` on a fresh branch, inside a tempdir the
+    /// caller owns — `git worktree add` needs the leaf not to exist yet, so it
+    /// is a subpath of that dir. The returned guard must outlive the assertions.
+    fn worktree_of(repo: &Path) -> (tempfile::TempDir, PathBuf) {
         git(repo, &["commit", "--allow-empty", "-m", "root"]);
-        let path = repo.parent().unwrap().join(name);
-        git(repo, &["worktree", "add", "-b", name, &path.to_string_lossy()]);
-        path
+        let branch = format!("wt-{}", uuid::Uuid::new_v4());
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join(&branch);
+        git(repo, &["worktree", "add", "-b", &branch, &path.to_string_lossy()]);
+        (parent, path)
     }
 
     fn started(local_id: &str, cwd: &Path) -> AdapterEvent {
@@ -328,7 +332,7 @@ mod tests {
     #[test]
     fn a_linked_worktree_of_the_same_repo_is_not_a_neighbour() {
         let repo = git_repo();
-        let wt = worktree_of(repo.path(), "lane-f");
+        let (_wt_parent, wt) = worktree_of(repo.path());
         let dirs = LiveDirs::default();
         dirs.observe("claude-code", &started("main-checkout", repo.path()));
         assert!(
