@@ -52,6 +52,7 @@ fn ring_scrub_cell() -> &'static RingScrub {
 }
 
 /// Install the user-configured scrub patterns on the rings of every adapter.
+///
 /// Called by the supervisor whenever the server syncs a `SecretScrubConfig`;
 /// the rings live in the drivers and have no other route to them.
 pub fn set_ring_scrub(user: &[(String, String)]) {

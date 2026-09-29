@@ -289,7 +289,7 @@ impl OpenCodeClient {
     }
 
     #[must_use]
-    pub fn rings(&self) -> Option<&std::sync::Arc<TrafficRings>> {
+    pub const fn rings(&self) -> Option<&std::sync::Arc<TrafficRings>> {
         self.rings.as_ref()
     }
 

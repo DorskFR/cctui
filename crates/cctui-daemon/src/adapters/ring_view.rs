@@ -32,9 +32,11 @@ pub struct TrafficSnapshot {
     pub rpc_tail: Vec<TrafficFrame>,
 }
 
-/// Cursors into the three rings: the last entry already emitted, so a poll
-/// emits the suffix after it. A cursor that no longer appears (the ring rolled
-/// past it between polls) replays the whole tail rather than losing frames.
+/// Cursors into the three rings: the last entry already emitted.
+///
+/// A poll emits the suffix after it. A cursor that no longer appears (the ring
+/// rolled past it between polls) replays the whole tail rather than losing
+/// frames.
 #[derive(Default)]
 pub struct Cursor {
     rpc: Option<TrafficFrame>,
@@ -107,6 +109,7 @@ pub fn render(snapshot: &TrafficSnapshot, cursor: &mut Cursor) -> String {
 }
 
 /// One viewer task per watched `local_id`, started and stopped by `WatchPty`.
+///
 /// `poll` returns the driver's current snapshot, or `None` while no live
 /// session owns that id — a watch may legitimately arrive before its session.
 #[derive(Clone, Default)]
