@@ -1,5 +1,10 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { authMiddleware, LOCAL_PRINCIPAL, setUserId } from "./auth/middleware.ts";
+import {
+  authMiddleware,
+  LOCAL_PRINCIPAL,
+  proxyAuthMiddleware,
+  setUserId,
+} from "./auth/middleware.ts";
 import type { AppDeps } from "./deps.ts";
 import { registerAccounts } from "./routes/accounts.ts";
 import { registerActivity } from "./routes/activity.ts";
@@ -42,7 +47,13 @@ export function createApp(deps: AppDeps = {}) {
     },
   });
 
-  if (deps.auth) {
+  if (deps.proxyAuth) {
+    const guard = proxyAuthMiddleware(deps.proxyAuth);
+    app.use("/v1/*", async (c, next) => {
+      if (AUTH_EXEMPT.has(c.req.path)) return next();
+      return guard(c, next);
+    });
+  } else if (deps.auth) {
     const guard = authMiddleware(deps.auth);
     app.use("/v1/*", async (c, next) => {
       if (AUTH_EXEMPT.has(c.req.path)) return next();

@@ -27,23 +27,9 @@ describe("auth middleware", () => {
     expect(await res.json()).toEqual({ items: [], next_cursor: null });
   });
 
-  test("accepts a known token via access_token query param on the SSE route only", async () => {
+  test("no longer accepts an access_token query param, not even on the SSE route", async () => {
     const app = createApp({ auth: resolver });
-    const ctrl = new AbortController();
-    const res = await app.request("/v1/events?access_token=tok-a", { signal: ctrl.signal });
-    expect(res.status).not.toBe(401);
-    ctrl.abort();
-  });
-
-  test("ignores the access_token query param on non-SSE routes", async () => {
-    const app = createApp({ auth: resolver });
-    const res = await app.request("/v1/repos?account=x&access_token=tok-a");
-    expect(res.status).toBe(401);
-  });
-
-  test("rejects a bad access_token query param", async () => {
-    const app = createApp({ auth: resolver });
-    const res = await app.request("/v1/events?access_token=nope");
+    const res = await app.request("/v1/events?access_token=tok-a");
     expect(res.status).toBe(401);
   });
 
@@ -109,8 +95,22 @@ describe("auth mode config", () => {
     expect((await app.request("/v1/repos")).status).toBe(401);
   });
 
-  test("defaults to cctui and explicit none opt-out is honored", () => {
-    expect(loadConfig({}).authMode).toBe("cctui");
+  test("defaults to proxy and explicit none opt-out is honored", () => {
+    expect(loadConfig({}).authMode).toBe("proxy");
     expect(loadConfig({ GHREVIEW_AUTH_MODE: "none" }).authMode).toBe("none");
+  });
+
+  test("the retired cctui mode is no longer a mode and needs no cctui schema", () => {
+    const cfg = loadConfig({ GHREVIEW_AUTH_MODE: "cctui", GHREVIEW_CCTUI_SCHEMA: "public" });
+    expect(cfg.authMode).toBe("proxy");
+    expect("cctuiSchema" in cfg).toBe(false);
+  });
+
+  test("proxy mode reads its secret and skew window from the environment", () => {
+    const cfg = loadConfig({ GHREVIEW_PROXY_SECRET: "s", GHREVIEW_PROXY_MAX_SKEW_SECONDS: "60" });
+    expect(cfg.authMode).toBe("proxy");
+    expect(cfg.proxySecret).toBe("s");
+    expect(cfg.proxyMaxSkewSeconds).toBe(60);
+    expect(loadConfig({}).proxyMaxSkewSeconds).toBe(300);
   });
 });

@@ -1,4 +1,4 @@
-export type AuthMode = "cctui" | "static" | "none";
+export type AuthMode = "proxy" | "static" | "none";
 
 export interface Config {
   databaseUrl: string | undefined;
@@ -13,14 +13,15 @@ export interface Config {
   authMode: AuthMode;
   authTokens: string | undefined;
   unsafeAllowAnonymous: boolean;
-  cctuiSchema: string;
+  proxySecret: string | undefined;
+  proxyMaxSkewSeconds: number;
   syncViewedFromGithub: boolean;
 }
 
 function parseAuthMode(value: string | undefined): AuthMode {
   if (value === "static") return "static";
   if (value === "none") return "none";
-  return "cctui";
+  return "proxy";
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -43,7 +44,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     authMode: parseAuthMode(env.GHREVIEW_AUTH_MODE),
     authTokens: env.GHREVIEW_AUTH_TOKENS,
     unsafeAllowAnonymous: env.GHREVIEW_UNSAFE_ALLOW_ANONYMOUS === "true",
-    cctuiSchema: env.GHREVIEW_CCTUI_SCHEMA ?? "public",
+    proxySecret: env.GHREVIEW_PROXY_SECRET,
+    proxyMaxSkewSeconds: num(env.GHREVIEW_PROXY_MAX_SKEW_SECONDS, 300),
     syncViewedFromGithub: env.GHREVIEW_SYNC_VIEWED_GITHUB === "true",
   };
 }
