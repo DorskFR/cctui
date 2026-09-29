@@ -90,6 +90,9 @@ pub struct Config {
     /// hours via `CCTUI_SESSION_ARCHIVE_TTL_HOURS`; stored as seconds.
     /// `0` disables auto-archiving.
     pub archive_after_secs: u64,
+    /// Live daemon WS connections one machine key may hold at once
+    /// (`CCTUI_MAX_DAEMON_WS_CONNS`). Per replica, not cluster-wide.
+    pub max_daemon_ws_conns: usize,
     /// Optional GitHub PAT (read access to the releases repo). When set, the
     /// daemon-binary manifest points clients at this server's proxy endpoint
     /// and the server streams the release asset itself (so a private releases
@@ -263,6 +266,10 @@ impl Config {
             archive_after_secs: get("CCTUI_SESSION_ARCHIVE_TTL_HOURS")
                 .and_then(|s| s.parse::<u64>().ok())
                 .map_or(24 * 60 * 60, |hours| hours * 60 * 60),
+            max_daemon_ws_conns: get("CCTUI_MAX_DAEMON_WS_CONNS")
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(crate::routes::daemon::DEFAULT_MAX_DAEMON_WS_CONNS),
             github_token: get("CCTUI_GITHUB_TOKEN")
                 .or_else(|| get("GH_TOKEN"))
                 .filter(|s| !s.trim().is_empty()),
@@ -342,6 +349,7 @@ impl Config {
             plugins_dir: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
+            max_daemon_ws_conns: crate::routes::daemon::DEFAULT_MAX_DAEMON_WS_CONNS,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],
@@ -457,6 +465,7 @@ mod tests {
             plugins_dir: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
+            max_daemon_ws_conns: crate::routes::daemon::DEFAULT_MAX_DAEMON_WS_CONNS,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],
