@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::app_server::{CodexLiveSnapshot, LiveSessionRegistry, SessionCommand};
+use crate::adapter_runtime::PtyWatch;
 use crate::adapters::pty_watch::PtyWatchSet;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -43,6 +44,49 @@ impl RingViewManager {
 
     pub(super) fn unwatch(&self, local_id: &str) {
         self.watches.unwatch(local_id);
+    }
+}
+
+/// Drains the adapter's out-of-band `WatchPty` channel, so a live view is
+/// served while the serial command loop is busy with a turn.
+pub(super) struct PtyWatchPump {
+    views: RingViewManager,
+    live: LiveSessionRegistry,
+    events: mpsc::Sender<AdapterEvent>,
+    shutdown: CancellationToken,
+}
+
+impl PtyWatchPump {
+    pub(super) fn new(
+        live: LiveSessionRegistry,
+        events: mpsc::Sender<AdapterEvent>,
+        shutdown: CancellationToken,
+    ) -> Self {
+        Self { views: RingViewManager::default(), live, events, shutdown }
+    }
+
+    pub(super) async fn run(self, mut watches: mpsc::Receiver<PtyWatch>) {
+        loop {
+            tokio::select! {
+                () = self.shutdown.cancelled() => return,
+                watch = watches.recv() => {
+                    let Some((local_id, watch)) = watch else { return };
+                    if watch {
+                        // No roster to resolve: `stream` polls the live registry
+                        // and simply finds nothing until the session is up, so a
+                        // watch ahead of its session needs no pending set.
+                        self.views.watch(
+                            local_id,
+                            self.live.clone(),
+                            self.events.clone(),
+                            &self.shutdown,
+                        );
+                    } else {
+                        self.views.unwatch(&local_id);
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -14,6 +14,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// A `WatchPty` routed off the command path: `(local_id, watch)`.
+pub type PtyWatch = (String, bool);
+
 /// Per-adapter execution context handed to [`Adapter::start`].
 pub struct AdapterCtx {
     /// Outbound: adapter pushes events here; the daemon multiplexes them
@@ -21,6 +24,10 @@ pub struct AdapterCtx {
     pub events: mpsc::Sender<AdapterEvent>,
     /// Inbound: daemon pushes commands targeting this adapter here.
     pub commands: mpsc::Receiver<AdapterCommand>,
+    /// Inbound, out-of-band: `WatchPty` only, so a live view never queues
+    /// behind a command whose socket round-trip can take 30s. `None` for
+    /// adapters that declared no live view.
+    pub pty_watch: Option<mpsc::Receiver<PtyWatch>>,
     /// Daemon-wide shutdown signal. Adapters MUST observe it and return
     /// cleanly when it fires.
     pub shutdown: CancellationToken,
@@ -50,6 +57,13 @@ pub trait Adapter: Send + Sync {
 pub trait AdapterFactory: Send + Sync {
     fn id(&self) -> &'static str;
     fn build(&self, config: serde_json::Value) -> Box<dyn Adapter>;
+
+    /// Whether this adapter, under `config`, drains [`AdapterCtx::pty_watch`].
+    /// A `false` here keeps `WatchPty` on the command path, where it answers
+    /// "unsupported"; a `true` that never drains the channel leaks watches.
+    fn pty_watch(&self, _config: &serde_json::Value) -> bool {
+        false
+    }
 }
 
 /// How a [`SessionDriver`] answered a command.
@@ -174,10 +188,6 @@ pub trait SessionDriver: Send {
     async fn diagnose(&mut self, _local_id: String, _request_id: Uuid) -> CommandOutcome {
         unsupported("diagnose")
     }
-
-    async fn watch_pty(&mut self, _local_id: String, _watch: bool) -> CommandOutcome {
-        unsupported("watch_pty")
-    }
 }
 
 /// Route one command to its driver method and report its outcome.
@@ -223,7 +233,11 @@ pub async fn dispatch_command<D: SessionDriver + ?Sized>(
         AdapterCommand::Diagnose { local_id, request_id } => {
             driver.diagnose(local_id, request_id).await
         }
-        AdapterCommand::WatchPty { local_id, watch } => driver.watch_pty(local_id, watch).await,
+        // Routed onto the adapter's `pty_watch` channel by the supervisor.
+        AdapterCommand::WatchPty { local_id, watch } => {
+            tracing::warn!(%local_id, watch, "watch_pty reached the command loop");
+            Ok(Handled::Done)
+        }
     };
     report_outcome(driver.adapter_id(), events, command_id, outcome).await;
 }

@@ -134,7 +134,7 @@ impl Adapter for CodexAdapter {
 /// started outside cctui, while the app-server command pump drives sessions
 /// that cctui spawns. They share a [`SessionRegistry`] so the log-tail skips
 /// rollout files an app-server session already owns (no double-ingest).
-async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
+async fn run_default(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     let app_cfg = AppServerConfig::from_value(&ctx.config);
     let registry: SessionRegistry = SessionRegistry::default();
     let live: LiveSessionRegistry = LiveSessionRegistry::default();
@@ -195,6 +195,12 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
 
     let log_handle = tokio::spawn(log.run());
 
+    let pty_watch_handle = ctx.pty_watch.take().map(|watches| {
+        let pump =
+            pty_view::PtyWatchPump::new(live.clone(), ctx.events.clone(), ctx.shutdown.clone());
+        tokio::spawn(pump.run(watches))
+    });
+
     let pump = CommandPump {
         events: ctx.events.clone(),
         live,
@@ -205,10 +211,12 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
         machine_key: ctx.machine_key,
         marks,
         shared,
-        pty_views: pty_view::RingViewManager::default(),
     };
     pump.run(ctx.commands).await;
     log_handle.abort();
+    if let Some(h) = pty_watch_handle {
+        h.abort();
+    }
     if let Some(h) = inventory_handle {
         h.abort();
     }
@@ -228,7 +236,6 @@ struct CommandPump {
     machine_key: Option<String>,
     marks: log_tail::ResumeMarks,
     shared: daemon::SharedDaemon,
-    pty_views: pty_view::RingViewManager,
 }
 
 #[async_trait::async_trait]
@@ -364,14 +371,6 @@ impl SessionDriver for CommandPump {
         Ok(Handled::Deferred)
     }
 
-    async fn watch_pty(&mut self, local_id: String, watch: bool) -> CommandOutcome {
-        if watch {
-            self.pty_views.watch(local_id, self.live.clone(), self.events.clone(), &self.shutdown);
-        } else {
-            self.pty_views.unwatch(&local_id);
-        }
-        Ok(Handled::Deferred)
-    }
 }
 
 impl CommandPump {
@@ -1048,6 +1047,10 @@ impl AdapterFactory for CodexFactory {
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
         Box::new(CodexAdapter)
     }
+    /// The uds mode has no session registry to stream rings from.
+    fn pty_watch(&self, config: &serde_json::Value) -> bool {
+        !uses_uds_mode(config)
+    }
 }
 
 #[cfg(test)]
@@ -1068,7 +1071,6 @@ pub(crate) async fn run_command_pump_for_test(
         server: None,
         machine_key: None,
         marks: log_tail::ResumeMarks::default(),
-        pty_views: pty_view::RingViewManager::default(),
     };
     pump.run(commands).await;
 }
