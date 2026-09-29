@@ -1,8 +1,7 @@
 import { defineJourney } from '@dorsk/journey';
 
-// Tsumikit's FilterSearchBar forwards no attributes to its input, so the book's
-// fill steps address it by accessible name; public steps anchor on the cctui
-// wrapper instead.
+// Tsumikit's FilterSearchBar forwards no attributes to its input, so the field is
+// addressed by accessible name within the cctui wrapper.
 const BOX = { label: 'Search sessions', within: 'search' } as const;
 const SESSIONS = '/sessions';
 
@@ -26,60 +25,53 @@ export default defineJourney({
 			capture: 'box'
 		},
 		{
-			id: 'start',
-			qaOnly: true,
-			route: SESSIONS,
-			target: 'section[blocked]',
+			id: 'whole',
+			target: 'session-list',
 			say: {
-				title: { en: 'Start from the whole list', fr: 'Partir de la liste entière' },
-				body: { en: 'Every session you have run is searchable, live ones and finished ones alike.', fr: 'Toutes vos sessions sont consultables, en cours comme terminées.' }
+				title: { en: 'Everything you have run is in here', fr: 'Tout ce que vous avez lancé est ici' },
+				body: { en: 'Live runs and finished ones alike. Count the rows now — the next two steps will cut this list down in front of you.', fr: 'Les runs en cours comme ceux terminés. Comptez les lignes maintenant : les deux étapes suivantes vont réduire cette liste sous vos yeux.' }
 			},
 			expect: [{ count: ['session', { min: 4 }] }],
 			capture: 'before'
 		},
 		{
 			id: 'free-text',
-			qaOnly: true,
 			target: BOX,
-			do: { kind: 'fill', value: 'pagination' },
+			do: { kind: 'fill', value: { $param: 'var.query' } },
 			say: {
-				title: { en: 'Search the transcripts, not just the titles', fr: 'Chercher dans les transcriptions, pas seulement les titres' },
-				body: { en: 'A plain word is matched against what the agents actually said and did, so you can find a run by what it touched.', fr: 'Un simple mot est comparé à ce que les agents ont dit et fait : vous retrouvez un run par ce qu’il a touché.' }
+				title: { en: 'Type a word the run would have used', fr: 'Tapez un mot que le run aurait employé' },
+				body: { en: 'Try “pagination”. A plain word is matched against the transcripts themselves, so you find a session by what it touched rather than by what you called it.', fr: 'Essayez « pagination ». Un simple mot est comparé aux transcriptions elles-mêmes : vous retrouvez une session par ce qu’elle a touché plutôt que par son nom.' }
 			},
-			expect: [{ count: ['session', { equals: 1 }] }],
 			capture: 'text'
 		},
 		{
 			id: 'facet',
-			qaOnly: true,
 			target: BOX,
-			do: { kind: 'fill', value: 'label:backend' },
+			do: { kind: 'fill', value: { $param: 'var.facet' } },
 			say: {
-				title: { en: 'Narrow by label, machine or status', fr: 'Filtrer par libellé, machine ou statut' },
-				body: { en: 'Typed filters like label:, machine: and status: combine with the free text to cut a large fleet down fast.', fr: 'Les filtres typés comme label:, machine: et status: se combinent au texte libre pour réduire vite une grande flotte.' }
+				title: { en: 'Turn a word into a condition', fr: 'Transformer un mot en condition' },
+				body: { en: 'Replace it with “label:backend”. Prefixes like label:, machine: and status: filter instead of searching, and the box offers the values it already knows.', fr: 'Remplacez-le par « label:backend ». Les préfixes comme label:, machine: et status: filtrent au lieu de chercher, et la boîte propose les valeurs qu’elle connaît déjà.' }
 			},
-			expect: [{ count: ['session', { min: 2 }] }],
 			capture: 'facet'
 		},
 		{
-			id: 'facets',
-			route: SESSIONS,
-			target: 'search',
-			say: {
-				title: { en: 'Narrow it with a typed filter', fr: 'Affiner avec un filtre typé' },
-				body: { en: 'Prefixes like label:, machine: and status: turn a word into a condition. Type one and the box offers the values it knows, so you need not remember them.', fr: 'Des préfixes comme label:, machine: et status: transforment un mot en condition. Tapez-en un et la boîte propose les valeurs qu’elle connaît : inutile de les mémoriser.' }
-			},
-			expect: [{ visible: 'search' }]
-		},
-		{
 			id: 'combine',
-			route: SESSIONS,
-			target: 'search',
+			target: 'session-list',
 			say: {
 				title: { en: 'Stack them to answer a real question', fr: 'Les combiner pour répondre à une vraie question' },
-				body: { en: 'Filters and free text apply together: status: with a word finds the run that failed on the thing you remember. Clearing the box brings the whole fleet back.', fr: 'Filtres et texte libre s’appliquent ensemble : status: plus un mot retrouve le run qui a échoué sur ce dont vous vous souvenez. Videz la boîte pour retrouver toute la flotte.' }
+				body: { en: 'Conditions and free text apply together: status:failed with a word finds the run that broke on the thing you half-remember. That is the whole query language.', fr: 'Conditions et texte libre s’appliquent ensemble : status:failed plus un mot retrouve le run qui a cassé sur ce dont vous vous souvenez à moitié. C’est tout le langage de requête.' }
 			},
-			expect: [{ visible: 'search' }]
+			capture: 'combined'
+		},
+		{
+			id: 'clear',
+			target: BOX,
+			do: { kind: 'fill', value: { $param: 'var.blank' } },
+			say: {
+				title: { en: 'Empty the box to get the fleet back', fr: 'Videz la boîte pour retrouver la flotte' },
+				body: { en: 'Clear it and every session returns. Nothing was hidden or archived — search only ever changes what this list shows you.', fr: 'Videz-la et toutes les sessions reviennent. Rien n’a été masqué ni archivé : la recherche ne change que ce que cette liste vous montre.' }
+			},
+			capture: 'cleared'
 		}
 	]
 });

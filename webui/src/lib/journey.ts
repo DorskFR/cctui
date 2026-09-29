@@ -171,7 +171,13 @@ export type GuideParams = Record<string, string>;
 /** The real-instance names the specs address through `{param}` keys. A name
  *  that does not exist stays absent, and the guide that needs it is refused. */
 export async function guideParams(qc: QueryClient): Promise<GuideParams> {
-	const out: GuideParams = { 'var.label': '', 'var.prompt': '' };
+	const out: GuideParams = {
+		'var.label': '',
+		'var.prompt': '',
+		'var.query': '',
+		'var.facet': '',
+		'var.blank': ''
+	};
 	const me = await qc.fetchQuery({ queryKey: qk.me, queryFn: endpoints.me, staleTime: 5 * 60_000 });
 	if (me.user_name) out['fixture.me'] = me.user_name;
 	const [accounts, pools, sessions] = await Promise.all([
