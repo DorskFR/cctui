@@ -651,9 +651,24 @@ pub fn cli(kind: &str, session: Option<String>, port: u16) -> anyhow::Result<Str
     } else {
         anyhow::bail!(
             "{}",
-            reply.get("error").and_then(Value::as_str).unwrap_or("preview call failed")
+            open_error(reply.get("error").and_then(Value::as_str).unwrap_or("preview call failed"))
         )
     }
+}
+
+/// A refusal as the caller should see it. `yubi dev` prints this and can fall
+/// back to serving the app itself, so the disabled case must say what to do
+/// rather than read as a transient failure.
+#[must_use]
+pub fn open_error(error: &str) -> String {
+    if error.trim() != cctui_proto::ws::PREVIEWS_DISABLED {
+        return error.to_owned();
+    }
+    format!(
+        "{error}: the server has no CCTUI_PREVIEW_HOST set, so it can serve no preview host. Set \
+         it to a pattern containing {{id}} — `cctui-pv-{{id}}.localhost` needs no DNS or \
+         certificate for a local instance — and restart the server."
+    )
 }
 
 #[cfg(test)]
@@ -662,6 +677,20 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// `yubi dev` prints this and exits, so a disabled instance has to be
+    /// distinguishable from a transient failure.
+    #[test]
+    fn the_disabled_refusal_explains_the_setup_and_other_errors_pass_through() {
+        let disabled = open_error(cctui_proto::ws::PREVIEWS_DISABLED);
+        assert!(disabled.starts_with(cctui_proto::ws::PREVIEWS_DISABLED), "{disabled}");
+        assert!(disabled.contains("CCTUI_PREVIEW_HOST"), "{disabled}");
+        assert!(disabled.contains("cctui-pv-{id}.localhost"), "{disabled}");
+        assert_eq!(
+            open_error("daemon is not connected to the server"),
+            "daemon is not connected to the server"
+        );
+    }
 
     async fn recv_up(rx: &mut mpsc::Receiver<DaemonFrameUp>) -> DaemonFrameUp {
         tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("frame").expect("open")

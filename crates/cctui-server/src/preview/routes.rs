@@ -3,6 +3,7 @@
 use axum::Json;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
+use cctui_proto::api::ApiError;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -40,19 +41,34 @@ fn info(state: &AppState, preview: &Preview) -> PreviewInfo {
     }
 }
 
+type ApiErr = (StatusCode, Json<ApiError>);
+
+fn err(status: StatusCode, msg: impl Into<String>) -> ApiErr {
+    (status, Json(ApiError { error: msg.into() }))
+}
+
+/// A caller that would otherwise poll an always-empty preview list needs to be
+/// told the feature is off, not left waiting.
+fn require_enabled(state: &AppState) -> Result<(), ApiErr> {
+    if state.preview.enabled() {
+        return Ok(());
+    }
+    Err(err(StatusCode::SERVICE_UNAVAILABLE, cctui_proto::ws::PREVIEWS_DISABLED))
+}
+
 async fn require_owner(
     state: &AppState,
     ctx: &AuthContext,
     session_id: &str,
-) -> Result<Uuid, StatusCode> {
+) -> Result<Uuid, ApiErr> {
     let owner = crate::authz::session_owner(session_id, &state.pool).await.map_err(|e| {
         tracing::error!("db error (preview owner): {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
+        err(StatusCode::INTERNAL_SERVER_ERROR, "could not resolve the session owner")
     })?;
     match owner {
         Some(owner) if owner == ctx.user_id => Ok(owner),
-        Some(_) => Err(StatusCode::FORBIDDEN),
-        None => Err(StatusCode::NOT_FOUND),
+        Some(_) => Err(err(StatusCode::FORBIDDEN, "not your session")),
+        None => Err(err(StatusCode::NOT_FOUND, "no such session")),
     }
 }
 
@@ -60,7 +76,8 @@ pub async fn list(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
-) -> Result<Json<Vec<PreviewInfo>>, StatusCode> {
+) -> Result<Json<Vec<PreviewInfo>>, ApiErr> {
+    require_enabled(&state)?;
     require_owner(&state, &ctx, &session_id).await?;
     let previews = state.preview.list(&state.pool, &session_id).await;
     Ok(Json(previews.iter().map(|p| info(&state, p)).collect()))
@@ -70,13 +87,14 @@ pub async fn ticket(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((session_id, preview_id)): Path<(String, String)>,
-) -> Result<Json<PreviewTicket>, StatusCode> {
+) -> Result<Json<PreviewTicket>, ApiErr> {
+    require_enabled(&state)?;
     let owner = require_owner(&state, &ctx, &session_id).await?;
     let Some(preview) = state.preview.get(&state.pool, &preview_id).await else {
-        return Err(StatusCode::NOT_FOUND);
+        return Err(err(StatusCode::NOT_FOUND, "no such preview"));
     };
     if preview.session_id != session_id || preview.user_id != owner {
-        return Err(StatusCode::NOT_FOUND);
+        return Err(err(StatusCode::NOT_FOUND, "no such preview"));
     }
     let ticket = state.preview.tickets().mint_ticket(&preview.id, owner);
     let auth_url = format!("{}/__cctui/auth?ticket={ticket}", state.preview.url_for(&preview.id));

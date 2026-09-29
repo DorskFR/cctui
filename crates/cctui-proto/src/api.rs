@@ -170,7 +170,8 @@ pub struct GatewayEnvResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_capability: Option<SpawnCapability>,
     /// Runtime plugins the session owner enabled that ship skills. The daemon
-    /// mirrors each one under its cache and passes it as `--plugin-dir`.
+    /// mirrors each one under its cache and hands it to the agent through
+    /// whatever channel that harness has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<SessionPlugin>,
 }

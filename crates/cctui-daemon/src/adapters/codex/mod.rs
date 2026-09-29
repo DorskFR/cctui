@@ -468,6 +468,15 @@ impl CommandPump {
                 return;
             }
         };
+        // Keyed by the launch key, not the thread id codex has yet to mint:
+        // `register_thread` binds it as an alias so the id the tools were told
+        // keeps resolving.
+        let skills = crate::plugins::resolve_session_skills(
+            self.server.as_ref(),
+            &launch_key,
+            &launch.plugins,
+        )
+        .await;
         // The CommandResult for `command_id` is deferred to the session
         // driver: it reports ok only after `thread/start` succeeds.
         let cfg = self.launch_cfg(spec, launch.settings.as_ref());
@@ -502,7 +511,8 @@ impl CommandPump {
         .with_agent_mcp(crate::adapters::agent_mcp::AgentMcp::for_capability(
             &launch_key,
             launch.spawn_capability.as_ref(),
-        ));
+        ))
+        .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
                 tracing::error!(%err, "codex app-server session ended in error");
@@ -525,15 +535,16 @@ impl CommandPump {
         // pre-minted + bound the gateway token to (falling back to the parent
         // thread id when absent), and fail closed on an account-bound fork
         // with empty env — same contract as Spawn.
-        let (env, served_settings) = match resolve_launch(
+        let launch_key = session_id.clone().unwrap_or_else(|| parent_local_id.clone());
+        let (env, served_settings, plugins) = match resolve_launch(
             self.server.as_ref(),
             self.machine_key.as_ref(),
-            &session_id.clone().unwrap_or_else(|| parent_local_id.clone()),
+            &launch_key,
             &spec.env,
         )
         .await
         {
-            Ok(launch) => (launch.env, launch.settings),
+            Ok(launch) => (launch.env, launch.settings, launch.plugins),
             Err(err) => {
                 tracing::error!(%err, "codex fork: refusing env-less launch");
                 self.reject(command_id, err.to_string()).await;
@@ -541,6 +552,9 @@ impl CommandPump {
             }
         };
         let cfg = self.launch_cfg(spec, served_settings.as_ref());
+        let skills =
+            crate::plugins::resolve_session_skills(self.server.as_ref(), &launch_key, &plugins)
+                .await;
         // Stage fork attachments, fatal on failure — same contract as spawn.
         let stage_id = session_id.unwrap_or_else(|| parent_local_id.clone());
         let attachments =
@@ -565,7 +579,8 @@ impl CommandPump {
             self.live.clone(),
             self.registry.clone(),
             self.shutdown.clone(),
-        );
+        )
+        .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
                 tracing::error!(%err, "codex app-server fork ended in error");
@@ -839,10 +854,17 @@ async fn dispatch(
             // A thread rediscovered from `thread/list` is seeded env-less, so its
             // first resume would 401 for an account-bound session; re-pull under
             // the same fail-closed contract as spawn/fork.
+            // Skills are not persisted: a resume on this daemon recalls what
+            // the launch resolved, and a rediscovered thread re-derives them
+            // from the same pull that re-mints its credential.
+            let mut skills = crate::plugins::recall_skills(local_id).unwrap_or_default();
             if resume_needs_env_pull(&record.env) {
                 match resolve_launch(server, machine_key, local_id, &record.env).await {
                     Ok(launch) => {
                         let settings = launch.settings;
+                        skills =
+                            crate::plugins::resolve_session_skills(server, local_id, &launch.plugins)
+                                .await;
                         record.env = launch.env;
                         record.spawn_relay = record.spawn_relay
                             || launch.spawn_capability.as_ref().is_some_and(|c| !c.is_empty());
@@ -865,6 +887,7 @@ async fn dispatch(
                 record,
                 local_id,
                 vec![command],
+                skills,
                 events.clone(),
                 live.clone(),
                 registry.clone(),

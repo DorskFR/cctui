@@ -63,7 +63,11 @@ impl ModelRef {
 /// channel, and leaving it on makes tool-call turns 400 on a missing
 /// `reasoning_content`.
 #[must_use]
-pub fn session_config(model: Option<&ModelRef>, env: &BTreeMap<String, String>) -> Value {
+pub fn session_config(
+    model: Option<&ModelRef>,
+    env: &BTreeMap<String, String>,
+    skill_roots: &[PathBuf],
+) -> Value {
     let base_url = env.get(BASE_URL_ENV).map_or(DEFAULT_BASE_URL, String::as_str);
     let mut cfg = json!({
         "$schema": "https://opencode.ai/config.json",
@@ -86,6 +90,11 @@ pub fn session_config(model: Option<&ModelRef>, env: &BTreeMap<String, String>) 
         "share": "disabled",
     });
 
+    if !skill_roots.is_empty() {
+        cfg["skills"] = json!({
+            "paths": skill_roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        });
+    }
     if let Some(model) = model {
         cfg["model"] = json!(model.qualified());
         cfg["provider"][&model.provider_id]["models"] = json!({
@@ -241,6 +250,27 @@ mod tests {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
     }
 
+    /// Skills reach an opencode session through its own config, never through
+    /// a user-global or repo directory.
+    #[test]
+    fn mirrored_skill_roots_ride_the_session_config() {
+        let plain = session_config(None, &BTreeMap::new(), &[]);
+        assert!(plain.get("skills").is_none(), "no plugins, no skills block");
+
+        let roots = [
+            PathBuf::from("/home/u/.config/cctui/plugins/yubisashi/abc/skills"),
+            PathBuf::from("/home/u/.config/cctui/plugins/other/def/skills"),
+        ];
+        let cfg = session_config(None, &BTreeMap::new(), &roots);
+        assert_eq!(
+            cfg["skills"]["paths"],
+            json!([
+                "/home/u/.config/cctui/plugins/yubisashi/abc/skills",
+                "/home/u/.config/cctui/plugins/other/def/skills",
+            ])
+        );
+    }
+
     #[test]
     fn a_capability_declares_the_cctui_agent_relay_in_the_session_config() {
         let mcp = crate::adapters::agent_mcp::AgentMcp::new(
@@ -248,7 +278,7 @@ mod tests {
             "ses-key".to_owned(),
             "/run/cctui-agent.sock".into(),
         );
-        let cfg = with_agent_mcp(session_config(None, &BTreeMap::new()), Some(&mcp));
+        let cfg = with_agent_mcp(session_config(None, &BTreeMap::new(), &[]), Some(&mcp));
         let command: Vec<&str> = cfg["mcp"]["cctui"]["command"]
             .as_array()
             .expect("the relay is declared as a local command")
@@ -261,7 +291,7 @@ mod tests {
 
     #[test]
     fn no_capability_leaves_the_session_config_without_an_mcp_block() {
-        let cfg = with_agent_mcp(session_config(None, &BTreeMap::new()), None);
+        let cfg = with_agent_mcp(session_config(None, &BTreeMap::new(), &[]), None);
         assert!(cfg.get("mcp").is_none(), "the tool must be absent, not merely denied: {cfg}");
     }
 
@@ -292,7 +322,7 @@ mod tests {
             assert_eq!(m.model_id, "accounts/fireworks/models/kimi-k3", "{spec}");
             assert_eq!(m.qualified(), "fireworks-ai/accounts/fireworks/models/kimi-k3");
 
-            let cfg = session_config(Some(&m), &BTreeMap::new());
+            let cfg = session_config(Some(&m), &BTreeMap::new(), &[]);
             assert_eq!(cfg["model"], "fireworks-ai/accounts/fireworks/models/kimi-k3");
             assert_eq!(
                 cfg["provider"][PROVIDER_ID]["models"]["accounts/fireworks/models/kimi-k3"]["options"]
@@ -310,7 +340,7 @@ mod tests {
             (BASE_URL_ENV, "https://cctui.example/gateway/fireworks"),
             (API_KEY_ENV, "sk-secret-value"),
         ]);
-        let cfg = session_config(Some(&model), &env);
+        let cfg = session_config(Some(&model), &env, &[]);
         assert_eq!(
             cfg["provider"][PROVIDER_ID]["options"]["baseURL"],
             "https://cctui.example/gateway/fireworks"
@@ -323,7 +353,7 @@ mod tests {
 
     #[test]
     fn config_falls_back_to_the_public_base_url() {
-        let cfg = session_config(None, &BTreeMap::new());
+        let cfg = session_config(None, &BTreeMap::new(), &[]);
         assert_eq!(cfg["provider"][PROVIDER_ID]["options"]["baseURL"], DEFAULT_BASE_URL);
         assert!(cfg.get("model").is_none());
     }
@@ -331,7 +361,7 @@ mod tests {
     #[test]
     fn thinking_is_disabled_for_the_selected_fireworks_model() {
         let model = ModelRef::parse("fireworks-ai/accounts/fireworks/models/kimi-k3").unwrap();
-        let cfg = session_config(Some(&model), &BTreeMap::new());
+        let cfg = session_config(Some(&model), &BTreeMap::new(), &[]);
         assert_eq!(
             cfg["provider"][PROVIDER_ID]["models"]["accounts/fireworks/models/kimi-k3"]["options"]
                 ["thinking"]["type"],
@@ -376,7 +406,7 @@ mod tests {
 
     #[test]
     fn default_stock_agent_is_locked_down() {
-        let cfg = session_config(None, &BTreeMap::new());
+        let cfg = session_config(None, &BTreeMap::new(), &[]);
         let build = &cfg["agent"][STOCK_AGENT];
         assert_eq!(build["permission"]["edit"], "deny");
         assert_eq!(build["permission"]["bash"]["*"], "deny");
@@ -386,7 +416,7 @@ mod tests {
 
     #[test]
     fn config_ships_the_reviewer_agent_and_disables_autoupdate() {
-        let cfg = session_config(None, &BTreeMap::new());
+        let cfg = session_config(None, &BTreeMap::new(), &[]);
         assert_eq!(cfg["agent"][REVIEWER_AGENT]["permission"]["edit"], "deny");
         assert_eq!(cfg["autoupdate"], false);
         assert_eq!(cfg["permission"]["doom_loop"], "deny");
@@ -396,7 +426,7 @@ mod tests {
     fn session_home_writes_the_config_under_xdg_config_home() {
         let tmp = tempfile::tempdir().unwrap();
         let home = SessionHome::under(tmp.path(), "ses/../weird id");
-        home.write_config(&session_config(None, &BTreeMap::new())).unwrap();
+        home.write_config(&session_config(None, &BTreeMap::new(), &[])).unwrap();
         assert!(home.config_file.ends_with("opencode/opencode.json"));
         assert!(home.config_file.starts_with(&home.config_home));
         assert!(home.data_home.is_dir());
@@ -417,7 +447,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let home = SessionHome::under(tmp.path(), "ses");
-        let config = session_config(None, &BTreeMap::new());
+        let config = session_config(None, &BTreeMap::new(), &[]);
         home.write_config(&config).unwrap();
         let mode = std::fs::metadata(&home.config_file).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "opencode.json must be 0600");
