@@ -148,7 +148,9 @@ pub async fn snapshot(state: &AppState) -> Snapshot {
             .await
             .unwrap_or_default();
     let machines_live: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM machines WHERE last_seen_at > now() - make_interval(secs => $1)",
+        "SELECT COUNT(*)::bigint FROM machines \
+         WHERE deleted_at IS NULL AND revoked_at IS NULL \
+           AND last_seen_at > now() - make_interval(secs => $1)",
     )
     .bind(MACHINE_ONLINE_SECS as f64)
     .fetch_one(&state.pool)

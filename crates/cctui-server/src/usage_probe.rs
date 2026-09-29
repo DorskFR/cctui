@@ -53,12 +53,13 @@ pub trait UsageProbe: Send + Sync {
 static OPENROUTER: OpenRouterProbe = OpenRouterProbe;
 static LITELLM: LiteLlmProbe = LiteLlmProbe;
 
-/// Every registered probe, in the order the picker lists them.
-const PROBES: &[&(dyn UsageProbe + Sync)] = &[&OPENROUTER, &LITELLM];
+/// Every registered probe, in the order the picker lists them. A `static`, not a
+/// `const`: a constant may not refer to a static.
+static PROBES: &[&'static dyn UsageProbe] = &[&OPENROUTER, &LITELLM];
 
 /// Look up a probe by its stored id.
 #[must_use]
-pub fn probe(id: &str) -> Option<&'static (dyn UsageProbe + Sync)> {
+pub fn probe(id: &str) -> Option<&'static dyn UsageProbe> {
     PROBES.iter().copied().find(|p| p.id() == id)
 }
 
