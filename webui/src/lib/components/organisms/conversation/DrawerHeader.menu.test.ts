@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
 import toolbar from './DrawerToolbar.svelte?raw';
-import drawer from '../ConversationDrawer.svelte?raw';
+import pane from '../ConversationPane.svelte?raw';
 
 const items = () => {
 	const start = header.indexOf('const overflowItems');
@@ -58,8 +58,8 @@ describe('drawer header ⋯ menu', () => {
 	});
 
 	it('wires the terminal to the toolbar, not the header', () => {
-		const head = drawer.slice(drawer.indexOf('<DrawerHeader'), drawer.indexOf('/>', drawer.indexOf('<DrawerHeader')));
-		const bar = drawer.slice(drawer.indexOf('<DrawerToolbar'), drawer.indexOf('/>', drawer.indexOf('<DrawerToolbar')));
+		const head = pane.slice(pane.indexOf('<DrawerHeader'), pane.indexOf('/>', pane.indexOf('<DrawerHeader')));
+		const bar = pane.slice(pane.indexOf('<DrawerToolbar'), pane.indexOf('/>', pane.indexOf('<DrawerToolbar')));
 		expect(head).not.toContain('terminal');
 		expect(bar).toContain('{terminalOpen}');
 		expect(bar).toContain('ontoggleTerminal=');
