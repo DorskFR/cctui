@@ -583,13 +583,18 @@ impl PermissionMode {
         }
     }
 
-    /// `(sandbox_mode, approval_policy)`.
+    /// `(sandbox_mode, approval_policy, workspace network access)`.
+    ///
+    /// `untrusted` is accepted ONLY as the native `approvalPolicy` param on
+    /// `thread/{start,resume,fork}`; as a config value codex 0.158 rejects it
+    /// (`approval_policy = "untrusted" is no longer supported`) and aborts the
+    /// app-server. Both values therefore ride the native thread params.
     #[must_use]
-    pub const fn codex_sandbox_approval(self) -> (&'static str, &'static str) {
+    pub const fn codex_sandbox_approval(self) -> (&'static str, &'static str, bool) {
         match self {
-            Self::Yolo | Self::Whip => ("danger-full-access", "never"),
-            Self::Auto => ("workspace-write", "never"),
-            Self::Ask => ("workspace-write", "on-request"),
+            Self::Yolo | Self::Whip => ("danger-full-access", "never", true),
+            Self::Auto => ("workspace-write", "on-request", false),
+            Self::Ask => ("workspace-write", "untrusted", true),
         }
     }
 
@@ -687,8 +692,40 @@ mod tests {
         for mode in
             [PermissionMode::Yolo, PermissionMode::Whip, PermissionMode::Auto, PermissionMode::Ask]
         {
-            let (_, approval) = mode.codex_sandbox_approval();
-            assert!(matches!(approval, "on-request" | "never"), "{mode:?} → {approval}");
+            let (sandbox, approval, _) = mode.codex_sandbox_approval();
+            assert!(
+                matches!(approval, "untrusted" | "on-request" | "never"),
+                "{mode:?} → {approval}"
+            );
+            assert!(
+                matches!(sandbox, "read-only" | "workspace-write" | "danger-full-access"),
+                "{mode:?} → {sandbox}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_permission_modes_map_to_the_intended_posture() {
+        assert_eq!(
+            PermissionMode::Ask.codex_sandbox_approval(),
+            ("workspace-write", "untrusted", true)
+        );
+        assert_eq!(
+            PermissionMode::Auto.codex_sandbox_approval(),
+            ("workspace-write", "on-request", false)
+        );
+        for mode in [PermissionMode::Yolo, PermissionMode::Whip] {
+            assert_eq!(mode.codex_sandbox_approval(), ("danger-full-access", "never", true));
+        }
+    }
+
+    #[test]
+    fn network_access_is_only_claimed_for_a_sandbox_that_has_it() {
+        for mode in
+            [PermissionMode::Yolo, PermissionMode::Whip, PermissionMode::Auto, PermissionMode::Ask]
+        {
+            let (sandbox, _, net) = mode.codex_sandbox_approval();
+            assert!(!net || sandbox != "read-only", "{mode:?}");
         }
     }
 

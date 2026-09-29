@@ -224,7 +224,20 @@ fn claude_config(mode: &str, tmp: &Path) -> serde_json::Value {
         "skip_backfill": true,
         "claude_bin": tmp.join("no-such-claude"),
         "socket_path": tmp.join("hook.sock"),
+        "supervise_daemon": false,
     })
+}
+
+#[test]
+fn claude_conformance_config_never_supervises_the_daemon() {
+    let tmp = tempfile::tempdir().unwrap();
+    for mode in ["bg", "oneshot", "sdk"] {
+        assert_eq!(
+            claude_config(mode, tmp.path()).get("supervise_daemon"),
+            Some(&serde_json::Value::Bool(false)),
+            "{mode}: conformance must not reach the user service manager"
+        );
+    }
 }
 
 async fn run_claude(mode: &str, expected: usize) -> Vec<String> {

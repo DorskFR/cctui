@@ -9,17 +9,21 @@ use crate::adapters::codex::model_list;
 pub struct AppServerConfig {
     /// Binary to invoke (default `"codex"`).
     pub bin: String,
-    /// Approval policy passed via `-c approval_policy=...`. `"on-request"`
-    /// (the default) lets Codex ask for approval so the relay has something
-    /// to forward; `"never"` disables prompts. Codex 0.153 refuses to start on
-    /// `"untrusted"`.
+    /// Approval policy sent as the native `approvalPolicy` thread param:
+    /// `"untrusted"` (prompt on everything), `"on-request"` (prompt only on an
+    /// escalation) or `"never"`. NEVER a config key — codex rejects
+    /// `approval_policy = "untrusted"` there and aborts the app-server.
     pub approval_policy: String,
-    /// Sandbox mode passed via `-c sandbox_mode=...`. `"read-only"`
+    /// Sandbox mode sent as the native `sandbox` thread param. `"read-only"`
     /// and `"workspace-write"` wrap commands in bubblewrap; on a host whose
     /// kernel forbids unprivileged user namespaces those fail to launch, so a
     /// per-host default of `"danger-full-access"` (no sandbox) is required
     /// there. Overridable per-spawn via the full-access toggle.
     pub sandbox_mode: String,
+    /// `sandbox_workspace_write.network_access`. Only meaningful under
+    /// `"workspace-write"`; it has no native thread param, so it stays a config
+    /// key (a bare TOML bool, never quoted).
+    pub network_access: bool,
     /// Reasoning effort passed via `-c model_reasoning_effort=...`
     /// (codex: `minimal`/`low`/`medium`/`high`). `None` keeps the codex
     /// default. Set per-spawn from the spawn request.
@@ -45,6 +49,7 @@ impl Default for AppServerConfig {
             bin: "codex".to_string(),
             approval_policy: "on-request".to_string(),
             sandbox_mode: "workspace-write".to_string(),
+            network_access: false,
             reasoning_effort: None,
             model: None,
             service_tier: None,
@@ -54,10 +59,14 @@ impl Default for AppServerConfig {
 }
 
 impl AppServerConfig {
-    /// The `-c key="value"` overrides passed to `codex app-server` for a spawn.
-    /// This is the COMPLETE set of config knobs cctui sets. They are
-    /// PROCESS-level — they apply to every thread this app-server serves — so
-    /// nothing per-session belongs here.
+    /// The string-valued `-c key="value"` overrides passed to `codex
+    /// app-server` for a spawn. They are PROCESS-level — they apply to every
+    /// thread this app-server serves — so nothing per-session belongs here.
+    ///
+    /// The permission posture is deliberately absent: `approval_policy` and
+    /// `sandbox_mode` ride [`ThreadConfig`]'s native params, because codex
+    /// refuses `approval_policy = "untrusted"` in every config layer.
+    /// [`Self::managed_overrides`] is the full managed set.
     ///
     /// Fast mode (`service_tier = "fast"`) is deliberately absent. It is a
     /// speed/price tier — 1.5x speed and increased usage on the SAME model at
@@ -71,15 +80,22 @@ impl AppServerConfig {
     /// the daemon must supply it per thread.
     #[must_use]
     pub fn config_overrides(&self) -> Vec<(String, String)> {
-        let mut args = vec![
-            ("approval_policy".to_owned(), self.approval_policy.clone()),
-            ("sandbox_mode".to_owned(), self.sandbox_mode.clone()),
-        ];
+        let mut args: Vec<(String, String)> = Vec::new();
         if let Some(effort) = self.reasoning_effort.as_deref() {
             args.push(("model_reasoning_effort".to_owned(), effort.to_owned()));
         }
         if let Some(model) = self.model.as_deref() {
             args.push(("model".to_owned(), model.to_owned()));
+        }
+        args
+    }
+
+    /// Every config key cctui manages, rendered as TOML literals.
+    #[must_use]
+    pub fn managed_overrides(&self) -> Vec<(String, String)> {
+        let mut args = quoted(self.config_overrides());
+        if self.sandbox_mode == "workspace-write" && self.network_access {
+            args.push(("sandbox_workspace_write.network_access".to_owned(), "true".to_owned()));
         }
         args
     }
@@ -94,6 +110,13 @@ impl AppServerConfig {
         }
         if let Some(s) = v.get("sandbox_mode").and_then(Value::as_str) {
             cfg.sandbox_mode = s.to_string();
+        }
+        if let Some(n) = v
+            .get("sandbox_workspace_write_network_access")
+            .or_else(|| v.get("network_access"))
+            .and_then(Value::as_bool)
+        {
+            cfg.network_access = n;
         }
         if let Some(e) = v.get("model_reasoning_effort").and_then(Value::as_str) {
             cfg.reasoning_effort = Some(e.to_string());
@@ -145,6 +168,11 @@ pub fn gateway_provider_overrides(
     ]
 }
 
+/// Config keys a session's config ladder must never carry: codex aborts on
+/// `approval_policy = "untrusted"`, and a config-level `sandbox_mode` would
+/// silently outrank the native `sandbox` thread param.
+pub(super) const NEVER_CONFIG: &[&str] = &["approval_policy", "sandbox_mode"];
+
 /// Quote a value that is always a TOML string (`config_overrides` and the
 /// gateway provider block are string-valued by construction).
 fn quoted(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
@@ -164,7 +192,7 @@ pub(super) fn launch_overrides(
     env: &std::collections::BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
     let managed: Vec<(String, String)> =
-        [quoted(cfg.config_overrides()), quoted(gateway_provider_overrides(env))].concat();
+        [cfg.managed_overrides(), quoted(gateway_provider_overrides(env))].concat();
     let account = env
         .get(cctui_proto::codex_config::CONFIG_TOML_ENV)
         .map(|b| cctui_proto::codex_config::overrides_from_block(b))
@@ -172,7 +200,7 @@ pub(super) fn launch_overrides(
     let owned: std::collections::BTreeSet<&str> = managed.iter().map(|(k, _)| k.as_str()).collect();
     account
         .into_iter()
-        .filter(|(k, _)| !owned.contains(k.as_str()))
+        .filter(|(k, _)| !owned.contains(k.as_str()) && !NEVER_CONFIG.contains(&k.as_str()))
         .chain(managed.iter().cloned())
         .collect()
 }
@@ -206,7 +234,7 @@ pub(super) fn shared_overlay(
     cfg: &AppServerConfig,
     env: &std::collections::BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
-    let managed = quoted(cfg.config_overrides());
+    let managed = cfg.managed_overrides();
     let account = env
         .get(cctui_proto::codex_config::CONFIG_TOML_ENV)
         .map(|b| cctui_proto::codex_config::overrides_from_block(b))
@@ -214,7 +242,11 @@ pub(super) fn shared_overlay(
     let owned: std::collections::BTreeSet<&str> = managed.iter().map(|(k, _)| k.as_str()).collect();
     account
         .into_iter()
-        .filter(|(k, _)| !owned.contains(k.as_str()) && !k.starts_with("model_provider"))
+        .filter(|(k, _)| {
+            !owned.contains(k.as_str())
+                && !NEVER_CONFIG.contains(&k.as_str())
+                && !k.starts_with("model_provider")
+        })
         .chain(managed.iter().cloned())
         .collect()
 }
@@ -301,6 +333,7 @@ mod tests {
         assert_eq!(cfg.sandbox_mode, "danger-full-access");
         // Default sandbox_mode is the safe, sandboxed mode.
         assert_eq!(AppServerConfig::default().sandbox_mode, "workspace-write");
+        assert!(!AppServerConfig::default().network_access);
     }
 
     #[test]
@@ -326,13 +359,9 @@ mod tests {
                 !keys.iter().any(|k| k.to_lowercase().contains("fast")),
                 "no fast-mode knob may be set, got {keys:?}"
             );
-            // Only the four known, intentional knobs are ever set.
             for k in &keys {
                 assert!(
-                    matches!(
-                        *k,
-                        "approval_policy" | "sandbox_mode" | "model_reasoning_effort" | "model"
-                    ),
+                    matches!(*k, "model_reasoning_effort" | "model"),
                     "unexpected codex config knob {k:?}"
                 );
             }
@@ -341,10 +370,7 @@ mod tests {
 
     #[test]
     fn config_overrides_default_and_with_quality_knobs() {
-        let base = AppServerConfig::default().config_overrides();
-        assert_eq!(base.len(), 2);
-        assert!(base.contains(&("approval_policy".to_owned(), "on-request".to_owned())));
-        assert!(base.contains(&("sandbox_mode".to_owned(), "workspace-write".to_owned())));
+        assert!(AppServerConfig::default().config_overrides().is_empty());
 
         let with = AppServerConfig {
             reasoning_effort: Some("high".to_owned()),
@@ -378,9 +404,8 @@ mod tests {
         assert!(flags.contains(&"hide_agent_reasoning=true".to_owned()), "{flags:?}");
         assert!(flags.contains(&"model_verbosity=\"low\"".to_owned()), "{flags:?}");
         assert!(flags.contains(&"model_context_window=272000".to_owned()), "{flags:?}");
-        // The managed knobs still ride along, still quoted.
-        assert!(flags.contains(&"approval_policy=\"on-request\"".to_owned()), "{flags:?}");
         assert!(flags.contains(&"model_provider=\"cctui\"".to_owned()), "{flags:?}");
+        assert!(!flags.iter().any(|f| f.starts_with("approval_policy=")), "{flags:?}");
     }
 
     /// Anything outside the curated set is dropped rather than forwarded — an
@@ -395,28 +420,91 @@ mod tests {
         assert!(!got.iter().any(|(k, _)| k == "service_tier" || k == "disableBundledSkills"));
         assert!(!got.iter().any(|(k, _)| k == "totallyNotAKey"));
         // The keys that collide with managed ones survive only with cctui's values.
-        for (key, want) in [
-            ("model_provider", "\"cctui\""),
-            ("approval_policy", "\"on-request\""),
-            ("sandbox_mode", "\"workspace-write\""),
-        ] {
-            let vals: Vec<&str> =
-                got.iter().filter(|(k, _)| k == key).map(|(_, v)| v.as_str()).collect();
-            assert_eq!(vals, vec![want], "{key} must be cctui's alone");
+        let providers: Vec<&str> =
+            got.iter().filter(|(k, _)| k == "model_provider").map(|(_, v)| v.as_str()).collect();
+        assert_eq!(providers, vec!["\"cctui\""], "model_provider must be cctui's alone");
+        for key in NEVER_CONFIG {
+            assert!(
+                !got.iter().any(|(k, _)| k.as_str() == *key),
+                "{key} must never reach a config layer"
+            );
         }
+    }
+
+    /// The posture is a native thread param; nothing may reintroduce it as
+    /// config, where codex would abort on `untrusted`.
+    #[test]
+    fn the_permission_posture_never_appears_in_any_config_layer() {
+        for cfg in [
+            AppServerConfig::default(),
+            AppServerConfig {
+                approval_policy: "untrusted".to_owned(),
+                sandbox_mode: "workspace-write".to_owned(),
+                network_access: true,
+                ..AppServerConfig::default()
+            },
+            AppServerConfig {
+                approval_policy: "never".to_owned(),
+                sandbox_mode: "danger-full-access".to_owned(),
+                network_access: true,
+                ..AppServerConfig::default()
+            },
+        ] {
+            let hostile = "approval_policy = \"untrusted\"\nsandbox_mode = \"read-only\"\n";
+            for layer in [
+                cfg.managed_overrides(),
+                launch_overrides(&cfg, &env_with_block(hostile)),
+                shared_overlay(&cfg, &env_with_block(hostile)),
+            ] {
+                for key in NEVER_CONFIG {
+                    assert!(!layer.iter().any(|(k, _)| k.as_str() == *key), "{key} in {layer:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_network_access_is_a_bare_toml_bool_and_only_for_workspace_write() {
+        let ask = AppServerConfig {
+            sandbox_mode: "workspace-write".to_owned(),
+            network_access: true,
+            ..AppServerConfig::default()
+        };
+        assert!(
+            ask.managed_overrides().contains(&(
+                "sandbox_workspace_write.network_access".to_owned(),
+                "true".to_owned()
+            ))
+        );
+
+        for cfg in [
+            AppServerConfig { network_access: false, ..ask.clone() },
+            AppServerConfig { sandbox_mode: "danger-full-access".to_owned(), ..ask.clone() },
+            AppServerConfig { sandbox_mode: "read-only".to_owned(), ..ask },
+        ] {
+            assert!(
+                !cfg.managed_overrides()
+                    .iter()
+                    .any(|(k, _)| k == "sandbox_workspace_write.network_access"),
+                "{cfg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_access_reads_from_the_host_config() {
+        assert!(!AppServerConfig::from_value(&json!({})).network_access);
+        assert!(
+            AppServerConfig::from_value(&json!({"sandbox_workspace_write_network_access": true}))
+                .network_access
+        );
+        assert!(AppServerConfig::from_value(&json!({"network_access": true})).network_access);
     }
 
     #[test]
     fn launch_overrides_are_unchanged_without_an_account_block() {
         let env = std::collections::BTreeMap::new();
-        let got = launch_overrides(&AppServerConfig::default(), &env);
-        assert_eq!(
-            got,
-            vec![
-                ("approval_policy".to_owned(), "\"on-request\"".to_owned()),
-                ("sandbox_mode".to_owned(), "\"workspace-write\"".to_owned()),
-            ]
-        );
+        assert!(launch_overrides(&AppServerConfig::default(), &env).is_empty());
     }
 
     #[test]

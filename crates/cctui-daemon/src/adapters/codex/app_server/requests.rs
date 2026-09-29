@@ -155,6 +155,11 @@ pub struct ThreadConfig {
     /// a skill catalog scoped to one session. Codex persists none of it, so it
     /// rides every start, resume and fork.
     pub developer_instructions: Option<String>,
+    /// Native `approvalPolicy`, never a config key: codex 0.158 accepts
+    /// `"untrusted"` only here and aborts on it in any config layer.
+    pub approval_policy: Option<String>,
+    /// Native `sandbox`.
+    pub sandbox: Option<String>,
 }
 
 impl ThreadConfig {
@@ -169,7 +174,16 @@ impl ThreadConfig {
             overlay: Vec::new(),
             tool_env: std::collections::BTreeMap::new(),
             developer_instructions: None,
+            approval_policy: None,
+            sandbox: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_permissions(mut self, approval_policy: &str, sandbox: &str) -> Self {
+        self.approval_policy = Some(approval_policy.to_owned());
+        self.sandbox = Some(sandbox.to_owned());
+        self
     }
 
     #[must_use]
@@ -194,7 +208,16 @@ impl ThreadConfig {
     pub fn apply(&self, mut params: Value) -> Value {
         let Some(map) = params.as_object_mut() else { return params };
         let mut config = json!({});
+        if let Some(policy) = &self.approval_policy {
+            map.insert("approvalPolicy".to_owned(), json!(policy));
+        }
+        if let Some(sandbox) = &self.sandbox {
+            map.insert("sandbox".to_owned(), json!(sandbox));
+        }
         for (key, literal) in &self.overlay {
+            if super::config::NEVER_CONFIG.contains(&key.as_str()) {
+                continue;
+            }
             if let Some(value) = toml_literal_to_json(literal) {
                 config[key.as_str()] = value;
             }
@@ -764,14 +787,54 @@ mod tests {
     #[test]
     fn the_overlay_carries_process_knobs_as_typed_config_values() {
         let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None).with_overlay(vec![
-            ("approval_policy".to_owned(), "\"never\"".to_owned()),
+            ("model_verbosity".to_owned(), "\"low\"".to_owned()),
+            ("sandbox_workspace_write.network_access".to_owned(), "true".to_owned()),
             ("mcp_servers.cctui.args".to_owned(), "[\"a\", \"b\"]".to_owned()),
             ("broken".to_owned(), "not toml [".to_owned()),
         ]);
         let params = tc.resume_params("tid", "/repo");
-        assert_eq!(params["config"]["approval_policy"], "never");
+        assert_eq!(params["config"]["model_verbosity"], "low");
+        assert_eq!(params["config"]["sandbox_workspace_write.network_access"], json!(true));
         assert_eq!(params["config"]["mcp_servers.cctui.args"], json!(["a", "b"]));
         assert!(params["config"].get("broken").is_none());
+    }
+
+    /// Last-ditch guard: codex aborts the whole app-server on
+    /// `approval_policy = "untrusted"` in any config layer.
+    #[test]
+    fn the_overlay_cannot_smuggle_the_posture_into_the_config_block() {
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None)
+            .with_overlay(vec![
+                ("approval_policy".to_owned(), "\"untrusted\"".to_owned()),
+                ("sandbox_mode".to_owned(), "\"read-only\"".to_owned()),
+            ])
+            .with_permissions("untrusted", "workspace-write");
+        for params in [
+            tc.start_params("/repo"),
+            tc.resume_params("tid", "/repo"),
+            tc.fork_params("tid", "/repo"),
+        ] {
+            assert_eq!(params["approvalPolicy"], "untrusted");
+            assert_eq!(params["sandbox"], "workspace-write");
+            assert!(params.get("config").is_none(), "{params}");
+        }
+    }
+
+    #[test]
+    fn permissions_ride_start_resume_and_fork_alike() {
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None)
+            .with_permissions("on-request", "workspace-write");
+        for params in [
+            tc.start_params("/repo"),
+            tc.resume_params("tid", "/repo"),
+            tc.fork_params("tid", "/repo"),
+        ] {
+            assert_eq!(params["approvalPolicy"], "on-request");
+            assert_eq!(params["sandbox"], "workspace-write");
+        }
+        let none = ThreadConfig::new(&std::collections::BTreeMap::new(), None);
+        assert!(none.start_params("/repo").get("approvalPolicy").is_none());
+        assert!(none.start_params("/repo").get("sandbox").is_none());
     }
 
     /// The tool env and the skill catalog are per-thread state codex persists

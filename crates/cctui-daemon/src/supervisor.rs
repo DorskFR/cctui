@@ -1004,9 +1004,11 @@ impl AdapterRunning {
 }
 
 impl Supervisor {
-    /// Queue a `Remove` for every archived session whose claude job is still
-    /// on disk and was not already attempted within [`PURGE_RETRY`].
+    /// Drop the archived sessions from the shared-cwd roster, and queue a
+    /// `Remove` for every one whose claude job is still on disk and was not
+    /// already attempted within [`PURGE_RETRY`].
     fn purge_archived_jobs(&self, running: &HashMap<String, AdapterRunning>, archived: &[String]) {
+        crate::neighbours::global().forget(archived);
         let Some(claude) = running.get(CLAUDE_ADAPTER_ID) else { return };
         let Some(jobs_root) = claude_jobs_root(running) else { return };
         let leaked = self.not_yet_attempted(leaked_jobs(&jobs_root, archived));
