@@ -403,13 +403,13 @@ mod tests {
             "oldest",
             "codex",
             repo.path(),
-            base.checked_sub(std::time::Duration::from_secs(600)).unwrap(),
+            base.checked_sub(std::time::Duration::from_mins(10)).unwrap(),
         );
         dirs.note(
             "middle",
             "claude-code",
             repo.path(),
-            base.checked_sub(std::time::Duration::from_secs(60)).unwrap(),
+            base.checked_sub(std::time::Duration::from_mins(1)).unwrap(),
         );
         assert_eq!(
             ids(&dirs.neighbours(&repo.path().to_string_lossy(), None)),
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn ages_read_in_seconds_minutes_and_hours() {
         assert_eq!(age(std::time::Duration::from_secs(3)), "3s");
-        assert_eq!(age(std::time::Duration::from_secs(14 * 60)), "14m");
-        assert_eq!(age(std::time::Duration::from_secs(3600 + 120)), "1h02");
+        assert_eq!(age(std::time::Duration::from_mins(14)), "14m");
+        assert_eq!(age(std::time::Duration::from_mins(62)), "1h02");
     }
 }

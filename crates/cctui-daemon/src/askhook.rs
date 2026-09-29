@@ -158,10 +158,12 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Report a finished turn to the daemon. The `Stop` hook is the only
-/// authoritative turn-end signal a claude session has — every other path
-/// (transcript tail, quiet window) is inference. Failures are logged and
-/// swallowed: the turn ends regardless of whether the daemon heard about it.
+/// Report a finished turn to the daemon.
+///
+/// The `Stop` hook is the only authoritative turn-end signal a claude session
+/// has — every other path (transcript tail, quiet window) is inference. Failures
+/// are logged and swallowed: the turn ends regardless of whether the daemon
+/// heard about it.
 pub fn report_turn_end(sock: &Path, session_id: &str) {
     let line = json!({ "kind": "turn_end", "session_id": session_id });
     if let Err(err) = send(sock, &line.to_string()) {

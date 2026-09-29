@@ -596,6 +596,11 @@ mod tests {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
+    fn chmod(path: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
     #[test]
     fn hook_settings_land_0600_under_the_injected_root_on_create_and_rewrite() {
         let tmp = tempfile::tempdir().unwrap();
@@ -625,8 +630,7 @@ mod tests {
         assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], json!("cctui_s_bearer"));
         assert!(written["hooks"]["PreToolUse"].is_array());
 
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        chmod(&path, 0o644);
         assert_eq!(write(), path);
         assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
     }
@@ -724,8 +728,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(written["mcpServers"]["cctui"]["args"][2], json!("sess-3"));
 
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        chmod(&path, 0o666);
         ensure_agent_mcp_config_in(&root, "ccccccc3", "sess-3", Some(&cap)).expect("rewritten");
         assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
     }
