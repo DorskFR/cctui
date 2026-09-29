@@ -69,11 +69,11 @@ export default defineJourney({
 		},
 		{
 			id: 'range',
-			route: HOME,
 			target: 'range',
+			do: { kind: 'click' },
 			say: {
 				title: { en: 'Choose the period you are reading', fr: 'Choisir la période que vous lisez' },
-				body: { en: 'This selector governs the charts below, not the tiles above. Widen it to judge a trend, narrow it to explain a single expensive day.', fr: 'Ce sélecteur gouverne les graphiques ci-dessous, pas les tuiles ci-dessus. Élargissez-le pour juger une tendance, réduisez-le pour expliquer une journée coûteuse.' }
+				body: { en: 'Pick a different period and watch the charts below redraw — this selector governs them, not the tiles above. Widen it to judge a trend, narrow it to explain a single expensive day.', fr: 'Choisissez une autre période et regardez les graphiques ci-dessous se redessiner — ce sélecteur les gouverne, pas les tuiles ci-dessus. Élargissez-la pour juger une tendance, réduisez-la pour expliquer une journée coûteuse.' }
 			},
 			expect: [{ visible: 'range' }]
 		},
