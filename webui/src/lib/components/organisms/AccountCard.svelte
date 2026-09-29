@@ -8,6 +8,10 @@
 	import { exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
 	import { accountHandleDrag } from '$lib/components/organisms/accounts/handleDrag.svelte';
 	import { providerLabel } from '$lib/providers';
+	import {
+		componentNames,
+		indicatorTone
+	} from '$lib/components/molecules/provider-status.logic';
 	import { Badge, Button, Checkbox, Icon, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
@@ -71,6 +75,14 @@
 				})
 			: null
 	);
+	// Read off the usage rows the card already fetches: the server attaches the
+	// family's incident reading to a credential only while it is degraded.
+	const upstream = $derived(
+		(usage.data ?? [])
+			.filter((e) => e.account === a.id && e.provider_status)
+			.map((e) => ({ provider: e.provider, status: e.provider_status! }))
+	);
+
 	const shares = useResourceShares(
 		() => 'account',
 		() => a.id,
@@ -188,6 +200,27 @@
 				</Text>
 			</span>
 		{/if}
+		{#each upstream as u (u.provider)}
+			<a
+				class="upstream"
+				href={u.status.url}
+				target="_blank"
+				rel="noopener"
+				data-tone={indicatorTone(u.status.indicator)}
+				title={u.status.description}
+			>
+				<span class="dot"></span>
+				<Text as="span" size="xs" tone="inherit">
+					{m.provider_status_account_badge({
+						provider: providerLabel(u.provider),
+						detail:
+							componentNames(u.status).join(', ') ||
+							u.status.description ||
+							u.status.indicator
+					})}
+				</Text>
+			</a>
+		{/each}
 		{#each redirects as r (r.id)}
 			<Badge
 				size="sm"
@@ -352,6 +385,25 @@
 		height: var(--sp-2);
 		border-radius: var(--r-pill);
 		background: var(--danger);
+	}
+	/* Wraps within the header row rather than widening it, like the exhausted
+	   chip beside it. */
+	.upstream {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+		flex-wrap: wrap;
+		text-decoration: none;
+		color: var(--danger);
+	}
+	.upstream[data-tone='warn'] {
+		color: var(--warn);
+	}
+	.upstream[data-tone='warn'] .dot {
+		background: var(--warn);
+	}
+	.upstream:hover {
+		text-decoration: underline;
 	}
 	.spacer {
 		flex: 1;

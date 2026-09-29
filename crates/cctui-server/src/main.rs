@@ -36,6 +36,7 @@ mod policy;
 mod pool_usage;
 mod presence;
 mod preview;
+mod provider_status;
 mod registry;
 mod routes;
 mod scheduled_messages;
@@ -200,6 +201,7 @@ async fn build_state(
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
         update_check: update_check::UpdateCheck::shared(),
+        provider_status: provider_status::ProviderStatusCache::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
     })
@@ -239,6 +241,15 @@ async fn start_background_tasks(state: &AppState) {
     // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
     if update_check::enabled_from_env() {
         tokio::spawn(update_check::task(state.update_check.clone(), state.http_client.clone()));
+    }
+
+    // Statuspage poller behind `GET /provider-status` and the usage payloads;
+    // `CCTUI_PROVIDER_STATUS=0` keeps every family on `unknown`.
+    if provider_status::enabled_from_env() {
+        tokio::spawn(provider_status::task(
+            state.provider_status.clone(),
+            state.http_client.clone(),
+        ));
     }
 
     // Warm the reauth gate from the persisted flag so a restart doesn't
@@ -838,6 +849,7 @@ mod tests {
             "GET /prompts/resolve Bearer Authenticated",
             "DELETE /prompts/{id} Bearer Authenticated",
             "GET /prompts/{id} Bearer Authenticated",
+            "GET /provider-status Bearer Authenticated",
             "GET /redirects Bearer Human",
             "DELETE /redirects/{id} Bearer Human",
             "GET /sessions Bearer Authenticated",

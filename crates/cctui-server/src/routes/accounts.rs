@@ -2381,6 +2381,12 @@ pub struct AccountUsage {
     /// Whether a usage-limit reset can be claimed right now (Codex reset
     /// credits, Claude `juniper_tide`); `None` when the payload has no such block.
     pub limit_reset: Option<crate::routes::limit_reset::LimitResetStatus>,
+    /// The upstream family's incident reading, present only when this
+    /// credential's provider is degraded: a healthy or unknown upstream is not
+    /// news, and a compatible endpoint never inherits a first-party incident.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub provider_status: Option<crate::provider_status::ProviderStatus>,
 }
 
 /// A normalized window plus its pace against the window's linear budget
@@ -2453,7 +2459,14 @@ impl AccountUsage {
         let limit_reset = usage
             .as_ref()
             .and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
-        Self { account_id, provider, usage, windows, age_secs, limit_reset }
+        Self { account_id, provider, usage, windows, age_secs, limit_reset, provider_status: None }
+    }
+
+    /// Attach the upstream incident reading for this credential's family, read
+    /// from the poller's cache — no network on the request path.
+    fn with_status(mut self, state: &AppState) -> Self {
+        self.provider_status = state.provider_status.degraded_for_provider(&self.provider);
+        self
     }
 }
 
@@ -2476,7 +2489,7 @@ pub async fn store_and_broadcast_usage(
         crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
     );
     let previous = previous_samples(state, id, usage.as_ref()).await;
-    let row = AccountUsage::build(id, provider, usage, 0, &previous);
+    let row = AccountUsage::build(id, provider, usage, 0, &previous).with_status(state);
     if row.provider.is_empty() {
         return row;
     }
@@ -2524,7 +2537,9 @@ pub async fn account_usage(
         let usage = hit.usage.clone();
         drop(hit);
         let previous = previous_samples(&state, id, usage.as_ref()).await;
-        return Ok(Json(AccountUsage::build(id, provider, usage, age_secs, &previous)));
+        return Ok(Json(
+            AccountUsage::build(id, provider, usage, age_secs, &previous).with_status(&state),
+        ));
     }
 
     // Stale or absent → fetch upstream (anthropic only; Codex returns None).
@@ -2541,7 +2556,9 @@ pub async fn account_usage(
             .map(|hit| (hit.usage.clone(), hit.fetched_at.elapsed().as_secs()));
         if let Some((usage, age_secs)) = cached {
             let previous = previous_samples(&state, id, usage.as_ref()).await;
-            return Ok(Json(AccountUsage::build(id, provider, usage, age_secs, &previous)));
+            return Ok(Json(
+                AccountUsage::build(id, provider, usage, age_secs, &previous).with_status(&state),
+            ));
         }
         // No prior value — surface as "no usage" so the UI just hides the chip.
         None
@@ -2606,7 +2623,8 @@ pub async fn all_accounts_usage(
                 .get(&r.id)
                 .map_or(0, |hit| hit.fetched_at.elapsed().as_secs());
             AccountUsageEntry {
-                usage: AccountUsage::build(r.id, r.provider, usage, age_secs, &previous),
+                usage: AccountUsage::build(r.id, r.provider, usage, age_secs, &previous)
+                    .with_status(&state),
                 account: r.account_id,
                 account_name: r.account_name,
                 account_emoji: r.account_emoji,

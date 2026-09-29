@@ -38,6 +38,7 @@ export const qk = {
   conversationAll: ["conversation"] as const,
   me: ["me"] as const,
   accounts: ["accounts"] as const,
+  providerStatus: ["provider-status"] as const,
   redirects: ["redirects"] as const,
   toolPolicy: (accountId: string) => ["tool-policy", accountId] as const,
   accountPools: ["account-pools"] as const,

@@ -1946,5 +1946,13 @@
 	"settings_plugins_admin_installed": "Plugin installed",
 	"settings_plugins_admin_enabled": "{name} enabled for this instance",
 	"settings_plugins_admin_disabled": "{name} disabled for this instance",
-	"settings_plugins_admin_uninstalled": "{name} uninstalled"
+	"settings_plugins_admin_uninstalled": "{name} uninstalled",
+  "provider_status_aria": "Upstream provider status ({count} degraded)",
+  "provider_status_heading": "{provider} · {severity}",
+  "provider_status_affected": "Affected: {components}",
+  "provider_status_page": "Status page",
+  "provider_status_minor": "degraded",
+  "provider_status_major": "partial outage",
+  "provider_status_critical": "major outage",
+  "provider_status_account_badge": "{provider} upstream: {detail}"
 }

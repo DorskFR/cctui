@@ -1946,5 +1946,13 @@
 	"settings_plugins_admin_installed": "Plugin installé",
 	"settings_plugins_admin_enabled": "{name} activé pour cette instance",
 	"settings_plugins_admin_disabled": "{name} désactivé pour cette instance",
-	"settings_plugins_admin_uninstalled": "{name} désinstallé"
+	"settings_plugins_admin_uninstalled": "{name} désinstallé",
+  "provider_status_aria": "État des fournisseurs en amont ({count} dégradé·s)",
+  "provider_status_heading": "{provider} · {severity}",
+  "provider_status_affected": "Touché : {components}",
+  "provider_status_page": "Page d'état",
+  "provider_status_minor": "dégradé",
+  "provider_status_major": "panne partielle",
+  "provider_status_critical": "panne majeure",
+  "provider_status_account_badge": "{provider} en amont : {detail}"
 }

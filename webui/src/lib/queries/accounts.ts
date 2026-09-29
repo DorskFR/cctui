@@ -9,6 +9,7 @@ import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import type {
   AccountUsageEntry,
+  ProviderStatus,
   UsageHistory,
   UsageWindowCloses,
   CreateAccount,
@@ -177,6 +178,10 @@ export const useSessionRebinds = (
  *  usage endpoint rate-limits per access token — do not shorten it. */
 export const USAGE_POLL_MS = 180_000;
 
+/** Provider status refresh. The server polls upstream every 60s; asking more
+ *  often than that only re-reads the same cache entry. */
+export const PROVIDER_STATUS_POLL_MS = 60_000;
+
 /** The caches a pushed usage row patches. Both are fed by one server-side
  *  per-account cache entry, so they must never be invalidated independently. */
 export const usageKeys = {
@@ -211,6 +216,19 @@ export const useAllAccountsUsage = (enabled: () => boolean = () => true) =>
     staleTime: USAGE_POLL_MS,
     refetchInterval: USAGE_POLL_MS,
     refetchOnWindowFocus: false,
+    retry: false,
+  }));
+
+/** What each upstream provider family reports on its status page. Server-side
+ *  this is a cached background poll, so the cadence here is only how fast the
+ *  UI notices — never an upstream request. */
+export const useProviderStatus = (enabled: () => boolean = () => true) =>
+  createQuery(() => ({
+    queryKey: qk.providerStatus,
+    queryFn: () => api.get<ProviderStatus[]>("/provider-status"),
+    enabled: enabled(),
+    staleTime: PROVIDER_STATUS_POLL_MS,
+    refetchInterval: PROVIDER_STATUS_POLL_MS,
     retry: false,
   }));
 

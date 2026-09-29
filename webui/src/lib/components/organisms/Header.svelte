@@ -16,6 +16,7 @@
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
+	import ProviderStatusDot from '$lib/components/molecules/ProviderStatusDot.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import {
 		DEFAULT_SETTINGS_PAGE,
@@ -173,7 +174,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 			{/if}
 		</div>
 		<div class="tail">
-			<span class="batt"><ResourceBattery /><UsageBattery /></span>
+			<span class="batt"><ProviderStatusDot /><ResourceBattery /><UsageBattery /></span>
 			<span class="divider" aria-hidden="true"></span>
 			<span class="prefs">
 				<ThemePicker

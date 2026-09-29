@@ -35,6 +35,7 @@ pub mod plugins_admin;
 pub mod privacy_scan;
 pub mod profiles;
 pub mod prompts;
+pub mod provider_status;
 pub mod scheduled_messages;
 pub mod self_update;
 pub mod server_settings;
