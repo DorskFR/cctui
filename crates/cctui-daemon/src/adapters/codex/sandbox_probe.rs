@@ -179,7 +179,7 @@ pub async fn refresh(bin: &str) -> CodexSandbox {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_cache_for_test() {
+fn reset_cache_for_test() {
     if let Ok(mut guard) = cache().lock() {
         *guard = None;
     }
@@ -240,7 +240,7 @@ mod tests {
         }
     }
 
-    /// An unfamiliar failure must not claim the AppArmor fix applies.
+    /// An unfamiliar failure must not claim the `AppArmor` fix applies.
     #[test]
     fn an_unrecognized_failure_is_unknown_and_keeps_its_first_line() {
         let out = ProbeOutput {

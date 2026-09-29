@@ -610,8 +610,8 @@ mod reconnect_tests {
     use cctui_proto::adapter::{AdapterEvent, SessionMeta};
     use tokio::sync::mpsc;
 
-    use super::{LiveRegistry, announce_live_sessions};
-    use crate::adapters::opencode::session::LiveSession;
+    use super::{LiveRegistry, announce_live_sessions, client, diagnose, pty_view, session};
+    use crate::adapters::opencode::session::{LiveSession, SessionCommand};
 
     async fn registry_with(local_id: &str) -> LiveRegistry {
         let live = LiveRegistry::default();
