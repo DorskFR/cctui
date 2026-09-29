@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::bumps::Bumps;
+use super::conn_limit::{ConnGuard, DAEMON_CONNS};
 use super::daemon_lost::{PENDING_DAEMON_LOST, schedule_daemon_lost};
 use super::decode::{
     MAX_TRANSFER_BYTES, STALE_TRANSFER, decode_binary_frame, decode_compressed_frame, expand_batch,
@@ -49,7 +50,37 @@ pub async fn ws(
         return Err(StatusCode::FORBIDDEN);
     };
     let user_id = ctx.user_id;
-    Ok(ws.on_upgrade(move |socket| handle(socket, state, machine_id, user_id)).into_response())
+    let cap = state.config.max_daemon_ws_conns;
+    let guard = if dispatch_machine(&state, machine_id).await {
+        Some(ConnGuard::exempt())
+    } else {
+        DAEMON_CONNS.acquire(ctx.key_id, cap, std::time::Instant::now())
+    };
+    let Some(guard) = guard else {
+        tracing::warn!(
+            %machine_id,
+            cap,
+            "daemon WS refused: machine already holds the maximum concurrent connections",
+        );
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    };
+    Ok(ws
+        .on_upgrade(move |socket| handle(socket, state, machine_id, user_id, guard))
+        .into_response())
+}
+
+/// Every dispatched worker pod authenticates against the user's single
+/// `dispatch` machine, so a whole fleet shares one machine id and — on the
+/// pre-ephemeral-key path — one key. A per-key cap would refuse them, so they
+/// stay uncapped; the dispatcher bounds how many pods exist.
+async fn dispatch_machine(state: &AppState, machine_id: Uuid) -> bool {
+    sqlx::query_scalar::<_, String>("SELECT kind FROM machines WHERE id = $1")
+        .bind(machine_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|kind| kind == "dispatch")
 }
 
 fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -101,7 +132,13 @@ where
     }
 }
 
-async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: Uuid) {
+async fn handle(
+    socket: WebSocket,
+    state: AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
+    guard: ConnGuard,
+) {
     let (sink, mut stream) = socket.split();
     let (tx, rx) = mpsc::channel::<DaemonFrameDown>(64);
     let mut conn = Conn::new(state, machine_id, user_id);
@@ -109,7 +146,15 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     send_initial_frames(&conn.state, machine_id, &tx).await;
     let outbound = tokio::spawn(outbound_pump(sink, rx));
     let flusher = spawn_bump_flusher(&conn.bumps, &conn.state.pool);
-    conn.read_loop(&mut stream, &tx).await;
+    tokio::select! {
+        () = conn.read_loop(&mut stream, &tx) => {}
+        () = guard.evicted() => {
+            tracing::warn!(
+                %machine_id,
+                "daemon WS displaced by a newer connection from the same machine",
+            );
+        }
+    }
     conn.close(&tx).await;
     outbound.abort();
     flusher.abort();

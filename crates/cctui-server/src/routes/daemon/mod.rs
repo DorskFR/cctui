@@ -22,6 +22,7 @@ use chrono::Utc;
 use crate::state::AppState;
 
 mod bumps;
+mod conn_limit;
 mod connection;
 mod daemon_lost;
 mod decode;
@@ -37,6 +38,7 @@ mod registration;
 mod test_support;
 mod tokens;
 
+pub(crate) use conn_limit::DEFAULT_MAX_CONNS as DEFAULT_MAX_DAEMON_WS_CONNS;
 pub use connection::ws;
 pub use gateway_env::{session_gateway_env, session_token_valid};
 pub use reconcile::{load_reconcile, load_scrub_config};
