@@ -28,6 +28,8 @@ pub const MAX_FILES: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+// The names are the JSON wire format and the exported TS binding.
+#[allow(clippy::struct_field_names)]
 pub struct UploadCaps {
     pub max_files: u32,
     #[cfg_attr(feature = "ts", ts(type = "number"))]
@@ -161,14 +163,16 @@ mod tests {
 
     async fn multipart_of(files: &[(&str, usize)]) -> Multipart {
         use axum::extract::FromRequest;
+        use std::fmt::Write as _;
         let mut body = String::new();
         for (name, size) in files {
-            body.push_str(&format!(
+            let _ = write!(
+                body,
                 "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"f\"; filename=\"{name}\"\r\n\r\n{}\r\n",
                 "x".repeat(*size)
-            ));
+            );
         }
-        body.push_str(&format!("--{BOUNDARY}--\r\n"));
+        let _ = write!(body, "--{BOUNDARY}--\r\n");
         let req = axum::http::Request::builder()
             .method("POST")
             .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
