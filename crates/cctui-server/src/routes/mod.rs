@@ -32,6 +32,7 @@ pub mod passkeys;
 pub mod permissions;
 pub mod plugins;
 pub mod plugins_admin;
+pub mod privacy_scan;
 pub mod profiles;
 pub mod prompts;
 pub mod scheduled_messages;

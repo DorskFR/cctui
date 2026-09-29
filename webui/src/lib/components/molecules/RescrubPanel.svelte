@@ -1,28 +1,43 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import {
 		Button,
 		Callout,
 		ConfirmModal,
-		DataTable,
 		EmptyState,
 		Progress,
-		SegmentedControl
+		SegmentedControl,
+		Text
 	} from '@dorsk/tsumikit';
 	import SettingRow from './SettingRow.svelte';
 	import { useRescrub } from '$lib/queries/settings';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import type { RescrubReport } from '@bindings/RescrubReport';
-	import { rescrubScopeSince, rescrubCategoryRows, type RescrubScope } from './rescrub.logic';
+	import type { PrivacyScanJob } from '@bindings/PrivacyScanJob';
+	import {
+		rescrubCategoryRows,
+		rescrubIdentifierWarnings,
+		rescrubIsRunning,
+		rescrubProgress,
+		rescrubScopeSince,
+		type RescrubScope
+	} from './rescrub.logic';
 
 	const rescrub = useRescrub();
 
 	let scope = $state<RescrubScope>('all');
-	let phase = $state<'idle' | 'scanning' | 'preview' | 'applying'>('idle');
+	let job = $state<PrivacyScanJob | null>(null);
 	let confirming = $state(false);
-	let report = $state<RescrubReport | null>(null);
+	let starting = $state(false);
+	let settled = $state<string | null>(null);
 
-	const rows = $derived(rescrubCategoryRows(report));
+	const running = $derived(rescrubIsRunning(job));
+	const progress = $derived(rescrubProgress(job));
+	const categories = $derived(rescrubCategoryRows(job));
+	const warnings = $derived(rescrubIdentifierWarnings(job));
+	const preview = $derived(
+		job?.status === 'completed' && job.dry_run && job.substitutions > 0 ? job : null
+	);
 
 	const scopeOptions = $derived([
 		{ value: 'all', label: m.settings_rescrub_scope_all() },
@@ -30,43 +45,69 @@
 		{ value: '7d', label: m.settings_rescrub_scope_7d() }
 	]);
 
-	async function scan() {
-		phase = 'scanning';
+	function settle(done: PrivacyScanJob) {
+		if (settled === done.id) return;
+		settled = done.id;
+		rescrub.settled(done);
+		if (done.status === 'failed') {
+			toasts.error(m.settings_rescrub_failed({ error: done.error ?? '' }));
+		} else if (!done.dry_run && done.status === 'completed') {
+			toasts.ok(
+				m.settings_rescrub_toast_done({ values: done.substitutions, messages: done.rows_changed })
+			);
+		}
+	}
+
+	async function refresh() {
 		try {
-			report = await rescrub({ dry_run: true, session_ids: null, since: rescrubScopeSince(scope) });
-			phase = 'preview';
+			const next = await rescrub.poll();
+			job = next;
+			if (next && next.status !== 'running') settle(next);
 		} catch (e) {
-			phase = 'idle';
 			toasts.error(e instanceof Error ? e.message : String(e));
 		}
 	}
 
-	async function apply() {
-		confirming = false;
-		phase = 'applying';
+	// A scan outlives the page: reopening Settings re-attaches to whatever the
+	// server still has running, on whichever replica answers.
+	onMount(() => {
+		void refresh();
+	});
+
+	$effect(() => {
+		if (!running) return;
+		const timer = setInterval(refresh, 1000);
+		return () => clearInterval(timer);
+	});
+
+	async function startScan(dry_run: boolean) {
+		starting = true;
 		try {
-			const done = await rescrub({
-				dry_run: false,
-				session_ids: null,
-				since: rescrubScopeSince(scope)
-			});
-			toasts.ok(
-				m.settings_rescrub_toast_done({
-					values: done.substitutions,
-					messages: done.rows_changed
-				})
-			);
+			settled = null;
+			job = await rescrub.start({ dry_run, session_ids: null, since: rescrubScopeSince(scope) });
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
-			report = null;
-			phase = 'idle';
+			starting = false;
 		}
 	}
 
-	function cancel() {
-		report = null;
-		phase = 'idle';
+	async function cancelScan() {
+		try {
+			const cancelled = await rescrub.cancel();
+			if (cancelled) job = cancelled;
+		} catch (e) {
+			toasts.error(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	function apply() {
+		confirming = false;
+		void startScan(false);
+	}
+
+	function dismiss() {
+		job = null;
 	}
 </script>
 
@@ -87,46 +128,92 @@
 			/>
 			<Button
 				tone="accent"
-				loading={phase === 'scanning'}
-				disabled={phase !== 'idle'}
-				onclick={scan}
+				loading={starting}
+				disabled={running || starting}
+				onclick={() => startScan(true)}
 			>
 				{m.settings_rescrub_scan()}
 			</Button>
 		</div>
 
-		{#if phase === 'scanning' || phase === 'applying'}
-			<Progress block indeterminate label={m.settings_rescrub_scanning()} />
+		{#if running && job}
+			<Progress
+				block
+				indeterminate={progress === null}
+				value={progress ? progress.value : 0}
+				max={progress ? progress.max : 1}
+				label={job.dry_run ? m.settings_rescrub_scanning() : m.settings_rescrub_applying()}
+			/>
+			<div class="controls">
+				<Text size="sm" tone="muted" as="span">
+					{#if progress}
+						{m.settings_rescrub_progress({
+							scanned: progress.value,
+							total: progress.max,
+							changed: job.rows_changed
+						})}
+					{:else}
+						{m.settings_rescrub_scanning()}
+					{/if}
+				</Text>
+				<Button tone="neutral" onclick={cancelScan}>{m.settings_rescrub_cancel()}</Button>
+			</div>
 		{/if}
 
-		{#if phase === 'preview' && report}
-			{#if report.substitutions === 0}
-				<EmptyState size="compact" title={m.settings_rescrub_empty()} />
-				<Button onclick={cancel}>{m.common_cancel()}</Button>
-			{:else}
-				<Callout tone="info" title={m.settings_rescrub_preview_title()}>
-					{m.settings_rescrub_preview_body({
-						scanned: report.rows_scanned,
-						changed: report.rows_changed,
-						values: report.substitutions
-					})}
+		{#if job?.status === 'cancelled'}
+			<Callout tone="warn" title={m.settings_rescrub_cancelled_title()}>
+				{m.settings_rescrub_cancelled_body({
+					scanned: job.rows_scanned,
+					changed: job.rows_changed
+				})}
+			</Callout>
+			<Button onclick={dismiss}>{m.common_close()}</Button>
+		{/if}
+
+		{#if job?.status === 'completed' && job.dry_run && job.substitutions === 0}
+			<EmptyState size="compact" title={m.settings_rescrub_empty()} />
+			<Button onclick={dismiss}>{m.common_close()}</Button>
+		{/if}
+
+		{#if preview}
+			<Callout tone="info" title={m.settings_rescrub_preview_title()}>
+				{m.settings_rescrub_preview_body({
+					scanned: preview.rows_scanned,
+					changed: preview.rows_changed,
+					values: preview.substitutions
+				})}
+			</Callout>
+			{#if warnings.length > 0}
+				<Callout tone="warn" title={m.settings_rescrub_identifier_title()}>
+					{m.settings_rescrub_identifier_body({ categories: warnings.join(', ') })}
 				</Callout>
-				<DataTable
-					size="sm"
-					columns={[
-						{ key: 'category', label: m.settings_rescrub_col_category() },
-						{ key: 'count', label: m.settings_rescrub_col_count(), align: 'right' }
-					]}
-					{rows}
-					rowKey={(r) => r.category}
-				/>
-				<div class="controls">
-					<Button tone="warn" onclick={() => (confirming = true)}>
-						{m.settings_rescrub_apply({ count: report.rows_changed })}
-					</Button>
-					<Button tone="neutral" onclick={cancel}>{m.common_cancel()}</Button>
-				</div>
 			{/if}
+			<ul class="categories">
+				{#each categories as cat (cat.category)}
+					<li class="category">
+						<div class="head">
+							<Text size="sm" weight="semibold" as="span">{cat.category}</Text>
+							<Text size="sm" tone="muted" as="span">
+								{m.settings_rescrub_matches({ count: cat.count })}
+							</Text>
+						</div>
+						<ul class="samples">
+							{#each cat.samples as sample, i (i)}
+								<li>
+									<code class="match">{sample.text}</code>
+									<code class="context">{sample.context}</code>
+								</li>
+							{/each}
+						</ul>
+					</li>
+				{/each}
+			</ul>
+			<div class="controls">
+				<Button tone="warn" onclick={() => (confirming = true)}>
+					{m.settings_rescrub_apply({ count: preview.rows_changed })}
+				</Button>
+				<Button tone="neutral" onclick={dismiss}>{m.common_cancel()}</Button>
+			</div>
 		{/if}
 	</div>
 </SettingRow>
@@ -134,7 +221,7 @@
 <ConfirmModal
 	bind:open={confirming}
 	tone="warn"
-	title={m.settings_rescrub_confirm_title({ count: report?.rows_changed ?? 0 })}
+	title={m.settings_rescrub_confirm_title({ count: preview?.rows_changed ?? 0 })}
 	message={m.settings_rescrub_confirm_body()}
 	confirmLabel={m.settings_rescrub_confirm_ok()}
 	onconfirm={apply}
@@ -153,5 +240,42 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-2);
+	}
+	.categories,
+	.samples {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+	}
+	.category {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+		padding: var(--sp-2);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+	}
+	.head {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--sp-2);
+	}
+	.samples li {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-2);
+		align-items: baseline;
+	}
+	.match {
+		font-size: var(--fs-xs);
+		color: var(--warn);
+	}
+	.context {
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+		overflow-wrap: anywhere;
 	}
 </style>

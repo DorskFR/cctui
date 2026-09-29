@@ -63,7 +63,7 @@ import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { RescrubRequest } from "@bindings/RescrubRequest";
-import type { RescrubReport } from "@bindings/RescrubReport";
+import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
@@ -437,10 +437,16 @@ export const endpoints = {
     api.get<SettingsCatalogResponse>(
       `/accounts/settings-catalog?family=${encodeURIComponent(family)}`,
     ),
-  /** Apply the current detector set to already-stored transcripts. `dry_run`
-   *  reports counts and writes nothing; a real pass is irreversible. */
-  rescrubSettings: (req: RescrubRequest) =>
-    api.post<RescrubReport>("/settings/rescrub", req),
+  /** Start a privacy scan over already-stored transcripts. `dry_run` reports
+   *  counts and writes nothing; a real pass is irreversible. Returns the job;
+   *  progress arrives through `privacyScanJob`. */
+  startRescrub: (req: RescrubRequest) =>
+    api.post<PrivacyScanJob>("/settings/rescrub", req),
+  /** The caller's most recent scan, so reopening the page re-attaches to a job
+   *  still running on some replica. */
+  privacyScanJob: () => api.get<PrivacyScanJob | null>("/settings/rescrub"),
+  cancelRescrub: () =>
+    api.post<PrivacyScanJob | null>("/settings/rescrub/cancel"),
   createAccount: (body: CreateAccount) =>
     api.post<OAuthAccount>("/accounts", body),
   updateAccount: (id: string, body: UpdateAccount) =>
