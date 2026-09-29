@@ -37,9 +37,23 @@ under `HOST_CONTEXT_KEY` in Svelte context (see `src/lib/plugin/host.ts`).
   and `router.setPath(path)`, so the router stops reading `window.location` and
   pushing history; navigations go back out through `PageProps.navigate`.
 - **Backend gate** — the page probes `/v1/health` through the proxy on mount. Until
-  an admin sets the plugin's `backendUrl` instance setting, and whenever the
-  backend is down, the page shows one "not configured or not reachable" state with
-  the observed status and a Retry, instead of a wall of failing queries.
+  an admin finishes the setup below, and whenever the backend is down, the page
+  shows one "not configured or not reachable" state with the observed status and a
+  Retry, instead of a wall of failing queries.
+
+### Configuring an installed plugin
+
+The plugin declares exactly one instance setting, `backendUrl`. The proxy signing
+secret is **not** a setting: the server mints it on install (any manifest with a
+`backend` block gets one), seals it, and returns it **once**.
+
+1. Install the plugin. The install response carries `proxy_secret` once —
+   `POST /api/v1/admin/plugins/ghreview/proxy-secret` rotates it and returns the new
+   value, also once.
+2. Set `GHREVIEW_PROXY_SECRET` on the ghreview deployment to that value.
+3. Set the upstream:
+   `PUT /api/v1/admin/plugins/ghreview/settings` with
+   `{"values":{"backendUrl":"https://…"}}`, or the form in Settings › Plugins.
 - **GitHub accounts** — PAT add/remove lives in the app now
   (`src/lib/components/GithubAccounts.svelte`, route `/accounts`), not in webui.
 
@@ -53,7 +67,8 @@ bun run build:plugin      # → dist/plugin/{plugin.json,web/} and dist/ghreview
 external, resolved from the host's `/plugin-runtime/*`), writes `plugin.json`
 (`id: ghreview`, `page`, `backend.upstreamSetting: "backendUrl"`,
 `instanceSettings`, `styles`, `skills` when `skills/gh-review/SKILL.md` exists) and
-tars the folder. It fails if the bundle or the stylesheet is missing, or if the
+tars the folder. `backend.upstreamSetting` must name a declared, non-secret `url`
+setting or the server refuses the manifest at install. It fails if the bundle or the stylesheet is missing, or if the
 archive exceeds the server's 5 MB limit.
 
 Component CSS is injected at mount, but the plain stylesheet imports (tokens,

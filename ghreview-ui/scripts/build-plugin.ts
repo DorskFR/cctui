@@ -19,7 +19,7 @@ interface PluginManifest {
   cctuiApi: 1;
   icon: string;
   web: string;
-  page: { title: string; icon: string };
+  page: { title: string; icon?: string };
   backend: { upstreamSetting: string };
   styles?: string[];
   instanceSettings: { key: string; label: string; type: "string" | "url"; secret?: boolean }[];
@@ -70,10 +70,10 @@ const manifest: PluginManifest = {
   page: { title: "Review", icon: "pull-request" },
   backend: { upstreamSetting: "backendUrl" },
   styles: ["web/index.css"],
-  instanceSettings: [
-    { key: "backendUrl", label: "Backend URL", type: "url" },
-    { key: "backendSecret", label: "Backend shared secret", type: "string", secret: true },
-  ],
+  // `backend.upstreamSetting` must name a declared, non-secret `url` setting or
+  // the server refuses the manifest. The proxy signing secret is minted and
+  // sealed server-side on install; it is never an instance setting.
+  instanceSettings: [{ key: "backendUrl", label: "Backend URL", type: "url" }],
   ...(hasSkill ? { skills: ["gh-review"] } : {}),
 };
 

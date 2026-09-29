@@ -1,7 +1,7 @@
 import { mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GithubPull } from "../api/types";
-import type { HostContext, SpawnRequest } from "../plugin/host";
+import type { HostContext, HostSpawnRequest } from "../plugin/host";
 import PluginHost from "../testing/PluginHost.svelte";
 import ReviewWithAgent from "./ReviewWithAgent.svelte";
 
@@ -46,7 +46,7 @@ describe("ReviewWithAgent", () => {
   });
 
   it("hands the host a prompt naming the pull request and its head SHA", () => {
-    const openSpawn = vi.fn<(request: SpawnRequest) => void>();
+    const openSpawn = vi.fn<(request: HostSpawnRequest) => void>();
     render({ openSpawn });
 
     const button = action();

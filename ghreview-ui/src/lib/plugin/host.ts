@@ -17,21 +17,24 @@ export interface HostUser {
   isAdmin: boolean;
 }
 
-export interface SpawnRequest {
+export interface HostSpawnRequest {
   prompt: string;
   working_dir?: string;
   machine_id?: string;
 }
 
+export type HostToastTone = "ok" | "info" | "error";
+
 export interface HostContext {
   cctuiApi: number;
+  cctuiApiMinor?: number;
   origin: string;
   user?: HostUser;
   apiFetch?(path: string, init?: RequestInit): Promise<Response>;
   pluginFetch?(path: string, init?: RequestInit): Promise<Response>;
   navigate?(path: string): void;
-  openSpawn?(request: SpawnRequest): void;
-  toast?(message: string, tone?: "ok" | "info" | "error"): void;
+  openSpawn?(request: HostSpawnRequest): void;
+  toast?(message: string, tone?: HostToastTone): void;
 }
 
 export interface CctuiPluginModule {
