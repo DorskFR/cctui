@@ -269,10 +269,10 @@ fn parse_percent(v: &serde_json::Value) -> Option<f64> {
 /// Missing/malformed entries omit only themselves — one unknown limit never
 /// collapses the valid ones.
 pub fn normalize_usage_windows(usage: &serde_json::Value) -> Vec<UsageWindow> {
-    let mut out = match usage.get("limits").and_then(serde_json::Value::as_array) {
-        Some(arr) => arr.iter().filter_map(normalize_structured_limit).collect(),
-        None => normalize_fixed_fields(usage),
-    };
+    let mut out = usage.get("limits").and_then(serde_json::Value::as_array).map_or_else(
+        || normalize_fixed_fields(usage),
+        |arr| arr.iter().filter_map(normalize_structured_limit).collect(),
+    );
     // Dollar windows are top-level under their canonical key in every shape, so
     // a payload carrying both (a probe reporting a percent window and a spend)
     // keeps both.

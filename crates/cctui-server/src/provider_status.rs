@@ -1,6 +1,6 @@
 //! Upstream incident awareness for the provider families we route to.
 //!
-//! Anthropic and OpenAI both publish a Statuspage v2 `summary.json`
+//! Anthropic and `OpenAI` both publish a Statuspage v2 `summary.json`
 //! unauthenticated. A background poller reads both at a slow cadence and keeps
 //! the normalized answer in [`ProviderStatusCache`], so the request path never
 //! talks to a status host: `GET /api/v1/provider-status` and the usage payloads
@@ -40,7 +40,7 @@ const SOURCES: &[(&str, &str, &str)] = &[
 ];
 
 const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
-const INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+const INTERVAL: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Normalized severity of an upstream family. `Unknown` is a first-class state:
 /// no reading yet, or a reading we could not parse.
@@ -180,8 +180,7 @@ impl ProviderStatusCache {
     pub fn get(&self, family: &str) -> ProviderStatus {
         self.slots
             .get(family)
-            .map(|s| s.status.clone())
-            .unwrap_or_else(|| ProviderStatus::unknown(family))
+            .map_or_else(|| ProviderStatus::unknown(family), |s| s.status.clone())
     }
 
     /// Every polled family, in a stable order.

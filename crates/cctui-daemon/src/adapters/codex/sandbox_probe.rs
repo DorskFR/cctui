@@ -278,15 +278,15 @@ mod tests {
         let bin = std::env::current_exe().expect("test binary path");
         let bin = bin.to_string_lossy().into_owned();
 
-        assert!(matches!(
-            probe_cached(&bin, &fake).await,
-            CodexSandbox::UsernsDenied { .. }
-        ));
+        assert!(matches!(probe_cached(&bin, &fake).await, CodexSandbox::UsernsDenied { .. }));
         probe_cached(&bin, &fake).await;
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1, "a cached verdict must not re-probe");
         assert!(last().is_some_and(|v| !v.is_ok()));
 
-        let moved = Fake { out: ProbeOutput { ok: true, ..ProbeOutput::default() }, calls: AtomicUsize::new(0) };
+        let moved = Fake {
+            out: ProbeOutput { ok: true, ..ProbeOutput::default() },
+            calls: AtomicUsize::new(0),
+        };
         assert!(probe_cached("/nonexistent/codex-0.154.0", &moved).await.is_ok());
         assert_eq!(moved.calls.load(Ordering::SeqCst), 1, "a moved binary must re-probe");
         reset_cache_for_test();
