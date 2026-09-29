@@ -147,9 +147,25 @@ A plugin pane can frame a dev server running next to the agent — on any machin
 including a k8s worker — without exposing a port.
 
 Set `CCTUI_PREVIEW_HOST` on the server to a pattern containing `{id}`, e.g.
-`cctui-pv-{id}.dorsk.dev`. Unset = feature off, and every preview route 404s.
-Routing in front of the server must send `*.dorsk.dev` to it (exact hostnames
-still win), and the wildcard TLS cert must cover it.
+`cctui-pv-{id}.dorsk.dev`. Unset = feature off: `preview open` fails with
+`previews are disabled on this instance` and the session API answers
+`503` with that message, so a pane says so instead of waiting for a preview
+that can never appear. Routing in front of the server must send `*.dorsk.dev`
+to it (exact hostnames still win), and the wildcard TLS cert must cover it.
+
+The pattern is a bare host, without scheme or port; the port comes from
+`CCTUI_EXTERNAL_URL`, so a server reached at `http://localhost:8700` hands out
+`http://cctui-pv-<id>.localhost:8700`.
+
+### Previews on localhost (self-hosted, no DNS, no TLS)
+
+`CCTUI_PREVIEW_HOST=cctui-pv-{id}.localhost` is all a local instance needs:
+browsers resolve every `*.localhost` name to loopback themselves, so there is
+no wildcard DNS record and no certificate to issue, and the preview is served
+by the same server on the same port. The local stack (`deploy/local`) sets it
+by default. A browser also needs the preview origin in the page's
+`frame-src` to frame it — `deploy/local/nginx.conf` allows
+`http://*.localhost:*`.
 
 Inside a session, `cctui-daemon preview open --port <n>` registers the port and
 prints the preview URL; `preview close --port <n>` drops it. Previews also close
