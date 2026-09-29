@@ -24,15 +24,30 @@ use std::time::{Duration, Instant};
 use cctui_proto::adapter::AdapterEvent;
 use tokio::sync::mpsc;
 
-/// Seconds the launch may wait for the session's MCP relay.
-/// `CCTUI_MCP_READY_WAIT_SECS=0` disables the gate for every harness.
+/// Seconds the launch may wait for the session's MCP relay when the operator
+/// names no other number.
+const DEFAULT_RELAY_WAIT_SECS: u64 = 8;
+
+/// Longest the gate may ever hold a first turn, whatever the operator asks
+/// for. A relay is either up in seconds or not coming.
+const MAX_RELAY_WAIT_SECS: u64 = 60;
+
+/// Seconds the launch may wait for the session's MCP relay, as
+/// `CCTUI_MCP_READY_WAIT_SECS` sets it. `0` disables the gate for every
+/// harness. Read only here and by claude-code's `SessionStart` hook, so the
+/// knob has exactly one production reader per delivery path.
 #[must_use]
 pub fn mcp_ready_wait_secs() -> u64 {
-    std::env::var("CCTUI_MCP_READY_WAIT_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(8)
-        .min(60)
+    relay_wait_secs(std::env::var("CCTUI_MCP_READY_WAIT_SECS").ok().as_deref())
+}
+
+/// The wait `raw` asks for, defaulted and clamped. Split from the environment
+/// read so it is testable without mutating process-global state.
+#[must_use]
+fn relay_wait_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_RELAY_WAIT_SECS)
+        .min(MAX_RELAY_WAIT_SECS)
 }
 
 /// Where the limits question is asked.
@@ -56,6 +71,10 @@ pub struct Preflight {
     card_id: Option<String>,
     /// The `mcpready` key of this session's relay, when it has one.
     relay_key: Option<String>,
+    /// How long the first turn waits for that relay. Resolved from the
+    /// environment when the relay is declared, so [`Self::run`] reads no
+    /// global state.
+    relay_wait: Duration,
 }
 
 impl Preflight {
@@ -68,6 +87,7 @@ impl Preflight {
             limits_session_id: None,
             card_id: None,
             relay_key: None,
+            relay_wait: Duration::ZERO,
         }
     }
 
@@ -108,7 +128,15 @@ impl Preflight {
         if let Some(key) = key {
             crate::mcpready::note_launch(&key);
             self.relay_key = Some(key);
+            self.relay_wait = Duration::from_secs(mcp_ready_wait_secs());
         }
+        self
+    }
+
+    /// Override the relay wait a [`Self::with_relay`] resolved.
+    #[must_use]
+    pub fn with_relay_wait(mut self, wait: Duration) -> Self {
+        self.relay_wait = wait;
         self
     }
 
@@ -194,11 +222,10 @@ impl Preflight {
     /// `initialize`. A relay that never connects releases the turn anyway.
     async fn await_relay(&self) {
         let Some(key) = self.relay_key.as_deref() else { return };
-        let wait = mcp_ready_wait_secs();
-        if wait == 0 {
+        if self.relay_wait.is_zero() {
             return;
         }
-        let _ = crate::mcpready::wait_until_ready(key, Duration::from_secs(wait)).await;
+        let _ = crate::mcpready::wait_until_ready(key, self.relay_wait).await;
     }
 
     /// Put the wait (or its end) on the session card.
@@ -331,24 +358,37 @@ mod tests {
         let (tx, _rx) = mpsc::channel(4);
         let key = "preflight-relay-2";
         crate::mcpready::forget(key);
-        // SAFETY: single-threaded test scope; the knob is read inside `run`.
-        unsafe { std::env::set_var("CCTUI_MCP_READY_WAIT_SECS", "1") };
-        let pf = Preflight::new(tx, None).with_relay(Some(key.to_owned()));
+        let pf = Preflight::new(tx, None)
+            .with_relay(Some(key.to_owned()))
+            .with_relay_wait(Duration::from_millis(80));
         tokio::time::timeout(Duration::from_secs(10), pf.run())
             .await
             .expect("the wait is bounded");
-        unsafe { std::env::remove_var("CCTUI_MCP_READY_WAIT_SECS") };
+        crate::mcpready::forget(key);
+    }
+
+    /// A zero wait is the operator switching the gate off, not a zero-length
+    /// poll: the turn goes out without consulting the relay at all.
+    #[tokio::test]
+    async fn a_zero_wait_skips_the_relay_gate() {
+        let (tx, _rx) = mpsc::channel(4);
+        let key = "preflight-relay-3";
+        crate::mcpready::forget(key);
+        let pf = Preflight::new(tx, None)
+            .with_relay(Some(key.to_owned()))
+            .with_relay_wait(Duration::ZERO);
+        tokio::time::timeout(Duration::from_secs(5), pf.run()).await.expect("no wait at all");
+        assert!(!crate::mcpready::is_ready(key), "the gate was skipped, not satisfied");
         crate::mcpready::forget(key);
     }
 
     #[test]
-    fn the_readiness_wait_is_clamped_and_switchable() {
-        // SAFETY: single-threaded test scope.
-        unsafe { std::env::set_var("CCTUI_MCP_READY_WAIT_SECS", "0") };
-        assert_eq!(super::mcp_ready_wait_secs(), 0, "0 disables the gate");
-        unsafe { std::env::set_var("CCTUI_MCP_READY_WAIT_SECS", "600") };
-        assert_eq!(super::mcp_ready_wait_secs(), 60, "clamped to a minute");
-        unsafe { std::env::remove_var("CCTUI_MCP_READY_WAIT_SECS") };
-        assert_eq!(super::mcp_ready_wait_secs(), 8);
+    fn the_readiness_wait_is_defaulted_clamped_and_switchable() {
+        use super::relay_wait_secs;
+        assert_eq!(relay_wait_secs(None), 8, "the default when the knob is unset");
+        assert_eq!(relay_wait_secs(Some("nonsense")), 8, "an unreadable value is no value");
+        assert_eq!(relay_wait_secs(Some("0")), 0, "0 disables the gate");
+        assert_eq!(relay_wait_secs(Some(" 12 ")), 12);
+        assert_eq!(relay_wait_secs(Some("600")), 60, "clamped to a minute");
     }
 }
