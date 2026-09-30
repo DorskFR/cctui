@@ -83,6 +83,10 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         }
 
         Action::ActivateInputWith(key) => {
+            if app.selected_session_ended() {
+                app.toast(Level::Info, "this session has ended");
+                return Vec::new();
+            }
             app.input_active = true;
             app.message_input.input(key);
             Vec::new()
@@ -447,6 +451,19 @@ mod tests {
         assert!(!app.sessions[0].auto_approve);
         reduce(&mut app, Action::AutoApproveSet { session_id: "s-a".to_owned(), enabled: true });
         assert!(app.sessions[0].auto_approve);
+    }
+
+    #[test]
+    fn an_ended_session_refuses_the_composer() {
+        let mut app = app();
+        app.sessions[0].end_reason = Some(cctui_proto::models::SessionEndReason::Completed);
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(reduce(&mut app, Action::ActivateInputWith(key)).is_empty());
+        assert!(!app.input_active);
+        assert!(app.toasts.latest().is_some());
     }
 
     #[test]

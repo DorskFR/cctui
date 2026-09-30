@@ -157,6 +157,11 @@ impl App {
         self.selected_session_id().is_some_and(|id| self.permissions.has(&id))
     }
 
+    /// An ended session takes no more input: the composer is closed for it.
+    pub fn selected_session_ended(&self) -> bool {
+        self.selected_session().is_some_and(|s| s.end_reason.is_some())
+    }
+
     #[cfg(test)]
     pub fn conversation(&self, session_id: &str) -> Option<&ConversationStore> {
         self.conversations.get(session_id)

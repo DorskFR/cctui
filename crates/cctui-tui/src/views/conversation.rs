@@ -34,9 +34,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let max_input = (main_area.height as usize / 2).max(1);
     let input_height = input_lines.clamp(1, 12_usize.min(max_input)) as u16;
 
-    let [header_area, content_area, separator_area, input_area] = Layout::vertical([
+    let [header_area, content_area, separator_area, banner_area, input_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(input_height),
     ])
@@ -128,6 +129,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ))),
         separator_area,
     );
+
+    super::banner::draw(frame, banner_area, app, &session);
+
+    if session.end_reason.is_some() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " this session has ended — nothing more can be sent",
+                theme::dim(),
+            )),
+            input_area,
+        );
+        return;
+    }
 
     // Input: [❯][textarea]
     let [prompt_area, textarea_area] = Layout::default()

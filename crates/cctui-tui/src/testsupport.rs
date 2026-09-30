@@ -143,3 +143,17 @@ pub fn edit_permission_request() -> PendingPermission {
         .to_string(),
     }
 }
+
+/// `ended_at` is pinned, not `now`: an end badge must not drift a snapshot.
+pub fn ended_session(
+    id: &str,
+    project: &str,
+    reason: &str,
+    detail: Option<&str>,
+) -> SessionListItem {
+    let mut s = session(id, project, "inactive", "done");
+    s.end_reason = Some(cctui_proto::models::SessionEndReason::parse(reason));
+    s.end_detail = detail.map(str::to_owned);
+    s.ended_at = chrono::DateTime::from_timestamp_millis(1_700_000_000_000);
+    s
+}

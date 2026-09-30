@@ -41,11 +41,7 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             vec![Action::Attention(AttentionAction::PermissionResolved { session_id, request_id })]
         }
         ServerEvent::SessionEnded { session_id, reason, detail } => {
-            let detail = detail.map_or_else(String::new, |d| format!(" — {d}"));
-            vec![Action::Toast(
-                Level::Info,
-                format!("{} ended: {reason:?}{detail}", short_id(&session_id)),
-            )]
+            vec![Action::Attention(AttentionAction::SessionEnded { session_id, reason, detail })]
         }
         ServerEvent::SoftLimitReached { session_id, account_name, retry_after_secs, .. } => {
             vec![Action::Toast(

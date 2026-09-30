@@ -1,7 +1,7 @@
 use crate::app::View;
 use crate::testsupport::{
-    app_with_sessions, conversation_store, edit_permission_request, permission_request,
-    render_screen, render_screen_sized,
+    app_with_sessions, conversation_store, edit_permission_request, ended_session,
+    permission_request, render_screen, render_screen_sized,
 };
 
 fn conversation_app() -> crate::app::App {
@@ -141,4 +141,47 @@ fn conversation_permission_card_narrow() {
     let mut app = conversation_app();
     app.permissions.push(permission_request());
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+#[test]
+fn conversation_banner_working() {
+    let mut app = conversation_app();
+    app.clock_ms = 120_000;
+    app.sessions[0].activity_detail = Some("running the tests".to_owned());
+    app.sessions[0].last_activity_at = chrono::DateTime::from_timestamp_millis(105_000);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_banner_silent() {
+    let mut app = conversation_app();
+    app.clock_ms = 600_000;
+    app.sessions[0].last_activity_at = chrono::DateTime::from_timestamp_millis(120_000);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_banner_waiting() {
+    let mut app = conversation_app();
+    app.sessions[0].bucket = cctui_proto::classifier::Bucket::Blocked;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_ended_closes_the_composer() {
+    let mut app = app_with_sessions();
+    app.sessions[0] = ended_session("s-working", "cctui", "crashed", Some("exit status 139"));
+    let id = app.sessions[0].id.clone();
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_ended_failed_start_carries_its_detail() {
+    let mut app = app_with_sessions();
+    app.sessions[0] =
+        ended_session("s-working", "cctui", "spawn_failed", Some("unknown model gpt-nope"));
+    app.router.push(View::Conversation);
+    insta::assert_snapshot!(render_screen(&mut app));
 }

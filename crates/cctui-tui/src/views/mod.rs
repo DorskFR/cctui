@@ -1,3 +1,4 @@
+pub mod banner;
 pub mod cards;
 pub mod conversation;
 pub mod help;
