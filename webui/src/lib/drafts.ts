@@ -1,20 +1,75 @@
 import { browser } from '$app/environment';
 import { attachmentStore } from './attachmentStore';
 
-/** localStorage-backed draft text (composer per session, spawn form). */
+/** Where a roaming key's value is mirrored to, once `serverDrafts` installs
+ *  itself. Kept as an injected hook rather than an import so this module stays
+ *  free of the `api` → `auth` → `drafts` cycle (and so tests can fake it). */
+export interface DraftRemote {
+	put(key: string, text: string): void;
+	del(key: string): void;
+}
+
+let remote: DraftRemote | null = null;
+
+export function setDraftRemote(r: DraftRemote | null) {
+	remote = r;
+}
+
+const ROAMING_PREFIXES = [
+	'cctui_draft_',
+	'cctui_history_',
+	'cctui_spawn_draft',
+	'cctui_prompt_history'
+];
+
+/** Keys whose value is text the user would miss, so it follows the user to
+ *  another browser or the TUI instead of dying with this localStorage. */
+export function isRoamingKey(key: string): boolean {
+	return ROAMING_PREFIXES.some((p) => key.startsWith(p));
+}
+
+/** localStorage-backed key/value store, and the synchronous read path for the
+ *  server-backed ones: device-local UI state (view options, list mode, the
+ *  in-progress spawn-slot pointer) lives only here, while a roaming key is
+ *  mirrored here *and* pushed to the server. */
 export const drafts = {
 	get(key: string): string {
 		return browser ? (localStorage.getItem(key) ?? '') : '';
 	},
 	set(key: string, value: string) {
-		if (!browser) return;
-		if (value) localStorage.setItem(key, value);
-		else localStorage.removeItem(key);
+		hydrateLocal(key, value);
+		if (!isRoamingKey(key)) return;
+		if (value) remote?.put(key, value);
+		else remote?.del(key);
 	},
 	clear(key: string) {
-		if (browser) localStorage.removeItem(key);
+		hydrateLocal(key, '');
+		if (isRoamingKey(key)) remote?.del(key);
 	}
 };
+
+/** Write the local mirror only. Used by `serverDrafts` when applying what the
+ *  server already holds, which must not bounce straight back as a write. */
+export function hydrateLocal(key: string, value: string) {
+	if (!browser) return;
+	try {
+		if (value) localStorage.setItem(key, value);
+		else localStorage.removeItem(key);
+	} catch {
+		/* quota / blocked storage */
+	}
+}
+
+/** Every roaming key present in this localStorage, for the one-time import. */
+export function localRoamingKeys(): string[] {
+	if (!browser) return [];
+	const out: string[] = [];
+	for (let i = 0; i < localStorage.length; i++) {
+		const k = localStorage.key(i);
+		if (k && isRoamingKey(k)) out.push(k);
+	}
+	return out;
+}
 
 export const composerKey = (sessionId: string) => `cctui_draft_${sessionId}`;
 export const historyKey = (sessionId: string) => `cctui_history_${sessionId}`;
@@ -28,7 +83,7 @@ const PROMPT_HISTORY_MAX = 15;
 function readHistory(key: string): string[] {
 	if (!browser) return [];
 	try {
-		const raw = localStorage.getItem(key);
+		const raw = drafts.get(key);
 		const arr = raw ? JSON.parse(raw) : [];
 		return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
 	} catch {
@@ -42,7 +97,7 @@ function pushHistory(key: string, value: string, max: number) {
 	if (!v) return;
 	const list = readHistory(key).filter((x) => x !== v);
 	list.push(v);
-	localStorage.setItem(key, JSON.stringify(list.slice(-max)));
+	drafts.set(key, JSON.stringify(list.slice(-max)));
 }
 
 /** localStorage-backed per-session sent-message history (most-recent-last,
@@ -51,7 +106,7 @@ export const history = {
 	get: (sessionId: string) => readHistory(historyKey(sessionId)),
 	push: (sessionId: string, value: string) => pushHistory(historyKey(sessionId), value, HISTORY_MAX),
 	clear(sessionId: string) {
-		if (browser) localStorage.removeItem(historyKey(sessionId));
+		drafts.clear(historyKey(sessionId));
 	}
 };
 
@@ -61,7 +116,7 @@ export const promptHistory = {
 	get: () => readHistory(PROMPT_HISTORY),
 	push: (value: string) => pushHistory(PROMPT_HISTORY, value, PROMPT_HISTORY_MAX),
 	clear() {
-		if (browser) localStorage.removeItem(PROMPT_HISTORY);
+		drafts.clear(PROMPT_HISTORY);
 	}
 };
 
@@ -69,8 +124,8 @@ export const promptHistory = {
  * Called when a conversation is archived. */
 export function clearSessionStorage(sessionId: string) {
 	if (!browser) return;
-	localStorage.removeItem(composerKey(sessionId));
-	localStorage.removeItem(historyKey(sessionId));
+	drafts.clear(composerKey(sessionId));
+	drafts.clear(historyKey(sessionId));
 	void attachmentStore.clear(composerKey(sessionId));
 }
 
@@ -92,6 +147,9 @@ export function clearSpawnSlot(machineId: string, workingDir: string) {
  * user's prompts or a cached bearer. */
 export function clearCctuiStorage() {
 	if (!browser) return;
+	// Detach the remote first: logging out empties this browser, it must not
+	// delete the server-side drafts the user is about to log back in to.
+	setDraftRemote(null);
 	for (const store of [localStorage, sessionStorage]) {
 		const doomed: string[] = [];
 		for (let i = 0; i < store.length; i++) {

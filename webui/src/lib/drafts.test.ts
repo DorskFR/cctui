@@ -1,7 +1,20 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { attachmentStore } from './attachmentStore';
-import { clearSpawnSlot, drafts, promptHistory, SPAWN_SLOT, spawnSlotKey } from './drafts';
+import {
+	clearSpawnSlot,
+	composerKey,
+	drafts,
+	historyKey,
+	isRoamingKey,
+	LIST_VIEW,
+	PROMPT_HISTORY,
+	promptHistory,
+	setDraftRemote,
+	SPAWN_SLOT,
+	spawnSlotKey,
+	VIEW_OPTS
+} from './drafts';
 
 const file = (name: string) => new File(['xxx'], name, { type: 'text/plain' });
 
@@ -79,5 +92,56 @@ describe('promptHistory', () => {
 	it('survives a corrupt payload', () => {
 		localStorage.setItem('cctui_prompt_history', 'not json');
 		expect(promptHistory.get()).toEqual([]);
+	});
+});
+
+describe('isRoamingKey', () => {
+	it('covers the text the user would miss', () => {
+		expect(isRoamingKey(composerKey('s1'))).toBe(true);
+		expect(isRoamingKey(historyKey('s1'))).toBe(true);
+		expect(isRoamingKey(PROMPT_HISTORY)).toBe(true);
+		expect(isRoamingKey(spawnSlotKey('m1', '/repo'))).toBe(true);
+	});
+
+	it('excludes device-local view state and the in-progress slot pointer', () => {
+		expect(isRoamingKey(VIEW_OPTS)).toBe(false);
+		expect(isRoamingKey(LIST_VIEW)).toBe(false);
+		expect(isRoamingKey(SPAWN_SLOT)).toBe(false);
+		expect(isRoamingKey('cctui_last_machine')).toBe(false);
+	});
+});
+
+describe('the injected remote', () => {
+	const seen: string[] = [];
+	const remote = {
+		put: (key: string, text: string) => seen.push(`put ${key}=${text}`),
+		del: (key: string) => seen.push(`del ${key}`)
+	};
+
+	beforeEach(() => {
+		seen.length = 0;
+		setDraftRemote(remote);
+	});
+
+	afterEach(() => {
+		setDraftRemote(null);
+	});
+
+	it('is told about roaming writes and clears, and never about local ones', () => {
+		const key = composerKey('s1');
+		drafts.set(key, 'text');
+		drafts.clear(key);
+		drafts.set(VIEW_OPTS, '{}');
+		drafts.clear(VIEW_OPTS);
+
+		expect(seen).toEqual([`put ${key}=text`, `del ${key}`]);
+	});
+
+	it('still writes the local mirror, so a read stays synchronous', () => {
+		const key = composerKey('s2');
+		drafts.set(key, 'mirrored');
+
+		expect(localStorage.getItem(key)).toBe('mirrored');
+		expect(drafts.get(key)).toBe('mirrored');
 	});
 });

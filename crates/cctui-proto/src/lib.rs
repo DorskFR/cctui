@@ -11,6 +11,7 @@ pub mod codex_config;
 pub mod compress;
 pub mod diagnose;
 pub mod domain_meta;
+pub mod drafts;
 pub mod git;
 pub mod github;
 pub mod harness;

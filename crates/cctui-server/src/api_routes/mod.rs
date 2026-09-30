@@ -8,6 +8,7 @@ mod admin_users;
 mod context;
 mod daemon;
 mod dispatch;
+mod drafts;
 mod keys;
 mod labels;
 mod machines;
@@ -80,6 +81,7 @@ pub fn register(r: Routes) -> Routes {
     let r = admin_users::register(r);
     let r = skills::register(r);
     let r = user_actions::register(r);
+    let r = drafts::register(r);
     users::register(r)
 }
 
