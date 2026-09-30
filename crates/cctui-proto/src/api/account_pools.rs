@@ -86,9 +86,10 @@ pub struct PoolUsageView {
     pub families: Vec<PoolFamilyUsage>,
 }
 
-/// One provider family inside a pool: only its members are interchangeable
-/// (a claude-code spawn elects among the anthropic credentials, a codex spawn
-/// among the openai ones), so only they are aggregated together.
+/// One provider family inside a pool.
+///
+/// Only its members are interchangeable (a claude-code spawn elects among the anthropic
+/// credentials, a codex spawn among the openai ones), so only they are aggregated together.
 #[derive(serde::Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PoolFamilyUsage {

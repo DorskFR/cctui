@@ -4,9 +4,10 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// One selectable model on a compatible-endpoint or `fireworks` provider:
-/// `model` is the `--model` code, `label` the display name. Safe to return over
-/// the API — model names are not secret (unlike the credential).
+/// One selectable model on a compatible-endpoint or `fireworks` provider.
+///
+/// `model` is the `--model` code, `label` the display name. Safe to return over the API — model
+/// names are not secret (unlike the credential).
 ///
 /// Pricing is per *million* tokens in USD and is account-owned data: it is what
 /// a pay-per-token provider is metered against, so it lives on the row rather
@@ -30,9 +31,10 @@ pub struct AccountModel {
     pub context_length: Option<i64>,
 }
 
-/// API view of one provider credential under an account. Secrets (the
-/// OAuth/static tokens) are deliberately absent; `base_url`/`auth_scheme` are
-/// surfaced so the accounts UI can render/edit a compatible endpoint in place.
+/// API view of one provider credential under an account.
+///
+/// Secrets (the OAuth/static tokens) are deliberately absent; `base_url`/`auth_scheme` are surfaced
+/// so the accounts UI can render/edit a compatible endpoint in place.
 #[derive(Debug, serde::Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "AccountProvider"))]
@@ -150,10 +152,11 @@ pub struct AccountInfo {
     // never returned over the API, exactly like the OAuth tokens.
 }
 
-/// Provider-credential payload: the create/attach fields for one
-/// provider row. Used standalone by `POST /accounts/{id}/providers` and
-/// flattened into [`CreateAccount`] so the legacy one-shot account+credential
-/// create keeps working.
+/// Provider-credential payload.
+///
+/// the create/attach fields for one provider row. Used standalone by `POST
+/// /accounts/{id}/providers` and flattened into [`CreateAccount`] so the legacy one-shot
+/// account+credential create keeps working.
 #[derive(Debug, Default, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "CreateProvider"))]
 pub struct ProviderSpec {
@@ -275,12 +278,12 @@ pub struct CreateAccount {
     pub provider: ProviderSpec,
 }
 
-/// `PATCH /api/v1/accounts/{id}` payload: identity-level fields only.
-/// `name` renames; `env_json` provided → re-encrypts and replaces (an empty map
-/// clears it); absent → unchanged (write-only, never returned). The legacy
-/// provider-ish fields are accepted syntactically but rejected with a pointer
-/// to the provider route, so an un-migrated client gets a clear 400 instead of
-/// a silent no-op.
+/// `PATCH /api/v1/accounts/{id}` payload.
+///
+/// identity-level fields only. `name` renames; `env_json` provided → re-encrypts and replaces (an
+/// empty map clears it); absent → unchanged (write-only, never returned). The legacy provider-ish
+/// fields are accepted syntactically but rejected with a pointer to the provider route, so an
+/// un-migrated client gets a clear 400 instead of a silent no-op.
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateAccount {
@@ -338,14 +341,13 @@ pub struct UpdateAccount {
     pub defaults: Option<serde_json::Value>,
 }
 
-/// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload. A partial update:
-/// for a non-managed compatible endpoint the operator may edit `base_url`,
-/// `auth_scheme`, and rotate the static credential (`access_token`).
-/// `models` / `model_aliases` / `soft_limits` / `settings_json` are editable
-/// for every provider. All optional; an absent field leaves that column unchanged.
-/// `base_url`/credential are never returned, so the editor re-supplies
-/// `base_url` when changing it and leaves the credential blank to keep the
-/// stored one.
+/// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload.
+///
+/// A partial update: for a non-managed compatible endpoint the operator may edit `base_url`,
+/// `auth_scheme`, and rotate the static credential (`access_token`). `models` / `model_aliases` /
+/// `soft_limits` / `settings_json` are editable for every provider. All optional; an absent field
+/// leaves that column unchanged. `base_url`/credential are never returned, so the editor
+/// re-supplies `base_url` when changing it and leaves the credential blank to keep the stored one.
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateProvider {
@@ -415,9 +417,10 @@ pub struct UpdateProvider {
 }
 
 /// The settings catalog as served to the webui account-settings editor.
-/// Everything here comes from the embedded catalog — the webui
-/// carries NO mirror of the key list, so it cannot drift from the server that
-/// validates the writes. `managed`/`system` keys are omitted entirely.
+///
+/// Everything here comes from the embedded catalog — the webui carries NO mirror of the key list,
+/// so it cannot drift from the server that validates the writes. `managed`/`system` keys are
+/// omitted entirely.
 #[derive(serde::Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SettingsCatalogResponse {
@@ -461,12 +464,12 @@ pub struct OAuthFinish {
     pub callback_url: Option<String>,
 }
 
-/// Usage windows surfaced per provider credential. `usage` mirrors
-/// Anthropic's free OAuth usage payload (`five_hour`/`seven_day` utilization +
-/// reset timestamps); `None` means the provider has no usage API (Codex) or the
-/// credential has no active windows — the webui hides the indicator in that
-/// case. `account_id` is the provider-row id (the legacy field name is the
-/// API contract).
+/// Usage windows surfaced per provider credential.
+///
+/// `usage` mirrors Anthropic's free OAuth usage payload (`five_hour`/`seven_day` utilization +
+/// reset timestamps); `None` means the provider has no usage API (Codex) or the credential has no
+/// active windows — the webui hides the indicator in that case. `account_id` is the provider-row id
+/// (the legacy field name is the API contract).
 #[derive(Debug, serde::Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AccountUsage {
@@ -543,9 +546,10 @@ pub struct ShareInfo {
     pub granted_at: DateTime<Utc>,
 }
 
-/// `POST /api/v1/accounts/{id}/shares` payload. `user` is the grantee,
-/// accepted as either a UUID or a login (`users.name`) so an operator can grant
-/// by whichever they have. `action` defaults to `use` (the only action today).
+/// `POST /api/v1/accounts/{id}/shares` payload.
+///
+/// `user` is the grantee, accepted as either a UUID or a login (`users.name`) so an operator can
+/// grant by whichever they have. `action` defaults to `use` (the only action today).
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "AccountGrantShare"))]
 pub struct GrantShare {

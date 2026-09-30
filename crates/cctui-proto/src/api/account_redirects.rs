@@ -3,9 +3,11 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// One live redirect rule. Exactly one of `to_account` / `to_model` is set
-/// (enforced by `account_redirects_one_target`): a rule either moves new
-/// sessions to another account or flips the model they spawn with — never both.
+/// One live redirect rule.
+///
+/// Exactly one of `to_account` / `to_model` is set (enforced by `account_redirects_one_target`): a
+/// rule either moves new sessions to another account or flips the model they spawn with — never
+/// both.
 #[derive(Clone, Debug, serde::Serialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

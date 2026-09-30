@@ -1,6 +1,6 @@
 //! `POST /api/v1/version/self-update` — how the deployment update was taken.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 

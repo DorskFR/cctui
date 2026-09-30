@@ -15,9 +15,10 @@ pub struct CapabilitiesResponse {
 }
 
 /// The Langfuse read integration's capability, as seen by the webui.
+///
 /// `available` gates every Langfuse UI element; `host` + `project_id` build the
-/// `<host>/project/<id>/sessions/<uuid>` deep link. All `None` when the sink is
-/// unconfigured; `project_id` alone `None` when the id could not be resolved.
+/// `<host>/project/<id>/sessions/<uuid>` deep link. All `None` when the sink is unconfigured;
+/// `project_id` alone `None` when the id could not be resolved.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct LangfuseCapability {

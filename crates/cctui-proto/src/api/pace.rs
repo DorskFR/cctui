@@ -1,7 +1,8 @@
-//! Burn-rate math for a usage window: how far into the window we are, what a
-//! linear spend would have consumed by now, and when the wall (100%) lands if
-//! the current rate holds. Pure functions; the usage routes attach the result
-//! to every window and the pace-limit enforcement reuses the same numbers.
+//! Burn-rate math for a usage window: how far into the window we are, what a linear spend would
+//! have consumed by now, and when the wall (100%) lands if the current rate holds.
+//!
+//! Pure functions; the usage routes attach the result to every window and the pace-limit
+//! enforcement reuses the same numbers.
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -43,6 +44,7 @@ pub struct Sample {
 
 /// Length of a canonical window, or `None` for one that never resets
 /// (a per-session dollar budget) or an unknown key.
+#[must_use]
 pub fn window_duration(key: &str) -> Option<Duration> {
     if key == KEY_SESSION || key == KEY_USD_5H {
         Some(Duration::hours(5))
@@ -60,6 +62,7 @@ pub fn window_duration(key: &str) -> Option<Duration> {
 /// utilization did not drop) and shows any growth; otherwise the window
 /// average (`utilization / elapsed`). Returns `None` when the window has no
 /// reset time or no known length.
+#[must_use]
 pub fn compute(
     now: DateTime<Utc>,
     utilization: f64,
@@ -106,6 +109,7 @@ pub fn compute(
 }
 
 /// [`compute`] for a normalized window, keyed off its canonical key.
+#[must_use]
 pub fn for_window(
     now: DateTime<Utc>,
     window: &crate::api::soft_limit::UsageWindow,

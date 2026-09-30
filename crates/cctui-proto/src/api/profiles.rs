@@ -32,9 +32,10 @@ pub struct SessionProfile {
     pub updated_at: DateTime<Utc>,
 }
 
-/// The knobs a profile carries. The account pick is at most one of
-/// `account_id` / `pool_id` / `no_account`; none = Auto (the server elects one).
-/// `None` model / effort / permission mode = the harness or account default.
+/// The knobs a profile carries.
+///
+/// The account pick is at most one of `account_id` / `pool_id` / `no_account`; none = Auto (the
+/// server elects one). `None` model / effort / permission mode = the harness or account default.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProfileSpec {

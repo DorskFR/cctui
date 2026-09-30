@@ -36,9 +36,10 @@ pub const KEY_USD_7D: &str = "usd_7d";
 /// never resets): a bounded hint, not `i64::MAX`.
 const NO_RESET_RETRY_SECS: i64 = 3600;
 
-/// Minimum elapsed share before a window's pace is enforceable: `expected_pct`
-/// is ~0 at a window's start, so the first request of a fresh window would
-/// otherwise read as an infinite burn. 10% is 30 minutes of a 5h window.
+/// Minimum elapsed share before a window's pace is enforceable.
+///
+/// `expected_pct` is ~0 at a window's start, so the first request of a fresh window would otherwise
+/// read as an infinite burn. 10% is 30 minutes of a 5h window.
 const PACE_MIN_ELAPSED_FRACTION: f64 = 0.10;
 /// Bounds on the pace back-off — long enough to slow a burst, short enough that
 /// the harness keeps making progress.
@@ -52,11 +53,13 @@ pub const PACE_REASON_PREFIX: &str = "pace:";
 pub const SESSION_SCOPE_PREFIX: &str = "session_scope:";
 
 /// Whether a canonical key denotes a dollar-denominated window.
+#[must_use]
 pub fn is_usd_key(key: &str) -> bool {
     matches!(key, KEY_SESSION_USD | KEY_USD_5H | KEY_USD_7D)
 }
 
 /// Whether a canonical key denotes a per-model weekly window.
+#[must_use]
 pub fn is_model_scoped_key(key: &str) -> bool {
     key.starts_with(WEEKLY_MODEL_PREFIX)
 }
@@ -68,6 +71,7 @@ pub fn is_model_scoped_key(key: &str) -> bool {
 /// tell, so every window applies — the conservative side, which can only narrow
 /// a margin, never overstate it. Enforcement and election share this one
 /// definition so they cannot drift apart.
+#[must_use]
 pub fn window_applies(window: &UsageWindow, model: Option<&str>) -> bool {
     let Some(scoped) = window.key.strip_prefix(WEEKLY_MODEL_PREFIX) else { return true };
     let Some(model) = model else { return true };
@@ -81,10 +85,11 @@ pub fn window_applies(window: &UsageWindow, model: Option<&str>) -> bool {
     requested.contains(scoped) || scoped.contains(&requested)
 }
 
-/// One window's independently editable soft-limit config. All fields optional:
-/// no `cap_pct`/`cap_usd` ⇒ no cap on that window; `bypass_minutes` `None` ⇒ no
-/// bypass. `cap_usd` applies to the dollar windows, `cap_pct` to the percent
-/// ones; a window is evaluated against whichever its usage reports.
+/// One window's independently editable soft-limit config.
+///
+/// All fields optional: no `cap_pct`/`cap_usd` ⇒ no cap on that window; `bypass_minutes` `None` ⇒
+/// no bypass. `cap_usd` applies to the dollar windows, `cap_pct` to the percent ones; a window is
+/// evaluated against whichever its usage reports.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "SoftLimitConfig"))]
 pub struct SoftLimit {
@@ -120,9 +125,11 @@ impl SoftLimit {
     }
 }
 
-/// Per-account soft-limit configuration: a map from canonical window key to that
-/// window's cap + bypass. Persisted as a validated JSONB map on the provider
-/// credential, so newly discovered model-scoped windows need NO migration.
+/// Per-account soft-limit configuration: a map from canonical window key to that window's cap +
+/// bypass.
+///
+/// Persisted as a validated JSONB map on the provider credential, so newly discovered model-scoped
+/// windows need NO migration.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct SoftLimits {
@@ -132,6 +139,7 @@ pub struct SoftLimits {
 impl SoftLimits {
     /// No window has a cap configured ⇒ nothing to evaluate (fast path). A bypass
     /// without a cap is inert, so it does not count as "set".
+    #[must_use]
     pub fn is_unset(&self) -> bool {
         !self
             .limits
@@ -172,10 +180,12 @@ impl SoftLimits {
     }
 }
 
-/// A canonical window key is one of: `session`, `weekly_all`, or
-/// `weekly_model:<slug>` where `<slug>` is `[a-z0-9._-]+`. Anything else is
-/// rejected so an upstream label cannot inject markup or collide with another
+/// A canonical window key is one of: `session`, `weekly_all`, or `weekly_model:<slug>` where
+/// `<slug>` is `[a-z0-9._-]+`.
+///
+/// Anything else is rejected so an upstream label cannot inject markup or collide with another
 /// account's config. Returns the normalized key (model slug re-slugged).
+#[must_use]
 pub fn canonicalize_key(key: &str) -> Option<String> {
     let key = key.trim();
     if key == KEY_SESSION || key == KEY_WEEKLY_ALL || is_usd_key(key) {
@@ -186,10 +196,12 @@ pub fn canonicalize_key(key: &str) -> Option<String> {
     (!slug.is_empty()).then(|| format!("{WEEKLY_MODEL_PREFIX}{slug}"))
 }
 
-/// Lowercase + collapse any run of non-`[a-z0-9._-]` characters to a single `-`,
-/// trimming leading/trailing separators. Stable and markup-free. Shared with
-/// `account_pick`, which slugs a requested model id the same way to match it
-/// against a scoped window's key.
+/// Lowercase + collapse any run of non-`[a-z0-9._-]` characters to a single `-`, trimming
+/// leading/trailing separators.
+///
+/// Stable and markup-free. Shared with `account_pick`, which slugs a requested model id the same
+/// way to match it against a scoped window's key.
+#[must_use]
 pub fn slug(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_dash = false;
@@ -260,11 +272,12 @@ fn parse_percent(v: &serde_json::Value) -> Option<f64> {
         .or_else(|| v.get("utilization").and_then(serde_json::Value::as_f64))
 }
 
-/// Normalize any of the three supported usage payloads into a provider-agnostic
-/// collection of windows:
-///   1. New Anthropic `{"limits":[{kind,percent,resets_at,scope?}, …]}`.
-///   2. Legacy Anthropic fixed fields (`five_hour`/`seven_day`/`seven_day_opus`/…).
-///   3. `OpenAI`'s canonical `{five_hour, seven_day}` shape (same as legacy).
+/// Normalize any of the three supported usage payloads into a provider-agnostic collection of
+/// windows.
+///
+/// 1. New Anthropic `{"limits":[{kind,percent,resets_at,scope?}, …]}`. 2. Legacy Anthropic fixed
+/// fields (`five_hour`/`seven_day`/`seven_day_opus`/…). 3. `OpenAI`'s canonical `{five_hour,
+/// seven_day}` shape (same as legacy).
 ///
 /// Missing/malformed entries omit only themselves — one unknown limit never
 /// collapses the valid ones.
@@ -358,9 +371,10 @@ fn normalize_structured_limit(entry: &serde_json::Value) -> Option<UsageWindow> 
     }
 }
 
-/// Identity from the duration upstream reported. The `five_hour`/`seven_day`
-/// slots are positional, not descriptive — a weekly-only plan reports its
-/// weekly limit in the primary slot. `None` keeps the slot's default identity.
+/// Identity from the duration upstream reported.
+///
+/// The `five_hour`/`seven_day` slots are positional, not descriptive — a weekly-only plan reports
+/// its weekly limit in the primary slot. `None` keeps the slot's default identity.
 fn identity_from_seconds(secs: i64) -> Option<(String, &'static str, String)> {
     if secs <= 0 {
         return None;
@@ -429,6 +443,7 @@ fn normalize_fixed_fields(usage: &serde_json::Value) -> Vec<UsageWindow> {
 }
 
 /// Display label for a dollar window key.
+#[must_use]
 pub fn usd_label(key: &str) -> &'static str {
     match key {
         KEY_USD_5H => "5h spend",
@@ -439,6 +454,7 @@ pub fn usd_label(key: &str) -> &'static str {
 
 /// Build a dollar window. `utilization` stays 0 — a spend has no percentage
 /// until a cap is set, and the cap lives in the config, not the usage.
+#[must_use]
 pub fn usd_window(key: &str, amount_usd: f64, resets_at: Option<DateTime<Utc>>) -> UsageWindow {
     UsageWindow {
         key: key.to_owned(),
@@ -482,6 +498,7 @@ pub enum Decision {
 /// evaluated when it applies to it (see [`window_applies`]) — a spent weekly
 /// Fable budget must not block an Opus request. `None` means "not known here"
 /// and keeps the conservative reading: every window counts.
+#[must_use]
 pub fn evaluate_soft_limit(
     windows: &[UsageWindow],
     caps: &SoftLimits,
@@ -550,6 +567,7 @@ pub fn evaluate_soft_limit(
 /// account-level change, and an account window is judged against its own cap
 /// alone so an unrelated window still over cap cannot hold it. A key the account
 /// no longer caps is lifted — the cap that produced it is gone.
+#[must_use]
 pub fn block_lifted_by(
     key: &str,
     windows: &[UsageWindow],
