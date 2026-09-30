@@ -102,7 +102,8 @@ fn exe_dir_writable(exe: &Path) -> bool {
 async fn fetch_server_version(server_url: &str) -> Result<String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let client = reqwest::Client::builder().timeout(VERSION_TIMEOUT).build()?;
-    let url = format!("{}/api/v1/version", server_url.trim_end_matches('/'));
+    let route = cctui_proto::api::routes::by_id("get_version").context("version route")?;
+    let url = format!("{}{}", server_url.trim_end_matches('/'), route.url(&[]));
     let resp = client.get(&url).send().await?.error_for_status()?;
     let info: ServerVersion = resp.json().await?;
     Ok(info.version)

@@ -28,24 +28,15 @@
     },
     {
       "q": "a b",
-      "out": [
-        "a",
-        "b"
-      ]
+      "out": ["a", "b"]
     },
     {
       "q": "\"two words\" tail",
-      "out": [
-        "two words",
-        "tail"
-      ]
+      "out": ["two words", "tail"]
     },
     {
       "q": "  spaced   out  ",
-      "out": [
-        "spaced",
-        "out"
-      ]
+      "out": ["spaced", "out"]
     }
   ],
   "sourceHref": [

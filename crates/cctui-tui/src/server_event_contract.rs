@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 
+use cctui_client::{Incoming, decode_frame};
 use cctui_proto::api::{UserAction, UserActionKind, UserActionStatus};
 use cctui_proto::github::{GithubEventKind, GithubEventPayload};
 use cctui_proto::models::{MachineLiveness, SessionEndReason, SessionStatus};
@@ -15,7 +16,6 @@ use uuid::Uuid;
 
 use crate::app::Action;
 use crate::app::server_event::to_actions;
-use crate::client::{Incoming, decode_frame};
 
 const VARIANT_COUNT: usize = 29;
 

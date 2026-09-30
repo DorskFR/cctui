@@ -1,6 +1,6 @@
 use crate::app::View;
 use crate::testsupport::{
-    app_with_sessions, conversation_lines, permission_request, render_screen, render_screen_sized,
+    app_with_sessions, conversation_store, permission_request, render_screen, render_screen_sized,
 };
 
 #[test]
@@ -43,7 +43,7 @@ fn session_list_selection_moves() {
 fn conversation() {
     let mut app = app_with_sessions();
     let id = app.selected_session().expect("a selected session").id.clone();
-    app.stream_buffer.insert(id, conversation_lines());
+    app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen(&mut app));
 }
@@ -59,7 +59,7 @@ fn conversation_without_data() {
 fn conversation_narrow() {
     let mut app = app_with_sessions();
     let id = app.selected_session().expect("a selected session").id.clone();
-    app.stream_buffer.insert(id, conversation_lines());
+    app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }
