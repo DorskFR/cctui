@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import tiles from './SessionTiles.svelte?raw';
 import page from './+page.svelte?raw';
 import layout from '../+layout.svelte?raw';
-import spawnDock from '$lib/spawnDock.svelte.ts?raw';
-import appCss from '$lib/styles/app.css?raw';
+import spawnDock from '../../lib/spawnDock.svelte.ts?raw';
+import appCss from '../../lib/styles/app.css?raw';
 
 describe('opening tiles never costs a turn', () => {
 	it('sends no message, reply or resume from the tiles view', () => {
