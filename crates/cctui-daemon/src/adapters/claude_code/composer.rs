@@ -44,7 +44,11 @@ pub(super) const fn next_submit_step(
         ComposerState::Empty => SubmitStep::Done,
         ComposerState::Unknown if unknown >= max_unknown => SubmitStep::GiveUp,
         ComposerState::Unknown | ComposerState::Holding => {
-            if attempt >= max_attempts { SubmitStep::GiveUp } else { SubmitStep::Press }
+            if attempt >= max_attempts {
+                SubmitStep::GiveUp
+            } else {
+                SubmitStep::Press
+            }
         }
     }
 }
@@ -148,9 +152,10 @@ mod tests {
     #[test]
     fn strip_ansi_turns_cursor_placement_into_rows() {
         let raw = b"\x1b[2J\x1b[1;1Hfirst\x1b[2;1Hsecond";
-        assert_eq!(strip_ansi(raw).lines().filter(|l| !l.is_empty()).collect::<Vec<_>>(), [
-            "first", "second"
-        ]);
+        assert_eq!(
+            strip_ansi(raw).lines().filter(|l| !l.is_empty()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
     }
 
     #[test]
@@ -196,7 +201,10 @@ mod tests {
 
     #[test]
     fn composer_unknown_without_a_prompt_row() {
-        assert_eq!(composer_state("· Pollinating… (2m 53s)\n  Read(foo.rs)\n"), ComposerState::Unknown);
+        assert_eq!(
+            composer_state("· Pollinating… (2m 53s)\n  Read(foo.rs)\n"),
+            ComposerState::Unknown
+        );
     }
 
     #[test]

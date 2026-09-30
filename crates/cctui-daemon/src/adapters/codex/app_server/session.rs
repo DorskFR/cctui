@@ -326,10 +326,7 @@ impl CodexSession {
     /// The id the session's files are staged under: the launch key when the
     /// server pre-minted one, else the thread id a resume already has.
     fn staging_id(&self) -> Option<&str> {
-        self.staging_key
-            .as_deref()
-            .or(self.spawn_key.as_deref())
-            .or_else(|| self.roster_self())
+        self.staging_key.as_deref().or(self.spawn_key.as_deref()).or_else(|| self.roster_self())
     }
 
     /// The roster id this session already holds, so the preamble does not
