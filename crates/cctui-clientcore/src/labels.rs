@@ -28,7 +28,7 @@ fn js_parse_int(s: &str) -> Option<i64> {
 /// The hue explicitly stored on a label, or `None` when unset ("Auto").
 #[must_use]
 pub fn stored_hue(color: &str) -> Option<u32> {
-    js_parse_int(color).map(|n| (((n % 360) + 360) % 360) as u32)
+    js_parse_int(color).map(|n| n.rem_euclid(360) as u32)
 }
 
 #[must_use]

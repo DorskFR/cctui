@@ -57,8 +57,9 @@ fn mark_text(text: &[char], terms: &[Vec<char>]) -> String {
             .iter()
             .find(|n| !n.is_empty() && i + n.len() <= hay.len() && hay[i..i + n.len()] == n[..]);
         if let Some(n) = hit {
-            let raw: String = text[i..i + n.len()].iter().collect();
-            out.push_str(&format!("<mark class=\"search-hit\">{raw}</mark>"));
+            out.push_str("<mark class=\"search-hit\">");
+            out.extend(text[i..i + n.len()].iter());
+            out.push_str("</mark>");
             i += n.len();
         } else {
             out.push(text[i]);
