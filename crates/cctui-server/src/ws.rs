@@ -544,7 +544,8 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. }
         | ServerEvent::SoftLimitReached { session_id, .. }
-        | ServerEvent::SoftLimitCleared { session_id } => session(session_id),
+        | ServerEvent::SoftLimitCleared { session_id }
+        | ServerEvent::UserActions { session_id, .. } => session(session_id),
         ServerEvent::SessionRegistered { session: s } => session(&s.id),
         ServerEvent::CommandResult { session_id, .. } => {
             session_id.as_deref().map_or(AdminsOnly, session)
@@ -559,6 +560,7 @@ fn audience(event: &ServerEvent) -> Audience {
         ServerEvent::DispatcherLiveness { dispatcher_id, .. } => {
             SharedWith(Owned::Dispatcher(*dispatcher_id))
         }
+        ServerEvent::RoomMembers { user_id, .. } => OwnerOf(Owned::User(*user_id)),
         ServerEvent::GithubEvent { .. } => AdminsOnly,
         ServerEvent::ScheduledLaunch { user_id, .. } => {
             user_id.map_or(AdminsOnly, |u| OwnerOf(Owned::User(u)))

@@ -9,10 +9,13 @@
 //! final message. Proto 1 relays (older, still attached to live sessions)
 //! get the single final line only.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cctui_proto::api::{MessageChildRequest, SpawnChildRequest};
+use cctui_proto::api::{
+    MessageChildRequest, PeerMessageRequest, RoomToolRequest, SpawnChildRequest,
+};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -51,6 +54,23 @@ enum CallKind {
     Usage {
         model: Option<String>,
     },
+    /// `CctuiPeers`: the sessions this one may address.
+    Peers,
+    /// `CctuiSend`: one message into a peer's turn queue. Unlike
+    /// [`Self::Message`] it never follows the target — a peer is not a child and
+    /// owes the caller no answer.
+    SendPeer(PeerMessageRequest),
+    /// `CctuiRoom`: post to, read or inspect a room this session is in.
+    Room(RoomToolRequest),
+    /// `CctuiHistory`: a bounded page of a peer's transcript. The peer is the
+    /// `session_id` entry of `query`.
+    PeerHistory {
+        query: Vec<(&'static str, String)>,
+    },
+    /// `CctuiUserActionAdd` / `CctuiUserActionTick`: the body is forwarded to the
+    /// server, which owns the list and answers with all of it.
+    UserActionAdd(Value),
+    UserActionTick(Value),
     /// The relay announcing that it answered `initialize`.
     RelayReady,
     /// The session's `SessionStart` hook holding the first turn until the relay
@@ -122,6 +142,12 @@ fn parse_call(line: &str) -> Result<Call, String> {
     let proto = v.get("proto").and_then(Value::as_u64).unwrap_or(1);
     let kind = match v.get("kind").and_then(Value::as_str) {
         Some("usage") => CallKind::Usage { model: string_arg(&args, "model") },
+        Some("peers") => CallKind::Peers,
+        Some("send_peer") => parse_send_peer(&args)?,
+        Some("room") => parse_room(&args)?,
+        Some("peer_history") => parse_peer_history(&args)?,
+        Some("user_action_add") => parse_user_action_add(&args),
+        Some("user_action_tick") => parse_user_action_tick(&args)?,
         Some("relay_ready") => CallKind::RelayReady,
         Some("relay_wait") => CallKind::RelayWait,
         Some(kind @ ("preview_open" | "preview_close")) => {
@@ -137,35 +163,129 @@ fn parse_call(line: &str) -> Result<Call, String> {
                 CallKind::PreviewClose { port }
             }
         }
-        Some("spawn_agent") => {
-            let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
-            if prompt.trim().is_empty() {
-                return Err("prompt is required".to_owned());
-            }
-            if let Some(child) = string_arg(&args, "session_id") {
-                CallKind::Message(MessageChildRequest { session_id: child, prompt })
-            } else {
-                let adapter =
-                    normalize_adapter(args.get("adapter").and_then(Value::as_str).unwrap_or(""));
-                let Some(model) = string_arg(&args, "model") else {
-                    return Err(missing_model_error(&adapter));
-                };
-                CallKind::Spawn(SpawnChildRequest {
-                    adapter,
-                    prompt,
-                    model: Some(model),
-                    agent_profile: string_arg(&args, "agent_profile"),
-                    budget_usd: args.get("budget_usd").and_then(Value::as_f64),
-                    cwd: string_arg(&args, "cwd"),
-                    permission_mode: string_arg(&args, "permission_mode")
-                        .and_then(|m| serde_json::from_value(Value::String(m)).ok()),
-                    name: string_arg(&args, "name"),
-                })
-            }
-        }
+        Some("spawn_agent") => parse_spawn_agent(&args)?,
         _ => return Err("unsupported request kind".to_owned()),
     };
     Ok(Call { session_id, kind, timeout, proto })
+}
+
+fn parse_send_peer(args: &Value) -> Result<CallKind, String> {
+    let Some(target) = string_arg(args, "session_id") else {
+        return Err("session_id is required: the peer to send to".to_owned());
+    };
+    let message = args.get("message").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+    if message.is_empty() {
+        return Err("message is required".to_owned());
+    }
+    Ok(CallKind::SendPeer(PeerMessageRequest { session_id: target, message }))
+}
+
+fn parse_room(args: &Value) -> Result<CallKind, String> {
+    let action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .map(|a| a.trim().to_ascii_lowercase())
+        .filter(|a| !a.is_empty())
+        .ok_or("action is required: \"post\", \"peek\" or \"members\"")?;
+    let message = string_arg(args, "message");
+    if action == "post" && message.is_none() {
+        return Err("message is required to post to a room".to_owned());
+    }
+    Ok(CallKind::Room(RoomToolRequest { action, room_id: string_arg(args, "room_id"), message }))
+}
+
+fn parse_peer_history(args: &Value) -> Result<CallKind, String> {
+    let Some(target) = string_arg(args, "session_id") else {
+        return Err("session_id is required: the peer whose history to read".to_owned());
+    };
+    let mut query: Vec<(&'static str, String)> = vec![("session_id", target)];
+    for key in ["after", "before", "limit"] {
+        if let Some(n) = args.get(key).and_then(Value::as_i64) {
+            query.push((key, n.to_string()));
+        }
+    }
+    if let Some(roles) = roles_arg(args) {
+        query.push(("roles", roles));
+    }
+    if let Some(format) = string_arg(args, "format") {
+        query.push(("format", format.to_ascii_lowercase()));
+    }
+    Ok(CallKind::PeerHistory { query })
+}
+
+fn parse_user_action_add(args: &Value) -> CallKind {
+    CallKind::UserActionAdd(json!({
+        "title": args.get("title").and_then(Value::as_str).unwrap_or("").trim(),
+        "detail": string_arg(args, "detail"),
+        "kind": match string_arg(args, "kind").as_deref() {
+            Some("input") => "input",
+            Some("decision") => "decision",
+            _ => "action",
+        },
+        "blocking": args.get("blocking").and_then(Value::as_bool).unwrap_or(false),
+    }))
+}
+
+fn parse_user_action_tick(args: &Value) -> Result<CallKind, String> {
+    let id = string_arg(args, "id").ok_or("id is required")?;
+    let status = match string_arg(args, "status").as_deref() {
+        Some("done") => "done",
+        Some("dropped") => "dropped",
+        other => {
+            return Err(format!(
+                "status must be \"done\" or \"dropped\", got {}",
+                other.unwrap_or("nothing"),
+            ));
+        }
+    };
+    Ok(CallKind::UserActionTick(json!({
+        "id": id,
+        "status": status,
+        "note": string_arg(args, "note"),
+    })))
+}
+
+fn parse_spawn_agent(args: &Value) -> Result<CallKind, String> {
+    let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
+    if prompt.trim().is_empty() {
+        return Err("prompt is required".to_owned());
+    }
+    if let Some(child) = string_arg(args, "session_id") {
+        return Ok(CallKind::Message(MessageChildRequest { session_id: child, prompt }));
+    }
+    let adapter = normalize_adapter(args.get("adapter").and_then(Value::as_str).unwrap_or(""));
+    let Some(model) = string_arg(args, "model") else {
+        return Err(missing_model_error(&adapter));
+    };
+    Ok(CallKind::Spawn(SpawnChildRequest {
+        adapter,
+        prompt,
+        model: Some(model),
+        agent_profile: string_arg(args, "agent_profile"),
+        budget_usd: args.get("budget_usd").and_then(Value::as_f64),
+        cwd: string_arg(args, "cwd"),
+        permission_mode: string_arg(args, "permission_mode")
+            .and_then(|m| serde_json::from_value(Value::String(m)).ok()),
+        name: string_arg(args, "name"),
+    }))
+}
+
+/// `roles` as the comma list the route expects, accepting either the array a
+/// model usually sends or a pre-joined string.
+fn roles_arg(args: &Value) -> Option<String> {
+    let raw = args.get("roles")?;
+    let joined = match raw {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::String(s) => s.trim().to_owned(),
+        _ => return None,
+    };
+    (!joined.is_empty()).then_some(joined)
 }
 
 fn string_arg(args: &Value, key: &str) -> Option<String> {
@@ -225,11 +345,138 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             timeout.as_secs(),
         ),
         CallKind::Usage { .. }
+        | CallKind::Peers
+        | CallKind::SendPeer(_)
+        | CallKind::Room(_)
+        | CallKind::PeerHistory { .. }
+        | CallKind::UserActionAdd(_)
+        | CallKind::UserActionTick(_)
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
         | CallKind::PreviewClose { .. } => String::new(),
     }
+}
+
+/// The roster as the compact lines a model reads before choosing a peer.
+fn render_peers(v: &Value) -> String {
+    let peers = v.get("peers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    if peers.is_empty() {
+        return "no addressable peers: this session has no parent, no children, no siblings and \
+                no shared sessions"
+            .to_owned();
+    }
+    let mut lines = vec![format!("{} addressable peer(s):", peers.len())];
+    for p in peers {
+        let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("?");
+        let name = p.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+        lines.push(format!(
+            "- {} [{}] {} · {} on {} · {}",
+            s("session_id"),
+            s("relation"),
+            name.unwrap_or("(unnamed)"),
+            s("adapter"),
+            s("machine"),
+            s("state"),
+        ));
+    }
+    lines.join("\n")
+}
+
+/// A room reply, rendered per action. `post` confirms the reach so a model knows
+/// how many agents it just interrupted; `peek` and `members` render the timeline
+/// and the roster as lines.
+fn render_room(action: &str, me: &str, v: &Value) -> String {
+    let room = v.get("room").and_then(Value::as_str).unwrap_or("the room");
+    match action {
+        "post" => {
+            let seq = v.get("seq").and_then(Value::as_i64).unwrap_or(0);
+            let delivered = v.get("delivered").and_then(Value::as_u64).unwrap_or(0);
+            let receipts =
+                v.get("receipts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            let mut out = format!(
+                "posted to {room} as #{seq}; delivered to {delivered} of {} other session(s). \
+                 They answer when they choose — nothing comes back through this call.",
+                receipts.len(),
+            );
+            // Name who did NOT get it: a broadcast is best effort, and a silent
+            // skip would read as a delivery.
+            let missed: Vec<String> = receipts
+                .iter()
+                .filter(|r| r.get("outcome").and_then(Value::as_str) != Some("delivered"))
+                .map(|r| {
+                    format!(
+                        "{} ({})",
+                        r.get("label").and_then(Value::as_str).unwrap_or("?"),
+                        r.get("outcome").and_then(Value::as_str).unwrap_or("?"),
+                    )
+                })
+                .collect();
+            if !missed.is_empty() {
+                let _ = write!(out, "\nNot delivered: {}.", missed.join(", "));
+            }
+            out
+        }
+        "members" => {
+            let members =
+                v.get("members").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            let mut lines = vec![format!("{room} — {} member(s), plus the human:", members.len())];
+            for mem in members {
+                let s = |k: &str| mem.get(k).and_then(Value::as_str).unwrap_or("?");
+                let name = mem.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+                lines.push(format!(
+                    "- {} [{}] {} · {} on {} · {}",
+                    s("session_id"),
+                    s("role"),
+                    name.unwrap_or("(unnamed)"),
+                    s("adapter"),
+                    s("machine"),
+                    s("state"),
+                ));
+            }
+            lines.join("\n")
+        }
+        _ => {
+            let messages =
+                v.get("messages").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            if messages.is_empty() {
+                return format!("{room} has no messages yet.");
+            }
+            let mut lines = vec![format!("{room} — {} message(s):", messages.len())];
+            for msg in messages {
+                let seq = msg.get("seq").and_then(Value::as_i64).unwrap_or(0);
+                let from = msg.get("sender_label").and_then(Value::as_str).unwrap_or("?");
+                let body = msg.get("body").and_then(Value::as_str).unwrap_or("");
+                let mine =
+                    msg.get("sender_session_id").and_then(Value::as_str).is_some_and(|s| s == me);
+                let mark = if mine { " (you)" } else { "" };
+                lines.push(format!("#{seq} {from}{mark}: {}", snippet(body, 2_000)));
+            }
+            lines.join("\n")
+        }
+    }
+}
+
+/// A history page as the markdown the tool promised, with the cursor line a
+/// caller needs to ask for the previous page.
+fn render_history(v: &Value) -> String {
+    let n = v.get("events").and_then(Value::as_u64).unwrap_or(0);
+    let body = v.get("markdown").and_then(Value::as_str).map_or_else(
+        || serde_json::to_string_pretty(v.get("items").unwrap_or(&Value::Null)).unwrap_or_default(),
+        str::to_owned,
+    );
+    let mut note = format!("\n\n[{n} event(s)");
+    if let Some(first) = v.get("first_seq").and_then(Value::as_i64) {
+        let _ = write!(note, " · oldest seq {first}");
+        if v.get("truncated").and_then(Value::as_bool).unwrap_or(false) {
+            let _ = write!(
+                note,
+                " · truncated: call again with before={first} for the page before this one"
+            );
+        }
+    }
+    note.push(']');
+    format!("{body}{note}")
 }
 
 fn annotate(mut frame: Value, note: &str) -> Value {
@@ -461,39 +708,156 @@ async fn run_usage(
     }
 }
 
+/// One list line as the model reads it back. The resolver is always named: a
+/// `done` the user ticked in the UI is the whole point of returning the list.
+fn render_user_action(item: &Value) -> String {
+    let title = item.get("title").and_then(Value::as_str).unwrap_or("(untitled)");
+    let status = item.get("status").and_then(Value::as_str).unwrap_or("open");
+    let kind = item.get("kind").and_then(Value::as_str).unwrap_or("action");
+    let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+    let mut line = if status == "open" {
+        let blocking = if item.get("blocking").and_then(Value::as_bool).unwrap_or(false) {
+            " BLOCKING"
+        } else {
+            ""
+        };
+        format!("[ ]{blocking} {title} ({kind}, id {id})")
+    } else {
+        let by = item
+            .get("resolved_by")
+            .and_then(Value::as_str)
+            .map(|b| format!(" by {b}"))
+            .unwrap_or_default();
+        format!("[{status}{by}] {title} (id {id})")
+    };
+    if let Some(note) = item.get("note").and_then(Value::as_str).filter(|n| !n.is_empty()) {
+        let _ = write!(line, " — {note}");
+    }
+    line
+}
+
+/// Render a `UserActionResult` for the model: the rejection reason if any, then
+/// the whole list, so a caller never has to guess what the user changed.
+fn render_user_action_result(v: &Value) -> String {
+    let mut out = Vec::new();
+    if let Some(err) = v.get("error").and_then(Value::as_str) {
+        out.push(format!("rejected: {err}"));
+    }
+    if let Some(added) = v.get("added").and_then(Value::as_str) {
+        out.push(format!("item id: {added}"));
+    }
+    let items: Vec<&Value> = v
+        .pointer("/list/items")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    if items.is_empty() {
+        out.push("the user action list is empty".to_owned());
+    } else {
+        let open = items
+            .iter()
+            .filter(|i| i.get("status").and_then(Value::as_str) == Some("open"))
+            .count();
+        out.push(format!("user actions ({open} open of {}):", items.len()));
+        out.extend(items.iter().map(|i| render_user_action(i)));
+    }
+    out.join("\n")
+}
+
+async fn run_user_action(
+    server: &ServerClient,
+    machine_key: &str,
+    session_id: &str,
+    path: &str,
+    body: &Value,
+) -> Value {
+    match server.user_action_call(machine_key, session_id, path, body).await {
+        Ok(result) => {
+            let raw = serde_json::to_value(&result).unwrap_or_else(|_| json!({}));
+            let text = render_user_action_result(&raw);
+            if result.error.is_some() {
+                json!({ "ok": false, "error": text })
+            } else {
+                json!({ "ok": true, "result": text })
+            }
+        }
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    }
+}
+
+/// The kinds that answer from one server round-trip and never follow a child.
+/// `None` means the call is a spawn or a follow-up, which [`run_call`] handles.
+async fn run_unfollowed_call(
+    server: &ServerClient,
+    machine_key: &str,
+    call: &Call,
+) -> Option<Value> {
+    let me = call.session_id.as_str();
+    let frame = match &call.kind {
+        CallKind::Usage { model } => run_usage(server, machine_key, me, model.as_deref()).await,
+        CallKind::Peers => match server.peers(machine_key, me).await {
+            Ok(v) => json!({ "ok": true, "result": render_peers(&v) }),
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
+        CallKind::SendPeer(req) => match server.message_peer(machine_key, me, req).await {
+            Ok(v) => {
+                let to = v.get("delivered_to").and_then(Value::as_str).unwrap_or(&req.session_id);
+                let relation = v.get("relation").and_then(Value::as_str).unwrap_or("peer");
+                json!({
+                    "ok": true,
+                    "result": format!(
+                        "delivered to {to} ({relation}). It arrives as a turn in that session; \
+                         it will not reply through this tool — watch for its own CctuiSend back."
+                    ),
+                })
+            }
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
+        CallKind::Room(req) => match server.room(machine_key, me, req).await {
+            Ok(v) => json!({ "ok": true, "result": render_room(&req.action, me, &v) }),
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
+        CallKind::PeerHistory { query } => {
+            match server.peer_conversation(machine_key, me, query).await {
+                Ok(v) => json!({ "ok": true, "result": render_history(&v) }),
+                Err(err) => json!({ "ok": false, "error": err.to_string() }),
+            }
+        }
+        CallKind::UserActionAdd(body) => run_user_action(server, machine_key, me, "", body).await,
+        CallKind::UserActionTick(body) => {
+            run_user_action(server, machine_key, me, "/tick", body).await
+        }
+        CallKind::RelayReady => {
+            crate::mcpready::announce(me);
+            json!({ "ok": true, "result": "ready" })
+        }
+        // Never `ok: false`: the hook releases the first turn either way.
+        CallKind::RelayWait => {
+            let ready = crate::mcpready::wait_until_ready(me, call.timeout).await;
+            let result = if ready { "ready" } else { "timeout" };
+            json!({ "ok": true, "result": result })
+        }
+        CallKind::PreviewOpen { port } => match crate::preview::open(me, *port).await {
+            Ok(opened) => json!({ "ok": true, "result": opened.url }),
+            Err(err) => json!({ "ok": false, "error": err }),
+        },
+        CallKind::PreviewClose { port } => match crate::preview::close(me, *port).await {
+            Ok(()) => json!({ "ok": true, "result": "closed" }),
+            Err(err) => json!({ "ok": false, "error": err }),
+        },
+        CallKind::Spawn(_) | CallKind::Message(_) => return None,
+    };
+    Some(frame)
+}
+
 async fn run_call(
     server: &ServerClient,
     machine_key: &str,
     call: Call,
     out: &mut (impl AsyncWriteExt + Unpin),
 ) -> Value {
-    match &call.kind {
-        CallKind::Usage { model } => {
-            return run_usage(server, machine_key, &call.session_id, model.as_deref()).await;
-        }
-        CallKind::RelayReady => {
-            crate::mcpready::announce(&call.session_id);
-            return json!({ "ok": true, "result": "ready" });
-        }
-        // Never `ok: false`: the hook releases the first turn either way.
-        CallKind::RelayWait => {
-            let ready = crate::mcpready::wait_until_ready(&call.session_id, call.timeout).await;
-            let result = if ready { "ready" } else { "timeout" };
-            return json!({ "ok": true, "result": result });
-        }
-        CallKind::PreviewOpen { port } => {
-            return match crate::preview::open(&call.session_id, *port).await {
-                Ok(opened) => json!({ "ok": true, "result": opened.url }),
-                Err(err) => json!({ "ok": false, "error": err }),
-            };
-        }
-        CallKind::PreviewClose { port } => {
-            return match crate::preview::close(&call.session_id, *port).await {
-                Ok(()) => json!({ "ok": true, "result": "closed" }),
-                Err(err) => json!({ "ok": false, "error": err }),
-            };
-        }
-        CallKind::Spawn(_) | CallKind::Message(_) => {}
+    if let Some(frame) = run_unfollowed_call(server, machine_key, &call).await {
+        return frame;
     }
     let note = dispatch_note(&call.kind, call.timeout);
     let watch = crate::childwatch::global();
@@ -527,6 +891,12 @@ async fn run_call(
             (handle, req.session_id.clone())
         }
         CallKind::Usage { .. }
+        | CallKind::Peers
+        | CallKind::SendPeer(_)
+        | CallKind::Room(_)
+        | CallKind::PeerHistory { .. }
+        | CallKind::UserActionAdd(_)
+        | CallKind::UserActionTick(_)
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
@@ -718,6 +1088,113 @@ mod tests {
         assert_eq!(req.cwd.as_deref(), Some("/workspace"));
         assert_eq!(req.permission_mode, Some(cctui_proto::adapter::PermissionMode::Auto));
         assert_eq!(req.name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn a_user_action_add_normalizes_its_kind_and_blocking_defaults() {
+        let line = json!({
+            "kind": "user_action_add",
+            "session_id": "s1",
+            "args": { "title": "  Approve PR #12  ", "kind": "nonsense" },
+        })
+        .to_string();
+        let CallKind::UserActionAdd(body) = parse_call(&line).unwrap().kind else {
+            panic!("expected an add")
+        };
+        assert_eq!(body["title"], json!("Approve PR #12"));
+        assert_eq!(body["kind"], json!("action"));
+        assert_eq!(body["blocking"], json!(false));
+        assert!(body["detail"].is_null());
+    }
+
+    #[test]
+    fn a_user_action_add_keeps_a_known_kind_and_a_blocking_flag() {
+        let line = json!({
+            "kind": "user_action_add",
+            "session_id": "s1",
+            "args": {
+                "title": "Pick a layout",
+                "kind": "decision",
+                "blocking": true,
+                "detail": " two options ",
+            },
+        })
+        .to_string();
+        let CallKind::UserActionAdd(body) = parse_call(&line).unwrap().kind else {
+            panic!("expected an add")
+        };
+        assert_eq!(body["kind"], json!("decision"));
+        assert_eq!(body["blocking"], json!(true));
+        assert_eq!(body["detail"], json!("two options"));
+    }
+
+    #[test]
+    fn a_tick_needs_an_id_and_a_terminal_status() {
+        let ok = json!({
+            "kind": "user_action_tick",
+            "session_id": "s1",
+            "args": { "id": "abc", "status": "dropped", "note": " never mind " },
+        })
+        .to_string();
+        let CallKind::UserActionTick(body) = parse_call(&ok).unwrap().kind else {
+            panic!("expected a tick")
+        };
+        assert_eq!(body["id"], json!("abc"));
+        assert_eq!(body["status"], json!("dropped"));
+        assert_eq!(body["note"], json!("never mind"));
+
+        let no_id = json!({ "kind": "user_action_tick", "session_id": "s1", "args": {} });
+        assert!(parse_call(&no_id.to_string()).is_err());
+        let bad_status = json!({
+            "kind": "user_action_tick",
+            "session_id": "s1",
+            "args": { "id": "abc", "status": "open" },
+        });
+        let err = parse_call(&bad_status.to_string()).unwrap_err();
+        assert!(err.contains("done"), "{err}");
+    }
+
+    #[test]
+    fn the_rendered_list_names_open_blocking_items_and_who_resolved_the_rest() {
+        let payload = json!({
+            "list": {
+                "session_id": "s1",
+                "items": [
+                    {
+                        "id": "id-1",
+                        "title": "Approve PR #12",
+                        "kind": "decision",
+                        "blocking": true,
+                        "status": "open",
+                    },
+                    {
+                        "id": "id-2",
+                        "title": "Run gcloud auth login",
+                        "kind": "action",
+                        "status": "done",
+                        "resolved_by": "user",
+                        "note": "token received",
+                    },
+                ],
+            },
+            "added": "id-1",
+        });
+        let text = render_user_action_result(&payload);
+        assert!(text.contains("user actions (1 open of 2):"), "{text}");
+        assert!(text.contains("[ ] BLOCKING Approve PR #12 (decision, id id-1)"), "{text}");
+        assert!(text.contains("[done by user] Run gcloud auth login (id id-2)"), "{text}");
+        assert!(text.contains("token received"), "{text}");
+        assert!(text.contains("item id: id-1"), "{text}");
+    }
+
+    #[test]
+    fn a_rejection_is_rendered_with_the_list_so_the_model_sees_the_true_state() {
+        let text = render_user_action_result(&json!({
+            "error": "title is required and was empty",
+            "list": { "session_id": "s1", "items": [] },
+        }));
+        assert!(text.starts_with("rejected: title is required"), "{text}");
+        assert!(text.contains("the user action list is empty"), "{text}");
     }
 
     #[test]
@@ -1388,6 +1865,268 @@ mod tests {
         assert_eq!(human_duration(30), "30s");
         assert_eq!(human_duration(0), "now");
         assert_eq!(human_duration(-5), "now");
+    }
+
+    #[test]
+    fn a_peers_call_needs_nothing_but_the_session() {
+        let line = json!({ "kind": "peers", "session_id": "s1", "args": {} }).to_string();
+        let call = parse_call(&line).unwrap();
+        assert_eq!(call.session_id, "s1");
+        assert!(matches!(call.kind, CallKind::Peers));
+        assert_eq!(dispatch_note(&CallKind::Peers, Duration::from_secs(30)), "");
+        assert!(parse_call(&json!({ "kind": "peers", "args": {} }).to_string()).is_err());
+    }
+
+    #[test]
+    fn a_send_call_carries_the_target_and_the_trimmed_message() {
+        let line = json!({
+            "kind": "send_peer",
+            "session_id": "s1",
+            "args": { "session_id": " peer-9 ", "message": "  check the tests  " },
+        })
+        .to_string();
+        let CallKind::SendPeer(req) = parse_call(&line).unwrap().kind else {
+            panic!("expected send_peer")
+        };
+        assert_eq!(req.session_id, "peer-9");
+        assert_eq!(req.message, "check the tests");
+    }
+
+    #[test]
+    fn a_send_call_without_a_target_or_a_message_is_rejected_by_name() {
+        let no_target = json!({ "kind": "send_peer", "session_id": "s1",
+                                "args": { "message": "hi" } });
+        assert!(parse_call(&no_target.to_string()).unwrap_err().contains("session_id is required"));
+        let no_message = json!({ "kind": "send_peer", "session_id": "s1",
+                                 "args": { "session_id": "peer-9", "message": "   " } });
+        assert!(parse_call(&no_message.to_string()).unwrap_err().contains("message is required"));
+    }
+
+    /// The launch-key alias applies to peer calls too: a codex or opencode
+    /// session must be attributed to the thread id the server knows.
+    #[test]
+    fn a_peer_call_resolves_the_launch_key_alias() {
+        bind_session_alias("peer-launch-key", "ses_realpeer");
+        let line =
+            json!({ "kind": "peers", "session_id": "peer-launch-key", "args": {} }).to_string();
+        assert_eq!(parse_call(&line).unwrap().session_id, "ses_realpeer");
+    }
+
+    #[test]
+    fn a_history_call_becomes_the_query_string_the_route_expects() {
+        let line = json!({
+            "kind": "peer_history",
+            "session_id": "s1",
+            "args": {
+                "session_id": "peer-9", "before": 4_242, "limit": 50,
+                "roles": ["user", " assistant ", ""], "format": "MarkDown",
+            },
+        })
+        .to_string();
+        let CallKind::PeerHistory { query } = parse_call(&line).unwrap().kind else {
+            panic!("expected peer_history")
+        };
+        let get = |k: &str| {
+            query.iter().find(|(key, _)| *key == k).map(|(_, v)| v.clone()).unwrap_or_default()
+        };
+        assert_eq!(get("session_id"), "peer-9");
+        assert_eq!(get("before"), "4242");
+        assert_eq!(get("limit"), "50");
+        assert_eq!(get("roles"), "user,assistant");
+        assert_eq!(get("format"), "markdown");
+        assert!(query.iter().all(|(k, _)| *k != "after"), "an absent knob must not be sent");
+    }
+
+    #[test]
+    fn a_history_call_with_no_knobs_sends_only_the_target() {
+        let line = json!({
+            "kind": "peer_history", "session_id": "s1", "args": { "session_id": "peer-9" },
+        })
+        .to_string();
+        let CallKind::PeerHistory { query, .. } = parse_call(&line).unwrap().kind else {
+            panic!("expected peer_history")
+        };
+        assert_eq!(query, vec![("session_id", "peer-9".to_owned())]);
+    }
+
+    #[test]
+    fn roles_accept_an_array_or_a_comma_string_and_nothing_else() {
+        assert_eq!(roles_arg(&json!({ "roles": ["user", "tool"] })).as_deref(), Some("user,tool"));
+        assert_eq!(roles_arg(&json!({ "roles": " user , tool " })).as_deref(), Some("user , tool"));
+        assert!(roles_arg(&json!({ "roles": [] })).is_none());
+        assert!(roles_arg(&json!({ "roles": "  " })).is_none());
+        assert!(roles_arg(&json!({ "roles": 7 })).is_none());
+        assert!(roles_arg(&json!({})).is_none());
+    }
+
+    #[test]
+    fn the_roster_renders_as_one_line_per_peer_and_says_so_when_empty() {
+        let empty = render_peers(&json!({ "peers": [] }));
+        assert!(empty.contains("no addressable peers"), "{empty}");
+        assert_eq!(render_peers(&json!({})), empty, "a malformed reply reads as empty");
+
+        let out = render_peers(&json!({ "peers": [
+            { "session_id": "p1", "name": "lane a", "adapter": "codex", "machine": "box-b",
+              "state": "live", "relation": "sibling" },
+            { "session_id": "p2", "name": "  ", "adapter": "claude-code", "machine": "box-a",
+              "state": "archived", "relation": "parent" },
+        ] }));
+        assert!(out.starts_with("2 addressable peer(s):"), "{out}");
+        assert!(out.contains("- p1 [sibling] lane a · codex on box-b · live"), "{out}");
+        assert!(out.contains("- p2 [parent] (unnamed) · claude-code on box-a · archived"), "{out}");
+    }
+
+    #[test]
+    fn a_history_reply_returns_the_markdown_with_a_cursor_note() {
+        let out = render_history(&json!({
+            "markdown": "# lane a\n\n**user**\n\ngo", "events": 12,
+            "first_seq": 900, "last_seq": 950, "truncated": true,
+        }));
+        assert!(out.starts_with("# lane a"), "{out}");
+        assert!(out.contains("[12 event(s)"), "{out}");
+        assert!(out.contains("oldest seq 900"), "{out}");
+        assert!(out.contains("before=900"), "{out}");
+
+        let whole = render_history(&json!({
+            "markdown": "x", "events": 2, "first_seq": 1, "truncated": false,
+        }));
+        assert!(!whole.contains("before="), "a complete page must not suggest paging: {whole}");
+    }
+
+    #[test]
+    fn a_json_history_reply_falls_back_to_the_raw_items() {
+        let out = render_history(&json!({
+            "events": 1, "items": [{ "seq": 4, "role": "user", "payload": { "type": "text" } }],
+        }));
+        assert!(out.contains("\"role\": \"user\""), "{out}");
+        assert!(out.contains("[1 event(s)]"), "{out}");
+    }
+
+    #[test]
+    fn a_room_call_parses_its_action_and_normalizes_the_spelling() {
+        let line = json!({
+            "kind": "room",
+            "session_id": "s1",
+            "args": { "action": " PoSt ", "message": " the gate is green ", "room_id": " r-1 " },
+        })
+        .to_string();
+        let CallKind::Room(req) = parse_call(&line).unwrap().kind else { panic!("expected room") };
+        assert_eq!(req.action, "post");
+        assert_eq!(req.message.as_deref(), Some("the gate is green"));
+        assert_eq!(req.room_id.as_deref(), Some("r-1"));
+        assert_eq!(dispatch_note(&CallKind::Room(req), Duration::from_secs(30)), "");
+    }
+
+    #[test]
+    fn peek_and_members_need_no_message_but_post_does() {
+        for action in ["peek", "members"] {
+            let line = json!({ "kind": "room", "session_id": "s1", "args": { "action": action } })
+                .to_string();
+            let CallKind::Room(req) = parse_call(&line).unwrap().kind else {
+                panic!("expected room")
+            };
+            assert_eq!(req.action, action);
+            assert!(req.message.is_none());
+            assert!(req.room_id.is_none(), "an omitted room means the caller's only room");
+        }
+        let no_message =
+            json!({ "kind": "room", "session_id": "s1", "args": { "action": "post" } });
+        assert!(
+            parse_call(&no_message.to_string()).unwrap_err().contains("message is required"),
+            "a post with nothing to say must be rejected before it reaches the server"
+        );
+        let no_action = json!({ "kind": "room", "session_id": "s1", "args": {} });
+        assert!(parse_call(&no_action.to_string()).unwrap_err().contains("action is required"));
+    }
+
+    /// A post reply must not read like a request/response: the model has to know
+    /// no answer is coming back through the call.
+    /// A broadcast is best effort, so the reply must name what did NOT land: a
+    /// silent skip reads as a delivery, and the agent then waits on a session
+    /// that never heard it.
+    #[test]
+    fn a_post_reply_names_the_reach_and_every_session_it_missed() {
+        let out = render_room(
+            "post",
+            "me",
+            &json!({
+                "room": "wave 23", "room_id": "r-1", "seq": 7, "delivered": 1,
+                "receipts": [
+                    { "session_id": "b", "label": "lane b (codex on box-b)",
+                      "outcome": "delivered" },
+                    { "session_id": "c", "label": "lane c (claude-code on box-a)",
+                      "outcome": "archived" },
+                    { "session_id": "d", "label": "lane d (codex on box-c)",
+                      "outcome": "offline" },
+                ],
+            }),
+        );
+        assert!(out.contains("posted to wave 23 as #7"), "{out}");
+        assert!(out.contains("delivered to 1 of 3 other session(s)"), "{out}");
+        assert!(out.contains("nothing comes back through this call"), "{out}");
+        assert!(out.contains("Not delivered:"), "{out}");
+        assert!(out.contains("lane c (claude-code on box-a) (archived)"), "{out}");
+        assert!(out.contains("lane d (codex on box-c) (offline)"), "{out}");
+        assert!(!out.contains("lane b"), "a delivered session is not listed as missed: {out}");
+    }
+
+    #[test]
+    fn a_fully_delivered_post_lists_nothing_as_missed() {
+        let out = render_room(
+            "post",
+            "me",
+            &json!({
+                "room": "wave 23", "seq": 1, "delivered": 1,
+                "receipts": [{ "session_id": "b", "label": "lane b", "outcome": "delivered" }],
+            }),
+        );
+        assert!(out.contains("delivered to 1 of 1 other session(s)"), "{out}");
+        assert!(!out.contains("Not delivered"), "{out}");
+    }
+
+    #[test]
+    fn peek_renders_the_timeline_and_marks_the_callers_own_posts() {
+        let out = render_room(
+            "peek",
+            "me",
+            &json!({
+                "room": "wave 23",
+                "messages": [
+                    { "seq": 1, "sender_label": "lane a (codex on box-b)",
+                      "sender_session_id": "other", "body": "started" },
+                    { "seq": 2, "sender_label": "me (claude-code on box-a)",
+                      "sender_session_id": "me", "body": "on it" },
+                    { "seq": 3, "sender_label": "you (human)", "body": "ship it" },
+                ],
+            }),
+        );
+        assert!(out.starts_with("wave 23 — 3 message(s):"), "{out}");
+        assert!(out.contains("#1 lane a (codex on box-b): started"), "{out}");
+        assert!(out.contains("#2 me (claude-code on box-a) (you): on it"), "{out}");
+        assert!(out.contains("#3 you (human): ship it"), "{out}");
+
+        let empty = render_room("peek", "me", &json!({ "room": "wave 23", "messages": [] }));
+        assert!(empty.contains("no messages yet"), "{empty}");
+    }
+
+    #[test]
+    fn members_renders_one_line_per_member_with_its_role_and_state() {
+        let out = render_room(
+            "members",
+            "me",
+            &json!({ "room": "wave 23", "members": [
+                { "session_id": "a", "name": "lane a", "adapter": "codex", "machine": "box-b",
+                  "state": "live", "role": "member" },
+                { "session_id": "b", "name": "  ", "adapter": "claude-code", "machine": "box-a",
+                  "state": "archived", "role": "observer" },
+            ] }),
+        );
+        assert!(out.starts_with("wave 23 — 2 member(s), plus the human:"), "{out}");
+        assert!(out.contains("- a [member] lane a · codex on box-b · live"), "{out}");
+        assert!(
+            out.contains("- b [observer] (unnamed) · claude-code on box-a · archived"),
+            "{out}"
+        );
     }
 
     #[test]

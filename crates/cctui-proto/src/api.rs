@@ -143,6 +143,25 @@ pub struct SpawnChildRequest {
     pub name: Option<String>,
 }
 
+/// Body for `POST /api/v1/daemon/sessions/{id}/message-peer`: `session_id` is
+/// the TARGET, the caller being the path segment.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PeerMessageRequest {
+    pub session_id: String,
+    pub message: String,
+}
+
+/// Body for `POST /api/v1/daemon/sessions/{id}/room`: the `CctuiRoom` call.
+/// `room_id` absent means "my only room"; `message` is required only for `post`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RoomToolRequest {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// Body for `POST /api/v1/daemon/sessions/{id}/message-child`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageChildRequest {
@@ -181,6 +200,37 @@ pub struct GatewayEnvResponse {
     /// whatever channel that harness has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<SessionPlugin>,
+    /// Memory notes and the prompt template this session was launched with,
+    /// already scope-resolved by the server.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<SessionContextItem>,
+}
+
+/// One resolved context item as the daemon needs it: enough to stage the body
+/// and name it to the agent. Server-side scoping is already applied.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContextItem {
+    /// `memory` or `prompt`.
+    pub kind: String,
+    pub name: String,
+    pub title: String,
+    pub body: String,
+    pub version: i32,
+}
+
+/// What a spawn asks for by way of reusable context.
+///
+/// `auto` adds every scope-matching memory on top of the explicit picks. It
+/// defaults to OFF: until the spawn panel can show what a scope would pull
+/// in, a session gets context only when someone named it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SpawnContext {
+    /// Item names, any kind.
+    #[serde(default)]
+    pub items: Vec<String>,
+    #[serde(default)]
+    pub auto: bool,
 }
 
 /// One enabled plugin's skill bundle, as served under
@@ -302,6 +352,11 @@ pub struct SessionListItem {
     pub pinned: bool,
     #[serde(default)]
     pub labels: Vec<Label>,
+    /// The room this session is in, for grouping and the card badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +375,9 @@ pub struct SessionListItem {
     /// Empty means render nothing.
     #[serde(default)]
     pub todos: Vec<TodoEntry>,
+    /// Absent when this session has no open user action and no child with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_actions: Option<UserActionCounts>,
     #[serde(default)]
     pub has_token_credentials: bool,
     #[serde(default)]
@@ -371,6 +429,197 @@ pub struct SessionKeepaliveRequest {
     pub interval_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ticks: Option<u32>,
+}
+
+pub const USER_ACTION_LIMIT: usize = 50;
+pub const USER_ACTION_TITLE_MAX: usize = 120;
+
+/// What the agent needs from the user.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum UserActionKind {
+    #[default]
+    Action,
+    Input,
+    Decision,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum UserActionStatus {
+    #[default]
+    Open,
+    Done,
+    Dropped,
+}
+
+/// Who resolved an item. The agent must see the user's own ticks, so this is
+/// recorded rather than assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum UserActionResolver {
+    Agent,
+    User,
+}
+
+impl UserActionKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Action => "action",
+            Self::Input => "input",
+            Self::Decision => "decision",
+        }
+    }
+
+    /// Unknown spellings fall back to `action` rather than failing a read: a row
+    /// written by a newer server must stay listable.
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "input" => Self::Input,
+            "decision" => Self::Decision,
+            _ => Self::Action,
+        }
+    }
+}
+
+impl UserActionStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Done => "done",
+            Self::Dropped => "dropped",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "done" => Self::Done,
+            "dropped" => Self::Dropped,
+            _ => Self::Open,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_open(self) -> bool {
+        matches!(self, Self::Open)
+    }
+}
+
+impl UserActionResolver {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::User => "user",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "agent" => Some(Self::Agent),
+            "user" => Some(Self::User),
+            _ => None,
+        }
+    }
+}
+
+/// One thing the agent is waiting on from the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct UserAction {
+    pub id: Uuid,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub kind: UserActionKind,
+    #[serde(default)]
+    pub blocking: bool,
+    pub status: UserActionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<UserActionResolver>,
+}
+
+/// A session's whole list. Every mutation returns it, so the caller — model or
+/// browser — never has to reconstruct the state it did not cause.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct UserActionList {
+    pub session_id: String,
+    #[serde(default)]
+    pub items: Vec<UserAction>,
+}
+
+/// What the daemon-facing add/tick endpoints answer.
+///
+/// A rejected call is a tool-level result, not an HTTP error: the model must
+/// always get the list back with the reason, never a bare failure it could read
+/// as "the list is gone".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct UserActionResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added: Option<Uuid>,
+    pub list: UserActionList,
+}
+
+/// Body for `POST /api/v1/daemon/sessions/{id}/user-actions`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct AddUserActionRequest {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub kind: UserActionKind,
+    #[serde(default)]
+    pub blocking: bool,
+}
+
+/// Body for `POST /api/v1/daemon/sessions/{id}/user-actions/tick`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct TickUserActionRequest {
+    /// A string, not a `Uuid`: a model that invents an id must get the list back
+    /// with a readable reason, not a deserialization failure.
+    pub id: String,
+    pub status: UserActionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Open user-action counts for a session card. `child_*` rolls up the session's
+/// subagents, so a parent sees that a child is blocked on the user.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct UserActionCounts {
+    pub open: u32,
+    pub blocking: u32,
+    #[serde(default)]
+    pub child_open: u32,
+    #[serde(default)]
+    pub child_blocking: u32,
+}
+
+impl UserActionCounts {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.open == 0 && self.child_open == 0
+    }
 }
 
 /// Task-list entry. `status` is `pending`, `in_progress` or `completed`;
@@ -672,6 +921,15 @@ pub struct SpawnRequest {
     pub relation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// Reusable context to attach. Resolved server-side so a webui spawn, a
+    /// `CctuiAgent` child and a dispatch all get the same kit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<SpawnContext>,
+    /// Profile this spawn came from. Only its context set is applied here;
+    /// the other knobs still arrive as explicit fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    pub profile_id: Option<uuid::Uuid>,
 }
 
 impl std::fmt::Debug for SpawnRequest {
@@ -698,6 +956,8 @@ impl std::fmt::Debug for SpawnRequest {
             .field("env_keys", &self.env_keys)
             .field("attachment_names", &self.attachment_names)
             .field("label_ids", &self.label_ids)
+            .field("context", &self.context)
+            .field("profile_id", &self.profile_id)
             .field("spawn_capability", &self.spawn_capability)
             .field("relation", &self.relation)
             .field("parent_session_id", &self.parent_session_id)

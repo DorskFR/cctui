@@ -173,8 +173,8 @@ fn queue_operation(payload: &Value) -> Option<String> {
     Some(payload.get("operation").and_then(Value::as_str).unwrap_or("queued").to_owned())
 }
 
-/// `queue_text` on rows the daemon wrote with the untruncated first line, else
-/// the `"{verb}: "`-prefixed excerpt older rows kept.
+/// `queue_text` on rows the daemon wrote with the untruncated body, else the
+/// `"{verb}: "`-prefixed excerpt older rows kept.
 fn queue_op_text(payload: &Value, text: &str) -> String {
     if let Some(t) = payload.get("queue_text").and_then(Value::as_str) {
         let t = t.trim();

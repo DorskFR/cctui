@@ -18,7 +18,8 @@ export function buildSpawnBody(
 	f: Form,
 	spawnProvider: string | undefined,
 	env: Record<string, string>,
-	followupParent: string | null
+	followupParent: string | null,
+	profileId: string | null = null
 ): SpawnRequest {
 	const adapter = f.adapter_id;
 	const noAccount = f.account === NO_ACCOUNT;
@@ -50,6 +51,10 @@ export function buildSpawnBody(
 		// Attached by the server once the session registers, so a draft
 		// launched later keeps them too.
 		label_ids: [...f.labels],
+		context: { items: [...f.context_items], auto: f.context_auto },
+		// The server reads the profile's pinned context from this; every other
+		// profile knob is already written into the form above.
+		profile_id: profileId,
 		relation: followupParent ? FOLLOWUP_RELATION : null,
 		parent_session_id: followupParent
 	};

@@ -10,6 +10,7 @@ import {
 	IMAGE_TOKEN_RUN_RE,
 	isSyntheticImageNotice,
 	parsePeerMessage,
+	parseRoomJoined,
 	parsePlan,
 	parseTodos,
 	stampTurns,
@@ -112,8 +113,15 @@ function userOrSystem(
 			ts,
 			html: ctx.renderMarkdown(peer.body),
 			text: peer.body,
-			peerFrom: peer.from ?? undefined
+			peerFrom: peer.from ?? undefined,
+			peerRoom: peer.room
 		};
+	}
+	const joined = parseRoomJoined(content);
+	if (joined) {
+		if (!ctx.visible('marker')) return null;
+		const label = m.rooms_joined_marker();
+		return { role: 'marker', ts, text: label, markerTexts: [label] };
 	}
 	if (looksKeepaliveTick(content)) {
 		if (!ctx.visible('marker')) return null;
@@ -415,6 +423,15 @@ export function queueKey(text: string | undefined): string {
 	return normalizePollText(first).replace(/…$/, '');
 }
 
+// Claude Code can deliver several queued prompts as ONE user turn, stacked line
+// by line: every line of a delivered turn is a candidate match.
+function deliveredKeys(text: string | undefined): string[] {
+	return stripAttachmentDecorations(text ?? '')
+		.split('\n')
+		.map((l) => normalizePollText(l).replace(/…$/, ''))
+		.filter((l) => l.length > 0);
+}
+
 interface QueueClose {
 	key: string;
 	absorbed: boolean;
@@ -429,16 +446,16 @@ function reconcileQueued(out: Line[], placeholders: Line[], closes: QueueClose[]
 	const absorbed = new Set<Line>();
 	for (const ln of out) {
 		if (ln.queued || ln.role !== 'user') continue;
-		const first = queueKey(ln.text);
-		if (!first) continue;
-		const at = open.findIndex((p) => {
-			const key = queueKey(p.text);
-			return key.length > 0 && first.startsWith(key);
-		});
-		if (at === -1) continue;
-		const [ph] = open.splice(at, 1);
-		ln.queuedAt = ph.ts;
-		absorbed.add(ph);
+		for (const delivered of deliveredKeys(ln.text)) {
+			const at = open.findIndex((p) => {
+				const key = queueKey(p.text);
+				return key.length > 0 && delivered.startsWith(key);
+			});
+			if (at === -1) continue;
+			const [ph] = open.splice(at, 1);
+			ln.queuedAt = Math.min(ln.queuedAt ?? ph.ts, ph.ts);
+			absorbed.add(ph);
+		}
 	}
 	// A `dequeue` record never carries its content, so a bodiless close is only
 	// consumed once no texted close claims the placeholder.
@@ -481,7 +498,9 @@ export function buildLines(
 			const body = e.content.trim();
 			const op = e.operation ?? 'queued';
 			if (op !== 'queued') {
-				closes.push({ key: queueKey(body), absorbed: op === 'absorbed' });
+				// Only the human withdrawing a prompt strikes it out; `dequeued`
+				// is Claude taking it off the queue to run it.
+				closes.push({ key: queueKey(body), absorbed: op !== 'removed' && op !== 'cleared' });
 				continue;
 			}
 			if (!body || !ctx.visible('user')) continue;

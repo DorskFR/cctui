@@ -4,6 +4,7 @@ mod account_usage;
 mod accounts;
 mod admin_instance;
 mod admin_users;
+mod context;
 mod daemon;
 mod dispatch;
 mod keys;
@@ -16,6 +17,7 @@ mod previews;
 mod profiles;
 mod prompts;
 mod provider_status;
+mod rooms;
 mod session_bulk;
 mod session_control;
 mod session_lifecycle;
@@ -25,6 +27,7 @@ mod session_state;
 mod session_view;
 mod shares;
 mod skills;
+mod user_actions;
 mod users;
 mod version;
 
@@ -48,6 +51,7 @@ const fn sess_write() -> Authz {
 pub fn register(r: Routes) -> Routes {
     let r = passkeys::register(r);
     let r = plugins::register(r);
+    let r = context::register(r);
     let r = version::register(r);
     let r = session_lifecycle::register(r);
     let r = dispatch::register(r);
@@ -66,11 +70,13 @@ pub fn register(r: Routes) -> Routes {
     let r = accounts::register(r);
     let r = profiles::register(r);
     let r = account_usage::register(r);
+    let r = rooms::register(r);
     let r = shares::register(r);
     let r = machines::register(r);
     let r = me::register(r);
     let r = admin_instance::register(r);
     let r = admin_users::register(r);
     let r = skills::register(r);
+    let r = user_actions::register(r);
     users::register(r)
 }

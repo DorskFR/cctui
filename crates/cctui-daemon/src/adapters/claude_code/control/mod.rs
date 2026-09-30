@@ -542,6 +542,8 @@ pub(super) struct LaunchEnv {
     /// Local mirrors of the owner's enabled plugin skills, passed as
     /// `--plugin-dir` so the worker loads them without touching the repo.
     pub plugin_dirs: Vec<String>,
+    /// Server-resolved memory notes, staged and announced through the preamble.
+    pub context: Vec<cctui_proto::api::SessionContextItem>,
 }
 
 /// Resolve a launch env into a full [`LaunchEnv`] from the server pull, shared
@@ -581,6 +583,7 @@ pub(super) async fn resolve_launch_env_for(
                 whip_phrases: resp.whip_phrases,
                 spawn_capability: resp.spawn_capability,
                 plugin_dirs,
+                context: resp.context,
             })
         }
         Err(e) => {
@@ -1185,14 +1188,14 @@ impl SessionDriver for Driver {
 
     async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
         let sock = self.ensure_socket().await?;
-        self.deliver_reply(
+        Box::pin(self.deliver_reply(
             &sock,
             &local_id,
             &text,
             None,
             &std::collections::BTreeMap::default(),
             None,
-        )
+        ))
         .await?;
         Ok(Handled::Done)
     }
@@ -1207,7 +1210,7 @@ impl SessionDriver for Driver {
         turn_id: Option<uuid::Uuid>,
     ) -> CommandOutcome {
         let sock = self.ensure_socket().await?;
-        self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id).await?;
+        Box::pin(self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id)).await?;
         Ok(Handled::Done)
     }
 

@@ -19,6 +19,7 @@ pub(super) fn build_session_context(
     staged: &[String],
     capability: Option<&cctui_proto::api::SpawnCapability>,
     neighbours: &[crate::neighbours::Neighbour],
+    context: Option<&str>,
 ) -> String {
     let mut b = String::from("<session-context>\n");
     if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
@@ -40,6 +41,9 @@ pub(super) fn build_session_context(
     let _ = writeln!(b, "cwd: {cwd}");
     if let Some(shared) = crate::neighbours::notice(neighbours, std::time::SystemTime::now()) {
         b.push_str(&shared);
+    }
+    if let Some(context) = context.map(str::trim).filter(|c| !c.is_empty()) {
+        let _ = writeln!(b, "{context}");
     }
     if !spec.env.is_empty() {
         let names = spec.env.keys().cloned().collect::<Vec<_>>().join(", ");
@@ -915,7 +919,7 @@ mod tests {
 
     #[test]
     fn session_context_omits_the_shared_cwd_line_when_the_session_is_alone() {
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[]);
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], None);
         assert!(block.contains("cwd: /work/cctui"));
         assert!(!block.contains("shared cwd"), "no neighbours means no line at all: {block}");
     }
@@ -928,6 +932,7 @@ mod tests {
             &[],
             None,
             std::slice::from_ref(&neighbour("wave-3 integrator")),
+            None,
         );
         assert!(block.contains("shared cwd: 1 other live session in this directory: "), "{block}");
         assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
@@ -940,7 +945,7 @@ mod tests {
         let mut lone = neighbour("wave-3 integrator");
         lone.started_at = None;
         let one = std::slice::from_ref(&lone);
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, one);
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, one, None);
         assert!(block.contains("\"wave-3 integrator\" (claude-code, working)."), "{block}");
         assert!(!block.contains("started"), "no age beats a wrong age: {block}");
     }
@@ -949,11 +954,31 @@ mod tests {
     fn session_context_lists_three_sharers_and_counts_the_rest() {
         let all: Vec<crate::neighbours::Neighbour> =
             (1..=4).map(|i| neighbour(&format!("agent {i}"))).collect();
-        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &all);
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, &all, None);
         assert!(block.contains("shared cwd: 4 other live sessions in this directory: "), "{block}");
         assert!(block.contains("agent 3"), "{block}");
         assert!(!block.contains("agent 4"), "{block}");
         assert!(block.contains("+1 more."), "{block}");
+    }
+
+    /// The staged-context notice rides the same block as everything else a
+    /// claude session is told, so there is one place to read.
+    #[test]
+    fn the_context_notice_lands_in_the_session_block() {
+        let block = build_session_context(
+            &bare_spec(),
+            "/work/cctui",
+            &[],
+            None,
+            &[],
+            Some("context: 1 attached for this session (House style). Read `/tmp/x/context.md`.\n"),
+        );
+        assert!(block.contains("context: 1 attached for this session (House style)"), "{block}");
+        assert!(block.contains("/tmp/x/context.md"), "{block}");
+        assert!(block.ends_with("</session-context>"), "{block}");
+
+        let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], Some("  "));
+        assert!(!bare.contains("context:"), "a blank notice adds no line: {bare}");
     }
 
     #[test]
@@ -975,7 +1000,8 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         };
-        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[]);
+        let block =
+            build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[], None);
         assert!(block.starts_with("<session-context>\n"));
         assert!(block.ends_with("</session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
@@ -1008,7 +1034,7 @@ mod tests {
             parent_local_id: None,
         };
         let cap = cctui_proto::api::SpawnCapability::machine_default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), &[]);
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), &[], None);
         assert!(block.contains("mcp__cctui__CctuiAgent"));
         assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
         assert!(block.contains("per-child budget ceiling: $20"));
@@ -1022,7 +1048,7 @@ mod tests {
         assert!(block.ends_with("</session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
-        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[]);
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[], None);
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
     }

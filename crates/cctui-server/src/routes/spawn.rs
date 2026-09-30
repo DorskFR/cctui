@@ -117,6 +117,9 @@ struct SpawnTarget {
     token_key: Uuid,
     /// `token_key` as the text id the stores use.
     token_session_id: String,
+    /// The context items this spawn resolved, server-side, from the request's
+    /// picks, the profile's pinned set and the scope-matching memories.
+    context: Vec<crate::routes::context::ContextItem>,
 }
 
 /// The ids a spawn is dispatched under: `(pre_session_id, token_key)`.
@@ -157,6 +160,8 @@ async fn validate_spawn(
     }
     crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &req.label_ids).await;
     crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
+    let context = resolve_spawn_context(state, ctx, req, owner, machine_uuid).await;
+    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context).await;
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
     // the session runs on that user's machine with that user's account.
@@ -171,7 +176,71 @@ async fn validate_spawn(
         pre_session_id,
         token_key,
         token_session_id,
+        context,
     })
+}
+
+/// Resolve the reusable context for this spawn: the request's explicit picks,
+/// plus the profile's pinned items, plus — unless the caller opted out — every
+/// enabled memory whose scope matches the spawn's machine, working dir and
+/// labels.
+///
+/// Best-effort: a lookup failure launches the session without context rather
+/// than refusing it. Context is a convenience, never a precondition.
+async fn resolve_spawn_context(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: &SpawnRequest,
+    owner: Uuid,
+    machine_uuid: Uuid,
+) -> Vec<crate::routes::context::ContextItem> {
+    use crate::routes::context::{SpawnScope, resolve_for_spawn};
+
+    let asked = req.context.clone().unwrap_or_default();
+    let uid = ctx.owner_filter().unwrap_or(owner);
+    let items = match crate::routes::context::list_for_user(&state.pool, uid).await {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::warn!(error = %e, "context lookup failed; spawning without it");
+            return Vec::new();
+        }
+    };
+    let mut picks = asked.items;
+    picks.extend(profile_context_names(state, req, uid, &items).await);
+    // The resolved uuid, not `req.machine_id`, which may be a name: a
+    // machine-scoped item must resolve the same here and on the child path.
+    let scope = SpawnScope {
+        machine_id: Some(machine_uuid.to_string()),
+        working_dir: Some(req.working_dir.clone()),
+        label_ids: req.label_ids.clone(),
+    };
+    resolve_for_spawn(&items, &picks, asked.auto, &scope)
+}
+
+/// The names of the items the request's profile pins. Empty when the request
+/// names no profile — the webui also applies a profile by filling the form,
+/// and doing both is harmless because picks are unioned by id.
+async fn profile_context_names(
+    state: &AppState,
+    req: &SpawnRequest,
+    uid: Uuid,
+    items: &[crate::routes::context::ContextItem],
+) -> Vec<String> {
+    let Some(profile_id) = req.profile_id else { return Vec::new() };
+    let pinned: Option<Vec<Uuid>> = sqlx::query_scalar(
+        "SELECT context_items FROM session_profiles WHERE id = $1 AND user_id = $2",
+    )
+    .bind(profile_id)
+    .bind(uid)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or_default();
+    pinned
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|id| items.iter().find(|i| &i.id == id))
+        .map(|i| i.name.clone())
+        .collect()
 }
 
 /// The account binding outcome and the session settings it may have rewritten.
@@ -399,6 +468,30 @@ async fn mint_account_env(
     }
 }
 
+/// The first turn this spawn sends. A selected prompt template replaces the
+/// typed prompt — a template IS the prompt, so staging it as a file the agent
+/// must go and read would be a pointless indirection — and the typed text
+/// rides underneath it as the concrete task.
+fn spawn_prompt(
+    req: &SpawnRequest,
+    context: &[crate::routes::context::ContextItem],
+) -> Option<String> {
+    let typed = req.prompt.clone().filter(|p| !p.trim().is_empty());
+    let Some(template) = context.iter().find(|i| i.kind == "prompt") else {
+        return typed;
+    };
+    let expanded = crate::routes::context::expand_template(
+        &template.body,
+        &req.working_dir,
+        req.name.as_deref().unwrap_or_default(),
+        typed.as_deref().unwrap_or_default(),
+    );
+    match typed {
+        Some(typed) if !expanded.contains(&typed) => Some(format!("{expanded}\n\n{typed}")),
+        _ => Some(expanded),
+    }
+}
+
 async fn execute_spawn(
     state: &AppState,
     target: SpawnTarget,
@@ -415,6 +508,7 @@ async fn execute_spawn(
         pre_session_id,
         token_key,
         token_session_id,
+        context,
         ..
     } = target;
     let BoundAccount { env, model, effort, permission_mode, account_choice } = bound;
@@ -427,7 +521,7 @@ async fn execute_spawn(
     let spec = SessionSpec {
         adapter_id: AdapterId::new(&adapter_id),
         working_dir: Some(req.working_dir.clone()),
-        prompt: req.prompt.clone(),
+        prompt: spawn_prompt(req, &context),
         name: req.name.clone(),
         permission_mode,
         effort,

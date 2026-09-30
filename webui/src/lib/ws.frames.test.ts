@@ -11,6 +11,7 @@ const SID = 's1';
 const ACCOUNT = '7d1c0a52-3f0e-4c47-9d8c-2b1e5f6a9c01';
 const MACHINE = '0b6f2c1e-8a4d-4e2b-9f3a-5c7d1e2f3a4b';
 const USER = '3f9a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8';
+const ROOM = '5c2e7a13-9b04-4f6d-8e21-7a0b3c4d5e6f';
 
 const fixtures = {
 	stream: {
@@ -109,6 +110,21 @@ const fixtures = {
 		user_id: USER,
 		state: 'scheduled',
 		launch_at: '2026-10-02T07:30:00Z'
+	},
+	room_members: { type: 'room_members', room_id: ROOM, user_id: USER },
+	user_actions: {
+		type: 'user_actions',
+		session_id: SID,
+		actions: [
+			{
+				id: 'ua-1',
+				title: 'Approve PR #12',
+				kind: 'decision',
+				blocking: true,
+				status: 'open',
+				created_at: '2026-09-30T10:00:00Z'
+			}
+		]
 	},
 	heartbeat: { type: 'heartbeat' },
 	resync: { type: 'resync', session_id: SID }
@@ -353,6 +369,31 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		c.onPty(SID, (d) => chunks.push(d));
 		sock.deliver(fixtures.pty_chunk);
 		expect(Array.from(chunks[0])).toEqual([104, 105]);
+	});
+
+	it('user_actions reaches the per-session listener and flags the session as needing input', () => {
+		const { c, sock } = setup();
+		const seen: unknown[] = [];
+		const patches: unknown[] = [];
+		c.onUserActions(SID, (list) => seen.push(list));
+		c.onListPatch((p) => patches.push(p));
+		sock.deliver(fixtures.user_actions);
+		// The listener fires once with the empty seed, then with the pushed list.
+		expect(seen.at(-1)).toEqual(fixtures.user_actions.actions);
+		expect(patches).toEqual([
+			{ session_id: SID, attention: 'needs_input', bucket: 'blocked' }
+		]);
+	});
+
+	it('a list with no blocking item does not claim the session needs input', () => {
+		const { c, sock } = setup();
+		const patches: unknown[] = [];
+		c.onListPatch((p) => patches.push(p));
+		sock.deliver({
+			...fixtures.user_actions,
+			actions: [{ ...fixtures.user_actions.actions[0], blocking: false }]
+		});
+		expect(patches).toEqual([]);
 	});
 
 	it('resync invalidates the session conversation', () => {

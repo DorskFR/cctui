@@ -29,8 +29,10 @@ mod ntfy;
 mod openapi;
 mod outbound;
 mod pace;
+mod peer_policy;
 mod plugin_archive;
 mod plugin_catalog;
+mod plugin_host_token;
 mod plugin_proxy;
 mod plugin_settings;
 mod plugin_store;
@@ -41,6 +43,7 @@ mod presence;
 mod preview;
 mod provider_status;
 mod registry;
+mod rooms;
 mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
@@ -52,6 +55,7 @@ mod soft_limit;
 mod spawn_labels;
 mod state;
 mod store;
+mod transcript_md;
 mod update_check;
 mod uploads;
 mod usage_history;
@@ -366,7 +370,19 @@ fn outer_routes() -> Router<AppState> {
         // machine-key self-auth as gateway-env.
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
+        .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
+        .route(
+            "/api/v1/daemon/sessions/{id}/user-actions/tick",
+            post(routes::user_actions::daemon_tick),
+        )
         .route("/api/v1/daemon/sessions/{id}/spawn-child", post(routes::spawn_child::spawn_child))
+        .route("/api/v1/daemon/sessions/{id}/room", post(routes::rooms::room_tool))
+        .route("/api/v1/daemon/sessions/{id}/peers", get(routes::peer::list_peers))
+        .route("/api/v1/daemon/sessions/{id}/message-peer", post(routes::peer::message_peer))
+        .route(
+            "/api/v1/daemon/sessions/{id}/peer-conversation",
+            get(routes::peer::peer_conversation),
+        )
         .route(
             "/api/v1/daemon/sessions/{id}/message-child",
             post(routes::spawn_child::message_child),
@@ -821,6 +837,11 @@ mod tests {
             "DELETE /bookmarks/{id} Bearer Authenticated",
             "PATCH /bookmarks/{id} Bearer Authenticated",
             "GET /capabilities Bearer Authenticated",
+            "GET /context Bearer Human",
+            "POST /context Bearer Human",
+            "GET /context/resolve Bearer Human",
+            "DELETE /context/{id} Bearer Human",
+            "PATCH /context/{id} Bearer Human",
             "GET /daemon/binary/{target} Bearer Authenticated",
             "POST /deenroll Bearer Authenticated",
             "POST /dispatcher/enroll Bearer Scope(Enroll)",
@@ -875,6 +896,9 @@ mod tests {
             "GET /provider-status Bearer Authenticated",
             "GET /redirects Bearer Human",
             "DELETE /redirects/{id} Bearer Human",
+            "GET /rooms Bearer Authenticated",
+            "DELETE /rooms/{id} Bearer Authenticated",
+            "PATCH /rooms/{id} Bearer Authenticated",
             "GET /sessions Bearer Authenticated",
             "POST /sessions/archive Bearer Authenticated",
             "POST /sessions/dispatch Bearer Scope(Dispatch)",
@@ -931,6 +955,8 @@ mod tests {
             r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
+            r#"DELETE /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/schedule-launch Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/search Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
@@ -938,6 +964,8 @@ mod tests {
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unarchive Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/user-actions Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/user-actions/{aid}/tick Bearer Resource(Session, Write, Path("id"))"#,
             "GET /settings Bearer Authenticated",
             "PUT /settings Bearer Authenticated",
             "GET /settings/rescrub Bearer Authenticated",

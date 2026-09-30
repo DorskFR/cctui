@@ -238,6 +238,58 @@ mod tests {
         );
     }
 
+    /// Harness parity is structural: all three harnesses launch the SAME relay
+    /// argv, so whatever `mcp::tool_schemas` advertises — the peer tools
+    /// included — is offered identically under `claude_code`, codex and opencode.
+    /// A per-harness allowlist appearing here would break that and must fail.
+    #[test]
+    fn every_harness_registers_the_same_relay_and_therefore_the_same_tools() {
+        let mcp = fixture();
+        let codex = mcp.codex_config_overrides();
+        let codex_args = codex
+            .iter()
+            .find(|(k, _)| k.split('.').next_back() == Some("args"))
+            .map(|(_, v)| v.clone())
+            .expect("codex args override");
+        let opencode: Vec<String> = mcp.opencode_config()[SERVER_NAME]["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        let claude = crate::mcp::mcp_config(&mcp.exe, mcp.session_key(), &mcp.sock);
+        let claude_args: Vec<String> = claude["mcpServers"][SERVER_NAME]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+
+        assert_eq!(claude_args, mcp.argv());
+        assert_eq!(opencode[1..], mcp.argv()[..]);
+        for arg in mcp.argv() {
+            assert!(codex_args.contains(&arg), "{arg} missing from the codex override");
+        }
+
+        let names: Vec<String> = crate::mcp::tool_schemas()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect();
+        for tool in [
+            crate::mcp::TOOL_NAME,
+            crate::mcp::USAGE_TOOL_NAME,
+            crate::mcp::PEERS_TOOL_NAME,
+            crate::mcp::SEND_TOOL_NAME,
+            crate::mcp::HISTORY_TOOL_NAME,
+            crate::mcp::ROOM_TOOL_NAME,
+        ] {
+            assert!(
+                names.iter().any(|n| n == tool),
+                "{tool} is not advertised by the shared relay"
+            );
+        }
+    }
+
     #[test]
     fn toml_values_are_escaped_so_a_path_cannot_break_out() {
         assert_eq!(toml_string(r#"a"b\c"#), r#""a\"b\\c""#);

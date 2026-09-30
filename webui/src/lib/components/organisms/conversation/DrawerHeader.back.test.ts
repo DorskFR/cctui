@@ -18,6 +18,12 @@ const backButton = () => {
 	return header.slice(start, header.indexOf('/>', i) + 2);
 };
 
+const backIcon = () => {
+	const m = backButton().match(/\bicon=\{?["']([a-z-]+)["']\}?/);
+	expect(m, 'the back control names no icon').toBeTruthy();
+	return (m as RegExpMatchArray)[1];
+};
+
 const glyph = (name: string) => {
 	const m = registry.match(new RegExp(`(?:'${name}'|${name}):\\s*'([^']*)'`));
 	expect(m, `no "${name}" glyph in the kit registry`).toBeTruthy();
@@ -26,13 +32,12 @@ const glyph = (name: string) => {
 
 describe('drawer back control', () => {
 	it('uses the bare chevron, not the arrow', () => {
-		expect(backButton()).toContain("'chevron-left'");
-		expect(backButton()).not.toContain("'back'");
+		expect(backIcon()).toBe('chevron-left');
 	});
 
-	it('becomes a close × in a tile, where there is nothing to go back to', () => {
-		expect(backButton()).toContain("chrome === 'tile' ? 'x' : 'chevron-left'");
-		expect(backButton()).toContain('m.tiles_close_tile()');
+	it('is rendered only when the shell has something to go back to', () => {
+		expect(header).toContain('{#if onclose}');
+		expect(header).not.toContain("chrome === 'tile' ? 'x' : 'chevron-left'");
 	});
 
 	it('stays a quiet affordance — no chip box, no oversized glyph', () => {

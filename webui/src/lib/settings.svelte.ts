@@ -12,11 +12,6 @@ import { fontScale, nearestLevel } from "./fontscale.svelte";
 import { notify } from "./notify.svelte";
 import type { SettingsPayload } from "@bindings/SettingsPayload";
 import { clampDockWidth } from "./dock";
-import {
-  clampMaxTiles,
-  clampSplitDirection,
-  type SplitDirection,
-} from "./tiles";
 import { saveErrorMessage } from "./saveError";
 import { clampFollowupWhenCold, type FollowupWhenCold } from "./followup";
 import { isPluginId } from "./plugins/discovery";
@@ -53,8 +48,8 @@ export interface SessionListSettings {
   labelFilter: string[];
   // Card accent color and section grouping share the dimension enum of
   // sessions.logic.ts; grouping has no "off" — 'status' is the bucketed list.
-  colorBy: "none" | "label" | "working_dir" | "machine";
-  groupBy: "status" | "label" | "working_dir" | "machine";
+  colorBy: "none" | "label" | "working_dir" | "machine" | "room";
+  groupBy: "status" | "label" | "working_dir" | "machine" | "room";
   // How wide the centered session-list column is allowed to grow. Only bites on
   // screens wider than the chosen cap, so it is a desktop-only knob in practice:
   // a phone viewport is already narrower than the default.
@@ -85,7 +80,15 @@ export const SESSION_LIST_WIDTHS = [
 export type SessionListWidth = (typeof SESSION_LIST_WIDTHS)[number];
 export const DEFAULT_SESSION_LIST_WIDTH: SessionListWidth = "default";
 
-const GROUP_BY_VALUES = ["status", "label", "working_dir", "machine"] as const;
+const GROUP_BY_VALUES = ["status", "label", "working_dir", "machine", "room"] as const;
+const COLOR_BY_VALUES = ["none", "label", "working_dir", "machine", "room"] as const;
+
+export function clampColorBy(v: unknown): SessionListSettings["colorBy"] {
+  return (COLOR_BY_VALUES as readonly unknown[]).includes(v)
+    ? (v as SessionListSettings["colorBy"])
+    : "none";
+}
+
 /** Blobs written before grouping had a status mode stored 'none' for it. */
 export function clampGroupBy(v: unknown): SessionListSettings["groupBy"] {
   return (GROUP_BY_VALUES as readonly unknown[]).includes(v)
@@ -122,13 +125,6 @@ export function clampSessionListWidth(v: unknown): SessionListWidth {
 export const SPAWN_DOCK_SIDES = ["left", "right"] as const;
 export type SpawnDockSide = (typeof SPAWN_DOCK_SIDES)[number];
 export const DEFAULT_SPAWN_DOCK_SIDE: SpawnDockSide = "right";
-
-// Tiles workspace: how the FIRST split lands and how many panes may be open.
-// Serializes as `data.tiles`; the server passes it through untouched.
-export interface TilesSettings {
-  splitDirection: SplitDirection;
-  maxTiles: number;
-}
 
 export interface SpawnDockSettings {
   enabled: boolean;
@@ -471,7 +467,6 @@ export function clampPluginsConfig(
 
 export interface SettingsState {
   sessionList: SessionListSettings;
-  tiles: TilesSettings;
   display: DisplaySettings;
   // Docked spawn panel (Sessions screen). Top-level so it serializes as
   // `data.spawnDock`; the server passes it through untouched.
@@ -522,10 +517,6 @@ export interface SettingsState {
 }
 
 const DEFAULTS: SettingsState = {
-  tiles: {
-    splitDirection: "vertical",
-    maxTiles: 4,
-  },
   sessionList: {
     sort: "activity",
     sortDir: DEFAULT_SORT_DIR,
@@ -583,10 +574,6 @@ export function mergeDefaults(
 ): SettingsState {
   const p = partial ?? {};
   return {
-    tiles: {
-      splitDirection: clampSplitDirection(p.tiles?.splitDirection),
-      maxTiles: clampMaxTiles(p.tiles?.maxTiles),
-    },
     sessionList: {
       ...DEFAULTS.sessionList,
       ...(p.sessionList ?? {}),
@@ -595,6 +582,7 @@ export function mergeDefaults(
       width: clampSessionListWidth(p.sessionList?.width),
       sortDir: clampSortDir(p.sessionList?.sortDir),
       groupBy: clampGroupBy(p.sessionList?.groupBy),
+      colorBy: clampColorBy(p.sessionList?.colorBy),
       accountNames: p.sessionList?.accountNames === true,
     },
     display: {
@@ -834,15 +822,6 @@ class Settings {
   // Section setters — replace a whole group (or a subset of its fields) and
   // persist. Components mutate via these so every write goes through the cache +
   // debounced save path.
-  setTiles(patch: Partial<TilesSettings>) {
-    const next = { ...this.state.tiles, ...patch };
-    this.state.tiles = {
-      splitDirection: clampSplitDirection(next.splitDirection),
-      maxTiles: clampMaxTiles(next.maxTiles),
-    };
-    this.persist();
-  }
-
   setSessionList(patch: Partial<SessionListSettings>) {
     this.state.sessionList = { ...this.state.sessionList, ...patch };
     this.persist();

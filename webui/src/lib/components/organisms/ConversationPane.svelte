@@ -6,6 +6,7 @@
 	import { endpoints, useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
+	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '$lib/rooms';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import { Dropzone } from '@dorsk/tsumikit';
@@ -43,9 +44,7 @@
 	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
-	import { goto } from '$app/navigation';
 	import { notify } from '$lib/notify.svelte';
-	import { tilesHref } from '$lib/tilesLink';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
 
@@ -62,7 +61,8 @@
 		onmaximize
 	}: {
 		session: SessionListItem;
-		onclose: () => void;
+		/** Omitted in a tile, which has nothing to close back to. */
+		onclose?: () => void;
 		highlight?: string[];
 		/** Causal seq of the matched message when opened from a search hit
 		 *  (`SessionListItem.match_seq`). `null` opens tail-anchored as usual. */
@@ -110,7 +110,29 @@
 	// both stay in sync.
 	const labelsQuery = useLabels();
 	const allLabels = $derived(labelsQuery.data?.labels ?? []);
+
 	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
+
+	// Room is a field on the session, so a change invalidates the session list
+	// that the grouping and the card badge read.
+	async function setRoom(sessionId: string, pick: { id: string } | { name: string }) {
+		try {
+			if ('id' in pick) await setSessionRoom(sessionId, pick.id);
+			else await setSessionRoomByName(sessionId, pick.name);
+			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
+		} catch (e) {
+			toasts.error(errMessage(e));
+		}
+	}
+
+	async function clearRoom(sessionId: string) {
+		try {
+			await clearSessionRoom(sessionId);
+			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
+		} catch (e) {
+			toasts.error(errMessage(e));
+		}
+	}
 
 	// Shared by the viewport (binds the scroller) and the composer (binds the
 	// textarea, whose growth must re-pin the viewport).
@@ -261,7 +283,7 @@
 		events: () => events,
 		view: () => view,
 		actions,
-		onclose: () => onclose()
+		onclose: () => onclose?.()
 	});
 
 	const fork = new ForkController({
@@ -274,7 +296,7 @@
 		// otherwise close and let the list refetch surface it.
 		onForked: (sid) => {
 			if (sid && onNavigate) onNavigate(sid);
-			else onclose();
+			else onclose?.();
 		}
 	});
 
@@ -358,7 +380,6 @@
 				{isCodexSession}
 				livenessClass={livenessClass(session)}
 				{showStatusBadge}
-				{chrome}
 				{maximized}
 				{onmaximize}
 				{onclose}
@@ -368,12 +389,6 @@
 				oncopymarkdown={sa.copyMarkdown}
 				onexport={sa.export}
 				onsearch={() => search.openBar()}
-				onopenintiles={chrome === 'drawer'
-					? () => {
-							onclose();
-							void goto(tilesHref([id]));
-						}
-					: undefined}
 				onescape={search.escape}
 				onfork={fork.openDialog}
 				onfollowup={onFollowup ? () => followup() : undefined}
@@ -390,6 +405,8 @@
 				onDetachLabel={actions.detachLabel}
 				onUpdateLabel={actions.updateLabel}
 				onDeleteLabel={actions.deleteLabel}
+				onsetroom={setRoom}
+				onclearroom={clearRoom}
 			/>
 
 			<DrawerToolbar

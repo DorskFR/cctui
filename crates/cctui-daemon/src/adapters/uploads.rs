@@ -61,6 +61,19 @@ pub fn stage_files(session_id: &str, uploads: &[BootstrapFile]) -> Result<Vec<St
     Ok(paths)
 }
 
+/// Write `body` into the session's staging dir under `name`, 0600, returning
+/// the absolute path. Same dir and permissions as an upload, so anything that
+/// can read a staged attachment can read this.
+pub fn stage_text(session_id: &str, name: &str, body: &str) -> Result<String> {
+    let dir = std::path::Path::new("/tmp/cctui-uploads").join(session_id);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating upload dir {}", dir.display()))?;
+    let path = dir.join(name);
+    cctui_proto::util::write_private(&path, body.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Resolve a non-colliding path in `dir` for `name`. If `dir/name` is free use
 /// it; otherwise append `-1`, `-2`, … before the extension until a free path is
 /// found.
@@ -178,6 +191,26 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("report-2.pdf")).unwrap(), "three");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_text_writes_one_private_file_and_overwrites_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let session_id = format!("test-{}", uuid::Uuid::new_v4());
+        let path = stage_text(&session_id, "context.md", "# one").expect("stage ok");
+        assert!(path.ends_with(&format!("{session_id}/context.md")), "{path}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# one");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        // A relaunch restages the same name rather than accumulating copies.
+        let again = stage_text(&session_id, "context.md", "# two").expect("stage ok");
+        assert_eq!(again, path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# two");
+
+        let _ =
+            std::fs::remove_dir_all(std::path::Path::new("/tmp/cctui-uploads").join(&session_id));
     }
 
     #[test]

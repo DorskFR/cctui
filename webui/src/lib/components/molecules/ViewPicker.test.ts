@@ -12,25 +12,32 @@ afterEach(() => {
 });
 
 describe('square toolbar pickers ride the kit Button control/square contract', () => {
-	it('ViewPicker is the kit icon toggle — two segments, no native select', () => {
-		comp = mount(ViewPicker, { target: document.body, props: { cardView: false } });
+	it('ViewPicker is the kit icon toggle — list, cards, tiles, no native select', () => {
+		comp = mount(ViewPicker, { target: document.body, props: { view: 'list' } });
 		const segments = [...document.querySelectorAll('button')];
-		expect(segments).toHaveLength(2);
+		expect(segments).toHaveLength(3);
 		expect(document.querySelector('select')).toBeNull();
-		// list is selected while cardView is false
 		expect(segments[0].getAttribute('aria-checked') ?? segments[0].getAttribute('aria-pressed')).toBe(
 			'true'
 		);
 	});
 
+	it('ViewPicker drops the tiles segment where tiles are not offered', () => {
+		comp = mount(ViewPicker, { target: document.body, props: { view: 'list', tiles: false } });
+		expect(document.querySelectorAll('button')).toHaveLength(2);
+	});
 
-	it('ViewPicker in the menu is one full-width kit Button row that flips the view', () => {
-		comp = mount(ViewPicker, { target: document.body, props: { cardView: false, menu: true } });
+
+	it('ViewPicker in the menu is one full-width kit Button row that cycles the view', () => {
+		comp = mount(ViewPicker, { target: document.body, props: { view: 'list', menu: true } });
 		const row = document.querySelector('button.btn[data-journey="view"]') as HTMLButtonElement;
 		expect(row).not.toBeNull();
 		expect(row.className).toContain('btn-block');
 		expect(document.querySelectorAll('button')).toHaveLength(1);
 		expect(row.textContent).toContain('Cards');
+		row.click();
+		flushSync();
+		expect(row.textContent).toContain('Tiles');
 		row.click();
 		flushSync();
 		expect(row.textContent).toContain('List');

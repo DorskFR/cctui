@@ -43,10 +43,16 @@ export const isSection = (v: string): v is Section =>
 // row survives when the filter is off, or when it has unread messages.
 export const matchesUnreadFilter = (s: SessionListItem, sections: Set<Section>): boolean =>
 	!sections.has('unread') || (s.unread_count ?? 0) > 0;
-export const parseSections = (raw: string | null): Set<Section> => {
+export const DEFAULT_SECTIONS: Section[] = ['starred', 'live', 'dispatched'];
+// Tiles put every match on screen at once, so the dispatched swarm starts off.
+export const DEFAULT_TILE_SECTIONS: Section[] = ['starred', 'live'];
+export const parseSections = (
+	raw: string | null,
+	fallback: Section[] = DEFAULT_SECTIONS
+): Set<Section> => {
 	const set = new Set<Section>((raw ?? '').split(',').filter(isSection));
 	// Never strand the user on an empty list (would render nothing).
-	return set.size ? set : new Set<Section>(['starred', 'live', 'dispatched']);
+	return set.size ? set : new Set<Section>(fallback);
 };
 
 // ── Per-section collapse ────────────────────────────────
@@ -386,13 +392,14 @@ export const inEnabledSections = (s: SessionListItem, sections: Set<Section>): b
 
 
 // ── Color / group dimension ───────────────────────────────────────────────
-export type Dimension = 'none' | 'status' | 'label' | 'working_dir' | 'machine';
+export type Dimension = 'none' | 'status' | 'label' | 'working_dir' | 'machine' | 'room';
 // Grouping has no "off": the status buckets are the ungrouped list.
 export type GroupDimension = Exclude<Dimension, 'none'>;
 const DIM_LABELS: { value: Exclude<Dimension, 'none' | 'status'>; label: string }[] = [
 	{ value: 'label', get label() { return m.sessions_dim_label(); } },
 	{ value: 'working_dir', get label() { return m.sessions_dim_working_dir(); } },
-	{ value: 'machine', get label() { return m.sessions_dim_machine(); } }
+	{ value: 'machine', get label() { return m.sessions_dim_machine(); } },
+	{ value: 'room', get label() { return m.sessions_dim_room(); } }
 ];
 export const COLOR_DIMENSIONS: { value: Dimension; label: string }[] = [
 	{ value: 'none', get label() { return m.common_none(); } },
@@ -403,7 +410,12 @@ export const GROUP_DIMENSIONS: { value: GroupDimension; label: string }[] = [
 	...DIM_LABELS
 ];
 export const isDimension = (v: string): v is Dimension =>
-	v === 'none' || v === 'status' || v === 'label' || v === 'working_dir' || v === 'machine';
+	v === 'none' ||
+	v === 'status' ||
+	v === 'label' ||
+	v === 'working_dir' ||
+	v === 'machine' ||
+	v === 'room';
 export const isGroupDimension = (v: string): v is GroupDimension => isDimension(v) && v !== 'none';
 /** Legacy `groupBy: 'none'` means the status buckets. */
 export const toGroupDimension = (v: string | null | undefined): GroupDimension =>
@@ -427,6 +439,13 @@ export function dimGroupsOf(s: SessionListItem, dim: Dimension): DimGroup[] {
 		if (!dir) return [{ key: DIM_NONE_KEY, label: DIM_NONE_LABEL, hue: null }];
 		const name = dir.split('/').filter(Boolean).pop() || dir;
 		return [{ key: `dir:${dir}`, label: name, hue: hashHue(dir) }];
+	}
+	if (dim === 'room') {
+		// A room is one field, so exactly one membership — and a session with no
+		// room falls in the same "—" bucket as an unlabelled or machine-less one.
+		const name = s.room_name;
+		if (!name || !s.room_id) return [{ key: DIM_NONE_KEY, label: DIM_NONE_LABEL, hue: null }];
+		return [{ key: `room:${s.room_id}`, label: name, hue: hashHue(s.room_id) }];
 	}
 	if (dim === 'machine') {
 		const name = s.machine_name;

@@ -6,6 +6,7 @@
 	import AppearanceSection from './AppearanceSection.svelte';
 	import SessionsSection from './SessionsSection.svelte';
 	import MacrosSection from './MacrosSection.svelte';
+	import ContextSection from './ContextSection.svelte';
 	import PluginsSection from './PluginsSection.svelte';
 	import ExecutionSection from './ExecutionSection.svelte';
 	import PrivacySection from './PrivacySection.svelte';
@@ -28,6 +29,9 @@
 </div>
 <div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
 	<MacrosSection />
+</div>
+<div class="pg" class:on={current === 'context'} data-settings-page="context" data-journey="page" data-journey-key="context">
+	<ContextSection />
 </div>
 <div class="pg" class:on={current === 'plugins'} data-settings-page="plugins" data-journey="page" data-journey-key="plugins">
 	<PluginsSection {isAdmin} />

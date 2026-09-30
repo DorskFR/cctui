@@ -6,6 +6,11 @@
 import type { HandleClientError } from '@sveltejs/kit';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
+import { isStaleChunkError, recoverFromStaleChunk } from '$lib/staleChunk';
+
+function swallowedAsStaleChunk(text: string): boolean {
+	return isStaleChunkError(text) && recoverFromStaleChunk();
+}
 
 /** Benign browser notices that arrive as `error` events but are not app
  *  failures. The ResizeObserver one fires whenever a resize handler causes
@@ -26,19 +31,24 @@ if (typeof window !== 'undefined') {
 		// `error` object and a non-window target — those aren't app errors, skip them.
 		if (!e.error && !e.message) return;
 		const text = message(e.error ?? e.message);
-		if (isBenignNotice(text)) return;
+		if (isBenignNotice(text) || swallowedAsStaleChunk(text)) return;
 		toasts.error(text);
 	});
 	window.addEventListener('unhandledrejection', (e) => {
 		const text = message(e.reason);
-		if (isBenignNotice(text)) return;
+		if (isBenignNotice(text) || swallowedAsStaleChunk(text)) return;
 		toasts.error(text);
 	});
+	// Vite preempts the rejection for its own preloads; without this the failure
+	// is only reachable as an unhandled `vite:preloadError`.
+	window.addEventListener('vite:preloadError', ((e: Event) => {
+		if (recoverFromStaleChunk()) e.preventDefault();
+	}) as EventListener);
 }
 
 export const handleError: HandleClientError = ({ error }) => {
 	const text = message(error);
-	toasts.error(text);
+	if (!swallowedAsStaleChunk(text)) toasts.error(text);
 	// Returned shape is exposed to the app as `page.error`; keep it message-only.
 	return { message: text };
 };

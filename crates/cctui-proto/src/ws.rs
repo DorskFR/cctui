@@ -752,6 +752,19 @@ pub enum ServerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_error: Option<String>,
     },
+    /// A session moved in or out of a room, so the list regroups and the card
+    /// badges reload rather than guess.
+    RoomMembers {
+        room_id: uuid::Uuid,
+        /// Whose rooms these are; scopes delivery to the owner.
+        user_id: uuid::Uuid,
+    },
+    /// The session's "needs you" list changed. Carries the whole list: a tab
+    /// that missed an earlier frame must not have to reconstruct it.
+    UserActions {
+        session_id: String,
+        actions: Vec<crate::api::UserAction>,
+    },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
     /// This socket lagged. Refetch the session, or everything when `None`.

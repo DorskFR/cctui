@@ -649,6 +649,8 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::SoftLimitReached { .. }
         | ServerEvent::PtyChunk { .. }
         | ServerEvent::ScheduledLaunch { .. }
+        | ServerEvent::RoomMembers { .. }
+        | ServerEvent::UserActions { .. }
         | ServerEvent::Heartbeat { .. }
         | ServerEvent::Resync { .. }
         | ServerEvent::ToolCallBlocked { .. }
@@ -708,6 +710,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         last_tool_name: None,
         tool_use_count: 0,
         todos: Vec::new(),
+        user_actions: None,
         has_token_credentials: false,
         account_traffic_observed: false,
         last_message_text: None,
@@ -726,6 +729,8 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         hibernated: false,
         pinned: false,
         labels: Vec::new(),
+        room_id: None,
+        room_name: None,
         last_heartbeat: None,
         pr_links: Vec::new(),
         end_reason: None,

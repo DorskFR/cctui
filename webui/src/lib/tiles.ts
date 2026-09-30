@@ -1,31 +1,45 @@
 /**
- * Auto-tiling grid geometry. Pure: the workspace state owns the session ids,
- * this owns only the shape.
+ * Auto-tiling grid geometry. Pure: the view owns the session ids, this owns
+ * only the shape.
  *
- * `cols = ceil(sqrt(n))`, `rows = ceil(n / cols)`. A partial last row is
- * widened to fill instead of leaving a hole, which needs sub-tracks: the grid
- * is laid out in `lcm(cols, lastRowCount)` columns so both a full row and the
- * short one divide it evenly. n=3 gives the T layout (two over one wide), n=5
- * gives three over two widened.
+ * The grid is picked from the pane count AND the viewport, not from
+ * `ceil(sqrt(n))`: on a 32:9 ultrawide, 16 panes want 8 columns by 2 rows,
+ * while the same 16 panes on 16:9 want 4 by 4. Each candidate `cols × rows`
+ * is scored on how far a pane's aspect ratio lands from a readable target,
+ * plus a penalty for cells the count cannot fill.
+ *
+ * A partial last row is widened to fill instead of leaving a hole, which needs
+ * sub-tracks: the grid is laid out in `lcm` of the row counts so both a full
+ * row and the short one divide it evenly. n=3 in a 2×2 gives the T layout
+ * (two over one wide).
  */
 
-export type SplitDirection = 'vertical' | 'horizontal';
+export interface Viewport {
+	width: number;
+	height: number;
+}
 
 export interface TilePlacement {
-	/** 1-based `grid-column-start`. */
 	start: number;
-	/** `grid-column-end` span, in sub-tracks. */
 	span: number;
-	/** 1-based `grid-row`. */
 	row: number;
 }
 
-export interface TileLayout {
+export interface TileGrid {
+	cols: number;
+	rows: number;
+}
+
+export interface TileLayout extends TileGrid {
 	/** Sub-track count: the value for `grid-template-columns: repeat(N, 1fr)`. */
 	tracks: number;
-	rows: number;
 	placements: TilePlacement[];
 }
+
+export const TARGET_PANE_RATIO = 4 / 3;
+export const WASTE_WEIGHT = 1.5;
+
+const FALLBACK: Viewport = { width: 1600, height: 900 };
 
 function gcd(a: number, b: number): number {
 	return b === 0 ? a : gcd(b, a % b);
@@ -47,35 +61,44 @@ export function rowCounts(n: number, cols: number): number[] {
 }
 
 /**
- * Geometry for `n` tiles. `split` only matters at n = 2, where the pair is
- * either side by side (`vertical`, the default) or stacked (`horizontal`).
- * Above that the square-ish grid is the same either way, so transposing it
- * would just rotate a symmetric shape.
+ * Cost of laying `n` panes out as `cols × rows` in `viewport`: log-distance of
+ * the pane ratio from `TARGET_PANE_RATIO`, plus the share of empty cells.
+ * Logs so that halving and doubling the ratio cost the same.
  */
-export function tileLayout(n: number, split: SplitDirection = 'vertical'): TileLayout {
-	if (n <= 0) return { tracks: 1, rows: 0, placements: [] };
-	if (n === 1) return { tracks: 1, rows: 1, placements: [{ start: 1, span: 1, row: 1 }] };
-	if (n === 2) {
-		return split === 'horizontal'
-			? {
-					tracks: 1,
-					rows: 2,
-					placements: [
-						{ start: 1, span: 1, row: 1 },
-						{ start: 1, span: 1, row: 2 }
-					]
-				}
-			: {
-					tracks: 2,
-					rows: 1,
-					placements: [
-						{ start: 1, span: 1, row: 1 },
-						{ start: 2, span: 1, row: 1 }
-					]
-				};
-	}
+export function gridCost(n: number, cols: number, rows: number, viewport: Viewport): number {
+	const cells = cols * rows;
+	const ratio = viewport.width / cols / (viewport.height / rows);
+	const distortion = Math.abs(Math.log(ratio / TARGET_PANE_RATIO));
+	return distortion + WASTE_WEIGHT * ((cells - n) / cells);
+}
 
-	const cols = Math.ceil(Math.sqrt(n));
+/**
+ * The columns × rows that fit `n` panes into `viewport` with the least
+ * distortion. Columns that would leave a whole trailing column empty are
+ * skipped, so every candidate is a grid the count can actually use.
+ */
+export function tileGrid(n: number, viewport: Viewport = FALLBACK): TileGrid {
+	if (n <= 0) return { cols: 1, rows: 0 };
+	const vp =
+		viewport.width > 0 && viewport.height > 0 ? viewport : FALLBACK;
+	let best: TileGrid = { cols: n, rows: 1 };
+	let bestCost = Infinity;
+	for (let cols = 1; cols <= n; cols++) {
+		const rows = Math.ceil(n / cols);
+		if ((cols - 1) * rows >= n) continue;
+		const cost = gridCost(n, cols, rows, vp);
+		if (cost < bestCost) {
+			bestCost = cost;
+			best = { cols, rows };
+		}
+	}
+	return best;
+}
+
+/** Geometry for `n` tiles in `viewport`, with the last row widened to fill. */
+export function tileLayout(n: number, viewport: Viewport = FALLBACK): TileLayout {
+	if (n <= 0) return { cols: 1, rows: 0, tracks: 1, placements: [] };
+	const { cols, rows } = tileGrid(n, viewport);
 	const counts = rowCounts(n, cols);
 	const tracks = counts.reduce((acc, c) => lcm(acc, c), 1);
 	const placements: TilePlacement[] = [];
@@ -85,17 +108,22 @@ export function tileLayout(n: number, split: SplitDirection = 'vertical'): TileL
 			placements.push({ start: i * span + 1, span, row: r + 1 });
 		}
 	});
-	return { tracks, rows: counts.length, placements };
+	return { cols, rows, tracks, placements };
 }
 
-export const TILES_MIN = 2;
-export const TILES_MAX = 9;
-
-export function clampMaxTiles(n: unknown): number {
-	const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : 4;
-	return Math.min(TILES_MAX, Math.max(TILES_MIN, v));
-}
-
-export function clampSplitDirection(v: unknown): SplitDirection {
-	return v === 'horizontal' ? 'horizontal' : 'vertical';
+/**
+ * Reorder `next` to keep every id that was already placed where it was: a
+ * session changing state must not move its tile. New ids land at the index the
+ * sort gives them, gone ids leave a hole that closes.
+ */
+export function stableTileOrder(prev: string[], next: string[]): string[] {
+	const wanted = new Set(next);
+	const out = prev.filter((id) => wanted.has(id));
+	const held = new Set(out);
+	next.forEach((id, i) => {
+		if (held.has(id)) return;
+		out.splice(Math.min(i, out.length), 0, id);
+		held.add(id);
+	});
+	return out;
 }

@@ -10,13 +10,18 @@ import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionStatus } from "./SessionStatus";
 import type { TodoEntry } from "./TodoEntry";
 import type { TokenUsage } from "./TokenUsage";
+import type { UserActionCounts } from "./UserActionCounts";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 export type SessionListItem = { id: string, parent_id: string | null, machine_id: string, working_dir: string, status: SessionStatus, liveness: Liveness, attention?: Attention | null, bucket: Bucket, token_usage: TokenUsage, metadata: JsonValue, adapter_id: AdapterId | null, machine_name?: string | null, 
 /**
  * 0–359. `None` = derived from the machine name.
  */
-machine_hue?: number | null, machine_kind?: string | null, last_message_text?: string | null, last_message_at?: string | null, registered_at?: string | null, name?: string | null, model?: string | null, effort?: string | null, permission_mode?: string | null, auto_approve: boolean, match_snippet?: string | null, match_seq?: number | null, last_activity_at?: string | null, cache_cold: boolean, estimated_burst_tokens?: number | null, hibernated: boolean, pinned: boolean, labels: Array<Label>, last_heartbeat?: string | null, account_name?: string | null, 
+machine_hue?: number | null, machine_kind?: string | null, last_message_text?: string | null, last_message_at?: string | null, registered_at?: string | null, name?: string | null, model?: string | null, effort?: string | null, permission_mode?: string | null, auto_approve: boolean, match_snippet?: string | null, match_seq?: number | null, last_activity_at?: string | null, cache_cold: boolean, estimated_burst_tokens?: number | null, hibernated: boolean, pinned: boolean, labels: Array<Label>, 
+/**
+ * The room this session is in, for grouping and the card badge.
+ */
+room_id?: string | null, room_name?: string | null, last_heartbeat?: string | null, account_name?: string | null, 
 /**
  * Capped at 99; populated by the live list only.
  */
@@ -24,7 +29,11 @@ unread_count: number, activity_detail?: string | null, last_tool_at?: string | n
 /**
  * Empty means render nothing.
  */
-todos: Array<TodoEntry>, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, 
+todos: Array<TodoEntry>, 
+/**
+ * Absent when this session has no open user action and no child with one.
+ */
+user_actions?: UserActionCounts | null, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, 
 /**
  * Draft only: when the queued launch is due.
  */

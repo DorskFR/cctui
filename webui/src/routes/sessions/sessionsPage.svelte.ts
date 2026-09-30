@@ -1,3 +1,4 @@
+import { untrack } from "svelte";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { Label } from "@bindings/Label";
 import type { endpoints, useSessionActions } from "$lib/queries";
@@ -8,6 +9,7 @@ import {
   LIST_HIDDEN,
   LIST_LABELS,
   LIST_SECTION,
+  LIST_TILE_SECTION,
   LIST_VIEW,
   type SpawnSlotPayload,
 } from "$lib/drafts";
@@ -24,6 +26,7 @@ import {
   splitQuery,
 } from "$lib/searchSchema";
 import {
+  DEFAULT_TILE_SECTIONS,
   parseSections,
   parseHiddenSections,
   serializeHiddenSections,
@@ -44,6 +47,7 @@ import {
   type SessionSort,
   type Dimension,
 } from "./sessions.logic";
+import { stableTileOrder } from "$lib/tiles";
 import { SessionsListController } from "./SessionsListController.svelte";
 import { ArchiveConfirm } from "./archiveConfirm.svelte";
 
@@ -103,7 +107,19 @@ export interface SessionsPageDeps {
   labels: () => Label[] | undefined;
   // Visual document order of the rendered rows, for shift-range selection.
   renderedOrder: () => string[];
+  // True below the mobile breakpoint, where tiles are not offered.
+  mobile?: () => boolean;
 }
+
+export type ViewMode = "list" | "grid" | "tiles";
+
+const parseViewMode = (raw: string): ViewMode =>
+  raw === "card" || raw === "grid"
+    ? "grid"
+    : raw === "tiles"
+      ? "tiles"
+      : "list";
+const serializeViewMode = (v: ViewMode): string => (v === "grid" ? "card" : v);
 
 export class SessionsPage {
   #d: SessionsPageDeps;
@@ -111,13 +127,19 @@ export class SessionsPage {
   readonly archiveConfirm: ArchiveConfirm;
   readonly searchSchema: Schema;
 
-  // Two layouts: list (compact rows, centered column) and card (detailed 3-up
-  // grid released to the full window). Grid is top-level only (subagents stay
+  // Three layouts: list (compact rows, centered column), grid (detailed 3-up
+  // cards released to the full window) and tiles (live conversation panes
+  // filling the window). Grid and tiles are top-level only (subagents stay
   // in list view / the drawer).
-  cardView = $state(false);
+  viewMode = $state<ViewMode>("list");
   // Section filter: independent on/off toggles over the loaded list
   // (starred / live / dispatched / drafts / archived / unread), persisted.
-  sections = $state<Set<Section>>(new Set());
+  // Tiles keep their own set so hiding the dispatched swarm there does not
+  // hide it from the list.
+  listSections = $state<Set<Section>>(new Set());
+  tileSections = $state<Set<Section>>(new Set());
+  tileOrder = $state<string[]>([]);
+  #tileSortKey = "";
   // Per-section collapse, independent of the section filter: the eye toggle
   // drops a group's rows while keeping the header and its live count.
   hiddenSections = $state<Set<string>>(new Set());
@@ -158,8 +180,12 @@ export class SessionsPage {
 
   constructor(d: SessionsPageDeps) {
     this.#d = d;
-    this.cardView = d.store.get(LIST_VIEW) === "card";
-    this.sections = parseSections(d.store.get(LIST_SECTION));
+    this.viewMode = parseViewMode(d.store.get(LIST_VIEW));
+    this.listSections = parseSections(d.store.get(LIST_SECTION));
+    this.tileSections = parseSections(
+      d.store.get(LIST_TILE_SECTION),
+      DEFAULT_TILE_SECTIONS,
+    );
     this.hiddenSections = parseHiddenSections(d.store.get(LIST_HIDDEN));
     this.labelFilter = new Set<string>(
       parseLabelFilter(d.store.get(LIST_LABELS)),
@@ -187,10 +213,25 @@ export class SessionsPage {
     });
 
     $effect(() => {
-      d.store.set(LIST_VIEW, this.cardView ? "card" : "list");
+      d.store.set(LIST_VIEW, serializeViewMode(this.viewMode));
     });
     $effect(() => {
-      d.store.set(LIST_SECTION, [...this.sections].join(","));
+      d.store.set(LIST_SECTION, [...this.listSections].join(","));
+    });
+    $effect(() => {
+      d.store.set(LIST_TILE_SECTION, [...this.tileSections].join(","));
+    });
+    // Tiles reflow on add/remove only; picking another sort re-seeds them.
+    $effect(() => {
+      const key = `${this.sortState.sort}:${this.sortState.sortDir}`;
+      const ids = this.tiles ? this.list.tileRows.map((r) => r.id) : [];
+      const prev = untrack(() =>
+        key === this.#tileSortKey ? this.tileOrder : [],
+      );
+      this.#tileSortKey = key;
+      const next = stableTileOrder(prev, ids);
+      if (next.length !== prev.length || next.some((id, i) => id !== prev[i]))
+        this.tileOrder = next;
     });
     $effect(() => {
       d.store.set(LIST_HIDDEN, serializeHiddenSections(this.hiddenSections));
@@ -228,6 +269,32 @@ export class SessionsPage {
       if (this.pagerActive) this.loadPage(true);
     });
   }
+
+  mobile = $derived.by(() => this.#d.mobile?.() ?? false);
+  // A persisted tiles choice falls back to the default view on a phone.
+  view: ViewMode = $derived(
+    this.viewMode === "tiles" && this.mobile ? "list" : this.viewMode,
+  );
+  get cardView(): boolean {
+    return this.view === "grid";
+  }
+  get tiles(): boolean {
+    return this.view === "tiles";
+  }
+  // One filter bar drives whichever set the active mode owns.
+  get sections(): Set<Section> {
+    return this.tiles ? this.tileSections : this.listSections;
+  }
+  set sections(v: Set<Section>) {
+    if (this.tiles) this.tileSections = v;
+    else this.listSections = v;
+  }
+  tileSessions = $derived.by(() => {
+    const by = new Map(this.list.tileRows.map((r) => [r.id, r]));
+    return this.tileOrder
+      .map((id) => by.get(id))
+      .filter((r): r is SessionListItem => !!r);
+  });
 
   // Color-by and group-by dimensions, read live from the server-persisted
   // settings blob and written back through settings.setSessionList.

@@ -12,14 +12,15 @@
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
+	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
+	import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import IssueLinkModal from '$lib/components/molecules/IssueLinkModal.svelte';
 	import { readPluginSlot } from '$lib/plugins/sessionSlots';
 	import { YOUTRACK_PLUGIN_ID, detectSessionIssueId } from '$lib/plugins/issueLink';
 	import { useSessionActions } from '$lib/queries';
-	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
+	import { Button, Icon, IconButton, Input, Menu, Modal, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
-	import type { ConversationChrome } from './chrome';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -28,7 +29,6 @@
 		isCodexSession,
 		livenessClass,
 		showStatusBadge,
-		chrome = 'drawer',
 		maximized = false,
 		onmaximize,
 		onclose,
@@ -38,7 +38,6 @@
 		oncopymarkdown,
 		onexport,
 		onsearch,
-		onopenintiles,
 		onescape,
 		onfork,
 		onfollowup,
@@ -58,19 +57,21 @@
 		onAttachLabel,
 		onDetachLabel,
 		onUpdateLabel,
-		onDeleteLabel
+		onDeleteLabel,
+		// Room = a field on the session: pick one (by id or by name) or clear it.
+		onsetroom,
+		onclearroom
 	}: {
 		session: SessionListItem;
 		archived: boolean;
 		isCodexSession: boolean;
 		livenessClass: string;
 		showStatusBadge: boolean;
-		/** In a tile the back chevron becomes a close ×; the maximize toggle
-		 *  appears only when the shell supplies `onmaximize`. */
-		chrome?: ConversationChrome;
+		/** The maximize toggle appears only when the shell supplies `onmaximize`. */
 		maximized?: boolean;
 		onmaximize?: () => void;
-		onclose: () => void;
+		/** Omitted in a tile, which has nothing to close back to. */
+		onclose?: () => void;
 		onrename: (name: string) => void;
 		onsetmodel: (model: string, effort: string) => void;
 		oncopylink: () => void;
@@ -78,8 +79,6 @@
 		onexport: () => void;
 		/** Open the find-in-conversation bar; omitted → no entry and no ⌘F. */
 		onsearch?: () => void;
-		/** Move this session into the tiles grid; omitted → no entry. */
-		onopenintiles?: () => void;
 		/** First refusal on Escape: true when it was consumed (the find bar
 		 *  clears or closes) and the drawer must stay open. */
 		onescape?: () => boolean;
@@ -101,6 +100,8 @@
 		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
+		onsetroom?: (sessionId: string, pick: { id: string } | { name: string }) => void;
+		onclearroom?: (sessionId: string) => void;
 	} = $props();
 
 	// Label picker is interactive only when an attach handler is wired in.
@@ -125,6 +126,7 @@
 
 	let keepaliveOpen = $state(false);
 	let issueLinkOpen = $state(false);
+	let roomOpen = $state(false);
 
 	const sessionActions = useSessionActions();
 	const detectedIssue = $derived(detectSessionIssueId(session));
@@ -191,15 +193,6 @@
 			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
 			onselect: onforkselect ?? onfork
 		},
-		...(onopenintiles
-			? [
-					{
-						label: m.tiles_open_here(),
-						icon: 'grid' as const,
-						onselect: onopenintiles
-					}
-				]
-			: []),
 		{
 			label: m.drawer_keepalive_label(),
 			icon: 'recycle' as const,
@@ -220,6 +213,16 @@
 						onselect: () => {
 							void sessionActions.setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, null);
 						}
+					}
+				]
+			: []),
+		...(onsetroom
+			? [
+					{
+						label: m.rooms_menu_action(),
+						icon: 'grid' as const,
+						attrs: { title: session.room_name ?? m.rooms_menu_label() },
+						onselect: () => (roomOpen = true)
 					}
 				]
 			: []),
@@ -249,7 +252,7 @@
 			e.preventDefault();
 			return;
 		}
-		onclose();
+		onclose?.();
 	}
 </script>
 
@@ -258,12 +261,9 @@
 <div class="dhead" data-journey="header">
 	<div class="dbar" class:compact={collapsed} bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
-		<IconButton
-			icon={chrome === 'tile' ? 'x' : 'chevron-left'}
-			label={chrome === 'tile' ? m.tiles_close_tile() : m.drawer_back()}
-			{box}
-			onclick={onclose}
-		/>
+		{#if onclose}
+			<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
+		{/if}
 		<SessionGlyphs
 			{session}
 			{livenessClass}
@@ -297,6 +297,7 @@
 						onDelete={onDeleteLabel}
 					/>
 				{/if}
+				<RoomBadge name={session.room_name} />
 			{/if}
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
@@ -396,6 +397,29 @@
 
 {#if issueLinkOpen}
 	<IssueLinkModal {session} detected={detectedIssue} onclose={() => (issueLinkOpen = false)} />
+{/if}
+
+{#if roomOpen}
+	<Modal title={m.rooms_menu_label()} onclose={() => (roomOpen = false)}>
+		{#snippet body()}
+			<RoomMenu
+				current={session.room_id ?? null}
+				onpick={(pick) => {
+					onsetroom?.(session.id, pick);
+					roomOpen = false;
+				}}
+				onclear={session.room_id
+					? () => {
+							onclearroom?.(session.id);
+							roomOpen = false;
+						}
+					: undefined}
+			/>
+		{/snippet}
+		{#snippet footer()}
+			<Button size="sm" variant="ghost" onclick={() => (roomOpen = false)}>{m.common_close()}</Button>
+		{/snippet}
+	</Modal>
 {/if}
 
 <style>

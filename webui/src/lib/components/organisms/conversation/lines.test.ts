@@ -407,6 +407,62 @@ describe('peer (cross-session) messages', () => {
 	});
 });
 
+describe('room messages', () => {
+	const ROOM = [
+		'<cctui-room name="wave 23" from="lane a (codex on box-b)">',
+		'The gate is green on my lane.',
+		'</cctui-room>'
+	].join('\n');
+
+	it('classifies a room post as peer and carries the room name', () => {
+		const ln = buildLines([text(`▷ User: ${ROOM}`, 1)], ctx())[0];
+		expect(ln.role).toBe('peer');
+		expect(ln.peerRoom).toBe('wave 23');
+		expect(ln.peerFrom).toBe('lane a (codex on box-b)');
+		expect(ln.text).toBe('The gate is green on my lane.');
+		expect(ln.text).not.toContain('cctui-room');
+	});
+
+	it('leaves a direct peer message without a room, so the two are distinguishable', () => {
+		const raw = '<cross-session-message from-name="lane-a">hi</cross-session-message>';
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('peer');
+		expect(ln.peerRoom).toBeUndefined();
+	});
+
+	it('folds a batch of catch-up posts into one line each', () => {
+		const two = [ROOM, ROOM.replace('The gate is green on my lane.', 'And the tag is cut.')].join(
+			'\n\n'
+		);
+		const ln = buildLines([text(`▷ User: ${two}`, 1)], ctx())[0];
+		// One turn carries the batch; the first envelope is what the line renders.
+		expect(ln.role).toBe('peer');
+		expect(ln.peerRoom).toBe('wave 23');
+	});
+
+	it('renders the join notice as a marker, not as a peer message', () => {
+		const joined = [
+			'<cctui-room-joined name="wave 23">',
+			'You have been added to the cctui room "wave 23".',
+			'</cctui-room-joined>'
+		].join('\n');
+		const ln = buildLines([text(`▷ User: ${joined}`, 1)], ctx())[0];
+		expect(ln.role).toBe('marker');
+		expect(ln.peerRoom).toBeUndefined();
+	});
+
+	it('keeps a human relaying a room wrapper as a user turn', () => {
+		const raw = `look at this: ${ROOM}`;
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('user');
+		expect(ln.peerRoom).toBeUndefined();
+	});
+
+	it('is filtered by the peer category like any other peer line', () => {
+		expect(buildLines([text(`▷ User: ${ROOM}`, 1)], ctx({ peer: false }))).toEqual([]);
+	});
+});
+
 describe('poll re-injection classification', () => {
 	const POLL = 'Check the queue depth and report anything above 100. Do not stop.';
 	const typed = (body: string, ts: number, turnId: string): AgentEvent => ({
@@ -710,14 +766,44 @@ describe('queued messages carry their own queue state', () => {
 		expect(lines[0].cancelled).toBeUndefined();
 	});
 
-	it('marks a queued prompt cancelled when it is dequeued with no user event', () => {
+	it('shows a dequeued prompt with no user event as delivered, not withdrawn', () => {
 		const lines = buildLines(
 			[queueOp('queued', 'ship the thing', 1, 5), queueOp('dequeued', '', 2, 6)],
 			ctx()
 		);
 		expect(lines).toHaveLength(1);
-		expect(lines[0].cancelled).toBe(true);
+		expect(lines[0].cancelled).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
 		expect(lines[0].text).toBe('ship the thing');
+	});
+
+	it('keeps every line of a multi-line queued prompt', () => {
+		const body = ['Your token: please rotate it', '', '- one', '- two'].join('\n');
+		const lines = buildLines([queueOp('queued', body, 1, 5)], ctx());
+		expect(lines).toHaveLength(1);
+		expect(lines[0].text).toBe(body);
+		expect(lines[0].html).toContain('- two');
+	});
+
+	it('shows a multi-line prompt consumed mid-turn once, as delivered', () => {
+		const body = ['Your token: please rotate it', '', 'the rest of the message'].join('\n');
+		const lines = buildLines(
+			[queueOp('queued', body, 1, 5), queueOp('absorbed', body, 2, 6)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].cancelled).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
+		expect(lines[0].text).toBe(body);
+	});
+
+	it('still strikes a prompt the user removed', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), queueOp('cleared', '', 2, 6)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].cancelled).toBe(true);
 	});
 
 	it('marks a queued prompt cancelled when a remove op names it', () => {
@@ -790,6 +876,38 @@ describe('queued messages carry their own queue state', () => {
 		const events = [queueOp('queued', 'ship the thing', 1, 5)];
 		expect(buildLines(events, ctx({ marker: false }))).toHaveLength(1);
 		expect(buildLines(events, ctx({ user: false }))).toHaveLength(0);
+	});
+
+	it('collapses several queued prompts delivered as one merged turn', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', 'STOP', 1, 5),
+				queueOp('queued', 'EXPLAIN EVERYTHING', 2, 6),
+				queueOp('absorbed', 'STOP', 3, 7),
+				queueOp('absorbed', 'EXPLAIN EVERYTHING', 4, 8),
+				user('STOP\nEXPLAIN EVERYTHING', 5, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].seq).toBe(9);
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
+	});
+
+	it('collapses two identical queued prompts delivered as one merged turn', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', 'STOP', 1, 5),
+				queueOp('queued', 'STOP', 2, 6),
+				queueOp('absorbed', 'STOP', 3, 7),
+				queueOp('absorbed', 'STOP', 4, 8),
+				user('STOP\nSTOP', 5, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].queuedAt).toBe(1);
 	});
 
 	it('does not let the duplicate guard swallow the delivered turn', () => {

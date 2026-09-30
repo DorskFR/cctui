@@ -1,10 +1,24 @@
 import { getLocale } from './paraglide/runtime';
 
-/** Compact token count: 1234 → "1.2k", 1_200_000 → "1.2M". */
+const TIERS = [
+	{ div: 1e9, suffix: 'B', digits: () => 1 },
+	{ div: 1e6, suffix: 'M', digits: () => 1 },
+	{ div: 1e3, suffix: 'k', digits: (v: number) => (v < 10 ? 1 : 0) },
+];
+
+/** Compact token count: 1234 → "1.2k", 1_200_000 → "1.2M", 1.0041e9 → "1.0B".
+ *  A value that rounds up to 1000 in its own tier is promoted to the next one,
+ *  so no unit ever displays "1000". */
 export function compact(n: number): string {
 	if (n < 1000) return String(n);
-	if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-	return `${(n / 1_000_000).toFixed(1)}M`;
+	let i = TIERS.findIndex((t) => n >= t.div);
+	if (i < 0) i = TIERS.length - 1;
+	let v = n / TIERS[i].div;
+	if (Number(v.toFixed(TIERS[i].digits(v))) >= 1000 && i > 0) {
+		i--;
+		v = n / TIERS[i].div;
+	}
+	return `${v.toFixed(TIERS[i].digits(v))}${TIERS[i].suffix}`;
 }
 
 /** Relative time from an ISO datetime, in the active locale ("3m ago" / "il y a

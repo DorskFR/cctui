@@ -147,7 +147,7 @@ impl Driver {
                 .await?;
         tracing::debug!(?resp, %short, "reply ack");
         if text.contains('\n')
-            && let Err(err) = socket::attach_submit(sock, &short, &confirm).await
+            && let Err(err) = Box::pin(socket::attach_submit(sock, &short, &confirm)).await
         {
             tracing::warn!(%err, %short, "failed to submit multiline reply draft");
         }
@@ -155,12 +155,13 @@ impl Driver {
     }
 
     /// Pick the submit-confirmation signal for a worker: transcript growth
-    /// when idle (the only signal image ingestion can't fake), repaint when
-    /// mid-turn (a submit only queues the message, so the transcript won't
-    /// grow) or when no transcript can be located.
+    /// when idle (the only signal image ingestion can't fake), the composer
+    /// emptying when mid-turn (a submit only queues the message, so the
+    /// transcript won't grow and the spinner repaints either way), repaint when
+    /// no transcript can be located.
     pub(super) fn submit_confirm(&self, short: &str, session_id: &str) -> socket::SubmitConfirm {
         if self.is_busy(short) {
-            return socket::SubmitConfirm::Repaint;
+            return socket::SubmitConfirm::Composer;
         }
         let path = self.transcript_locations.get(short).map(|loc| loc.path.clone()).or_else(|| {
             transcript::newest_transcript_for_session(&self.cfg.projects_root, session_id)

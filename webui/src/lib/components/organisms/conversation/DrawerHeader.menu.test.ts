@@ -77,7 +77,9 @@ describe('drawer header ⋯ menu', () => {
 		expect(header).toContain('isFindChord(e)');
 		expect(header).toMatch(/if \(onescape\?\.\(\)\) \{/);
 		const esc = header.indexOf("e.key !== 'Escape'");
-		expect(header.indexOf('onescape?.()', esc)).toBeLessThan(header.indexOf('onclose();', esc));
+		const close = header.indexOf('onclose?.()', esc);
+		expect(close).toBeGreaterThan(-1);
+		expect(header.indexOf('onescape?.()', esc)).toBeLessThan(close);
 	});
 
 	it('adds no :global override', () => {

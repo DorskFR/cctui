@@ -10,7 +10,10 @@ const config = {
 		adapter: adapter({ fallback: 'index.html' }),
 		alias: {
 			'@bindings': 'src/lib/bindings'
-		}
+		},
+		// Without a poll SvelteKit never re-reads _app/version.json, so a tab that
+		// outlived a deploy keeps importing chunks the new build does not have.
+		version: { pollInterval: 60_000 }
 	}
 };
 

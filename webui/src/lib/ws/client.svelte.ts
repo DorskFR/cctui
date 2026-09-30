@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ServerEvent } from '@bindings/ServerEvent';
+import type { UserAction } from '@bindings/UserAction';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
 import type { QueryClient } from '@tanstack/svelte-query';
@@ -24,7 +25,8 @@ import {
 	type PermCb,
 	type PlanCb,
 	type SoftLimitCb,
-	type ToolBlockCb
+	type ToolBlockCb,
+	type UserActionsCb
 } from './prompts';
 import { SessionStreams, type StreamCb } from './stream';
 import { LiveSocket, type Status } from './socket.svelte';
@@ -188,6 +190,11 @@ export class WsClient {
 				else this.markListDirty();
 				break;
 			}
+			// A session moved in or out of a room: the list carries the room as a
+			// field, so regrouping is just a refetch.
+			case 'room_members':
+				this.markListDirty();
+				break;
 			case 'machine_resources': {
 				const { type: _, ...p } = msg;
 				for (const cb of this.machineResourcesCbs) cb(p);
@@ -399,6 +406,15 @@ export class WsClient {
 
 	onToolBlock(id: string, cb: ToolBlockCb): () => void {
 		return this.prompts.onToolBlock(id, cb);
+	}
+
+	onUserActions(id: string, cb: UserActionsCb): () => void {
+		return this.prompts.onUserActions(id, cb);
+	}
+
+	/** Seed the list from an HTTP read (the WS only pushes changes). */
+	setUserActions(id: string, list: UserAction[]) {
+		this.prompts.setUserActions(id, list);
 	}
 
 	dismissToolBlock(id: string) {

@@ -35,6 +35,7 @@ const orchestrator: SessionProfile = {
   effort: "medium",
   permission_mode: "yolo",
   service_tier: null,
+  context_items: [],
   sort_order: 0,
   created_at: "",
   updated_at: "",

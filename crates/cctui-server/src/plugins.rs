@@ -48,6 +48,20 @@ pub struct PluginManifest {
     /// proxy at `/api/v1/plugins/<id>/backend/*`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<PluginBackend>,
+    /// Ask the host to mint this user a cctui credential on enable instead of
+    /// making them paste one in; see `crate::plugin_host_token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_token: Option<PluginHostToken>,
+}
+
+/// The env name a host-minted, `read`-scoped cctui token is exported under.
+/// There is deliberately no scope field: the one cctui API a plugin's skill can
+/// reach is its own backend proxy, which asks for `read`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginHostToken {
+    pub env: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -193,6 +207,8 @@ pub enum ManifestError {
     BadInstanceSetting(String, String, &'static str),
     #[error("plugin `{0}`: backend is invalid: {1}")]
     BadBackend(String, &'static str),
+    #[error("plugin `{0}`: hostToken is invalid: {1}")]
+    BadHostToken(String, &'static str),
     #[error("plugin `{0}` declares a `page` but no `web` module to export it from")]
     PageWithoutWeb(String),
 }
@@ -292,6 +308,17 @@ pub fn validate_manifest(
         }
         if !keys.insert(setting.key.as_str()) || !envs.insert(setting.env.as_str()) {
             return Err(bad("duplicate key or env"));
+        }
+    }
+    if let Some(host_token) = &manifest.host_token {
+        if !cctui_proto::worker_env::valid_plugin_env_name(&host_token.env) {
+            return Err(ManifestError::BadHostToken(
+                id,
+                "env must match ^[A-Z][A-Z0-9_]{0,63}$ and not be reserved",
+            ));
+        }
+        if !envs.insert(host_token.env.as_str()) {
+            return Err(ManifestError::BadHostToken(id, "env collides with a settings env"));
         }
     }
     validate_instance_settings(manifest, &id)?;
@@ -639,18 +666,28 @@ pub fn plugin_config(
         .collect()
 }
 
-/// `env name -> value` for every declared setting the user filled in.
+/// `env name -> value` for every declared setting the user filled in, plus
+/// `host_token` under the manifest's `hostToken.env` when both are present.
+/// The caller unseals the token, so this stays usable without the vault key.
 pub fn plugin_env(
     manifest: &PluginManifest,
     settings: Option<&serde_json::Value>,
+    host_token: Option<&str>,
 ) -> BTreeMap<String, String> {
     let config = plugin_config(manifest, settings);
-    manifest
+    let mut env: BTreeMap<String, String> = manifest
         .settings
         .iter()
         .filter(|decl| cctui_proto::worker_env::valid_plugin_env_name(&decl.env))
         .filter_map(|decl| config.get(&decl.key).map(|v| (decl.env.clone(), v.clone())))
-        .collect()
+        .collect();
+    if let Some(decl) = &manifest.host_token
+        && cctui_proto::worker_env::valid_plugin_env_name(&decl.env)
+        && let Some(token) = host_token
+    {
+        env.insert(decl.env.clone(), token.to_owned());
+    }
+    env
 }
 
 /// The absolute file for a safe relative `path` inside `dir`, `None` when it
@@ -715,9 +752,9 @@ pub mod test_support {
 mod tests {
     use super::test_support::write_plugin;
     use super::{
-        ManifestError, PluginBackend, PluginInstanceSetting, PluginManifest, PluginPage,
-        PluginRegistry, PluginSetting, PluginSource, enabled_ids, load_plugin, mime_for,
-        plugin_config, plugin_env, resolve_static, safe_relative, scan_dir, valid_id,
+        ManifestError, PluginBackend, PluginHostToken, PluginInstanceSetting, PluginManifest,
+        PluginPage, PluginRegistry, PluginSetting, PluginSource, enabled_ids, load_plugin,
+        mime_for, plugin_config, plugin_env, resolve_static, safe_relative, scan_dir, valid_id,
         validate_manifest,
     };
     use serde_json::json;
@@ -738,6 +775,7 @@ mod tests {
             settings: vec![],
             instance_settings: vec![],
             backend: None,
+            host_token: None,
         }
     }
 
@@ -957,10 +995,77 @@ mod tests {
             "p": { "host": "10.0.0.5", "cert": "", "undeclared": "x", "n": 3 },
             "q": { "host": "other" }
         } } });
-        let env = plugin_env(&m, Some(&settings));
+        let env = plugin_env(&m, Some(&settings), None);
         assert_eq!(env, BTreeMap::from([("YUBI_HOST".to_owned(), "10.0.0.5".to_owned())]));
         assert_eq!(plugin_config(&m, Some(&settings)).keys().collect::<Vec<_>>(), vec!["host"]);
-        assert!(plugin_env(&m, None).is_empty());
+        assert!(plugin_env(&m, None, None).is_empty());
+    }
+
+    #[test]
+    fn a_host_token_is_exported_under_its_declared_env() {
+        let mut m = manifest("ghreview");
+        m.settings = vec![setting("host", "GH_HOST")];
+        m.host_token = Some(PluginHostToken { env: "GHREVIEW_CCTUI_TOKEN".to_owned() });
+        let settings = json!({ "plugins": { "config": { "ghreview": { "host": "h" } } } });
+
+        let env = plugin_env(&m, Some(&settings), Some("cctui_u_secret"));
+        assert_eq!(env.get("GHREVIEW_CCTUI_TOKEN").map(String::as_str), Some("cctui_u_secret"));
+        assert_eq!(env.get("GH_HOST").map(String::as_str), Some("h"));
+
+        assert!(
+            !plugin_env(&m, Some(&settings), None).contains_key("GHREVIEW_CCTUI_TOKEN"),
+            "a user with no minted token gets no env at all, not an empty one"
+        );
+
+        let mut without = manifest("ghreview");
+        without.host_token = None;
+        assert!(
+            plugin_env(&without, Some(&settings), Some("cctui_u_secret")).is_empty(),
+            "a plugin that never asked for a host token never receives one"
+        );
+    }
+
+    #[test]
+    fn a_host_token_env_is_validated_like_a_setting_env() {
+        let mut m = manifest("p");
+        m.host_token = Some(PluginHostToken { env: "GHREVIEW_CCTUI_TOKEN".to_owned() });
+        assert_eq!(validate_manifest(&m, "p", &|_| false), Ok(()));
+
+        for env in ["PATH", "CCTUI_WEB_ORIGIN", "ANTHROPIC_API_KEY", "lower", "HTTPS_PROXY"] {
+            let mut m = manifest("p");
+            m.host_token = Some(PluginHostToken { env: env.to_owned() });
+            assert!(
+                matches!(
+                    validate_manifest(&m, "p", &|_| false),
+                    Err(ManifestError::BadHostToken(..))
+                ),
+                "{env}"
+            );
+        }
+
+        let mut m = manifest("p");
+        m.settings = vec![setting("tok", "SAME_ENV")];
+        m.host_token = Some(PluginHostToken { env: "SAME_ENV".to_owned() });
+        assert!(
+            matches!(validate_manifest(&m, "p", &|_| false), Err(ManifestError::BadHostToken(..))),
+            "a user-pasted setting must not shadow the minted token"
+        );
+    }
+
+    #[test]
+    fn a_manifest_round_trips_the_host_token_in_camel_case() {
+        let raw = r#"{"id":"p","name":"N","version":"1","cctuiApi":1,
+            "hostToken":{"env":"GHREVIEW_CCTUI_TOKEN"}}"#;
+        let m: PluginManifest = serde_json::from_str(raw).unwrap();
+        assert_eq!(m.host_token.as_ref().unwrap().env, "GHREVIEW_CCTUI_TOKEN");
+        assert_eq!(validate_manifest(&m, "p", &|_| false), Ok(()));
+        let back = serde_json::to_value(&m).unwrap();
+        assert_eq!(back["hostToken"]["env"], "GHREVIEW_CCTUI_TOKEN");
+
+        let bare: PluginManifest =
+            serde_json::from_str(r#"{"id":"p","name":"N","version":"1","cctuiApi":1}"#).unwrap();
+        assert!(bare.host_token.is_none());
+        assert!(serde_json::to_value(&bare).unwrap().get("hostToken").is_none());
     }
 
     #[test]

@@ -54,6 +54,7 @@ pub async fn session_gateway_env(
             whip_phrases: None,
             spawn_capability: None,
             plugins: Vec::new(),
+            context: Vec::new(),
         }));
     }
 
@@ -79,6 +80,7 @@ pub async fn session_gateway_env(
             whip_phrases,
             spawn_capability: spawn_capability_for(&state, &session_id).await,
             plugins,
+            context: session_context(&state, &session_id).await,
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -134,7 +136,28 @@ pub async fn session_gateway_env(
         whip_phrases,
         spawn_capability: spawn_capability_for(&state, &session_id).await,
         plugins,
+        context: session_context(&state, &session_id).await,
     }))
+}
+
+/// The memory notes and prompt template this session was launched with, as the
+/// daemon needs them. Re-served on every (re)launch so a resume keeps the kit
+/// its spawn resolved, and read through the spawn key the adapters echo.
+async fn session_context(
+    state: &AppState,
+    session_id: &str,
+) -> Vec<cctui_proto::api::SessionContextItem> {
+    crate::routes::context::for_session(&state.pool, session_id)
+        .await
+        .into_iter()
+        .map(|i| cctui_proto::api::SessionContextItem {
+            kind: i.kind,
+            name: i.name,
+            title: i.title,
+            body: i.body,
+            version: i.version,
+        })
+        .collect()
 }
 
 /// Whether a daemon may resolve `session_id`'s gateway env: the row is missing
@@ -219,7 +242,10 @@ pub fn session_plugins(
     crate::plugins::enabled_ids(settings)
         .iter()
         .filter_map(|id| registry.get(id))
-        .map(|p| (crate::plugins::plugin_env(&p.manifest, settings), p))
+        .map(|p| {
+            let host_token = crate::plugin_host_token::unsealed(settings, &p.manifest.id);
+            (crate::plugins::plugin_env(&p.manifest, settings, host_token.as_deref()), p)
+        })
         .filter(|(env, p)| !p.skill_files.is_empty() || !env.is_empty())
         .map(|(env, p)| cctui_proto::api::SessionPlugin {
             id: p.manifest.id,
@@ -433,5 +459,24 @@ mod tests {
         assert_eq!(plugins[0].skills_hash.len(), 16);
         assert_eq!(plugins[0].env.get("ON_HOST").map(String::as_str), Some("10.0.0.5"));
         assert!(super::session_plugins(&registry, None).is_empty());
+    }
+
+    #[test]
+    fn a_host_token_plugin_with_no_minted_token_exports_none() {
+        use crate::plugins::test_support::write_plugin;
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(root.path(), "asks", r#","hostToken":{"env":"ASKS_TOKEN"}"#);
+        let registry = crate::plugins::PluginRegistry::from_dir(root.path().to_path_buf());
+        let settings = serde_json::json!({ "plugins": { "enabled": { "asks": true } } });
+
+        // Reads the sealed block, which is absent — so this must not reach the
+        // vault key, which is unset outside the server process.
+        let plugins = super::session_plugins(&registry, Some(&settings));
+        assert_eq!(plugins.len(), 1, "the skill files still ship");
+        assert_eq!(plugins[0].id, "asks");
+        assert!(
+            !plugins[0].env.contains_key("ASKS_TOKEN"),
+            "a user with no minted token gets no env entry at all"
+        );
     }
 }

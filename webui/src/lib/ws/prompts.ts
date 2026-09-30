@@ -1,4 +1,5 @@
 import type { ServerEvent } from '@bindings/ServerEvent';
+import type { UserAction } from '@bindings/UserAction';
 import {
 	KeyedListeners,
 	type LiveAsk,
@@ -17,6 +18,8 @@ export type PlanCb = (plan: LivePlan | null) => void;
 /** Live soft-limit block for a session, or null when none is active. */
 export type SoftLimitCb = (sl: SoftLimitBlock | null) => void;
 export type ToolBlockCb = (b: ToolBlock | null) => void;
+/** The session's whole "needs you" list, empty when it has none. */
+export type UserActionsCb = (list: UserAction[]) => void;
 
 /** How prompt changes reach the session list. */
 export interface PromptListHost {
@@ -35,11 +38,13 @@ export class LivePrompts {
 	private plans = new Map<string, LivePlan>();
 	private softLimits = new Map<string, SoftLimitBlock>();
 	private toolBlocks = new Map<string, ToolBlock>();
+	private userActions = new Map<string, UserAction[]>();
 	private permCbs = new KeyedListeners<PermReq[]>();
 	private askCbs = new KeyedListeners<LiveAsk | null>();
 	private planCbs = new KeyedListeners<LivePlan | null>();
 	private softLimitCbs = new KeyedListeners<SoftLimitBlock | null>();
 	private toolBlockCbs = new KeyedListeners<ToolBlock | null>();
+	private userActionCbs = new KeyedListeners<UserAction[]>();
 
 	constructor(private host: PromptListHost) {}
 
@@ -84,6 +89,9 @@ export class LivePrompts {
 				this.setToolBlock(msg.session_id, { tool_name: msg.tool_name, rule: msg.rule });
 				return true;
 			}
+			case 'user_actions':
+				this.setUserActions(msg.session_id, msg.actions);
+				return true;
 			case 'soft_limit_cleared':
 				this.setSoftLimit(msg.session_id, null);
 				return true;
@@ -133,6 +141,27 @@ export class LivePrompts {
 		else this.softLimits.set(id, sl);
 		this.host.markListDirty();
 		this.softLimitCbs.emit(id, sl);
+	}
+
+	/** A blocking item makes the session need the user exactly the way a
+	 * permission prompt does, so it takes the same attention patch — that is what
+	 * drives the notification and the title badge. */
+	setUserActions(id: string, list: UserAction[]) {
+		this.userActions.set(id, list);
+		if (list.some((a) => a.status === 'open' && a.blocking)) {
+			this.host.emitListPatch({ session_id: id, attention: 'needs_input', bucket: 'blocked' });
+		} else {
+			this.host.markListDirty();
+		}
+		this.userActionCbs.emit(id, list);
+	}
+
+	/** Register a "needs you" listener for a session. Fires with the current list
+	 * immediately and on every change. Returns an unsubscribe fn. */
+	onUserActions(id: string, cb: UserActionsCb): () => void {
+		const off = this.userActionCbs.add(id, cb);
+		cb(this.userActions.get(id) ?? []);
+		return off;
 	}
 
 	private setToolBlock(id: string, b: ToolBlock | null) {

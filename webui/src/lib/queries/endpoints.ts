@@ -17,8 +17,13 @@ import type { UsageAnalytics } from "@bindings/UsageAnalytics";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
+import type { UserActionList } from "@bindings/UserActionList";
+import type { UserActionStatus } from "@bindings/UserActionStatus";
 import type { ConversationSearchResponse } from "@bindings/ConversationSearchResponse";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
+import type { ContextItem } from "@bindings/ContextItem";
+import type { ContextItemSpec } from "@bindings/ContextItemSpec";
+import type { UpdateContextItemRequest } from "@bindings/UpdateContextItemRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
 import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
@@ -248,6 +253,25 @@ export const endpoints = {
    * readable (admin). */
   rotatePluginProxySecret: (id: string) =>
     api.post<PluginProxySecret>(`/admin/plugins/${encodeURIComponent(id)}/proxy-secret`, {}),
+  /** The caller's reusable context items (memory notes, prompt templates). */
+  contextItems: () => api.get<ContextItem[]>("/context"),
+  createContextItem: (body: ContextItemSpec) =>
+    api.post<ContextItem>("/context", body),
+  updateContextItem: (id: string, body: UpdateContextItemRequest) =>
+    api.patch<ContextItem>(`/context/${id}`, body),
+  deleteContextItem: (id: string) => api.del<void>(`/context/${id}`),
+  /** What a spawn into these coordinates would attach on its own. */
+  resolveContext: (q: {
+    machine_id?: string;
+    working_dir?: string;
+    labels?: string;
+  }) =>
+    api.get<ContextItem[]>(
+      `/context/resolve?${new URLSearchParams(
+        Object.entries(q).filter(([, v]) => !!v) as [string, string][],
+      ).toString()}`,
+    ),
+
   /** The caller's spawn profiles, oldest first. */
   profiles: () => api.get<SessionProfile[]>("/profiles"),
   createProfile: (body: CreateProfileRequest) =>
@@ -330,6 +354,14 @@ export const endpoints = {
     }),
   unpinMessage: (id: string, seq: number) =>
     api.del<void>(`/sessions/${id}/pins/${seq}`),
+  /** What the agent is waiting on from the user. The WS only pushes changes, so
+   *  an opening pane reads the list once here. */
+  userActions: (id: string) =>
+    api.get<UserActionList>(`/sessions/${id}/user-actions`),
+  tickUserAction: (id: string, actionId: string, status: UserActionStatus) =>
+    api.post<UserActionList>(`/sessions/${id}/user-actions/${actionId}/tick`, {
+      status,
+    }),
   /** One-call session diagnose: everything the daemon knows about
    *  the session — each fact dated + sourced, plus the arbitration verdict —
    *  merged with the server-side gateway/account binding facts. */

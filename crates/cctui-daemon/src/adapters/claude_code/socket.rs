@@ -14,12 +14,19 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
+use super::composer;
+
 /// Control-socket ops that the claude daemon gates behind the control key.
 /// Read ops (`ping`/`list`/`has`/`kill`) are ungated; only the
 /// mutating `dispatch`/`reply`/`attach` ops are rejected with `EAUTH` when no
 /// `auth` is presented. The daemon's request schema is a strict discriminated
 /// union, so `auth` must ONLY ride on these ops — adding it to `ping`/`list`
 /// would be rejected as a malformed request.
+/// PTY read-buffer size. Heap-allocated at every call site: these buffers live
+/// across awaits, and an inline array makes the reply future large enough to
+/// trip `clippy::large_futures` several frames up.
+const READ_BUF: usize = 8192;
+
 const AUTH_GATED_OPS: &[&str] = &["dispatch", "reply", "attach"];
 
 /// Path to the claude daemon's control key, mirroring the CLI's own resolution
@@ -166,6 +173,10 @@ pub enum SubmitConfirm {
     /// seconds, so a swallowed Enter still "repaints" and the weaker check
     /// passes while the draft sits unsent.
     Transcript { path: PathBuf, baseline: u64 },
+    /// The composer emptied, read off a fresh full-screen repaint. The only
+    /// usable signal mid-turn: the submit merely queues the message, so the
+    /// transcript stays put, and the spinner repaints regardless.
+    Composer,
 }
 
 /// True once the transcript gained a complete `"type":"user"` line past
@@ -216,8 +227,12 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
     /// again risks submitting a second (now empty or queued) message.
     const MAX_LANDED_ENTERS: u32 = 2;
 
+    if matches!(confirm, SubmitConfirm::Composer) {
+        return attach_submit_probed(socket, short).await;
+    }
+
     let (attempts, confirm_window) = match confirm {
-        SubmitConfirm::Repaint => (3, CONFIRM),
+        SubmitConfirm::Repaint | SubmitConfirm::Composer => (3, CONFIRM),
         // Transcript growth lags the keypress (claude appends after the turn
         // starts), and each Enter swallowed mid-ingest burns an attempt: give
         // the strict mode more room.
@@ -225,7 +240,7 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
     };
 
     let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
-    let mut buf = [0_u8; 8192];
+    let mut buf = vec![0_u8; READ_BUF];
     let mut landed_enters = 0_u32;
 
     let settle_start = tokio::time::Instant::now();
@@ -245,7 +260,7 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
         let mut repainted = false;
         let confirmed = loop {
             let submitted = match confirm {
-                SubmitConfirm::Repaint => false,
+                SubmitConfirm::Repaint | SubmitConfirm::Composer => false,
                 SubmitConfirm::Transcript { path, baseline } => {
                     transcript_gained_user_entry(path, *baseline)
                 }
@@ -279,6 +294,12 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
         if repainted {
             landed_enters += 1;
             if landed_enters >= MAX_LANDED_ENTERS {
+                // A worker whose last status was stale is really mid-turn, where
+                // a submit only queues: the transcript will never grow. An empty
+                // composer proves the draft left anyway.
+                if composer_emptied(socket, short).await {
+                    return Ok(());
+                }
                 bail!(
                     "draft submit unconfirmed after {attempt} attempts; \
                      {landed_enters} Enters repainted without transcript growth, \
@@ -287,7 +308,132 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
             }
         }
     }
+    if composer_emptied(socket, short).await {
+        return Ok(());
+    }
     bail!("draft submit Enter went unconfirmed after {attempts} attempts")
+}
+
+/// Whether a screen probe can prove the composer is now empty. Any failure or
+/// unreadable frame answers `false`: the caller uses this to *stop* worrying, so
+/// it must never guess a submit landed.
+async fn composer_emptied(socket: &Path, short: &str) -> bool {
+    matches!(probe_composer(socket, short).await, composer::ComposerState::Empty)
+}
+
+/// Read the composer off a fresh full-screen repaint. Unreadable, unattachable
+/// or slow answers `Unknown` — callers must never press Enter on a guess.
+async fn probe_composer(socket: &Path, short: &str) -> composer::ComposerState {
+    /// How long the probe collects bytes for its frame.
+    const WINDOW: Duration = Duration::from_millis(700);
+    /// Bound on the whole probe — an unattachable worker must not hang a submit.
+    const TIMEOUT: Duration = Duration::from_secs(3);
+
+    match tokio::time::timeout(TIMEOUT, attach_screen(socket, short, WINDOW)).await {
+        Ok(Ok(screen)) => composer::composer_state(&screen),
+        Ok(Err(err)) => {
+            tracing::debug!(%err, %short, "composer probe failed");
+            composer::ComposerState::Unknown
+        }
+        Err(_) => composer::ComposerState::Unknown,
+    }
+}
+
+/// Read one full screen frame from a worker: a fresh attach makes the worker
+/// repaint everything, so `window` of coalesced bytes is the current screen.
+/// Never writes after the request — the bytes would land as keystrokes.
+async fn attach_screen(socket: &Path, short: &str, window: Duration) -> Result<String> {
+    let (mut reader, _write_half) = attach_handshake(socket, short).await?;
+    let mut frame: Vec<u8> = Vec::new();
+    let mut buf = vec![0_u8; READ_BUF];
+    let deadline = tokio::time::Instant::now() + window;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        match tokio::time::timeout(deadline - now, reader.read(&mut buf)).await {
+            Ok(Ok(0)) => bail!("worker detached during screen probe"),
+            Ok(Ok(n)) => frame.extend_from_slice(&buf[..n]),
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => break,
+        }
+    }
+    Ok(composer::strip_ansi(&frame))
+}
+
+/// Submit a draft in a worker that is mid-turn. The quiet-screen heuristic
+/// [`attach_submit`] uses is unusable here — a busy claude repaints its spinner
+/// several times a second, so the screen never goes quiet and every Enter is
+/// followed by bytes that look like a confirmation. Instead: give the composer a
+/// short ingest grace, press Enter, and read the composer back off a fresh
+/// full-screen repaint. Re-press only while the draft is provably still there,
+/// which is the one state where another Enter cannot double-submit.
+async fn attach_submit_probed(socket: &Path, short: &str) -> Result<()> {
+    /// Grace for the composer to finish ingesting the paste (image paths are
+    /// read and swapped for `[Image #N]`) before the first Enter.
+    const INGEST_GRACE: Duration = Duration::from_millis(1200);
+    /// Settling time between an Enter and the probe that judges it.
+    const AFTER_ENTER: Duration = Duration::from_millis(600);
+    const MAX_ATTEMPTS: u32 = 6;
+    /// Consecutive unreadable frames after which we stop pressing: a landed
+    /// submit must never be doubled just because the screen got unclear.
+    const MAX_UNKNOWN: u32 = 2;
+
+    let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
+    let mut buf = vec![0_u8; READ_BUF];
+    // Draining is not optional: an unread attach backs up the worker's PTY
+    // writer.
+    drain_for(&mut reader, &mut buf, INGEST_GRACE).await?;
+
+    let mut unknown = 0_u32;
+    for attempt in 1..=MAX_ATTEMPTS {
+        write_half.write_all(b"\r").await?;
+        write_half.flush().await?;
+        drain_for(&mut reader, &mut buf, AFTER_ENTER).await?;
+
+        let state = probe_composer(socket, short).await;
+        if matches!(state, composer::ComposerState::Unknown) {
+            unknown += 1;
+        } else {
+            unknown = 0;
+        }
+        match composer::next_submit_step(state, attempt, unknown, MAX_ATTEMPTS, MAX_UNKNOWN) {
+            composer::SubmitStep::Done => {
+                if attempt > 1 {
+                    tracing::info!(%short, attempt, "queued draft submit needed retry Enters");
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                return Ok(());
+            }
+            composer::SubmitStep::Press => {}
+            composer::SubmitStep::GiveUp => bail!(
+                "queued draft still in the composer after {attempt} Enters (last probe: {state:?})"
+            ),
+        }
+    }
+    bail!("queued draft submit went unconfirmed after {MAX_ATTEMPTS} Enters")
+}
+
+/// Read and discard PTY bytes for `window`, failing if the worker detaches.
+async fn drain_for(
+    reader: &mut BufReader<OwnedReadHalf>,
+    buf: &mut [u8],
+    window: Duration,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + window;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        match tokio::time::timeout(deadline - now, reader.read(buf)).await {
+            Ok(Ok(0)) => bail!("worker detached during draft submit"),
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => return Ok(()),
+        }
+    }
 }
 
 /// Answer a pending `AskUserQuestion` form natively: inject the
@@ -740,5 +886,149 @@ mod tests {
             .expect_err("FIN must be an error");
         assert!(err.to_string().contains("detached"), "unexpected error: {err}");
         server.await.unwrap();
+    }
+
+    /// Fake busy worker: it streams a spinner forever (so no quiet window and
+    /// no meaningful repaint signal exists), swallows the first Enter, and
+    /// empties its composer on the second. Every fresh attach repaints the
+    /// current screen, which is what the probe reads.
+    fn spawn_busy_worker(
+        listener: tokio::net::UnixListener,
+        enters: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        swallow: u32,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                let enters = std::sync::Arc::clone(&enters);
+                tokio::spawn(async move {
+                    use std::sync::atomic::Ordering;
+                    let (read_half, mut write_half) = stream.into_split();
+                    let mut reader = BufReader::new(read_half);
+                    let mut req = String::new();
+                    if reader.read_line(&mut req).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+                    let submitted = enters.load(Ordering::SeqCst) > swallow;
+                    let frame: &[u8] = if submitted {
+                        b"\x1b[2J\x1b[1;1H\xc2\xb7 Pollinating\xe2\x80\xa6\x1b[3;1H\
+                          \xe2\x94\x82 > \xe2\x94\x82"
+                    } else {
+                        b"\x1b[2J\x1b[1;1H\xc2\xb7 Pollinating\xe2\x80\xa6\x1b[3;1H\
+                          \xe2\x94\x82 > [Pasted text #7 +3 lines] \xe2\x94\x82"
+                    };
+                    write_half.write_all(frame).await.unwrap();
+                    write_half.flush().await.unwrap();
+
+                    let mut key = [0_u8; 1];
+                    loop {
+                        tokio::select! {
+                            read = reader.read(&mut key) => match read {
+                                Ok(0) | Err(_) => return,
+                                Ok(_) => if key[0] == b'\r' {
+                                    enters.fetch_add(1, Ordering::SeqCst);
+                                },
+                            },
+                            () = tokio::time::sleep(Duration::from_millis(100)) => {
+                                if write_half.write_all(b"\x1b[1;1H\xc2\xb7 spinning").await.is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        })
+    }
+
+    /// The reported defect: mid-turn, with an image + multiline paste, the first
+    /// Enter is swallowed while the composer ingests. The probe must notice the
+    /// draft is still there and land a second Enter within seconds.
+    #[tokio::test]
+    async fn attach_submit_probed_re_presses_until_the_composer_empties() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let enters = std::sync::Arc::new(AtomicU32::new(0));
+        let server = spawn_busy_worker(listener, std::sync::Arc::clone(&enters), 1);
+
+        let started = std::time::Instant::now();
+        attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Composer)
+            .await
+            .expect("submit should confirm once the composer empties");
+        assert_eq!(enters.load(Ordering::SeqCst), 2, "one swallowed Enter, one that landed");
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        server.abort();
+    }
+
+    /// A composer that empties on the first Enter must not get a second one —
+    /// mid-turn that would queue a stray empty message.
+    #[tokio::test]
+    async fn attach_submit_probed_presses_once_when_the_first_enter_lands() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let enters = std::sync::Arc::new(AtomicU32::new(0));
+        let server = spawn_busy_worker(listener, std::sync::Arc::clone(&enters), 0);
+
+        attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Composer)
+            .await
+            .expect("submit should confirm on the first Enter");
+        assert_eq!(enters.load(Ordering::SeqCst), 1, "exactly one Enter");
+        server.abort();
+    }
+
+    /// An unreadable screen (no composer row at all) must stop after
+    /// `MAX_UNKNOWN` probes rather than pressing Enter six times.
+    #[tokio::test]
+    async fn attach_submit_probed_stops_pressing_on_unreadable_screens() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let enters = std::sync::Arc::new(AtomicU32::new(0));
+        let counter = std::sync::Arc::clone(&enters);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                let counter = std::sync::Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let (read_half, mut write_half) = stream.into_split();
+                    let mut reader = BufReader::new(read_half);
+                    let mut req = String::new();
+                    if reader.read_line(&mut req).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+                    let mut key = [0_u8; 1];
+                    loop {
+                        tokio::select! {
+                            read = reader.read(&mut key) => match read {
+                                Ok(0) | Err(_) => return,
+                                Ok(_) => if key[0] == b'\r' {
+                                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                },
+                            },
+                            () = tokio::time::sleep(Duration::from_millis(100)) => {
+                                if write_half.write_all(b"  Read(foo.rs)\n").await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let err = attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Composer)
+            .await
+            .expect_err("an unreadable screen cannot confirm a submit");
+        assert!(err.to_string().contains("composer"), "unexpected error: {err}");
+        assert_eq!(enters.load(Ordering::SeqCst), 2, "capped at MAX_UNKNOWN Enters");
+        server.abort();
     }
 }

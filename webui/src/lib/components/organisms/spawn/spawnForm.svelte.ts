@@ -335,7 +335,13 @@ export class SpawnForm {
 	}
 
 	buildSpawnBody(): SpawnRequest {
-		return buildSpawnBody(this.effectiveForm, this.spawnProvider, envMap(this.envRows), this.followupParent);
+		return buildSpawnBody(
+			this.effectiveForm,
+			this.spawnProvider,
+			envMap(this.envRows),
+			this.followupParent,
+			this.selectedProfileId
+		);
 	}
 	draftBody(): SpawnRequest {
 		return draftBody(this.buildSpawnBody(), this.envRows, this.files);

@@ -7,12 +7,12 @@
 	import { qk } from '$lib/queries';
 	import { attachmentStore } from '$lib/attachmentStore';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
-	import { page } from '$app/state';
+	import { page, updated } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
 	import { settings, sessionListWidthSize } from '$lib/settings.svelte';
 	import { locale } from '$lib/locale.svelte';
 	import { ws } from '$lib/ws.svelte';
-	import { goto } from '$app/navigation';
+	import { goto, beforeNavigate } from '$app/navigation';
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
@@ -23,16 +23,22 @@
 	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container, Toaster } from '@dorsk/tsumikit';
 	import { dockLayout } from '$lib/spawnDock.svelte';
+	import { fullBleed } from '$lib/fullBleed.svelte';
 	import { mountJourneys } from '$lib/journey';
 
 	let { children } = $props();
 
-	// A plugin's full page and the tiles grid manage their own full-height
-	// layout, so they render outside the width-capped Container and without
-	// content padding.
+	// A deploy replaced the content-hashed chunks this tab knows, so the next
+	// navigation goes through the server instead of importing a 404.
+	beforeNavigate(({ willUnload, to }) => {
+		if (updated.current && !willUnload && to?.url) location.href = to.url.href;
+	});
+
+	// A plugin's full page and the Sessions tiles mode manage their own
+	// full-height layout, so they render outside the width-capped Container and
+	// without content padding.
 	const isApp = $derived(page.url.pathname.startsWith('/apps/'));
-	const isTiles = $derived(page.url.pathname.startsWith('/tiles'));
-	const fullBleed = $derived(isApp || isTiles);
+	const bleed = $derived(isApp || fullBleed.on);
 
 	// Every route renders in the --content-wide column; only the session list's
 	// width is user-settable (Settings › Session list), and the cap only bites
@@ -151,13 +157,13 @@
 				<main
 					class="content"
 					class:app={isApp}
-					class:tiles={isTiles}
+					class:tiles={fullBleed.on}
 					class:dock-left={!!docks?.left}
 					class:dock-right={!!docks?.right}
 					style:--dock-left-w={docks?.left ?? undefined}
 					style:--dock-right-w={docks?.right ?? undefined}
 				>
-					{#if fullBleed}
+					{#if bleed}
 						{@render children?.()}
 					{:else}
 						<Container size={contentSize}>
