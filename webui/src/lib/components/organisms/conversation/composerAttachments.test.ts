@@ -46,6 +46,7 @@ async function make(over: Partial<ComposerAttachmentsOpts> = {}) {
 }
 
 const file = (name: string, body = 'x') => new File([body], name, { type: 'text/plain' });
+const image = (name: string) => new File(['x'], name, { type: 'image/png' });
 
 const pasteEvent = (text: string) =>
 	({
@@ -72,11 +73,21 @@ describe('ComposerAttachments', () => {
 	});
 
 	it('still lists every staged path in the sent body with no tokens in the text', async () => {
-		const { a } = await make();
-		a.add([file('a.png'), file('b.png')]);
+		const { a, text } = await make();
+		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
-		const body = await a.stage('look', async () => ({ paths: ['/tmp/a.png', '/tmp/b.png'] }));
-		expect(body).toBe('look\n\nAttached files (2):\n- /tmp/a.png\n- /tmp/b.png');
+		const body = await a.stage('look', async () => ({ paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
+		expect(body).toBe('look\n\nAttached files (2):\n- /tmp/a.txt\n- /tmp/b.txt');
+		expect(text()).toBe('');
+	});
+
+	it('leads the sent body with image names, which Claude keeps once it eats the paths', async () => {
+		const { a, text } = await make();
+		a.add([image('shot.png')]);
+		await flush();
+		const body = await a.stage('', async () => ({ paths: ['/tmp/cctui-uploads/s1/shot.png'] }));
+		expect(body).toBe('[shot.png]\n\nAttached file:\n- /tmp/cctui-uploads/s1/shot.png');
+		expect(text()).toBe('');
 	});
 
 	it('tokens the draft for a masked large paste', async () => {

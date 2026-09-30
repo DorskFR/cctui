@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isPasteName, parseUserUploadRefs } from './lines';
-import { pickAttachment, type SessionAttachment } from '$lib/queries/types';
+import { pickAttachment, pickUnnamedImages, type SessionAttachment } from '$lib/queries/types';
 
 const sid = '0a1b2c3d-1111-2222-3333-444455556666';
 
@@ -28,6 +28,22 @@ describe('parseUserUploadRefs', () => {
 	it('takes only the staged name when a stale token names another upload', () => {
 		const text = `What is using so much for the GPU?\n\n[paste-1.txt]\n\nI think we could free some?\n\nAttached file:\n- /tmp/cctui-uploads/${sid}/paste-1-1.txt`;
 		expect(parseUserUploadRefs(text)).toEqual({ sessionId: sid, names: ['paste-1-1.txt'] });
+	});
+
+	it("names the images of Claude's copy from its leading token run", () => {
+		expect(parseUserUploadRefs('[Image #1][shot 1.png]\nlook\nAttached file:\n-')).toEqual({
+			sessionId: null,
+			names: ['shot 1.png']
+		});
+	});
+
+	it("counts the images of Claude's copy when no name survived", () => {
+		expect(parseUserUploadRefs('[Image #1]Attached file:\n-')).toEqual({
+			sessionId: null,
+			names: [],
+			unnamedImages: 1
+		});
+		expect(parseUserUploadRefs('[Image #1][Image #2]good ?\nAttached files (2):\n-\n-').unnamedImages).toBe(2);
 	});
 
 	it('ignores prose brackets and markdown links', () => {
@@ -76,5 +92,27 @@ describe('pickAttachment', () => {
 	it('falls back to the earliest upload of that name, and null when unknown', () => {
 		expect(pickAttachment(all, 'paste-1.txt', 10)?.hash).toBe('a');
 		expect(pickAttachment(all, 'nope.txt', 6000)).toBeNull();
+	});
+});
+
+describe('pickUnnamedImages', () => {
+	const img = (name: string, created_at: number) => ({ ...att(name, created_at), content_type: 'image/png' });
+	const all = [
+		img('old.png', 0),
+		img('a.png', 1_000_000),
+		att('paste-1.txt', 1_001_000),
+		img('b.png', 1_002_000),
+		img('later.png', 2_000_000)
+	];
+
+	it('takes the newest images uploaded just before the message, oldest first', () => {
+		expect(pickUnnamedImages(all, 2, 1_005_000).map((a) => a.name)).toEqual(['a.png', 'b.png']);
+		expect(pickUnnamedImages(all, 1, 1_005_000).map((a) => a.name)).toEqual(['b.png']);
+	});
+
+	it('never reaches for images far outside the message time', () => {
+		expect(pickUnnamedImages(all, 5, 1_005_000).map((a) => a.name)).toEqual(['a.png', 'b.png']);
+		expect(pickUnnamedImages(all, 1, 5_000_000)).toEqual([]);
+		expect(pickUnnamedImages(all, 0, 1_005_000)).toEqual([]);
 	});
 });

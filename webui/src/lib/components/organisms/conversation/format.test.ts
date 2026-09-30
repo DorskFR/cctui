@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { insertAtCaret, parseTodos, quoteMarkdown, todoProgress } from './format';
+import {
+	insertAtCaret,
+	parseTodos,
+	quoteMarkdown,
+	stripAttachmentDecorations,
+	todoProgress
+} from './format';
 import type { AskQuestion, Line } from './types';
 
 // The Conversation Drawer must render the combined message list in strict
@@ -182,5 +188,17 @@ describe('insertAtCaret', () => {
 		const first = insertAtCaret('', undefined, block);
 		const second = insertAtCaret(first.text, first.caret, '> r\n\n');
 		expect(second.text).toBe('> q\n\n> r\n\n');
+	});
+});
+
+describe('stripAttachmentDecorations', () => {
+	it("drops Claude's pathless attachment block glued to the image token run", () => {
+		expect(stripAttachmentDecorations('[Image #1]Attached file:\n-')).toBe('');
+		expect(stripAttachmentDecorations('[Image #1][Image #2]Attached files (2):\n-\n-')).toBe('');
+	});
+
+	it("keeps the prose of Claude's copy of an image turn", () => {
+		expect(stripAttachmentDecorations('[Image #1]good ?\nAttached file:\n-')).toBe('good ?');
+		expect(stripAttachmentDecorations('[Image #1][shot.png]\nlook\n\nAttached file:\n-')).toBe('look');
 	});
 });

@@ -111,7 +111,9 @@ export function stripAttachmentDecorations(text: string): string {
 	let inAttachedBlock = false;
 	let first = true;
 	for (const raw of text.split('\n')) {
-		const line = raw.trimEnd();
+		// The token run is only ever prefixed to the turn's opening line; a later
+		// `[file.txt]` is the human's own prose and must survive.
+		const line = first ? raw.trimEnd().replace(IMAGE_TOKEN_RUN_RE, '') : raw.trimEnd();
 		const t = line.trim();
 		if (ATTACHED_HEADER_RE.test(t)) {
 			inAttachedBlock = true;
@@ -122,10 +124,8 @@ export function stripAttachmentDecorations(text: string): string {
 			inAttachedBlock = false;
 		}
 		if (SYNTH_IMAGE_LINE_RE.test(t) || STAGED_BULLET_RE.test(t)) continue;
-		// The token run is only ever prefixed to the turn's opening line; a later
-		// `[file.txt]` is the human's own prose and must survive.
-		out.push(first ? line.replace(IMAGE_TOKEN_RUN_RE, '') : line);
-		if (t) first = false;
+		out.push(line);
+		if (raw.trim()) first = false;
 	}
 	return out.join('\n').trim();
 }

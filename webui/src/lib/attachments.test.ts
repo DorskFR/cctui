@@ -9,6 +9,7 @@ import {
 	mergeFiles,
 	mergeFilesRenamed,
 	nextPasteIndex,
+	prefixImageTokens,
 	rewriteFileTokens
 } from './attachments';
 
@@ -201,5 +202,27 @@ describe('fileCapError', () => {
 		expect(fileCapError(Array.from({ length: 11 }, (_, i) => sized(String(i), 1)))).toBe(
 			'Too many files (max 10)'
 		);
+	});
+});
+
+describe('prefixImageTokens', () => {
+	const img = (name: string) => new File(['x'], name, { type: 'image/png' });
+
+	it('leads the body with the staged name of each image', () => {
+		const files = [img('Screenshot 1.png'), img('b.png'), f('notes.txt')];
+		const paths = ['/tmp/u/s/Screenshot 1.png', '/tmp/u/s/b-1.png', '/tmp/u/s/notes.txt'];
+		expect(prefixImageTokens('look', files, paths)).toBe('[Screenshot 1.png] [b-1.png]\nlook');
+		expect(prefixImageTokens('', files, paths)).toBe('[Screenshot 1.png] [b-1.png]');
+	});
+
+	it('skips names the leading run already carries, not ones later in the prose', () => {
+		const files = [img('a.png'), img('b.png')];
+		const paths = ['/tmp/a.png', '/tmp/b.png'];
+		expect(prefixImageTokens('[a.png] see [b.png]', files, paths)).toBe('[b.png]\n[a.png] see [b.png]');
+		expect(prefixImageTokens('[a.png] [b.png] hi', files, paths)).toBe('[a.png] [b.png] hi');
+	});
+
+	it('leaves a body without images untouched', () => {
+		expect(prefixImageTokens('hi', [f('a.txt')], ['/tmp/a.txt'])).toBe('hi');
 	});
 });

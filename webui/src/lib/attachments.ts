@@ -100,6 +100,20 @@ export function rewriteFileTokens(text: string, files: File[], paths: string[]):
 	return out;
 }
 
+const LEADING_TOKEN_RUN_RE = /^(?:\s*\[[^[\]\n]+\])+/;
+
+/** Claude swaps a staged image path for an image block and records only an
+ *  `[Image #N]` in its place, so a leading `[name]` run is the one copy of the
+ *  image's name its transcript keeps. */
+export function prefixImageTokens(text: string, files: File[], paths: string[]): string {
+	const run = LEADING_TOKEN_RUN_RE.exec(text)?.[0] ?? '';
+	const tokens = files
+		.map((f, i) => (f.type.startsWith('image/') ? `[${paths[i]?.split('/').pop() || f.name}]` : ''))
+		.filter((t) => t && !run.includes(t));
+	if (!tokens.length) return text;
+	return text ? `${tokens.join(' ')}\n${text}` : tokens.join(' ');
+}
+
 /** Append a `[name]` reference for each attached file to the draft text,
  *  skipping names it already contains so a re-pick doesn't duplicate. */
 export function appendFileTokens(text: string, files: File[]): string {

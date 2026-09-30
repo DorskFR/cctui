@@ -164,7 +164,7 @@
 	{#if pluginActions.length && onpluginaction}
 		<PluginMessageActions actions={pluginActions} onopen={onpluginaction} />
 	{/if}
-	{#if uploadRefs && uploadRefs.names.length}
+	{#if uploadRefs && (uploadRefs.names.length || uploadRefs.unnamedImages)}
 		<UserAttachments refs={uploadRefs} ts={ln.ts} {archived} />
 	{/if}
 	{#if ln.summary}

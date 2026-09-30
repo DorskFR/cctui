@@ -11,7 +11,12 @@
 	import { localFileHref } from '$lib/markdown';
 	import { m } from '$lib/paraglide/messages';
 	import { useSessionAttachments } from '$lib/queries';
-	import { attachmentBlobUrl, pickAttachment, type SessionAttachment } from '$lib/queries/types';
+	import {
+		attachmentBlobUrl,
+		pickAttachment,
+		pickUnnamedImages,
+		type SessionAttachment
+	} from '$lib/queries/types';
 	import { toasts } from '$lib/toast.svelte';
 	import { isPasteName, type UserUploadRefs } from './lines';
 
@@ -23,13 +28,15 @@
 
 	const query = useSessionAttachments(
 		() => refs.sessionId ?? '',
-		() => !!refs.sessionId && refs.names.length > 0
+		() => !!refs.sessionId && (refs.names.length > 0 || !!refs.unnamedImages)
 	);
 
 	const resolved = $derived(
-		refs.names
-			.map((name) => pickAttachment(query.data ?? [], name, ts))
-			.filter((a): a is SessionAttachment => a !== null)
+		refs.names.length
+			? refs.names
+					.map((name) => pickAttachment(query.data ?? [], name, ts))
+					.filter((a): a is SessionAttachment => a !== null)
+			: pickUnnamedImages(query.data ?? [], refs.unnamedImages ?? 0, ts)
 	);
 
 	const url = (a: SessionAttachment) => attachmentBlobUrl(a.session_id, a.hash);
