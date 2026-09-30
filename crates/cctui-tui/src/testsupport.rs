@@ -8,6 +8,9 @@ use serde_json::json;
 
 use crate::app::{App, ConversationLine, LineKind, PendingPermission};
 
+/// Pinned so a version bump cannot rewrite every snapshot.
+pub(crate) const VERSION: &str = "0.0.0-test";
+
 pub(crate) const WIDTH: u16 = 100;
 pub(crate) const HEIGHT: u16 = 24;
 
@@ -16,6 +19,7 @@ pub(crate) fn render_screen(app: &mut App) -> String {
 }
 
 pub(crate) fn render_screen_sized(app: &mut App, width: u16, height: u16) -> String {
+    app.version = VERSION;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal.draw(|frame| crate::views::render(frame, app)).expect("draw");
     buffer_text(terminal.backend().buffer())

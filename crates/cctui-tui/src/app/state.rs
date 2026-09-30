@@ -64,6 +64,9 @@ pub(crate) fn uptime_secs(s: &SessionListItem) -> i64 {
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub router: Router,
+    /// Injected so views never read the build: a version bump must not churn
+    /// every snapshot.
+    pub version: &'static str,
     pub sessions: Vec<SessionListItem>,
     pub selected_index: usize,
     pub stream_buffer: HashMap<String, Vec<ConversationLine>>,
@@ -108,6 +111,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             router: Router::new(View::SessionList),
+            version: env!("CARGO_PKG_VERSION"),
             sessions: Vec::new(),
             selected_index: 0,
             stream_buffer: HashMap::new(),
