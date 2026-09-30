@@ -14,6 +14,15 @@ pub(crate) enum Incoming {
     Undecodable(String),
 }
 
+/// The single place a websocket frame becomes an [`Incoming`]. Shared with the
+/// contract test so it exercises the production decode, not a copy of it.
+pub(crate) fn decode_frame(text: &str) -> Incoming {
+    match serde_json::from_str::<ServerEvent>(text) {
+        Ok(event) => Incoming::Event(Box::new(event)),
+        Err(e) => Incoming::Undecodable(e.to_string()),
+    }
+}
+
 pub struct ServerClient {
     base_url: String,
     token: String,
@@ -155,11 +164,7 @@ impl ServerClient {
                     Message::Close(_) => break,
                     _ => continue,
                 };
-                let incoming = match serde_json::from_str::<ServerEvent>(&text) {
-                    Ok(event) => Incoming::Event(Box::new(event)),
-                    Err(e) => Incoming::Undecodable(e.to_string()),
-                };
-                if event_tx.send(incoming).await.is_err() {
+                if event_tx.send(decode_frame(&text)).await.is_err() {
                     break;
                 }
             }

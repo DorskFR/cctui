@@ -4,6 +4,8 @@ mod install;
 mod keys;
 mod selfupdate;
 #[cfg(test)]
+mod server_event_contract;
+#[cfg(test)]
 mod testsupport;
 mod theme;
 mod ui;
