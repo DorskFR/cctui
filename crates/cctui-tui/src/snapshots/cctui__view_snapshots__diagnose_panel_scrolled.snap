@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   ┌ Diagnose ──────────────────────────────────────────────────────────────────────────────────┐
+   │s-working                                                                                   │
+   │account                            main                                                     │
+▸  │account bound                      true                                                     │
+   │machine last seen                  4s ago                                                   │
+   │daemon report:                                                                              │
+   │adapter                            claude-code                                              │
+   │short                              6e189420                                                 │
+   │effective_state [activity, 1s ago] {"verdict":"active/working","tempo":"active","state":"wo…│
+   │last_hook_event [hook, undated]    — (no hook delivery seen)                                │
+   │attach [attach, undated]           {"phase":"held","last_probe_alive":true,"last_probe_at_m…│
+   │pty_output [pty, undated]          — (PTY capture not implemented)                          │
+   │claude_socket [discovery, 0ms ago] {"path":"/tmp/cc-daemon-1000/ab/control.sock","live":tru…│
+   │transcript [filesystem, undated]   — (no transcript pinned)                                 │
+   │prompts [hook, undated]            — (no prompt state yet)                                  │
+   │permission_mode [spawn, undated]   "yolo"                                                   │
+   │dispatch [dispatch, undated]       — (not a dispatched session)                             │
+   │gateway [daemon-config, undated]   — (no server client)                                     │
+   │ j/k Scroll  r Refresh  Esc Close    18/18                                                  │
+   └────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

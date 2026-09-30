@@ -14,6 +14,7 @@ pub enum Context {
     History,
     Help,
     Permission,
+    Diagnose,
     Ask,
     AskText,
     Plan,
@@ -28,6 +29,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::History,
     Context::Help,
     Context::Permission,
+    Context::Diagnose,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -44,6 +46,7 @@ impl Context {
             Self::History => "history",
             Self::Help => "help",
             Self::Permission => "permission",
+            Self::Diagnose => "diagnose",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -60,6 +63,7 @@ impl Context {
             Self::History => "Prompt history",
             Self::Help => "Help",
             Self::Permission => "Permission card",
+            Self::Diagnose => "Diagnose / info",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -164,6 +168,14 @@ actions! {
     HistoryRecall => "history-recall", "Put this prompt in the composer";
 
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    DiagnoseClose => "diagnose-close", "Close the panel";
+    DiagnoseScrollDown => "diagnose-scroll-down", "Scroll the panel down";
+    DiagnoseScrollUp => "diagnose-scroll-up", "Scroll the panel up";
+    DiagnosePageDown => "diagnose-page-down", "Page the panel down";
+    DiagnosePageUp => "diagnose-page-up", "Page the panel up";
+    DiagnoseTop => "diagnose-top", "Jump to the top of the panel";
+    DiagnoseRefresh => "diagnose-refresh", "Refresh the report";
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
@@ -276,6 +288,19 @@ const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "enter", ActionId::HistoryRecall),
 ];
 
+/// The panel is modal, so it claims its own scrolling rather than falling
+/// through to the view underneath.
+const DIAGNOSE: &[BindingSpec] = &[
+    spec(Context::Diagnose, "esc, q", ActionId::DiagnoseClose),
+    spec(Context::Diagnose, "j, down", ActionId::DiagnoseScrollDown),
+    spec(Context::Diagnose, "k, up", ActionId::DiagnoseScrollUp),
+    spec(Context::Diagnose, "pagedown", ActionId::DiagnosePageDown),
+    spec(Context::Diagnose, "pageup", ActionId::DiagnosePageUp),
+    spec(Context::Diagnose, "g", ActionId::DiagnoseTop),
+    spec(Context::Diagnose, "r", ActionId::DiagnoseRefresh),
+    spec(Context::Diagnose, "D", ActionId::Diagnose),
+];
+
 const HELP: &[BindingSpec] = &[
     spec(Context::Help, "esc, q, ?", ActionId::CloseHelp),
     spec(Context::Help, "j, down", ActionId::ScrollDown),
@@ -333,6 +358,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     HISTORY,
     HELP,
     PERMISSION,
+    DIAGNOSE,
     ASK,
     ASK_TEXT,
     PLAN,

@@ -1,6 +1,7 @@
 pub mod banner;
 pub mod cards;
 pub mod conversation;
+pub mod diagnose;
 pub mod help;
 pub mod history;
 pub mod prompt;
@@ -18,6 +19,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Help => {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
+        }
+        View::Diagnose => {
+            match app.router.below() {
+                Some(View::Conversation) => conversation::draw(frame, app),
+                _ => sessions::draw(frame, app),
+            }
+            diagnose::draw(frame, app);
         }
         View::HistoryPicker => {
             match app.router.below() {

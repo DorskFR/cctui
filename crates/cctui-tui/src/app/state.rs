@@ -6,6 +6,7 @@ use ratatui_textarea::TextArea;
 
 use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
+use super::diagnose::DiagnosePanel;
 use super::identity::AuthState;
 use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
@@ -20,6 +21,7 @@ pub enum View {
     Conversation,
     Help,
     HistoryPicker,
+    Diagnose,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -197,6 +199,8 @@ pub struct App {
     pub asks: HashMap<String, AskCard>,
     /// Live plan-approval prompt per session, cleared on `PlanResolved`.
     pub plans: HashMap<String, PlanCard>,
+    /// The open diagnose/info overlay, `None` when it is closed.
+    pub diagnose: Option<DiagnosePanel>,
     pub scroll_offset: usize,
     /// First cheat-sheet row shown; clamped by the overlay when it draws.
     pub help_scroll: usize,
@@ -283,6 +287,7 @@ impl App {
             permissions: PermissionInbox::default(),
             asks: HashMap::new(),
             plans: HashMap::new(),
+            diagnose: None,
             scroll_offset: 0,
             help_scroll: 0,
             follow_tail: true,

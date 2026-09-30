@@ -1,12 +1,13 @@
 use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::diagnose::DiagnoseAction;
 use crate::app::drafts::DraftAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
-    CLOCK_MS, app_with_sessions, ask_card, conversation_store, edit_permission_request,
-    ended_session, ms_ago, permission_request, plan_card, render_screen, render_screen_sized,
-    session, todo,
+    CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnose_response,
+    edit_permission_request, ended_session, ms_ago, permission_request, plan_card, render_screen,
+    render_screen_sized, session, todo,
 };
 
 /// `selected_index` walks the grouped list, so the session on screen is not
@@ -503,4 +504,109 @@ fn conversation_permission_card_outranks_an_ask_card() {
     app.asks.insert(id, ask_card());
     with_permission(&mut app, permission_request());
     insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The panel over the session list, with the report already in hand.
+fn app_with_panel(mode: crate::app::diagnose::DiagnoseMode) -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Diagnose(DiagnoseAction::Open(mode)));
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Loaded {
+            session_id: "s-working".to_owned(),
+            report: Box::new(diagnose_response()),
+        }),
+    );
+    app
+}
+
+#[test]
+fn diagnose_panel() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_scrolled() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    reduce(&mut app, Action::Diagnose(DiagnoseAction::Scroll(6)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_still_fetching() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    focus(&mut app, "s-working");
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Open(crate::app::diagnose::DiagnoseMode::Facts)),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_with_an_unreachable_daemon() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    let mut report = diagnose_response();
+    report.daemon = None;
+    report.daemon_error = Some("machine orion is offline".to_owned());
+    report.server.account_bound = false;
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Loaded {
+            session_id: "s-working".to_owned(),
+            report: Box::new(report),
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_lists_the_silence_reasons() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    let mut report = diagnose_response();
+    if let Some(daemon) = report.daemon.as_mut() {
+        daemon.adapter = "codex".to_owned();
+        daemon.codex = Some(codex_section());
+    }
+    report.silence = vec![
+        cctui_proto::silence::SilenceReason::CodexStalledRpc { count: 2, age_ms: 120_000 },
+        cctui_proto::silence::SilenceReason::CodexNoTurn,
+    ];
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Loaded {
+            session_id: "s-working".to_owned(),
+            report: Box::new(report),
+        }),
+    );
+    reduce(&mut app, Action::Diagnose(DiagnoseAction::Scroll(9)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn codex_section() -> cctui_proto::diagnose::CodexDiagnose {
+    cctui_proto::diagnose::CodexDiagnose {
+        codex_version: Some("0.153.4".to_owned()),
+        min_version: "0.153.4".to_owned(),
+        version_supported: Some(true),
+        transport: "stdio".to_owned(),
+        app_server_pid: Some(4242),
+        live: true,
+        registered: true,
+        thread_id: Some("019e6628".to_owned()),
+        active_turn_id: Some("turn-1".to_owned()),
+        turn_status: "working".to_owned(),
+        pending_rpc_count: 2,
+        pending_rpc_methods: vec!["turn/start".to_owned()],
+        protocol_errors: vec![],
+        stderr_tail: vec![],
+        rpc_tail: vec![],
+        rollout_path: None,
+        rollout_size_bytes: None,
+        auth_state: Some("gateway env present".to_owned()),
+        registry_live_mismatch: None,
+    }
 }

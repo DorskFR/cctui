@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::prompt::PromptAction;
@@ -61,6 +62,7 @@ pub enum Action {
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
     Prompt(PromptAction),
+    Diagnose(DiagnoseAction),
 
     StreamLine {
         session_id: String,
@@ -163,6 +165,10 @@ pub enum Effect {
         session_id: String,
         request_id: String,
         behavior: &'static str,
+    },
+    /// `GET /sessions/{id}/diagnose`: everything the daemon and the server know.
+    FetchDiagnose {
+        session_id: String,
     },
     /// Persist the fold state to `tui-state.json`.
     SaveUiState(crate::config::uistate::UiState),

@@ -227,3 +227,69 @@ pub fn ended_session(
     s.ended_at = chrono::DateTime::from_timestamp_millis(1_700_000_000_000);
     s
 }
+
+pub fn diagnose_response() -> cctui_proto::diagnose::SessionDiagnoseResponse {
+    use cctui_proto::diagnose::{
+        AttachStatus, DiagnoseFact, EffectiveState, ServerDiagnose, SessionDiagnose,
+        SessionDiagnoseResponse, SocketStatus,
+    };
+    let now = CLOCK_MS;
+    SessionDiagnoseResponse {
+        session_id: "s-working".to_owned(),
+        daemon: Some(SessionDiagnose {
+            local_id: "s-working".to_owned(),
+            short: Some("6e189420".to_owned()),
+            generated_at_ms: now,
+            adapter: "claude-code".to_owned(),
+            effective_state: DiagnoseFact::observed(
+                EffectiveState {
+                    verdict: "active/working".to_owned(),
+                    tempo: Some("active".to_owned()),
+                    state: Some("working".to_owned()),
+                    detail: Some("running tests".to_owned()),
+                    activity: None,
+                },
+                "activity",
+                now - 1_000,
+                now,
+            ),
+            last_hook_event: DiagnoseFact::missing("hook", "no hook delivery seen"),
+            attach: DiagnoseFact::undated(
+                AttachStatus {
+                    phase: "held".to_owned(),
+                    backoff_ms: None,
+                    last_probe_alive: Some(true),
+                    last_probe_at_ms: Some(now - 10_000),
+                },
+                "attach",
+            ),
+            pty_output: DiagnoseFact::missing("pty", "PTY capture not implemented"),
+            claude_socket: DiagnoseFact::fresh(
+                SocketStatus {
+                    path: Some("/tmp/cc-daemon-1000/ab/control.sock".to_owned()),
+                    live: true,
+                    candidates: vec!["/tmp/cc-daemon-1000/ab/control.sock".to_owned()],
+                },
+                "discovery",
+                now,
+            ),
+            transcript: DiagnoseFact::missing("filesystem", "no transcript pinned"),
+            prompts: DiagnoseFact::missing("hook", "no prompt state yet"),
+            permission_mode: DiagnoseFact::undated("yolo".to_owned(), "spawn"),
+            dispatch: DiagnoseFact::missing("dispatch", "not a dispatched session"),
+            gateway: DiagnoseFact::missing("daemon-config", "no server client"),
+            codex: None,
+            opencode: None,
+        }),
+        daemon_error: None,
+        server: ServerDiagnose {
+            status: Some("active".to_owned()),
+            adapter_id: Some("claude-code".to_owned()),
+            account_bound: true,
+            accounts: vec!["main".to_owned()],
+            machine_id: Some("orion".to_owned()),
+            machine_last_seen_ms: Some(now - 4_000),
+        },
+        silence: vec![],
+    }
+}

@@ -2,6 +2,7 @@ pub mod action;
 pub mod attention;
 pub mod conversation;
 pub mod conversation_store;
+pub mod diagnose;
 pub mod drafts;
 pub mod effects;
 pub mod identity;

@@ -1,29 +1,28 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 397
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         k / ↑       Scroll up                        │
-▸ │  ?           Toggle this cheat sheet            PgDn        Page down                        │
-  │  q           Quit cctui                         PgUp        Page up                          │
-  │  Ctrl+g      Jump to the next pending approval  ? / q / Esc Close this cheat sheet           │
-  │Session list                                   Permission card                                │
-  │  j / ↓       Next session                       y           Allow                            │
-  │  k / ↑       Previous session                   n           Deny                             │
-  │  g           First session                      A           Allow and auto-approve           │
-  │  G           Last session                     Question card                                  │
-  │  Enter       Open the conversation              Esc         Answer later                     │
-  │  z / Tab     Fold or open the subagent group    j / ↓       Next option                      │
-  │  S           Fold or open the section           k / ↑       Previous option                  │
-  │  Z           Fold or open everything            1-9         Pick an option by number         │
-  │Conversation                                     Space       Toggle the focused option        │
-  │  1-9         Jump to session by number          Tab         Next question                    │
-  │  q / Esc     Back to the session list           Shift+Tab   Previous question                │
-  │  j / ↓       Scroll down                        o           Write a free-text answer         │
-  │  k / ↑       Scroll up                          Enter       Send the answer                  │
-  │  PgDn        Page down                        Question card — free text                      │
-  │  PgUp        Page up                            Enter       Accept the text                  │
+  │Anywhere                                       Permission card                                │
+▸ │  ?           Toggle this cheat sheet            y           Allow                            │
+  │  q           Quit cctui                         n           Deny                             │
+  │  D           Diagnose the selected session      A           Allow and auto-approve           │
+  │  Ctrl+g      Jump to the next pending approvalDiagnose / info                                │
+  │Session list                                     D           Diagnose the selected session    │
+  │  j / ↓       Next session                       q / Esc     Close the panel                  │
+  │  k / ↑       Previous session                   j / ↓       Scroll the panel down            │
+  │  g           First session                      k / ↑       Scroll the panel up              │
+  │  G           Last session                       PgDn        Page the panel down              │
+  │  Enter       Open the conversation              PgUp        Page the panel up                │
+  │  z / Tab     Fold or open the subagent group    g           Jump to the top of the panel     │
+  │  S           Fold or open the section           r           Refresh the report               │
+  │  Z           Fold or open everything          Question card                                  │
+  │Conversation                                     Esc         Answer later                     │
+  │  1-9         Jump to session by number          j / ↓       Next option                      │
+  │  q / Esc     Back to the session list           k / ↑       Previous option                  │
+  │  j / ↓       Scroll down                        1-9         Pick an option by number         │
+  │  k / ↑       Scroll up                          Space       Toggle the focused option        │
+  │  PgDn        Page down                          Tab         Next question                    │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

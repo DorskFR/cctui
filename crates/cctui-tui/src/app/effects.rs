@@ -11,6 +11,7 @@ use super::action::{Action, Effect};
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
@@ -203,6 +204,19 @@ async fn run(
             }
             Vec::new()
         }
+        Effect::FetchDiagnose { session_id } => match server.diagnose(&session_id).await {
+            Ok(report) => {
+                vec![Action::Diagnose(DiagnoseAction::Loaded {
+                    session_id,
+                    report: Box::new(report),
+                })]
+            }
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, session_id, "diagnose fetch failed");
+                vec![Action::Diagnose(DiagnoseAction::Failed { session_id, error: e.to_string() })]
+            }
+        },
     }
 }
 
