@@ -44,4 +44,5 @@ sha2.workspace = true
 insta = "1"
 pretty_assertions = "1.4.1"
 tempfile.workspace = true
+toml.workspace = true
 uuid.workspace = true

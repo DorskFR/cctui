@@ -2,6 +2,8 @@ mod app;
 mod client;
 mod install;
 mod keys;
+#[cfg(test)]
+mod parity;
 mod selfupdate;
 #[cfg(test)]
 mod server_event_contract;
