@@ -10,11 +10,67 @@ Tsumikit, atomic design).
 - `crates/cctui-server` — the server (HTTP API + WebSocket).
 - `crates/cctui-daemon` — long-lived per-machine daemon that spawns/observes sessions.
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
-- `crates/cctui-tui` — is unmaintained for now.
+- `crates/cctui-tui` — the terminal client (`cctui`). Maintained; see
+  [The TUI is a first-class client](#the-tui-is-a-first-class-client).
 - `webui/` — the web UI (Svelte 5 + Tsumikit). See DESIGN.md.
 - `migrations/` — sqlx Postgres migrations, applied on server start. See
   [docs/database-performance.md](docs/database-performance.md) for reading
   `pg_stat_statements` and index usage before adding or dropping an index.
+
+## The TUI is a first-class client
+
+`crates/cctui-tui` is a supported client, not a leftover. It talks to the same
+HTTP API and WebSocket as the webui, and it is the only client available over
+plain SSH. Treat a TUI regression the way you would a webui regression.
+
+### Crate layout
+
+- `src/app/` — the store. `state.rs` holds `App`; `action.rs` defines the
+  `Action` vocabulary every input source funnels into and the `Effect` set that
+  is the only route to the network; `reduce.rs` is
+  `reduce(&mut App, Action) -> Vec<Effect>` and is **pure** — no clock (read
+  `App::clock_ms`), no IO, no `await`; `effects.rs` runs effects sequentially on
+  a worker task, off the key-handling path; `router.rs` is the view stack;
+  `toast.rs` is the status-line primitive; `server_event.rs` turns a
+  `ServerEvent` into actions; `line.rs` turns an `AgentEvent` into a rendered
+  conversation line.
+- `src/keys.rs` — pure terminal-input-to-`Action` mapping, testable without a
+  terminal. Key handlers dispatch actions; they never call the network.
+- `src/views/` — one module per view, plus `views::render` which dispatches on
+  the router. `src/widgets/`, `src/theme.rs` — shared chrome.
+- `src/ui/` — vendored Codex render modules (markdown, diffs, wrapping), held
+  outside the pedantic lints.
+- `src/main.rs` — CLI, terminal setup and the select loop. New state belongs in
+  the store, not here.
+
+### Server and proto changes must reach the TUI
+
+`app/server_event.rs` matches `ServerEvent` **exhaustively**, so a new variant
+will not compile until the TUI does something with it. There are exactly two
+acceptable answers:
+
+1. **Handle it** — dispatch an action, however small (a toast counts).
+2. **Waive it** — give the variant its own match arm with a one-line reason on
+   the arm, e.g. `waived("the TUI has no drafts view")`. The waiver list is
+   meant to be read in review; do not add a variant to someone else's arm to
+   make it compile.
+
+The same applies to `cctui-proto` wire shapes: `src/server_event_contract.rs`
+constructs one sample per `ServerEvent` variant and decodes it through the
+TUI's own `client::decode_frame`. Adding a variant breaks that file's
+compilation until it has a sample. Keep `VARIANT_COUNT` in step.
+
+Nothing the TUI receives may be dropped silently. Frames that fail to decode
+become `Incoming::Undecodable`, and unreadable agent events are counted; both
+log and bump a status-line counter.
+
+### Testing
+
+Views are covered by `insta` snapshots rendered into a ratatui `TestBackend`
+(`src/testsupport.rs`, `src/view_snapshots.rs`). Fixtures must not depend on
+the wall clock — anything derived from `now` makes a snapshot drift. Regenerate
+with `cargo insta accept` and review the diff; never hand-edit a `.snap`.
+Reducer and keymap changes belong in the unit tests next to them.
 
 ## Package manager: webui is npm
 

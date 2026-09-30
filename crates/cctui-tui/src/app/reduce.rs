@@ -1,0 +1,676 @@
+use super::action::{Action, Effect, HeartbeatUsage};
+use super::state::{App, ConversationLine, PendingPermission, View};
+use super::toast::Level;
+
+/// The single place app state changes. Pure: no clock, no IO — anything that
+/// needs either comes back as an [`Effect`].
+#[allow(clippy::too_many_lines)]
+pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
+    match action {
+        Action::Quit => {
+            app.should_quit = true;
+            Vec::new()
+        }
+
+        Action::SelectNext => {
+            app.select_next();
+            Vec::new()
+        }
+        Action::SelectPrev => {
+            app.select_prev();
+            Vec::new()
+        }
+        Action::SelectFirst => {
+            app.select_first();
+            Vec::new()
+        }
+        Action::SelectLast => {
+            app.select_last();
+            Vec::new()
+        }
+        Action::SelectIndex(index) => {
+            if index < app.flattened_sessions().len() {
+                app.selected_index = index;
+                app.follow_tail = true;
+            }
+            Vec::new()
+        }
+
+        Action::ToggleShowAllSessions => {
+            app.show_all_sessions = !app.show_all_sessions;
+            Vec::new()
+        }
+        Action::ToggleTimestamps => {
+            app.show_timestamps = !app.show_timestamps;
+            Vec::new()
+        }
+
+        Action::OpenHelp => {
+            app.router.push(View::Help);
+            Vec::new()
+        }
+        // Help always dismisses to the session list, never to the view it was
+        // opened over.
+        Action::CloseHelp => {
+            app.router.reset(View::SessionList);
+            Vec::new()
+        }
+        Action::LeaveConversation => {
+            app.router.reset(View::SessionList);
+            Vec::new()
+        }
+        Action::OpenSelectedConversation => {
+            let Some(session_id) = app.selected_session_id() else { return Vec::new() };
+            let fetch = !app.stream_buffer.contains_key(&session_id);
+            app.follow_tail = true;
+            app.router.push(View::Conversation);
+            vec![Effect::LoadConversation { session_id, fetch }]
+        }
+
+        Action::Scroll { lines, release_follow } => {
+            snap_scroll_if_following(app);
+            app.scroll_offset = if lines < 0 {
+                app.scroll_offset.saturating_sub(lines.unsigned_abs() as usize)
+            } else {
+                app.scroll_offset.saturating_add(lines as usize)
+            };
+            if release_follow {
+                app.follow_tail = false;
+            }
+            Vec::new()
+        }
+        Action::ScrollToTop => {
+            app.scroll_offset = 0;
+            app.follow_tail = false;
+            Vec::new()
+        }
+        Action::ScrollToBottom => {
+            app.follow_tail = true;
+            Vec::new()
+        }
+
+        Action::ActivateInput => {
+            app.input_active = true;
+            Vec::new()
+        }
+        Action::ActivateInputWith(key) => {
+            app.input_active = true;
+            app.message_input.input(key);
+            Vec::new()
+        }
+        Action::CancelInput => {
+            app.input_active = false;
+            Vec::new()
+        }
+        Action::InputKey(key) => {
+            app.message_input.input(key);
+            Vec::new()
+        }
+        Action::InputNewline => {
+            app.message_input.insert_newline();
+            Vec::new()
+        }
+        Action::SubmitInput => {
+            let content = app.message_input.lines().join("\n");
+            let target = app.selected_session_id();
+            app.reset_input();
+            app.input_active = false;
+            match target {
+                Some(session_id) if !content.trim().is_empty() => {
+                    vec![Effect::SendMessage { session_id, content }]
+                }
+                _ => Vec::new(),
+            }
+        }
+
+        Action::InterruptSelected => app
+            .selected_session_id()
+            .map(|session_id| vec![Effect::Interrupt { session_id }])
+            .unwrap_or_default(),
+        Action::ToggleAutoApproveSelected => app
+            .selected_session()
+            .map(|s| (s.id.clone(), !s.auto_approve))
+            .map(|(session_id, enabled)| vec![Effect::SetAutoApprove { session_id, enabled }])
+            .unwrap_or_default(),
+        Action::AutoApproveSet { session_id, enabled } => {
+            if let Some(s) = app.sessions.iter_mut().find(|s| s.id == session_id) {
+                s.auto_approve = enabled;
+            }
+            Vec::new()
+        }
+
+        Action::ResolvePermission { allow } => {
+            let behavior = if allow { "allow" } else { "deny" };
+            let effects = app
+                .permission_queue
+                .pop_front()
+                .map(|req| {
+                    vec![Effect::RespondPermission {
+                        session_id: req.session_id,
+                        request_id: req.request_id,
+                        behavior,
+                    }]
+                })
+                .unwrap_or_default();
+            if app.permission_queue.is_empty() {
+                app.router.pop();
+            }
+            effects
+        }
+        Action::PermissionRequested(req) => {
+            enqueue_permission_request(app, req);
+            Vec::new()
+        }
+        Action::PermissionResolved { session_id, request_id } => {
+            resolve_permission(app, &session_id, &request_id);
+            Vec::new()
+        }
+
+        Action::RefreshSessions => vec![Effect::RefreshSessions],
+        Action::SessionsLoaded(sessions) => {
+            app.sessions = sessions;
+            app.update_aggregates();
+            Vec::new()
+        }
+        Action::ConversationLoaded { session_id, lines } => {
+            if !lines.is_empty() {
+                app.stream_buffer.entry(session_id).or_insert(lines);
+            }
+            Vec::new()
+        }
+
+        Action::StreamLine { session_id, line, usage } => {
+            if let Some(usage) = usage {
+                apply_heartbeat_usage(app, &session_id, &usage);
+            }
+            append_line(app, session_id, line);
+            Vec::new()
+        }
+        Action::SessionStatusChanged { session_id, status } => {
+            if let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id) {
+                session.status = status;
+                app.update_aggregates();
+            }
+            Vec::new()
+        }
+        Action::SessionRegistered(session) => {
+            register_session(app, *session);
+            Vec::new()
+        }
+        Action::SessionDeregistered(session_id) => {
+            deregister_session(app, &session_id);
+            Vec::new()
+        }
+
+        Action::Reconnected => {
+            app.toast(Level::Info, "reconnected");
+            let mut effects = vec![Effect::RefreshSessions];
+            if app.view() == View::Conversation
+                && let Some(session_id) = app.selected_session_id()
+            {
+                effects.insert(0, Effect::Subscribe { session_id });
+            }
+            effects
+        }
+        Action::Toast(level, text) => {
+            app.toast(level, text);
+            Vec::new()
+        }
+        Action::UndecodableWsMessage(reason) => {
+            app.status.undecodable_ws_messages += 1;
+            tracing::warn!(%reason, "dropping an undecodable websocket message");
+            app.toast(Level::Warn, "dropped an undecodable server message");
+            Vec::new()
+        }
+        Action::UndecodableAgentEvents(count) => {
+            app.status.undecodable_agent_events += count as u64;
+            tracing::warn!(count, "dropping undecodable agent events");
+            app.toast(Level::Warn, format!("dropped {count} unreadable conversation events"));
+            Vec::new()
+        }
+    }
+}
+
+/// When `follow_tail` is active, resolve `scroll_offset` to the actual bottom
+/// position so that relative scroll operations work immediately without a dead zone.
+const fn snap_scroll_if_following(app: &mut App) {
+    if app.follow_tail {
+        app.scroll_offset = app.total_display_lines.saturating_sub(app.viewport_height);
+    }
+}
+
+fn enqueue_permission_request(app: &mut App, req: PendingPermission) {
+    let was_empty = app.permission_queue.is_empty();
+    app.permission_queue.push_back(req);
+    if was_empty {
+        app.router.push(View::PermissionDialog);
+    }
+}
+
+/// Drop any queued entry that matches; if it's the head and the dialog is
+/// currently showing, restore the pre-dialog view.
+fn resolve_permission(app: &mut App, session_id: &str, request_id: &str) {
+    let was_head_matching = app
+        .permission_queue
+        .front()
+        .is_some_and(|p| p.session_id == session_id && p.request_id == request_id);
+    app.permission_queue.retain(|p| !(p.session_id == session_id && p.request_id == request_id));
+    if was_head_matching && app.permission_queue.is_empty() && app.view() == View::PermissionDialog {
+        app.router.pop();
+    }
+}
+
+fn apply_heartbeat_usage(app: &mut App, session_id: &str, usage: &HeartbeatUsage) {
+    if let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id) {
+        session.token_usage.tokens_in = usage.tokens_in;
+        session.token_usage.tokens_out = usage.tokens_out;
+        session.token_usage.cost_usd = usage.cost_usd;
+    }
+}
+
+fn append_line(app: &mut App, session_id: String, line: ConversationLine) {
+    let buf = app.stream_buffer.entry(session_id).or_default();
+    let is_dup = buf.last().is_some_and(|last| last.kind == line.kind && last.text == line.text);
+    if !is_dup {
+        buf.push(line);
+    }
+}
+
+fn register_session(app: &mut App, session: cctui_proto::models::Session) {
+    if app.sessions.iter().any(|s| s.id == session.id) {
+        return;
+    }
+    app.sessions.push(cctui_proto::api::SessionListItem {
+        id: session.id,
+        parent_id: session.parent_id,
+        machine_id: session.machine_id,
+        working_dir: session.working_dir,
+        status: session.status,
+        liveness: cctui_proto::models::Liveness::Active,
+        attention: None,
+        // Classifier signals arrive on the next REST refresh; Working until then.
+        bucket: cctui_proto::classifier::Bucket::Working,
+        token_usage: cctui_proto::models::TokenUsage::default(),
+        metadata: session.metadata,
+        adapter_id: session.adapter_id,
+        machine_name: None,
+        machine_hue: None,
+        machine_kind: None,
+        account_name: None,
+        unread_count: 0,
+        activity_detail: None,
+        last_tool_at: None,
+        last_tool_name: None,
+        tool_use_count: 0,
+        todos: Vec::new(),
+        user_actions: None,
+        has_token_credentials: false,
+        account_traffic_observed: false,
+        last_message_text: None,
+        last_message_at: None,
+        registered_at: Some(session.registered_at),
+        name: None,
+        model: None,
+        effort: None,
+        permission_mode: None,
+        auto_approve: false,
+        match_snippet: None,
+        match_seq: None,
+        last_activity_at: None,
+        cache_cold: false,
+        estimated_burst_tokens: None,
+        hibernated: false,
+        pinned: false,
+        labels: Vec::new(),
+        room_id: None,
+        room_name: None,
+        last_heartbeat: None,
+        pr_links: Vec::new(),
+        end_reason: None,
+        end_detail: None,
+        ended_at: None,
+        auto_archive_at: None,
+        archived_by: None,
+        keepalive: None,
+        last_keepalive_at: None,
+        launch_at: None,
+        launch_error: None,
+    });
+    app.update_aggregates();
+}
+
+fn deregister_session(app: &mut App, session_id: &str) {
+    app.sessions.retain(|s| s.id != session_id);
+    app.stream_buffer.remove(session_id);
+    let len = app.flattened_sessions().len();
+    if len > 0 && app.selected_index >= len {
+        app.selected_index = len - 1;
+    }
+    app.update_aggregates();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Action, App, Effect, Level, View, reduce};
+    use crate::app::state::LineKind;
+    use crate::testsupport::{conversation_lines, permission_request, session};
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.sessions = vec![
+            session("s-a", "alpha", "active", "working"),
+            session("s-b", "beta", "active", "working"),
+        ];
+        app.show_all_sessions = true;
+        app.update_aggregates();
+        app
+    }
+
+    fn line(text: &str) -> crate::app::state::ConversationLine {
+        crate::app::state::ConversationLine {
+            timestamp: 0,
+            kind: LineKind::Assistant,
+            text: text.to_owned(),
+            tool_input: None,
+        }
+    }
+
+    #[test]
+    fn quit_sets_the_flag_and_needs_no_effect() {
+        let mut app = app();
+        assert!(reduce(&mut app, Action::Quit).is_empty());
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn selection_is_clamped_at_both_ends() {
+        let mut app = app();
+        reduce(&mut app, Action::SelectPrev);
+        assert_eq!(app.selected_index, 0);
+        reduce(&mut app, Action::SelectLast);
+        assert_eq!(app.selected_index, 1);
+        reduce(&mut app, Action::SelectNext);
+        assert_eq!(app.selected_index, 1);
+        reduce(&mut app, Action::SelectFirst);
+        assert_eq!(app.selected_index, 0);
+    }
+
+    #[test]
+    fn select_index_out_of_range_is_ignored() {
+        let mut app = app();
+        reduce(&mut app, Action::SelectIndex(9));
+        assert_eq!(app.selected_index, 0);
+        reduce(&mut app, Action::SelectIndex(1));
+        assert_eq!(app.selected_index, 1);
+        assert!(app.follow_tail);
+    }
+
+    #[test]
+    fn opening_a_conversation_fetches_once_then_only_subscribes() {
+        let mut app = app();
+        let effects = reduce(&mut app, Action::OpenSelectedConversation);
+        assert_eq!(app.view(), View::Conversation);
+        match effects.as_slice() {
+            [Effect::LoadConversation { session_id, fetch: true }] => {
+                assert_eq!(session_id, "s-a");
+            }
+            _ => panic!("expected a fetching load effect"),
+        }
+
+        reduce(&mut app, Action::LeaveConversation);
+        let id = app.selected_session_id().expect("a session");
+        reduce(&mut app, Action::ConversationLoaded { session_id: id, lines: conversation_lines() });
+        let effects = reduce(&mut app, Action::OpenSelectedConversation);
+        assert!(matches!(effects.as_slice(), [Effect::LoadConversation { fetch: false, .. }]));
+    }
+
+    #[test]
+    fn leaving_a_conversation_returns_to_the_list() {
+        let mut app = app();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        reduce(&mut app, Action::LeaveConversation);
+        assert_eq!(app.view(), View::SessionList);
+        assert_eq!(app.router.depth(), 1);
+    }
+
+    #[test]
+    fn help_opens_as_an_overlay_and_dismisses_to_the_list() {
+        let mut app = app();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        reduce(&mut app, Action::OpenHelp);
+        assert_eq!(app.view(), View::Help);
+        assert_eq!(app.router.below(), Some(View::Conversation));
+        reduce(&mut app, Action::CloseHelp);
+        assert_eq!(app.view(), View::SessionList);
+        assert_eq!(app.router.depth(), 1);
+    }
+
+    #[test]
+    fn scrolling_up_detaches_from_the_tail_and_down_by_page_does_not() {
+        let mut app = app();
+        app.total_display_lines = 200;
+        app.viewport_height = 20;
+
+        reduce(&mut app, Action::Scroll { lines: -3, release_follow: true });
+        assert_eq!(app.scroll_offset, 177);
+        assert!(!app.follow_tail);
+
+        app.follow_tail = true;
+        reduce(&mut app, Action::Scroll { lines: 15, release_follow: false });
+        assert_eq!(app.scroll_offset, 195);
+        assert!(app.follow_tail);
+    }
+
+    #[test]
+    fn scroll_offset_never_underflows() {
+        let mut app = app();
+        app.follow_tail = false;
+        app.scroll_offset = 1;
+        reduce(&mut app, Action::Scroll { lines: -50, release_follow: true });
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_to_top_and_bottom_set_follow_tail() {
+        let mut app = app();
+        reduce(&mut app, Action::ScrollToTop);
+        assert_eq!(app.scroll_offset, 0);
+        assert!(!app.follow_tail);
+        reduce(&mut app, Action::ScrollToBottom);
+        assert!(app.follow_tail);
+    }
+
+    #[test]
+    fn submitting_sends_the_composer_text_and_clears_it() {
+        let mut app = app();
+        reduce(&mut app, Action::ActivateInput);
+        app.message_input.insert_str("hello there");
+        let effects = reduce(&mut app, Action::SubmitInput);
+        match effects.as_slice() {
+            [Effect::SendMessage { session_id, content }] => {
+                assert_eq!(session_id, "s-a");
+                assert_eq!(content, "hello there");
+            }
+            _ => panic!("expected a send effect"),
+        }
+        assert!(!app.input_active);
+        assert_eq!(app.message_input.lines().join("\n"), "");
+    }
+
+    #[test]
+    fn submitting_blank_text_sends_nothing() {
+        let mut app = app();
+        app.message_input.insert_str("   ");
+        assert!(reduce(&mut app, Action::SubmitInput).is_empty());
+        assert!(!app.input_active);
+    }
+
+    #[test]
+    fn auto_approve_is_applied_only_once_the_server_confirms() {
+        let mut app = app();
+        let effects = reduce(&mut app, Action::ToggleAutoApproveSelected);
+        match effects.as_slice() {
+            [Effect::SetAutoApprove { session_id, enabled: true }] => {
+                assert_eq!(session_id, "s-a");
+            }
+            _ => panic!("expected an auto-approve effect"),
+        }
+        assert!(!app.sessions[0].auto_approve);
+        reduce(
+            &mut app,
+            Action::AutoApproveSet { session_id: "s-a".to_owned(), enabled: true },
+        );
+        assert!(app.sessions[0].auto_approve);
+    }
+
+    #[test]
+    fn a_permission_request_opens_the_dialog_over_the_current_view() {
+        let mut app = app();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        reduce(&mut app, Action::PermissionRequested(permission_request()));
+        assert_eq!(app.view(), View::PermissionDialog);
+        assert_eq!(app.router.below(), Some(View::Conversation));
+
+        let effects = reduce(&mut app, Action::ResolvePermission { allow: true });
+        match effects.as_slice() {
+            [Effect::RespondPermission { request_id, behavior, .. }] => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(*behavior, "allow");
+            }
+            _ => panic!("expected a permission response effect"),
+        }
+        assert_eq!(app.view(), View::Conversation);
+    }
+
+    #[test]
+    fn a_queued_permission_keeps_the_dialog_open() {
+        let mut app = app();
+        reduce(&mut app, Action::PermissionRequested(permission_request()));
+        let mut second = permission_request();
+        second.request_id = "req-2".to_owned();
+        reduce(&mut app, Action::PermissionRequested(second));
+        assert_eq!(app.router.depth(), 2);
+
+        reduce(&mut app, Action::ResolvePermission { allow: false });
+        assert_eq!(app.view(), View::PermissionDialog);
+        assert_eq!(app.permission_queue.len(), 1);
+
+        reduce(&mut app, Action::ResolvePermission { allow: false });
+        assert_eq!(app.view(), View::SessionList);
+    }
+
+    #[test]
+    fn a_permission_resolved_elsewhere_closes_the_dialog() {
+        let mut app = app();
+        reduce(&mut app, Action::PermissionRequested(permission_request()));
+        reduce(
+            &mut app,
+            Action::PermissionResolved {
+                session_id: "s-working".to_owned(),
+                request_id: "req-1".to_owned(),
+            },
+        );
+        assert!(app.permission_queue.is_empty());
+        assert_eq!(app.view(), View::SessionList);
+    }
+
+    #[test]
+    fn consecutive_identical_stream_lines_are_deduped() {
+        let mut app = app();
+        for _ in 0..3 {
+            reduce(
+                &mut app,
+                Action::StreamLine {
+                    session_id: "s-a".to_owned(),
+                    line: line("same"),
+                    usage: None,
+                },
+            );
+        }
+        assert_eq!(app.stream_buffer["s-a"].len(), 1);
+        reduce(
+            &mut app,
+            Action::StreamLine {
+                session_id: "s-a".to_owned(),
+                line: line("different"),
+                usage: None,
+            },
+        );
+        assert_eq!(app.stream_buffer["s-a"].len(), 2);
+    }
+
+    #[test]
+    fn a_heartbeat_updates_the_session_usage() {
+        let mut app = app();
+        reduce(
+            &mut app,
+            Action::StreamLine {
+                session_id: "s-a".to_owned(),
+                line: line(""),
+                usage: Some(super::HeartbeatUsage {
+                    tokens_in: 7,
+                    tokens_out: 8,
+                    cost_usd: 9.5,
+                }),
+            },
+        );
+        assert_eq!(app.sessions[0].token_usage.tokens_in, 7);
+        assert_eq!(app.sessions[0].token_usage.tokens_out, 8);
+        assert!((app.sessions[0].token_usage.cost_usd - 9.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn deregistering_clamps_the_selection_and_drops_the_buffer() {
+        let mut app = app();
+        reduce(&mut app, Action::SelectLast);
+        reduce(
+            &mut app,
+            Action::StreamLine {
+                session_id: "s-b".to_owned(),
+                line: line("bye"),
+                usage: None,
+            },
+        );
+        reduce(&mut app, Action::SessionDeregistered("s-b".to_owned()));
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.selected_index, 0);
+        assert!(!app.stream_buffer.contains_key("s-b"));
+    }
+
+    #[test]
+    fn reconnecting_resubscribes_only_from_the_conversation() {
+        let mut app = app();
+        assert!(matches!(
+            reduce(&mut app, Action::Reconnected).as_slice(),
+            [Effect::RefreshSessions]
+        ));
+
+        reduce(&mut app, Action::OpenSelectedConversation);
+        assert!(matches!(
+            reduce(&mut app, Action::Reconnected).as_slice(),
+            [Effect::Subscribe { .. }, Effect::RefreshSessions]
+        ));
+    }
+
+    #[test]
+    fn undecodable_messages_are_counted_and_surfaced() {
+        let mut app = app();
+        reduce(&mut app, Action::UndecodableWsMessage("unknown variant".to_owned()));
+        reduce(&mut app, Action::UndecodableAgentEvents(4));
+        assert_eq!(app.status.undecodable_ws_messages, 1);
+        assert_eq!(app.status.undecodable_agent_events, 4);
+        assert_eq!(app.status.total(), 5);
+        assert!(!app.status.is_clean());
+        assert!(app.toasts.latest().is_some());
+    }
+
+    #[test]
+    fn toasts_carry_the_reducer_clock() {
+        let mut app = app();
+        app.clock_ms = 1_000;
+        reduce(&mut app, Action::Toast(Level::Error, "boom".to_owned()));
+        let toast = app.toasts.latest().expect("a toast");
+        assert_eq!(toast.text, "boom");
+        assert_eq!(toast.expires_ms, 1_000 + crate::app::toast::Toasts::TTL_MS);
+    }
+}

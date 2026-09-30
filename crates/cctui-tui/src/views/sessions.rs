@@ -33,7 +33,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let total = app.sessions.len();
     let active = app.active_count;
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" cctui ", theme::STATUS_BAR_BG),
         Span::raw(" "),
         Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), theme::DIM),
@@ -41,8 +41,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(format!("{total} sessions"), theme::DIM),
         Span::raw("  "),
         Span::styled(format!("● {active} active"), theme::ACTIVE),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    spans.extend(crate::widgets::status::status_spans(app));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -103,7 +104,7 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
     let branch = s.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
     let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
 
-    let uptime = format_uptime(crate::uptime_secs(s));
+    let uptime = format_uptime(crate::app::state::uptime_secs(s));
     let cost = format!("${:.2}", s.token_usage.cost_usd);
 
     let adapter = s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str());

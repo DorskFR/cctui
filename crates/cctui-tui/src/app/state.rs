@@ -4,7 +4,10 @@ use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use super::router::Router;
+use super::toast::{Level, StatusCounters, Toasts};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     SessionList,
     Conversation,
@@ -41,9 +44,26 @@ pub enum LineKind {
     Reply,
 }
 
+/// Display ordering for the classifier buckets in the session list:
+/// sessions that want the user's eyes float to the top.
+pub(crate) const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
+    use cctui_proto::classifier::Bucket;
+    match bucket {
+        Bucket::Blocked => 0,
+        Bucket::Review => 1,
+        Bucket::Working => 2,
+        Bucket::Done => 3,
+    }
+}
+
+/// Uptime derived from `registered_at`; 0 when unset.
+pub(crate) fn uptime_secs(s: &SessionListItem) -> i64 {
+    s.registered_at.map_or(0, |r| (chrono::Utc::now() - r).num_seconds())
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
-    pub view: View,
+    pub router: Router,
     pub sessions: Vec<SessionListItem>,
     pub selected_index: usize,
     pub stream_buffer: HashMap<String, Vec<ConversationLine>>,
@@ -52,8 +72,6 @@ pub struct App {
     pub should_quit: bool,
     /// Queue of pending permission requests; first is shown as dialog.
     pub permission_queue: std::collections::VecDeque<PendingPermission>,
-    /// View to return to after dismissing a permission dialog.
-    pub pre_permission_view: View,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
@@ -68,6 +86,11 @@ pub struct App {
     pub render_cache: Vec<ratatui::text::Line<'static>>,
     pub render_cache_session: String,
     pub render_cache_len: usize,
+    pub toasts: Toasts,
+    pub status: StatusCounters,
+    /// Refreshed once per loop iteration; the reducer reads this instead of the
+    /// clock so it stays pure and testable.
+    pub clock_ms: i64,
 }
 
 impl App {
@@ -84,7 +107,7 @@ impl App {
 
     pub fn new() -> Self {
         Self {
-            view: View::SessionList,
+            router: Router::new(View::SessionList),
             sessions: Vec::new(),
             selected_index: 0,
             stream_buffer: HashMap::new(),
@@ -92,7 +115,6 @@ impl App {
             input_active: false,
             should_quit: false,
             permission_queue: std::collections::VecDeque::new(),
-            pre_permission_view: View::SessionList,
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,
@@ -103,12 +125,27 @@ impl App {
             render_cache: Vec::new(),
             render_cache_session: String::new(),
             render_cache_len: 0,
+            toasts: Toasts::default(),
+            status: StatusCounters::default(),
+            clock_ms: 0,
         }
+    }
+
+    pub fn view(&self) -> View {
+        self.router.current()
+    }
+
+    pub fn toast(&mut self, level: Level, text: impl Into<String>) {
+        self.toasts.push(level, text, self.clock_ms);
     }
 
     pub fn selected_session(&self) -> Option<&SessionListItem> {
         let flat = self.flattened_sessions();
         flat.get(self.selected_index).copied()
+    }
+
+    pub fn selected_session_id(&self) -> Option<String> {
+        self.selected_session().map(|s| s.id.clone())
     }
 
     /// Session list ordered for display, with Task-tool subagents
@@ -131,12 +168,12 @@ impl App {
             .collect();
         // Group by classifier bucket (Needs input → Ready for review →
         // Working → Completed); within a bucket, oldest first.
-        tops.sort_by_key(|s| (crate::bucket_rank(s.bucket), crate::uptime_secs(s)));
+        tops.sort_by_key(|s| (bucket_rank(s.bucket), uptime_secs(s)));
         let mut out: Vec<&SessionListItem> = Vec::new();
         for t in tops {
             out.push(t);
             if let Some(cs) = kids.get_mut(t.id.as_str()) {
-                cs.sort_by_key(|s| crate::uptime_secs(s));
+                cs.sort_by_key(|s| uptime_secs(s));
                 out.extend(cs.iter().copied());
             }
         }
