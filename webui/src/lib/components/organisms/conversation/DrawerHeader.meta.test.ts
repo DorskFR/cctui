@@ -48,10 +48,17 @@ describe('drawer header meta row', () => {
 		expect(popover).toContain('box="sm"');
 	});
 
+	// The panel is the full readout, not a copy of the row's compact chips: the
+	// row degrades to a logo on a phone, so every figure has to be reachable here.
 	it('puts the droppable items behind the trigger, model editor included', () => {
-		expect(popover).toContain('<span class="tokens"><TokenUsage');
-		expect(popover).toContain('<span class="langfuse"><LangfuseChip');
 		expect(popover).toContain("{@render modelMeta('drawer-details')}");
+		expect(popover).toContain('m.drawer_details_in()');
+		expect(popover).toContain('m.drawer_details_out()');
+		expect(popover).toContain('m.drawer_details_cache_read()');
+		expect(popover).toContain('m.drawer_details_cache_write()');
+		expect(popover).toContain('m.drawer_details_total()');
+		expect(popover).toContain('m.drawer_details_cost()');
+		expect(popover).toContain('<LangfuseChip');
 		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{#snippet modelMeta') + 2000);
 		expect(snippet).toContain('<ModelPicker');
 		expect(snippet).toContain('onclick={applyModelChange}');
@@ -74,10 +81,17 @@ describe('drawer header meta row', () => {
 	it('un-hides everything the row dropped once it is inside the popover', () => {
 		expect(css).toContain('.metapop .m-full');
 		expect(css).toContain('.metapop .m-short');
-		expect(css).toContain('.metapop .langfuse,');
-		expect(css).toContain('.metapop .tokens,');
 		expect(css).toContain('.metapop .model-edit');
 		expect(css).toContain('.metapop .model {');
+	});
+
+	it('clamps the panel to the viewport so it cannot clip on a phone', () => {
+		expect(popover).toMatch(/panelStyle="[^"]*100vw - 2 \* var\(--sp-3\)[^"]*"/);
+	});
+
+	it('only shows the Langfuse rows when the sink reported calls', () => {
+		expect(popover).toContain('{#if calls > 0}');
+		expect(script).toContain('detailsOpen && langfuseAvailable');
 	});
 
 	it('adds no horizontal overflow escape hatch', () => {

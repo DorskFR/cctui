@@ -4,7 +4,8 @@
 	// chip, and the adapter logo, which is the trigger of the popover holding
 	// what a narrow row dropped.
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { modelShort, statusBadgeTone } from '$lib/format';
+	import { compact, modelShort, statusBadgeTone, usd } from '$lib/format';
+	import { tokenUsageLayout, bustReasonKey } from '$lib/components/molecules/TokenUsage.logic';
 	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
@@ -12,9 +13,15 @@
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
 	import PluginChips from '$lib/components/molecules/PluginChips.svelte';
 	import { YOUTRACK_PLUGIN_ID, resolveIssueSlot } from '$lib/plugins/issueLink';
-	import { Badge, Icon, IconButton, Popover, Select, WorkingDir } from '@dorsk/tsumikit';
+	import { Badge, Icon, IconButton, Popover, Select, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
-	import { useCodexModels, useMergedCodexModels, useSessionActions } from '$lib/queries';
+	import {
+		useCapabilities,
+		useCodexModels,
+		useMergedCodexModels,
+		useSessionActions,
+		useSessionLangfuse
+	} from '$lib/queries';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -40,6 +47,19 @@
 	} = $props();
 
 	const end = $derived(sessionEnd(session));
+	const usage = $derived(session.token_usage);
+	const totals = $derived(tokenUsageLayout(usage));
+	const bust = $derived(usage.cache_bust ?? null);
+	const bustReason = $derived.by(() => {
+		switch (bustReasonKey(bust?.reason ?? '')) {
+			case 'ttl_expired':
+				return m.sessions_token_bust_reason_ttl_expired();
+			case 'gateway_rewrote_body':
+				return m.sessions_token_bust_reason_gateway_rewrote_body();
+			default:
+				return m.sessions_token_bust_reason_unknown();
+		}
+	});
 	const branch = $derived(branchOf(session));
 
 	const actions = useSessionActions();
@@ -47,6 +67,17 @@
 		const data = await resolveIssueSlot(issue);
 		if (data) await actions.setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, data);
 	}
+
+	// The details panel is the only place the full readout lives, so its Langfuse
+	// figures are fetched on open rather than with the header.
+	let detailsOpen = $state(false);
+	const caps = useCapabilities();
+	const langfuseAvailable = $derived(!!caps.data?.langfuse?.available);
+	const lf = useSessionLangfuse(
+		() => session.id,
+		() => detailsOpen && langfuseAvailable
+	);
+	const calls = $derived(Number(lf.data?.trace_count ?? 0));
 
 	// In-place model/effort editor, codex only.
 	let modelEditing = $state(false);
@@ -175,13 +206,63 @@
 		label={m.drawer_meta_details()}
 		placement="bottom-end"
 		box="sm"
+		panelStyle="min-width: min(19rem, calc(100vw - 2 * var(--sp-3))); max-width: min(26rem, calc(100vw - 2 * var(--sp-3)))"
 		data-journey="head-details"
+		bind:open={detailsOpen}
 	>
 		{#snippet trigger()}<AdapterIcon adapter={session.adapter_id} size={20} />{/snippet}
 		<div class="metapop">
-			<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
-			<span class="langfuse"><LangfuseChip id={session.id} /></span>
-			{@render modelMeta('drawer-details')}
+			<div class="mp-row mp-model">
+				<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_model()}</Text></span>
+				<span class="mp-val">{@render modelMeta('drawer-details')}</span>
+			</div>
+			<div class="mp-sep"></div>
+			<div class="mp-grid">
+				{#each [
+					{ k: m.drawer_details_in(), v: compact(Number(usage.tokens_in)) },
+					{ k: m.drawer_details_out(), v: compact(Number(usage.tokens_out)) },
+					{ k: m.drawer_details_cache_read(), v: compact(Number(usage.cache_read_tokens)) },
+					{ k: m.drawer_details_cache_write(), v: compact(Number(usage.cache_creation_tokens)) }
+				] as row (row.k)}
+					<span class="mp-key"><Text size="xs" tone="faint">{row.k}</Text></span>
+					<span class="mp-num"><Text variant="code" size="xs" tone="muted">{row.v}</Text></span>
+				{/each}
+				<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_total()}</Text></span>
+				<span class="mp-num"
+					><Text variant="code" size="xs" tone="accent" weight="semibold"
+						>{compact(totals.total)}</Text
+					></span
+				>
+				<span class="mp-key"><Text size="xs" tone="muted" weight="semibold">{m.drawer_details_cost()}</Text></span>
+				<span class="mp-num"
+					><Text variant="code" size="xs" tone="success" weight="semibold">{usd(totals.cost)}</Text
+					></span
+				>
+			</div>
+			{#if bust}
+				<div class="mp-row">
+					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_bust()}</Text></span>
+					<span class="mp-val"
+						><Text size="xs" tone="danger"
+							>💥 {m.sessions_token_bust_hint({
+								tokens: compact(Number(bust.lost_tokens)),
+								cost: usd(Number(bust.lost_usd)),
+								reason: bustReason
+							})}</Text
+						></span
+					>
+				</div>
+			{/if}
+			{#if calls > 0}
+				<div class="mp-row">
+					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_calls()}</Text></span>
+					<span class="mp-num"><Text variant="code" size="xs" tone="muted">{calls}</Text></span>
+				</div>
+				<div class="mp-row">
+					<span class="mp-key"><Text size="xs" tone="faint">{m.drawer_details_langfuse()}</Text></span>
+					<span class="mp-val"><LangfuseChip id={session.id} /></span>
+				</div>
+			{/if}
 		</div>
 	</Popover>
 	</div>
@@ -264,15 +345,46 @@
 			max-width: 6rem;
 		}
 	}
-	/* The popover holds what the row dropped, so it always shows the full model
-	   text the narrow row degrades. */
+	/* The popover is the full readout, not a spill-over of the row: the meta row
+	   degrades to a logo on a phone, so this panel is the only place the whole
+	   token breakdown is reachable. Its width is clamped to the viewport by the
+	   `panelStyle` so it cannot clip at 390px. */
 	.metapop {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
+		align-items: stretch;
 		gap: var(--sp-2);
 		min-width: 0;
 		max-width: 100%;
+	}
+	.mp-grid {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		gap: 0.15rem var(--sp-3);
+		align-items: baseline;
+	}
+	.mp-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--sp-3);
+		min-width: 0;
+	}
+	.mp-key {
+		min-width: 0;
+	}
+	.mp-num {
+		justify-self: end;
+		white-space: nowrap;
+	}
+	.mp-val {
+		display: inline-flex;
+		align-items: center;
+		min-width: 0;
+		text-align: right;
+	}
+	.mp-sep {
+		border-top: 1px solid var(--border);
 	}
 	.metapop .m-full,
 	.metapop .m-effort {
@@ -281,8 +393,6 @@
 	.metapop .m-short {
 		display: none;
 	}
-	.metapop .langfuse,
-	.metapop .tokens,
 	.metapop .model-edit {
 		display: contents;
 	}
