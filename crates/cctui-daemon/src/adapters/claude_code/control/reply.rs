@@ -147,7 +147,7 @@ impl Driver {
                 .await?;
         tracing::debug!(?resp, %short, "reply ack");
         if text.contains('\n')
-            && let Err(err) = socket::attach_submit(sock, &short, &confirm).await
+            && let Err(err) = Box::pin(socket::attach_submit(sock, &short, &confirm)).await
         {
             tracing::warn!(%err, %short, "failed to submit multiline reply draft");
         }
