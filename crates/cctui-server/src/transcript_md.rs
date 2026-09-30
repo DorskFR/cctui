@@ -84,10 +84,10 @@ pub fn block(payload: &Value) -> Option<(&'static str, String)> {
     if body.is_empty() {
         return None;
     }
-    let rendered = match tool {
-        Some(tool) => format!("**{role}: {tool}**\n\n{body}"),
-        None => format!("**{role}**\n\n{body}"),
-    };
+    let rendered = tool.map_or_else(
+        || format!("**{role}**\n\n{body}"),
+        |tool| format!("**{role}: {tool}**\n\n{body}"),
+    );
     Some((role, rendered))
 }
 

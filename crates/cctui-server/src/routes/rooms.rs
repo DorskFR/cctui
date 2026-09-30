@@ -352,28 +352,25 @@ mod tests {
     use super::*;
     use crate::rooms::PostRefusal;
 
-    /// DB-gated: the room lifecycle — sessions across two machines, the reach of
-    /// a broadcast (everyone but the sender), the timeline `peek` reads, the
-    /// policy relation a room confers, one room per session, and the release on
-    /// delete.
-    #[tokio::test]
-    async fn a_room_relates_its_sessions_and_a_broadcast_reaches_all_but_the_sender() {
-        let Some(url) = crate::routes::gateway::test_db_url("rooms_fanout") else { return };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
-        let uid = Uuid::new_v4();
-        let machine_a = Uuid::new_v4();
-        let machine_b = Uuid::new_v4();
+    async fn test_pool(tag: &str) -> Option<sqlx::PgPool> {
+        let url = crate::routes::gateway::test_db_url(tag)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    async fn seed_owner(pool: &sqlx::PgPool, uid: Uuid, machines: &[Uuid]) {
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'rooms-test', $2)")
             .bind(uid)
             .bind(format!("kh-{uid}"))
-            .execute(&pool)
+            .execute(pool)
             .await
             .expect("seed user");
-        for m in [machine_a, machine_b] {
+        for &m in machines {
             sqlx::query(
                 "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
             )
@@ -381,51 +378,141 @@ mod tests {
             .bind(uid)
             .bind(format!("box-{m}"))
             .bind(format!("kh-{m}"))
-            .execute(&pool)
+            .execute(pool)
             .await
             .expect("seed machine");
         }
-        // A claude session on machine A, a codex session on machine B, and an
-        // unrelated session that is in no room.
+    }
+
+    async fn seed_session(
+        pool: &sqlx::PgPool,
+        id: &str,
+        uid: Uuid,
+        machine: Uuid,
+        adapter: &str,
+        status: &str,
+        room: Option<Uuid>,
+    ) {
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, \
+             adapter_id, session_name, status, room_id) \
+             VALUES ($1, $2, '/w', $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(id)
+        .bind(machine.to_string())
+        .bind(uid)
+        .bind(machine)
+        .bind(adapter)
+        .bind(format!("name-{id}"))
+        .bind(status)
+        .bind(room)
+        .execute(pool)
+        .await
+        .expect("seed session");
+    }
+
+    async fn seed_room(pool: &sqlx::PgPool, uid: Uuid, name: &str) -> Uuid {
+        sqlx::query_scalar("INSERT INTO rooms (user_id, name) VALUES ($1, $2) RETURNING id")
+            .bind(uid)
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .expect("seed room")
+    }
+
+    /// A room is a field: joining, moving and leaving are all one UPDATE.
+    async fn set_room(pool: &sqlx::PgPool, id: &str, room: Option<Uuid>) {
+        sqlx::query("UPDATE sessions SET room_id = $1 WHERE id = $2")
+            .bind(room)
+            .bind(id)
+            .execute(pool)
+            .await
+            .expect("set room_id");
+    }
+
+    async fn set_status(pool: &sqlx::PgPool, id: &str, status: &str) {
+        sqlx::query("UPDATE sessions SET status = $1 WHERE id = $2")
+            .bind(status)
+            .bind(id)
+            .execute(pool)
+            .await
+            .expect("set status");
+    }
+
+    async fn set_archived(pool: &sqlx::PgPool, room: Uuid, archived: bool) {
+        let sql = if archived {
+            "UPDATE rooms SET archived_at = now() WHERE id = $1"
+        } else {
+            "UPDATE rooms SET archived_at = NULL WHERE id = $1"
+        };
+        sqlx::query(sql).bind(room).execute(pool).await.expect("archive room");
+    }
+
+    /// One post written the way [`post`] does it: claim the next seq, insert the
+    /// row. `None` is the human, who has no sender session.
+    async fn post_as(pool: &sqlx::PgPool, room: Uuid, sender: Option<&str>, body: &str) -> i64 {
+        let seq: i64 = sqlx::query_scalar(
+            "UPDATE rooms SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq",
+        )
+        .bind(room)
+        .fetch_one(pool)
+        .await
+        .expect("claim seq");
+        sqlx::query(
+            "INSERT INTO room_messages (room_id, seq, sender_session_id, sender_label, body) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(room)
+        .bind(seq)
+        .bind(sender)
+        .bind(sender.map_or("you (human)", |_| "lane a (claude-code on box-a)"))
+        .bind(body)
+        .execute(pool)
+        .await
+        .expect("insert room message");
+        seq
+    }
+
+    async fn cleanup(pool: &sqlx::PgPool, uid: Uuid) {
+        for sql in [
+            "DELETE FROM rooms WHERE user_id = $1",
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(pool).await.ok();
+        }
+    }
+
+    /// Two sessions in one room across two machines, plus one in no room.
+    async fn seed_trio(
+        pool: &sqlx::PgPool,
+        uid: Uuid,
+        machines: (Uuid, Uuid),
+    ) -> (String, String, String, Uuid) {
+        let (machine_a, machine_b) = machines;
+        seed_owner(pool, uid, &[machine_a, machine_b]).await;
         let a = Uuid::new_v4().to_string();
         let b = Uuid::new_v4().to_string();
         let outsider = Uuid::new_v4().to_string();
-        for (id, m, adapter) in [
-            (&a, machine_a, "claude-code"),
-            (&b, machine_b, "codex"),
-            (&outsider, machine_a, "codex"),
-        ] {
-            sqlx::query(
-                "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, \
-                 adapter_id, session_name, status) \
-                 VALUES ($1, $2, '/w', $3, $4, $5, $6, 'active')",
-            )
-            .bind(id)
-            .bind(m.to_string())
-            .bind(uid)
-            .bind(m)
-            .bind(adapter)
-            .bind(format!("name-{id}"))
-            .execute(&pool)
-            .await
-            .expect("seed session");
-        }
-        let room_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO rooms (user_id, name) VALUES ($1, 'wave 23') RETURNING id",
-        )
-        .bind(uid)
-        .fetch_one(&pool)
-        .await
-        .expect("seed room");
-        // A room is a field: putting a session in one is an UPDATE.
+        seed_session(pool, &a, uid, machine_a, "claude-code", "active", None).await;
+        seed_session(pool, &b, uid, machine_b, "codex", "active", None).await;
+        seed_session(pool, &outsider, uid, machine_a, "codex", "active", None).await;
+        let room_id = seed_room(pool, uid, "wave 23").await;
         for id in [&a, &b] {
-            sqlx::query("UPDATE sessions SET room_id = $1 WHERE id = $2")
-                .bind(room_id)
-                .bind(id)
-                .execute(&pool)
-                .await
-                .expect("seed room_id");
+            set_room(pool, id, Some(room_id)).await;
         }
+        (a, b, outsider, room_id)
+    }
+
+    /// DB-gated: a room is visible only to its owner, and membership is the
+    /// explicit grant that relates two sessions for the peer tools.
+    #[tokio::test]
+    async fn a_room_is_owner_scoped_and_relates_exactly_its_members() {
+        let Some(pool) = test_pool("rooms_membership").await else { return };
+        let uid = Uuid::new_v4();
+        let (a, b, outsider, room_id) =
+            seed_trio(&pool, uid, (Uuid::new_v4(), Uuid::new_v4())).await;
 
         let room = rooms::load(&pool, room_id, uid).await.unwrap().expect("room");
         assert_eq!(room.members.len(), 2);
@@ -435,8 +522,6 @@ mod tests {
             "another owner must not see the room"
         );
 
-        // Room membership authorises the pair for the peer tools, and leaves the
-        // outsider refused.
         assert_eq!(
             crate::peer_policy::authorize(&pool, &a, &b, uid).await.unwrap().0,
             crate::peer_policy::Relation::Room,
@@ -455,33 +540,25 @@ mod tests {
             roster.iter().any(|r| r.0 == b && r.5 == "room"),
             "a room member must appear on the roster as `room`: {roster:?}"
         );
+        cleanup(&pool, uid).await;
+    }
 
-        // Two posts from A while B is offline, written the way `post` does.
+    /// DB-gated: who a broadcast reaches (everyone but the sender), that an
+    /// archived member keeps its place, and the timeline `peek` reads.
+    #[tokio::test]
+    async fn a_broadcast_reaches_every_member_but_the_sender_and_peek_pages_by_seq() {
+        let Some(pool) = test_pool("rooms_fanout").await else { return };
+        let uid = Uuid::new_v4();
+        let (a, b, outsider, room_id) =
+            seed_trio(&pool, uid, (Uuid::new_v4(), Uuid::new_v4())).await;
+
+        // Two posts from A while B is offline.
         for (n, body) in [(1_i64, "first"), (2, "second")] {
-            let seq: i64 = sqlx::query_scalar(
-                "UPDATE rooms SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq",
-            )
-            .bind(room_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            assert_eq!(seq, n);
-            sqlx::query(
-                "INSERT INTO room_messages (room_id, seq, sender_session_id, sender_label, body) \
-                 VALUES ($1, $2, $3, 'lane a (claude-code on box-a)', $4)",
-            )
-            .bind(room_id)
-            .bind(seq)
-            .bind(&a)
-            .bind(body)
-            .execute(&pool)
-            .await
-            .unwrap();
+            assert_eq!(post_as(&pool, room_id, Some(&a), body).await, n);
         }
 
-        // Who a broadcast would reach: every session in the room except the
-        // sender. There is no cursor and no queue to inspect — the loop in `post`
-        // walks `room.members`, so that list IS the reach.
+        // There is no cursor and no queue to inspect — the loop in `post` walks
+        // `room.members`, so that list IS the reach.
         let live = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
         let reach: Vec<&str> = live
             .members
@@ -497,31 +574,11 @@ mod tests {
         assert!(live.members.iter().all(|mem| mem.state == "live"));
 
         // A third post, this one from the human (no sender session), reaches both.
-        let seq: i64 = sqlx::query_scalar(
-            "UPDATE rooms SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq",
-        )
-        .bind(room_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO room_messages (room_id, seq, sender_session_id, sender_label, body) \
-             VALUES ($1, $2, NULL, 'you (human)', 'from the human')",
-        )
-        .bind(room_id)
-        .bind(seq)
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert_eq!(seq, 3);
+        assert_eq!(post_as(&pool, room_id, None, "from the human").await, 3);
 
         // An archived or ended member stays in the room and is reported as
         // skipped rather than dropped from it.
-        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
-            .bind(&b)
-            .execute(&pool)
-            .await
-            .unwrap();
+        set_status(&pool, &b, "archived").await;
         let with_archived = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
         assert_eq!(with_archived.members.len(), 2, "an archived session keeps its room");
         let state_of_b = with_archived
@@ -531,25 +588,26 @@ mod tests {
             .map(|mem| mem.state)
             .unwrap();
         assert_eq!(state_of_b, "archived", "the loop reads this and reports `archived`");
-        sqlx::query("UPDATE sessions SET status = 'active' WHERE id = $1")
-            .bind(&b)
-            .execute(&pool)
-            .await
-            .unwrap();
+        set_status(&pool, &b, "active").await;
 
-        // What `CctuiRoom peek` reads, and its `after=` cursor.
         let all = rooms::timeline(&pool, room_id, None, 200).await.unwrap();
         assert_eq!(all.len(), 3);
         let delta = rooms::timeline(&pool, room_id, Some(2), 200).await.unwrap();
         assert_eq!(delta.len(), 1);
         assert_eq!(delta[0].seq, 3);
+        cleanup(&pool, uid).await;
+    }
 
-        // An archived room refuses new posts.
-        sqlx::query("UPDATE rooms SET archived_at = now() WHERE id = $1")
-            .bind(room_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+    /// DB-gated: an archived room refuses posts, a session is in at most one
+    /// room, and deleting a room releases its sessions instead of deleting them.
+    #[tokio::test]
+    async fn one_room_per_session_and_deleting_a_room_releases_it() {
+        let Some(pool) = test_pool("rooms_lifecycle").await else { return };
+        let uid = Uuid::new_v4();
+        let (a, b, _outsider, room_id) =
+            seed_trio(&pool, uid, (Uuid::new_v4(), Uuid::new_v4())).await;
+
+        set_archived(&pool, room_id, true).await;
         let archived = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
         assert!(archived.archived);
         assert_eq!(rooms::check_sender(&archived, Some(&a)), Err(PostRefusal::Archived));
@@ -560,27 +618,12 @@ mod tests {
              so the archived state is read off the sessions, and unarchiving one restores \
              its reach without having to unarchive the room",
         );
+        set_archived(&pool, room_id, false).await;
 
-        // A session is in at most one room: moving it to a second one takes it
-        // out of the first, because the room is a single column.
-        sqlx::query("UPDATE rooms SET archived_at = NULL WHERE id = $1")
-            .bind(room_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-        let other: Uuid = sqlx::query_scalar(
-            "INSERT INTO rooms (user_id, name) VALUES ($1, 'wave 24') RETURNING id",
-        )
-        .bind(uid)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query("UPDATE sessions SET room_id = $1 WHERE id = $2")
-            .bind(other)
-            .bind(&b)
-            .execute(&pool)
-            .await
-            .unwrap();
+        // Moving a session to a second room takes it out of the first, because
+        // the room is a single column.
+        let other = seed_room(&pool, uid, "wave 24").await;
+        set_room(&pool, &b, Some(other)).await;
         let first = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
         assert_eq!(
             first.members.iter().map(|m| m.session_id.clone()).collect::<Vec<_>>(),
@@ -594,7 +637,6 @@ mod tests {
             "two different rooms are not a shared room",
         );
 
-        // Deleting a room releases its sessions rather than deleting them.
         sqlx::query("DELETE FROM rooms WHERE id = $1").bind(other).execute(&pool).await.unwrap();
         assert!(rooms::room_of_session(&pool, &b).await.unwrap().is_none());
         let still_there: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE id = $1")
@@ -603,11 +645,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(still_there, 1, "ON DELETE SET NULL, not CASCADE");
-
-        sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        cleanup(&pool, uid).await;
     }
 
     /// DB-gated: the archive cascade picks exactly the room's own unarchived
@@ -620,44 +658,12 @@ mod tests {
     /// this crate do not build.
     #[tokio::test]
     async fn archiving_a_room_selects_exactly_its_own_live_sessions() {
-        let Some(url) = crate::routes::gateway::test_db_url("rooms_archive_cascade") else {
-            return;
-        };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
+        let Some(pool) = test_pool("rooms_archive_cascade").await else { return };
         let uid = Uuid::new_v4();
         let machine = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'room-arch', $2)")
-            .bind(uid)
-            .bind(format!("kh-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
-            .bind(machine)
-            .bind(uid)
-            .bind(machine.to_string())
-            .bind(format!("kh-{machine}"))
-            .execute(&pool)
-            .await
-            .expect("seed machine");
-        let mine: Uuid = sqlx::query_scalar(
-            "INSERT INTO rooms (user_id, name) VALUES ($1, 'mine') RETURNING id",
-        )
-        .bind(uid)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let theirs: Uuid = sqlx::query_scalar(
-            "INSERT INTO rooms (user_id, name) VALUES ($1, 'theirs') RETURNING id",
-        )
-        .bind(uid)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        seed_owner(&pool, uid, &[machine]).await;
+        let mine = seed_room(&pool, uid, "mine").await;
+        let theirs = seed_room(&pool, uid, "theirs").await;
 
         // In `mine`: two live, one ended (still has a row to flag), one already
         // archived. Plus one in the other room and one with no room at all.
@@ -675,20 +681,7 @@ mod tests {
             (&other_room, Some(theirs), "active"),
             (&roomless, None, "active"),
         ] {
-            sqlx::query(
-                "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, \
-                 adapter_id, status, room_id) \
-                 VALUES ($1, $2, '/w', $3, $4, 'claude-code', $5, $6)",
-            )
-            .bind(id)
-            .bind(machine.to_string())
-            .bind(uid)
-            .bind(machine)
-            .bind(status)
-            .bind(room)
-            .execute(&pool)
-            .await
-            .expect("seed session");
+            seed_session(&pool, id, uid, machine, "claude-code", status, room).await;
         }
 
         let mut picked = sessions_in_room(&pool, mine).await.expect("selection");
@@ -706,11 +699,7 @@ mod tests {
         );
 
         // The grouping survives: archiving flags the status and leaves room_id.
-        sqlx::query("UPDATE rooms SET archived_at = now() WHERE id = $1")
-            .bind(mine)
-            .execute(&pool)
-            .await
-            .unwrap();
+        set_archived(&pool, mine, true).await;
         sqlx::query("UPDATE sessions SET status = 'archived' WHERE room_id = $1")
             .bind(mine)
             .execute(&pool)
@@ -750,10 +739,6 @@ mod tests {
             crate::peer_policy::Refusal::Unrelated,
             "a different room is still not a shared room",
         );
-
-        sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        cleanup(&pool, uid).await;
     }
 }

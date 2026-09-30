@@ -2242,7 +2242,7 @@ mod tests {
         let mut out = Vec::new();
         parse_line(
             "s",
-            &json!({"type":"queue-operation","operation":"enqueue","prompt":body.clone()}),
+            &json!({"type":"queue-operation","operation":"enqueue","prompt":body}),
             &mut out,
         );
         let msgs = message_payloads(&out);

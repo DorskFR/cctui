@@ -412,9 +412,11 @@ pub fn user_action_tick_schema() -> Value {
     })
 }
 
-/// Every tool this relay advertises, in a stable order. One list, one relay:
-/// registering it for codex or opencode (`adapters::agent_mcp`) offers exactly
-/// the same surface as `claude_code`'s `--mcp-config`.
+/// Every tool this relay advertises, in a stable order.
+///
+/// One list, one relay: registering it for codex or opencode
+/// (`adapters::agent_mcp`) offers exactly the same surface as `claude_code`'s
+/// `--mcp-config`.
 #[must_use]
 pub fn tool_schemas() -> Vec<Value> {
     vec![

@@ -26,14 +26,14 @@ use crate::transcript_md;
 
 /// Per-sender ceilings. A peer message is a turn in somebody else's session:
 /// cheap to send, expensive to receive.
-pub(crate) const SEND_PER_MIN: usize = 10;
+pub const SEND_PER_MIN: usize = 10;
 const HISTORY_PER_MIN: usize = 30;
-const WINDOW: Duration = Duration::from_secs(60);
+const WINDOW: Duration = Duration::from_mins(1);
 
 /// A peer message becomes a prompt, so it is capped like one. A room broadcast
 /// is the same message to several targets, so it is capped and counted the same:
 /// one broadcast spends one send from the caller's window.
-pub(crate) const MAX_MESSAGE_BYTES: usize = 32 * 1024;
+pub const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 
 /// Default and maximum page of a history read.
 const DEFAULT_HISTORY_EVENTS: i64 = 200;
@@ -63,7 +63,7 @@ impl Limiter {
     }
 }
 
-pub(crate) fn limiter() -> &'static Limiter {
+pub fn limiter() -> &'static Limiter {
     static LIMITER: std::sync::LazyLock<Limiter> = std::sync::LazyLock::new(Limiter::default);
     &LIMITER
 }
@@ -118,7 +118,7 @@ pub fn envelope(sender: &SessionNode, body: &str) -> String {
 /// Record a marker turn on `session_id` so the human sees what an agent did on
 /// their behalf. Best-effort: losing the audit row must not fail the call it
 /// describes, but it is logged loudly when it does.
-pub(crate) async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
+async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
     let payload = json!({ "role": "system_marker", "text": text });
     if let Err(err) = sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, 'message', $2)",
@@ -520,29 +520,25 @@ mod tests {
         assert!(bare.limit.is_none() && bare.after.is_none() && bare.roles.is_none());
     }
 
-    /// DB-gated end-to-end policy + history: a child reads the transcript of an
-    /// ARCHIVED parent whose machine row is gone, a sibling on another machine
-    /// is addressable, and an unrelated session of the same owner is 403.
-    #[tokio::test]
-    async fn history_reads_an_archived_parent_and_the_policy_holds_across_machines() {
-        let Some(url) = crate::routes::gateway::test_db_url("peer_history_and_policy") else {
-            return;
-        };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
-        let uid = Uuid::new_v4();
-        let machine_a = Uuid::new_v4();
-        let machine_b = Uuid::new_v4();
+    async fn test_pool(tag: &str) -> Option<sqlx::PgPool> {
+        let url = crate::routes::gateway::test_db_url(tag)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    async fn seed_owner(pool: &sqlx::PgPool, uid: Uuid, machines: &[Uuid]) {
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'peer-test', $2)")
             .bind(uid)
             .bind(format!("kh-{uid}"))
-            .execute(&pool)
+            .execute(pool)
             .await
             .expect("seed user");
-        for m in [machine_a, machine_b] {
+        for &m in machines {
             sqlx::query(
                 "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
             )
@@ -550,36 +546,67 @@ mod tests {
             .bind(uid)
             .bind(format!("box-{m}"))
             .bind(format!("kh-{m}"))
-            .execute(&pool)
+            .execute(pool)
             .await
             .expect("seed machine");
         }
+    }
+
+    async fn seed_session(
+        pool: &sqlx::PgPool,
+        id: &str,
+        parent: Option<&str>,
+        uid: Uuid,
+        machine: Uuid,
+        status: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, \
+             machine_uuid, adapter_id, session_name, status) \
+             VALUES ($1, $2, $3, '/w', $4, $5, 'claude-code', $6, $7)",
+        )
+        .bind(id)
+        .bind(parent)
+        .bind(machine.to_string())
+        .bind(uid)
+        .bind(machine)
+        .bind(format!("name-{id}"))
+        .bind(status)
+        .execute(pool)
+        .await
+        .expect("seed session");
+    }
+
+    async fn cleanup(pool: &sqlx::PgPool, uid: Uuid) {
+        for sql in [
+            "DELETE FROM rooms WHERE user_id = $1",
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(pool).await.ok();
+        }
+    }
+
+    /// DB-gated: the policy relates a child to its parent and to a sibling on
+    /// ANOTHER machine, refuses an unrelated session of the same owner, and
+    /// refuses a caller the owner does not own. A room is the only explicit
+    /// grant, and leaving it takes the reach away again.
+    #[tokio::test]
+    async fn the_policy_relates_kin_and_room_members_and_refuses_everyone_else() {
+        let Some(pool) = test_pool("peer_policy_across_machines").await else { return };
+        let uid = Uuid::new_v4();
+        let machine_a = Uuid::new_v4();
+        let machine_b = Uuid::new_v4();
+        seed_owner(&pool, uid, &[machine_a, machine_b]).await;
         let parent = Uuid::new_v4().to_string();
         let child_a = Uuid::new_v4().to_string();
         let child_b = Uuid::new_v4().to_string();
         let loner = Uuid::new_v4().to_string();
-        for (id, par, m, status) in [
-            (&parent, None::<&str>, machine_a, "archived"),
-            (&child_a, Some(parent.as_str()), machine_a, "active"),
-            (&child_b, Some(parent.as_str()), machine_b, "active"),
-            (&loner, None, machine_b, "active"),
-        ] {
-            sqlx::query(
-                "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, \
-                 machine_uuid, adapter_id, session_name, status) \
-                 VALUES ($1, $2, $3, '/w', $4, $5, 'claude-code', $6, $7)",
-            )
-            .bind(id)
-            .bind(par)
-            .bind(m.to_string())
-            .bind(uid)
-            .bind(m)
-            .bind(format!("name-{id}"))
-            .bind(status)
-            .execute(&pool)
-            .await
-            .expect("seed session");
-        }
+        seed_session(&pool, &parent, None, uid, machine_a, "archived").await;
+        seed_session(&pool, &child_a, Some(&parent), uid, machine_a, "active").await;
+        seed_session(&pool, &child_b, Some(&parent), uid, machine_b, "active").await;
+        seed_session(&pool, &loner, None, uid, machine_b, "active").await;
 
         assert_eq!(
             peer_policy::authorize(&pool, &child_a, &parent, uid).await.unwrap().0,
@@ -645,9 +672,22 @@ mod tests {
         assert_eq!(by_id.get(child_b.as_str()), Some(&"sibling"));
         assert!(!by_id.contains_key(loner.as_str()), "a session out of the room is off the roster");
         assert!(!by_id.contains_key(child_a.as_str()), "the caller is not its own peer");
+        cleanup(&pool, uid).await;
+    }
 
-        // The archived parent's transcript is still in stream_events, and the
-        // machine going away does not touch it.
+    /// DB-gated: a child reads the transcript of an ARCHIVED parent — the events
+    /// outlive the session's status — pages backwards with `before`, and leaves
+    /// an audit marker in its own transcript.
+    #[tokio::test]
+    async fn history_reads_an_archived_parent_and_pages_backwards() {
+        let Some(pool) = test_pool("peer_history").await else { return };
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        seed_owner(&pool, uid, &[machine]).await;
+        let parent = Uuid::new_v4().to_string();
+        let child = Uuid::new_v4().to_string();
+        seed_session(&pool, &parent, None, uid, machine, "archived").await;
+        seed_session(&pool, &child, Some(&parent), uid, machine, "active").await;
         for (role, text) in [
             ("user", "plan the migration"),
             ("assistant", "here is the plan"),
@@ -663,6 +703,7 @@ mod tests {
             .await
             .expect("seed event");
         }
+
         let q = crate::routes::sessions::ConversationQuery {
             limit: Some(DEFAULT_HISTORY_EVENTS),
             ..Default::default()
@@ -714,21 +755,17 @@ mod tests {
         assert_eq!(older.len(), 1);
         assert!(older[0].0 < newest_seq, "before must page backwards");
 
-        audit(&pool, &child_a, "consulted history of the parent").await;
+        audit(&pool, &child, "consulted history of the parent").await;
         let marker: Option<String> = sqlx::query_scalar(
             "SELECT payload->>'text' FROM stream_events \
              WHERE session_id = $1 AND payload->>'role' = 'system_marker' \
              ORDER BY id DESC LIMIT 1",
         )
-        .bind(&child_a)
+        .bind(&child)
         .fetch_optional(&pool)
         .await
         .expect("audit row");
         assert_eq!(marker.as_deref(), Some("consulted history of the parent"));
-
-        sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        cleanup(&pool, uid).await;
     }
 }

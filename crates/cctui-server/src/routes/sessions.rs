@@ -1808,7 +1808,7 @@ type ConversationRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<uu
 
 /// `(id, client payload, created_at, turn_id)`: a stored row the client can
 /// render, in the query's own order (newest-first for `Desc`).
-pub(crate) type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
+pub type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
 
 /// Reads rows until `limit` of them survive [`crate::normalize::for_client`],
 /// or the table is exhausted in the paging direction. Some stored rows carry
@@ -1821,7 +1821,7 @@ pub(crate) type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<u
 /// the causal `seq` and a strict total order, so a late-flushed
 /// `AskUserQuestion` card+preamble keep their insert position even when their
 /// `created_at` ties or lands after the user's answer.
-pub(crate) async fn renderable_rows(
+pub async fn renderable_rows(
     pool: &sqlx::PgPool,
     session_id: &str,
     adapter_id: &str,

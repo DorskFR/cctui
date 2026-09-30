@@ -249,7 +249,7 @@ pub enum PostRefusal {
 
 impl PostRefusal {
     #[must_use]
-    pub fn status(&self) -> StatusCode {
+    pub const fn status(&self) -> StatusCode {
         match self {
             Self::Empty | Self::EnvelopeBreak => StatusCode::BAD_REQUEST,
             Self::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,

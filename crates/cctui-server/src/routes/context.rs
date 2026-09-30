@@ -627,7 +627,7 @@ mod tests {
         // What a profile pins, named the same way on both paths.
         let pinned = ["pinned".to_owned(), "reviewer".to_owned()];
         let scope = SpawnScope {
-            machine_id: Some(machine.clone()),
+            machine_id: Some(machine),
             working_dir: Some("/w/repo/crates".into()),
             label_ids: Vec::new(),
         };
