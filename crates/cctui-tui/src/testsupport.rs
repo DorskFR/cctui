@@ -131,7 +131,7 @@ pub fn conversation_store() -> crate::app::ConversationStore {
 }
 
 fn line(kind: LineKind, text: impl Into<String>) -> ConversationLine {
-    ConversationLine::new(kind, 0, text)
+    ConversationLine::new(kind, text, 0)
 }
 
 fn tool(category: ToolCategory, name: &str, detail: &str) -> ConversationLine {
@@ -144,6 +144,32 @@ fn result(error: bool, name: &str, text: &str) -> ConversationLine {
     let mut line = line(LineKind::Result { error }, text);
     line.tool = Some(name.to_owned());
     line
+}
+
+pub fn ask_card() -> crate::app::prompt::AskCard {
+    let questions = json!([
+            {
+                "header": "Storage",
+                "question": "Which database?",
+                "options": [
+                    {"label": "Postgres", "description": "the default"},
+                    {"label": "SQLite"}
+                ]
+            },
+            {
+                "question": "Which features?",
+                "multiSelect": true,
+                "options": [{"label": "auth"}, {"label": "billing"}]
+            }
+    ]);
+    crate::app::prompt::AskCard::new("Which database?".to_owned(), Some(&questions), None)
+}
+
+pub fn plan_card() -> crate::app::prompt::PlanCard {
+    crate::app::prompt::PlanCard::new(
+        "# Plan\n\n- rework the reducer\n- add the card".to_owned(),
+        None,
+    )
 }
 
 pub fn permission_request() -> PendingPermission {

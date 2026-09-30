@@ -6,6 +6,7 @@ use ratatui_textarea::TextArea;
 
 use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
+use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
 pub use super::session_list::uptime_secs;
 use super::toast::{Level, StatusCounters, Toasts};
@@ -16,6 +17,7 @@ pub enum View {
     Conversation,
     Help,
     PermissionDialog,
+    HistoryPicker,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -101,21 +103,43 @@ pub struct ConversationLine {
     pub peer_room: Option<String>,
     /// Duration and token figures on [`LineKind::Summary`].
     pub footer: Option<TurnFooter>,
+    /// Delivery or queue state; `None` is a settled line.
+    pub status: Option<LineStatus>,
+}
+
+/// What a line is still waiting for: delivery of the user's own send, or the
+/// agent taking a queued prompt off its queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineStatus {
+    Sending,
+    Retrying {
+        attempt: u32,
+        max: u32,
+    },
+    Delivered,
+    Failed(String),
+    /// Waiting behind the running turn on the agent's own queue.
+    Queued,
+    /// Withdrawn from that queue before the agent ran it.
+    Removed,
 }
 
 impl ConversationLine {
     #[must_use]
-    pub fn new(kind: LineKind, timestamp: i64, text: impl Into<String>) -> Self {
+    pub fn new(kind: LineKind, text: impl Into<String>, timestamp: i64) -> Self {
         Self { timestamp, kind, text: text.into(), ..Self::default() }
+    }
+
+    #[must_use]
+    pub fn with_status(mut self, status: LineStatus) -> Self {
+        self.status = Some(status);
+        self
     }
 
     /// Whether the line hides body text behind a collapse toggle.
     #[must_use]
     pub const fn collapsible(&self) -> bool {
-        matches!(
-            self.kind,
-            LineKind::Thinking { .. } | LineKind::Result { .. } | LineKind::Compact
-        )
+        matches!(self.kind, LineKind::Thinking { .. } | LineKind::Result { .. } | LineKind::Compact)
     }
 }
 
@@ -166,6 +190,10 @@ pub struct App {
     pub should_quit: bool,
     /// Queue of pending permission requests; first is shown as dialog.
     pub permission_queue: std::collections::VecDeque<PendingPermission>,
+    /// Live `AskUserQuestion` per session, cleared on `AskResolved`.
+    pub asks: HashMap<String, AskCard>,
+    /// Live plan-approval prompt per session, cleared on `PlanResolved`.
+    pub plans: HashMap<String, PlanCard>,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
@@ -197,6 +225,9 @@ pub struct App {
     pub toasts: Toasts,
     pub status: StatusCounters,
     pub auth: AuthState,
+    pub drafts: super::drafts::DraftState,
+    /// Sends that have left the composer but are not confirmed delivered.
+    pub outbox: super::send::Outbox,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -214,6 +245,16 @@ impl App {
         self.message_input = Self::new_input_textarea();
     }
 
+    /// Replace the composer's content, leaving the caret after the last
+    /// character so typing continues where the text ends.
+    pub fn set_input_text(&mut self, text: &str) {
+        let mut textarea = Self::new_input_textarea();
+        if !text.is_empty() {
+            let _ = textarea.insert_str(text);
+        }
+        self.message_input = textarea;
+    }
+
     pub fn new() -> Self {
         Self {
             router: Router::new(View::SessionList),
@@ -227,6 +268,8 @@ impl App {
             input_active: false,
             should_quit: false,
             permission_queue: std::collections::VecDeque::new(),
+            asks: HashMap::new(),
+            plans: HashMap::new(),
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,
@@ -245,6 +288,8 @@ impl App {
             toasts: Toasts::default(),
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
+            drafts: super::drafts::DraftState::default(),
+            outbox: super::send::Outbox::default(),
             clock_ms: 0,
         }
     }

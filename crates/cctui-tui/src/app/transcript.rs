@@ -84,9 +84,7 @@ fn room_joined_re() -> &'static Regex {
 
 fn attr_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"([a-z-]+)="([^"]*)""#).expect("the attribute pattern compiles")
-    })
+    RE.get_or_init(|| Regex::new(r#"([a-z-]+)="([^"]*)""#).expect("the attribute pattern compiles"))
 }
 
 fn is_peer_preamble(line: &str) -> bool {

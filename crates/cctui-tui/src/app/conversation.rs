@@ -181,7 +181,7 @@ mod tests {
     }
 
     fn line(text: &str) -> ConversationLine {
-        ConversationLine::new(LineKind::Assistant, 0, text)
+        ConversationLine::new(LineKind::Assistant, text, 0)
     }
 
     fn page(app: &mut App, kind: PageKind, rows: &[(i64, &str)], has_more: bool) {
@@ -221,7 +221,7 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
                 seq: Some(9),
-                line: Some(line("live")),
+                line: Some(Box::new(line("live"))),
                 usage: None,
             },
         );
@@ -416,7 +416,7 @@ mod tests {
         open(&mut app, "s-a".to_owned());
         let rows = vec![
             (1_i64, line("prose")),
-            (2, ConversationLine::new(LineKind::Result { error: false }, 0, "120 lines")),
+            (2, ConversationLine::new(LineKind::Result { error: false }, "120 lines", 0)),
         ];
         reduce(
             &mut app,
@@ -448,7 +448,7 @@ mod tests {
                 kind: PageKind::Latest,
                 rows: vec![(
                     1,
-                    ConversationLine::new(LineKind::Thinking { redacted: false }, 0, "hmm"),
+                    ConversationLine::new(LineKind::Thinking { redacted: false }, "hmm", 0),
                 )],
                 etag: None,
                 has_more: false,

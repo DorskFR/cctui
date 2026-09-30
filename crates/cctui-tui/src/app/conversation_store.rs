@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use super::state::ConversationLine;
+use super::state::{ConversationLine, LineKind, LineStatus};
 
 pub const PAGE_LIMIT: i64 = 200;
 
@@ -243,7 +243,28 @@ impl ConversationStore {
             self.epoch += 1;
         }
         self.entries.insert(at, Entry { seq, sequenced, line, expanded: false });
+        self.close_queued(at);
         true
+    }
+
+    /// The prompt the agent finally ran, or the human withdrew, retires the
+    /// placeholder that was standing in for it.
+    fn close_queued(&mut self, at: usize) {
+        let line = &self.entries[at].line;
+        let (keys, exact) = match (&line.kind, &line.status) {
+            (LineKind::User, None) => (delivered_keys(&line.text), true),
+            (LineKind::System, Some(LineStatus::Removed)) => {
+                (vec![queue_key(&line.text).to_owned()], false)
+            }
+            _ => return,
+        };
+        let placeholder = self.entries.iter().position(|e| {
+            e.line.status == Some(LineStatus::Queued)
+                && keys.iter().any(|delivered| matches(&e.line.text, delivered, exact))
+        });
+        let Some(placeholder) = placeholder else { return };
+        self.entries.remove(placeholder);
+        self.epoch += 1;
     }
 
     /// Flips one entry's collapse state. Bumping `epoch` is what invalidates the
@@ -273,13 +294,36 @@ impl ConversationStore {
     }
 }
 
+/// Queue records carry no id, so a placeholder is matched to its prompt by
+/// text. Only the first line survives truncation on the server side.
+fn queue_key(text: &str) -> &str {
+    text.lines().next().unwrap_or("").trim().trim_end_matches('…')
+}
+
+/// A single turn can deliver several queued prompts stacked line by line.
+fn delivered_keys(text: &str) -> Vec<String> {
+    text.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect()
+}
+
+fn matches(placeholder: &str, other: &str, exact: bool) -> bool {
+    let key = queue_key(placeholder);
+    if key.is_empty() {
+        return !exact && other.is_empty();
+    }
+    other.starts_with(key) || (!exact && key.starts_with(other) && !other.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ConversationStore, PAGE_LIMIT, PageKind, PageRequest};
-    use crate::app::state::{ConversationLine, LineKind};
+    use crate::app::state::{ConversationLine, LineKind, LineStatus};
 
     fn line(text: &str) -> ConversationLine {
-        ConversationLine::new(LineKind::Assistant, 0, text)
+        ConversationLine::new(LineKind::Assistant, text, 0)
+    }
+
+    fn queued(text: &str) -> ConversationLine {
+        ConversationLine::new(LineKind::User, text, 0).with_status(LineStatus::Queued)
     }
 
     fn rows(specs: &[(i64, &str)]) -> Vec<(i64, ConversationLine)> {
@@ -472,7 +516,7 @@ mod tests {
     fn expanding_a_line_invalidates_the_render_cache() {
         let mut store = ConversationStore::new();
         store.push_live(Some(1), line("prose"));
-        let out = ConversationLine::new(LineKind::Result { error: false }, 0, "out");
+        let out = ConversationLine::new(LineKind::Result { error: false }, "out", 0);
         store.push_live(Some(2), out);
         let epoch = store.epoch();
 
@@ -494,7 +538,7 @@ mod tests {
         store.push_live(Some(1), line("prose"));
         store.push_live(
             Some(2),
-            ConversationLine::new(LineKind::Thinking { redacted: false }, 0, "hmm"),
+            ConversationLine::new(LineKind::Thinking { redacted: false }, "hmm", 0),
         );
         assert!(store.set_all_expanded(true));
         assert!(!store.entries()[0].expanded);
@@ -511,5 +555,55 @@ mod tests {
         assert_eq!(store.newest_seq(), None);
         assert_eq!(store.etag(), None);
         assert!(!store.loaded);
+    }
+
+    #[test]
+    fn a_queued_prompt_clears_when_its_own_turn_is_delivered() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), queued("ship the thing"));
+        store.push_live(Some(2), queued("then tag it"));
+        assert_eq!(texts(&store), ["ship the thing", "then tag it"]);
+
+        let epoch = store.epoch();
+        store.push_live(Some(3), ConversationLine::new(LineKind::User, "ship the thing", 0));
+        assert_eq!(texts(&store), ["then tag it", "ship the thing"]);
+        assert!(store.epoch() > epoch, "retiring a placeholder invalidates the render cache");
+
+        store.push_live(Some(4), ConversationLine::new(LineKind::User, "then tag it", 0));
+        assert_eq!(texts(&store), ["ship the thing", "then tag it"]);
+        assert!(store.lines().all(|l| l.status.is_none()), "nothing is still queued");
+    }
+
+    #[test]
+    fn one_delivered_turn_absorbs_the_prompt_it_stacked() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), queued("ship the thing"));
+        store.push_live(
+            Some(2),
+            ConversationLine::new(LineKind::User, "and now\nship the thing please", 0),
+        );
+        assert_eq!(texts(&store), ["and now\nship the thing please"]);
+    }
+
+    #[test]
+    fn a_withdrawn_prompt_leaves_the_removal_note_and_no_placeholder() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), queued("ship the thing"));
+        store.push_live(
+            Some(2),
+            ConversationLine::new(LineKind::System, "ship the thing", 0)
+                .with_status(LineStatus::Removed),
+        );
+        assert_eq!(texts(&store), ["ship the thing"]);
+        assert_eq!(store.entries()[0].line.status, Some(LineStatus::Removed));
+    }
+
+    #[test]
+    fn an_unrelated_user_message_leaves_the_queue_alone() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), queued("ship the thing"));
+        store.push_live(Some(2), ConversationLine::new(LineKind::User, "what is the status", 0));
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.entries()[0].line.status, Some(LineStatus::Queued));
     }
 }

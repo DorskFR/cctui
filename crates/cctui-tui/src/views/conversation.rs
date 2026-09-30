@@ -4,8 +4,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
-use crate::app::transcript;
-use crate::app::{App, ConversationLine, LineKind, ToolCategory, TurnFooter};
+use crate::app::conversation_store::ConversationStore;
+use crate::app::{
+    App, ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter, send, transcript,
+};
 use crate::theme;
 use crate::ui::{diff_render, markdown_render};
 
@@ -32,30 +34,46 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let max_input = (main_area.height as usize / 2).max(1);
     let input_height = input_lines.clamp(1, 12_usize.min(max_input)) as u16;
 
-    let [header_area, content_area, separator_area, input_area] = Layout::vertical([
+    let card = super::prompt::card_lines(
+        app,
+        &session.id,
+        main_area.width as usize,
+        (main_area.height as usize / 2).max(1),
+    );
+    let card_height = u16::try_from(card.len()).unwrap_or(u16::MAX);
+
+    let [header_area, content_area, card_area, separator_area, input_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(card_height),
         Constraint::Length(1),
         Constraint::Length(input_height),
     ])
     .areas(main_area);
 
+    if card_height > 0 {
+        frame.render_widget(Paragraph::new(card), card_area);
+    }
+
     // Header
     let auto = if session.auto_approve { " ── ✓ auto-approve" } else { "" };
+    let waiting = app.prompt_marker(&session.id).map_or_else(String::new, |m| format!(" ── {m}"));
     let header_text = if branch.is_empty() {
-        format!(" {project} on {machine} ── {model} ── {cost}{auto}")
+        format!(" {project} on {machine} ── {model} ── {cost}{auto}{waiting}")
     } else {
-        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}")
+        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}{waiting}")
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
     header_spans.extend(crate::widgets::status::status_spans(app));
     frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
 
     // Conversation
-    if let Some(store) = app.conversations.get(&session.id).filter(|s| !s.is_empty()) {
+    let pending = send::pending_lines(app, &session.id);
+    let store = app.conversations.get(&session.id).filter(|s| !s.is_empty());
+    if store.is_some() || !pending.is_empty() {
         let visible_height = content_area.height as usize;
-        let entries = store.entries();
-        let epoch = store.epoch();
+        let entries = store.map_or(&[][..], ConversationStore::entries);
+        let epoch = store.map_or(0, ConversationStore::epoch);
 
         // The cache may only be appended to: any entry that landed earlier than
         // the end bumps `epoch` and forces a rebuild.
@@ -81,8 +99,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.render_cache_entries = entries.len();
         }
 
+        // An optimistic send is never collapsible, so it needs no expand state.
+        let pending_opts = RenderOpts { show_timestamps: app.show_timestamps, expanded: false };
+        let pending_lines: Vec<Line<'static>> =
+            pending.iter().flat_map(|line| render_line(line, pending_opts)).collect();
+
         let previous_total = app.total_display_lines;
-        let total = app.render_cache.len();
+        let total = app.render_cache.len() + pending_lines.len();
         app.viewport_height = visible_height;
         app.total_display_lines = total;
 
@@ -110,8 +133,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         let offset = if app.follow_tail { max_offset } else { app.scroll_offset.min(max_offset) };
 
-        let mut display_lines: Vec<Line<'static>> =
-            app.render_cache.iter().skip(offset).take(visible_height).cloned().collect();
+        let mut display_lines: Vec<Line<'static>> = app
+            .render_cache
+            .iter()
+            .chain(pending_lines.iter())
+            .skip(offset)
+            .take(visible_height)
+            .cloned()
+            .collect();
         if let Some((start, end)) = focus {
             for (row, line) in display_lines.iter_mut().enumerate() {
                 let absolute = offset + row;
@@ -135,13 +164,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Separator
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "─".repeat(separator_area.width as usize),
-            theme::border_focused(),
-        ))),
-        separator_area,
-    );
+    let marker = if app.drafts.has_draft(&session.id) { " draft " } else { "" };
+    let rule = (separator_area.width as usize).saturating_sub(marker.chars().count());
+    let mut separator_spans = vec![Span::styled("─".repeat(rule), theme::border_focused())];
+    if !marker.is_empty() {
+        separator_spans.push(Span::styled(marker, theme::dim()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(separator_spans)), separator_area);
 
     // Input: [❯][textarea]
     let [prompt_area, textarea_area] = Layout::default()
@@ -385,11 +414,9 @@ fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> 
     match line.kind {
         LineKind::User => {
             // Two blank lines before user message — clear turn separator
-            let mut out = vec![
-                Line::from(""),
-                Line::from(""),
-                Line::from(vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)]),
-            ];
+            let mut head = vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)];
+            head.extend(status_span(line.status.as_ref()));
+            let mut out = vec![Line::from(""), Line::from(""), Line::from(head)];
             out.extend(line.text.lines().map(|text_line| {
                 Line::from(Span::styled(
                     text_line.to_string(),
@@ -428,8 +455,7 @@ fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> 
         }
         LineKind::Compact => {
             let body = markdown_lines(&line.text);
-            let mut header =
-                vec![Span::raw(ts), Span::styled("⟳ context compacted", theme::dim())];
+            let mut header = vec![Span::raw(ts), Span::styled("⟳ context compacted", theme::dim())];
             if !opts.expanded {
                 header.push(collapse_hint(body.len()));
                 return vec![Line::from(header)];
@@ -455,7 +481,15 @@ fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> 
             vec![Line::from(vec![Span::raw(ts), Span::styled(text, style)])]
         }
         LineKind::System => {
-            if line.text.is_empty() {
+            if line.status == Some(LineStatus::Removed) {
+                let body = line.text.lines().next().unwrap_or_default();
+                let note = if body.is_empty() {
+                    "⧗ removed from queue".to_owned()
+                } else {
+                    format!("⧗ removed from queue: {body}")
+                };
+                vec![Line::from(Span::styled(note, theme::dim()))]
+            } else if line.text.is_empty() {
                 Vec::new()
             } else {
                 vec![Line::from(Span::styled(line.text.clone(), theme::dim()))]
@@ -502,6 +536,23 @@ fn focused_rows(
     let start = starts[cursor];
     let end = starts.get(cursor + 1).copied().unwrap_or(total);
     Some((start, end.max(start + 1)))
+}
+
+/// The delivery or queue badge a user line carries, if any.
+fn status_span(status: Option<&LineStatus>) -> Option<Span<'static>> {
+    let (text, style) = match status? {
+        LineStatus::Sending => ("  … sending".to_owned(), theme::dim()),
+        LineStatus::Retrying { attempt, max } => {
+            (format!("  ⟳ retrying ({attempt}/{max})"), theme::dim())
+        }
+        LineStatus::Delivered => ("  ✓ sent".to_owned(), theme::dim()),
+        LineStatus::Failed(reason) => {
+            (format!("  ✗ failed: {reason} — R retry  e edit  x drop"), theme::error())
+        }
+        LineStatus::Queued => ("  ⧗ queued".to_owned(), theme::dim()),
+        LineStatus::Removed => ("  ⧗ removed from queue".to_owned(), theme::dim()),
+    };
+    Some(Span::styled(text, style))
 }
 
 /// Render a scrollbar overlay on the right edge of the content area.
@@ -618,7 +669,7 @@ mod tests {
     }
 
     fn result(error: bool, text: &str) -> ConversationLine {
-        let mut line = ConversationLine::new(LineKind::Result { error }, 0, text);
+        let mut line = ConversationLine::new(LineKind::Result { error }, text, 0);
         line.tool = Some("Bash".to_owned());
         line
     }
@@ -646,11 +697,8 @@ mod tests {
 
     #[test]
     fn thinking_collapses_to_a_single_summary_row() {
-        let line = ConversationLine::new(
-            LineKind::Thinking { redacted: false },
-            0,
-            "one\ntwo\nthree",
-        );
+        let line =
+            ConversationLine::new(LineKind::Thinking { redacted: false }, "one\ntwo\nthree", 0);
         let collapsed = rows(&line, false);
         assert_eq!(collapsed.len(), 1);
         assert!(collapsed[0].contains("thinking (3 lines)"), "{collapsed:?}");
@@ -659,7 +707,7 @@ mod tests {
 
     #[test]
     fn redacted_thinking_has_no_body_to_expand() {
-        let line = ConversationLine::new(LineKind::Thinking { redacted: true }, 0, "\u{fffd}");
+        let line = ConversationLine::new(LineKind::Thinking { redacted: true }, "\u{fffd}", 0);
         assert_eq!(rows(&line, true).len(), 1);
         assert!(rows(&line, true)[0].contains("redacted"));
     }
@@ -667,7 +715,7 @@ mod tests {
     #[test]
     fn a_tool_row_carries_its_name_detail_and_category_badge() {
         let mut line =
-            ConversationLine::new(LineKind::Tool { category: ToolCategory::Read }, 0, "src/a.rs");
+            ConversationLine::new(LineKind::Tool { category: ToolCategory::Read }, "src/a.rs", 0);
         line.tool = Some("Read".to_owned());
         let rendered = rows(&line, false);
         assert_eq!(rendered.len(), 1);
@@ -679,14 +727,14 @@ mod tests {
     #[test]
     fn an_mcp_tool_row_shows_the_short_name() {
         let mut line =
-            ConversationLine::new(LineKind::Tool { category: ToolCategory::Mcp }, 0, "{}");
+            ConversationLine::new(LineKind::Tool { category: ToolCategory::Mcp }, "{}", 0);
         line.tool = Some("mcp__cctui__CctuiUsage".to_owned());
         assert!(rows(&line, false)[0].contains("cctui:CctuiUsage"));
     }
 
     #[test]
     fn an_assistant_turn_with_usage_gets_a_footer_row() {
-        let mut line = ConversationLine::new(LineKind::Assistant, 0, "done");
+        let mut line = ConversationLine::new(LineKind::Assistant, "done", 0);
         line.footer = Some(TurnFooter {
             duration_ms: None,
             tokens_in: Some(12_400),
@@ -701,7 +749,7 @@ mod tests {
 
     #[test]
     fn a_duration_only_summary_renders_as_a_clock_row() {
-        let mut line = ConversationLine::new(LineKind::Summary, 0, String::new());
+        let mut line = ConversationLine::new(LineKind::Summary, String::new(), 0);
         line.footer = Some(TurnFooter { duration_ms: Some(98_000), ..TurnFooter::default() });
         let rendered = rows(&line, false);
         assert_eq!(rendered.len(), 1);
@@ -710,7 +758,7 @@ mod tests {
 
     #[test]
     fn a_peer_line_names_its_sender_and_room() {
-        let mut line = ConversationLine::new(LineKind::Peer, 0, "rebased");
+        let mut line = ConversationLine::new(LineKind::Peer, "rebased", 0);
         line.peer_from = Some("lane-b".to_owned());
         line.peer_room = Some("wave-3".to_owned());
         let rendered = rows(&line, false);
@@ -720,7 +768,7 @@ mod tests {
 
     #[test]
     fn an_empty_system_line_renders_nothing() {
-        let line = ConversationLine::new(LineKind::System, 0, String::new());
+        let line = ConversationLine::new(LineKind::System, String::new(), 0);
         assert!(rows(&line, false).is_empty());
     }
 }

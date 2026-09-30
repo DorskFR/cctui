@@ -1,15 +1,24 @@
 use super::action::{Action, Effect, HeartbeatUsage};
-use super::conversation;
 use super::conversation::ConversationAction;
 use super::state::{App, PendingPermission, View};
 use super::toast::Level;
+use super::{conversation, send};
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
-#[allow(clippy::too_many_lines)]
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
+    let mut effects = reduce_action(app, action);
+    effects.extend(super::drafts::sync_composer(app));
+    effects
+}
+
+#[allow(clippy::too_many_lines)]
+fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
+        Action::Send(action) => send::reduce_send(app, action),
+        Action::Tick => send::tick(app),
 
         Action::Quit => {
             app.should_quit = true;
@@ -101,7 +110,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         Action::ActivateInputWith(key) => {
             app.input_active = true;
             app.message_input.input(key);
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::CancelInput => {
             app.input_active = false;
@@ -109,11 +118,11 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::InputKey(key) => {
             app.message_input.input(key);
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::InputNewline => {
             app.message_input.insert_newline();
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::SubmitInput => {
             let content = app.message_input.lines().join("\n");
@@ -122,9 +131,12 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.input_active = false;
             match target {
                 Some(session_id) if !content.trim().is_empty() => {
-                    vec![Effect::SendMessage { session_id, content }]
+                    send::submit(app, session_id, content, None)
                 }
-                _ => Vec::new(),
+                // Nothing to send, but the emptied composer is still a draft
+                // change the store has to hear about.
+                Some(session_id) => super::drafts::on_send(app, &session_id, &content),
+                None => Vec::new(),
             }
         }
 
@@ -178,13 +190,14 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
                 apply_heartbeat_usage(app, &session_id, &usage);
             }
             if let Some(line) = line {
-                conversation::stream(app, &session_id, seq, line);
+                conversation::stream(app, &session_id, seq, *line);
             }
             Vec::new()
         }
@@ -207,6 +220,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
             let mut effects = conversation::reconnect(app);
+            effects.extend(send::redispatch_parked(app));
             effects.push(Effect::RefreshSessions);
             effects
         }
@@ -333,6 +347,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
 fn deregister_session(app: &mut App, session_id: &str) {
     app.sessions.retain(|s| s.id != session_id);
     app.conversations.remove(session_id);
+    app.drafts.forget(session_id);
     if app.subscribed.as_deref() == Some(session_id) {
         app.subscribed = None;
     }
@@ -363,8 +378,8 @@ mod tests {
         app
     }
 
-    fn line(text: &str) -> Option<crate::app::state::ConversationLine> {
-        Some(crate::app::state::ConversationLine::new(LineKind::Assistant, 0, text))
+    fn line(text: &str) -> Box<crate::app::state::ConversationLine> {
+        Box::new(crate::app::state::ConversationLine::new(LineKind::Assistant, text, 0))
     }
 
     #[test]
@@ -475,12 +490,16 @@ mod tests {
         app.input_active = true;
         app.message_input.insert_str("hello there");
         let effects = reduce(&mut app, Action::SubmitInput);
-        match effects.as_slice() {
-            [Effect::SendMessage { session_id, content }] => {
+        let sent = effects
+            .iter()
+            .find(|e| matches!(e, Effect::SendMessage { .. }))
+            .expect("expected a send effect");
+        match sent {
+            Effect::SendMessage { session_id, content, ask_picks: None, .. } => {
                 assert_eq!(session_id, "s-a");
                 assert_eq!(content, "hello there");
             }
-            _ => panic!("expected a send effect"),
+            _ => unreachable!("filtered above"),
         }
         assert!(!app.input_active);
         assert_eq!(app.message_input.lines().join("\n"), "");
@@ -569,7 +588,7 @@ mod tests {
                 Action::StreamLine {
                     session_id: "s-a".to_owned(),
                     seq: Some(1),
-                    line: line("same"),
+                    line: Some(line("same")),
                     usage: None,
                 },
             );
@@ -580,7 +599,7 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
                 seq: Some(2),
-                line: line("different"),
+                line: Some(line("different")),
                 usage: None,
             },
         );
@@ -614,7 +633,7 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-b".to_owned(),
                 seq: Some(1),
-                line: line("bye"),
+                line: Some(line("bye")),
                 usage: None,
             },
         );

@@ -1,6 +1,6 @@
 use cctui_proto::ws::AgentEvent;
 
-use super::state::{ConversationLine, LineKind, ToolCategory, TurnFooter};
+use super::state::{ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter};
 use super::transcript;
 
 fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
@@ -111,26 +111,43 @@ fn clean_user_message(text: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
+/// A queue record: the enqueued prompt is the human's own message waiting its
+/// turn, and only a withdrawal is worth a line of its own. A bodiless `dequeued`
+/// is the agent picking the prompt up — the real turn follows, so it shows
+/// nothing.
+fn queue_op_line(content: &str, operation: Option<&str>, ts: i64) -> Option<ConversationLine> {
+    let body = content.trim();
+    match operation.unwrap_or("queued") {
+        "queued" if !body.is_empty() => {
+            Some(ConversationLine::new(LineKind::User, body, ts).with_status(LineStatus::Queued))
+        }
+        "removed" | "cleared" if !body.is_empty() => {
+            Some(ConversationLine::new(LineKind::System, body, ts).with_status(LineStatus::Removed))
+        }
+        _ => None,
+    }
+}
+
 /// Classifies a stored user turn: peer relay, marker, injected, or human.
 fn user_line(text: &str, ts: i64, meta: bool) -> Option<ConversationLine> {
     if let Some(peer) = transcript::parse_peer_message(text) {
-        let mut line = ConversationLine::new(LineKind::Peer, ts, peer.body);
+        let mut line = ConversationLine::new(LineKind::Peer, peer.body, ts);
         line.peer_from = peer.from;
         line.peer_room = peer.room;
         return Some(line);
     }
     if transcript::parse_room_joined(text).is_some() {
-        return Some(ConversationLine::new(LineKind::Marker, ts, "joined a room"));
+        return Some(ConversationLine::new(LineKind::Marker, "joined a room", ts));
     }
     if transcript::looks_keepalive_tick(text) {
-        return Some(ConversationLine::new(LineKind::Marker, ts, "keep-alive tick"));
+        return Some(ConversationLine::new(LineKind::Marker, "keep-alive tick", ts));
     }
     // `meta` is set authoritatively at the adapter layer; `looks_meta` catches
     // the turns it misses.
     if meta || transcript::looks_meta(text) {
-        return Some(ConversationLine::new(LineKind::System, ts, text.trim()));
+        return Some(ConversationLine::new(LineKind::System, text.trim(), ts));
     }
-    clean_user_message(text).map(|cleaned| ConversationLine::new(LineKind::User, ts, cleaned))
+    clean_user_message(text).map(|cleaned| ConversationLine::new(LineKind::User, cleaned, ts))
 }
 
 /// Only annotations with something to show become a line.
@@ -142,19 +159,21 @@ fn annotation_line(content: &str, ts: i64) -> Option<ConversationLine> {
             if ms == 0 {
                 return None;
             }
-            let mut line = ConversationLine::new(LineKind::Summary, ts, String::new());
+            let mut line = ConversationLine::new(LineKind::Summary, String::new(), ts);
             line.footer = Some(TurnFooter { duration_ms: Some(ms), ..TurnFooter::default() });
             Some(line)
         }
         "stop_hook_summary" if !detail.trim().is_empty() => {
-            Some(ConversationLine::new(LineKind::Marker, ts, format!("hook: {}", detail.trim())))
+            Some(ConversationLine::new(LineKind::Marker, format!("hook: {}", detail.trim()), ts))
         }
         _ => None,
     }
 }
 
 fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
-    let AgentEvent::Text { content, meta, ts, kind, message_id, usage, turn_id, .. } = event else {
+    let AgentEvent::Text { content, meta, ts, kind, operation, message_id, usage, turn_id, .. } =
+        event
+    else {
         return None;
     };
     // Streaming emits an empty text event before the populated one.
@@ -164,20 +183,19 @@ fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
     let mut line = match kind.as_deref() {
         Some(k @ ("thinking" | "redacted_thinking")) => ConversationLine::new(
             LineKind::Thinking { redacted: k == "redacted_thinking" },
-            *ts,
             content.clone(),
+            *ts,
         ),
         // Markers carry no user prefix, so they must be claimed before the
         // assistant fallthrough or they read as assistant prose.
-        Some("system_marker" | "queue_op") => {
-            ConversationLine::new(LineKind::Marker, *ts, content.clone())
-        }
+        Some("system_marker") => ConversationLine::new(LineKind::Marker, content.clone(), *ts),
+        Some("queue_op") => return queue_op_line(content, operation.as_deref(), *ts),
         Some("turn_annotation") => return annotation_line(content, *ts),
         _ if content.starts_with(transcript::USER_PREFIX) => {
             user_line(content[transcript::USER_PREFIX.len()..].trim_start(), *ts, *meta)?
         }
         _ => {
-            let mut line = ConversationLine::new(LineKind::Assistant, *ts, content.clone());
+            let mut line = ConversationLine::new(LineKind::Assistant, content.clone(), *ts);
             line.footer = usage.as_ref().map(|u| TurnFooter {
                 duration_ms: None,
                 tokens_in: Some(u.tokens_in),
@@ -200,10 +218,14 @@ pub fn agent_event_to_line(event: &AgentEvent) -> Option<ConversationLine> {
     match event {
         AgentEvent::Text { .. } => text_line(event),
         AgentEvent::ToolCall { tool, input, kind, ts, .. } => {
+            // A historical ask or plan renders as its questions rather than raw
+            // JSON; everything else takes the generic one-line summary.
+            let detail = super::prompt::historical_tool_text(tool, input)
+                .unwrap_or_else(|| crate::views::sessions::format_tool_input(tool, input));
             let mut line = ConversationLine::new(
                 LineKind::Tool { category: ToolCategory::of(tool, kind.as_deref()) },
+                detail,
                 *ts,
-                crate::views::sessions::format_tool_input(tool, input),
             );
             line.tool = Some(tool.clone());
             // Edit/Write inputs become an inline diff at render time.
@@ -214,16 +236,16 @@ pub fn agent_event_to_line(event: &AgentEvent) -> Option<ConversationLine> {
         }
         AgentEvent::ToolResult { tool, output_summary, error, ts, .. } => {
             let kind = LineKind::Result { error: *error };
-            let mut line = ConversationLine::new(kind, *ts, output_summary.clone());
+            let mut line = ConversationLine::new(kind, output_summary.clone(), *ts);
             line.tool = Some(tool.clone());
             Some(line)
         }
         AgentEvent::Heartbeat { .. } | AgentEvent::TurnEnd { .. } => None,
         AgentEvent::ContextReset { ts, .. } => {
-            Some(ConversationLine::new(LineKind::Reset, *ts, "context reset (/clear)"))
+            Some(ConversationLine::new(LineKind::Reset, "context reset (/clear)", *ts))
         }
         AgentEvent::CompactSummary { content, ts, .. } => (!content.trim().is_empty())
-            .then(|| ConversationLine::new(LineKind::Compact, *ts, content.clone())),
+            .then(|| ConversationLine::new(LineKind::Compact, content.clone(), *ts)),
         AgentEvent::TurnSummary { detail, status_category, needs_action, ts, .. } => {
             let text = if detail.trim().is_empty() {
                 status_category.as_deref().unwrap_or_default().trim()
@@ -233,16 +255,15 @@ pub fn agent_event_to_line(event: &AgentEvent) -> Option<ConversationLine> {
             if text.is_empty() {
                 return None;
             }
-            let mut line = ConversationLine::new(LineKind::Summary, *ts, text);
-            line.footer =
-                Some(TurnFooter { needs_action: *needs_action, ..TurnFooter::default() });
+            let mut line = ConversationLine::new(LineKind::Summary, text, *ts);
+            line.footer = Some(TurnFooter { needs_action: *needs_action, ..TurnFooter::default() });
             Some(line)
         }
         AgentEvent::Reply { content, ts, turn_id, .. } => {
             if content.trim().is_empty() {
                 return None;
             }
-            let mut line = ConversationLine::new(LineKind::Reply, *ts, content.clone());
+            let mut line = ConversationLine::new(LineKind::Reply, content.clone(), *ts);
             line.turn_id = *turn_id;
             Some(line)
         }
@@ -256,7 +277,21 @@ mod tests {
     use serde_json::json;
 
     use super::agent_event_to_line;
-    use crate::app::state::{ConversationLine, LineKind, ToolCategory};
+    use crate::app::state::{ConversationLine, LineKind, LineStatus, ToolCategory};
+
+    fn queue_op(content: &str, operation: &str) -> AgentEvent {
+        AgentEvent::Text {
+            content: content.to_owned(),
+            meta: false,
+            kind: Some("queue_op".to_owned()),
+            operation: Some(operation.to_owned()),
+            ts: 100,
+            message_id: None,
+            usage: None,
+            seq: Some(7),
+            turn_id: None,
+        }
+    }
 
     fn text(content: &str, kind: Option<&str>) -> AgentEvent {
         AgentEvent::Text {
@@ -329,6 +364,23 @@ mod tests {
     fn a_keepalive_tick_collapses_to_a_marker() {
         let ln = line(&text("▷ User: [cctui keep-alive 2/6]", None));
         assert_eq!(ln.kind, LineKind::Marker);
+    }
+
+    #[test]
+    fn a_queued_prompt_is_the_humans_own_line_and_a_withdrawal_is_marked() {
+        let queued = line(&queue_op("ship it", "queued"));
+        assert_eq!(queued.kind, LineKind::User);
+        assert_eq!(queued.status, Some(LineStatus::Queued));
+        assert_eq!(queued.text, "ship it");
+
+        let removed = line(&queue_op("ship it", "removed"));
+        assert_eq!(removed.status, Some(LineStatus::Removed));
+
+        assert!(
+            agent_event_to_line(&queue_op("ship it", "dequeued")).is_none(),
+            "the agent taking a prompt off the queue is followed by the real turn"
+        );
+        assert!(agent_event_to_line(&queue_op("  ", "queued")).is_none());
     }
 
     #[test]
@@ -436,10 +488,7 @@ mod tests {
 
     #[test]
     fn reset_and_compact_are_distinct_kinds() {
-        assert_eq!(
-            line(&AgentEvent::ContextReset { ts: 1, seq: None }).kind,
-            LineKind::Reset
-        );
+        assert_eq!(line(&AgentEvent::ContextReset { ts: 1, seq: None }).kind, LineKind::Reset);
         let compact =
             AgentEvent::CompactSummary { content: "we did X".to_owned(), ts: 1, seq: None };
         let ln = line(&compact);
