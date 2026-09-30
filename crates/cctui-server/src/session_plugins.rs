@@ -46,13 +46,12 @@ pub fn apply_slot(
             map.insert(plugin_id.to_owned(), value);
         }
     } else {
-        let empty = root
-            .get_mut("plugins")
-            .and_then(serde_json::Value::as_object_mut)
-            .is_some_and(|slots| {
+        let empty = root.get_mut("plugins").and_then(serde_json::Value::as_object_mut).is_some_and(
+            |slots| {
                 slots.remove(plugin_id);
                 slots.is_empty()
-            });
+            },
+        );
         if empty {
             root.remove("plugins");
         }
