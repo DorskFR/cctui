@@ -65,6 +65,7 @@ const profile = (over: Partial<SessionProfile> = {}): SessionProfile => ({
 	effort: 'medium',
 	permission_mode: 'yolo',
 	service_tier: null,
+	context_items: [],
 	created_at: '',
 	updated_at: '',
 	...over
