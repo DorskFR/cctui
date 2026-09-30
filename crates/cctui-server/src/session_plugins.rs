@@ -19,12 +19,7 @@ pub fn slot_allowed(plugin_id: &str, installed: bool) -> bool {
 
 /// Serialized size of a slot payload, for the cap check.
 pub fn slot_size(data: &serde_json::Value) -> usize {
-    serde_json::to_vec(data).map_or(usize::MAX, Vec::len)
-}
-
-/// Read one slot out of a session's metadata.
-pub fn read_slot(metadata: &serde_json::Value, plugin_id: &str) -> Option<serde_json::Value> {
-    metadata.get("plugins")?.get(plugin_id).cloned()
+    serde_json::to_vec(data).map_or(usize::MAX, |v| v.len())
 }
 
 /// Write or clear one slot in `metadata`, creating `plugins` if needed and
@@ -147,13 +142,5 @@ mod tests {
         let mut meta = json!({ "plugins": 7 });
         apply_slot(&mut meta, "youtrack", Some(json!({ "issue": "CCT-1" })));
         assert_eq!(meta["plugins"]["youtrack"]["issue"], "CCT-1");
-    }
-
-    #[test]
-    fn read_slot_finds_what_apply_wrote() {
-        let mut meta = json!({});
-        assert!(read_slot(&meta, "youtrack").is_none());
-        apply_slot(&mut meta, "youtrack", Some(json!({ "issue": "CCT-910" })));
-        assert_eq!(read_slot(&meta, "youtrack").unwrap()["issue"], "CCT-910");
     }
 }

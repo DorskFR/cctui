@@ -24,13 +24,11 @@ pub async fn set_session_plugin(
     if !slot_allowed(&plugin_id, state.plugins.get(&plugin_id).is_some()) {
         return Err(AppError::new(StatusCode::NOT_FOUND, "unknown plugin"));
     }
-    if let Some(data) = &req.data {
-        if slot_size(data) > MAX_SLOT_BYTES {
-            return Err(AppError::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("plugin slot must be at most {MAX_SLOT_BYTES} bytes"),
-            ));
-        }
+    if req.data.as_ref().is_some_and(|data| slot_size(data) > MAX_SLOT_BYTES) {
+        return Err(AppError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("plugin slot must be at most {MAX_SLOT_BYTES} bytes"),
+        ));
     }
 
     let current: Option<(serde_json::Value,)> =
