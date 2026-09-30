@@ -51,7 +51,9 @@ export default defineConfig({
 		},
 		{
 			name: 'tiles',
-			testMatch: /tiles-.*\.spec\.ts/,
+			// Anchored to the filename: testMatch sees the absolute path, so a bare
+			// `tiles-` also matches every spec under a worktree named for the branch.
+			testMatch: /(^|[\\/])tiles-[^\\/]*\.spec\.ts$/,
 			use: { baseURL: headerUrl }
 		},
 		{

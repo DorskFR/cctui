@@ -109,6 +109,9 @@ export async function stubApi(page: Page, sessions: unknown[], opts: StubOptions
 		if (path === '/version') return json({ version: '0.23.0-beta.10' });
 		if (path === '/settings') return json({ data: opts.settings ?? {} });
 		if (path === '/labels') return json({ labels: [] });
+		// DraftList, not the generic `[]`: serverDrafts iterates `.drafts`.
+		if (path === '/drafts') return json({ drafts: [] });
+		if (path.startsWith('/drafts/')) return json({});
 		if (path.endsWith('/user-actions')) return json({ session_id: path.split('/')[2], items: [] });
 		if (path === '/sessions' || path.startsWith('/sessions/search'))
 			return json({ sessions, total: sessions.length });
