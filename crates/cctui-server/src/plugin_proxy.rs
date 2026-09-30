@@ -387,21 +387,14 @@ mod tests {
         assert!(out.get(axum::http::header::COOKIE).is_none());
     }
 
-    #[tokio::test]
-    async fn a_test_upstream_sees_a_verifiable_identity_and_no_cctui_cookie() {
-        use axum::extract::{Path as AxPath, State as AxState};
+    type RecordedCalls = std::sync::Arc<std::sync::Mutex<Vec<(String, String, HeaderMap)>>>;
+
+    /// An in-process upstream on an ephemeral port that records what it was sent.
+    async fn spawn_test_upstream() -> (String, RecordedCalls) {
         use axum::http::Request as HttpRequest;
-        use axum::{Extension as AxExtension, Router};
-        use std::sync::{Arc, Mutex};
-
-        let Some(url) = crate::routes::gateway::test_db_url("plugin_backend_proxy") else {
-            return;
-        };
-        let pool = crate::db::connect(&url).await.expect("connect test db");
-
-        let seen: Arc<Mutex<Vec<(String, String, HeaderMap)>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen: RecordedCalls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let upstream = Router::new().fallback(move |req: HttpRequest<axum::body::Body>| {
+        let upstream = axum::Router::new().fallback(move |req: HttpRequest<axum::body::Body>| {
             let recorder = recorder.clone();
             async move {
                 recorder.lock().unwrap().push((
@@ -415,7 +408,16 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        (base, seen)
+    }
 
+    /// Register a backend-declaring plugin in `state`, point it at `upstream` and
+    /// mint its proxy secret. The `TempDir` must outlive the plugin's files.
+    async fn install_backend_plugin(
+        state: &crate::state::AppState,
+        pool: &sqlx::PgPool,
+        upstream: &str,
+    ) -> (tempfile::TempDir, String) {
         let root = tempfile::tempdir().unwrap();
         crate::plugins::test_support::write_plugin(
             root.path(),
@@ -425,42 +427,88 @@ mod tests {
         let mut plugin = crate::plugins::load_plugin(&root.path().join("proxydemo")).unwrap();
         plugin.instance_enabled = true;
         let manifest = plugin.manifest.clone();
-
-        let state = crate::state::AppState::for_test(pool.clone());
         state.plugins.upsert_installed(plugin);
 
-        crate::plugin_settings::delete(&pool, "proxydemo").await.unwrap();
+        crate::plugin_settings::delete(pool, "proxydemo").await.unwrap();
         crate::plugin_settings::write(
-            &pool,
+            pool,
             &manifest,
-            &std::collections::BTreeMap::from([("upstream".to_owned(), base.clone())]),
+            &std::collections::BTreeMap::from([("upstream".to_owned(), upstream.to_owned())]),
         )
         .await
         .unwrap();
         let (secret, _) =
-            crate::plugin_settings::ensure_proxy_secret(&pool, "proxydemo").await.unwrap();
+            crate::plugin_settings::ensure_proxy_secret(pool, "proxydemo").await.unwrap();
+        (root, secret)
+    }
 
+    async fn seed_user(pool: &sqlx::PgPool) -> uuid::Uuid {
         let user_id = uuid::Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'Proxy Tester', $2)")
             .bind(user_id)
             .bind(user_id.to_string())
-            .execute(&pool)
+            .execute(pool)
             .await
             .unwrap();
         sqlx::query("INSERT INTO user_settings (user_id, version, data) VALUES ($1, 1, $2)")
             .bind(user_id)
             .bind(serde_json::json!({ "plugins": { "enabled": { "proxydemo": true } } }))
-            .execute(&pool)
+            .execute(pool)
             .await
             .unwrap();
+        user_id
+    }
 
-        let ctx = crate::auth::AuthContext {
+    async fn set_enabled_for_user(pool: &sqlx::PgPool, user_id: uuid::Uuid, enabled: bool) {
+        sqlx::query("UPDATE user_settings SET data = $2 WHERE user_id = $1")
+            .bind(user_id)
+            .bind(serde_json::json!({ "plugins": { "enabled": { "proxydemo": enabled } } }))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    fn read_ctx(user_id: uuid::Uuid) -> crate::auth::AuthContext {
+        crate::auth::AuthContext {
             user_id,
             key_id: uuid::Uuid::nil(),
             machine_id: None,
             scopes: std::iter::once(crate::auth::Scope::Read).collect(),
+        }
+    }
+
+    async fn call_backend(
+        state: &crate::state::AppState,
+        ctx: &crate::auth::AuthContext,
+        sub_path: &str,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> axum::response::Response {
+        super::backend(
+            axum::extract::State(state.clone()),
+            axum::Extension(ctx.clone()),
+            axum::extract::Path(("proxydemo".to_owned(), sub_path.to_owned())),
+            request,
+        )
+        .await
+    }
+
+    fn empty_request() -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder().body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_test_upstream_sees_a_verifiable_identity_and_no_cctui_cookie() {
+        let Some(url) = crate::routes::gateway::test_db_url("plugin_backend_proxy") else {
+            return;
         };
-        let request = HttpRequest::builder()
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let (base, seen) = spawn_test_upstream().await;
+        let state = crate::state::AppState::for_test(pool.clone());
+        let (_plugin_dir, secret) = install_backend_plugin(&state, &pool, &base).await;
+        let user_id = seed_user(&pool).await;
+        let ctx = read_ctx(user_id);
+
+        let request = axum::http::Request::builder()
             .method("GET")
             .uri("/api/v1/plugins/proxydemo/backend/v1/pulls?state=open")
             .header(axum::http::header::COOKIE, "cctui_auth=secret; cctui_preview=t; theirs=1")
@@ -468,14 +516,7 @@ mod tests {
             .header(USER_ID_HEADER, "spoofed")
             .body(axum::body::Body::empty())
             .unwrap();
-
-        let resp = super::backend(
-            AxState(state.clone()),
-            AxExtension(ctx.clone()),
-            AxPath(("proxydemo".to_owned(), "v1/pulls".to_owned())),
-            request,
-        )
-        .await;
+        let resp = call_backend(&state, &ctx, "v1/pulls", request).await;
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
 
         let calls = seen.lock().unwrap().clone();
@@ -499,30 +540,18 @@ mod tests {
             "the upstream can verify the signature with its own copy of the secret"
         );
 
-        sqlx::query("UPDATE user_settings SET data = $2 WHERE user_id = $1")
-            .bind(user_id)
-            .bind(serde_json::json!({ "plugins": { "enabled": { "proxydemo": false } } }))
-            .execute(&pool)
-            .await
-            .unwrap();
-        let resp = super::backend(
-            AxState(state.clone()),
-            AxExtension(ctx.clone()),
-            AxPath(("proxydemo".to_owned(), "v1/pulls".to_owned())),
-            HttpRequest::builder().body(axum::body::Body::empty()).unwrap(),
-        )
-        .await;
+        set_enabled_for_user(&pool, user_id, false).await;
+        let resp = call_backend(&state, &ctx, "v1/pulls", empty_request()).await;
         assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
 
+        set_enabled_for_user(&pool, user_id, true).await;
         state.plugins.set_installed_enabled("proxydemo", false);
-        let resp = super::backend(
-            AxState(state.clone()),
-            AxExtension(ctx),
-            AxPath(("proxydemo".to_owned(), "v1/pulls".to_owned())),
-            HttpRequest::builder().body(axum::body::Body::empty()).unwrap(),
-        )
-        .await;
-        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+        let resp = call_backend(&state, &ctx, "v1/pulls", empty_request()).await;
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "an instance-disabled plugin is indistinguishable from an unknown one"
+        );
 
         crate::plugin_settings::delete(&pool, "proxydemo").await.unwrap();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.unwrap();
