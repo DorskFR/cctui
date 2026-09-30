@@ -7,8 +7,8 @@
 //!
 //! ## Adding a relation
 //!
-//! Rooms and topics are separate features that widen who may talk to whom
-//! without changing anything else here. Each adds:
+//! Topics are a separate feature that widens who may talk to whom without
+//! changing anything else here. It adds:
 //!
 //! 1. a [`Relation`] variant,
 //! 2. a field on [`PeerFacts`] carrying the fact its predicate needs (a bool,
@@ -30,10 +30,8 @@ pub enum Relation {
     Parent,
     Child,
     Sibling,
-    /// Both sessions are members of the same room.
+    /// Both sessions carry the same `sessions.room_id`.
     Room,
-    /// An explicit `session_peer_shares` grant.
-    Shared,
 }
 
 impl Relation {
@@ -45,7 +43,6 @@ impl Relation {
             Self::Child => "child",
             Self::Sibling => "sibling",
             Self::Room => "room",
-            Self::Shared => "shared",
         }
     }
 }
@@ -68,8 +65,8 @@ impl Refusal {
             Self::Unknown => "no such session",
             Self::Unrelated => {
                 "not addressable from this session: a peer must be its parent, its child, a \
-                 sibling, a member of a room it is in, or explicitly shared with it. Call \
-                 CctuiPeers to see what is reachable."
+                 sibling, or in the same room. Call CctuiPeers to see what is reachable, and \
+                 ask the human to put you both in a room if you need more."
             }
         }
     }
@@ -140,16 +137,14 @@ impl SessionNode {
 pub struct PeerFacts {
     pub caller: SessionNode,
     pub target: SessionNode,
-    /// A live `session_peer_shares` row joins the pair in either direction.
-    pub explicitly_shared: bool,
-    /// Both sessions carry the same `sessions.room_id`, and that room is live.
+    /// Both sessions carry the same `sessions.room_id`.
     pub same_room: bool,
 }
 
 type Predicate = fn(&PeerFacts) -> Option<Relation>;
 
 /// Evaluated in order; the first match is the reported relation.
-const PREDICATES: &[Predicate] = &[tree_relation, same_room, explicit_share];
+const PREDICATES: &[Predicate] = &[tree_relation, same_room];
 
 /// Parent, child, sibling or self within the `parent_id` tree. Two roots are
 /// NOT siblings: `parent_id IS NULL` is "no parent", not a shared one.
@@ -172,10 +167,6 @@ fn tree_relation(facts: &PeerFacts) -> Option<Relation> {
 
 fn same_room(facts: &PeerFacts) -> Option<Relation> {
     facts.same_room.then_some(Relation::Room)
-}
-
-fn explicit_share(facts: &PeerFacts) -> Option<Relation> {
-    facts.explicitly_shared.then_some(Relation::Shared)
 }
 
 /// May `caller` address `target`, and why?
@@ -217,8 +208,7 @@ SELECT s.id, s.session_name, s.adapter_id, m.name, s.status, \
          WHEN s.id = me.parent_id THEN 'parent' \
          WHEN s.parent_id = me.id THEN 'child' \
          WHEN me.parent_id IS NOT NULL AND s.parent_id = me.parent_id THEN 'sibling' \
-         WHEN me.room_id IS NOT NULL AND s.room_id = me.room_id THEN 'room' \
-         ELSE 'shared' \
+         ELSE 'room' \
        END \
   FROM me \
   JOIN sessions s ON s.user_id = me.user_id AND s.id <> me.id \
@@ -227,19 +217,8 @@ SELECT s.id, s.session_name, s.adapter_id, m.name, s.status, \
     OR s.parent_id = me.id \
     OR (me.parent_id IS NOT NULL AND s.parent_id = me.parent_id) \
     OR (me.room_id IS NOT NULL AND s.room_id = me.room_id) \
-    OR EXISTS (SELECT 1 FROM session_peer_shares p WHERE p.revoked_at IS NULL \
-                 AND ((p.session_id = me.id AND p.peer_session_id = s.id) \
-                   OR (p.session_id = s.id AND p.peer_session_id = me.id))) \
  ORDER BY 6, s.id \
  LIMIT 200";
-
-/// `$1` is the calling session id, `$2` the target's.
-pub const SHARE_SQL: &str = "\
-SELECT 1 FROM session_peer_shares \
- WHERE revoked_at IS NULL \
-   AND ((session_id = $1 AND peer_session_id = $2) \
-     OR (session_id = $2 AND peer_session_id = $1)) \
- LIMIT 1";
 
 /// `$1` is the calling session id, `$2` the target's.
 ///
@@ -315,13 +294,6 @@ pub async fn authorize(
         return Err(Refusal::Unknown);
     }
     let target = load_node(pool, target_id).await.ok().flatten().ok_or(Refusal::Unknown)?;
-    let explicitly_shared: bool = sqlx::query_scalar::<_, i32>(SHARE_SQL)
-        .bind(caller_id)
-        .bind(target_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| Refusal::Unknown)?
-        .is_some();
     let same_room: bool = sqlx::query_scalar::<_, i32>(SAME_ROOM_SQL)
         .bind(caller_id)
         .bind(target_id)
@@ -329,7 +301,7 @@ pub async fn authorize(
         .await
         .map_err(|_| Refusal::Unknown)?
         .is_some();
-    let facts = PeerFacts { caller, target, explicitly_shared, same_room };
+    let facts = PeerFacts { caller, target, same_room };
     decide(&facts).map(|relation| (relation, facts))
 }
 
@@ -352,7 +324,7 @@ mod tests {
     }
 
     fn facts(caller: SessionNode, target: SessionNode) -> PeerFacts {
-        PeerFacts { caller, target, explicitly_shared: false, same_room: false }
+        PeerFacts { caller, target, same_room: false }
     }
 
     /// The policy table the two tickets specify, in one place.
@@ -408,8 +380,6 @@ mod tests {
         assert_eq!(decide(&f), Err(Refusal::Unrelated));
         f.same_room = true;
         assert_eq!(decide(&f), Ok(Relation::Room));
-        f.explicitly_shared = true;
-        assert_eq!(decide(&f), Ok(Relation::Room), "room outranks share");
     }
 
     /// A room never overrides the tree: a child of the caller that also shares a
@@ -422,23 +392,13 @@ mod tests {
         assert_eq!(decide(&f), Ok(Relation::Child));
     }
 
+    /// A room can never bridge two owners: ownership is checked before any
+    /// predicate runs, so no future relation can accidentally do it either.
     #[test]
-    fn an_explicit_share_authorizes_an_otherwise_unrelated_pair() {
-        let me = Uuid::new_v4();
-        let mut f = facts(node("r1", me, None), node("r2", me, None));
-        assert_eq!(decide(&f), Err(Refusal::Unrelated));
-        f.explicitly_shared = true;
-        assert_eq!(decide(&f), Ok(Relation::Shared));
-    }
-
-    /// A share can never bridge two owners: ownership is checked before any
-    /// predicate runs.
-    #[test]
-    fn a_share_across_owners_is_still_refused() {
+    fn a_shared_room_across_owners_is_still_refused() {
         let f = PeerFacts {
             caller: node("mine", Uuid::new_v4(), None),
             target: node("theirs", Uuid::new_v4(), None),
-            explicitly_shared: true,
             same_room: true,
         };
         assert_eq!(decide(&f), Err(Refusal::Unknown));
@@ -491,13 +451,9 @@ mod tests {
     /// emit is a [`Relation`] the policy also knows.
     #[test]
     fn the_roster_sql_labels_match_the_relation_vocabulary() {
-        for relation in [
-            Relation::Parent,
-            Relation::Child,
-            Relation::Sibling,
-            Relation::Room,
-            Relation::Shared,
-        ] {
+        for relation in
+            [Relation::Parent, Relation::Child, Relation::Sibling, Relation::Room]
+        {
             assert!(
                 ROSTER_SQL.contains(&format!("'{}'", relation.as_str())),
                 "{} missing from the roster CASE",
@@ -505,7 +461,6 @@ mod tests {
             );
         }
         assert!(ROSTER_SQL.contains("s.user_id = me.user_id"), "the roster must stay owner-scoped");
-        assert!(ROSTER_SQL.contains("revoked_at IS NULL"), "a revoked share must not be addressable");
         assert!(
             ROSTER_SQL.contains("s.room_id = me.room_id"),
             "a room is a field on sessions, not a membership table"

@@ -2,6 +2,10 @@
 -- in the UI, and a permission boundary letting its sessions address each other
 -- (see `peer_policy`). There is no membership table — a session belongs to at
 -- most one room, so the room IS a column, and moving a session is one UPDATE.
+--
+-- `next_seq` numbers the room's posts for `CctuiRoom peek`. It is not a delivery
+-- cursor: a broadcast is delivered in the loop that writes it, so there is no
+-- per-member position to remember.
 CREATE TABLE IF NOT EXISTS rooms (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -20,10 +24,6 @@ CREATE INDEX IF NOT EXISTS rooms_user_live ON rooms (user_id) WHERE archived_at 
 -- taking them with it.
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS room_id UUID REFERENCES rooms(id) ON DELETE SET NULL;
-
--- The broadcast delivery cursor, per session because a session is in one room.
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS room_delivered_seq BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS sessions_room ON sessions (room_id) WHERE room_id IS NOT NULL;
 

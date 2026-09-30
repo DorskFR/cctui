@@ -10,7 +10,6 @@ export interface RoomMember {
 	adapter: string | null;
 	machine: string | null;
 	state: 'live' | 'ended' | 'archived';
-	last_delivered_seq: number;
 }
 
 export interface Room {
@@ -45,22 +44,6 @@ export const setSessionRoomByName = (sessionId: string, name: string) =>
 
 export const clearSessionRoom = (sessionId: string) =>
 	api.del<void>(`/sessions/${sessionId}/room`);
-
-// --- peer shares (the writer rooms brings with it) ---
-
-export interface PeerShare {
-	session_id: string;
-	name: string | null;
-}
-
-export const listPeerShares = (sessionId: string) =>
-	api.get<{ shares: PeerShare[] }>(`/sessions/${sessionId}/peer-shares`).then((r) => r.shares);
-
-export const sharePeer = (sessionId: string, peerSessionId: string) =>
-	api.post<unknown>(`/sessions/${sessionId}/peer-shares`, { peer_session_id: peerSessionId });
-
-export const unsharePeer = (sessionId: string, peerSessionId: string) =>
-	api.del<void>(`/sessions/${sessionId}/peer-shares/${peerSessionId}`);
 
 // --- pure helpers ---
 

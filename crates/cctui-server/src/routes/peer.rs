@@ -26,12 +26,14 @@ use crate::transcript_md;
 
 /// Per-sender ceilings. A peer message is a turn in somebody else's session:
 /// cheap to send, expensive to receive.
-const SEND_PER_MIN: usize = 10;
+pub(crate) const SEND_PER_MIN: usize = 10;
 const HISTORY_PER_MIN: usize = 30;
 const WINDOW: Duration = Duration::from_secs(60);
 
-/// A peer message becomes a prompt, so it is capped like one.
-const MAX_MESSAGE_BYTES: usize = 32 * 1024;
+/// A peer message becomes a prompt, so it is capped like one. A room broadcast
+/// is the same message to several targets, so it is capped and counted the same:
+/// one broadcast spends one send from the caller's window.
+pub(crate) const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 
 /// Default and maximum page of a history read.
 const DEFAULT_HISTORY_EVENTS: i64 = 200;
@@ -61,7 +63,7 @@ impl Limiter {
     }
 }
 
-fn limiter() -> &'static Limiter {
+pub(crate) fn limiter() -> &'static Limiter {
     static LIMITER: std::sync::LazyLock<Limiter> = std::sync::LazyLock::new(Limiter::default);
     &LIMITER
 }
@@ -116,7 +118,7 @@ pub fn envelope(sender: &SessionNode, body: &str) -> String {
 /// Record a marker turn on `session_id` so the human sees what an agent did on
 /// their behalf. Best-effort: losing the audit row must not fail the call it
 /// describes, but it is logged loudly when it does.
-async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
+pub(crate) async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
     let payload = json!({ "role": "system_marker", "text": text });
     if let Err(err) = sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, 'message', $2)",
@@ -127,6 +129,62 @@ async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
     .await
     {
         tracing::error!(%session_id, %err, "peer audit event insert failed");
+    }
+}
+
+/// What one delivery attempt did. `Offline` covers every reason the bus could not
+/// place the turn: no daemon for the machine, no adapter, a closed channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    Delivered,
+    Archived,
+    Ended,
+    Offline,
+}
+
+impl Delivery {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::Archived => "archived",
+            Self::Ended => "ended",
+            Self::Offline => "offline",
+        }
+    }
+}
+
+/// Place `text` as a turn in `target_id`'s session — the ONE delivery path for
+/// every agent-to-agent message, direct or broadcast.
+///
+/// `bus::dispatch` resolves the target's own machine and routes across replicas,
+/// so this inherits whatever the bus transport becomes (CCT-568's NATS core would
+/// swap underneath with no change here). A session mid-turn is not special-cased:
+/// it receives the turn exactly as it would a message the human sent while it was
+/// working.
+pub async fn deliver(
+    state: &AppState,
+    target_id: &str,
+    target_state: &str,
+    text: String,
+) -> Delivery {
+    match target_state {
+        "archived" => return Delivery::Archived,
+        "ended" => return Delivery::Ended,
+        _ => {}
+    }
+    match crate::bus::dispatch(
+        state,
+        target_id,
+        AdapterCommand::SendMessage { local_id: target_id.to_owned(), text },
+    )
+    .await
+    {
+        Ok(()) => Delivery::Delivered,
+        Err(err) => {
+            tracing::info!(target = %target_id, %err, "peer turn not delivered");
+            Delivery::Offline
+        }
     }
 }
 
@@ -212,19 +270,15 @@ pub async fn message_peer(
     }
 
     let text = envelope(&caller, body);
-    crate::bus::dispatch(
-        &state,
-        &target.id,
-        AdapterCommand::SendMessage { local_id: target.id.clone(), text },
-    )
-    .await
-    .map_err(|err| {
-        let status = match err {
-            crate::bus::BusError::NotFound => StatusCode::NOT_FOUND,
-            _ => StatusCode::SERVICE_UNAVAILABLE,
-        };
-        AppError::new(status, format!("could not deliver to {target_id}: {err}"))
-    })?;
+    match deliver(&state, &target.id, target.state(), text).await {
+        Delivery::Delivered => {}
+        outcome => {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not deliver to {target_id}: {}", outcome.as_str()),
+            ));
+        }
+    }
     audit(
         &state.pool,
         &session_id,
@@ -546,28 +600,35 @@ mod tests {
             "another owner's machine key must not resolve this caller at all",
         );
 
-        // An explicit share makes the unrelated pair addressable, and revoking
-        // it takes the right away again.
-        sqlx::query(
-            "INSERT INTO session_peer_shares (session_id, peer_session_id, granted_by) \
-             VALUES ($1, $2, $3)",
+        // A room is the only explicit grant: putting the unrelated pair in one
+        // makes it addressable, and taking either out takes the right away.
+        let room_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO rooms (user_id, name) VALUES ($1, 'shared') RETURNING id",
         )
-        .bind(&loner)
-        .bind(&child_a)
         .bind(uid)
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
-        .expect("seed share");
+        .expect("seed room");
+        sqlx::query("UPDATE sessions SET room_id = $1 WHERE id = ANY($2)")
+            .bind(room_id)
+            .bind(vec![loner.clone(), child_a.clone()])
+            .execute(&pool)
+            .await
+            .expect("seed room members");
         assert_eq!(
             peer_policy::authorize(&pool, &child_a, &loner, uid).await.unwrap().0,
-            Relation::Shared,
-            "the share is symmetric: the grantee may address the granter",
+            Relation::Room,
+            "a room relates both directions",
         );
-        sqlx::query("UPDATE session_peer_shares SET revoked_at = now() WHERE session_id = $1")
+        assert_eq!(
+            peer_policy::authorize(&pool, &loner, &child_a, uid).await.unwrap().0,
+            Relation::Room,
+        );
+        sqlx::query("UPDATE sessions SET room_id = NULL WHERE id = $1")
             .bind(&loner)
             .execute(&pool)
             .await
-            .expect("revoke");
+            .expect("leave room");
         assert_eq!(
             peer_policy::authorize(&pool, &child_a, &loner, uid).await.unwrap_err(),
             Refusal::Unrelated,
@@ -582,7 +643,7 @@ mod tests {
             roster.iter().map(|r| (r.0.as_str(), r.5.as_str())).collect();
         assert_eq!(by_id.get(parent.as_str()), Some(&"parent"));
         assert_eq!(by_id.get(child_b.as_str()), Some(&"sibling"));
-        assert!(!by_id.contains_key(loner.as_str()), "a revoked share is off the roster");
+        assert!(!by_id.contains_key(loner.as_str()), "a session out of the room is off the roster");
         assert!(!by_id.contains_key(child_a.as_str()), "the caller is not its own peer");
 
         // The archived parent's transcript is still in stream_events, and the
@@ -664,6 +725,7 @@ mod tests {
         .expect("audit row");
         assert_eq!(marker.as_deref(), Some("consulted history of the parent"));
 
+        sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();

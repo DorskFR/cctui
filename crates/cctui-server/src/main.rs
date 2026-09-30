@@ -721,7 +721,6 @@ async fn reaper_task(state: AppState) {
         machine_liveness::sweep_dispatchers(&state).await;
 
         auto_resume::sweep(&state).await;
-        rooms::sweep(&state).await;
         scheduled_messages::sweep(&state).await;
         scheduled_spawns::sweep(&state).await;
 
@@ -934,9 +933,6 @@ mod tests {
             r#"DELETE /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,
             r#"PATCH /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/messages/scheduled/{queue_id}/send-now Bearer Resource(Session, Write, Path("id"))"#,
-            r#"GET /sessions/{id}/peer-shares Bearer Resource(Session, Write, Path("id"))"#,
-            r#"POST /sessions/{id}/peer-shares Bearer Resource(Session, Write, Path("id"))"#,
-            r#"DELETE /sessions/{id}/peer-shares/{peer_session_id} Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/pin Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/pins Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/pins Bearer Resource(Session, Write, Path("id"))"#,

@@ -1,49 +1,35 @@
 //! Rooms: a field on `sessions` that groups them, and the permission boundary
 //! [`crate::peer_policy`] reads. A session belongs to at most one room.
 //!
-//! On top of that, `CctuiRoom` gives the sessions in a room a broadcast: a post
-//! is fanned out to the others as an attributed turn.
+//! On top of that, `CctuiRoom post` broadcasts to the room: one message, delivered
+//! to every other live session in it.
 //!
-//! ## Why there is no per-member outbox
+//! ## The broadcast is a loop, not a message bus
 //!
-//! `sessions.room_delivered_seq` IS the delivery cursor. [`sweep`] looks for
-//! sessions whose cursor trails their room's `next_seq` and which can take a
-//! turn right now ([`crate::keepalive::skip_reason`]), sends the missed posts in
-//! `seq` order, and advances the cursor. That one mechanism gives all four
-//! behaviours: a session mid-turn or needing input is simply not selected and is
-//! picked up on a later tick; an offline or ended one replays in order when it
-//! comes back; a crashed replica loses nothing; and a redelivery cannot
-//! duplicate a post.
+//! [`post`] writes the row and then, in the same call, delivers to each live
+//! member through [`crate::routes::peer::deliver`] — the identical path a direct
+//! `CctuiSend` takes. There is no queue, no per-member cursor, no background
+//! sweep and no replay: a broadcast is N sends that happen to share a body, and
+//! the caller gets one result per member.
 //!
-//! ## Loop guard
+//! This is deliberate. The bus already solves cross-machine and cross-replica
+//! routing, and CCT-568 would swap its transport for a NATS core underneath;
+//! riding that seam means the broadcast inherits the upgrade for free, whereas a
+//! delivery ledger of our own would be a second, worse copy of it.
 //!
-//! Nothing here reads a session's ordinary output. A reply only reaches the room
-//! if the agent explicitly calls `CctuiRoom post`, and [`pending_for`] never
-//! selects a message whose sender is that session itself. Those two facts are
-//! the whole guard, and the standing preamble ([`join_preamble`]) says so.
+//! A member that is mid-turn is NOT special-cased: it receives the turn exactly as
+//! it would a message the human sent while it was working. A member that is
+//! archived, ended, or whose machine is unreachable is reported as skipped — the
+//! caller is told, and nothing is retried behind its back.
 
 use axum::http::StatusCode;
 use uuid::Uuid;
 
-use cctui_proto::adapter::AdapterCommand;
-
 use crate::error::AppError;
+// A broadcast is the same message to several targets, so it is capped and counted
+// exactly like one direct send.
+use crate::routes::peer::{MAX_MESSAGE_BYTES, SEND_PER_MIN};
 use crate::state::AppState;
-
-/// A room post becomes a turn in every member's session, so it is capped well
-/// below a prompt: a room is for coordination, not for shipping payloads.
-pub const MAX_POST_BYTES: usize = 16 * 1024;
-
-/// Posts per minute per sender.
-pub const POSTS_PER_MIN: usize = 10;
-
-/// Members served per sweep tick. A room fan-out is a burst of turns; spreading
-/// it over ticks keeps one big room from monopolising the reaper.
-const SWEEP_BATCH: i64 = 100;
-
-/// Posts delivered to one member in a single catch-up, oldest first. A member
-/// offline for a long conversation gets the rest on the next tick.
-const REPLAY_BATCH: usize = 20;
 
 /// A closing tag in the body would end the wrapper early and the remainder would
 /// read as the member's own prose.
@@ -64,7 +50,6 @@ pub struct Member {
     pub adapter: Option<String>,
     pub machine: Option<String>,
     pub state: &'static str,
-    pub last_delivered_seq: i64,
 }
 
 impl Member {
@@ -138,24 +123,22 @@ pub fn join_preamble(room_name: &str, members: &[Member]) -> String {
 }
 
 const MEMBERS_SQL: &str = "\
-SELECT s.id, s.session_name, s.adapter_id, m.name, s.status, s.room_delivered_seq \
+SELECT s.id, s.session_name, s.adapter_id, m.name, s.status \
   FROM sessions s \
   LEFT JOIN machines m ON m.id = s.machine_uuid \
  WHERE s.room_id = $1 \
  ORDER BY s.registered_at, s.id";
 
-type MemberRow =
-    (String, Option<String>, Option<String>, Option<String>, Option<String>, i64);
+type MemberRow = (String, Option<String>, Option<String>, Option<String>, Option<String>);
 
 fn member_of(r: MemberRow) -> Member {
-    let (session_id, name, adapter, machine, status, last_delivered_seq) = r;
+    let (session_id, name, adapter, machine, status) = r;
     Member {
         session_id,
         name,
         adapter,
         machine,
         state: crate::peer_policy::state_of(status.as_deref()),
-        last_delivered_seq,
     }
 }
 
@@ -282,8 +265,8 @@ impl std::fmt::Display for PostRefusal {
             Self::Empty => f.write_str("message is required"),
             Self::TooLarge(n) => write!(
                 f,
-                "message is {n} bytes; the room post cap is {MAX_POST_BYTES}. Post a pointer (a \
-                 path, a session id), not a payload."
+                "message is {n} bytes; the room post cap is {MAX_MESSAGE_BYTES}. Post a pointer \
+                 (a path, a session id), not a payload."
             ),
             Self::EnvelopeBreak => {
                 write!(f, "message must not contain {ENVELOPE_CLOSE}: it would truncate the envelope")
@@ -291,7 +274,7 @@ impl std::fmt::Display for PostRefusal {
             Self::Archived => f.write_str("this room is archived and takes no new messages"),
             Self::NotAMember => f.write_str("this session is not in that room"),
             Self::RateLimited => {
-                write!(f, "room post rate limit reached ({POSTS_PER_MIN} per minute per sender)")
+                write!(f, "room post rate limit reached ({SEND_PER_MIN} per minute per sender)")
             }
         }
     }
@@ -310,7 +293,7 @@ pub fn check_body(body: &str) -> Result<&str, PostRefusal> {
     if body.is_empty() {
         return Err(PostRefusal::Empty);
     }
-    if body.len() > MAX_POST_BYTES {
+    if body.len() > MAX_MESSAGE_BYTES {
         return Err(PostRefusal::TooLarge(body.len()));
     }
     if body.contains(ENVELOPE_CLOSE) {
@@ -332,28 +315,50 @@ pub fn check_sender(room: &Room, sender: Option<&str>) -> Result<(), PostRefusal
     Ok(())
 }
 
-fn limiter() -> &'static crate::routes::peer::Limiter {
-    static LIMITER: std::sync::LazyLock<crate::routes::peer::Limiter> =
-        std::sync::LazyLock::new(crate::routes::peer::Limiter::default);
-    &LIMITER
+/// One member's outcome in a broadcast.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Receipt {
+    pub session_id: String,
+    pub label: String,
+    /// `delivered` | `archived` | `ended` | `offline`.
+    pub outcome: &'static str,
 }
 
-/// Append a message to `room`'s timeline and wake the fan-out.
+/// A completed broadcast: the row that was written, and who got it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Broadcast {
+    pub message: RoomMessage,
+    pub receipts: Vec<Receipt>,
+}
+
+impl Broadcast {
+    #[must_use]
+    pub fn delivered(&self) -> usize {
+        self.receipts.iter().filter(|r| r.outcome == "delivered").count()
+    }
+}
+
+/// Post to `room` and deliver it to every other live session in it.
 ///
 /// The `seq` is allocated under the room's row lock, so two concurrent posts get
-/// distinct, ordered sequence numbers and no member's cursor can skip one.
+/// distinct, ordered numbers in the timeline `peek` reads. Delivery then happens
+/// right here, one [`crate::routes::peer::deliver`] per member: best effort, never
+/// retried, every outcome reported back to the caller.
 pub async fn post(
     state: &AppState,
     room: &Room,
     sender: Option<&Member>,
     body: &str,
-) -> Result<RoomMessage, AppError> {
+) -> Result<Broadcast, AppError> {
     let body = check_body(body)?;
     check_sender(room, sender.map(|m| m.session_id.as_str()))?;
-    let key = sender.map_or_else(|| format!("room-human:{}", room.id), |m| {
-        format!("room:{}", m.session_id)
-    });
-    if !limiter().admit(&key, POSTS_PER_MIN, std::time::Instant::now()) {
+    // One broadcast spends one send from the caller's window, on the same key a
+    // direct CctuiSend uses, so the two cannot be played against each other.
+    let key = sender.map_or_else(
+        || format!("room-human:{}", room.id),
+        |m| format!("send:{}", m.session_id),
+    );
+    if !crate::routes::peer::limiter().admit(&key, SEND_PER_MIN, std::time::Instant::now()) {
         return Err(PostRefusal::RateLimited.into());
     }
     let label = sender.map_or_else(|| HUMAN_LABEL.to_owned(), Member::label);
@@ -381,248 +386,54 @@ pub async fn post(
     let message = RoomMessage {
         seq,
         sender_session_id: sender.map(|m| m.session_id.clone()),
-        sender_label: label,
+        sender_label: label.clone(),
         body: body.to_owned(),
         created_at,
     };
-    deliver_room(state, room.id).await;
-    Ok(message)
-}
-
-/// A member with posts it has not been given yet, and the session signals that
-/// decide whether it can take a turn now.
-#[derive(Debug, Clone)]
-pub struct Pending {
-    pub room_id: Uuid,
-    pub room_name: String,
-    pub session_id: String,
-    pub last_delivered_seq: i64,
-    pub status: String,
-    pub tempo: Option<String>,
-    pub agent_state: Option<String>,
-    pub soft_limit_reason: Option<String>,
-    pub ended: bool,
-}
-
-impl Pending {
-    /// Whether this session can be handed a turn right now. Mid-turn and
-    /// needs-input ones are left for a later tick; ended and archived ones wait
-    /// until a resume flips their row back to a live status.
-    #[must_use]
-    pub fn deliverable(&self) -> bool {
-        crate::keepalive::skip_reason(&crate::keepalive::Snapshot {
-            status: &self.status,
-            tempo: self.tempo.as_deref(),
-            agent_state: self.agent_state.as_deref(),
-            soft_limit_reason: self.soft_limit_reason.as_deref(),
-            ended: self.ended,
-            ticks_sent: 0,
-            max_ticks: 0,
-        })
-        .is_none()
-    }
-}
-
-/// `$1` bounds the scan; `$2`, when non-null, restricts it to one room.
-const PENDING_SQL: &str = "\
-SELECT r.id, r.name, s.id, s.room_delivered_seq, \
-       COALESCE(s.status, 'ended'), s.tempo, s.agent_state, s.soft_limit_reason, \
-       EXISTS (SELECT 1 FROM stream_events e \
-                WHERE e.session_id = s.id AND e.event_type = 'session_ended') \
-  FROM sessions s \
-  JOIN rooms r ON r.id = s.room_id AND r.archived_at IS NULL \
- WHERE s.room_delivered_seq < r.next_seq \
-   AND ($2::uuid IS NULL OR r.id = $2) \
- ORDER BY r.id, s.id \
- LIMIT $1";
-
-type PendingRow = (
-    Uuid,
-    String,
-    String,
-    i64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    bool,
-);
-
-pub async fn pending(
-    pool: &sqlx::PgPool,
-    room_id: Option<Uuid>,
-    limit: i64,
-) -> Result<Vec<Pending>, sqlx::Error> {
-    let rows: Vec<PendingRow> =
-        sqlx::query_as(PENDING_SQL).bind(limit).bind(room_id).fetch_all(pool).await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| Pending {
-            room_id: r.0,
-            room_name: r.1,
-            session_id: r.2,
-            last_delivered_seq: r.3,
-            status: r.4,
-            tempo: r.5,
-            agent_state: r.6,
-            soft_limit_reason: r.7,
-            ended: r.8,
-        })
-        .collect())
-}
-
-/// The posts one member still owes, oldest first, excluding its own.
-///
-/// Excluding the sender here rather than at post time is what makes the cursor
-/// safe: the member's cursor still advances past its own post, so it never
-/// blocks the queue behind it.
-pub async fn pending_for(
-    pool: &sqlx::PgPool,
-    member: &Pending,
-) -> Result<Vec<RoomMessage>, sqlx::Error> {
-    type Row = (i64, Option<String>, String, String, chrono::DateTime<chrono::Utc>);
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT seq, sender_session_id, sender_label, body, created_at FROM room_messages \
-         WHERE room_id = $1 AND seq > $2 \
-           AND (sender_session_id IS NULL OR sender_session_id <> $3) \
-         ORDER BY seq LIMIT $4",
-    )
-    .bind(member.room_id)
-    .bind(member.last_delivered_seq)
-    .bind(&member.session_id)
-    .bind(i64::try_from(REPLAY_BATCH).unwrap_or(20))
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(seq, sender_session_id, sender_label, body, created_at)| RoomMessage {
-            seq,
-            sender_session_id,
-            sender_label,
-            body,
-            created_at,
-        })
-        .collect())
-}
-
-/// The highest `seq` a member has now seen: the last message actually delivered,
-/// or — when every pending message was its own — the room's head, so its cursor
-/// does not stay behind its own posts forever.
-pub async fn advance_to(
-    pool: &sqlx::PgPool,
-    member: &Pending,
-    delivered: Option<i64>,
-) -> Result<i64, sqlx::Error> {
-    let target = match delivered {
-        Some(seq) => seq,
-        None => sqlx::query_scalar::<_, i64>("SELECT next_seq FROM rooms WHERE id = $1")
-            .bind(member.room_id)
-            .fetch_one(pool)
-            .await?,
-    };
-    sqlx::query(
-        "UPDATE sessions SET room_delivered_seq = GREATEST(room_delivered_seq, $3) \
-         WHERE id = $2 AND room_id = $1",
-    )
-    .bind(member.room_id)
-    .bind(&member.session_id)
-    .bind(target)
-    .execute(pool)
-    .await?;
-    Ok(target)
-}
-
-/// Hand one member every post it is owed, in order, as a single turn.
-///
-/// Batched into one turn on purpose: two posts that arrived while a session was
-/// busy are one thing to read, and one turn costs one model call instead of two.
-pub async fn deliver_pending(state: &AppState, member: &Pending) -> Result<usize, String> {
-    let owed = pending_for(&state.pool, member).await.map_err(|e| e.to_string())?;
-    if owed.is_empty() {
-        let _ = advance_to(&state.pool, member, None).await;
-        return Ok(0);
-    }
-    let text = owed
-        .iter()
-        .map(|m| envelope(&member.room_name, &m.sender_label, &m.body))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let last = owed.last().map(|m| m.seq);
-    crate::bus::dispatch(
-        state,
-        &member.session_id,
-        AdapterCommand::SendMessage { local_id: member.session_id.clone(), text },
-    )
-    .await
-    .map_err(|err| err.to_string())?;
-    // Advanced only after the bus accepted the frame: a failed dispatch leaves
-    // the cursor where it was, so the next tick retries the same posts.
-    let _ = advance_to(&state.pool, member, last).await;
-    Ok(owed.len())
-}
-
-/// Serve one room's pending members immediately after a post.
-pub async fn deliver_room(state: &AppState, room_id: Uuid) {
-    serve(state, Some(room_id)).await;
-}
-
-/// Reaper tick: serve every member whose cursor trails, anywhere.
-pub async fn sweep(state: &AppState) {
-    serve(state, None).await;
-}
-
-async fn serve(state: &AppState, room_id: Option<Uuid>) {
-    let members = match pending(&state.pool, room_id, SWEEP_BATCH).await {
-        Ok(m) => m,
-        Err(err) => {
-            tracing::warn!(%err, "room pending lookup failed");
-            return;
-        }
-    };
-    for member in members {
-        if !member.deliverable() {
+    let text = envelope(&room.name, &label, body);
+    let me = sender.map(|m| m.session_id.as_str());
+    let mut receipts = Vec::with_capacity(room.members.len());
+    for member in &room.members {
+        // The sender never receives its own post.
+        if Some(member.session_id.as_str()) == me {
             continue;
         }
-        match deliver_pending(state, &member).await {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(
-                room = %member.room_id,
-                session = %member.session_id,
-                posts = n,
-                "room fan-out delivered",
-            ),
-            Err(err) => tracing::warn!(
-                room = %member.room_id,
-                session = %member.session_id,
-                %err,
-                "room fan-out failed; the cursor is unchanged and the next tick retries",
-            ),
-        }
+        let outcome =
+            crate::routes::peer::deliver(state, &member.session_id, member.state, text.clone())
+                .await;
+        receipts.push(Receipt {
+            session_id: member.session_id.clone(),
+            label: member.label(),
+            outcome: outcome.as_str(),
+        });
     }
+    tracing::info!(
+        room = %room.id,
+        seq,
+        sender = ?me,
+        members = receipts.len(),
+        delivered = receipts.iter().filter(|r| r.outcome == "delivered").count(),
+        "room post broadcast",
+    );
+    Ok(Broadcast { message, receipts })
 }
 
 /// Put `session_id` in `room`, moving it out of whatever room it was in, then
 /// greet it with the standing preamble.
 ///
-/// The cursor starts at the room's head: a session joining an old conversation
-/// is not flooded with its whole backlog. `peek` is how it reads what it missed.
+/// A newcomer is not handed the room's past posts — only what is broadcast from
+/// now on reaches it. `CctuiRoom peek` is how it reads what came before.
 pub async fn set_room(
     state: &AppState,
     room: &Room,
     owner: Uuid,
     session_id: &str,
 ) -> Result<Member, AppError> {
-    let head: i64 = sqlx::query_scalar("SELECT next_seq FROM rooms WHERE id = $1")
-        .bind(room.id)
-        .fetch_one(&state.pool)
-        .await?;
     let moved = sqlx::query(
-        "UPDATE sessions SET room_id = $1, room_delivered_seq = $3 \
-         WHERE id = $2 AND (room_id IS DISTINCT FROM $1)",
+        "UPDATE sessions SET room_id = $1 WHERE id = $2 AND (room_id IS DISTINCT FROM $1)",
     )
     .bind(room.id)
     .bind(session_id)
-    .bind(head)
     .execute(&state.pool)
     .await?
     .rows_affected()
@@ -640,30 +451,24 @@ pub async fn set_room(
     let others: Vec<Member> =
         room.members.iter().filter(|m| m.session_id != session_id).cloned().collect();
     let text = join_preamble(&room.name, &others);
-    if let Err(err) = crate::bus::dispatch(
-        state,
-        session_id,
-        AdapterCommand::SendMessage { local_id: session_id.to_owned(), text },
-    )
-    .await
-    {
+    let outcome = crate::routes::peer::deliver(state, session_id, joined.state, text).await;
+    if outcome != crate::routes::peer::Delivery::Delivered {
         tracing::info!(
-            room = %room.id, session = %session_id, %err,
-            "room join preamble not delivered (session offline); it is told on resume",
+            room = %room.id, session = %session_id, outcome = outcome.as_str(),
+            "room join preamble not delivered; the session is told on its next join",
         );
     }
     Ok(joined)
 }
 
-/// Take `session_id` out of whatever room it is in. Its cursor is reset so a
-/// later join starts clean rather than at a stale seq of another room.
+/// Take `session_id` out of whatever room it is in.
 pub async fn clear_room(
     state: &AppState,
     owner: Uuid,
     session_id: &str,
 ) -> Result<Option<Uuid>, AppError> {
     let was: Option<Uuid> = sqlx::query_scalar(
-        "UPDATE sessions SET room_id = NULL, room_delivered_seq = 0 \
+        "UPDATE sessions SET room_id = NULL \
          WHERE id = $1 AND room_id IS NOT NULL RETURNING room_id",
     )
     .bind(session_id)
@@ -693,26 +498,11 @@ mod tests {
             adapter: Some("claude-code".into()),
             machine: Some("box-a".into()),
             state: "live",
-            last_delivered_seq: 0,
         }
     }
 
     fn room(members: Vec<Member>) -> Room {
         Room { id: Uuid::nil(), name: "wave 23".into(), archived: false, members }
-    }
-
-    fn pending_member(status: &str) -> Pending {
-        Pending {
-            room_id: Uuid::nil(),
-            room_name: "wave 23".into(),
-            session_id: "a".into(),
-            last_delivered_seq: 0,
-            status: status.to_owned(),
-            tempo: None,
-            agent_state: None,
-            soft_limit_reason: None,
-            ended: false,
-        }
     }
 
     /// The room envelope must be in the family the webui already detects, and
@@ -742,10 +532,13 @@ mod tests {
     fn the_body_rules_reject_empty_oversized_and_envelope_breaking_posts() {
         assert_eq!(check_body("  hi  ").unwrap(), "hi");
         assert_eq!(check_body("   "), Err(PostRefusal::Empty));
-        let big = "x".repeat(MAX_POST_BYTES + 1);
-        assert_eq!(check_body(&big), Err(PostRefusal::TooLarge(MAX_POST_BYTES + 1)));
+        let big = "x".repeat(MAX_MESSAGE_BYTES + 1);
+        assert_eq!(check_body(&big), Err(PostRefusal::TooLarge(MAX_MESSAGE_BYTES + 1)));
         assert_eq!(check_body("a </cctui-room> b"), Err(PostRefusal::EnvelopeBreak));
-        assert_eq!(check_body(&"x".repeat(MAX_POST_BYTES)).map(str::len), Ok(MAX_POST_BYTES));
+        assert_eq!(
+            check_body(&"x".repeat(MAX_MESSAGE_BYTES)).map(str::len),
+            Ok(MAX_MESSAGE_BYTES)
+        );
     }
 
     #[test]
@@ -772,46 +565,52 @@ mod tests {
         assert_eq!(check_sender(&archived, None), Err(PostRefusal::Archived));
     }
 
-    /// The queueing rule: a member mid-turn, needing input, soft-limited, ended
-    /// or archived is not served this tick. An idle or hibernated one is.
+    /// There is no queue to test any more: the broadcast is a loop, and a member
+    /// mid-turn receives its turn like any other message. What must hold is that
+    /// a member who cannot take a turn is REPORTED rather than retried, which is
+    /// `Delivery`'s job — see `routes::peer`.
     #[test]
-    fn only_idle_members_are_served_and_the_rest_wait_for_a_later_tick() {
-        assert!(pending_member("active").deliverable());
-        assert!(pending_member("inactive").deliverable());
-        assert!(!pending_member("archived").deliverable());
-        assert!(!pending_member("ended").deliverable());
-
-        let mid_turn = Pending { tempo: Some("active".into()), ..pending_member("active") };
-        assert!(!mid_turn.deliverable(), "a session mid-turn must be left alone");
-        let working = Pending { agent_state: Some("working".into()), ..pending_member("active") };
-        assert!(!working.deliverable());
-        let blocked = Pending { tempo: Some("blocked".into()), ..pending_member("active") };
-        assert!(!blocked.deliverable(), "a session needing input must be queued, not interrupted");
-        let limited =
-            Pending { soft_limit_reason: Some("weekly_all".into()), ..pending_member("active") };
-        assert!(!limited.deliverable());
-        let gone = Pending { ended: true, ..pending_member("active") };
-        assert!(!gone.deliverable());
-        let hibernated = Pending { tempo: Some("hibernated".into()), ..pending_member("active") };
-        assert!(hibernated.deliverable(), "a hibernated member is woken by the post");
-    }
-
-    /// The loop guard, in the SQL that selects what a member is owed: a member
-    /// is never handed back its own post.
-    #[test]
-    fn the_fanout_query_reads_the_cursor_off_the_session_row() {
+    fn a_broadcast_reports_every_member_including_the_ones_it_could_not_reach() {
+        let b = Broadcast {
+            message: RoomMessage {
+                seq: 1,
+                sender_session_id: Some("a".into()),
+                sender_label: "lane a (claude-code on box-a)".into(),
+                body: "the gate is green".into(),
+                created_at: chrono::Utc::now(),
+            },
+            receipts: vec![
+                Receipt {
+                    session_id: "b".into(),
+                    label: "lane b".into(),
+                    outcome: "delivered",
+                },
+                Receipt {
+                    session_id: "c".into(),
+                    label: "lane c".into(),
+                    outcome: "archived",
+                },
+                Receipt { session_id: "d".into(), label: "lane d".into(), outcome: "offline" },
+            ],
+        };
+        assert_eq!(b.delivered(), 1);
+        assert_eq!(b.receipts.len(), 3, "every member is accounted for, reached or not");
         assert!(
-            PENDING_SQL.contains("s.room_delivered_seq < r.next_seq"),
-            "the cursor is what makes a session pending, and it lives on the session"
+            !b.receipts.iter().any(|r| r.session_id == "a"),
+            "the sender is never in its own receipts"
         );
-        assert!(PENDING_SQL.contains("archived_at IS NULL"), "an archived room fans out nothing");
-        assert!(!PENDING_SQL.contains("room_members"), "there is no membership table any more");
     }
 
+    /// The loop guard: nothing here reads a member's ordinary output, and the
+    /// broadcast loop skips the sender by id. Both are in `post`; this asserts the
+    /// preamble still tells the agent so, because that is what stops it echoing.
     #[test]
-    /// The preamble has to state both halves of what a room is — the permission
-    /// boundary and the broadcast — and the loop guard, or an agent either does
-    /// not know it may address its peers or echoes every turn into the room.
+    fn the_loop_guard_is_stated_where_the_agent_will_read_it() {
+        let text = join_preamble("wave 23", &[member("a")]);
+        assert!(text.contains("stay in your own conversation"), "{text}");
+        assert!(text.contains("action \"post\""), "{text}");
+    }
+
     #[test]
     fn the_join_preamble_names_the_room_its_sessions_the_permissions_and_the_guard() {
         let text = join_preamble("wave 23", &[member("a"), member("b")]);

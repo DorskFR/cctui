@@ -1,6 +1,5 @@
-//! Room routes: the small REST surface the webui's room picker needs, the
-//! daemon-authenticated `CctuiRoom` endpoint, and the writer for
-//! `session_peer_shares`.
+//! Room routes: the small REST surface the webui's room picker needs, and the
+//! daemon-authenticated `CctuiRoom` endpoint.
 //!
 //! There is no room page and no human timeline: a room is a field on a session
 //! plus a permission boundary, so the only human operations are naming a room
@@ -275,86 +274,6 @@ pub async fn clear_session_room(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// --- session_peer_shares writer ---
-
-#[derive(Debug, serde::Deserialize)]
-pub struct PeerShareRequest {
-    pub peer_session_id: String,
-}
-
-/// `POST /api/v1/sessions/{id}/peer-shares` — let two otherwise unrelated
-/// sessions of the same owner address each other. Symmetric: one row, both
-/// directions, matching what [`crate::peer_policy`] reads.
-pub async fn create_peer_share(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(session_id): Path<String>,
-    Json(req): Json<PeerShareRequest>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
-    let peer = req.peer_session_id.trim();
-    if peer.is_empty() {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "peer_session_id is required"));
-    }
-    if peer == session_id {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "a session cannot be shared with itself"));
-    }
-    own_session(&state, &session_id, ctx.user_id).await?;
-    own_session(&state, peer, ctx.user_id).await?;
-    // Re-granting a revoked pair must revive it, not collide with the dead row:
-    // the unique index only covers live grants.
-    sqlx::query(
-        "INSERT INTO session_peer_shares (session_id, peer_session_id, granted_by) \
-         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-    )
-    .bind(&session_id)
-    .bind(peer)
-    .bind(ctx.user_id)
-    .execute(&state.pool)
-    .await?;
-    Ok((StatusCode::CREATED, Json(json!({ "session_id": session_id, "peer_session_id": peer }))))
-}
-
-/// `DELETE /api/v1/sessions/{id}/peer-shares/{peer_session_id}` — revoke in
-/// either direction, since the grant is symmetric.
-pub async fn revoke_peer_share(
-    State(state): State<AppState>,
-    Path((session_id, peer)): Path<(String, String)>,
-) -> Result<StatusCode, AppError> {
-    sqlx::query(
-        "UPDATE session_peer_shares SET revoked_at = now() \
-         WHERE revoked_at IS NULL \
-           AND ((session_id = $1 AND peer_session_id = $2) \
-             OR (session_id = $2 AND peer_session_id = $1))",
-    )
-    .bind(&session_id)
-    .bind(&peer)
-    .execute(&state.pool)
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// `GET /api/v1/sessions/{id}/peer-shares` — who this session is shared with.
-pub async fn list_peer_shares(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-) -> Result<Json<Value>, AppError> {
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT s.id, s.session_name FROM session_peer_shares p \
-           JOIN sessions s ON s.id = CASE WHEN p.session_id = $1 THEN p.peer_session_id \
-                                          ELSE p.session_id END \
-          WHERE p.revoked_at IS NULL AND (p.session_id = $1 OR p.peer_session_id = $1) \
-          ORDER BY s.id",
-    )
-    .bind(&session_id)
-    .fetch_all(&state.pool)
-    .await?;
-    let out: Vec<Value> = rows
-        .into_iter()
-        .map(|(id, name)| json!({ "session_id": id, "name": name }))
-        .collect();
-    Ok(Json(json!({ "shares": out })))
-}
-
 // --- daemon surface for the CctuiRoom tool ---
 
 /// The room a tool call means: the one it named, or the caller's own. A session
@@ -401,27 +320,20 @@ pub async fn room_tool(
     match req.action.trim().to_ascii_lowercase().as_str() {
         "post" => {
             let body = req.message.as_deref().unwrap_or_default();
-            let sender = me.as_ref();
-            let message = rooms::post(&state, &room, sender, body).await?;
-            let recipients = room
-                .members
-                .iter()
-                .filter(|m| m.session_id != session_id)
-                .count();
+            let cast = rooms::post(&state, &room, me.as_ref(), body).await?;
             Ok(Json(json!({
                 "room": room.name,
                 "room_id": room.id,
-                "seq": message.seq,
-                "recipients": recipients,
+                "seq": cast.message.seq,
+                "delivered": cast.delivered(),
+                "receipts": cast.receipts,
             })))
         }
         "peek" => {
-            let seen = me.as_ref().map_or(0, |m| m.last_delivered_seq);
             let messages = rooms::timeline(&state.pool, room.id, None, TIMELINE_PAGE).await?;
             Ok(Json(json!({
                 "room": room.name,
                 "room_id": room.id,
-                "last_delivered_seq": seen,
                 "messages": messages,
             })))
         }
@@ -442,11 +354,12 @@ mod tests {
     use super::*;
     use crate::rooms::PostRefusal;
 
-    /// DB-gated: the whole room lifecycle — create, seed members across two
-    /// machines, post, fan out, replay in order after an offline gap, the loop
-    /// guard, and the policy relation rooms confer.
+    /// DB-gated: the room lifecycle — sessions across two machines, the reach of
+    /// a broadcast (everyone but the sender), the timeline `peek` reads, the
+    /// policy relation a room confers, one room per session, and the release on
+    /// delete.
     #[tokio::test]
-    async fn a_room_fans_out_in_order_and_never_echoes_its_sender() {
+    async fn a_room_relates_its_sessions_and_a_broadcast_reaches_all_but_the_sender() {
         let Some(url) = crate::routes::gateway::test_db_url("rooms_fanout") else { return };
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
@@ -564,39 +477,24 @@ mod tests {
             .unwrap();
         }
 
-        let pend = rooms::pending(&pool, Some(room_id), 100).await.expect("pending");
-        let for_b = pend.iter().find(|p| p.session_id == b).expect("b is owed both posts");
-        let for_a = pend.iter().find(|p| p.session_id == a).expect("a's cursor also trails");
-
-        // The loop guard: A is owed nothing, because both posts are its own.
+        // Who a broadcast would reach: every session in the room except the
+        // sender. There is no cursor and no queue to inspect — the loop in `post`
+        // walks `room.members`, so that list IS the reach.
+        let live = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
+        let reach: Vec<&str> = live
+            .members
+            .iter()
+            .filter(|mem| mem.session_id != a)
+            .map(|mem| mem.session_id.as_str())
+            .collect();
+        assert_eq!(reach, vec![b.as_str()], "the sender is excluded, everyone else is in");
         assert!(
-            rooms::pending_for(&pool, for_a).await.unwrap().is_empty(),
-            "a sender must never be handed back its own post"
+            !live.members.iter().any(|mem| mem.session_id == outsider),
+            "a session in no room is never reached"
         );
-        let owed = rooms::pending_for(&pool, for_b).await.unwrap();
-        assert_eq!(owed.len(), 2, "an offline member is owed both posts");
-        assert_eq!(
-            owed.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
-            vec!["first", "second"],
-            "replay must be in seq order"
-        );
-        assert_eq!(owed.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(live.members.iter().all(|mem| mem.state == "live"));
 
-        // Advancing A past its own posts stops it being selected forever.
-        rooms::advance_to(&pool, for_a, None).await.unwrap();
-        let after = rooms::pending(&pool, Some(room_id), 100).await.unwrap();
-        assert!(
-            !after.iter().any(|p| p.session_id == a),
-            "a sender's cursor must advance past its own posts"
-        );
-
-        // B receives them, in one turn, and is then up to date.
-        rooms::advance_to(&pool, for_b, Some(2)).await.unwrap();
-        let settled = rooms::pending(&pool, Some(room_id), 100).await.unwrap();
-        assert!(settled.is_empty(), "{settled:?}");
-
-        // A third post while B is up to date makes it pending again with only
-        // the new message.
+        // A third post, this one from the human (no sender session), reaches both.
         let seq: i64 = sqlx::query_scalar(
             "UPDATE rooms SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq",
         )
@@ -613,18 +511,29 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let again = rooms::pending(&pool, Some(room_id), 100).await.unwrap();
-        let for_b = again.iter().find(|p| p.session_id == b).expect("b is owed the human post");
-        let owed = rooms::pending_for(&pool, for_b).await.unwrap();
-        assert_eq!(owed.len(), 1);
-        assert_eq!(owed[0].body, "from the human");
-        assert!(owed[0].sender_session_id.is_none(), "a human post has no sender session");
-        let for_a = again.iter().find(|p| p.session_id == a).expect("a is owed it too");
-        assert_eq!(
-            rooms::pending_for(&pool, for_a).await.unwrap().len(),
-            1,
-            "the human's post reaches the session that posted earlier"
-        );
+        assert_eq!(seq, 3);
+
+        // An archived or ended member stays in the room and is reported as
+        // skipped rather than dropped from it.
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+            .bind(&b)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let with_archived = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
+        assert_eq!(with_archived.members.len(), 2, "an archived session keeps its room");
+        let state_of_b = with_archived
+            .members
+            .iter()
+            .find(|mem| mem.session_id == b)
+            .map(|mem| mem.state)
+            .unwrap();
+        assert_eq!(state_of_b, "archived", "the loop reads this and reports `archived`");
+        sqlx::query("UPDATE sessions SET status = 'active' WHERE id = $1")
+            .bind(&b)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // What `CctuiRoom peek` reads, and its `after=` cursor.
         let all = rooms::timeline(&pool, room_id, None, 200).await.unwrap();
@@ -633,16 +542,12 @@ mod tests {
         assert_eq!(delta.len(), 1);
         assert_eq!(delta[0].seq, 3);
 
-        // An archived room stops fanning out and refuses new posts.
+        // An archived room refuses new posts.
         sqlx::query("UPDATE rooms SET archived_at = now() WHERE id = $1")
             .bind(room_id)
             .execute(&pool)
             .await
             .unwrap();
-        assert!(
-            rooms::pending(&pool, Some(room_id), 100).await.unwrap().is_empty(),
-            "an archived room must not fan out"
-        );
         let archived = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
         assert!(archived.archived);
         assert_eq!(rooms::check_sender(&archived, Some(&a)), Err(PostRefusal::Archived));
@@ -845,87 +750,6 @@ mod tests {
         );
 
         sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
-    }
-
-    /// DB-gated: `session_peer_shares` now has a writer, and the policy sees
-    /// what it writes.
-    #[tokio::test]
-    async fn the_share_writer_grants_and_revokes_symmetrically() {
-        let Some(url) = crate::routes::gateway::test_db_url("rooms_share_writer") else { return };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
-        let uid = Uuid::new_v4();
-        let machine = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'share-test', $2)")
-            .bind(uid)
-            .bind(format!("kh-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
-            .bind(machine)
-            .bind(uid)
-            .bind(machine.to_string())
-            .bind(format!("kh-{machine}"))
-            .execute(&pool)
-            .await
-            .expect("seed machine");
-        let one = Uuid::new_v4().to_string();
-        let two = Uuid::new_v4().to_string();
-        for id in [&one, &two] {
-            sqlx::query(
-                "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, \
-                 adapter_id, status) VALUES ($1, $2, '/w', $3, $4, 'codex', 'active')",
-            )
-            .bind(id)
-            .bind(machine.to_string())
-            .bind(uid)
-            .bind(machine)
-            .execute(&pool)
-            .await
-            .expect("seed session");
-        }
-        assert_eq!(
-            crate::peer_policy::authorize(&pool, &one, &two, uid).await.unwrap_err(),
-            crate::peer_policy::Refusal::Unrelated,
-        );
-        sqlx::query(
-            "INSERT INTO session_peer_shares (session_id, peer_session_id, granted_by) \
-             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-        )
-        .bind(&one)
-        .bind(&two)
-        .bind(uid)
-        .execute(&pool)
-        .await
-        .expect("grant");
-        assert_eq!(
-            crate::peer_policy::authorize(&pool, &two, &one, uid).await.unwrap().0,
-            crate::peer_policy::Relation::Shared,
-            "the grant works in the direction it was not written in",
-        );
-        sqlx::query(
-            "UPDATE session_peer_shares SET revoked_at = now() WHERE revoked_at IS NULL \
-               AND ((session_id = $1 AND peer_session_id = $2) \
-                 OR (session_id = $2 AND peer_session_id = $1))",
-        )
-        .bind(&two)
-        .bind(&one)
-        .execute(&pool)
-        .await
-        .expect("revoke");
-        assert_eq!(
-            crate::peer_policy::authorize(&pool, &one, &two, uid).await.unwrap_err(),
-            crate::peer_policy::Refusal::Unrelated,
-            "revoking from either side takes the right away",
-        );
-
         sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();

@@ -6,7 +6,6 @@
 	// delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { Label } from '@bindings/Label';
-	import type { ShareCandidate } from '$lib/peerShares';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { isArchiveChord, isFindChord } from '$lib/platform';
@@ -14,7 +13,6 @@
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
-	import SharePeerMenu from '$lib/components/molecules/SharePeerMenu.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import { Icon, IconButton, Input, Menu, Popover, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
@@ -60,9 +58,7 @@
 		onDeleteLabel,
 		// Room = a field on the session: pick one (by id or by name) or clear it.
 		onsetroom,
-		onclearroom,
-		// The owner's other sessions, for the pairwise share picker.
-		shareCandidates = [],
+		onclearroom
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -107,7 +103,6 @@
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 		onsetroom?: (sessionId: string, pick: { id: string } | { name: string }) => void;
 		onclearroom?: (sessionId: string) => void;
-		shareCandidates?: ShareCandidate[];
 	} = $props();
 
 	// Label picker is interactive only when an attach handler is wired in.
@@ -297,17 +292,6 @@
 						onpick={(pick) => onsetroom?.(session.id, pick)}
 						onclear={session.room_id ? () => onclearroom?.(session.id) : undefined}
 					/>
-				</Popover>
-				<Popover
-					label={m.rooms_share_peer()}
-					placement="bottom-start"
-					variant="ghost"
-					box="xs"
-					hitArea="compact"
-				>
-					{#snippet trigger()}<span class="roomtrigger" title={m.rooms_share_peer()}>⇄</span
-						>{/snippet}
-					<SharePeerMenu sessionId={session.id} candidates={shareCandidates} />
 				</Popover>
 			{/if}
 		</div>

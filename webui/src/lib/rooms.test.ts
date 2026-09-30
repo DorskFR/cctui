@@ -14,8 +14,7 @@ function member(id: string, state: RoomMember['state'] = 'live'): RoomMember {
 		name: `lane ${id}`,
 		adapter: 'claude-code',
 		machine: 'box-a',
-		state,
-		last_delivered_seq: 0
+		state
 	};
 }
 

@@ -1,4 +1,4 @@
-//! Room routes, and the peer-share writer that lands with them.
+//! Room routes.
 //!
 //! Rooms carry no `ResourceKind`, so they are `Authenticated` here and every
 //! handler scopes its own queries by `user_id`. The per-session routes are
@@ -35,22 +35,6 @@ pub(super) fn register(r: Routes) -> Routes {
         "Put this session in a room (by id or name), or take it out of one.",
         axum::routing::put(routes::rooms::set_session_room)
             .delete(routes::rooms::clear_session_room),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[GET, Method::POST],
-        "/sessions/{id}/peer-shares",
-        "List or grant peer-addressing shares for this session.",
-        get(routes::rooms::list_peer_shares).post(routes::rooms::create_peer_share),
-        Authn::Bearer,
-        sess_write(),
-    )
-    .add(
-        &[Method::DELETE],
-        "/sessions/{id}/peer-shares/{peer_session_id}",
-        "Revoke a peer-addressing share.",
-        axum::routing::delete(routes::rooms::revoke_peer_share),
         Authn::Bearer,
         sess_write(),
     )

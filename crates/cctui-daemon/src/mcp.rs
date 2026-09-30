@@ -288,15 +288,17 @@ pub fn history_tool_schema() -> Value {
 pub fn room_tool_schema() -> Value {
     json!({
         "name": ROOM_TOOL_NAME,
-        "description": "Talk to a cctui ROOM: a named group of sessions, plus the human, sharing \
-    one conversation. A human adds sessions to a room; you cannot join one yourself. `post` sends \
-    a message to every other member as a turn in their session, and to the human's Room panel. \
-    IMPORTANT: only an explicit post reaches the room — your ordinary replies stay in your own \
-    conversation, so working normally never echoes you into the room. Messages you receive wrapped \
-    in <cctui-room> came from another member, not from the human who runs you. `peek` re-reads the \
-    timeline (including what arrived while you were busy), `members` lists who is in it. Omit \
-    room_id when you are in exactly one room. Rate-limited to 10 posts a minute, and size-capped \
-    — post a pointer, not a payload.",
+        "description": "Broadcast to your cctui ROOM: the named group of sessions a human put \
+    you in. You cannot join or leave one yourself. `post` delivers your message to every other \
+    LIVE session in the room as a turn, and reports per-session whether it landed — a session \
+    that is archived, ended or whose machine is offline is skipped and named, not queued, so \
+    re-post later if it matters. IMPORTANT: only an explicit post reaches the room — your ordinary \
+    replies stay in your own conversation, so working normally never echoes you into the room. \
+    Messages you receive wrapped in <cctui-room> came from another session in the room, not from \
+    the human who runs you. `peek` reads the room's past messages, `members` lists who is in it. \
+    Being in a room also lets you use CctuiPeers, CctuiSend and CctuiHistory on its sessions. Omit \
+    room_id: you are in at most one room. A post counts against the same rate limit as CctuiSend \
+    and is size-capped — post a pointer, not a payload.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -308,8 +310,8 @@ pub fn room_tool_schema() -> Value {
                 },
                 "room_id": {
                     "type": "string",
-                    "description": "Which room. Optional when this session is in exactly one; \
-    required otherwise, and the error lists the options.",
+                    "description": "Rarely needed: a session is in at most one room, which is \
+    used when this is omitted.",
                 },
                 "message": {
                     "type": "string",
@@ -663,7 +665,11 @@ mod tests {
             "the loop guard must be in the tool description too: {desc}"
         );
         assert!(desc.contains("<cctui-room>"), "{desc}");
-        assert!(desc.contains("exactly one room"), "{desc}");
+        assert!(desc.contains("at most one room"), "{desc}");
+        assert!(
+            desc.contains("skipped and named, not queued"),
+            "a broadcast is best effort; the model must not assume delivery: {desc}"
+        );
         assert_eq!(tool_kind(ROOM_TOOL_NAME), Some("room"));
     }
 

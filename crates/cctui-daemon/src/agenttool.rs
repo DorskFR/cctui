@@ -348,13 +348,32 @@ fn render_room(action: &str, me: &str, v: &Value) -> String {
     let room = v.get("room").and_then(Value::as_str).unwrap_or("the room");
     match action {
         "post" => {
-            let n = v.get("recipients").and_then(Value::as_u64).unwrap_or(0);
             let seq = v.get("seq").and_then(Value::as_i64).unwrap_or(0);
-            format!(
-                "posted to {room} as #{seq}; {n} other member(s) will receive it as a turn, and \
-                 the human sees it in the Room panel. They answer when they choose — nothing \
-                 comes back through this call."
-            )
+            let delivered = v.get("delivered").and_then(Value::as_u64).unwrap_or(0);
+            let receipts =
+                v.get("receipts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            let mut out = format!(
+                "posted to {room} as #{seq}; delivered to {delivered} of {} other session(s). \
+                 They answer when they choose — nothing comes back through this call.",
+                receipts.len(),
+            );
+            // Name who did NOT get it: a broadcast is best effort, and a silent
+            // skip would read as a delivery.
+            let missed: Vec<String> = receipts
+                .iter()
+                .filter(|r| r.get("outcome").and_then(Value::as_str) != Some("delivered"))
+                .map(|r| {
+                    format!(
+                        "{} ({})",
+                        r.get("label").and_then(Value::as_str).unwrap_or("?"),
+                        r.get("outcome").and_then(Value::as_str).unwrap_or("?"),
+                    )
+                })
+                .collect();
+            if !missed.is_empty() {
+                out.push_str(&format!("\nNot delivered: {}.", missed.join(", ")));
+            }
+            out
         }
         "members" => {
             let members =
@@ -382,7 +401,6 @@ fn render_room(action: &str, me: &str, v: &Value) -> String {
             if messages.is_empty() {
                 return format!("{room} has no messages yet.");
             }
-            let seen = v.get("last_delivered_seq").and_then(Value::as_i64).unwrap_or(0);
             let mut lines = vec![format!("{room} — {} message(s):", messages.len())];
             for msg in messages {
                 let seq = msg.get("seq").and_then(Value::as_i64).unwrap_or(0);
@@ -390,7 +408,7 @@ fn render_room(action: &str, me: &str, v: &Value) -> String {
                 let body = msg.get("body").and_then(Value::as_str).unwrap_or("");
                 let mine =
                     msg.get("sender_session_id").and_then(Value::as_str).is_some_and(|s| s == me);
-                let mark = if mine { " (you)" } else if seq > seen { " (new to you)" } else { "" };
+                let mark = if mine { " (you)" } else { "" };
                 lines.push(format!("#{seq} {from}{mark}: {}", snippet(body, 2_000)));
             }
             lines.join("\n")
@@ -1791,26 +1809,56 @@ mod tests {
 
     /// A post reply must not read like a request/response: the model has to know
     /// no answer is coming back through the call.
+    /// A broadcast is best effort, so the reply must name what did NOT land: a
+    /// silent skip reads as a delivery, and the agent then waits on a session
+    /// that never heard it.
     #[test]
-    fn a_post_reply_names_the_reach_and_says_no_answer_is_coming() {
+    fn a_post_reply_names_the_reach_and_every_session_it_missed() {
         let out = render_room(
             "post",
             "me",
-            &json!({ "room": "wave 23", "room_id": "r-1", "seq": 7, "recipients": 2 }),
+            &json!({
+                "room": "wave 23", "room_id": "r-1", "seq": 7, "delivered": 1,
+                "receipts": [
+                    { "session_id": "b", "label": "lane b (codex on box-b)",
+                      "outcome": "delivered" },
+                    { "session_id": "c", "label": "lane c (claude-code on box-a)",
+                      "outcome": "archived" },
+                    { "session_id": "d", "label": "lane d (codex on box-c)",
+                      "outcome": "offline" },
+                ],
+            }),
         );
         assert!(out.contains("posted to wave 23 as #7"), "{out}");
-        assert!(out.contains("2 other member(s)"), "{out}");
+        assert!(out.contains("delivered to 1 of 3 other session(s)"), "{out}");
         assert!(out.contains("nothing comes back through this call"), "{out}");
+        assert!(out.contains("Not delivered:"), "{out}");
+        assert!(out.contains("lane c (claude-code on box-a) (archived)"), "{out}");
+        assert!(out.contains("lane d (codex on box-c) (offline)"), "{out}");
+        assert!(!out.contains("lane b"), "a delivered session is not listed as missed: {out}");
     }
 
     #[test]
-    fn peek_renders_the_timeline_and_marks_what_is_new_and_what_is_mine() {
+    fn a_fully_delivered_post_lists_nothing_as_missed() {
+        let out = render_room(
+            "post",
+            "me",
+            &json!({
+                "room": "wave 23", "seq": 1, "delivered": 1,
+                "receipts": [{ "session_id": "b", "label": "lane b", "outcome": "delivered" }],
+            }),
+        );
+        assert!(out.contains("delivered to 1 of 1 other session(s)"), "{out}");
+        assert!(!out.contains("Not delivered"), "{out}");
+    }
+
+    #[test]
+    fn peek_renders_the_timeline_and_marks_the_callers_own_posts() {
         let out = render_room(
             "peek",
             "me",
             &json!({
                 "room": "wave 23",
-                "last_delivered_seq": 1,
                 "messages": [
                     { "seq": 1, "sender_label": "lane a (codex on box-b)",
                       "sender_session_id": "other", "body": "started" },
@@ -1823,7 +1871,7 @@ mod tests {
         assert!(out.starts_with("wave 23 — 3 message(s):"), "{out}");
         assert!(out.contains("#1 lane a (codex on box-b): started"), "{out}");
         assert!(out.contains("#2 me (claude-code on box-a) (you): on it"), "{out}");
-        assert!(out.contains("#3 you (human) (new to you): ship it"), "{out}");
+        assert!(out.contains("#3 you (human): ship it"), "{out}");
 
         let empty = render_room("peek", "me", &json!({ "room": "wave 23", "messages": [] }));
         assert!(empty.contains("no messages yet"), "{empty}");
