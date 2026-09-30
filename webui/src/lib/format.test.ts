@@ -1,5 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { machineInitial, modelAbbrev, modelFamily, modelShort, usd } from './format';
+import { compact, machineInitial, modelAbbrev, modelFamily, modelShort, usd } from './format';
+
+describe('compact', () => {
+	it('leaves counts below 1000 alone', () => {
+		expect(compact(999)).toBe('999');
+	});
+
+	it('formats thousands', () => {
+		expect(compact(1000)).toBe('1.0k');
+		expect(compact(9_999)).toBe('10.0k');
+		expect(compact(999_949)).toBe('999k');
+	});
+
+	it('promotes instead of showing 1000 in a unit', () => {
+		expect(compact(999_950)).toBe('1.0M');
+		expect(compact(999_950_000)).toBe('1.0B');
+	});
+
+	it('formats millions and billions', () => {
+		expect(compact(1_000_000)).toBe('1.0M');
+		expect(compact(999_949_999)).toBe('999.9M');
+		expect(compact(1_004_100_000)).toBe('1.0B');
+		expect(compact(12_345_678_901)).toBe('12.3B');
+	});
+});
 
 describe('modelShort', () => {
 	it('drops the vendor prefix', () => {
