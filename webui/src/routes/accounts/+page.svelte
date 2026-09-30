@@ -12,10 +12,8 @@
 		type AccountProvider
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { ghreviewUrl } from '$lib/config';
 	import { providerLabel } from '$lib/providers';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
-	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import AccountsBoard from '$lib/components/organisms/accounts/AccountsBoard.svelte';
 	import AccountEditorModal from '$lib/components/organisms/accounts/AccountEditorModal.svelte';
@@ -24,8 +22,6 @@
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	// The Connectors tab only appears when the ghreview backend is deployed.
-	const reviewConfigured = $derived(ghreviewUrl() !== null);
 	let tab = $state('ai');
 
 	const accounts = useAccounts();
@@ -46,7 +42,6 @@
 			id: 'ai',
 			label: `${m.accounts_tab_ai()} ${rows.length} · ${m.accounts_pools_count({ n: poolList.length })}`
 		},
-		...(reviewConfigured ? [{ id: 'connectors', label: m.accounts_tab_connectors() }] : []),
 		{ id: 'dispatchers', label: m.accounts_tab_dispatchers() }
 	]);
 
@@ -143,8 +138,6 @@
 						/>
 					{/snippet}
 				</AccountsBoard>
-			{:else if id === 'connectors'}
-				<GithubConnectors />
 			{:else if id === 'dispatchers'}
 				<DispatchersPanel heading={false} />
 			{/if}

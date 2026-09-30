@@ -1,5 +1,4 @@
 import type { IconName } from '@dorsk/tsumikit';
-import { ghreviewUrl } from '$lib/config';
 import { m } from '$lib/paraglide/messages';
 
 export interface NavItemSpec {
@@ -11,7 +10,6 @@ export interface NavItemSpec {
 }
 
 export interface NavGates {
-	hasGithubConnector?: boolean;
 	/** Enabled page plugins, appended before Settings. */
 	pages?: { href: string; label: string; iconName: IconName }[];
 }
@@ -24,9 +22,6 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 		{ href: '/bookmarks', label: m.nav_bookmarks(), icon: '◈' },
 		{ href: '/access', label: m.nav_access(), icon: '◍' },
 		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },
-		...(ghreviewUrl() !== null && gates.hasGithubConnector === true
-			? [{ href: '/github', label: m.nav_github(), icon: '◐' }]
-			: []),
 		...(gates.pages ?? []).map((p) => ({ href: p.href, label: p.label, icon: '', iconName: p.iconName })),
 		{ href: '/settings', label: m.nav_settings(), icon: '⚙' }
 	];

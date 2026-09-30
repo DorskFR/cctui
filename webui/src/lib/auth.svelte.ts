@@ -2,7 +2,6 @@ import { browser } from '$app/environment';
 import { apiFetch } from './api';
 import { apiBase } from './config';
 import { clearCctuiStorage } from './drafts';
-import { clearGhreviewToken } from './ghreview';
 import { getAssertion, passkeysSupported } from './passkeys';
 import type { PasskeyChallenge } from '@bindings/PasskeyChallenge';
 import type { PasskeyConfig } from '@bindings/PasskeyConfig';
@@ -100,14 +99,12 @@ class Auth {
 			/* clear locally regardless of network outcome */
 		}
 		this.isAuthed = false;
-		clearGhreviewToken();
 		clearCctuiStorage();
 	}
 
 	/** Called by the API/WS layer on a 401 so the UI returns to login. */
 	markLoggedOut(): void {
 		this.isAuthed = false;
-		clearGhreviewToken();
 		clearCctuiStorage();
 	}
 }

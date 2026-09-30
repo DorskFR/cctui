@@ -135,7 +135,7 @@ make run/server     # server on :8700
 ```
 
 ```sh
-make webui/install  # ghreview-ui (bun) + webui (npm)
+make webui/install  # webui dependencies (npm)
 make webui/dev      # Vite dev server
 ```
 

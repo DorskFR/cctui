@@ -37,16 +37,11 @@ The API origin is runtime config: `static/config.js` sets
 with `no-store`) to retarget the API without rebuilding. Auth is a Bearer token
 held in `localStorage`; the server allows the cross-origin calls via CORS.
 
-### gh-review connector (CCT-610)
+### Review center
 
-`static/config.js` also carries `window.CCTUI_CONFIG.ghreviewUrl` — the origin of
-the gh-review backend (epic CCT-600). When set, a **Review** nav entry mounts the
-`ghreview-ui` app (imported as a workspace dependency, `../ghreview-ui`, aliased
-`$ghreview` in `vite.config.ts`) under `/review`, passing the backend URL plus a
-bearer minted for the signed-in user (`src/lib/ghreview.ts`) — no second login.
-When it is empty/unset the connector degrades gracefully: the Review entry hides
-and `/review` shows a "not configured" panel. The embed is lazy-loaded, so its
-chunk ships only to deployments that enable it.
+The GitHub review center is no longer built in: it ships as the **ghreview**
+plugin (https://github.com/DorskFR/ghreview), installed from the plugin catalog
+and mounted at `/apps/ghreview`. `/github` and `/review` redirect there.
 
 ## Deploy
 
