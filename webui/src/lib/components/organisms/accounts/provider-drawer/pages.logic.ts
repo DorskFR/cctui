@@ -4,6 +4,7 @@ import { providerFamily } from '$lib/providers';
 export const PAGE_IDS = [
 	'aliases',
 	'limits',
+	'resets',
 	'ui',
 	'privacy',
 	'tools',
@@ -50,6 +51,9 @@ export function groupPage(title: string): PageId {
 export function pagesFor(kind: string): PageId[] {
 	const family = providerFamily(kind);
 	const out: PageId[] = ['aliases', 'limits'];
+	// Only a first-party credential has reset programs; a compatible endpoint
+	// would get a page that can never fill.
+	if (kind === 'anthropic' || kind === 'openai') out.push('resets');
 	if (family === 'anthropic') out.push('ui', 'privacy', 'tools');
 	if (family === 'openai') out.push('speed', 'reasoning', 'privacy');
 	out.push('models', 'gateway', 'advanced');
