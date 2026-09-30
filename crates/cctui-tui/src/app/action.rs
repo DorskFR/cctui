@@ -11,6 +11,7 @@ use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::state::ConversationLine;
+use super::terminal::TerminalAction;
 use super::toast::Level;
 
 /// Everything that can change the app. Key handlers, the websocket and
@@ -81,6 +82,7 @@ pub enum Action {
     Auth(AuthAction),
     Drafts(DraftAction),
     Send(SendAction),
+    Terminal(TerminalAction),
     SessionLive(SessionLiveAction),
 
     /// A pure clock advance: it moves delivery deadlines, re-evaluates the
@@ -140,6 +142,11 @@ pub enum Effect {
     },
     Unsubscribe {
         session_id: String,
+    },
+    /// Start or stop the PTY relay for one session.
+    WatchTerminal {
+        session_id: String,
+        watch: bool,
     },
     SendMessage {
         send_id: u64,

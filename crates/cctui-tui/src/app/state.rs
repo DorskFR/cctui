@@ -20,6 +20,7 @@ pub enum View {
     Conversation,
     Help,
     HistoryPicker,
+    Terminal,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -244,6 +245,8 @@ pub struct App {
     pub refresh: RefreshCounters,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
+    /// The watched session's emulated screen, open only while the pane is.
+    pub terminal: Option<super::terminal::TerminalPane>,
 }
 
 impl App {
@@ -310,6 +313,7 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             ui: UiState::default(),
+            terminal: None,
         }
     }
 
