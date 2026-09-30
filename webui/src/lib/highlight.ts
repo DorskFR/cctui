@@ -1,6 +1,4 @@
 // biome-ignore-all lint/suspicious/noControlCharactersInRegex: ANSI/C0 stripping requires matching control bytes
-// Also imported by webui through the `$ghreview` alias; its ambient types live
-// in webui/src/ghreview-embed.d.ts and must follow export changes.
 
 import hljs from "highlight.js/lib/core";
 import bashLang from "highlight.js/lib/languages/bash";
@@ -80,7 +78,9 @@ export const LANG_ALIAS: Record<string, string> = {
 export function looksLikeDiff(value: string): boolean {
   const lines = value.split("\n").filter(Boolean);
   if (lines.length < 2) return false;
-  const markedLines = lines.filter((line) => line[0] === "+" || line[0] === "-").length;
+  const markedLines = lines.filter(
+    (line) => line[0] === "+" || line[0] === "-",
+  ).length;
   return markedLines >= 1 && markedLines >= lines.length * 0.5;
 }
 
@@ -89,9 +89,12 @@ export function highlightDiff(value: string): string {
     .split("\n")
     .map((line) => {
       const escaped = escapeHtml(line);
-      if (line.startsWith("+")) return `<span class="hljs-addition">${escaped}</span>`;
-      if (line.startsWith("-")) return `<span class="hljs-deletion">${escaped}</span>`;
-      if (line.startsWith("@@")) return `<span class="hljs-meta">${escaped}</span>`;
+      if (line.startsWith("+"))
+        return `<span class="hljs-addition">${escaped}</span>`;
+      if (line.startsWith("-"))
+        return `<span class="hljs-deletion">${escaped}</span>`;
+      if (line.startsWith("@@"))
+        return `<span class="hljs-meta">${escaped}</span>`;
       return escaped;
     })
     .join("\n");
@@ -99,11 +102,16 @@ export function highlightDiff(value: string): string {
 
 export function highlightCode(rawCode: string, language: string): string {
   const clean = stripAnsi(rawCode);
-  const normalized = LANG_ALIAS[language.toLowerCase()] ?? language.toLowerCase();
-  if (normalized === "diff" || (!normalized && looksLikeDiff(clean))) return highlightDiff(clean);
+  const normalized =
+    LANG_ALIAS[language.toLowerCase()] ?? language.toLowerCase();
+  if (normalized === "diff" || (!normalized && looksLikeDiff(clean)))
+    return highlightDiff(clean);
   if (normalized && hljs.getLanguage(normalized)) {
     try {
-      return hljs.highlight(clean, { language: normalized, ignoreIllegals: true }).value;
+      return hljs.highlight(clean, {
+        language: normalized,
+        ignoreIllegals: true,
+      }).value;
     } catch {
       return escapeHtml(clean);
     }

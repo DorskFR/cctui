@@ -19,10 +19,7 @@ parallel, so the wall clock is the slowest job plus queueing.
 | cargo test (ignored integration) | 132 s | 172 s |
 | cargo clippy | 74 s | 83 s |
 | audit | 42 s | 72 s |
-| ghreview | 36 s | 54 s |
-| ghreview-ui | 29 s | 36 s |
 | cargo fmt | 16 s | 19 s |
-| generated artifacts up to date | 13 s | 16 s |
 | biome / actionlint / no-css-global / i18n-messages | 6–9 s each | |
 
 Heaviest steps:
@@ -54,7 +51,7 @@ Wall clock: **median 1193 s** (≈ 20 min), p90 1234 s.
 | release | 12 s | 24 s |
 
 `images` steps: worker 273 s, server 270 s, dispatcher-kube 215 s, orchestrator
-144 s, webui 60 s, ghreview 8 s. Both `images` and `build` wait on `test`, so the
+144 s, webui 60 s. Both `images` and `build` wait on `test`, so the
 critical path is `test` (182 s) followed by `images` (1008 s) ≈ 1190 s, which is
 the whole wall clock.
 

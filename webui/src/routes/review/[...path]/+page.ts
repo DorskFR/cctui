@@ -5,5 +5,5 @@ export const prerender = false;
 
 export const load: PageLoad = ({ params }) => {
 	const rest = params.path ? `/${params.path}` : '';
-	redirect(308, `/github${rest}`);
+	redirect(308, `/apps/ghreview${rest}`);
 };

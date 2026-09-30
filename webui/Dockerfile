@@ -1,19 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ---- build the static SPA ----
-# Build context is the repo ROOT (see `make ui/image/build`): the webui imports
-# the sibling gh-review UI (CCT-610) as workspace source and compiles it, so both
-# `webui/` and `ghreview-ui/` must be in the context.
+# Build context is the repo ROOT (see `make ui/image/build`).
 FROM node:22-alpine@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c AS build
 WORKDIR /app
-
-# gh-review is a path dependency + `$ghreview` vite-alias source. Install its
-# deps so vite/esbuild can resolve its tsconfig + svelte; svelte is deduped to
-# webui's single copy at bundle time (webui/vite.config.ts). ghreview-ui is a bun
-# project (bun.lock, no package-lock.json), so it installs with bun.
-COPY --from=oven/bun:1.3-alpine@sha256:efc5e42c7bedc1661ab0b7272c74c3ebf794f054297f530a62055f2d1a0eb662 /usr/local/bin/bun /usr/local/bin/bun
-COPY ghreview-ui/ ./ghreview-ui/
-RUN cd ghreview-ui && bun install --frozen-lockfile
 
 WORKDIR /app/webui
 COPY webui/package.json webui/package-lock.json ./

@@ -6,10 +6,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
 	plugins: [sveltekit()],
 	resolve: {
-		conditions: ['browser'],
-		alias: {
-			$ghreview: new URL('../ghreview-ui/src', import.meta.url).pathname
-		}
+		conditions: ['browser']
 	},
 	test: {
 		environment: 'node',

@@ -56,9 +56,9 @@ an exact release asset:
       "id": "yubisashi",
       "name": "Review",
       "description": "Point at your running app and hand comments to the agent",
-      "version": "0.5.2",
-      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.5.2/yubisashi-0.5.2.tgz",
-      "sha256": "3aa31bb529f23a306854f2282192b8597904268855627c58048d7b162ff072ac",
+      "version": "0.5.3",
+      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.5.3/yubisashi-0.5.3.tgz",
+      "sha256": "c64796ae47a8fa3ee618ad643898bf829257b14a499865aa02fb4b856503f594",
       "homepage": "https://github.com/DorskFR/yubisashi"
     }
   ]

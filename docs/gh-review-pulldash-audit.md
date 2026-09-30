@@ -4,6 +4,10 @@ Systematic pass over `coder/pulldash`, audited at commit **`1fd065e`** ("feat: a
 personal access token authentication (#15)", 2026-01-05), cloned to
 `~/.claude/artifacts/pulldash-audit/pulldash`. Part of the **gh-review center** epic.
 
+> The gh-review center shipped as **ghreview**, which now lives in its own repo
+> at <https://github.com/DorskFR/ghreview> and installs into cctui as a plugin.
+> This audit is kept here as design background.
+
 pulldash's thesis: "Fast, filterable PR review. Entirely client-side." It runs with
 **no backend** — GitHub's REST/GraphQL API supports CORS, so the browser talks to
 GitHub directly and does every expensive thing (diff parse, syntax highlight,
@@ -434,7 +438,7 @@ config constants named for reference). The gh-review center must **reimplement**
 patterns independently — engineers should work from this catalogue and the product
 behavior, **not** from pulldash's source files, to keep our implementation clean-room
 and free of AGPL-derived code. Do not copy, paste, or transliterate pulldash source
-into the cctui/ghreview codebase. If in doubt about a specific mechanism, describe the
+into the ghreview codebase. If in doubt about a specific mechanism, describe the
 desired behavior in a ticket and implement from the description.
 
 _Audited commit: `1fd065eb179ad26e46e08194e287aac432268149` (2026-01-05)._
