@@ -753,8 +753,8 @@ mod tests {
     use super::test_support::write_plugin;
     use super::{
         ManifestError, PluginBackend, PluginHostToken, PluginInstanceSetting, PluginManifest,
-        PluginPage, PluginRegistry, PluginSetting, PluginSource, enabled_ids, load_plugin, mime_for,
-        plugin_config, plugin_env, resolve_static, safe_relative, scan_dir, valid_id,
+        PluginPage, PluginRegistry, PluginSetting, PluginSource, enabled_ids, load_plugin,
+        mime_for, plugin_config, plugin_env, resolve_static, safe_relative, scan_dir, valid_id,
         validate_manifest,
     };
     use serde_json::json;

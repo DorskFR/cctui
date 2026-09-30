@@ -72,8 +72,7 @@ fn put_plugins(obj: &mut Map<String, Value>, plugins: Map<String, Value>) {
 fn write(data: &mut Value, plugin_id: &str, value: Option<String>) {
     let Some(obj) = data.as_object_mut() else { return };
     let mut plugins = obj.get("plugins").and_then(Value::as_object).cloned().unwrap_or_default();
-    let mut block =
-        plugins.get(BLOCK).and_then(Value::as_object).cloned().unwrap_or_default();
+    let mut block = plugins.get(BLOCK).and_then(Value::as_object).cloned().unwrap_or_default();
     match value {
         Some(v) => block.insert(plugin_id.to_owned(), Value::String(v)),
         None => block.remove(plugin_id),
@@ -187,7 +186,11 @@ pub async fn revoke_for_all(
     .execute(pool)
     .await?;
     if !hashes.is_empty() {
-        tracing::info!(plugin_id, count = hashes.len(), "plugin host tokens revoked for every user");
+        tracing::info!(
+            plugin_id,
+            count = hashes.len(),
+            "plugin host tokens revoked for every user"
+        );
     }
     Ok(hashes.len())
 }
@@ -257,7 +260,8 @@ pub async fn reconcile(
 mod db_tests {
     use super::{label, reconcile, revoke_for_all, sealed, unsealed};
     use crate::auth::AuthConfig;
-    use crate::plugins::{PluginRegistry, test_support::write_plugin};
+    use crate::plugins::PluginRegistry;
+    use crate::plugins::test_support::write_plugin;
     use serde_json::{Value, json};
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -272,9 +276,7 @@ mod db_tests {
 
     async fn connect(test_name: &str) -> Option<PgPool> {
         let url = crate::routes::gateway::test_db_url(test_name)?;
-        Some(
-            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap(),
-        )
+        Some(sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap())
     }
 
     /// A throwaway user with a `{read, admin}` ceiling. A random id per call is
@@ -504,7 +506,8 @@ mod db_tests {
 #[cfg(test)]
 mod tests {
     use super::{BLOCK, Plan, label, plan, sealed, strip, wanted, write};
-    use crate::plugins::{PluginRegistry, test_support::write_plugin};
+    use crate::plugins::PluginRegistry;
+    use crate::plugins::test_support::write_plugin;
     use serde_json::{Value, json};
 
     fn with_token(id: &str) -> Value {
@@ -560,8 +563,7 @@ mod tests {
         write_plugin(root.path(), "quiet", "");
         let registry = PluginRegistry::from_dir(root.path().to_path_buf());
 
-        let enabled =
-            ["asks".to_owned(), "quiet".to_owned(), "not-installed".to_owned()];
+        let enabled = ["asks".to_owned(), "quiet".to_owned(), "not-installed".to_owned()];
         assert_eq!(wanted(&registry, &enabled), vec!["asks".to_owned()]);
         assert!(wanted(&registry, &["quiet".to_owned()]).is_empty());
         assert!(wanted(&registry, &[]).is_empty());
