@@ -105,6 +105,16 @@ pub fn conversation_lines() -> Vec<ConversationLine> {
     ]
 }
 
+pub fn conversation_store() -> crate::app::ConversationStore {
+    let mut store = crate::app::ConversationStore::new();
+    let mut seq = 0_i64;
+    for line in conversation_lines() {
+        seq += 1;
+        store.push_live(Some(seq), line);
+    }
+    store
+}
+
 fn line(kind: LineKind, text: &str) -> ConversationLine {
     ConversationLine { timestamp: 0, kind, text: text.to_owned(), tool_input: None }
 }

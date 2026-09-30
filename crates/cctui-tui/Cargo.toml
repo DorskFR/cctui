@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 rustls.workspace = true
+cctui-client.workspace = true
 cctui-proto.workspace = true
 clap.workspace = true
 serde.workspace = true
@@ -39,9 +40,11 @@ diffy = "0.5.1"
 similar = "3.1.1"
 semver.workspace = true
 sha2.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 insta = "1"
 pretty_assertions = "1.4.1"
 tempfile.workspace = true
+toml.workspace = true
 uuid.workspace = true

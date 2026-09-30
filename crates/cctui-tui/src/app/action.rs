@@ -2,6 +2,8 @@ use cctui_proto::api::SessionListItem;
 use cctui_proto::models::SessionStatus;
 use crossterm::event::KeyEvent;
 
+use super::conversation::ConversationAction;
+use super::conversation_store::{PageKind, PageRequest};
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -58,13 +60,11 @@ pub enum Action {
 
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
-    ConversationLoaded {
-        session_id: String,
-        lines: Vec<ConversationLine>,
-    },
+    Conversation(ConversationAction),
 
     StreamLine {
         session_id: String,
+        seq: Option<i64>,
         line: ConversationLine,
         usage: Option<HeartbeatUsage>,
     },
@@ -94,13 +94,19 @@ pub struct HeartbeatUsage {
 /// key-handling path; the effects runner owns them.
 pub enum Effect {
     RefreshSessions,
-    /// `fetch` is false when the conversation is already buffered; the
-    /// subscribe still goes out either way.
-    LoadConversation {
+    LoadConversationPage {
         session_id: String,
-        fetch: bool,
+        kind: PageKind,
+        page: PageRequest,
+        etag: Option<String>,
+    },
+    MarkSeen {
+        session_id: String,
     },
     Subscribe {
+        session_id: String,
+    },
+    Unsubscribe {
         session_id: String,
     },
     SendMessage {
