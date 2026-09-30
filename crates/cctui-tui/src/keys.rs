@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::action::Action;
+use crate::app::conversation::ConversationAction;
 use crate::app::state::View;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
@@ -81,6 +82,9 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ScrollToTop => Action::ScrollToTop,
         ActionId::ScrollToBottom => Action::ScrollToBottom,
         ActionId::ToggleTimestamps => Action::ToggleTimestamps,
+        ActionId::LineCursor => Action::Conversation(ConversationAction::ToggleLineCursor),
+        ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
+        ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::InterruptSelected,
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
 
@@ -156,6 +160,28 @@ mod tests {
         assert!(matches!(
             map(View::Conversation, false, KeyCode::PageUp),
             Some(Action::Scroll { lines: -15, release_follow: true })
+        ));
+    }
+
+    #[test]
+    fn the_transcript_collapse_keys_are_claimed_only_in_the_conversation() {
+        use crate::app::conversation::ConversationAction;
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('v')),
+            Some(Action::Conversation(ConversationAction::ToggleLineCursor))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('o')),
+            Some(Action::Conversation(ConversationAction::ToggleExpand))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('z')),
+            Some(Action::Conversation(ConversationAction::ToggleExpandAll))
+        ));
+        assert!(map(View::SessionList, false, KeyCode::Char('v')).is_none());
+        assert!(matches!(
+            map(View::Conversation, true, KeyCode::Char('v')),
+            Some(Action::InputKey(_))
         ));
     }
 

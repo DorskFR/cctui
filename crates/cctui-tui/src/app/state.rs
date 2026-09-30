@@ -28,21 +28,122 @@ pub struct PendingPermission {
     pub input_preview: String,
 }
 
-/// Conversation line with metadata for rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCategory {
+    Read,
+    Write,
+    Mcp,
+    /// Executed by the provider rather than the harness.
+    Server,
+    Other,
+}
+
+impl ToolCategory {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Mcp => "mcp",
+            Self::Server => "server",
+            Self::Other => "tool",
+        }
+    }
+
+    /// `server_tool_use` wins over the name-based bucket.
+    #[must_use]
+    pub fn of(tool: &str, event_kind: Option<&str>) -> Self {
+        if matches!(event_kind, Some("server_tool_use" | "server_tool_result")) {
+            return Self::Server;
+        }
+        match tool {
+            "Read" | "Glob" | "Grep" | "WebFetch" | "WebSearch" | "LSP" => Self::Read,
+            "Write" | "Edit" | "Bash" | "NotebookEdit" => Self::Write,
+            name if name.starts_with("mcp__") => Self::Mcp,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnFooter {
+    pub duration_ms: Option<u64>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    /// The server classified the turn as wanting the operator.
+    pub needs_action: bool,
+}
+
+impl TurnFooter {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.duration_ms.is_none() && self.tokens_in.is_none() && self.tokens_out.is_none()
+    }
+}
+
+/// One rendered transcript line.
+///
+/// Build with [`ConversationLine::new`] so adding a field never touches a call
+/// site.
+#[derive(Debug, Clone, Default)]
 pub struct ConversationLine {
     pub timestamp: i64,
     pub kind: LineKind,
     pub text: String,
     /// Raw tool input JSON (kept for Edit/Write to generate diffs).
     pub tool_input: Option<serde_json::Value>,
+    /// Tool name on [`LineKind::Tool`] and [`LineKind::Result`].
+    pub tool: Option<String>,
+    pub message_id: Option<String>,
+    pub turn_id: Option<uuid::Uuid>,
+    /// Sender of a peer message: a display name when one was supplied.
+    pub peer_from: Option<String>,
+    /// Room a peer message came through; absent for a direct one.
+    pub peer_room: Option<String>,
+    /// Duration and token figures on [`LineKind::Summary`].
+    pub footer: Option<TurnFooter>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+impl ConversationLine {
+    #[must_use]
+    pub fn new(kind: LineKind, timestamp: i64, text: impl Into<String>) -> Self {
+        Self { timestamp, kind, text: text.into(), ..Self::default() }
+    }
+
+    /// Whether the line hides body text behind a collapse toggle.
+    #[must_use]
+    pub const fn collapsible(&self) -> bool {
+        matches!(
+            self.kind,
+            LineKind::Thinking { .. } | LineKind::Result { .. } | LineKind::Compact
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LineKind {
     User,
+    #[default]
     Assistant,
-    ToolCall,
-    ToolResult,
+    /// Extended thinking; `redacted` content has no body to show.
+    Thinking {
+        redacted: bool,
+    },
+    Tool {
+        category: ToolCategory,
+    },
+    Result {
+        error: bool,
+    },
+    /// A message relayed from another session or a room.
+    Peer,
+    /// One line of harness bookkeeping.
+    Marker,
+    /// A `/clear` boundary.
+    Reset,
+    /// A `/compact` summary.
+    Compact,
+    /// The per-turn footer.
+    Summary,
     System,
     Reply,
 }
@@ -80,6 +181,16 @@ pub struct App {
     pub render_cache_session: String,
     pub render_cache_entries: usize,
     pub render_cache_epoch: u64,
+    /// `show_timestamps` the cache was built with: the prefix is baked into
+    /// every cached row, so toggling it has to rebuild.
+    pub render_cache_timestamps: bool,
+    /// First display row of each cached entry; the line cursor maps an entry
+    /// onto its rows through this.
+    pub render_cache_starts: Vec<usize>,
+    /// Focused entry in line-select mode; `None` means normal scrolling.
+    pub line_cursor: Option<usize>,
+    /// Which way the next bulk toggle goes; the per-entry state is the store's.
+    pub expand_all: bool,
     /// An older page landed: the next render re-anchors the viewport onto the
     /// lines the user was reading instead of letting them slide down.
     pub pending_prepend: bool,
@@ -126,6 +237,10 @@ impl App {
             render_cache_session: String::new(),
             render_cache_entries: 0,
             render_cache_epoch: 0,
+            render_cache_timestamps: false,
+            render_cache_starts: Vec::new(),
+            line_cursor: None,
+            expand_all: false,
             pending_prepend: false,
             toasts: Toasts::default(),
             status: StatusCounters::default(),

@@ -1,5 +1,6 @@
 use super::action::{Action, Effect, HeartbeatUsage};
 use super::conversation;
+use super::conversation::ConversationAction;
 use super::state::{App, PendingPermission, View};
 use super::toast::Level;
 
@@ -50,7 +51,16 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         }
         // Help dismisses to the session list, never to the view it was opened
         // over, so it collapses the stack exactly as leaving a conversation does.
-        Action::CloseHelp | Action::LeaveConversation => {
+        Action::CloseHelp => {
+            app.router.reset(View::SessionList);
+            conversation::leave(app)
+        }
+        // Line-select is a mode inside the conversation: the same key leaves it
+        // first and only closes the conversation on a second press.
+        Action::LeaveConversation => {
+            if conversation::line_select_active(app) {
+                return conversation::reduce(app, ConversationAction::ToggleLineCursor);
+            }
             app.router.reset(View::SessionList);
             conversation::leave(app)
         }
@@ -59,6 +69,13 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             conversation::open(app, session_id)
         }
 
+        // Line-wise keys move the focused line instead of the viewport while
+        // line-select is on; paging keys keep scrolling either way.
+        Action::Scroll { lines, .. }
+            if conversation::line_select_active(app) && lines.abs() == 1 =>
+        {
+            conversation::reduce(app, ConversationAction::MoveCursor { delta: lines })
+        }
         Action::Scroll { lines, release_follow } => {
             snap_scroll_if_following(app);
             app.scroll_offset = if lines < 0 {
@@ -166,7 +183,9 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             if let Some(usage) = usage {
                 apply_heartbeat_usage(app, &session_id, &usage);
             }
-            conversation::stream(app, &session_id, seq, line);
+            if let Some(line) = line {
+                conversation::stream(app, &session_id, seq, line);
+            }
             Vec::new()
         }
         Action::SessionStatusChanged { session_id, status } => {
@@ -344,13 +363,8 @@ mod tests {
         app
     }
 
-    fn line(text: &str) -> crate::app::state::ConversationLine {
-        crate::app::state::ConversationLine {
-            timestamp: 0,
-            kind: LineKind::Assistant,
-            text: text.to_owned(),
-            tool_input: None,
-        }
+    fn line(text: &str) -> Option<crate::app::state::ConversationLine> {
+        Some(crate::app::state::ConversationLine::new(LineKind::Assistant, 0, text))
     }
 
     #[test]
@@ -581,10 +595,11 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
                 seq: Some(1),
-                line: line(""),
+                line: None,
                 usage: Some(super::HeartbeatUsage { tokens_in: 7, tokens_out: 8, cost_usd: 9.5 }),
             },
         );
+        assert_eq!(conversation_len(&app, "s-a"), 0, "a heartbeat adds no row");
         assert_eq!(app.sessions[0].token_usage.tokens_in, 7);
         assert_eq!(app.sessions[0].token_usage.tokens_out, 8);
         assert!((app.sessions[0].token_usage.cost_usd - 9.5).abs() < f64::EPSILON);

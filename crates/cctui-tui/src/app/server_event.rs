@@ -115,3 +115,31 @@ fn stream_action(session_id: String, data: &AgentEvent) -> Action {
     };
     Action::StreamLine { session_id, seq: data.seq(), line: agent_event_to_line(data), usage }
 }
+
+#[cfg(test)]
+mod tests {
+    use cctui_proto::ws::{AgentEvent, ServerEvent};
+
+    use super::{Action, to_actions};
+
+    #[test]
+    fn a_heartbeat_moves_the_usage_without_adding_a_line() {
+        let event = ServerEvent::Stream {
+            session_id: "s-a".to_owned(),
+            data: AgentEvent::Heartbeat {
+                tokens_in: 5,
+                tokens_out: 6,
+                cost_usd: 0.2,
+                ts: 1,
+                seq: Some(3),
+            },
+        };
+        match to_actions(event).as_slice() {
+            [Action::StreamLine { line, usage, .. }] => {
+                assert!(line.is_none(), "a heartbeat has nothing to render");
+                assert!(usage.is_some());
+            }
+            _ => panic!("expected one stream action"),
+        }
+    }
+}

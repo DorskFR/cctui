@@ -56,6 +56,9 @@ pub struct Entry {
     /// False when the event carried no `seq`: those dedupe by content, not id.
     pub sequenced: bool,
     pub line: ConversationLine,
+    /// Whether a collapsible line shows its body. Never read for a line that is
+    /// not collapsible.
+    pub expanded: bool,
 }
 
 /// What a merge changed, for the caller's scroll and cache bookkeeping.
@@ -239,8 +242,34 @@ impl ConversationStore {
         if at < self.entries.len() {
             self.epoch += 1;
         }
-        self.entries.insert(at, Entry { seq, sequenced, line });
+        self.entries.insert(at, Entry { seq, sequenced, line, expanded: false });
         true
+    }
+
+    /// Flips one entry's collapse state. Bumping `epoch` is what invalidates the
+    /// render cache: an expanded line occupies a different number of rows.
+    pub fn toggle_expanded(&mut self, index: usize) -> bool {
+        let Some(entry) = self.entries.get_mut(index).filter(|e| e.line.collapsible()) else {
+            return false;
+        };
+        entry.expanded = !entry.expanded;
+        self.epoch += 1;
+        true
+    }
+
+    /// Sets every collapsible entry at once. Returns false when nothing moved.
+    pub fn set_all_expanded(&mut self, expanded: bool) -> bool {
+        let mut changed = false;
+        for entry in &mut self.entries {
+            if entry.line.collapsible() && entry.expanded != expanded {
+                entry.expanded = expanded;
+                changed = true;
+            }
+        }
+        if changed {
+            self.epoch += 1;
+        }
+        changed
     }
 }
 
@@ -250,12 +279,7 @@ mod tests {
     use crate::app::state::{ConversationLine, LineKind};
 
     fn line(text: &str) -> ConversationLine {
-        ConversationLine {
-            timestamp: 0,
-            kind: LineKind::Assistant,
-            text: text.to_owned(),
-            tool_input: None,
-        }
+        ConversationLine::new(LineKind::Assistant, 0, text)
     }
 
     fn rows(specs: &[(i64, &str)]) -> Vec<(i64, ConversationLine)> {
@@ -442,6 +466,41 @@ mod tests {
         assert_eq!(store.etag(), Some("etag-2"));
         assert!(!store.has_more_older, "a later page already proved the start was reached");
         assert_eq!(texts(&store), ["older", "a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn expanding_a_line_invalidates_the_render_cache() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), line("prose"));
+        let out = ConversationLine::new(LineKind::Result { error: false }, 0, "out");
+        store.push_live(Some(2), out);
+        let epoch = store.epoch();
+
+        assert!(!store.toggle_expanded(0), "an assistant line has nothing to collapse");
+        assert_eq!(store.epoch(), epoch);
+
+        assert!(store.toggle_expanded(1));
+        assert!(store.entries()[1].expanded);
+        assert!(store.epoch() > epoch, "the cached row count changed");
+
+        assert!(store.toggle_expanded(1));
+        assert!(!store.entries()[1].expanded);
+        assert!(!store.toggle_expanded(9), "an index past the end does nothing");
+    }
+
+    #[test]
+    fn a_bulk_toggle_only_moves_collapsible_lines() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), line("prose"));
+        store.push_live(
+            Some(2),
+            ConversationLine::new(LineKind::Thinking { redacted: false }, 0, "hmm"),
+        );
+        assert!(store.set_all_expanded(true));
+        assert!(!store.entries()[0].expanded);
+        assert!(store.entries()[1].expanded);
+        assert!(!store.set_all_expanded(true), "a repeat toggle changes nothing");
+        assert!(store.set_all_expanded(false));
     }
 
     #[test]

@@ -78,6 +78,38 @@ fn conversation() {
 }
 
 #[test]
+fn conversation_expanded_blocks() {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    let mut store = conversation_store();
+    store.set_all_expanded(true);
+    app.conversations.insert(id, store);
+    app.router.push(View::Conversation);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_line_cursor() {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    app.follow_tail = false;
+    app.line_cursor = Some(5);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_with_timestamps() {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    app.show_timestamps = true;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn conversation_without_data() {
     let mut app = app_with_sessions();
     app.router.push(View::Conversation);

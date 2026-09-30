@@ -10,9 +10,12 @@ pub mod server_event;
 pub mod session_list;
 pub mod state;
 pub mod toast;
+pub mod transcript;
 
 pub use action::Action;
 #[cfg(test)]
 pub use conversation_store::ConversationStore;
 pub use reduce::reduce;
-pub use state::{App, ConversationLine, LineKind, PendingPermission, View};
+pub use state::{
+    App, ConversationLine, LineKind, PendingPermission, ToolCategory, TurnFooter, View,
+};

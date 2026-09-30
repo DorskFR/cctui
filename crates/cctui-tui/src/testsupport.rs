@@ -6,7 +6,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::json;
 
-use crate::app::{App, ConversationLine, LineKind, PendingPermission};
+use crate::app::{App, ConversationLine, LineKind, PendingPermission, ToolCategory, TurnFooter};
 
 /// Pinned so a version bump cannot rewrite every snapshot.
 pub const VERSION: &str = "0.0.0-test";
@@ -90,17 +90,32 @@ pub fn app_with_sessions() -> App {
 }
 
 pub fn conversation_lines() -> Vec<ConversationLine> {
+    let mut peer = line(LineKind::Peer, "the parser lane is rebased");
+    peer.peer_from = Some("lane-b".to_owned());
+
+    let mut assistant = line(LineKind::Assistant, "Looking at the views first.\n\n- one\n- two");
+    assistant.footer = Some(TurnFooter {
+        duration_ms: None,
+        tokens_in: Some(12_400),
+        tokens_out: Some(1_100),
+        needs_action: false,
+    });
+
+    let mut summary = line(LineKind::Summary, String::new());
+    summary.footer = Some(TurnFooter { duration_ms: Some(38_000), ..TurnFooter::default() });
+
     vec![
         line(LineKind::User, "add a snapshot harness"),
-        line(LineKind::Assistant, "Looking at the views first.\n\n- one\n- two"),
-        ConversationLine {
-            timestamp: 0,
-            kind: LineKind::ToolCall,
-            text: "[Read] crates/cctui-tui/src/main.rs".to_owned(),
-            tool_input: None,
-        },
-        line(LineKind::ToolResult, "  → 984 lines"),
-        line(LineKind::System, "⟳ context reset (/clear · /compact)"),
+        line(LineKind::Thinking { redacted: false }, "two parsers\nthe second one wraps"),
+        tool(ToolCategory::Read, "Read", "crates/cctui-tui/src/main.rs"),
+        result(false, "Read", "984 lines"),
+        tool(ToolCategory::Write, "Bash", "cargo test"),
+        result(true, "Bash", "exit 101 · 3 failed\n  parser::wraps\n  parser::nests"),
+        assistant,
+        summary,
+        peer,
+        line(LineKind::Marker, "keep-alive tick"),
+        line(LineKind::Reset, "context reset (/clear)"),
         line(LineKind::Reply, "done"),
     ]
 }
@@ -115,8 +130,20 @@ pub fn conversation_store() -> crate::app::ConversationStore {
     store
 }
 
-fn line(kind: LineKind, text: &str) -> ConversationLine {
-    ConversationLine { timestamp: 0, kind, text: text.to_owned(), tool_input: None }
+fn line(kind: LineKind, text: impl Into<String>) -> ConversationLine {
+    ConversationLine::new(kind, 0, text)
+}
+
+fn tool(category: ToolCategory, name: &str, detail: &str) -> ConversationLine {
+    let mut line = line(LineKind::Tool { category }, detail);
+    line.tool = Some(name.to_owned());
+    line
+}
+
+fn result(error: bool, name: &str, text: &str) -> ConversationLine {
+    let mut line = line(LineKind::Result { error }, text);
+    line.tool = Some(name.to_owned());
+    line
 }
 
 pub fn permission_request() -> PendingPermission {

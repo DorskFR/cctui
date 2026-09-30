@@ -156,15 +156,16 @@ async fn load_conversation_page(
     };
 
     let total = rows.len();
-    let decoded: Vec<(i64, ConversationLine)> = rows
-        .into_iter()
-        .filter_map(|row| {
-            serde_json::from_value::<AgentEvent>(row.event)
-                .ok()
-                .map(|event| (row.seq, agent_event_to_line(&event)))
-        })
-        .collect();
-    let undecodable = total - decoded.len();
+    let mut undecodable = 0;
+    let mut decoded: Vec<(i64, ConversationLine)> = Vec::with_capacity(total);
+    for row in rows {
+        let seq = row.seq;
+        match serde_json::from_value::<AgentEvent>(row.event) {
+            // An event with nothing to render is not a decoding failure.
+            Ok(event) => decoded.extend(agent_event_to_line(&event).map(|line| (seq, line))),
+            Err(_) => undecodable += 1,
+        }
+    }
 
     let mut actions = vec![Action::Conversation(ConversationAction::Loaded {
         session_id: session_id.to_owned(),

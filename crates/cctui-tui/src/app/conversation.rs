@@ -18,6 +18,12 @@ pub enum ConversationAction {
         session_id: String,
         kind: PageKind,
     },
+    ToggleLineCursor,
+    MoveCursor {
+        delta: i32,
+    },
+    ToggleExpand,
+    ToggleExpandAll,
 }
 
 pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
@@ -26,6 +32,34 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
             let merge = app.conversation_mut(&session_id).merge_page(kind, rows, etag, has_more);
             if kind == PageKind::Older && merge.inserted > 0 && merge.reordered {
                 app.pending_prepend = true;
+                // The cursor addresses an entry by index, so a prepend moves it.
+                if let Some(cursor) = app.line_cursor.as_mut() {
+                    *cursor += merge.inserted;
+                }
+            }
+            Vec::new()
+        }
+        ConversationAction::ToggleLineCursor => {
+            toggle_line_cursor(app);
+            Vec::new()
+        }
+        ConversationAction::MoveCursor { delta } => {
+            move_cursor(app, delta);
+            Vec::new()
+        }
+        ConversationAction::ToggleExpand => {
+            if let Some(cursor) = app.line_cursor
+                && let Some(session_id) = app.selected_session_id()
+            {
+                app.conversation_mut(&session_id).toggle_expanded(cursor);
+            }
+            Vec::new()
+        }
+        ConversationAction::ToggleExpandAll => {
+            let expand = !app.expand_all;
+            app.expand_all = expand;
+            if let Some(session_id) = app.selected_session_id() {
+                app.conversation_mut(&session_id).set_all_expanded(expand);
             }
             Vec::new()
         }
@@ -46,6 +80,7 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
 pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
     app.follow_tail = true;
     app.scroll_offset = 0;
+    app.line_cursor = None;
     app.router.push(View::Conversation);
     app.subscribed = Some(session_id.clone());
 
@@ -93,6 +128,43 @@ pub fn stream(app: &mut App, session_id: &str, seq: Option<i64>, line: Conversat
     app.conversation_mut(session_id).push_live(seq, line);
 }
 
+fn entry_count(app: &mut App) -> usize {
+    app.selected_session_id().map_or(0, |id| app.conversation_mut(&id).entries().len())
+}
+
+/// Line-select starts at the newest line and holds the viewport there: the
+/// cursor and `follow_tail` would otherwise fight over the scroll offset.
+fn toggle_line_cursor(app: &mut App) {
+    if app.line_cursor.take().is_some() {
+        return;
+    }
+    let count = entry_count(app);
+    if count > 0 {
+        app.line_cursor = Some(count - 1);
+        app.follow_tail = false;
+    }
+}
+
+fn move_cursor(app: &mut App, delta: i32) {
+    let Some(current) = app.line_cursor else { return };
+    let count = entry_count(app);
+    if count == 0 {
+        app.line_cursor = None;
+        return;
+    }
+    let next = if delta < 0 {
+        current.saturating_sub(delta.unsigned_abs() as usize)
+    } else {
+        current.saturating_add(delta as usize)
+    };
+    app.line_cursor = Some(next.min(count - 1));
+}
+
+/// True while line-select owns `j`/`k`.
+pub const fn line_select_active(app: &App) -> bool {
+    app.line_cursor.is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ConversationAction, PageKind, load_older, open, reconnect};
@@ -109,12 +181,7 @@ mod tests {
     }
 
     fn line(text: &str) -> ConversationLine {
-        ConversationLine {
-            timestamp: 0,
-            kind: LineKind::Assistant,
-            text: text.to_owned(),
-            tool_input: None,
-        }
+        ConversationLine::new(LineKind::Assistant, 0, text)
     }
 
     fn page(app: &mut App, kind: PageKind, rows: &[(i64, &str)], has_more: bool) {
@@ -154,7 +221,7 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
                 seq: Some(9),
-                line: line("live"),
+                line: Some(line("live")),
                 usage: None,
             },
         );
@@ -266,6 +333,134 @@ mod tests {
             }),
         );
         assert!(!load_older(&mut app).is_empty(), "the failed page can be asked for again");
+    }
+
+    fn line_select(app: &mut App) -> Vec<Effect> {
+        reduce(app, Action::Conversation(ConversationAction::ToggleLineCursor))
+    }
+
+    #[test]
+    fn line_select_starts_on_the_newest_line_and_detaches_from_the_tail() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(1, "a"), (2, "b"), (3, "c")], false);
+
+        line_select(&mut app);
+        assert_eq!(app.line_cursor, Some(2));
+        assert!(!app.follow_tail);
+
+        line_select(&mut app);
+        assert_eq!(app.line_cursor, None, "the same key leaves the mode");
+    }
+
+    #[test]
+    fn line_select_does_nothing_on_an_empty_transcript() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        line_select(&mut app);
+        assert_eq!(app.line_cursor, None);
+    }
+
+    #[test]
+    fn the_cursor_moves_with_the_line_keys_and_clamps_at_both_ends() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(1, "a"), (2, "b"), (3, "c")], false);
+        line_select(&mut app);
+
+        reduce(&mut app, Action::Scroll { lines: -1, release_follow: true });
+        assert_eq!(app.line_cursor, Some(1));
+        reduce(&mut app, Action::Scroll { lines: -9, release_follow: true });
+        assert_eq!(app.line_cursor, Some(1), "a page key still scrolls the viewport");
+
+        reduce(&mut app, Action::Scroll { lines: -1, release_follow: true });
+        reduce(&mut app, Action::Scroll { lines: -1, release_follow: true });
+        assert_eq!(app.line_cursor, Some(0));
+        for _ in 0..5 {
+            reduce(&mut app, Action::Scroll { lines: 1, release_follow: false });
+        }
+        assert_eq!(app.line_cursor, Some(2));
+    }
+
+    #[test]
+    fn leaving_exits_line_select_before_it_closes_the_conversation() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(1, "a")], false);
+        line_select(&mut app);
+
+        assert!(reduce(&mut app, Action::LeaveConversation).is_empty());
+        assert_eq!(app.view(), crate::app::View::Conversation);
+        assert!(app.line_cursor.is_none());
+
+        assert!(!reduce(&mut app, Action::LeaveConversation).is_empty());
+        assert_eq!(app.view(), crate::app::View::SessionList);
+    }
+
+    #[test]
+    fn an_older_page_carries_the_cursor_with_the_line_it_pointed_at() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(10, "a"), (11, "b")], true);
+        line_select(&mut app);
+        assert_eq!(app.line_cursor, Some(1));
+
+        app.conversation_mut("s-a").begin_older().expect("a request");
+        page(&mut app, PageKind::Older, &[(8, "older-1"), (9, "older-2")], false);
+        assert_eq!(app.line_cursor, Some(3), "still the newest line");
+    }
+
+    #[test]
+    fn expanding_only_touches_the_focused_collapsible_line() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        let rows = vec![
+            (1_i64, line("prose")),
+            (2, ConversationLine::new(LineKind::Result { error: false }, 0, "120 lines")),
+        ];
+        reduce(
+            &mut app,
+            Action::Conversation(ConversationAction::Loaded {
+                session_id: "s-a".to_owned(),
+                kind: PageKind::Latest,
+                rows,
+                etag: None,
+                has_more: false,
+            }),
+        );
+        line_select(&mut app);
+        reduce(&mut app, Action::Conversation(ConversationAction::ToggleExpand));
+        assert!(app.conversation_mut("s-a").entries()[1].expanded);
+
+        reduce(&mut app, Action::Conversation(ConversationAction::MoveCursor { delta: -1 }));
+        reduce(&mut app, Action::Conversation(ConversationAction::ToggleExpand));
+        assert!(!app.conversation_mut("s-a").entries()[0].expanded, "prose has no body to hide");
+    }
+
+    #[test]
+    fn the_bulk_toggle_alternates_without_a_cursor() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        reduce(
+            &mut app,
+            Action::Conversation(ConversationAction::Loaded {
+                session_id: "s-a".to_owned(),
+                kind: PageKind::Latest,
+                rows: vec![(
+                    1,
+                    ConversationLine::new(LineKind::Thinking { redacted: false }, 0, "hmm"),
+                )],
+                etag: None,
+                has_more: false,
+            }),
+        );
+        reduce(&mut app, Action::Conversation(ConversationAction::ToggleExpandAll));
+        assert!(app.expand_all);
+        assert!(app.conversation_mut("s-a").entries()[0].expanded);
+
+        reduce(&mut app, Action::Conversation(ConversationAction::ToggleExpandAll));
+        assert!(!app.expand_all);
+        assert!(!app.conversation_mut("s-a").entries()[0].expanded);
     }
 
     #[test]

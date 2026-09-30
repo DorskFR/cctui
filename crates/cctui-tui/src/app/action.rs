@@ -66,7 +66,9 @@ pub enum Action {
     StreamLine {
         session_id: String,
         seq: Option<i64>,
-        line: ConversationLine,
+        /// `None` for an event with nothing to render; the `usage` beside it may
+        /// still move the session row.
+        line: Option<ConversationLine>,
         usage: Option<HeartbeatUsage>,
     },
     SessionStatusChanged {

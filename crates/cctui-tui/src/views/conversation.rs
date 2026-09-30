@@ -4,7 +4,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
-use crate::app::{App, ConversationLine, LineKind};
+use crate::app::transcript;
+use crate::app::{App, ConversationLine, LineKind, ToolCategory, TurnFooter};
 use crate::theme;
 use crate::ui::{diff_render, markdown_render};
 
@@ -60,16 +61,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // the end bumps `epoch` and forces a rebuild.
         if app.render_cache_session != session.id
             || app.render_cache_epoch != epoch
+            || app.render_cache_timestamps != app.show_timestamps
             || app.render_cache_entries > entries.len()
         {
             app.render_cache.clear();
+            app.render_cache_starts.clear();
             app.render_cache_session.clone_from(&session.id);
             app.render_cache_epoch = epoch;
+            app.render_cache_timestamps = app.show_timestamps;
             app.render_cache_entries = 0;
         }
         if app.render_cache_entries < entries.len() {
             for entry in &entries[app.render_cache_entries..] {
-                app.render_cache.extend(render_line(&entry.line, app.show_timestamps));
+                app.render_cache_starts.push(app.render_cache.len());
+                let opts =
+                    RenderOpts { show_timestamps: app.show_timestamps, expanded: entry.expanded };
+                app.render_cache.extend(render_line(&entry.line, opts));
             }
             app.render_cache_entries = entries.len();
         }
@@ -87,10 +94,32 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
 
         let max_offset = total.saturating_sub(visible_height);
+        let focus = focused_rows(
+            app.line_cursor,
+            entries.len(),
+            &app.render_cache_starts,
+            app.render_cache.len(),
+        );
+        if let Some((start, end)) = focus {
+            // The cursor, not the tail, decides what is on screen in line-select.
+            if start < app.scroll_offset {
+                app.scroll_offset = start;
+            } else if end > app.scroll_offset + visible_height {
+                app.scroll_offset = end.saturating_sub(visible_height);
+            }
+        }
         let offset = if app.follow_tail { max_offset } else { app.scroll_offset.min(max_offset) };
 
-        let display_lines: Vec<Line> =
+        let mut display_lines: Vec<Line<'static>> =
             app.render_cache.iter().skip(offset).take(visible_height).cloned().collect();
+        if let Some((start, end)) = focus {
+            for (row, line) in display_lines.iter_mut().enumerate() {
+                let absolute = offset + row;
+                if absolute >= start && absolute < end {
+                    highlight(line);
+                }
+            }
+        }
 
         frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), content_area);
 
@@ -142,32 +171,212 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 // Role labels: soft, not shouting
 const LABEL_YOU: Style = Style::new().fg(Color::Rgb(130, 170, 200)); // soft blue
 const LABEL_ASSISTANT: Style = Style::new().fg(Color::Rgb(180, 140, 100)); // warm muted orange
+const LABEL_PEER: Style = Style::new().fg(Color::Rgb(150, 190, 160)); // muted green
+const THINKING: Style = Style::new().fg(Color::Rgb(120, 115, 150)); // dim violet
 
 // Tool badges: dark background tints, light text — subtle not aggressive
 const TOOL_READ: Style = Style::new().fg(Color::Rgb(140, 160, 180)).bg(Color::Rgb(30, 40, 55)); // slate
 const TOOL_WRITE: Style = Style::new().fg(Color::Rgb(200, 180, 130)).bg(Color::Rgb(50, 45, 25)); // dark amber
 const TOOL_MCP: Style = Style::new().fg(Color::Rgb(170, 140, 180)).bg(Color::Rgb(45, 30, 50)); // dark plum
+const TOOL_SERVER: Style = Style::new().fg(Color::Rgb(150, 170, 150)).bg(Color::Rgb(30, 45, 35)); // dark moss
 const TOOL_DETAIL: Style = Style::new().fg(Color::Rgb(100, 100, 100)); // muted gray
 const TOOL_RESULT_STYLE: Style = Style::new().fg(Color::Rgb(90, 90, 90)); // dimmer gray
 const ARROW: Style = Style::new().fg(Color::Rgb(80, 80, 80));
+const HINT: Style = Style::new().fg(Color::Rgb(85, 85, 95));
 
-fn tool_badge_style(tool_name: &str) -> (Style, &'static str) {
-    match tool_name {
-        // Read tools
-        "Read" | "Glob" | "Grep" | "WebFetch" | "WebSearch" | "LSP" => (TOOL_READ, "read"),
-        // Write tools
-        "Write" | "Edit" | "Bash" | "NotebookEdit" => (TOOL_WRITE, "write"),
-        // MCP tools (prefixed with mcp__)
-        name if name.starts_with("mcp__") => (TOOL_MCP, "mcp"),
-        // Everything else
-        _ => (TOOL_READ, "tool"),
+/// Rows a collapsed result keeps before it hides the rest behind the hint.
+const RESULT_PREVIEW_ROWS: usize = 1;
+
+const fn tool_badge_style(category: ToolCategory) -> Style {
+    match category {
+        ToolCategory::Write => TOOL_WRITE,
+        ToolCategory::Mcp => TOOL_MCP,
+        ToolCategory::Server => TOOL_SERVER,
+        ToolCategory::Read | ToolCategory::Other => TOOL_READ,
     }
 }
 
-#[allow(clippy::too_many_lines, clippy::redundant_clone)]
-fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'static>> {
-    let mut result = Vec::new();
-    let ts = if show_timestamps {
+fn collapse_hint(hidden: usize) -> Span<'static> {
+    Span::styled(format!("  ({hidden} more · o)"), HINT)
+}
+
+/// Integer math on purpose: a float cast here trips `cast_precision_loss`.
+fn format_tokens(value: u64) -> String {
+    if value < 1_000 {
+        return value.to_string();
+    }
+    format!("{}.{}k", value / 1_000, (value % 1_000) / 100)
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    let secs = ms / 1_000;
+    if secs >= 60 { format!("{}m{:02}s", secs / 60, secs % 60) } else { format!("{secs}s") }
+}
+
+fn footer_text(footer: &TurnFooter) -> String {
+    let mut parts = Vec::new();
+    if let Some(ms) = footer.duration_ms {
+        parts.push(format_duration_ms(ms));
+    }
+    match (footer.tokens_in, footer.tokens_out) {
+        (Some(input), Some(output)) => {
+            parts.push(format!("{} in / {} out", format_tokens(input), format_tokens(output)));
+        }
+        (Some(input), None) => parts.push(format!("{} in", format_tokens(input))),
+        (None, Some(output)) => parts.push(format!("{} out", format_tokens(output))),
+        (None, None) => {}
+    }
+    parts.join(" · ")
+}
+
+/// What the view needs beyond the line itself. New per-line decorations other
+/// lanes add belong here rather than as another positional argument.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderOpts {
+    pub show_timestamps: bool,
+    /// Only meaningful for a [`ConversationLine::collapsible`] line.
+    pub expanded: bool,
+}
+
+fn markdown_lines(text: &str) -> Vec<Line<'static>> {
+    let md_text = markdown_render::render_markdown_text(text);
+    if md_text.lines.is_empty() {
+        return text.lines().map(|l| Line::from(Span::raw(l.to_string()))).collect();
+    }
+    md_text
+        .lines
+        .iter()
+        .map(|md_line| {
+            Line::from(
+                md_line
+                    .spans
+                    .iter()
+                    .map(|s| Span::styled(s.content.to_string(), s.style))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn render_thinking(
+    line: &ConversationLine,
+    ts: String,
+    redacted: bool,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    if redacted {
+        return vec![Line::from(vec![
+            Span::raw(ts),
+            Span::styled("∴ thinking (redacted)", THINKING),
+        ])];
+    }
+    let body: Vec<&str> = line.text.lines().collect();
+    let mut header =
+        vec![Span::raw(ts), Span::styled(format!("∴ thinking ({} lines)", body.len()), THINKING)];
+    if !expanded {
+        header.push(collapse_hint(body.len()));
+        return vec![Line::from(header)];
+    }
+    let mut out = vec![Line::from(header)];
+    out.extend(
+        body.iter().map(|l| {
+            Line::from(Span::styled(format!("  {l}"), THINKING.add_modifier(Modifier::DIM)))
+        }),
+    );
+    out
+}
+
+fn render_tool(line: &ConversationLine, ts: String, category: ToolCategory) -> Vec<Line<'static>> {
+    let tool = line.tool.as_deref().unwrap_or_default();
+    let mut out = vec![Line::from(vec![
+        Span::raw(ts),
+        Span::styled(
+            format!(" {} ", transcript::display_tool_name(tool)),
+            tool_badge_style(category),
+        ),
+        Span::raw(" "),
+        Span::styled(line.text.clone(), TOOL_DETAIL),
+        Span::styled(format!("  {}", category.as_str()), HINT),
+    ])];
+    if let Some(diff_lines) = match tool {
+        "Edit" => generate_edit_diff(line, &line.text),
+        "Write" => generate_write_diff(line, &line.text),
+        _ => None,
+    } {
+        out.extend(diff_lines);
+    }
+    out
+}
+
+fn render_result(
+    line: &ConversationLine,
+    ts: String,
+    error: bool,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    let marker = if error { "└ ✗ " } else { "└ " };
+    let marker_style = if error { theme::error() } else { ARROW };
+    let body_style = if error { theme::error() } else { TOOL_RESULT_STYLE };
+
+    if line.text.trim().is_empty() {
+        return vec![Line::from(vec![
+            Span::raw(ts),
+            Span::styled(format!("{marker}(empty)"), marker_style),
+        ])];
+    }
+    if looks_like_diff(&line.text) {
+        let lang = detect_diff_lang(&line.text);
+        let diff_lines = diff_render::render_unified_diff(&line.text, lang.as_deref(), 120);
+        if diff_lines.is_empty() {
+            return vec![Line::from(vec![
+                Span::raw(ts),
+                Span::styled(format!("{marker}(empty diff)"), marker_style),
+            ])];
+        }
+        let mut header =
+            vec![Span::raw(ts), Span::styled(marker.trim_end().to_owned(), marker_style)];
+        if !expanded {
+            header.push(collapse_hint(diff_lines.len()));
+            return vec![Line::from(header)];
+        }
+        let mut out = vec![Line::from(header)];
+        out.extend(diff_lines);
+        return out;
+    }
+
+    let body: Vec<&str> = line.text.lines().collect();
+    let shown = if expanded { body.len() } else { RESULT_PREVIEW_ROWS.min(body.len()) };
+    let mut first = vec![
+        Span::raw(ts),
+        Span::styled(marker.to_owned(), marker_style),
+        Span::styled(body[0].to_owned(), body_style),
+    ];
+    if shown < body.len() {
+        first.push(collapse_hint(body.len() - shown));
+    }
+    let mut out = vec![Line::from(first)];
+    out.extend(
+        body[1..shown].iter().map(|l| Line::from(Span::styled(format!("    {l}"), body_style))),
+    );
+    out
+}
+
+fn render_peer(line: &ConversationLine, ts: String) -> Vec<Line<'static>> {
+    let who = line.peer_from.as_deref().unwrap_or("peer");
+    let label = line
+        .peer_room
+        .as_deref()
+        .map_or_else(|| format!("◆ {who}"), |room| format!("◆ {who} in {room}"));
+    let mut out =
+        vec![Line::from(""), Line::from(vec![Span::raw(ts), Span::styled(label, LABEL_PEER)])];
+    out.extend(markdown_lines(&line.text));
+    out
+}
+
+/// Everything on screen for a line, so the render cache holds exactly that.
+#[allow(clippy::too_many_lines)]
+fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> {
+    let ts = if opts.show_timestamps {
         format!("{} ", format_timestamp(line.timestamp))
     } else {
         String::new()
@@ -176,120 +385,123 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
     match line.kind {
         LineKind::User => {
             // Two blank lines before user message — clear turn separator
-            result.push(Line::from(""));
-            result.push(Line::from(""));
-            result.push(Line::from(vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)]));
-            for text_line in line.text.lines() {
-                result.push(Line::from(Span::styled(
+            let mut out = vec![
+                Line::from(""),
+                Line::from(""),
+                Line::from(vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)]),
+            ];
+            out.extend(line.text.lines().map(|text_line| {
+                Line::from(Span::styled(
                     text_line.to_string(),
                     Style::default().fg(Color::Rgb(210, 210, 210)),
-                )));
-            }
-            result.push(Line::from("")); // space after user text before assistant's tools
+                ))
+            }));
+            out.push(Line::from(""));
+            out
         }
         LineKind::Assistant => {
-            result.push(Line::from(""));
-            result.push(Line::from(vec![
-                Span::raw(ts),
-                Span::styled("● Assistant", LABEL_ASSISTANT),
-            ]));
-            let md_text = markdown_render::render_markdown_text(&line.text);
-            if md_text.lines.is_empty() {
-                for text_line in line.text.lines() {
-                    result.push(Line::from(Span::raw(text_line.to_string())));
-                }
-            } else {
-                for md_line in &md_text.lines {
-                    let spans: Vec<Span<'static>> = md_line
-                        .spans
-                        .iter()
-                        .map(|s| Span::styled(s.content.to_string(), s.style))
-                        .collect();
-                    result.push(Line::from(spans));
-                }
+            let mut out = vec![
+                Line::from(""),
+                Line::from(vec![Span::raw(ts), Span::styled("● Assistant", LABEL_ASSISTANT)]),
+            ];
+            out.extend(markdown_lines(&line.text));
+            if let Some(footer) = line.footer.as_ref().filter(|f| !f.is_empty()) {
+                out.push(Line::from(Span::styled(format!("⏱ {}", footer_text(footer)), HINT)));
             }
+            out
         }
-        LineKind::ToolCall => {
-            let text = &line.text;
-            let (tool_name, detail) = if text.starts_with('[') {
-                text.find(']')
-                    .map_or(("", text.as_str()), |end| (&text[1..end], text[end + 2..].trim()))
-            } else {
-                ("", text.as_str())
-            };
-
-            let (badge_style, _category) = tool_badge_style(tool_name);
-
-            // Shorten MCP tool names: mcp__server__tool → server:tool
-            let display_name = if tool_name.starts_with("mcp__") {
-                tool_name.strip_prefix("mcp__").unwrap_or(tool_name).replacen("__", ":", 1)
-            } else {
-                tool_name.to_string()
-            };
-
-            result.push(Line::from(vec![
+        LineKind::Thinking { redacted } => render_thinking(line, ts, redacted, opts.expanded),
+        LineKind::Tool { category } => render_tool(line, ts, category),
+        LineKind::Result { error } => render_result(line, ts, error, opts.expanded),
+        LineKind::Peer => render_peer(line, ts),
+        LineKind::Marker => {
+            vec![Line::from(vec![
                 Span::raw(ts),
-                Span::styled(format!(" {display_name} "), badge_style),
-                Span::raw(" "),
-                Span::styled(detail.to_string(), TOOL_DETAIL),
-            ]));
-
-            // For Edit tool calls, generate and display a diff from old_string/new_string
-            // For Edit/Write tool calls, show inline diffs
-            if let Some(diff_lines) = match tool_name {
-                "Edit" => generate_edit_diff(line, detail),
-                "Write" => generate_write_diff(line, detail),
-                _ => None,
-            } {
-                result.extend(diff_lines);
-            }
+                Span::styled(format!("· {}", line.text), theme::dim()),
+            ])]
         }
-        LineKind::ToolResult => {
-            let result_text = line.text.strip_prefix("  → ").unwrap_or(&line.text);
-            if result_text.is_empty() {
-                result.push(Line::from(vec![Span::raw(ts), Span::styled("→ (empty)", ARROW)]));
-            } else if looks_like_diff(result_text) {
-                // Detect file extension from the preceding tool call's detail
-                let lang = detect_diff_lang(result_text);
-                let diff_lines =
-                    diff_render::render_unified_diff(result_text, lang.as_deref(), 120);
-                if diff_lines.is_empty() {
-                    result.push(Line::from(vec![
-                        Span::raw(ts),
-                        Span::styled("→ (empty diff)", ARROW),
-                    ]));
-                } else {
-                    result.push(Line::from(vec![Span::raw(ts), Span::styled("→", ARROW)]));
-                    result.extend(diff_lines);
-                }
-            } else {
-                let lines_vec: Vec<&str> = result_text.lines().collect();
-                result.push(Line::from(vec![
-                    Span::raw(ts),
-                    Span::styled("→ ", ARROW),
-                    Span::styled(lines_vec[0].to_string(), TOOL_RESULT_STYLE),
-                ]));
-                for rest in &lines_vec[1..] {
-                    result.push(Line::from(Span::styled(format!("  {rest}"), TOOL_RESULT_STYLE)));
-                }
+        LineKind::Reset => {
+            vec![Line::from(vec![
+                Span::raw(ts),
+                Span::styled(format!("⟳ {}", line.text), theme::dim()),
+            ])]
+        }
+        LineKind::Compact => {
+            let body = markdown_lines(&line.text);
+            let mut header =
+                vec![Span::raw(ts), Span::styled("⟳ context compacted", theme::dim())];
+            if !opts.expanded {
+                header.push(collapse_hint(body.len()));
+                return vec![Line::from(header)];
             }
+            let mut out = vec![Line::from(header)];
+            out.extend(body);
+            out
+        }
+        LineKind::Summary => {
+            let detail = line.footer.as_ref().map(footer_text).unwrap_or_default();
+            let text = if detail.is_empty() {
+                format!("⏱ {}", line.text)
+            } else if line.text.is_empty() {
+                format!("⏱ {detail}")
+            } else {
+                format!("⏱ {detail} · {}", line.text)
+            };
+            let style = if line.footer.as_ref().is_some_and(|f| f.needs_action) {
+                theme::error()
+            } else {
+                HINT
+            };
+            vec![Line::from(vec![Span::raw(ts), Span::styled(text, style)])]
         }
         LineKind::System => {
-            if !line.text.is_empty() {
-                result.push(Line::from(Span::styled(line.text.clone(), theme::dim())));
+            if line.text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Line::from(Span::styled(line.text.clone(), theme::dim()))]
             }
         }
         LineKind::Reply => {
-            result.push(Line::from(""));
-            result.push(Line::from(vec![
-                Span::raw(ts),
-                Span::styled("◁ Reply ", LABEL_ASSISTANT),
-                Span::raw(line.text.clone()),
-            ]));
+            vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw(ts),
+                    Span::styled("◁ Reply ", LABEL_ASSISTANT),
+                    Span::raw(line.text.clone()),
+                ]),
+            ]
         }
     }
+}
 
-    result
+const CURSOR_BG: Color = Color::Rgb(38, 42, 52);
+
+/// Tints a row without discarding the per-span colours the cache baked in.
+fn highlight(line: &mut Line<'static>) {
+    line.style = line.style.bg(CURSOR_BG);
+    for span in &mut line.spans {
+        span.style = span.style.bg(CURSOR_BG);
+    }
+}
+
+/// Display rows the focused entry occupies, or `None` outside line-select.
+///
+/// Takes the pieces rather than `&App`: the caller still holds a borrow of the
+/// conversation map. The cache may lag the store by a frame, so an index it has
+/// not reached is treated as unfocused rather than clamped onto another entry.
+fn focused_rows(
+    cursor: Option<usize>,
+    entry_count: usize,
+    starts: &[usize],
+    total: usize,
+) -> Option<(usize, usize)> {
+    let cursor = cursor?;
+    if cursor >= entry_count || cursor >= starts.len() {
+        return None;
+    }
+    let start = starts[cursor];
+    let end = starts.get(cursor + 1).copied().unwrap_or(total);
+    Some((start, end.max(start + 1)))
 }
 
 /// Render a scrollbar overlay on the right edge of the content area.
@@ -391,4 +603,124 @@ fn format_timestamp(ts: i64) -> String {
         || "??:??".to_string(),
         |dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RenderOpts, render_line};
+    use crate::app::{ConversationLine, LineKind, ToolCategory, TurnFooter};
+
+    fn rows(line: &ConversationLine, expanded: bool) -> Vec<String> {
+        render_line(line, RenderOpts { show_timestamps: false, expanded })
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect()
+    }
+
+    fn result(error: bool, text: &str) -> ConversationLine {
+        let mut line = ConversationLine::new(LineKind::Result { error }, 0, text);
+        line.tool = Some("Bash".to_owned());
+        line
+    }
+
+    #[test]
+    fn a_collapsed_result_keeps_one_row_and_says_what_it_hid() {
+        let line = result(false, "120 lines\nsecond\nthird");
+        let collapsed = rows(&line, false);
+        assert_eq!(collapsed.len(), 1);
+        assert!(collapsed[0].contains("120 lines"));
+        assert!(collapsed[0].contains("2 more"), "{collapsed:?}");
+
+        let expanded = rows(&line, true);
+        assert_eq!(expanded.len(), 3);
+        assert!(!expanded[0].contains("more"));
+    }
+
+    #[test]
+    fn a_failing_result_is_marked_and_a_short_one_needs_no_hint() {
+        let rendered = rows(&result(true, "exit 101 · 3 failed"), false);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains('✗'), "{rendered:?}");
+        assert!(!rendered[0].contains("more"));
+    }
+
+    #[test]
+    fn thinking_collapses_to_a_single_summary_row() {
+        let line = ConversationLine::new(
+            LineKind::Thinking { redacted: false },
+            0,
+            "one\ntwo\nthree",
+        );
+        let collapsed = rows(&line, false);
+        assert_eq!(collapsed.len(), 1);
+        assert!(collapsed[0].contains("thinking (3 lines)"), "{collapsed:?}");
+        assert_eq!(rows(&line, true).len(), 4);
+    }
+
+    #[test]
+    fn redacted_thinking_has_no_body_to_expand() {
+        let line = ConversationLine::new(LineKind::Thinking { redacted: true }, 0, "\u{fffd}");
+        assert_eq!(rows(&line, true).len(), 1);
+        assert!(rows(&line, true)[0].contains("redacted"));
+    }
+
+    #[test]
+    fn a_tool_row_carries_its_name_detail_and_category_badge() {
+        let mut line =
+            ConversationLine::new(LineKind::Tool { category: ToolCategory::Read }, 0, "src/a.rs");
+        line.tool = Some("Read".to_owned());
+        let rendered = rows(&line, false);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("Read"));
+        assert!(rendered[0].contains("src/a.rs"));
+        assert!(rendered[0].contains("read"));
+    }
+
+    #[test]
+    fn an_mcp_tool_row_shows_the_short_name() {
+        let mut line =
+            ConversationLine::new(LineKind::Tool { category: ToolCategory::Mcp }, 0, "{}");
+        line.tool = Some("mcp__cctui__CctuiUsage".to_owned());
+        assert!(rows(&line, false)[0].contains("cctui:CctuiUsage"));
+    }
+
+    #[test]
+    fn an_assistant_turn_with_usage_gets_a_footer_row() {
+        let mut line = ConversationLine::new(LineKind::Assistant, 0, "done");
+        line.footer = Some(TurnFooter {
+            duration_ms: None,
+            tokens_in: Some(12_400),
+            tokens_out: Some(1_100),
+            needs_action: false,
+        });
+        let rendered = rows(&line, false);
+        let footer = rendered.last().expect("a footer row");
+        assert!(footer.contains("12.4k in"), "{rendered:?}");
+        assert!(footer.contains("1.1k out"));
+    }
+
+    #[test]
+    fn a_duration_only_summary_renders_as_a_clock_row() {
+        let mut line = ConversationLine::new(LineKind::Summary, 0, String::new());
+        line.footer = Some(TurnFooter { duration_ms: Some(98_000), ..TurnFooter::default() });
+        let rendered = rows(&line, false);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("1m38s"), "{rendered:?}");
+    }
+
+    #[test]
+    fn a_peer_line_names_its_sender_and_room() {
+        let mut line = ConversationLine::new(LineKind::Peer, 0, "rebased");
+        line.peer_from = Some("lane-b".to_owned());
+        line.peer_room = Some("wave-3".to_owned());
+        let rendered = rows(&line, false);
+        assert!(rendered.iter().any(|r| r.contains("lane-b in wave-3")), "{rendered:?}");
+        assert!(rendered.iter().any(|r| r.contains("rebased")));
+    }
+
+    #[test]
+    fn an_empty_system_line_renders_nothing() {
+        let line = ConversationLine::new(LineKind::System, 0, String::new());
+        assert!(rows(&line, false).is_empty());
+    }
 }
