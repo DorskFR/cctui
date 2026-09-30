@@ -88,7 +88,7 @@ async fn list_of(state: &AppState, session_id: &str) -> Result<UserActionList, A
 }
 
 /// Publish the current list so every open tab on this session updates.
-async fn broadcast(state: &AppState, list: &UserActionList) {
+fn broadcast(state: &AppState, list: &UserActionList) {
     state.bus.publish_server(cctui_proto::ws::ServerEvent::UserActions {
         session_id: list.session_id.clone(),
         actions: list.items.clone(),
@@ -146,12 +146,13 @@ pub async fn add(
     .await?;
     result.added = Some(id);
     result.list = list_of(state, session_id).await?;
-    broadcast(state, &result.list).await;
+    broadcast(state, &result.list);
     Ok(result)
 }
 
 /// Resolve one item. `None` for an unknown id — the caller answers with the list
-/// and the reason rather than a failure.
+/// and the reason rather than a failure. Callers gate on [`writable`] first, so a
+/// rejected tick can say *why* instead of pretending the item is gone.
 pub async fn tick(
     state: &AppState,
     session_id: &str,
@@ -160,11 +161,8 @@ pub async fn tick(
     note: Option<&str>,
     by: UserActionResolver,
 ) -> Result<Option<UserActionList>, AppError> {
-    if !writable(&state.pool, session_id).await? {
-        return Ok(None);
-    }
     let done = sqlx::query(
-        "UPDATE session_user_actions SET status = $3, note = COALESCE($4, note), \
+        "UPDATE session_user_actions SET status = $3, note = COALESCE($4::text, note), \
          resolved_at = now(), resolved_by = $5 WHERE id = $1 AND session_id = $2",
     )
     .bind(id)
@@ -179,7 +177,7 @@ pub async fn tick(
         return Ok(None);
     }
     let list = list_of(state, session_id).await?;
-    broadcast(state, &list).await;
+    broadcast(state, &list);
     Ok(Some(list))
 }
 
@@ -224,6 +222,13 @@ pub async fn daemon_tick(
     Json(req): Json<TickUserActionRequest>,
 ) -> Result<Json<UserActionResult>, AppError> {
     daemon_session(&state, &headers, &session_id).await?;
+    if !writable(&state.pool, &session_id).await? {
+        return Ok(Json(UserActionResult {
+            error: Some("this session is archived, so its list is read-only".to_owned()),
+            added: None,
+            list: list_of(&state, &session_id).await?,
+        }));
+    }
     let ticked = match Uuid::parse_str(req.id.trim()) {
         Ok(id) => {
             tick(
@@ -241,7 +246,7 @@ pub async fn daemon_tick(
     Ok(Json(match ticked {
         Some(list) => UserActionResult { error: None, added: None, list },
         None => UserActionResult {
-            error: Some(format!("no open user action {} on this session", req.id)),
+            error: Some(format!("no user action {} on this session", req.id)),
             added: None,
             list: list_of(&state, &session_id).await?,
         },
@@ -287,6 +292,12 @@ pub async fn ui_tick(
     Json(req): Json<UiTick>,
 ) -> Result<Json<UserActionList>, AppError> {
     require_owner(&state, &ctx, &session_id).await?;
+    if !writable(&state.pool, &session_id).await? {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "this session is archived, so its list is read-only",
+        ));
+    }
     let ticked = tick(
         &state,
         &session_id,
