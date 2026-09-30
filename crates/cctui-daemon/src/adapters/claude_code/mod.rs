@@ -313,7 +313,6 @@ async fn handle_hook_connection(
         // idles now instead of on the next status poll.
         if let Some(local_id) = parse_turn_end(line, &session_map) {
             record_hook(&hook_log, &local_id, "turn_end");
-            crate::childwatch::global().note_turn_end(&local_id);
             crate::adapters::turn_end::emit(&events, &local_id).await;
             continue;
         }
