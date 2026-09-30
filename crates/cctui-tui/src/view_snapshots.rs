@@ -913,8 +913,6 @@ fn file_viewer_image_placeholder() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
-// -- CCT-1236: interrupt feedback and in-place controls --
-
 fn codex_conversation() -> crate::app::App {
     let mut app = app_on("s-working");
     let s = session_mut(&mut app, "s-working");
@@ -991,8 +989,6 @@ fn model_picker_on_a_gated_model() {
     reduce(&mut app, Action::Controls(ControlsAction::PickerMove(1)));
     insta::assert_snapshot!(render_screen(&mut app));
 }
-
-// -- CCT-1237: todo panel and subagent navigation --
 
 fn app_with_a_subagent() -> crate::app::App {
     let mut app = app_on("s-working");

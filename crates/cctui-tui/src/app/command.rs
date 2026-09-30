@@ -42,8 +42,7 @@ pub fn parse(input: &str) -> Result<Command, String> {
             }
             Ok(Command::Attach { path: PathBuf::from(rest.join(" ")) })
         }
-        // Arguments are refused rather than ignored: the dialog that will
-        // take them is CCT-1264's, and a silently dropped one would mislead.
+        // `:fork` takes no options yet; refusing them beats silently dropping them.
         "fork" => {
             if words.next().is_some() {
                 return Err("usage: :fork".to_owned());
