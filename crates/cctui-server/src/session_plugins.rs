@@ -1,7 +1,7 @@
 //! Per-session plugin data slots: `sessions.metadata.plugins.<plugin_id>`.
 //!
 //! The allow-list is a built-in registry extended by installed plugin ids, not
-//! the `plugins` table alone: first-party connectors (YouTrack, Slack, GitHub)
+//! the `plugins` table alone: first-party connectors (`YouTrack`, Slack, GitHub)
 //! have no bundle and would never be writable, and uninstalling a bundle would
 //! make a session's stored slot unwritable while it is still rendered.
 
@@ -33,31 +33,28 @@ pub fn apply_slot(
         *metadata = serde_json::Value::Object(serde_json::Map::new());
     }
     let Some(root) = metadata.as_object_mut() else { return };
-    match data {
-        Some(value) => {
-            let slots = root
-                .entry("plugins".to_owned())
-                .and_modify(|v| {
-                    if !v.is_object() {
-                        *v = serde_json::Value::Object(serde_json::Map::new());
-                    }
-                })
-                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-            if let Some(map) = slots.as_object_mut() {
-                map.insert(plugin_id.to_owned(), value);
-            }
-        }
-        None => {
-            let empty = match root.get_mut("plugins").and_then(serde_json::Value::as_object_mut) {
-                Some(slots) => {
-                    slots.remove(plugin_id);
-                    slots.is_empty()
+    if let Some(value) = data {
+        let slots = root
+            .entry("plugins".to_owned())
+            .and_modify(|v| {
+                if !v.is_object() {
+                    *v = serde_json::Value::Object(serde_json::Map::new());
                 }
-                None => false,
-            };
-            if empty {
-                root.remove("plugins");
-            }
+            })
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(map) = slots.as_object_mut() {
+            map.insert(plugin_id.to_owned(), value);
+        }
+    } else {
+        let empty = root
+            .get_mut("plugins")
+            .and_then(serde_json::Value::as_object_mut)
+            .is_some_and(|slots| {
+                slots.remove(plugin_id);
+                slots.is_empty()
+            });
+        if empty {
+            root.remove("plugins");
         }
     }
 }
