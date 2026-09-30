@@ -52,7 +52,7 @@ describe('endpoint helpers use the route table', () => {
 		const src = readFileSync(join(process.cwd(), 'src', 'lib', 'queries', 'endpoints.ts'), 'utf8');
 		const ids = [...src.matchAll(/\bpath\("([a-z0-9_]+)"/g)].map((m) => m[1]);
 		expect(ids.length).toBeGreaterThan(0);
-		const known = new Set(ROUTES.map((r) => r.id));
+		const known = new Set<string>(ROUTES.map((r) => r.id));
 		expect(ids.filter((id) => !known.has(id))).toEqual([]);
 	});
 });
