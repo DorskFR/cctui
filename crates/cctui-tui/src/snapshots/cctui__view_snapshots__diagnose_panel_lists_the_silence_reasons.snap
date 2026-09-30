@@ -22,7 +22,7 @@ expression: render_screen(&mut app)
    │why is it silent?                                                                           │
    │· 2 JSON-RPC request(s) outstanding and no frame for 2m ago.                                │
    │· No turn is in flight, so codex has nothing to answer.                                     │
-   │ j/k Scroll  r Refresh  Esc Close    21/21                                                  │
+   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close    21/21                           │
    └────────────────────────────────────────────────────────────────────────────────────────────┘
 
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

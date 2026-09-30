@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+r      Search sent prompts                j / ↓       Scroll the plan down             │
-▸ │  Tab         Answer the waiting prompt          k / ↑       Scroll the plan up               │
-  │Composer                                       Plan card — refine                             │
-  │  Esc         Close the composer                 Enter       Accept the text                  │
-  │  Enter       Send the message                   Esc         Discard the text                 │
-  │  Ctrl+j / A… Insert a newline                 Row glyphs                                     │
-  │  ↑           Recall an earlier prompt           ●           working                          │
-  │  ↓           Recall a later prompt              ◐           stale or asleep                  │
-  │  Ctrl+r      Search sent prompts                ○           idle                             │
-  │Prompt history                                   ☾           hibernated                       │
-  │  Esc         Close the prompt list              ↳           subagent                         │
-  │  Ctrl+n / ↓  Next prompt                        ▸ / ▾       folded / open group              │
-  │  Ctrl+p / ↑  Previous prompt                    !           permission waiting on you        │
-  │  Enter       Put this prompt in the composer    ?           question waiting on you          │
-  │Help                                             P           plan waiting for approval        │
-  │  j / ↓       Scroll down                        ●N          unread messages                  │
-  │  k / ↑       Scroll up                          ⚡           auto-approve on                  │
-  │  PgDn        Page down                          ✕reason     how it ended                     │
-  │  PgUp        Page up                            ⚙N age      tool calls, age of the last      │
-  │  ? / q / Esc Close this cheat sheet                                                          │
+  │Composer                                         Enter       Accept the text                  │
+▸ │  Esc         Close the composer                 Esc         Discard the text                 │
+  │  Enter       Send the message                 Row glyphs                                     │
+  │  Ctrl+j / A… Insert a newline                   ●           working                          │
+  │  ↑           Recall an earlier prompt           ◐           stale or asleep                  │
+  │  ↓           Recall a later prompt              ○           idle                             │
+  │  Ctrl+r      Search sent prompts                ☾           hibernated                       │
+  │Prompt history                                   ↳           subagent                         │
+  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
+  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
+  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
+  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
+  │Help                                             ●N          unread messages                  │
+  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
+  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
+  │  PgDn        Page down                          ⚠           account traffic never seen       │
+  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
+  │  ? / q / Esc Close this cheat sheet             ✕reason     how it ended                     │
+  │Permission card                                  ⚙N age      tool calls, age of the last      │
+  │  y           Allow                                                                           │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

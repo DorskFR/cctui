@@ -217,6 +217,13 @@ async fn run(
                 vec![Action::Diagnose(DiagnoseAction::Failed { session_id, error: e.to_string() })]
             }
         },
+        Effect::CopyToClipboard { text } => {
+            if let Err(e) = crate::clipboard::copy(&text) {
+                tracing::warn!(%e, "clipboard write failed");
+                return vec![Action::Toast(Level::Warn, "could not copy".to_owned())];
+            }
+            Vec::new()
+        }
     }
 }
 

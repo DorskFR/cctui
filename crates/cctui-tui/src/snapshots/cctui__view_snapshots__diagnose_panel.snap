@@ -22,7 +22,7 @@ expression: render_screen(&mut app)
    │transcript [filesystem, undated]   — (no transcript pinned)                                 │
    │prompts [hook, undated]            — (no prompt state yet)                                  │
    │permission_mode [spawn, undated]   "yolo"                                                   │
-   │ j/k Scroll  r Refresh  Esc Close    16/18                                                  │
+   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close    16/18                           │
    └────────────────────────────────────────────────────────────────────────────────────────────┘
 
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -293,3 +293,19 @@ pub fn diagnose_response() -> cctui_proto::diagnose::SessionDiagnoseResponse {
         silence: vec![],
     }
 }
+
+/// A session whose every dated field is pinned to [`CLOCK_MS`].
+pub fn diagnosable_session() -> SessionListItem {
+    let mut s = session("s-working", "cctui", "active", "working");
+    s.parent_id = None;
+    s.machine_name = Some("orion".to_owned());
+    s.model = Some("opus".to_owned());
+    s.effort = Some("high".to_owned());
+    s.permission_mode = Some("yolo".to_owned());
+    s.account_name = Some("main".to_owned());
+    s.account_traffic_observed = true;
+    s.registered_at = Some(ms_ago(3_600_000));
+    s.last_heartbeat = Some(ms_ago(2_000));
+    s.last_tool_at = Some(ms_ago(45_000));
+    s
+}

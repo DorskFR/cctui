@@ -176,6 +176,7 @@ actions! {
     DiagnosePageUp => "diagnose-page-up", "Page the panel up";
     DiagnoseTop => "diagnose-top", "Jump to the top of the panel";
     DiagnoseRefresh => "diagnose-refresh", "Refresh the report";
+    DiagnoseCopyId => "diagnose-copy-id", "Copy the session id";
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
@@ -298,7 +299,9 @@ const DIAGNOSE: &[BindingSpec] = &[
     spec(Context::Diagnose, "pageup", ActionId::DiagnosePageUp),
     spec(Context::Diagnose, "g", ActionId::DiagnoseTop),
     spec(Context::Diagnose, "r", ActionId::DiagnoseRefresh),
+    spec(Context::Diagnose, "y", ActionId::DiagnoseCopyId),
     spec(Context::Diagnose, "D", ActionId::Diagnose),
+    spec(Context::Diagnose, "i", ActionId::Info),
 ];
 
 const HELP: &[BindingSpec] = &[

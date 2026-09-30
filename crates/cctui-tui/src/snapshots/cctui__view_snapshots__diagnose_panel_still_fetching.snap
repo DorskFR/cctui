@@ -22,7 +22,7 @@ expression: render_screen(&mut app)
    │                                                                                            │
    │                                                                                            │
    │                                                                                            │
-   │ j/k Scroll  r Refresh  Esc Close                                                           │
+   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close                                    │
    └────────────────────────────────────────────────────────────────────────────────────────────┘
 
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

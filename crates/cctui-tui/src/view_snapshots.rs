@@ -5,9 +5,9 @@ use crate::app::diagnose::DiagnoseAction;
 use crate::app::drafts::DraftAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
-    CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnose_response,
-    edit_permission_request, ended_session, ms_ago, permission_request, plan_card, render_screen,
-    render_screen_sized, session, todo,
+    CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnosable_session,
+    diagnose_response, edit_permission_request, ended_session, ms_ago, permission_request,
+    plan_card, render_screen, render_screen_sized, session, todo,
 };
 
 /// `selected_index` walks the grouped list, so the session on screen is not
@@ -510,6 +510,7 @@ fn conversation_permission_card_outranks_an_ask_card() {
 fn app_with_panel(mode: crate::app::diagnose::DiagnoseMode) -> crate::app::App {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
+    *session_mut(&mut app, "s-working") = diagnosable_session();
     focus(&mut app, "s-working");
     reduce(&mut app, Action::Diagnose(DiagnoseAction::Open(mode)));
     reduce(
@@ -609,4 +610,38 @@ fn codex_section() -> cctui_proto::diagnose::CodexDiagnose {
         auth_state: Some("gateway env present".to_owned()),
         registry_live_mismatch: None,
     }
+}
+
+#[test]
+fn session_info_popup() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Info);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_info_popup_for_an_ended_session() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Info);
+    let row = session_mut(&mut app, "s-working");
+    row.end_reason = Some(cctui_proto::models::SessionEndReason::DaemonLost);
+    row.end_detail = Some("machine went away".to_owned());
+    row.account_traffic_observed = false;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_info_popup_narrow() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Info);
+    insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+#[test]
+fn session_list_secondary_badges() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    session_mut(&mut app, "s-working").cache_cold = true;
+    let blocked = session_mut(&mut app, "s-blocked");
+    blocked.account_name = Some("main".to_owned());
+    blocked.account_traffic_observed = false;
+    app.soft_limited.insert("s-done".to_owned());
+    insta::assert_snapshot!(render_screen(&mut app));
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
@@ -201,6 +201,8 @@ pub struct App {
     pub plans: HashMap<String, PlanCard>,
     /// The open diagnose/info overlay, `None` when it is closed.
     pub diagnose: Option<DiagnosePanel>,
+    /// Sessions parked behind an account soft limit, from the WS frames.
+    pub soft_limited: HashSet<String>,
     pub scroll_offset: usize,
     /// First cheat-sheet row shown; clamped by the overlay when it draws.
     pub help_scroll: usize,
@@ -288,6 +290,7 @@ impl App {
             asks: HashMap::new(),
             plans: HashMap::new(),
             diagnose: None,
+            soft_limited: HashSet::new(),
             scroll_offset: 0,
             help_scroll: 0,
             follow_tail: true,

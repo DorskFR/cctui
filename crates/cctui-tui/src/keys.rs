@@ -165,6 +165,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PlanScrollUp => Action::Prompt(PromptAction::PlanScroll(-1)),
 
         ActionId::Diagnose => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)),
+        ActionId::Info => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)),
         ActionId::DiagnoseClose => Action::Diagnose(DiagnoseAction::Close),
         ActionId::DiagnoseScrollDown => Action::Diagnose(DiagnoseAction::Scroll(1)),
         ActionId::DiagnoseScrollUp => Action::Diagnose(DiagnoseAction::Scroll(-1)),
@@ -172,6 +173,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DiagnosePageUp => Action::Diagnose(DiagnoseAction::Scroll(-15)),
         ActionId::DiagnoseTop => Action::Diagnose(DiagnoseAction::ScrollTop),
         ActionId::DiagnoseRefresh => Action::Diagnose(DiagnoseAction::Refresh),
+        ActionId::DiagnoseCopyId => Action::Diagnose(DiagnoseAction::CopyId),
 
         _ => return None,
     })
@@ -331,11 +333,15 @@ mod tests {
     }
 
     #[test]
-    fn the_diagnose_global_reaches_both_views() {
+    fn the_diagnose_globals_reach_both_views() {
         for view in [View::SessionList, View::Conversation] {
             assert!(matches!(
                 map(view, false, KeyCode::Char('D')),
                 Some(Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)))
+            ));
+            assert!(matches!(
+                map(view, false, KeyCode::Char('i')),
+                Some(Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)))
             ));
         }
     }
@@ -350,6 +356,10 @@ mod tests {
         assert!(matches!(
             map_panel(KeyCode::Char('r')),
             Some(Action::Diagnose(DiagnoseAction::Refresh))
+        ));
+        assert!(matches!(
+            map_panel(KeyCode::Char('y')),
+            Some(Action::Diagnose(DiagnoseAction::CopyId))
         ));
         assert!(matches!(
             map_panel(KeyCode::Char('g')),

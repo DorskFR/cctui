@@ -170,6 +170,10 @@ pub enum Effect {
     FetchDiagnose {
         session_id: String,
     },
+    /// Put `text` on the terminal's clipboard.
+    CopyToClipboard {
+        text: String,
+    },
     /// Persist the fold state to `tui-state.json`.
     SaveUiState(crate::config::uistate::UiState),
 }

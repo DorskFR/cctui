@@ -3,6 +3,7 @@
 //! Which reasons apply is the server's call ([`cctui_proto::silence`]); this
 //! module only words them.
 
+use cctui_proto::api::SessionListItem;
 use cctui_proto::diagnose::{DiagnoseFact, SessionDiagnoseResponse};
 use cctui_proto::silence::SilenceReason;
 
@@ -14,12 +15,15 @@ use super::state::{App, View};
 pub enum DiagnoseMode {
     /// `D`: the dated facts plus why the session looks silent.
     Facts,
+    /// `i`: identity and timestamps first, the facts underneath.
+    Info,
 }
 
 impl DiagnoseMode {
     pub const fn title(self) -> &'static str {
         match self {
             Self::Facts => " Diagnose ",
+            Self::Info => " Session info ",
         }
     }
 }
@@ -68,6 +72,10 @@ pub fn fmt_age(ms: i64) -> String {
 #[must_use]
 pub fn fmt_age_opt(ms: Option<i64>) -> String {
     ms.map_or_else(|| "undated".to_owned(), fmt_age)
+}
+
+fn fmt_since(at: Option<chrono::DateTime<chrono::Utc>>, now_ms: i64) -> String {
+    at.map_or_else(|| "—".to_owned(), |t| fmt_age((now_ms - t.timestamp_millis()).max(0)))
 }
 
 /// The wording of one server-decided reason.
@@ -183,6 +191,52 @@ fn fact_row<T: serde::Serialize>(name: &str, fact: &DiagnoseFact<T>) -> Row {
     }
 }
 
+/// Identity and timestamps: what the operator reads off a silent row before
+/// asking the daemon anything.
+#[must_use]
+pub fn info_rows(s: &SessionListItem, now_ms: i64) -> Vec<Row> {
+    let model = match (&s.model, &s.effort) {
+        (Some(model), Some(effort)) => format!("{model} ({effort})"),
+        (Some(model), None) => model.clone(),
+        _ => "—".to_owned(),
+    };
+    let mut rows = vec![
+        Row::heading("session"),
+        Row::new("id", s.id.clone(), Tone::Normal),
+        Row::new("parent", s.parent_id.clone().unwrap_or_else(|| "—".to_owned()), Tone::Dim),
+        Row::new(
+            "machine",
+            s.machine_name.clone().unwrap_or_else(|| s.machine_id.clone()),
+            Tone::Normal,
+        ),
+        Row::new("adapter", s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str()), Tone::Dim),
+        Row::new(
+            "account",
+            s.account_name.clone().unwrap_or_else(|| "ambient".to_owned()),
+            if s.account_name.is_some() && !s.account_traffic_observed {
+                Tone::Warn
+            } else {
+                Tone::Normal
+            },
+        ),
+        Row::new("model", model, Tone::Normal),
+        Row::new(
+            "permission mode",
+            s.permission_mode.clone().unwrap_or_else(|| "—".to_owned()),
+            Tone::Dim,
+        ),
+        Row::new("registered", fmt_since(s.registered_at, now_ms), Tone::Dim),
+        Row::new("last heartbeat", fmt_since(s.last_heartbeat, now_ms), Tone::Dim),
+        Row::new("last tool", fmt_since(s.last_tool_at, now_ms), Tone::Dim),
+    ];
+    if let Some(reason) = s.end_reason {
+        let detail = s.end_detail.as_ref().map_or_else(String::new, |d| format!(" — {d}"));
+        let label = super::attention::end_reason_label(reason);
+        rows.push(Row::new("ended", format!("{label}{detail}"), Tone::Error));
+    }
+    rows
+}
+
 /// Server facts, daemon facts and silence reasons — the panel's shared body.
 #[must_use]
 pub fn report_rows(resp: &SessionDiagnoseResponse, now_ms: i64) -> Vec<Row> {
@@ -247,6 +301,11 @@ pub fn report_rows(resp: &SessionDiagnoseResponse, now_ms: i64) -> Vec<Row> {
 pub fn panel_rows(app: &App) -> Vec<Row> {
     let Some(panel) = app.diagnose.as_ref() else { return Vec::new() };
     let mut rows = Vec::new();
+    if panel.mode == DiagnoseMode::Info
+        && let Some(s) = app.sessions.iter().find(|s| s.id == panel.session_id)
+    {
+        rows.extend(info_rows(s, app.clock_ms));
+    }
     if let Some(report) = panel.report.as_ref() {
         rows.extend(report_rows(report, app.clock_ms));
     } else if panel.loading {
@@ -265,6 +324,7 @@ pub enum DiagnoseAction {
     Refresh,
     Scroll(i32),
     ScrollTop,
+    CopyId,
     Loaded {
         session_id: String,
         report: Box<SessionDiagnoseResponse>,
@@ -272,6 +332,11 @@ pub enum DiagnoseAction {
     Failed {
         session_id: String,
         error: String,
+    },
+    /// A `soft_limit_reached`/`cleared` frame for one session.
+    SoftLimit {
+        session_id: String,
+        active: bool,
     },
 }
 
@@ -303,6 +368,12 @@ pub fn reduce_diagnose(app: &mut App, action: DiagnoseAction) -> Vec<Effect> {
             }
             Vec::new()
         }
+        DiagnoseAction::CopyId => {
+            let Some(panel) = app.diagnose.as_ref() else { return Vec::new() };
+            let id = panel.session_id.clone();
+            app.toast(super::toast::Level::Info, format!("copied {id}"));
+            vec![Effect::CopyToClipboard { text: id }]
+        }
         // A late reply for a panel that was closed or retargeted is dropped.
         DiagnoseAction::Loaded { session_id, report } => {
             if let Some(panel) = app.diagnose.as_mut().filter(|p| p.session_id == session_id) {
@@ -316,6 +387,14 @@ pub fn reduce_diagnose(app: &mut App, action: DiagnoseAction) -> Vec<Effect> {
             if let Some(panel) = app.diagnose.as_mut().filter(|p| p.session_id == session_id) {
                 panel.error = Some(error);
                 panel.loading = false;
+            }
+            Vec::new()
+        }
+        DiagnoseAction::SoftLimit { session_id, active } => {
+            if active {
+                app.soft_limited.insert(session_id);
+            } else {
+                app.soft_limited.remove(&session_id);
             }
             Vec::new()
         }
@@ -355,7 +434,7 @@ mod tests {
     use cctui_proto::silence::SilenceReason;
 
     use super::{
-        DiagnoseAction, DiagnoseMode, Harness, Tone, fmt_age, panel_rows, report_rows,
+        DiagnoseAction, DiagnoseMode, Harness, Tone, fmt_age, info_rows, panel_rows, report_rows,
         silence_messages, silence_text,
     };
     use crate::app::action::Effect;
@@ -548,6 +627,60 @@ mod tests {
     }
 
     #[test]
+    fn the_info_rows_carry_the_identity_and_the_timestamps() {
+        let mut s = session("s-a", "alpha", "active", "working");
+        s.parent_id = Some("s-parent".into());
+        s.model = Some("opus".into());
+        s.effort = Some("high".into());
+        s.permission_mode = Some("yolo".into());
+        s.account_name = Some("main".into());
+        s.registered_at = chrono::DateTime::from_timestamp_millis(NOW - 3_600_000);
+        s.last_heartbeat = chrono::DateTime::from_timestamp_millis(NOW - 2_000);
+        s.last_tool_at = chrono::DateTime::from_timestamp_millis(NOW - 60_000);
+
+        let rows = info_rows(&s, NOW);
+        let get = |label: &str| {
+            rows.iter().find(|r| r.label == label).map(|r| r.value.clone()).unwrap_or_default()
+        };
+        assert_eq!(get("id"), "s-a");
+        assert_eq!(get("parent"), "s-parent");
+        assert_eq!(get("model"), "opus (high)");
+        assert_eq!(get("permission mode"), "yolo");
+        assert_eq!(get("registered"), "1h ago");
+        assert_eq!(get("last heartbeat"), "2s ago");
+        assert_eq!(get("last tool"), "1m ago");
+        assert!(rows.iter().all(|r| r.label != "ended"), "a live session has no end row");
+    }
+
+    #[test]
+    fn an_account_with_no_observed_traffic_is_flagged_warn() {
+        let mut s = session("s-a", "alpha", "active", "working");
+        s.account_name = Some("main".into());
+        s.account_traffic_observed = false;
+        let rows = info_rows(&s, NOW);
+        let account = rows.iter().find(|r| r.label == "account").expect("the row");
+        assert_eq!(account.tone, Tone::Warn);
+
+        s.account_traffic_observed = true;
+        let rows = info_rows(&s, NOW);
+        assert_eq!(rows.iter().find(|r| r.label == "account").expect("the row").tone, Tone::Normal);
+    }
+
+    #[test]
+    fn an_ended_session_names_its_reason() {
+        let mut s = session("s-a", "alpha", "inactive", "done");
+        s.end_reason = Some(cctui_proto::models::SessionEndReason::DaemonLost);
+        s.end_detail = Some("machine went away".into());
+        let rows = info_rows(&s, NOW);
+        let ended = rows.iter().find(|r| r.label == "ended").expect("the row");
+        assert_eq!(
+            ended.value, "daemon lost — machine went away",
+            "the reason is worded, not Debug"
+        );
+        assert_eq!(ended.tone, Tone::Error);
+    }
+
+    #[test]
     fn opening_pushes_the_overlay_and_asks_the_server_once() {
         let mut app = app();
         let effects = dispatch(&mut app, DiagnoseAction::Open(DiagnoseMode::Facts));
@@ -565,6 +698,48 @@ mod tests {
         assert!(dispatch(&mut app, DiagnoseAction::Open(DiagnoseMode::Facts)).is_empty());
         assert!(app.diagnose.is_none());
         assert_eq!(app.view(), View::SessionList);
+    }
+
+    #[test]
+    fn switching_face_over_the_same_session_refetches_nothing() {
+        let mut app = app();
+        dispatch(&mut app, DiagnoseAction::Open(DiagnoseMode::Facts));
+        dispatch(
+            &mut app,
+            DiagnoseAction::Loaded { session_id: "s-a".to_owned(), report: Box::new(response()) },
+        );
+        let effects = dispatch(&mut app, DiagnoseAction::Open(DiagnoseMode::Info));
+        assert!(effects.is_empty(), "the report already in hand is reused");
+        let panel = app.diagnose.as_ref().expect("a panel");
+        assert_eq!(panel.mode, DiagnoseMode::Info);
+        assert!(panel.report.is_some());
+    }
+
+    #[test]
+    fn the_info_face_puts_the_identity_above_the_report() {
+        let mut app = app();
+        dispatch(&mut app, DiagnoseAction::Open(DiagnoseMode::Info));
+        dispatch(
+            &mut app,
+            DiagnoseAction::Loaded { session_id: "s-a".to_owned(), report: Box::new(response()) },
+        );
+        let rows = panel_rows(&app);
+        let id = rows.iter().position(|r| r.label == "id").expect("the id row");
+        let server = rows.iter().position(|r| r.label == "server").expect("the server heading");
+        assert!(id < server, "identity comes first in the info face");
+    }
+
+    #[test]
+    fn the_facts_face_leaves_the_identity_out() {
+        let mut app = app();
+        dispatch(&mut app, DiagnoseAction::Open(DiagnoseMode::Facts));
+        dispatch(
+            &mut app,
+            DiagnoseAction::Loaded { session_id: "s-a".to_owned(), report: Box::new(response()) },
+        );
+        let rows = panel_rows(&app);
+        assert!(rows.iter().all(|r| r.label != "id"));
+        assert!(rows.iter().any(|r| r.label == "server"));
     }
 
     #[test]
@@ -607,6 +782,29 @@ mod tests {
         assert_eq!(app.diagnose.as_ref().expect("a panel").scroll, 0);
         dispatch(&mut app, DiagnoseAction::Scroll(3));
         assert_eq!(app.diagnose.as_ref().expect("a panel").scroll, 3);
+    }
+
+    #[test]
+    fn copying_the_id_hands_it_to_the_clipboard_effect() {
+        let mut app = app();
+        dispatch(&mut app, DiagnoseAction::Open(DiagnoseMode::Info));
+        let effects = dispatch(&mut app, DiagnoseAction::CopyId);
+        assert!(matches!(effects.as_slice(), [Effect::CopyToClipboard { text }] if text == "s-a"));
+    }
+
+    #[test]
+    fn a_soft_limit_frame_marks_and_clears_the_session() {
+        let mut app = app();
+        dispatch(
+            &mut app,
+            DiagnoseAction::SoftLimit { session_id: "s-a".to_owned(), active: true },
+        );
+        assert!(app.soft_limited.contains("s-a"));
+        dispatch(
+            &mut app,
+            DiagnoseAction::SoftLimit { session_id: "s-a".to_owned(), active: false },
+        );
+        assert!(app.soft_limited.is_empty());
     }
 
     #[test]

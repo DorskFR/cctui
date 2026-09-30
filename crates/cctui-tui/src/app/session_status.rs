@@ -140,6 +140,7 @@ pub fn end_badge(s: &SessionListItem) -> Option<String> {
 /// place a row-level indicator goes: a new signal is a field here, never a span
 /// appended after the width budget is settled.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RowBadges {
     /// `?` an unanswered question, `P` a plan waiting for approval.
     pub prompt: Option<&'static str>,
@@ -147,17 +148,32 @@ pub struct RowBadges {
     pub pending: bool,
     pub unread: u32,
     pub auto_approve: bool,
+    /// The next turn pays to re-read the context the harness dropped.
+    pub cache_cold: bool,
+    /// The account is parked behind a provider soft limit.
+    pub soft_limited: bool,
+    /// A named account whose traffic the gateway has never seen: the session
+    /// is probably billing somewhere else.
+    pub account_traffic: bool,
     pub end: Option<String>,
 }
 
 impl RowBadges {
     #[must_use]
-    pub fn of(s: &SessionListItem, pending: bool, prompt: Option<&'static str>) -> Self {
+    pub fn of(
+        s: &SessionListItem,
+        pending: bool,
+        prompt: Option<&'static str>,
+        soft_limited: bool,
+    ) -> Self {
         Self {
             prompt,
             pending,
             unread: s.unread_count,
             auto_approve: s.auto_approve,
+            cache_cold: s.cache_cold,
+            soft_limited,
+            account_traffic: s.account_name.is_some() && !s.account_traffic_observed,
             end: end_badge(s),
         }
     }
@@ -168,6 +184,9 @@ impl RowBadges {
             && !self.pending
             && self.unread == 0
             && !self.auto_approve
+            && !self.cache_cold
+            && !self.soft_limited
+            && !self.account_traffic
             && self.end.is_none()
     }
 
@@ -192,6 +211,15 @@ impl RowBadges {
         }
         if self.auto_approve {
             parts.push("⚡".to_owned());
+        }
+        if self.soft_limited {
+            parts.push("⏸".to_owned());
+        }
+        if self.account_traffic {
+            parts.push("⚠".to_owned());
+        }
+        if self.cache_cold {
+            parts.push("❄".to_owned());
         }
         if let Some(end) = &self.end {
             parts.push(end.clone());
@@ -260,6 +288,9 @@ pub const GLYPH_LEGEND: &[(&str, &str)] = &[
     ("P", "plan waiting for approval"),
     ("●N", "unread messages"),
     ("⚡", "auto-approve on"),
+    ("⏸", "account soft-limited"),
+    ("⚠", "account traffic never seen"),
+    ("❄", "cache cold, next turn re-reads"),
     ("✕reason", "how it ended"),
     ("⚙N age", "tool calls, age of the last"),
 ];
@@ -431,15 +462,15 @@ mod tests {
     #[test]
     fn badges_render_in_triage_order_and_vanish_when_there_is_nothing_to_say() {
         let mut s = session("s", "p", "active", "working");
-        assert!(RowBadges::of(&s, false, None).is_empty());
-        assert_eq!(RowBadges::of(&s, false, None).text(), "");
-        assert!(!RowBadges::of(&s, false, None).wants_you());
+        assert!(RowBadges::of(&s, false, None, false).is_empty());
+        assert_eq!(RowBadges::of(&s, false, None, false).text(), "");
+        assert!(!RowBadges::of(&s, false, None, false).wants_you());
 
         s.unread_count = 4;
         s.auto_approve = true;
         s.hibernated = true;
         s.end_reason = Some(cctui_proto::models::SessionEndReason::Crashed);
-        let badges = RowBadges::of(&s, true, Some("?"));
+        let badges = RowBadges::of(&s, true, Some("?"), false);
         assert!(!badges.is_empty());
         assert!(badges.wants_you());
         assert_eq!(
@@ -448,9 +479,34 @@ mod tests {
             "hibernation is the leading glyph and the activity word, not a third badge"
         );
 
-        let quiet = RowBadges::of(&s, false, None);
+        let quiet = RowBadges::of(&s, false, None, false);
         assert!(!quiet.wants_you(), "unread and auto-approve are reports, not requests");
         assert_eq!(quiet.text(), "●4 ⚡ ✕crashed");
+    }
+
+    #[test]
+    fn the_secondary_signals_each_earn_their_own_glyph() {
+        let mut s = session("s", "p", "active", "working");
+        s.cache_cold = true;
+        assert_eq!(RowBadges::of(&s, false, None, false).text(), "❄");
+
+        s.cache_cold = false;
+        assert_eq!(RowBadges::of(&s, false, None, true).text(), "⏸");
+
+        s.account_name = Some("main".to_owned());
+        s.account_traffic_observed = false;
+        assert_eq!(RowBadges::of(&s, false, None, false).text(), "⚠");
+        s.account_traffic_observed = true;
+        assert!(
+            RowBadges::of(&s, false, None, false).is_empty(),
+            "an account whose traffic was observed says nothing"
+        );
+
+        s.account_name = None;
+        s.cache_cold = true;
+        let all = RowBadges::of(&s, false, None, true);
+        assert_eq!(all.text(), "⏸ ❄");
+        assert!(!all.wants_you(), "a secondary signal reports, it does not ask");
     }
 
     #[test]

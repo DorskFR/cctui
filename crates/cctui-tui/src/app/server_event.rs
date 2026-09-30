@@ -2,6 +2,7 @@ use cctui_proto::ws::{AgentEvent, ServerEvent};
 
 use super::action::{Action, HeartbeatUsage};
 use super::attention::AttentionAction;
+use super::diagnose::DiagnoseAction;
 use super::line::agent_event_to_line;
 use super::prompt::PromptAction;
 use super::send::SendAction;
@@ -47,19 +48,21 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             vec![Action::Attention(AttentionAction::SessionEnded { session_id, reason, detail })]
         }
         ServerEvent::SoftLimitReached { session_id, account_name, retry_after_secs, .. } => {
-            vec![Action::Toast(
-                Level::Error,
-                format!(
-                    "{} hit the {account_name} soft limit; retry in {retry_after_secs}s",
-                    short_id(&session_id)
-                ),
-            )]
+            let toast = format!(
+                "{} hit the {account_name} soft limit; retry in {retry_after_secs}s",
+                short_id(&session_id)
+            );
+            vec![
+                Action::Diagnose(DiagnoseAction::SoftLimit { session_id, active: true }),
+                Action::Toast(Level::Error, toast),
+            ]
         }
         ServerEvent::SoftLimitCleared { session_id } => {
-            vec![Action::Toast(
-                Level::Info,
-                format!("{} soft limit cleared", short_id(&session_id)),
-            )]
+            let toast = format!("{} soft limit cleared", short_id(&session_id));
+            vec![
+                Action::Diagnose(DiagnoseAction::SoftLimit { session_id, active: false }),
+                Action::Toast(Level::Info, toast),
+            ]
         }
         ServerEvent::ToolCallBlocked { session_id, tool_name, rule } => {
             vec![Action::Toast(

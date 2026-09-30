@@ -89,7 +89,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let compact = width < COMPACT_HINTS_UNDER;
     let mut hotkeys = Vec::with_capacity(10);
-    for (keys, label) in [("j/k", "Scroll"), ("r", "Refresh"), ("Esc", "Close")] {
+    for (keys, label) in
+        [("j/k", "Scroll"), ("r", "Refresh"), ("y", "Copy id"), ("D/i", "Switch"), ("Esc", "Close")]
+    {
         hotkeys.push(Span::styled(format!(" {keys}"), theme::hotkey()));
         if !compact {
             hotkeys.push(Span::raw(format!(" {label} ")));
