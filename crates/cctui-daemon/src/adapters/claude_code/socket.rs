@@ -22,6 +22,11 @@ use super::composer;
 /// `auth` is presented. The daemon's request schema is a strict discriminated
 /// union, so `auth` must ONLY ride on these ops — adding it to `ping`/`list`
 /// would be rejected as a malformed request.
+/// PTY read-buffer size. Heap-allocated at every call site: these buffers live
+/// across awaits, and an inline array makes the reply future large enough to
+/// trip `clippy::large_futures` several frames up.
+const READ_BUF: usize = 8192;
+
 const AUTH_GATED_OPS: &[&str] = &["dispatch", "reply", "attach"];
 
 /// Path to the claude daemon's control key, mirroring the CLI's own resolution
@@ -208,9 +213,6 @@ fn transcript_gained_user_entry(path: &Path, baseline: u64) -> bool {
 /// Wait for the screen to go quiet, press Enter, and re-press until `confirm`
 /// proves it landed.
 pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) -> Result<()> {
-    if matches!(confirm, SubmitConfirm::Composer) {
-        return attach_submit_probed(socket, short).await;
-    }
     /// PTY quiet period treated as "composer settled".
     const QUIET: std::time::Duration = std::time::Duration::from_millis(600);
     /// Cap on the settle wait. Multi-image ingest can repaint well past 10s,
@@ -225,6 +227,10 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
     /// again risks submitting a second (now empty or queued) message.
     const MAX_LANDED_ENTERS: u32 = 2;
 
+    if matches!(confirm, SubmitConfirm::Composer) {
+        return attach_submit_probed(socket, short).await;
+    }
+
     let (attempts, confirm_window) = match confirm {
         SubmitConfirm::Repaint | SubmitConfirm::Composer => (3, CONFIRM),
         // Transcript growth lags the keypress (claude appends after the turn
@@ -234,7 +240,7 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
     };
 
     let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
-    let mut buf = [0_u8; 8192];
+    let mut buf = vec![0_u8; READ_BUF];
     let mut landed_enters = 0_u32;
 
     let settle_start = tokio::time::Instant::now();
@@ -339,7 +345,7 @@ async fn probe_composer(socket: &Path, short: &str) -> composer::ComposerState {
 async fn attach_screen(socket: &Path, short: &str, window: Duration) -> Result<String> {
     let (mut reader, _write_half) = attach_handshake(socket, short).await?;
     let mut frame: Vec<u8> = Vec::new();
-    let mut buf = [0_u8; 8192];
+    let mut buf = vec![0_u8; READ_BUF];
     let deadline = tokio::time::Instant::now() + window;
     loop {
         let now = tokio::time::Instant::now();
@@ -375,7 +381,7 @@ async fn attach_submit_probed(socket: &Path, short: &str) -> Result<()> {
     const MAX_UNKNOWN: u32 = 2;
 
     let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
-    let mut buf = [0_u8; 8192];
+    let mut buf = vec![0_u8; READ_BUF];
     // Draining is not optional: an unread attach backs up the worker's PTY
     // writer.
     drain_for(&mut reader, &mut buf, INGEST_GRACE).await?;

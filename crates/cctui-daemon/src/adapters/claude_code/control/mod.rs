@@ -1188,14 +1188,14 @@ impl SessionDriver for Driver {
 
     async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
         let sock = self.ensure_socket().await?;
-        self.deliver_reply(
+        Box::pin(self.deliver_reply(
             &sock,
             &local_id,
             &text,
             None,
             &std::collections::BTreeMap::default(),
             None,
-        )
+        ))
         .await?;
         Ok(Handled::Done)
     }
@@ -1210,7 +1210,7 @@ impl SessionDriver for Driver {
         turn_id: Option<uuid::Uuid>,
     ) -> CommandOutcome {
         let sock = self.ensure_socket().await?;
-        self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id).await?;
+        Box::pin(self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id)).await?;
         Ok(Handled::Done)
     }
 
