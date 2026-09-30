@@ -138,7 +138,8 @@ pub fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             ConversationLine { timestamp: *ts, kind, text, tool_input: None }
         }
         AgentEvent::ToolCall { tool, input, ts, .. } => {
-            let detail = crate::views::sessions::format_tool_input(tool, input);
+            let detail = super::prompt::historical_tool_text(tool, input)
+                .unwrap_or_else(|| crate::views::sessions::format_tool_input(tool, input));
             // Keep raw input for Edit/Write so we can generate diffs during render
             let keep_input = matches!(tool.as_str(), "Edit" | "Write");
             ConversationLine {

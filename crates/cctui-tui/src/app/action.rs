@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::identity::AuthAction;
+use super::prompt::PromptAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -62,6 +63,7 @@ pub enum Action {
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
+    Prompt(PromptAction),
 
     StreamLine {
         session_id: String,
@@ -117,6 +119,8 @@ pub enum Effect {
     SendMessage {
         session_id: String,
         content: String,
+        /// 0-based option picks per question when the message answers a prompt.
+        ask_picks: Option<Vec<Vec<usize>>>,
     },
     Interrupt {
         session_id: String,

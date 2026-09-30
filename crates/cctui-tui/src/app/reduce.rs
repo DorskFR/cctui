@@ -105,7 +105,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.input_active = false;
             match target {
                 Some(session_id) if !content.trim().is_empty() => {
-                    vec![Effect::SendMessage { session_id, content }]
+                    vec![Effect::SendMessage { session_id, content, ask_picks: None }]
                 }
                 _ => Vec::new(),
             }
@@ -161,6 +161,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
@@ -462,7 +463,7 @@ mod tests {
         app.message_input.insert_str("hello there");
         let effects = reduce(&mut app, Action::SubmitInput);
         match effects.as_slice() {
-            [Effect::SendMessage { session_id, content }] => {
+            [Effect::SendMessage { session_id, content, ask_picks: None }] => {
                 assert_eq!(session_id, "s-a");
                 assert_eq!(content, "hello there");
             }
