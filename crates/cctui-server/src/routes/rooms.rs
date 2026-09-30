@@ -1,11 +1,16 @@
-//! Room routes: the human REST surface for the webui, the daemon-authenticated
-//! `CctuiRoom` endpoint, and the writer for `session_peer_shares`.
+//! Room routes: the small REST surface the webui's room picker needs, the
+//! daemon-authenticated `CctuiRoom` endpoint, and the writer for
+//! `session_peer_shares`.
+//!
+//! There is no room page and no human timeline: a room is a field on a session
+//! plus a permission boundary, so the only human operations are naming a room
+//! and moving sessions in and out of it.
 //!
 //! Rooms are owned by a user, and there is no `ResourceKind::Room`: every query
 //! here carries `user_id = $owner` itself rather than relying on a route guard,
 //! so an unknown id and another owner's id answer identically.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde_json::{Value, json};
@@ -43,74 +48,12 @@ async fn own_session(
         .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such session"))
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct CreateRoomRequest {
-    pub name: String,
-    #[serde(default)]
-    pub session_ids: Vec<String>,
-}
-
 /// `GET /api/v1/rooms`.
 pub async fn list_rooms(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(json!({ "rooms": rooms::list(&state.pool, ctx.user_id).await? })))
-}
-
-/// `POST /api/v1/rooms` — create a room, optionally seeded from the sessions the
-/// user had multi-selected.
-pub async fn create_room(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<CreateRoomRequest>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
-    let name = req.name.trim();
-    if name.is_empty() {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "room name is required"));
-    }
-    if req.session_ids.len() > MAX_MEMBERS {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            format!("a room holds at most {MAX_MEMBERS} sessions"),
-        ));
-    }
-    let live: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rooms WHERE user_id = $1 AND archived_at IS NULL")
-            .bind(ctx.user_id)
-            .fetch_one(&state.pool)
-            .await?;
-    if live >= MAX_ROOMS {
-        return Err(AppError::new(
-            StatusCode::CONFLICT,
-            format!("you already have {MAX_ROOMS} live rooms; archive one first"),
-        ));
-    }
-    let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO rooms (user_id, name) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(ctx.user_id)
-    .bind(name)
-    .fetch_one(&state.pool)
-    .await?;
-    // Each join reads the room back so the newcomer's preamble lists the members
-    // already in it.
-    for session_id in &req.session_ids {
-        own_session(&state, session_id, ctx.user_id).await?;
-        let room = owned(&state, id, ctx.user_id).await?;
-        rooms::add_member(&state, &room, ctx.user_id, session_id, "member").await?;
-    }
-    let room = owned(&state, id, ctx.user_id).await?;
-    Ok((StatusCode::CREATED, Json(json!(room))))
-}
-
-/// `GET /api/v1/rooms/{id}`.
-pub async fn get_room(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Value>, AppError> {
-    Ok(Json(json!(owned(&state, id, ctx.user_id).await?)))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -145,6 +88,9 @@ pub async fn update_room(
             .execute(&state.pool)
             .await?;
     }
+    state
+        .bus
+        .publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id: id, user_id: ctx.user_id });
     Ok(Json(json!(owned(&state, id, ctx.user_id).await?)))
 }
 
@@ -167,105 +113,84 @@ pub async fn delete_room(
 }
 
 #[derive(Debug, serde::Deserialize)]
-pub struct AddMemberRequest {
-    pub session_id: String,
+pub struct SetRoomRequest {
+    /// An existing room id, or — when `name` is given instead — the name to
+    /// create-or-reuse. Exactly one of the two is required.
     #[serde(default)]
-    pub role: Option<String>,
+    pub room_id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
-/// `POST /api/v1/rooms/{id}/members`.
-pub async fn add_member(
+/// Get-or-create a room by name for `owner`, case-insensitively, reviving an
+/// archived one rather than colliding with it.
+async fn room_by_name(state: &AppState, owner: Uuid, name: &str) -> Result<Uuid, AppError> {
+    let live: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rooms WHERE user_id = $1 AND archived_at IS NULL")
+            .bind(owner)
+            .fetch_one(&state.pool)
+            .await?;
+    if live >= MAX_ROOMS {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!("you already have {MAX_ROOMS} live rooms; archive one first"),
+        ));
+    }
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO rooms (user_id, name) VALUES ($1, $2) \
+         ON CONFLICT (user_id, lower(name)) \
+           DO UPDATE SET name = EXCLUDED.name, archived_at = NULL \
+         RETURNING id",
+    )
+    .bind(owner)
+    .bind(name)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(id)
+}
+
+/// `PUT /api/v1/sessions/{id}/room` — put this session in a room, by id or by
+/// name, moving it out of whatever room it was in.
+pub async fn set_session_room(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-    Json(req): Json<AddMemberRequest>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
+    Path(session_id): Path<String>,
+    Json(req): Json<SetRoomRequest>,
+) -> Result<Json<Value>, AppError> {
+    own_session(&state, &session_id, ctx.user_id).await?;
+    let id = match (req.room_id.as_deref().map(str::trim), req.name.as_deref().map(str::trim)) {
+        (Some(raw), _) if !raw.is_empty() => Uuid::parse_str(raw)
+            .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "room_id is not a room id"))?,
+        (_, Some(name)) if !name.is_empty() => room_by_name(&state, ctx.user_id, name).await?,
+        _ => {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "room_id or name is required"));
+        }
+    };
     let room = owned(&state, id, ctx.user_id).await?;
     if room.archived {
         return Err(AppError::new(StatusCode::CONFLICT, "this room is archived"));
     }
     if room.members.len() >= MAX_MEMBERS
-        && !room.members.iter().any(|m| m.session_id == req.session_id)
+        && !room.members.iter().any(|m| m.session_id == session_id)
     {
         return Err(AppError::new(
             StatusCode::CONFLICT,
             format!("this room already holds {MAX_MEMBERS} sessions"),
         ));
     }
-    own_session(&state, &req.session_id, ctx.user_id).await?;
-    let role = req.role.as_deref().unwrap_or("member");
-    let member =
-        rooms::add_member(&state, &room, ctx.user_id, req.session_id.trim(), role).await?;
-    Ok((StatusCode::CREATED, Json(json!(member))))
+    rooms::set_room(&state, &room, ctx.user_id, &session_id).await?;
+    Ok(Json(json!({ "room_id": room.id, "name": room.name })))
 }
 
-/// `DELETE /api/v1/rooms/{id}/members/{session_id}`.
-pub async fn remove_member(
+/// `DELETE /api/v1/sessions/{id}/room` — take this session out of its room.
+pub async fn clear_session_room(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Path((id, session_id)): Path<(Uuid, String)>,
-) -> Result<StatusCode, AppError> {
-    owned(&state, id, ctx.user_id).await?;
-    sqlx::query("DELETE FROM room_members WHERE room_id = $1 AND session_id = $2")
-        .bind(id)
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await?;
-    state
-        .bus
-        .publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id: id, user_id: ctx.user_id });
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Debug, Default, serde::Deserialize)]
-pub struct TimelineQuery {
-    pub after: Option<i64>,
-    pub limit: Option<i64>,
-}
-
-/// `GET /api/v1/rooms/{id}/messages?after=`.
-pub async fn get_messages(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-    Query(q): Query<TimelineQuery>,
-) -> Result<Json<Value>, AppError> {
-    owned(&state, id, ctx.user_id).await?;
-    let messages =
-        rooms::timeline(&state.pool, id, q.after, q.limit.unwrap_or(TIMELINE_PAGE)).await?;
-    Ok(Json(json!({ "messages": messages })))
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct PostMessageRequest {
-    pub message: String,
-}
-
-/// `POST /api/v1/rooms/{id}/messages` — the human composer. Posts land with
-/// `sender_session_id = NULL`.
-pub async fn post_message(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<Uuid>,
-    Json(req): Json<PostMessageRequest>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
-    let room = owned(&state, id, ctx.user_id).await?;
-    let message = rooms::post(&state, &room, ctx.user_id, None, &req.message).await?;
-    Ok((StatusCode::CREATED, Json(json!(message))))
-}
-
-/// `GET /api/v1/sessions/{id}/rooms` — for the card badge and the "add to room"
-/// menu. Owner-gated by the route guard.
-pub async fn session_rooms(
-    State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<Value>, AppError> {
-    let rows = rooms::rooms_of_session(&state.pool, &session_id).await?;
-    let out: Vec<Value> = rows
-        .into_iter()
-        .map(|(id, name, role)| json!({ "id": id, "name": name, "role": role }))
-        .collect();
-    Ok(Json(json!({ "rooms": out })))
+) -> Result<StatusCode, AppError> {
+    own_session(&state, &session_id, ctx.user_id).await?;
+    rooms::clear_room(&state, ctx.user_id, &session_id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // --- session_peer_shares writer ---
@@ -350,9 +275,8 @@ pub async fn list_peer_shares(
 
 // --- daemon surface for the CctuiRoom tool ---
 
-/// The room a tool call means: the one it named, or — when it named none and the
-/// caller is in exactly one — that one. Ambiguity is an error naming the options
-/// rather than a guess.
+/// The room a tool call means: the one it named, or the caller's own. A session
+/// is in at most one room, so there is never anything to disambiguate.
 async fn resolve_room(
     state: &AppState,
     caller: &str,
@@ -368,23 +292,14 @@ async fn resolve_room(
         }
         return Ok(room);
     }
-    let mine = rooms::rooms_of_session(&state.pool, caller).await?;
-    match mine.as_slice() {
-        [] => Err(AppError::new(
+    let Some((id, _)) = rooms::room_of_session(&state.pool, caller).await? else {
+        return Err(AppError::new(
             StatusCode::NOT_FOUND,
-            "this session is not in any room, so there is nowhere to post. A human adds a session \
-             to a room from the cctui UI.",
-        )),
-        [(id, _, _)] => owned(state, *id, owner).await,
-        many => Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "this session is in {} rooms; pass room_id. Options: {}",
-                many.len(),
-                many.iter().map(|(id, n, _)| format!("{n} ({id})")).collect::<Vec<_>>().join(", "),
-            ),
-        )),
-    }
+            "this session is not in a room, so there is nowhere to post. A human puts a session \
+             in a room from the cctui UI.",
+        ));
+    };
+    owned(state, id, owner).await
 }
 
 /// `POST /api/v1/daemon/sessions/{id}/room` — the server side of `CctuiRoom`.
@@ -405,7 +320,7 @@ pub async fn room_tool(
         "post" => {
             let body = req.message.as_deref().unwrap_or_default();
             let sender = me.as_ref();
-            let message = rooms::post(&state, &room, owner, sender, body).await?;
+            let message = rooms::post(&state, &room, sender, body).await?;
             let recipients = room
                 .members
                 .iter()
@@ -507,15 +422,14 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("seed room");
+        // A room is a field: putting a session in one is an UPDATE.
         for id in [&a, &b] {
-            sqlx::query(
-                "INSERT INTO room_members (room_id, session_id) VALUES ($1, $2)",
-            )
-            .bind(room_id)
-            .bind(id)
-            .execute(&pool)
-            .await
-            .expect("seed member");
+            sqlx::query("UPDATE sessions SET room_id = $1 WHERE id = $2")
+                .bind(room_id)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("seed room_id");
         }
 
         let room = rooms::load(&pool, room_id, uid).await.unwrap().expect("room");
@@ -630,7 +544,7 @@ mod tests {
             "the human's post reaches the session that posted earlier"
         );
 
-        // The timeline the webui reads, and its `after=` cursor.
+        // What `CctuiRoom peek` reads, and its `after=` cursor.
         let all = rooms::timeline(&pool, room_id, None, 200).await.unwrap();
         assert_eq!(all.len(), 3);
         let delta = rooms::timeline(&pool, room_id, Some(2), 200).await.unwrap();
@@ -655,6 +569,49 @@ mod tests {
             crate::peer_policy::Refusal::Unrelated,
             "an archived room stops authorising its members",
         );
+
+        // A session is in at most one room: moving it to a second one takes it
+        // out of the first, because the room is a single column.
+        sqlx::query("UPDATE rooms SET archived_at = NULL WHERE id = $1")
+            .bind(room_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let other: Uuid = sqlx::query_scalar(
+            "INSERT INTO rooms (user_id, name) VALUES ($1, 'wave 24') RETURNING id",
+        )
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE sessions SET room_id = $1 WHERE id = $2")
+            .bind(other)
+            .bind(&b)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let first = rooms::load(&pool, room_id, uid).await.unwrap().unwrap();
+        assert_eq!(
+            first.members.iter().map(|m| m.session_id.clone()).collect::<Vec<_>>(),
+            vec![a.clone()],
+            "moving a session to another room must remove it from the first"
+        );
+        assert_eq!(rooms::room_of_session(&pool, &b).await.unwrap().map(|r| r.0), Some(other));
+        assert_eq!(
+            crate::peer_policy::authorize(&pool, &a, &b, uid).await.unwrap_err(),
+            crate::peer_policy::Refusal::Unrelated,
+            "two different rooms are not a shared room",
+        );
+
+        // Deleting a room releases its sessions rather than deleting them.
+        sqlx::query("DELETE FROM rooms WHERE id = $1").bind(other).execute(&pool).await.unwrap();
+        assert!(rooms::room_of_session(&pool, &b).await.unwrap().is_none());
+        let still_there: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE id = $1")
+            .bind(&b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(still_there, 1, "ON DELETE SET NULL, not CASCADE");
 
         sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();

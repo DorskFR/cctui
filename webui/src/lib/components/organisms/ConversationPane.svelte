@@ -6,6 +6,7 @@
 	import { endpoints, useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
+	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '$lib/rooms';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import { Dropzone } from '@dorsk/tsumikit';
@@ -111,6 +112,27 @@
 	const labelsQuery = useLabels();
 	const allLabels = $derived(labelsQuery.data?.labels ?? []);
 	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
+
+	// Room is a field on the session, so a change invalidates the session list
+	// that the grouping and the card badge read.
+	async function setRoom(sessionId: string, pick: { id: string } | { name: string }) {
+		try {
+			if ('id' in pick) await setSessionRoom(sessionId, pick.id);
+			else await setSessionRoomByName(sessionId, pick.name);
+			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
+		} catch (e) {
+			toasts.error(errMessage(e));
+		}
+	}
+
+	async function clearRoom(sessionId: string) {
+		try {
+			await clearSessionRoom(sessionId);
+			void qc.invalidateQueries({ queryKey: qk.sessionsAll });
+		} catch (e) {
+			toasts.error(errMessage(e));
+		}
+	}
 
 	// Shared by the viewport (binds the scroller) and the composer (binds the
 	// textarea, whose growth must re-pin the viewport).
@@ -390,6 +412,8 @@
 				onDetachLabel={actions.detachLabel}
 				onUpdateLabel={actions.updateLabel}
 				onDeleteLabel={actions.deleteLabel}
+				onsetroom={setRoom}
+				onclearroom={clearRoom}
 			/>
 
 			<DrawerToolbar

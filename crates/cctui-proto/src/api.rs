@@ -321,6 +321,11 @@ pub struct SessionListItem {
     pub pinned: bool,
     #[serde(default)]
     pub labels: Vec<Label>,
+    /// The room this session is in, for grouping and the card badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

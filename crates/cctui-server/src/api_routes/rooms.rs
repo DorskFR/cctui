@@ -3,65 +3,40 @@
 //! Rooms carry no `ResourceKind`, so they are `Authenticated` here and every
 //! handler scopes its own queries by `user_id`. The per-session routes are
 //! ownership-gated by the route guard like the rest of the `/sessions/{id}`
-//! family.
+//! family. There is no timeline route: the room has no human-facing page.
 
-use super::{GET, sess_read, sess_write};
+use super::{GET, sess_write};
 use crate::authz::Authz::Authenticated;
 use crate::authz::{Authn, Routes};
 use crate::routes;
 use axum::http::Method;
-use axum::routing::{get, post};
+use axum::routing::get;
 
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
-        &[GET, Method::POST],
-        "/rooms",
-        "List rooms, or create one from the selected sessions.",
-        get(routes::rooms::list_rooms).post(routes::rooms::create_room),
-        Authn::Bearer,
-        Authenticated,
-    )
-    .add(
-        &[GET, Method::PATCH, Method::DELETE],
-        "/rooms/{id}",
-        "Read, rename/archive, or delete a room.",
-        get(routes::rooms::get_room)
-            .patch(routes::rooms::update_room)
-            .delete(routes::rooms::delete_room),
-        Authn::Bearer,
-        Authenticated,
-    )
-    .add(
-        &[Method::POST],
-        "/rooms/{id}/members",
-        "Add a session to a room.",
-        post(routes::rooms::add_member),
-        Authn::Bearer,
-        Authenticated,
-    )
-    .add(
-        &[Method::DELETE],
-        "/rooms/{id}/members/{session_id}",
-        "Remove a session from a room.",
-        axum::routing::delete(routes::rooms::remove_member),
-        Authn::Bearer,
-        Authenticated,
-    )
-    .add(
-        &[GET, Method::POST],
-        "/rooms/{id}/messages",
-        "Read the room timeline, or post to it as the human.",
-        get(routes::rooms::get_messages).post(routes::rooms::post_message),
-        Authn::Bearer,
-        Authenticated,
-    )
-    .add(
         &[GET],
-        "/sessions/{id}/rooms",
-        "Rooms this session belongs to.",
-        get(routes::rooms::session_rooms),
+        "/rooms",
+        "List rooms, for the picker.",
+        get(routes::rooms::list_rooms),
         Authn::Bearer,
-        sess_read(),
+        Authenticated,
+    )
+    .add(
+        &[Method::PATCH, Method::DELETE],
+        "/rooms/{id}",
+        "Rename/archive, or delete a room.",
+        axum::routing::patch(routes::rooms::update_room).delete(routes::rooms::delete_room),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::PUT, Method::DELETE],
+        "/sessions/{id}/room",
+        "Put this session in a room (by id or name), or take it out of one.",
+        axum::routing::put(routes::rooms::set_session_room)
+            .delete(routes::rooms::clear_session_room),
+        Authn::Bearer,
+        sess_write(),
     )
     .add(
         &[GET, Method::POST],

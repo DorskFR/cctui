@@ -54,7 +54,7 @@ export interface SessionListSettings {
   // Card accent color and section grouping share the dimension enum of
   // sessions.logic.ts; grouping has no "off" — 'status' is the bucketed list.
   colorBy: "none" | "label" | "working_dir" | "machine";
-  groupBy: "status" | "label" | "working_dir" | "machine";
+  groupBy: "status" | "label" | "working_dir" | "machine" | "room";
   // How wide the centered session-list column is allowed to grow. Only bites on
   // screens wider than the chosen cap, so it is a desktop-only knob in practice:
   // a phone viewport is already narrower than the default.
@@ -85,7 +85,7 @@ export const SESSION_LIST_WIDTHS = [
 export type SessionListWidth = (typeof SESSION_LIST_WIDTHS)[number];
 export const DEFAULT_SESSION_LIST_WIDTH: SessionListWidth = "default";
 
-const GROUP_BY_VALUES = ["status", "label", "working_dir", "machine"] as const;
+const GROUP_BY_VALUES = ["status", "label", "working_dir", "machine", "room"] as const;
 /** Blobs written before grouping had a status mode stored 'none' for it. */
 export function clampGroupBy(v: unknown): SessionListSettings["groupBy"] {
   return (GROUP_BY_VALUES as readonly unknown[]).includes(v)

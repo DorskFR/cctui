@@ -11,7 +11,6 @@
 	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
-	import { roomIndex } from '$lib/roomIndex.svelte';
 	import { pushState, replaceState } from '$app/navigation';
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
@@ -114,7 +113,6 @@
 	onMount(() => {
 		lastUrlId = sessionIdFromUrl();
 		mounted = true;
-		void roomIndex.load();
 	});
 
 	function setUrlSession(id: string | null, replace = false) {

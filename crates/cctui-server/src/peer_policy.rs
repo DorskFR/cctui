@@ -96,6 +96,8 @@ pub struct SessionNode {
     pub adapter_id: Option<String>,
     pub name: Option<String>,
     pub status: Option<String>,
+    /// The one room this session is in, if any.
+    pub room_id: Option<Uuid>,
 }
 
 /// `live` / `ended` / `archived`, the three states the roster reports.
@@ -140,7 +142,7 @@ pub struct PeerFacts {
     pub target: SessionNode,
     /// A live `session_peer_shares` row joins the pair in either direction.
     pub explicitly_shared: bool,
-    /// Both sessions hold a `room_members` row for the same live room.
+    /// Both sessions carry the same `sessions.room_id`, and that room is live.
     pub same_room: bool,
 }
 
@@ -209,16 +211,13 @@ pub type RosterRow =
 ///
 /// `$1` is the calling session id.
 pub const ROSTER_SQL: &str = "\
-WITH me AS (SELECT id, user_id, parent_id FROM sessions WHERE id = $1) \
+WITH me AS (SELECT id, user_id, parent_id, room_id FROM sessions WHERE id = $1) \
 SELECT s.id, s.session_name, s.adapter_id, m.name, s.status, \
        CASE \
          WHEN s.id = me.parent_id THEN 'parent' \
          WHEN s.parent_id = me.id THEN 'child' \
          WHEN me.parent_id IS NOT NULL AND s.parent_id = me.parent_id THEN 'sibling' \
-         WHEN EXISTS (SELECT 1 FROM room_members a \
-                        JOIN room_members b ON b.room_id = a.room_id \
-                        JOIN rooms r ON r.id = a.room_id AND r.archived_at IS NULL \
-                       WHERE a.session_id = me.id AND b.session_id = s.id) THEN 'room' \
+         WHEN me.room_id IS NOT NULL AND s.room_id = me.room_id THEN 'room' \
          ELSE 'shared' \
        END \
   FROM me \
@@ -227,10 +226,8 @@ SELECT s.id, s.session_name, s.adapter_id, m.name, s.status, \
  WHERE s.id = me.parent_id \
     OR s.parent_id = me.id \
     OR (me.parent_id IS NOT NULL AND s.parent_id = me.parent_id) \
-    OR EXISTS (SELECT 1 FROM room_members a \
-                 JOIN room_members b ON b.room_id = a.room_id \
-                 JOIN rooms r ON r.id = a.room_id AND r.archived_at IS NULL \
-                WHERE a.session_id = me.id AND b.session_id = s.id) \
+    OR (me.room_id IS NOT NULL AND s.room_id = me.room_id \
+        AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = me.room_id AND r.archived_at IS NULL)) \
     OR EXISTS (SELECT 1 FROM session_peer_shares p WHERE p.revoked_at IS NULL \
                  AND ((p.session_id = me.id AND p.peer_session_id = s.id) \
                    OR (p.session_id = s.id AND p.peer_session_id = me.id))) \
@@ -246,18 +243,18 @@ SELECT 1 FROM session_peer_shares \
  LIMIT 1";
 
 /// `$1` is the calling session id, `$2` the target's. A room that has been
-/// archived stops authorising its members.
+/// archived stops authorising the sessions in it.
 pub const SAME_ROOM_SQL: &str = "\
-SELECT 1 FROM room_members a \
-  JOIN room_members b ON b.room_id = a.room_id \
+SELECT 1 FROM sessions a \
+  JOIN sessions b ON b.room_id = a.room_id \
   JOIN rooms r ON r.id = a.room_id AND r.archived_at IS NULL \
- WHERE a.session_id = $1 AND b.session_id = $2 \
+ WHERE a.id = $1 AND b.id = $2 AND a.room_id IS NOT NULL \
  LIMIT 1";
 
 /// `$1` is the session id.
 pub const NODE_SQL: &str = "\
 SELECT s.id, s.user_id, s.parent_id, s.machine_uuid, m.name, s.adapter_id, s.session_name, \
-       s.status \
+       s.status, s.room_id \
   FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
  WHERE s.id = $1";
 
@@ -271,12 +268,24 @@ pub type NodeRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<Uuid>,
 );
 
 impl From<NodeRow> for SessionNode {
     fn from(r: NodeRow) -> Self {
-        let (id, user_id, parent_id, machine_uuid, machine_name, adapter_id, name, status) = r;
-        Self { id, user_id, parent_id, machine_uuid, machine_name, adapter_id, name, status }
+        let (id, user_id, parent_id, machine_uuid, machine_name, adapter_id, name, status, room_id) =
+            r;
+        Self {
+            id,
+            user_id,
+            parent_id,
+            machine_uuid,
+            machine_name,
+            adapter_id,
+            name,
+            status,
+            room_id,
+        }
     }
 }
 
@@ -334,6 +343,7 @@ mod tests {
             adapter_id: Some("claude-code".into()),
             name: Some(format!("s-{id}")),
             status: Some("active".into()),
+            room_id: None,
         }
     }
 
@@ -492,5 +502,13 @@ mod tests {
         }
         assert!(ROSTER_SQL.contains("s.user_id = me.user_id"), "the roster must stay owner-scoped");
         assert!(ROSTER_SQL.contains("revoked_at IS NULL"), "a revoked share must not be addressable");
+        assert!(
+            ROSTER_SQL.contains("s.room_id = me.room_id"),
+            "a room is a field on sessions, not a membership table"
+        );
+        assert!(
+            SAME_ROOM_SQL.contains("archived_at IS NULL"),
+            "an archived room must stop authorising its sessions"
+        );
     }
 }

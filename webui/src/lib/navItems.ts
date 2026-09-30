@@ -23,7 +23,6 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 		{ href: '/tiles', label: m.nav_tiles(), icon: '◫' },
 		{ href: '/bookmarks', label: m.nav_bookmarks(), icon: '◈' },
 		{ href: '/access', label: m.nav_access(), icon: '◍' },
-		{ href: '/rooms', label: m.rooms_title(), icon: '◎' },
 		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },
 		...(ghreviewUrl() !== null && gates.hasGithubConnector === true
 			? [{ href: '/github', label: m.nav_github(), icon: '◐' }]

@@ -145,6 +145,8 @@ pub struct DbSession {
     resolved_machine_name: Option<String>,
     resolved_machine_hue: Option<i16>,
     resolved_machine_kind: Option<String>,
+    room_id: Option<uuid::Uuid>,
+    room_name: Option<String>,
 }
 
 pub fn derive_status(registered_at: DateTime<Utc>, last_heartbeat: DateTime<Utc>) -> SessionStatus {
@@ -355,11 +357,13 @@ async fn fetch_listed_rows(
     let cols = "s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
                 s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
                 COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind";
+                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind, \
+                s.room_id, rm.name AS room_name";
     let non_archived_query = format!(
         "SELECT {cols} \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
+         LEFT JOIN rooms rm ON rm.id = s.room_id \
          WHERE {} \
          AND ($1::uuid IS NULL OR m.user_id = $1) \
          ORDER BY s.registered_at DESC",
@@ -374,6 +378,7 @@ async fn fetch_listed_rows(
             "SELECT {cols} \
              FROM sessions s \
              LEFT JOIN machines m ON m.id = s.machine_uuid \
+             LEFT JOIN rooms rm ON rm.id = s.room_id \
              WHERE s.status = 'archived' \
              AND ($1::uuid IS NULL OR m.user_id = $1) \
              ORDER BY s.registered_at DESC LIMIT 25",
@@ -433,6 +438,8 @@ fn skeleton_list_item(
         hibernated: false,
         pinned: false,
         labels: Vec::new(),
+        room_id: None,
+        room_name: None,
         last_heartbeat: Some(last_heartbeat),
         account_name: None,
         unread_count: 0,
@@ -497,6 +504,8 @@ fn db_list_item(row: DbSession) -> SessionListItem {
     item.machine_name = row.resolved_machine_name;
     item.machine_hue = row.resolved_machine_hue;
     item.machine_kind = row.resolved_machine_kind;
+    item.room_id = row.room_id.map(|id| id.to_string());
+    item.room_name = row.room_name;
     item
 }
 
@@ -1064,9 +1073,11 @@ pub struct SearchParams {
 const SEARCH_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
             s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
             COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-            m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
+            m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind, \
+            s.room_id, rm.name AS room_name \
      FROM sessions s \
-     LEFT JOIN machines m ON m.id = s.machine_uuid";
+     LEFT JOIN machines m ON m.id = s.machine_uuid \
+     LEFT JOIN rooms rm ON rm.id = s.room_id";
 
 const SEARCH_DEFAULT_LIMIT: i64 = 100;
 const SEARCH_MAX_LIMIT: i64 = 500;
@@ -1585,6 +1596,8 @@ pub async fn get_session(
                 hibernated: false,
                 pinned: false,
                 labels: Vec::new(),
+                room_id: None,
+                room_name: None,
                 last_heartbeat: Some(handle.session.last_heartbeat),
                 account_name: None,
                 unread_count: 0,
@@ -1652,6 +1665,8 @@ pub async fn get_session(
         hibernated: false,
         pinned: false,
         labels: Vec::new(),
+        room_id: row.room_id.map(|id| id.to_string()),
+        room_name: row.room_name,
         last_heartbeat: Some(row.last_heartbeat),
         account_name: None,
         unread_count: 0,

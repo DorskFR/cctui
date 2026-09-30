@@ -6,6 +6,7 @@ import {
 	branchOf,
 	bucketInSection,
 	colorHueOf,
+	COLOR_DIMENSIONS,
 	dimGroupsOf,
 	DIM_NONE_KEY,
 	draftEditPrefill,
@@ -17,6 +18,7 @@ import {
 	fmtWhen,
 	formatAgo,
 	groupChildren,
+	GROUP_DIMENSIONS,
 	groupRows,
 	inEnabledSections,
 	isDimension,
@@ -318,6 +320,7 @@ describe('dimension color / group', () => {
 		expect(isDimension('label')).toBe(true);
 		expect(isDimension('working_dir')).toBe(true);
 		expect(isDimension('machine')).toBe(true);
+		expect(isDimension('room')).toBe(true);
 		expect(isDimension('nope')).toBe(false);
 	});
 
@@ -353,6 +356,28 @@ describe('dimension color / group', () => {
 
 		it('sends a machineless session to "—"', () => {
 			expect(dimGroupsOf(session({ machine_name: null }), 'machine')[0].key).toBe(DIM_NONE_KEY);
+		});
+
+		it('groups by room, one membership because the room is a single field', () => {
+			const gs = dimGroupsOf(session({ room_id: 'r-1', room_name: 'wave 23' }), 'room');
+			expect(gs).toHaveLength(1);
+			expect(gs[0].label).toBe('wave 23');
+			expect(gs[0].key).toBe('room:r-1');
+			expect(gs[0].hue).not.toBe(null);
+		});
+
+		it('sends a roomless session to the same "—" bucket as the other dimensions', () => {
+			expect(dimGroupsOf(session({ room_id: null, room_name: null }), 'room')[0].key).toBe(
+				DIM_NONE_KEY
+			);
+			expect(dimGroupsOf(session({ room_id: 'r-1', room_name: null }), 'room')[0].key).toBe(
+				DIM_NONE_KEY
+			);
+		});
+
+		it('offers room in both the group and the colour dimension lists', () => {
+			expect(GROUP_DIMENSIONS.map((d) => d.value)).toContain('room');
+			expect(COLOR_DIMENSIONS.map((d) => d.value)).toContain('room');
 		});
 	});
 

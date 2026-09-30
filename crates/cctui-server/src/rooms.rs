@@ -1,23 +1,26 @@
-//! Rooms: a named group of sessions with one ordered timeline, fanned out to
-//! every member as an attributed turn.
+//! Rooms: a field on `sessions` that groups them, and the permission boundary
+//! [`crate::peer_policy`] reads. A session belongs to at most one room.
+//!
+//! On top of that, `CctuiRoom` gives the sessions in a room a broadcast: a post
+//! is fanned out to the others as an attributed turn.
 //!
 //! ## Why there is no per-member outbox
 //!
-//! `room_members.last_delivered_seq` IS the delivery cursor. [`sweep`] looks for
-//! members whose cursor trails the room's `next_seq` and whose session can take
-//! a turn right now ([`crate::keepalive::skip_reason`]), sends the missed posts
-//! in `seq` order, and advances the cursor. That one mechanism gives all four
-//! behaviours the ticket asks for: a member mid-turn or needing input is simply
-//! not selected and is picked up on a later tick; an offline or ended member
-//! replays in order when it comes back; a crashed replica loses nothing; and a
-//! redelivery cannot duplicate a post.
+//! `sessions.room_delivered_seq` IS the delivery cursor. [`sweep`] looks for
+//! sessions whose cursor trails their room's `next_seq` and which can take a
+//! turn right now ([`crate::keepalive::skip_reason`]), sends the missed posts in
+//! `seq` order, and advances the cursor. That one mechanism gives all four
+//! behaviours: a session mid-turn or needing input is simply not selected and is
+//! picked up on a later tick; an offline or ended one replays in order when it
+//! comes back; a crashed replica loses nothing; and a redelivery cannot
+//! duplicate a post.
 //!
 //! ## Loop guard
 //!
-//! Nothing here reads a member's ordinary output. A reply only reaches the room
+//! Nothing here reads a session's ordinary output. A reply only reaches the room
 //! if the agent explicitly calls `CctuiRoom post`, and [`pending_for`] never
-//! selects a message whose sender is the member itself. Those two facts are the
-//! whole guard, and the standing preamble ([`join_preamble`]) tells the agent so.
+//! selects a message whose sender is that session itself. Those two facts are
+//! the whole guard, and the standing preamble ([`join_preamble`]) says so.
 
 use axum::http::StatusCode;
 use uuid::Uuid;
@@ -61,16 +64,10 @@ pub struct Member {
     pub adapter: Option<String>,
     pub machine: Option<String>,
     pub state: &'static str,
-    pub role: String,
     pub last_delivered_seq: i64,
 }
 
 impl Member {
-    #[must_use]
-    pub fn is_observer(&self) -> bool {
-        self.role == "observer"
-    }
-
     /// `name (adapter on machine)`, the same shape the peer envelope uses.
     #[must_use]
     pub fn label(&self) -> String {
@@ -119,58 +116,45 @@ pub fn envelope(room_name: &str, sender_label: &str, body: &str) -> String {
 /// The standing block a session is told when it joins, delivered through the
 /// same neutral primitive as a post so no harness needs to know about rooms.
 #[must_use]
-pub fn join_preamble(room_name: &str, members: &[Member], observer: bool) -> String {
+pub fn join_preamble(room_name: &str, members: &[Member]) -> String {
     let roster = if members.is_empty() {
         "nobody else yet".to_owned()
     } else {
         members.iter().map(Member::label).collect::<Vec<_>>().join(", ")
     };
-    let how = if observer {
-        "You are an OBSERVER: you receive the room's messages but cannot post to it."
-    } else {
-        "To say something to the room, call the CctuiRoom tool with action \"post\". Nothing else \
-         you write reaches the room — your ordinary replies stay in your own conversation, so you \
-         will not echo yourself by working normally. Use \"peek\" to re-read the timeline and \
-         \"members\" to see who is in it."
-    };
     format!(
         "<cctui-room-joined name=\"{}\">\nYou have been added to the cctui room \"{}\".\n\
-         Members: {roster}, plus the human.\n\
-         Messages wrapped in <cctui-room> come from another member of this room, not from the \
-         human who runs you.\n{how}\n</cctui-room-joined>",
+         Members: {roster}.\n\
+         Being in a room means you may address these sessions with CctuiPeers, CctuiSend and \
+         CctuiHistory, across machines and harnesses, and they may address you.\n\
+         To say something to the whole room at once, call CctuiRoom with action \"post\". Nothing \
+         else you write reaches the room — your ordinary replies stay in your own conversation, so \
+         you will not echo yourself by working normally. Messages wrapped in <cctui-room> come \
+         from another session in this room, not from the human who runs you.\n\
+         </cctui-room-joined>",
         attr(room_name),
         attr(room_name),
     )
 }
 
 const MEMBERS_SQL: &str = "\
-SELECT rm.session_id, s.session_name, s.adapter_id, m.name, s.status, rm.role, \
-       rm.last_delivered_seq \
-  FROM room_members rm \
-  LEFT JOIN sessions s ON s.id = rm.session_id \
+SELECT s.id, s.session_name, s.adapter_id, m.name, s.status, s.room_delivered_seq \
+  FROM sessions s \
   LEFT JOIN machines m ON m.id = s.machine_uuid \
- WHERE rm.room_id = $1 \
- ORDER BY rm.joined_at, rm.session_id";
+ WHERE s.room_id = $1 \
+ ORDER BY s.registered_at, s.id";
 
-type MemberRow = (
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-    i64,
-);
+type MemberRow =
+    (String, Option<String>, Option<String>, Option<String>, Option<String>, i64);
 
 fn member_of(r: MemberRow) -> Member {
-    let (session_id, name, adapter, machine, status, role, last_delivered_seq) = r;
+    let (session_id, name, adapter, machine, status, last_delivered_seq) = r;
     Member {
         session_id,
         name,
         adapter,
         machine,
         state: crate::peer_policy::state_of(status.as_deref()),
-        role,
         last_delivered_seq,
     }
 }
@@ -223,19 +207,19 @@ pub async fn list(pool: &sqlx::PgPool, owner: Uuid) -> Result<Vec<Room>, sqlx::E
     Ok(out)
 }
 
-/// The live rooms a session belongs to, for the card badge and for resolving a
-/// tool call that named no room.
-pub async fn rooms_of_session(
+/// The live room a session is in, if any. One row by construction: the room is
+/// a column, so a tool call never has to disambiguate between several.
+pub async fn room_of_session(
     pool: &sqlx::PgPool,
     session_id: &str,
-) -> Result<Vec<(Uuid, String, String)>, sqlx::Error> {
+) -> Result<Option<(Uuid, String)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT r.id, r.name, rm.role FROM room_members rm \
-           JOIN rooms r ON r.id = rm.room_id AND r.archived_at IS NULL \
-          WHERE rm.session_id = $1 ORDER BY r.created_at DESC",
+        "SELECT r.id, r.name FROM sessions s \
+           JOIN rooms r ON r.id = s.room_id AND r.archived_at IS NULL \
+          WHERE s.id = $1",
     )
     .bind(session_id)
-    .fetch_all(pool)
+    .fetch_optional(pool)
     .await
 }
 
@@ -275,7 +259,6 @@ pub enum PostRefusal {
     TooLarge(usize),
     EnvelopeBreak,
     Archived,
-    Observer,
     NotAMember,
     RateLimited,
 }
@@ -286,7 +269,7 @@ impl PostRefusal {
         match self {
             Self::Empty | Self::EnvelopeBreak => StatusCode::BAD_REQUEST,
             Self::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::Archived | Self::Observer => StatusCode::CONFLICT,
+            Self::Archived => StatusCode::CONFLICT,
             Self::NotAMember => StatusCode::FORBIDDEN,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         }
@@ -306,10 +289,7 @@ impl std::fmt::Display for PostRefusal {
                 write!(f, "message must not contain {ENVELOPE_CLOSE}: it would truncate the envelope")
             }
             Self::Archived => f.write_str("this room is archived and takes no new messages"),
-            Self::Observer => {
-                f.write_str("this session is an observer in the room and cannot post to it")
-            }
-            Self::NotAMember => f.write_str("this session is not a member of that room"),
+            Self::NotAMember => f.write_str("this session is not in that room"),
             Self::RateLimited => {
                 write!(f, "room post rate limit reached ({POSTS_PER_MIN} per minute per sender)")
             }
@@ -346,11 +326,8 @@ pub fn check_sender(room: &Room, sender: Option<&str>) -> Result<(), PostRefusal
         return Err(PostRefusal::Archived);
     }
     let Some(sender) = sender else { return Ok(()) };
-    let Some(member) = room.members.iter().find(|m| m.session_id == sender) else {
+    if !room.members.iter().any(|m| m.session_id == sender) {
         return Err(PostRefusal::NotAMember);
-    };
-    if member.is_observer() {
-        return Err(PostRefusal::Observer);
     }
     Ok(())
 }
@@ -368,7 +345,6 @@ fn limiter() -> &'static crate::routes::peer::Limiter {
 pub async fn post(
     state: &AppState,
     room: &Room,
-    owner: Uuid,
     sender: Option<&Member>,
     body: &str,
 ) -> Result<RoomMessage, AppError> {
@@ -409,23 +385,8 @@ pub async fn post(
         body: body.to_owned(),
         created_at,
     };
-    announce(state, room, owner, &message);
     deliver_room(state, room.id).await;
     Ok(message)
-}
-
-/// Tell every watching webui socket about a post, so the Room panel updates
-/// without polling.
-fn announce(state: &AppState, room: &Room, owner: Uuid, message: &RoomMessage) {
-    state.bus.publish_server(cctui_proto::ws::ServerEvent::RoomMessage {
-        room_id: room.id,
-        room_name: room.name.clone(),
-        user_id: owner,
-        seq: message.seq,
-        sender_session_id: message.sender_session_id.clone(),
-        sender_label: message.sender_label.clone(),
-        body: message.body.clone(),
-    });
 }
 
 /// A member with posts it has not been given yet, and the session signals that
@@ -435,7 +396,6 @@ pub struct Pending {
     pub room_id: Uuid,
     pub room_name: String,
     pub session_id: String,
-    pub role: String,
     pub last_delivered_seq: i64,
     pub status: String,
     pub tempo: Option<String>,
@@ -445,9 +405,9 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// Whether this member can be handed a turn right now. Mid-turn and
-    /// needs-input members are left for a later tick; ended and archived ones
-    /// wait until a resume flips their row back to a live status.
+    /// Whether this session can be handed a turn right now. Mid-turn and
+    /// needs-input ones are left for a later tick; ended and archived ones wait
+    /// until a resume flips their row back to a live status.
     #[must_use]
     pub fn deliverable(&self) -> bool {
         crate::keepalive::skip_reason(&crate::keepalive::Snapshot {
@@ -465,21 +425,19 @@ impl Pending {
 
 /// `$1` bounds the scan; `$2`, when non-null, restricts it to one room.
 const PENDING_SQL: &str = "\
-SELECT r.id, r.name, rm.session_id, rm.role, rm.last_delivered_seq, \
+SELECT r.id, r.name, s.id, s.room_delivered_seq, \
        COALESCE(s.status, 'ended'), s.tempo, s.agent_state, s.soft_limit_reason, \
        EXISTS (SELECT 1 FROM stream_events e \
-                WHERE e.session_id = rm.session_id AND e.event_type = 'session_ended') \
-  FROM room_members rm \
-  JOIN rooms r ON r.id = rm.room_id AND r.archived_at IS NULL \
-  LEFT JOIN sessions s ON s.id = rm.session_id \
- WHERE rm.last_delivered_seq < r.next_seq \
+                WHERE e.session_id = s.id AND e.event_type = 'session_ended') \
+  FROM sessions s \
+  JOIN rooms r ON r.id = s.room_id AND r.archived_at IS NULL \
+ WHERE s.room_delivered_seq < r.next_seq \
    AND ($2::uuid IS NULL OR r.id = $2) \
- ORDER BY r.id, rm.session_id \
+ ORDER BY r.id, s.id \
  LIMIT $1";
 
 type PendingRow = (
     Uuid,
-    String,
     String,
     String,
     i64,
@@ -503,13 +461,12 @@ pub async fn pending(
             room_id: r.0,
             room_name: r.1,
             session_id: r.2,
-            role: r.3,
-            last_delivered_seq: r.4,
-            status: r.5,
-            tempo: r.6,
-            agent_state: r.7,
-            soft_limit_reason: r.8,
-            ended: r.9,
+            last_delivered_seq: r.3,
+            status: r.4,
+            tempo: r.5,
+            agent_state: r.6,
+            soft_limit_reason: r.7,
+            ended: r.8,
         })
         .collect())
 }
@@ -564,8 +521,8 @@ pub async fn advance_to(
             .await?,
     };
     sqlx::query(
-        "UPDATE room_members SET last_delivered_seq = GREATEST(last_delivered_seq, $3) \
-         WHERE room_id = $1 AND session_id = $2",
+        "UPDATE sessions SET room_delivered_seq = GREATEST(room_delivered_seq, $3) \
+         WHERE id = $2 AND room_id = $1",
     )
     .bind(member.room_id)
     .bind(&member.session_id)
@@ -644,45 +601,45 @@ async fn serve(state: &AppState, room_id: Option<Uuid>) {
     }
 }
 
-/// Add `session_id` to `room`, then greet it with the standing preamble.
+/// Put `session_id` in `room`, moving it out of whatever room it was in, then
+/// greet it with the standing preamble.
 ///
 /// The cursor starts at the room's head: a session joining an old conversation
 /// is not flooded with its whole backlog. `peek` is how it reads what it missed.
-pub async fn add_member(
+pub async fn set_room(
     state: &AppState,
     room: &Room,
     owner: Uuid,
     session_id: &str,
-    role: &str,
 ) -> Result<Member, AppError> {
-    let role = if role == "observer" { "observer" } else { "member" };
     let head: i64 = sqlx::query_scalar("SELECT next_seq FROM rooms WHERE id = $1")
         .bind(room.id)
         .fetch_one(&state.pool)
         .await?;
-    sqlx::query(
-        "INSERT INTO room_members (room_id, session_id, role, last_delivered_seq) \
-         VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (room_id, session_id) DO UPDATE SET role = EXCLUDED.role",
+    let moved = sqlx::query(
+        "UPDATE sessions SET room_id = $1, room_delivered_seq = $3 \
+         WHERE id = $2 AND (room_id IS DISTINCT FROM $1)",
     )
     .bind(room.id)
     .bind(session_id)
-    .bind(role)
     .bind(head)
     .execute(&state.pool)
-    .await?;
+    .await?
+    .rows_affected()
+        > 0;
     let joined = members(&state.pool, room.id)
         .await?
         .into_iter()
         .find(|m| m.session_id == session_id)
         .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"))?;
+    announce_members(state, room.id, owner);
+    // A session already in this room is not greeted again.
+    if !moved {
+        return Ok(joined);
+    }
     let others: Vec<Member> =
         room.members.iter().filter(|m| m.session_id != session_id).cloned().collect();
-    state.bus.publish_server(cctui_proto::ws::ServerEvent::RoomMembers {
-        room_id: room.id,
-        user_id: owner,
-    });
-    let text = join_preamble(&room.name, &others, joined.is_observer());
+    let text = join_preamble(&room.name, &others);
     if let Err(err) = crate::bus::dispatch(
         state,
         session_id,
@@ -698,18 +655,44 @@ pub async fn add_member(
     Ok(joined)
 }
 
+/// Take `session_id` out of whatever room it is in. Its cursor is reset so a
+/// later join starts clean rather than at a stale seq of another room.
+pub async fn clear_room(
+    state: &AppState,
+    owner: Uuid,
+    session_id: &str,
+) -> Result<Option<Uuid>, AppError> {
+    let was: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE sessions SET room_id = NULL, room_delivered_seq = 0 \
+         WHERE id = $1 AND room_id IS NOT NULL RETURNING room_id",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .flatten();
+    if let Some(room_id) = was {
+        announce_members(state, room_id, owner);
+    }
+    Ok(was)
+}
+
+fn announce_members(state: &AppState, room_id: Uuid, owner: Uuid) {
+    state
+        .bus
+        .publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id, user_id: owner });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn member(id: &str, role: &str) -> Member {
+    fn member(id: &str) -> Member {
         Member {
             session_id: id.to_owned(),
             name: Some(format!("lane {id}")),
             adapter: Some("claude-code".into()),
             machine: Some("box-a".into()),
             state: "live",
-            role: role.to_owned(),
             last_delivered_seq: 0,
         }
     }
@@ -723,7 +706,6 @@ mod tests {
             room_id: Uuid::nil(),
             room_name: "wave 23".into(),
             session_id: "a".into(),
-            role: "member".into(),
             last_delivered_seq: 0,
             status: status.to_owned(),
             tempo: None,
@@ -771,30 +753,23 @@ mod tests {
         assert_eq!(PostRefusal::Empty.status(), StatusCode::BAD_REQUEST);
         assert_eq!(PostRefusal::TooLarge(1).status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(PostRefusal::Archived.status(), StatusCode::CONFLICT);
-        assert_eq!(PostRefusal::Observer.status(), StatusCode::CONFLICT);
         assert_eq!(PostRefusal::NotAMember.status(), StatusCode::FORBIDDEN);
         assert_eq!(PostRefusal::RateLimited.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(PostRefusal::TooLarge(99).to_string().contains("99"));
     }
 
-    /// Authorisation to post: a non-member is refused even though it may hold
-    /// the room id, an observer is refused by role, and the human (None) is
-    /// always allowed into a live room.
+    /// Authorisation to post: a session not in the room is refused even though
+    /// it may hold the room id.
     #[test]
-    fn only_non_observer_members_and_the_human_may_post() {
-        let r = room(vec![member("a", "member"), member("b", "observer")]);
+    fn only_sessions_in_the_room_may_post_to_it() {
+        let r = room(vec![member("a"), member("b")]);
         assert_eq!(check_sender(&r, Some("a")), Ok(()));
-        assert_eq!(check_sender(&r, Some("b")), Err(PostRefusal::Observer));
         assert_eq!(check_sender(&r, Some("stranger")), Err(PostRefusal::NotAMember));
-        assert_eq!(check_sender(&r, None), Ok(()));
+        assert_eq!(check_sender(&r, None), Ok(()), "None is the server's own post");
 
-        let archived = Room { archived: true, ..room(vec![member("a", "member")]) };
+        let archived = Room { archived: true, ..room(vec![member("a")]) };
         assert_eq!(check_sender(&archived, Some("a")), Err(PostRefusal::Archived));
-        assert_eq!(
-            check_sender(&archived, None),
-            Err(PostRefusal::Archived),
-            "an archived room takes nothing, not even from the human"
-        );
+        assert_eq!(check_sender(&archived, None), Err(PostRefusal::Archived));
     }
 
     /// The queueing rule: a member mid-turn, needing input, soft-limited, ended
@@ -824,23 +799,30 @@ mod tests {
     /// The loop guard, in the SQL that selects what a member is owed: a member
     /// is never handed back its own post.
     #[test]
-    fn the_fanout_query_excludes_the_members_own_posts() {
+    fn the_fanout_query_reads_the_cursor_off_the_session_row() {
         assert!(
-            PENDING_SQL.contains("rm.last_delivered_seq < r.next_seq"),
-            "the cursor is what makes a member pending"
+            PENDING_SQL.contains("s.room_delivered_seq < r.next_seq"),
+            "the cursor is what makes a session pending, and it lives on the session"
         );
         assert!(PENDING_SQL.contains("archived_at IS NULL"), "an archived room fans out nothing");
+        assert!(!PENDING_SQL.contains("room_members"), "there is no membership table any more");
     }
 
     #[test]
-    fn the_join_preamble_names_the_room_the_members_and_how_to_reply() {
-        let text = join_preamble("wave 23", &[member("a", "member"), member("b", "member")], false);
+    /// The preamble has to state both halves of what a room is — the permission
+    /// boundary and the broadcast — and the loop guard, or an agent either does
+    /// not know it may address its peers or echoes every turn into the room.
+    #[test]
+    fn the_join_preamble_names_the_room_its_sessions_the_permissions_and_the_guard() {
+        let text = join_preamble("wave 23", &[member("a"), member("b")]);
         assert!(text.contains("name=\"wave 23\""), "{text}");
         assert!(text.contains("lane a (claude-code on box-a)"), "{text}");
         assert!(text.contains("lane b (claude-code on box-a)"), "{text}");
-        assert!(text.contains("plus the human"), "{text}");
-        assert!(text.contains("CctuiRoom"), "{text}");
+        for tool in ["CctuiPeers", "CctuiSend", "CctuiHistory", "CctuiRoom"] {
+            assert!(text.contains(tool), "{tool} missing from the preamble: {text}");
+        }
         assert!(text.contains("action \"post\""), "{text}");
+        assert!(text.contains("across machines and harnesses"), "{text}");
         assert!(
             text.contains("stay in your own conversation"),
             "the loop guard must be stated, or agents echo every turn: {text}"
@@ -848,22 +830,18 @@ mod tests {
     }
 
     #[test]
-    fn an_observer_is_told_it_cannot_post_and_an_empty_room_says_so() {
-        let observer = join_preamble("wave 23", &[], true);
-        assert!(observer.contains("OBSERVER"), "{observer}");
-        assert!(observer.contains("nobody else yet"), "{observer}");
-        assert!(!observer.contains("action \"post\""), "{observer}");
+    fn an_empty_room_says_so_rather_than_listing_nothing() {
+        let alone = join_preamble("wave 23", &[]);
+        assert!(alone.contains("nobody else yet"), "{alone}");
     }
 
     #[test]
     fn a_member_label_falls_back_to_the_session_id() {
-        let mut m = member("a", "member");
+        let mut m = member("a");
         assert_eq!(m.label(), "lane a (claude-code on box-a)");
         m.name = Some("  ".into());
         m.adapter = None;
         m.machine = None;
         assert_eq!(m.label(), "a (unknown on unknown machine)");
-        assert!(!m.is_observer());
-        assert!(member("b", "observer").is_observer());
     }
 }
