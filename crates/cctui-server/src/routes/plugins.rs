@@ -13,10 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::auth::AuthContext;
 use std::collections::BTreeMap;
 
-use crate::plugins::{
-    Plugin, PluginInstanceSetting, PluginPage, PluginSetting, enabled_ids, mime_for, plugin_config,
-    resolve_static,
-};
+use crate::plugins::{Plugin, enabled_ids, mime_for, plugin_config, resolve_static};
 use crate::state::AppState;
 
 pub use cctui_proto::api::plugins::PluginInfo;

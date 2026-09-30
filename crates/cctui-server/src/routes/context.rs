@@ -10,7 +10,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -461,6 +460,8 @@ pub async fn resolve_items(
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
 
     fn item(kind: &str, name: &str, scope: &str, scope_ref: Option<&str>) -> ContextItem {
