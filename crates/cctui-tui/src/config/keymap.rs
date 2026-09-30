@@ -13,6 +13,7 @@ pub enum Context {
     Composer,
     History,
     Help,
+    ModelPicker,
     Permission,
     Ask,
     AskText,
@@ -27,6 +28,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Composer,
     Context::History,
     Context::Help,
+    Context::ModelPicker,
     Context::Permission,
     Context::Ask,
     Context::AskText,
@@ -43,6 +45,7 @@ impl Context {
             Self::Composer => "composer",
             Self::History => "history",
             Self::Help => "help",
+            Self::ModelPicker => "model-picker",
             Self::Permission => "permission",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
@@ -59,6 +62,7 @@ impl Context {
             Self::Composer => "Composer",
             Self::History => "Prompt history",
             Self::Help => "Help",
+            Self::ModelPicker => "Model picker",
             Self::Permission => "Permission card",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
@@ -141,6 +145,13 @@ actions! {
     ScrollToBottom => "scroll-to-bottom", "Jump to the bottom";
     ToggleTimestamps => "toggle-timestamps", "Show timestamps";
     Interrupt => "interrupt", "Interrupt the turn";
+    ModelPicker => "model-picker", "Change model and effort";
+    PickerClose => "picker-close", "Close the picker";
+    PickerNext => "picker-next", "Next entry";
+    PickerPrev => "picker-prev", "Previous entry";
+    PickerModelColumn => "picker-model-column", "Focus the model list";
+    PickerEffortColumn => "picker-effort-column", "Focus the effort list";
+    PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
     ToggleExpand => "toggle-expand", "Expand the focused line";
@@ -253,6 +264,8 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "e", ActionId::EditSend),
     spec(Context::Conversation, "x", ActionId::DiscardSend),
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
+    spec(Context::Conversation, "M", ActionId::ModelPicker),
+    spec(Context::Conversation, "ctrl+f", ActionId::Fork),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
@@ -282,6 +295,17 @@ const HELP: &[BindingSpec] = &[
     spec(Context::Help, "k, up", ActionId::ScrollUp),
     spec(Context::Help, "pagedown", ActionId::PageDown),
     spec(Context::Help, "pageup", ActionId::PageUp),
+];
+
+/// Modal over the conversation: everything it does not claim stays claimed,
+/// so a stray key cannot type into the composer behind it.
+const MODEL_PICKER: &[BindingSpec] = &[
+    spec(Context::ModelPicker, "esc, q", ActionId::PickerClose),
+    spec(Context::ModelPicker, "j, down", ActionId::PickerNext),
+    spec(Context::ModelPicker, "k, up", ActionId::PickerPrev),
+    spec(Context::ModelPicker, "h, left", ActionId::PickerModelColumn),
+    spec(Context::ModelPicker, "l, right, tab", ActionId::PickerEffortColumn),
+    spec(Context::ModelPicker, "enter", ActionId::PickerApply),
 ];
 
 /// The card is inline, not modal: only the answer keys live here and
@@ -332,6 +356,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     COMPOSER,
     HISTORY,
     HELP,
+    MODEL_PICKER,
     PERMISSION,
     ASK,
     ASK_TEXT,

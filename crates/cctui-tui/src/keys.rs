@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::PromptFocus;
 use crate::app::action::Action;
 use crate::app::attention::{AttentionAction, Decision};
+use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
 use crate::app::drafts::DraftAction;
 use crate::app::prompt::PromptAction;
@@ -29,6 +30,9 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
     if matches!(view, View::HistoryPicker) {
         return Context::History;
     }
+    if matches!(view, View::ModelPicker) {
+        return Context::ModelPicker;
+    }
     if input_active {
         return Context::Composer;
     }
@@ -46,6 +50,7 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
         View::Conversation => Context::Conversation,
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
+        View::ModelPicker => Context::ModelPicker,
     }
 }
 
@@ -69,12 +74,12 @@ pub fn map_input(
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
-            View::Help | View::HistoryPicker => None,
+            View::Help | View::HistoryPicker | View::ModelPicker => None,
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
-            View::Help | View::HistoryPicker => None,
+            View::Help | View::HistoryPicker | View::ModelPicker => None,
         },
     }
 }
@@ -113,7 +118,19 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::LineCursor => Action::Conversation(ConversationAction::ToggleLineCursor),
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
-        ActionId::Interrupt => Action::InterruptSelected,
+        ActionId::Interrupt => Action::Controls(ControlsAction::Interrupt),
+        ActionId::Fork => Action::Controls(ControlsAction::Fork),
+        ActionId::ModelPicker => Action::Controls(ControlsAction::OpenModelPicker),
+        ActionId::PickerClose => Action::Controls(ControlsAction::ClosePicker),
+        ActionId::PickerNext => Action::Controls(ControlsAction::PickerMove(1)),
+        ActionId::PickerPrev => Action::Controls(ControlsAction::PickerMove(-1)),
+        ActionId::PickerModelColumn => {
+            Action::Controls(ControlsAction::PickerColumn(PickerColumn::Model))
+        }
+        ActionId::PickerEffortColumn => {
+            Action::Controls(ControlsAction::PickerColumn(PickerColumn::Effort))
+        }
+        ActionId::PickerApply => Action::Controls(ControlsAction::PickerApply),
         ActionId::RetrySend => Action::Send(SendAction::Retry(chord.event())),
         ActionId::EditSend => Action::Send(SendAction::Edit(chord.event())),
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
@@ -180,8 +197,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use super::{
-        Action, AttentionAction, Decision, DraftAction, InputEvent, Keymap, PromptFocus, View,
-        map_input,
+        Action, AttentionAction, ControlsAction, Decision, DraftAction, InputEvent, Keymap,
+        PickerColumn, PromptFocus, View, map_input,
     };
     use crate::app::prompt::PromptAction;
     use crate::config::keymap::Context;
@@ -316,10 +333,53 @@ mod tests {
     }
 
     #[test]
+    fn the_session_controls_are_bound_in_the_conversation() {
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('M')),
+            Some(Action::Controls(ControlsAction::OpenModelPicker))
+        ));
+        assert!(matches!(
+            map_event(View::Conversation, false, ctrl('f')),
+            Some(Action::Controls(ControlsAction::Fork))
+        ));
+    }
+
+    /// The picker is modal: a key it does not claim must not reach the
+    /// composer behind it.
+    #[test]
+    fn the_model_picker_claims_its_keys_and_swallows_the_rest() {
+        assert!(matches!(
+            map(View::ModelPicker, false, KeyCode::Char('j')),
+            Some(Action::Controls(ControlsAction::PickerMove(1)))
+        ));
+        assert!(matches!(
+            map(View::ModelPicker, false, KeyCode::Char('k')),
+            Some(Action::Controls(ControlsAction::PickerMove(-1)))
+        ));
+        assert!(matches!(
+            map(View::ModelPicker, false, KeyCode::Tab),
+            Some(Action::Controls(ControlsAction::PickerColumn(PickerColumn::Effort)))
+        ));
+        assert!(matches!(
+            map(View::ModelPicker, false, KeyCode::Left),
+            Some(Action::Controls(ControlsAction::PickerColumn(PickerColumn::Model)))
+        ));
+        assert!(matches!(
+            map(View::ModelPicker, false, KeyCode::Enter),
+            Some(Action::Controls(ControlsAction::PickerApply))
+        ));
+        assert!(matches!(
+            map(View::ModelPicker, false, KeyCode::Esc),
+            Some(Action::Controls(ControlsAction::ClosePicker))
+        ));
+        assert!(map(View::ModelPicker, false, KeyCode::Char('w')).is_none());
+    }
+
+    #[test]
     fn ctrl_bindings_win_over_navigation() {
         assert!(matches!(
             map_event(View::Conversation, false, ctrl('c')),
-            Some(Action::InterruptSelected)
+            Some(Action::Controls(ControlsAction::Interrupt))
         ));
         assert!(matches!(
             map_event(View::Conversation, false, ctrl('a')),

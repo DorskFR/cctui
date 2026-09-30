@@ -227,3 +227,36 @@ pub fn ended_session(
     s.ended_at = chrono::DateTime::from_timestamp_millis(1_700_000_000_000);
     s
 }
+
+/// Lists shaped like `/models/codex`: a default, the running model and one the
+/// catalog gates.
+pub fn picker_models() -> cctui_proto::harness_models::HarnessModels {
+    use cctui_proto::harness_models::{HarnessModels, ModelHint, ModelOption};
+    HarnessModels {
+        harness: "codex".to_owned(),
+        models: vec![
+            ModelOption {
+                v: String::new(),
+                label: "Default".to_owned(),
+                hint: None,
+                disabled: false,
+            },
+            ModelOption {
+                v: "gpt-5.6-sol".to_owned(),
+                label: "Sol".to_owned(),
+                hint: None,
+                disabled: false,
+            },
+            ModelOption {
+                v: "gpt-6-terra".to_owned(),
+                label: "Terra".to_owned(),
+                hint: Some(ModelHint::Gated {
+                    version: "0.160".to_owned(),
+                    current: "0.158".to_owned(),
+                }),
+                disabled: true,
+            },
+        ],
+        efforts: vec![String::new(), "low".to_owned(), "medium".to_owned(), "high".to_owned()],
+    }
+}

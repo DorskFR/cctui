@@ -1,5 +1,6 @@
 pub mod action;
 pub mod attention;
+pub mod controls;
 pub mod conversation;
 pub mod conversation_store;
 pub mod drafts;

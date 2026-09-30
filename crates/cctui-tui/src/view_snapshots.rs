@@ -1,12 +1,13 @@
 use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::drafts::DraftAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, edit_permission_request,
-    ended_session, ms_ago, permission_request, plan_card, render_screen, render_screen_sized,
-    session, todo,
+    ended_session, ms_ago, permission_request, picker_models, plan_card, render_screen,
+    render_screen_sized, session, todo,
 };
 
 /// `selected_index` walks the grouped list, so the session on screen is not
@@ -502,5 +503,84 @@ fn conversation_permission_card_outranks_an_ask_card() {
     let id = selected(&app);
     app.asks.insert(id, ask_card());
     with_permission(&mut app, permission_request());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+// -- CCT-1236: interrupt feedback and in-place controls --
+
+fn codex_conversation() -> crate::app::App {
+    let mut app = app_on("s-working");
+    let s = session_mut(&mut app, "s-working");
+    s.adapter_id = Some(cctui_proto::adapter::AdapterId::new("codex"));
+    s.model = Some("gpt-5.6-sol".to_owned());
+    s.effort = Some("high".to_owned());
+    s.permission_mode = Some("acceptEdits".to_owned());
+    focus(&mut app, "s-working");
+    app
+}
+
+#[test]
+fn conversation_header_carries_the_dials_and_permission_mode() {
+    let mut app = codex_conversation();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_interrupt_armed_by_one_press() {
+    let mut app = app_on("s-working");
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Controls(ControlsAction::Interrupt));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_interrupt_in_flight() {
+    let mut app = app_on("s-working");
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Controls(ControlsAction::Interrupt));
+    reduce(&mut app, Action::Controls(ControlsAction::Interrupt));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_fork_armed_by_one_press() {
+    let mut app = app_on("s-working");
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Controls(ControlsAction::Fork));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn model_picker_while_the_lists_load() {
+    let mut app = codex_conversation();
+    reduce(&mut app, Action::Controls(ControlsAction::OpenModelPicker));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn model_picker_loaded() {
+    let mut app = codex_conversation();
+    reduce(&mut app, Action::Controls(ControlsAction::OpenModelPicker));
+    reduce(&mut app, Action::Controls(ControlsAction::ModelsLoaded(Box::new(picker_models()))));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn model_picker_on_the_effort_column() {
+    let mut app = codex_conversation();
+    reduce(&mut app, Action::Controls(ControlsAction::OpenModelPicker));
+    reduce(&mut app, Action::Controls(ControlsAction::ModelsLoaded(Box::new(picker_models()))));
+    reduce(&mut app, Action::Controls(ControlsAction::PickerColumn(PickerColumn::Effort)));
+    reduce(&mut app, Action::Controls(ControlsAction::PickerMove(1)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// A gated model shows why it cannot be picked and the footer says so.
+#[test]
+fn model_picker_on_a_gated_model() {
+    let mut app = codex_conversation();
+    reduce(&mut app, Action::Controls(ControlsAction::OpenModelPicker));
+    reduce(&mut app, Action::Controls(ControlsAction::ModelsLoaded(Box::new(picker_models()))));
+    reduce(&mut app, Action::Controls(ControlsAction::PickerMove(1)));
     insta::assert_snapshot!(render_screen(&mut app));
 }

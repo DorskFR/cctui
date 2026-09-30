@@ -18,7 +18,21 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, session: &SessionListItem)
     frame.render_widget(Paragraph::new(line(app, session)), area);
 }
 
+/// An interrupt in flight, or a key waiting for its second press, outranks the
+/// activity: both are answers to something the operator just did.
 pub fn line(app: &App, session: &SessionListItem) -> Line<'static> {
+    if app.controls.is_interrupting(&session.id) {
+        return Line::from(vec![
+            Span::styled(" ⏹ ", theme::cost()),
+            Span::styled("interrupting…", theme::cost()),
+        ]);
+    }
+    if let Some(what) = app.controls.armed_for(&session.id, app.clock_ms) {
+        return Line::from(vec![
+            Span::styled(" ⚠ ", theme::cost()),
+            Span::styled(what.hint().to_owned(), theme::cost()),
+        ]);
+    }
     Line::from(spans(&activity(app, session), app.clock_ms))
 }
 

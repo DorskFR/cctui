@@ -493,8 +493,8 @@ ticket = "CCT-1258"
 [[route]]
 id = "get_models_by_harness"
 # GET /models/{harness} — Model and effort options for a harness picker (optional machine_id).
-tui = "planned"
-ticket = "CCT-1258"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_meta_domain"
@@ -967,8 +967,8 @@ ticket = "CCT-1264"
 [[route]]
 id = "post_sessions_by_id_set_model"
 # POST /sessions/{id}/set-model — Change a session's model.
-tui = "planned"
-ticket = "CCT-1236"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_switch_account"
@@ -1123,8 +1123,8 @@ ticket = "CCT-1251"
 [[route]]
 id = "post_sessions_by_id_fork"
 # POST /sessions/{id}/fork — Fork a session into a new one.
-tui = "planned"
-ticket = "CCT-1264"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_auto_approve"

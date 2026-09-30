@@ -28,7 +28,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .unwrap_or("unknown");
     let branch =
         session.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
-    let model = session.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
+    // `session.model` is what set-model writes, so it is what the header must
+    // read; the spawn metadata is only the fallback for a row that has none.
+    let model = session
+        .model
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .or_else(|| session.metadata.get("model").and_then(serde_json::Value::as_str))
+        .unwrap_or("");
     let cost = format!("${:.2}", session.token_usage.cost_usd);
     let machine = &session.machine_id;
 
@@ -65,10 +72,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Header
     let auto = if session.auto_approve { " ── ✓ auto-approve" } else { "" };
     let waiting = app.prompt_marker(&session.id).map_or_else(String::new, |m| format!(" ── {m}"));
+    let mode = crate::app::controls::permission_badge(&session)
+        .map_or_else(String::new, |m| format!(" ── {m}"));
+    let effort = session.effort.as_deref().filter(|e| !e.is_empty()).unwrap_or_default();
+    let dials = if effort.is_empty() { model.to_owned() } else { format!("{model}·{effort}") };
     let header_text = if branch.is_empty() {
-        format!(" {project} on {machine} ── {model} ── {cost}{auto}{waiting}")
+        format!(" {project} on {machine} ── {dials} ── {cost}{mode}{auto}{waiting}")
     } else {
-        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}{waiting}")
+        format!(" {project} ({branch}) on {machine} ── {dials} ── {cost}{mode}{auto}{waiting}")
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
     header_spans.extend(crate::widgets::status::status_spans(app));

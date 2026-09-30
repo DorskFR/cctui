@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
 use super::attention::AttentionAction;
+use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
@@ -176,13 +177,43 @@ async fn run(
                 })],
             }
         }
-        Effect::Interrupt { session_id } => match server.interrupt(&session_id).await {
-            Ok(()) => Vec::new(),
-            Err(e) => {
+        Effect::Interrupt { session_id } => {
+            let error = server.interrupt(&session_id).await.err();
+            if let Some(e) = error.as_ref() {
                 tracing::warn!(%e, "interrupt failed");
-                vec![Action::Toast(Level::Error, "interrupt failed".to_owned())]
+            }
+            vec![Action::Controls(ControlsAction::InterruptFinished {
+                session_id,
+                error: error.map(|e| e.to_string()),
+            })]
+        }
+        Effect::Fork { session_id } => match server.fork(&session_id).await {
+            Ok(resp) => vec![Action::Controls(ControlsAction::Forked(resp.session_id))],
+            Err(e) => {
+                tracing::warn!(%e, "fork failed");
+                vec![Action::Toast(Level::Error, format!("fork failed: {e}"))]
             }
         },
+        Effect::FetchHarnessModels { harness, machine_id, model } => {
+            match server.harness_models(&harness, Some(&machine_id), &model).await {
+                Ok(models) => {
+                    vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "harness model list fetch failed");
+                    vec![Action::Toast(Level::Warn, "could not read the model list".to_owned())]
+                }
+            }
+        }
+        Effect::SetModel { session_id, model, effort } => {
+            match server.set_model(&session_id, Some(&model), Some(&effort)).await {
+                Ok(()) => vec![Action::Controls(ControlsAction::ModelSet { model, effort })],
+                Err(e) => {
+                    tracing::warn!(%e, "set-model failed");
+                    vec![Action::Toast(Level::Error, format!("set-model failed: {e}"))]
+                }
+            }
+        }
         Effect::SetAutoApprove { session_id, enabled } => {
             match server.set_auto_approve(&session_id, enabled).await {
                 Ok(()) => vec![Action::AutoApproveSet { session_id, enabled }],

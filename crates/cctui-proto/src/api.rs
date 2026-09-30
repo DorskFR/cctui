@@ -869,7 +869,9 @@ pub struct SetModelRequest {
 }
 
 /// Omitted fields inherit from the parent; working dir, adapter and account always do.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// [`Default`] is a whole-session fork: every dial inherited, no prompt.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ForkRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]

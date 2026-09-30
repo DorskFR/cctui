@@ -3,6 +3,7 @@ use cctui_proto::models::SessionStatus;
 use crossterm::event::KeyEvent;
 
 use super::attention::AttentionAction;
+use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
@@ -48,7 +49,7 @@ pub enum Action {
     InputNewline,
     SubmitInput,
 
-    InterruptSelected,
+    Controls(ControlsAction),
     ToggleAutoApproveSelected,
     AutoApproveSet {
         session_id: String,
@@ -154,6 +155,20 @@ pub enum Effect {
     },
     Interrupt {
         session_id: String,
+    },
+    Fork {
+        session_id: String,
+    },
+    /// `GET /models/{harness}`: the picker's model and effort lists.
+    FetchHarnessModels {
+        harness: String,
+        machine_id: String,
+        model: String,
+    },
+    SetModel {
+        session_id: String,
+        model: String,
+        effort: String,
     },
     SetAutoApprove {
         session_id: String,

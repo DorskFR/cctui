@@ -1,29 +1,28 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 405
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  z           Expand every thinking and result…  j / ↓       Scroll the plan down             │
-▸ │  R           Retry the undelivered message      k / ↑       Scroll the plan up               │
-  │  e           Edit the undelivered message     Plan card — refine                             │
-  │  x           Drop the undelivered message       Enter       Accept the text                  │
-  │  Ctrl+r      Search sent prompts                Esc         Discard the text                 │
-  │  Tab         Answer the waiting prompt        Row glyphs                                     │
-  │Composer                                         ●           working                          │
-  │  Esc         Close the composer                 ◐           stale or asleep                  │
-  │  Enter       Send the message                   ○           idle                             │
-  │  Ctrl+j / A… Insert a newline                   ☾           hibernated                       │
-  │  ↑           Recall an earlier prompt           ↳           subagent                         │
-  │  ↓           Recall a later prompt              ▸ / ▾       folded / open group              │
-  │  Ctrl+r      Search sent prompts                !           permission waiting on you        │
-  │Prompt history                                   ?           question waiting on you          │
-  │  Esc         Close the prompt list              P           plan waiting for approval        │
-  │  Ctrl+n / ↓  Next prompt                        ●N          unread messages                  │
-  │  Ctrl+p / ↑  Previous prompt                    ⚡           auto-approve on                  │
-  │  Enter       Put this prompt in the composer    ✕reason     how it ended                     │
-  │Help                                             ⚙N age      tool calls, age of the last      │
-  │  j / ↓       Scroll down                                                                     │
+  │  e           Edit the undelivered message       r           Refine the plan                  │
+▸ │  x           Drop the undelivered message       j / ↓       Scroll the plan down             │
+  │  Ctrl+r      Search sent prompts                k / ↑       Scroll the plan up               │
+  │  Tab         Answer the waiting prompt        Plan card — refine                             │
+  │Composer                                         Enter       Accept the text                  │
+  │  Esc         Close the composer                 Esc         Discard the text                 │
+  │  Enter       Send the message                 Row glyphs                                     │
+  │  Ctrl+j / A… Insert a newline                   ●           working                          │
+  │  ↑           Recall an earlier prompt           ◐           stale or asleep                  │
+  │  ↓           Recall a later prompt              ○           idle                             │
+  │  Ctrl+r      Search sent prompts                ☾           hibernated                       │
+  │Prompt history                                   ↳           subagent                         │
+  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
+  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
+  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
+  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
+  │Help                                             ●N          unread messages                  │
+  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
+  │  k / ↑       Scroll up                          ✕reason     how it ended                     │
+  │  PgDn        Page down                          ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

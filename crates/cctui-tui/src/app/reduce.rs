@@ -157,10 +157,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             }
         }
 
-        Action::InterruptSelected => app
-            .selected_session_id()
-            .map(|session_id| vec![Effect::Interrupt { session_id }])
-            .unwrap_or_default(),
+        Action::Controls(action) => super::controls::reduce_controls(app, action),
         Action::ToggleAutoApproveSelected => app
             .selected_session()
             .map(|s| (s.id.clone(), !s.auto_approve))
@@ -177,7 +174,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::SessionsLoaded(sessions) => {
             app.sessions = sessions;
             app.update_aggregates();
-            Vec::new()
+            super::controls::take_pending_jump(app)
         }
         Action::Conversation(action) => conversation::reduce(app, action),
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
@@ -200,7 +197,9 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::SessionRegistered(session) => {
             register_session(app, *session);
-            Vec::new()
+            // A fork normally registers over the socket before the refresh
+            // that was asked for on its behalf lands.
+            super::controls::take_pending_jump(app)
         }
         Action::SessionDeregistered(session_id) => {
             deregister_session(app, &session_id);

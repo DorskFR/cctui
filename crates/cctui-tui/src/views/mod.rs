@@ -3,6 +3,7 @@ pub mod cards;
 pub mod conversation;
 pub mod help;
 pub mod history;
+pub mod model_picker;
 pub mod prompt;
 pub mod sessions;
 
@@ -18,6 +19,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Help => {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
+        }
+        View::ModelPicker => {
+            conversation::draw(frame, app);
+            if let Some(picker) = app.controls.picker.as_ref() {
+                model_picker::draw(frame, picker);
+            }
         }
         View::HistoryPicker => {
             match app.router.below() {

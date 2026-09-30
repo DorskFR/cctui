@@ -1,9 +1,13 @@
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
-use cctui_proto::api::{AutoApproveRequest, SessionListItem, SessionListResponse};
+use cctui_proto::api::{
+    AutoApproveRequest, ForkRequest, ForkResponse, SessionListItem, SessionListResponse,
+    SetModelRequest,
+};
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
+use cctui_proto::harness_models::HarnessModels;
 use reqwest::StatusCode;
 use reqwest::header::{ETAG, IF_NONE_MATCH};
 use serde::Serialize;
@@ -296,6 +300,53 @@ impl Client {
         Ok(ConversationFetch::Page { rows, etag, has_more })
     }
 
+    /// Change a running session's model and/or effort. An empty string means
+    /// the harness default; `None` leaves that dial alone.
+    pub async fn set_model(
+        &self,
+        session_id: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_by_id_set_model")?;
+        let body = serde_json::to_value(SetModelRequest {
+            model: model.map(str::to_owned),
+            effort: effort.map(str::to_owned),
+        })
+        .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    /// Fork a whole session. Every field of [`ForkRequest`] is inherited, so
+    /// the fork needs no options.
+    pub async fn fork(&self, session_id: &str) -> Result<ForkResponse, ClientError> {
+        let route = Self::route("post_sessions_by_id_fork")?;
+        let body = serde_json::to_value(ForkRequest::default())
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[("id", session_id)], &[], Some(&body)).await
+    }
+
+    /// The model and effort lists a picker for `harness` should offer.
+    ///
+    /// `machine_id` narrows the codex catalog and is only sent when it is a
+    /// uuid, which is what the route accepts; `model` scopes the effort list.
+    pub async fn harness_models(
+        &self,
+        harness: &str,
+        machine_id: Option<&str>,
+        model: &str,
+    ) -> Result<HarnessModels, ClientError> {
+        let mut query: Vec<(&'static str, String)> = Vec::new();
+        if let Some(machine) = machine_id.filter(|m| uuid::Uuid::parse_str(m).is_ok()) {
+            query.push(("machine_id", machine.to_owned()));
+        }
+        if !model.is_empty() {
+            query.push(("model", model.to_owned()));
+        }
+        self.json(Self::route("get_models_by_harness")?, &[("harness", harness)], &query, None)
+            .await
+    }
+
     pub async fn interrupt(&self, session_id: &str) -> Result<(), ClientError> {
         self.unit(Self::route("post_sessions_by_id_interrupt")?, &[("id", session_id)], None).await
     }
@@ -473,6 +524,9 @@ mod tests {
             "get_sessions_by_id_conversation",
             "get_sessions_by_id_diagnose",
             "post_sessions_by_id_interrupt",
+            "post_sessions_by_id_set_model",
+            "post_sessions_by_id_fork",
+            "get_models_by_harness",
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
             "get_permissions_pending",

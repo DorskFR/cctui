@@ -99,6 +99,18 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
     ]
 }
 
+/// Move the whole view to another session: leave whatever is subscribed, put
+/// the selection on the target and open it.
+pub fn switch_to(app: &mut App, session_id: String) -> Vec<Effect> {
+    let Some(index) = app.flattened_sessions().iter().position(|s| s.id == session_id) else {
+        return Vec::new();
+    };
+    app.selected_index = index;
+    let mut effects = leave(app);
+    effects.extend(open(app, session_id));
+    effects
+}
+
 pub fn leave(app: &mut App) -> Vec<Effect> {
     app.subscribed
         .take()
