@@ -226,13 +226,14 @@ mod tests {
             "m\u{1f}mach\u{1f}/secret".to_owned(),
             serde_json::from_value::<SpawnMemoryEntry>(entry(1)).unwrap(),
         );
-        put_spawn_memory(
+        let stored = put_spawn_memory(
             State(state.clone()),
             Extension(ctx(owner)),
             Json(SpawnMemoryPayload { entries }),
         )
         .await
         .unwrap();
+        assert_eq!(stored.0.entries.len(), 1);
 
         let seen = get_spawn_memory(State(state), Extension(ctx(other))).await.unwrap();
         assert!(seen.0.entries.is_empty());
