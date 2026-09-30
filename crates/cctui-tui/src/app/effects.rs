@@ -150,10 +150,17 @@ async fn load_conversation(server: &ServerClient, session_id: &str) -> Vec<Actio
         tracing::warn!(session_id, "conversation fetch failed");
         return Vec::new();
     };
+    let total = events.len();
     let lines: Vec<_> = events
         .iter()
         .filter_map(|v| serde_json::from_value::<AgentEvent>(v.clone()).ok())
         .map(|e| agent_event_to_line(&e))
         .collect();
-    vec![Action::ConversationLoaded { session_id: session_id.to_owned(), lines }]
+    let undecodable = total - lines.len();
+    let mut actions =
+        vec![Action::ConversationLoaded { session_id: session_id.to_owned(), lines }];
+    if undecodable > 0 {
+        actions.push(Action::UndecodableAgentEvents(undecodable));
+    }
+    actions
 }

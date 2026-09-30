@@ -19,8 +19,8 @@ use std::time::Duration;
 use anyhow::Result;
 use app::effects::Effects;
 use app::{Action, App, reduce, server_event};
-use cctui_proto::ws::{ServerEvent, TuiCommand};
-use client::ServerClient;
+use cctui_proto::ws::TuiCommand;
+use client::{Incoming, ServerClient};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
 };
@@ -219,9 +219,9 @@ async fn run(
             maybe_event = event_rx.recv() => {
                 match maybe_event {
                     Some(event) => {
-                        let mut actions = server_event::to_actions(event);
+                        let mut actions = incoming_actions(event);
                         while let Ok(ev) = event_rx.try_recv() {
-                            actions.extend(server_event::to_actions(ev));
+                            actions.extend(incoming_actions(ev));
                         }
                         actions
                     }
@@ -273,12 +273,19 @@ async fn init_sessions(server: &ServerClient, app: &mut App) {
 
 async fn connect_ws_or_dummy(
     server: &ServerClient,
-) -> (mpsc::Sender<TuiCommand>, mpsc::Receiver<ServerEvent>) {
+) -> (mpsc::Sender<TuiCommand>, mpsc::Receiver<Incoming>) {
     (server.connect_ws().await).unwrap_or_else(|_| {
         let (tx, _) = mpsc::channel::<TuiCommand>(1);
-        let (_, rx) = mpsc::channel::<ServerEvent>(1);
+        let (_, rx) = mpsc::channel::<Incoming>(1);
         (tx, rx)
     })
+}
+
+fn incoming_actions(incoming: Incoming) -> Vec<Action> {
+    match incoming {
+        Incoming::Event(event) => server_event::to_actions(*event),
+        Incoming::Undecodable(reason) => vec![Action::UndecodableWsMessage(reason)],
+    }
 }
 
 /// Bootstrap `viewport_height` from terminal size if not yet set by a render pass.

@@ -216,6 +216,18 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.toast(level, text);
             Vec::new()
         }
+        Action::UndecodableWsMessage(reason) => {
+            app.status.undecodable_ws_messages += 1;
+            tracing::warn!(%reason, "dropping an undecodable websocket message");
+            app.toast(Level::Warn, "dropped an undecodable server message");
+            Vec::new()
+        }
+        Action::UndecodableAgentEvents(count) => {
+            app.status.undecodable_agent_events += count as u64;
+            tracing::warn!(count, "dropping undecodable agent events");
+            app.toast(Level::Warn, format!("dropped {count} unreadable conversation events"));
+            Vec::new()
+        }
     }
 }
 
@@ -638,6 +650,18 @@ mod tests {
             reduce(&mut app, Action::Reconnected).as_slice(),
             [Effect::Subscribe { .. }, Effect::RefreshSessions]
         ));
+    }
+
+    #[test]
+    fn undecodable_messages_are_counted_and_surfaced() {
+        let mut app = app();
+        reduce(&mut app, Action::UndecodableWsMessage("unknown variant".to_owned()));
+        reduce(&mut app, Action::UndecodableAgentEvents(4));
+        assert_eq!(app.status.undecodable_ws_messages, 1);
+        assert_eq!(app.status.undecodable_agent_events, 4);
+        assert_eq!(app.status.total(), 5);
+        assert!(!app.status.is_clean());
+        assert!(app.toasts.latest().is_some());
     }
 
     #[test]

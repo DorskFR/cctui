@@ -79,6 +79,10 @@ pub(crate) enum Action {
 
     Reconnected,
     Toast(Level, String),
+    /// A websocket frame the TUI could not deserialize.
+    UndecodableWsMessage(String),
+    /// Persisted agent events the TUI could not deserialize.
+    UndecodableAgentEvents(usize),
 }
 
 /// Token/cost figures a heartbeat carries for the session row.
