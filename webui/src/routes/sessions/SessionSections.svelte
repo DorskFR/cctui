@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FirstRunChecklist from '$lib/components/molecules/FirstRunChecklist.svelte';
 	import type { Snippet } from 'svelte';
 	import { Button, Callout, Container, Spinner, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -120,6 +121,7 @@
 		{:else if !sp.list.hasLiveRows && !sp.showArchived && !sp.sections.has('drafts')}
 			<div class="placeholder">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
+				<FirstRunChecklist />
 			</div>
 		{:else if sp.groupBy !== 'status'}
 			{#each sp.list.groupedSections as g (g.key)}

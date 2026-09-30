@@ -322,6 +322,9 @@ export interface OnboardingSettings {
    *  the probes read live instance state, which a reset cannot undo, so without
    *  this they report done again immediately and the reset reads as a no-op. */
   probeOptOut: string[];
+  /** The first-run checklist was closed by hand. Its ticks come from the probes,
+   *  so this is the only thing about it worth storing. */
+  checklistDismissed?: boolean;
 }
 
 function mergeStepProgress(v: unknown): Record<string, GuideStepProgress> {
