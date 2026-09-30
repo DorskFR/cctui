@@ -178,7 +178,7 @@ mod tests {
         let listed = list_drafts(State(state.clone()), Extension(ctx(uid))).await.unwrap();
         assert!(listed.0.drafts.iter().any(|d| d.key == key));
 
-        put_draft(
+        let cleared = put_draft(
             State(state.clone()),
             Extension(ctx(uid)),
             Path(key.clone()),
@@ -186,6 +186,7 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(cleared, StatusCode::NO_CONTENT);
         let gone = get_draft(State(state), Extension(ctx(uid)), Path(key)).await;
         assert_eq!(gone.unwrap_err().status(), StatusCode::NOT_FOUND);
     }
@@ -203,7 +204,7 @@ mod tests {
         let state = AppState::for_test(pool);
         let key = format!("cctui_draft_shared_{owner}");
 
-        put_draft(
+        let saved = put_draft(
             State(state.clone()),
             Extension(ctx(owner)),
             Path(key.clone()),
@@ -211,6 +212,7 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(saved, StatusCode::NO_CONTENT);
 
         let peek = get_draft(State(state.clone()), Extension(ctx(other)), Path(key.clone())).await;
         assert_eq!(peek.unwrap_err().status(), StatusCode::NOT_FOUND);
@@ -218,8 +220,11 @@ mod tests {
         let listed = list_drafts(State(state.clone()), Extension(ctx(other))).await.unwrap();
         assert!(listed.0.drafts.iter().all(|d| d.key != key));
 
-        delete_draft(State(state.clone()), Extension(ctx(other)), Path(key.clone())).await.unwrap();
-        put_draft(
+        let swept = delete_draft(State(state.clone()), Extension(ctx(other)), Path(key.clone()))
+            .await
+            .unwrap();
+        assert_eq!(swept, StatusCode::NO_CONTENT);
+        let trampled = put_draft(
             State(state.clone()),
             Extension(ctx(other)),
             Path(key.clone()),
@@ -227,6 +232,7 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(trampled, StatusCode::NO_CONTENT);
 
         let still = get_draft(State(state), Extension(ctx(owner)), Path(key)).await.unwrap();
         assert_eq!(still.0.text, "owner's secret", "another user's PUT wrote its own row");
