@@ -193,9 +193,10 @@ pub fn reviewer_agent() -> Value {
     })
 }
 
-/// The working profile a spawn gets when it asked for `yolo` or `whip`: edits,
-/// bash and the network are open, like the other harnesses in those postures.
-/// `question` stays denied because no human answers mid-turn, and
+/// The working profile of a `yolo` or `whip` spawn.
+///
+/// Edits, bash and the network are open, like the other harnesses in those
+/// postures. `question` stays denied because no human answers mid-turn, and
 /// `doom_loop: deny` plus `steps` still bound a runaway turn. No `prompt`: the
 /// stock build prompt applies, not the reviewer's.
 #[must_use]
