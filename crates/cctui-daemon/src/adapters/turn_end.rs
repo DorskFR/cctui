@@ -19,6 +19,14 @@ pub fn signal(local_id: &str, ts: i64, server_supports: bool) -> Option<AdapterE
     server_supports.then(|| AdapterEvent::TurnEnd { local_id: local_id.to_owned(), ts: Some(ts) })
 }
 
+/// Record the turn end for a `CctuiAgent` follow watching this session.
+///
+/// Ungated: the capability governs only the wire event, while the follow runs
+/// in this process. No-op when nothing watches the session.
+pub fn note(local_id: &str) {
+    crate::childwatch::global().note_turn_end(local_id);
+}
+
 /// Whether the connected server accepts the signal at all.
 #[must_use]
 pub fn supported() -> bool {
@@ -38,6 +46,7 @@ pub async fn emit_gated(
     local_id: &str,
     server_supports: bool,
 ) {
+    note(local_id);
     let Some(event) = signal(local_id, chrono::Utc::now().timestamp(), server_supports) else {
         return;
     };
@@ -47,6 +56,30 @@ pub async fn emit_gated(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::childwatch::Assessment;
+    use std::time::Instant;
+
+    fn assistant_text(local_id: &str, text: &str) -> AdapterEvent {
+        AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: serde_json::json!({ "role": "assistant", "text": text }),
+            turn_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_older_server_still_gets_the_follow_its_turn_end() {
+        let watch = crate::childwatch::global();
+        let h = watch.register_bound("turn-end-seam-1");
+        watch.observe(&assistant_text("turn-end-seam-1", "the answer"));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        emit_gated(&tx, "turn-end-seam-1", false).await;
+        assert!(rx.try_recv().is_err(), "the wire event stays gated");
+        let Assessment::Finished(out) = h.snapshot().unwrap().assess(Instant::now()) else {
+            panic!("the follow must end on the turn end the gate withheld")
+        };
+        assert_eq!(out.final_text.as_deref(), Some("the answer"));
+    }
 
     #[test]
     fn an_older_server_is_sent_nothing() {

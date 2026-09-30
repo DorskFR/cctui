@@ -1563,6 +1563,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_ends_a_followed_childs_turn_even_against_an_older_server() {
+        let (mut session, _rx, client) = test_session(None);
+        session.turn_end_supported = false;
+        let watch = crate::childwatch::global();
+        let h = watch.register_bound("ses_1");
+        watch.observe(&AdapterEvent::Message {
+            local_id: "ses_1".to_owned(),
+            payload: serde_json::json!({ "role": "assistant", "text": "the answer" }),
+            turn_id: None,
+        });
+        assert!(session.on_event(&client, idle()).await);
+        let snap = h.snapshot().unwrap();
+        let crate::childwatch::Assessment::Finished(out) = snap.assess(std::time::Instant::now())
+        else {
+            panic!("session.idle must end the follow regardless of the wire gate")
+        };
+        assert_eq!(out.final_text.as_deref(), Some("the answer"));
+    }
+
+    #[tokio::test]
     async fn oneshot_child_crashes_on_session_error() {
         let (mut session, mut rx, client) = test_session(Some("parent-1".to_owned()));
         let evt = OcEvent::SessionError {

@@ -345,7 +345,14 @@ fn map_error_notification(local_id: &str, v: &Value) -> Incoming {
 }
 
 fn map_turn_completed(local_id: &str, v: &Value) -> Incoming {
+    if !turn_failed(v) {
+        crate::adapters::turn_end::note(local_id);
+    }
     turn_completion(local_id, v, crate::adapters::turn_end::supported())
+}
+
+fn turn_failed(v: &Value) -> bool {
+    v.pointer("/params/turn/status").map_or(TurnStatus::Unknown, parse_status) == TurnStatus::Failed
 }
 
 /// Map `turn/completed` whose `turn.status == "failed"` → failed
@@ -353,9 +360,7 @@ fn map_turn_completed(local_id: &str, v: &Value) -> Incoming {
 /// is codex's authoritative turn end; against a server that cannot take one it
 /// stays ignored, since idle status arrives via `thread/status/changed` anyway.
 fn turn_completion(local_id: &str, v: &Value, turn_end_supported: bool) -> Incoming {
-    if v.pointer("/params/turn/status").map_or(TurnStatus::Unknown, parse_status)
-        != TurnStatus::Failed
-    {
+    if !turn_failed(v) {
         return crate::adapters::turn_end::signal(
             local_id,
             chrono::Utc::now().timestamp(),
@@ -514,6 +519,9 @@ fn map_name(local_id: &str, v: &Value) -> Incoming {
 mod tests {
     use super::super::rpc::classify;
     use super::*;
+    use crate::childwatch::{Assessment, ChildWatch, WatchHandle};
+    use std::sync::Arc;
+    use std::time::Instant;
 
     fn command_item(output: &str) -> AdapterEvent {
         AdapterEvent::ToolUse {
@@ -928,6 +936,41 @@ mod tests {
         }
         // An older server takes nothing and keeps its status poll.
         assert!(matches!(turn_completion("t", &v, false), Incoming::Traced { .. }));
+    }
+
+    fn completed_turn(status: &str) -> Value {
+        json!({"method": "turn/completed", "params": {"threadId": "t", "turn": {
+            "id": "u", "items": [], "status": status}}})
+    }
+
+    fn watched_child(local_id: &str) -> (Arc<ChildWatch>, WatchHandle) {
+        let watch = crate::childwatch::global();
+        let h = watch.register_bound(local_id);
+        watch.observe(&AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: json!({ "role": "assistant", "text": "the answer" }),
+            turn_id: None,
+        });
+        (watch, h)
+    }
+
+    #[test]
+    fn a_successful_turn_completed_ends_a_codex_childs_follow() {
+        let (_watch, h) = watched_child("codex-turn-end-1");
+        let _ = map_turn_completed("codex-turn-end-1", &completed_turn("completed"));
+        let snap = h.snapshot().unwrap();
+        let Assessment::Finished(out) = snap.assess(Instant::now()) else {
+            panic!("codex's turn end must end the follow whatever the server supports")
+        };
+        assert_eq!(out.final_text.as_deref(), Some("the answer"));
+    }
+
+    #[test]
+    fn a_failed_turn_leaves_the_follow_running() {
+        let (_watch, h) = watched_child("codex-turn-end-2");
+        let _ = map_turn_completed("codex-turn-end-2", &completed_turn("failed"));
+        let snap = h.snapshot().unwrap();
+        assert!(matches!(snap.assess(Instant::now()), Assessment::Running(_)));
     }
 
     /// A failed turn keeps its failed Status — one `Incoming` carries one
