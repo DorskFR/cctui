@@ -221,6 +221,8 @@ pub struct SpawnParams {
     pub agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
     /// Mirrored `skills/` roots for this session's `skills.paths`.
     pub skill_roots: Vec<std::path::PathBuf>,
+    /// Memory notes the server attached to this launch.
+    pub context: Vec<cctui_proto::api::SessionContextItem>,
     /// Limit hold + MCP-readiness wait, awaited between session creation and
     /// the first turn. `None` outside a real daemon run.
     pub preflight: Option<crate::preflight::Preflight>,
@@ -553,7 +555,12 @@ impl OpenCodeSession {
             let files = self.params.attachments.join("\n");
             format!("{prompt}\n\nAttached files:\n{files}").trim().to_owned()
         };
-        let preamble = crate::preamble::block(&self.params.cwd, Some(local_id));
+        let preamble = crate::preamble::for_launch(
+            Some(self.params.key.as_str()).filter(|k| !k.is_empty()),
+            &self.params.cwd,
+            Some(local_id),
+            &self.params.context,
+        );
         crate::preamble::merge(preamble, (!body.is_empty()).then_some(body))
     }
 
@@ -1320,6 +1327,7 @@ mod tests {
             agent_mcp: None,
             preflight: None,
             skill_roots: Vec::new(),
+            context: Vec::new(),
         };
         let live = LiveRegistry::default();
         let handle =
@@ -1397,6 +1405,7 @@ mod tests {
             agent_mcp: None,
             preflight: None,
             skill_roots: Vec::new(),
+            context: Vec::new(),
         };
         let mut session =
             OpenCodeSession::new(params, tx, LiveRegistry::default(), CancellationToken::new());
@@ -1460,6 +1469,34 @@ mod tests {
         assert!(turn.contains("do not switch branches"), "{turn}");
 
         crate::neighbours::global().forget(&[neighbour]);
+    }
+
+    /// opencode has no instruction channel either: the memory notice rides
+    /// the first turn, above the prompt.
+    #[test]
+    fn attached_memory_reaches_an_opencode_session_on_its_first_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        session.params.key = format!("launch-{}", Uuid::new_v4());
+        session.params.context = vec![cctui_proto::api::SessionContextItem {
+            kind: "memory".to_owned(),
+            name: "house-style".to_owned(),
+            title: "House style".to_owned(),
+            body: "be terse".to_owned(),
+            version: 1,
+        }];
+
+        let turn = session.first_turn("ses_me").expect("a first turn");
+        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.contains("context: 1 attached"), "{turn}");
+        assert!(turn.contains("House style"), "{turn}");
+        assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
+
+        let staged =
+            std::path::Path::new("/tmp/cctui-uploads").join(&session.params.key).join("context.md");
+        assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
+        let _ = std::fs::remove_dir_all(staged.parent().unwrap());
     }
 
     /// A session alone in its tree is sent its prompt and nothing else.
@@ -1843,6 +1880,7 @@ mod tests {
             agent_mcp: None,
             preflight: None,
             skill_roots: Vec::new(),
+            context: Vec::new(),
         };
         params.cfg.bin = "/definitely/not/a/binary".to_owned();
         let mut session =

@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn account_family_routes_are_human_only() {
         const HUMAN_PREFIXES: &[&str] =
-            &["/accounts", "/account-pools", "/profiles", "/redirects", "/{resource_type}"];
+            &["/accounts", "/account-pools", "/context", "/profiles", "/redirects", "/{resource_type}"];
         const EXEMPT: &[&str] = &["/accounts/settings-catalog"];
         for d in descriptors() {
             if HUMAN_PREFIXES.iter().any(|p| d.path.starts_with(p)) && !EXEMPT.contains(&d.path) {

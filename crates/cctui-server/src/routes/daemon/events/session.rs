@@ -247,6 +247,7 @@ async fn on_session_started(
     crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
     crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
+    crate::routes::context::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     Ok(())
 }
 

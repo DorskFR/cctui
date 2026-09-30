@@ -563,6 +563,7 @@ impl CommandPump {
         )
         .with_agent_mcp(agent_mcp)
         .with_preflight(Some(preflight))
+        .with_session_context(launch.context.clone(), Some(launch_key.clone()))
         .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
@@ -587,7 +588,7 @@ impl CommandPump {
         // thread id when absent), and fail closed on an account-bound fork
         // with empty env — same contract as Spawn.
         let launch_key = session_id.clone().unwrap_or_else(|| parent_local_id.clone());
-        let (env, served_settings, plugins) = match resolve_launch(
+        let (env, served_settings, plugins, context) = match resolve_launch(
             self.server.as_ref(),
             self.machine_key.as_ref(),
             &launch_key,
@@ -595,7 +596,7 @@ impl CommandPump {
         )
         .await
         {
-            Ok(launch) => (launch.env, launch.settings, launch.plugins),
+            Ok(launch) => (launch.env, launch.settings, launch.plugins, launch.context),
             Err(err) => {
                 tracing::error!(%err, "codex fork: refusing env-less launch");
                 self.reject(command_id, err.to_string()).await;
@@ -633,6 +634,7 @@ impl CommandPump {
             self.shutdown.clone(),
         )
         .with_preflight(Some(preflight))
+        .with_session_context(context, Some(launch_key.clone()))
         .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {

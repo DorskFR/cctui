@@ -34,6 +34,9 @@ pub struct SessionProfile {
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
     pub service_tier: Option<String>,
+    /// Context items this profile pins, applied server-side at spawn.
+    #[cfg_attr(feature = "ts", ts(type = "string[]"))]
+    pub context_items: Vec<Uuid>,
     pub sort_order: i32,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub created_at: DateTime<Utc>,
@@ -69,6 +72,9 @@ pub struct ProfileSpec {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub service_tier: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "string[]", optional))]
+    pub context_items: Vec<Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -93,7 +99,8 @@ pub struct UpdateProfileRequest {
 }
 
 const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
-                    effort, permission_mode, service_tier, sort_order, created_at, updated_at";
+                    effort, permission_mode, service_tier, context_items, sort_order, created_at, \
+                    updated_at";
 
 fn db_err(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(dbe) = &e
@@ -147,6 +154,7 @@ fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, AppError> {
         service_tier: crate::settings_catalog::codex::normalize_service_tier(
             opt(spec.service_tier).as_deref(),
         ),
+        context_items: spec.context_items,
     })
 }
 
@@ -227,8 +235,8 @@ pub async fn insert(
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO session_profiles \
             (user_id, name, harness, account_id, pool_id, no_account, model_alias, effort, \
-             permission_mode, service_tier, sort_order) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+             permission_mode, service_tier, context_items, sort_order) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                  (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM session_profiles WHERE user_id = $1)) \
          RETURNING {COLS}"
     )))
@@ -242,6 +250,7 @@ pub async fn insert(
     .bind(spec.effort.as_deref())
     .bind(spec.permission_mode.as_deref())
     .bind(spec.service_tier.as_deref())
+    .bind(&spec.context_items)
     .fetch_one(pool)
     .await
 }
@@ -264,6 +273,7 @@ pub async fn update(
             effort = CASE WHEN $4 THEN $10 ELSE effort END, \
             permission_mode = CASE WHEN $4 THEN $11 ELSE permission_mode END, \
             service_tier = CASE WHEN $4 THEN $12 ELSE service_tier END, \
+            context_items = CASE WHEN $4 THEN $13 ELSE context_items END, \
             updated_at = now() \
          WHERE id = $1 AND user_id = $2 RETURNING {COLS}"
     )))
@@ -279,6 +289,7 @@ pub async fn update(
     .bind(spec.and_then(|s| s.effort.as_deref()))
     .bind(spec.and_then(|s| s.permission_mode.as_deref()))
     .bind(spec.and_then(|s| s.service_tier.as_deref()))
+    .bind(spec.map(|s| s.context_items.clone()).unwrap_or_default())
     .fetch_optional(pool)
     .await
 }
@@ -420,6 +431,7 @@ mod tests {
             effort: Some(String::new()),
             service_tier: None,
             permission_mode: mode.map(str::to_string),
+            context_items: Vec::new(),
         }
     }
 
@@ -528,6 +540,7 @@ mod tests {
             service_tier: None,
             effort: Some("medium".into()),
             permission_mode: Some("yolo".into()),
+            context_items: Vec::new(),
         };
         let created = insert(&pool, owner, "Orchestrator", &kit).await.expect("insert");
         assert_eq!(created.account_id, Some(account));

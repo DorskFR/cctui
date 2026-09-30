@@ -87,6 +87,8 @@ describe('page map', () => {
 		expect(pageForHash('')).toBe(DEFAULT_SETTINGS_PAGE);
 		expect(pageForHash(null)).toBe(DEFAULT_SETTINGS_PAGE);
 		expect(pageForHash('#whatever')).toBe(DEFAULT_SETTINGS_PAGE);
+		expect(pageForHash('#memory')).toBe('context');
+		expect(pageForHash('#skills')).toBe('plugins');
 	});
 
 	it('groups every page under exactly one scope, you before instance', () => {

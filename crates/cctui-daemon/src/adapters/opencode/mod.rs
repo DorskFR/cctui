@@ -340,6 +340,7 @@ impl Pump {
             agent_mcp,
             skill_roots: skills.roots,
             preflight: Some(preflight),
+            context: launch.context,
         };
         let session = OpenCodeSession::new(
             params,
