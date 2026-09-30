@@ -415,6 +415,15 @@ export function queueKey(text: string | undefined): string {
 	return normalizePollText(first).replace(/…$/, '');
 }
 
+// Claude Code can deliver several queued prompts as ONE user turn, stacked line
+// by line: every line of a delivered turn is a candidate match.
+function deliveredKeys(text: string | undefined): string[] {
+	return stripAttachmentDecorations(text ?? '')
+		.split('\n')
+		.map((l) => normalizePollText(l).replace(/…$/, ''))
+		.filter((l) => l.length > 0);
+}
+
 interface QueueClose {
 	key: string;
 	absorbed: boolean;
@@ -429,16 +438,16 @@ function reconcileQueued(out: Line[], placeholders: Line[], closes: QueueClose[]
 	const absorbed = new Set<Line>();
 	for (const ln of out) {
 		if (ln.queued || ln.role !== 'user') continue;
-		const first = queueKey(ln.text);
-		if (!first) continue;
-		const at = open.findIndex((p) => {
-			const key = queueKey(p.text);
-			return key.length > 0 && first.startsWith(key);
-		});
-		if (at === -1) continue;
-		const [ph] = open.splice(at, 1);
-		ln.queuedAt = ph.ts;
-		absorbed.add(ph);
+		for (const delivered of deliveredKeys(ln.text)) {
+			const at = open.findIndex((p) => {
+				const key = queueKey(p.text);
+				return key.length > 0 && delivered.startsWith(key);
+			});
+			if (at === -1) continue;
+			const [ph] = open.splice(at, 1);
+			ln.queuedAt = Math.min(ln.queuedAt ?? ph.ts, ph.ts);
+			absorbed.add(ph);
+		}
 	}
 	// A `dequeue` record never carries its content, so a bodiless close is only
 	// consumed once no texted close claims the placeholder.

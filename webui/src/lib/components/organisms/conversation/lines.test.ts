@@ -792,6 +792,38 @@ describe('queued messages carry their own queue state', () => {
 		expect(buildLines(events, ctx({ user: false }))).toHaveLength(0);
 	});
 
+	it('collapses several queued prompts delivered as one merged turn', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', 'STOP', 1, 5),
+				queueOp('queued', 'EXPLAIN EVERYTHING', 2, 6),
+				queueOp('absorbed', 'STOP', 3, 7),
+				queueOp('absorbed', 'EXPLAIN EVERYTHING', 4, 8),
+				user('STOP\nEXPLAIN EVERYTHING', 5, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].seq).toBe(9);
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
+	});
+
+	it('collapses two identical queued prompts delivered as one merged turn', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', 'STOP', 1, 5),
+				queueOp('queued', 'STOP', 2, 6),
+				queueOp('absorbed', 'STOP', 3, 7),
+				queueOp('absorbed', 'STOP', 4, 8),
+				user('STOP\nSTOP', 5, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].queuedAt).toBe(1);
+	});
+
 	it('does not let the duplicate guard swallow the delivered turn', () => {
 		const lines = buildLines(
 			[queueOp('queued', 'same text', 1, 5), user('same text', 2, 6)],
