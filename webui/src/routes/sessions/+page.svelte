@@ -21,10 +21,12 @@
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import { ConfirmModal } from '@dorsk/tsumikit';
 	import SessionSections from './SessionSections.svelte';
+	import SessionTiles from './SessionTiles.svelte';
 	import SessionsBulkBar from './SessionsBulkBar.svelte';
 	import EditDraftModal from './EditDraftModal.svelte';
 	import { drafts, clearSpawnSlot, currentSpawnSlot, readSpawnSlot } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
+	import { holdFullBleed } from '$lib/fullBleed.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionIdFromLocation, sessionHrefFor, toGroupDimension } from './sessions.logic';
@@ -68,7 +70,34 @@
 		sessionsLoading: () => sessions.isLoading,
 		allSessions: () => allSessions.data?.sessions ?? [],
 		labels: () => labelsQuery.data?.labels,
-		renderedOrder: renderedIds
+		renderedOrder: renderedIds,
+		mobile: () => mobile
+	});
+
+	// Tiles need a window to split, so they are not offered below the drawer's
+	// own breakpoint.
+	let mobile = $state(false);
+	$effect(() => {
+		const mq = window.matchMedia('(max-width: 959px)');
+		const sync = () => (mobile = mq.matches);
+		sync();
+		mq.addEventListener('change', sync);
+		return () => mq.removeEventListener('change', sync);
+	});
+
+	// `/tiles` forwards here; consume the hint once so it does not re-apply on
+	// every later navigation.
+	$effect(() => {
+		if (page.url.searchParams.get('view') !== 'tiles') return;
+		untrack(() => (sp.viewMode = 'tiles'));
+		const url = new URL(page.url);
+		url.searchParams.delete('view');
+		replaceState(url, page.state);
+	});
+
+	$effect(() => {
+		if (!sp.tiles) return;
+		return holdFullBleed();
 	});
 	// The full (incl. archived) list, only fetched while a pinned parent may
 	// have archived subagents to splice back under it.
@@ -199,7 +228,8 @@
 	bind:sections={sp.sections}
 	labels={sp.allLabels}
 	bind:labelFilter={sp.labelFilter}
-	bind:cardView={sp.cardView}
+	bind:view={sp.viewMode}
+	tiles={!sp.mobile}
 	colorBy={sp.colorBy}
 	groupBy={sp.groupBy}
 	onColorBy={sp.setColorBy}
@@ -217,7 +247,11 @@
 	<SessionsBulkBar {sp} />
 {/if}
 
-<SessionSections {sp} {pending} {machineLiveness} />
+{#if sp.tiles}
+	<SessionTiles sessions={sp.tileSessions} onNavigate={(sid) => void sp.navigateToForked(sid)} />
+{:else}
+	<SessionSections {sp} {pending} {machineLiveness} />
+{/if}
 
 {#if sp.liveOpen}
 	<ConversationDrawer

@@ -237,31 +237,12 @@ describe("Settings save → load round-trip through the blob", () => {
     expect(merged.spawnDock.side).toBe("right");
   });
 
-  it("the tiles split direction and cap survive a persist then reload", () => {
-    settings.setTiles({ splitDirection: "horizontal", maxTiles: 6 });
-
-    const loaded = loadFromCache();
-    expect(loaded.tiles.splitDirection).toBe("horizontal");
-    expect(loaded.tiles.maxTiles).toBe(6);
-  });
-
-  it("tiles default to a vertical split and 4 panes, and clamp a bogus blob", () => {
-    expect(mergeDefaults(null).tiles).toEqual({
-      splitDirection: "vertical",
-      maxTiles: 4,
-    });
+  it("no longer carries a tiles block: tiles is a Sessions view mode", () => {
+    expect(mergeDefaults(null)).not.toHaveProperty("tiles");
     const merged = mergeDefaults({
       tiles: { splitDirection: "sideways", maxTiles: 99 },
     } as unknown as Record<string, unknown>);
-    expect(merged.tiles.splitDirection).toBe("vertical");
-    expect(merged.tiles.maxTiles).toBe(9);
-  });
-
-  it("clamps a cap written out of range by a setter, not just by a reload", () => {
-    settings.setTiles({ maxTiles: 0 });
-    expect(settings.state.tiles.maxTiles).toBe(2);
-    settings.setTiles({ maxTiles: 50 });
-    expect(settings.state.tiles.maxTiles).toBe(9);
+    expect(merged).not.toHaveProperty("tiles");
   });
 
   it("the toast position survives a persist then reload", () => {

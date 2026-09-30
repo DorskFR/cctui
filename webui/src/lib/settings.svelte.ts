@@ -12,11 +12,6 @@ import { fontScale, nearestLevel } from "./fontscale.svelte";
 import { notify } from "./notify.svelte";
 import type { SettingsPayload } from "@bindings/SettingsPayload";
 import { clampDockWidth } from "./dock";
-import {
-  clampMaxTiles,
-  clampSplitDirection,
-  type SplitDirection,
-} from "./tiles";
 import { saveErrorMessage } from "./saveError";
 import { clampFollowupWhenCold, type FollowupWhenCold } from "./followup";
 import { isPluginId } from "./plugins/discovery";
@@ -122,13 +117,6 @@ export function clampSessionListWidth(v: unknown): SessionListWidth {
 export const SPAWN_DOCK_SIDES = ["left", "right"] as const;
 export type SpawnDockSide = (typeof SPAWN_DOCK_SIDES)[number];
 export const DEFAULT_SPAWN_DOCK_SIDE: SpawnDockSide = "right";
-
-// Tiles workspace: how the FIRST split lands and how many panes may be open.
-// Serializes as `data.tiles`; the server passes it through untouched.
-export interface TilesSettings {
-  splitDirection: SplitDirection;
-  maxTiles: number;
-}
 
 export interface SpawnDockSettings {
   enabled: boolean;
@@ -471,7 +459,6 @@ export function clampPluginsConfig(
 
 export interface SettingsState {
   sessionList: SessionListSettings;
-  tiles: TilesSettings;
   display: DisplaySettings;
   // Docked spawn panel (Sessions screen). Top-level so it serializes as
   // `data.spawnDock`; the server passes it through untouched.
@@ -522,10 +509,6 @@ export interface SettingsState {
 }
 
 const DEFAULTS: SettingsState = {
-  tiles: {
-    splitDirection: "vertical",
-    maxTiles: 4,
-  },
   sessionList: {
     sort: "activity",
     sortDir: DEFAULT_SORT_DIR,
@@ -583,10 +566,6 @@ export function mergeDefaults(
 ): SettingsState {
   const p = partial ?? {};
   return {
-    tiles: {
-      splitDirection: clampSplitDirection(p.tiles?.splitDirection),
-      maxTiles: clampMaxTiles(p.tiles?.maxTiles),
-    },
     sessionList: {
       ...DEFAULTS.sessionList,
       ...(p.sessionList ?? {}),
@@ -834,15 +813,6 @@ class Settings {
   // Section setters — replace a whole group (or a subset of its fields) and
   // persist. Components mutate via these so every write goes through the cache +
   // debounced save path.
-  setTiles(patch: Partial<TilesSettings>) {
-    const next = { ...this.state.tiles, ...patch };
-    this.state.tiles = {
-      splitDirection: clampSplitDirection(next.splitDirection),
-      maxTiles: clampMaxTiles(next.maxTiles),
-    };
-    this.persist();
-  }
-
   setSessionList(patch: Partial<SessionListSettings>) {
     this.state.sessionList = { ...this.state.sessionList, ...patch };
     this.persist();

@@ -1,9 +1,6 @@
 <script lang="ts">
 	import { Button, Popover, Text } from '@dorsk/tsumikit';
-	import { goto } from '$app/navigation';
 	import { m } from '$lib/paraglide/messages';
-	import { settings } from '$lib/settings.svelte';
-	import { tilesHref } from '$lib/tilesLink';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { setSessionRoom, setSessionRoomByName } from '$lib/rooms';
@@ -12,16 +9,6 @@
 
 	let { sp }: { sp: SessionsPage } = $props();
 	let making = $state(false);
-
-	// The grid is capped, so a selection over it opens the first `maxTiles` and
-	// says so rather than silently dropping the rest.
-	function openInTiles() {
-		const max = settings.state.tiles.maxTiles;
-		const picked = [...sp.list.selected];
-		if (picked.length > max) toasts.info(m.tiles_over_cap({ max }));
-		sp.list.exitSelect();
-		void goto(tilesHref(picked.slice(0, max)));
-	}
 
 	// One call per session: the room is a field on each, and `setSessionRoomByName`
 	// creates-or-reuses so the whole selection lands in one room either way.
@@ -49,12 +36,6 @@
 	<Button onclick={sp.list.selectAll}>{m.sessions_select_all()}</Button>
 	<Text size="xs" tone="muted">{m.sessions_select_range_hint()}</Text>
 	<div class="spacer"></div>
-	<Button
-		disabled={sp.list.selected.size === 0}
-		onclick={openInTiles}
-	>
-		{m.tiles_open_count({ count: sp.list.selected.size || '' })}
-	</Button>
 	<Popover label={m.rooms_move_count({ count: sp.list.selected.size || '' })} placement="bottom-end">
 		{#snippet trigger()}
 			<span>{m.rooms_move_count({ count: sp.list.selected.size || '' })}</span>
