@@ -12,6 +12,7 @@ pub enum Context {
     Conversation,
     Composer,
     History,
+    Terminal,
     Help,
     Permission,
     Ask,
@@ -26,6 +27,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Conversation,
     Context::Composer,
     Context::History,
+    Context::Terminal,
     Context::Help,
     Context::Permission,
     Context::Ask,
@@ -42,6 +44,7 @@ impl Context {
             Self::Conversation => "conversation",
             Self::Composer => "composer",
             Self::History => "history",
+            Self::Terminal => "terminal",
             Self::Help => "help",
             Self::Permission => "permission",
             Self::Ask => "ask",
@@ -58,6 +61,7 @@ impl Context {
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
             Self::History => "Prompt history",
+            Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::Permission => "Permission card",
             Self::Ask => "Question card",
@@ -150,6 +154,10 @@ actions! {
     DiscardSend => "discard-send", "Drop the undelivered message";
     CopyMessage => "copy-message", "Copy the selected message";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    TerminalOpen => "terminal-open", "Watch the live terminal";
+    TerminalClose => "terminal-close", "Close the terminal pane";
+    TerminalScrollDown => "terminal-scroll-down", "Scroll the terminal down";
+    TerminalScrollUp => "terminal-scroll-up", "Scroll the terminal up";
 
     CancelInput => "cancel-input", "Close the composer";
     SubmitInput => "submit-input", "Send the message";
@@ -256,6 +264,13 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
+    spec(Context::Conversation, "T", ActionId::TerminalOpen),
+];
+
+const TERMINAL: &[BindingSpec] = &[
+    spec(Context::Terminal, "esc, q, T", ActionId::TerminalClose),
+    spec(Context::Terminal, "j, down", ActionId::TerminalScrollDown),
+    spec(Context::Terminal, "k, up", ActionId::TerminalScrollUp),
 ];
 
 /// `shift+enter` is unreported by most terminals, so a newline also has a
@@ -331,6 +346,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CONVERSATION,
     COMPOSER,
     HISTORY,
+    TERMINAL,
     HELP,
     PERMISSION,
     ASK,

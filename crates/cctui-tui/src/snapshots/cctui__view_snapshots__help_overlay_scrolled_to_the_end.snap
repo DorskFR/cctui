@@ -1,29 +1,28 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 405
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  z           Expand every thinking and result…  j / ↓       Scroll the plan down             │
-▸ │  R           Retry the undelivered message      k / ↑       Scroll the plan up               │
-  │  e           Edit the undelivered message     Plan card — refine                             │
-  │  x           Drop the undelivered message       Enter       Accept the text                  │
-  │  Ctrl+r      Search sent prompts                Esc         Discard the text                 │
-  │  Tab         Answer the waiting prompt        Row glyphs                                     │
-  │Composer                                         ●           working                          │
-  │  Esc         Close the composer                 ◐           stale or asleep                  │
-  │  Enter       Send the message                   ○           idle                             │
-  │  Ctrl+j / A… Insert a newline                   ☾           hibernated                       │
-  │  ↑           Recall an earlier prompt           ↳           subagent                         │
-  │  ↓           Recall a later prompt              ▸ / ▾       folded / open group              │
-  │  Ctrl+r      Search sent prompts                !           permission waiting on you        │
-  │Prompt history                                   ?           question waiting on you          │
-  │  Esc         Close the prompt list              P           plan waiting for approval        │
-  │  Ctrl+n / ↓  Next prompt                        ●N          unread messages                  │
-  │  Ctrl+p / ↑  Previous prompt                    ⚡           auto-approve on                  │
-  │  Enter       Put this prompt in the composer    ✕reason     how it ended                     │
-  │Help                                             ⚙N age      tool calls, age of the last      │
-  │  j / ↓       Scroll down                                                                     │
+  │  e           Edit the undelivered message       r           Refine the plan                  │
+▸ │  x           Drop the undelivered message       j / ↓       Scroll the plan down             │
+  │  T           Watch the live terminal            k / ↑       Scroll the plan up               │
+  │  Ctrl+r      Search sent prompts              Plan card — refine                             │
+  │  Tab         Answer the waiting prompt          Enter       Accept the text                  │
+  │Composer                                         Esc         Discard the text                 │
+  │  Esc         Close the composer               Row glyphs                                     │
+  │  Enter       Send the message                   ●           working                          │
+  │  Ctrl+j / A… Insert a newline                   ◐           stale or asleep                  │
+  │  ↑           Recall an earlier prompt           ○           idle                             │
+  │  ↓           Recall a later prompt              ☾           hibernated                       │
+  │  Ctrl+r      Search sent prompts                ↳           subagent                         │
+  │Prompt history                                   ▸ / ▾       folded / open group              │
+  │  Esc         Close the prompt list              !           permission waiting on you        │
+  │  Ctrl+n / ↓  Next prompt                        ?           question waiting on you          │
+  │  Ctrl+p / ↑  Previous prompt                    P           plan waiting for approval        │
+  │  Enter       Put this prompt in the composer    ●N          unread messages                  │
+  │Terminal pane                                    ⚡           auto-approve on                  │
+  │  T / q / Esc Close the terminal pane            ✕reason     how it ended                     │
+  │  j / ↓       Scroll the terminal down           ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

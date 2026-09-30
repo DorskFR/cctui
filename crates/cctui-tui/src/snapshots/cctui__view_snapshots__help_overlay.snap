@@ -1,29 +1,28 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 397
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         k / ↑       Scroll up                        │
-▸ │  ?           Toggle this cheat sheet            PgDn        Page down                        │
-  │  q           Quit cctui                         PgUp        Page up                          │
-  │  Ctrl+g      Jump to the next pending approval  ? / q / Esc Close this cheat sheet           │
-  │Session list                                   Permission card                                │
-  │  j / ↓       Next session                       y           Allow                            │
-  │  k / ↑       Previous session                   n           Deny                             │
-  │  g           First session                      A           Allow and auto-approve           │
-  │  G           Last session                     Question card                                  │
-  │  Enter       Open the conversation              Esc         Answer later                     │
-  │  z / Tab     Fold or open the subagent group    j / ↓       Next option                      │
-  │  S           Fold or open the section           k / ↑       Previous option                  │
-  │  Z           Fold or open everything            1-9         Pick an option by number         │
-  │Conversation                                     Space       Toggle the focused option        │
-  │  1-9         Jump to session by number          Tab         Next question                    │
-  │  q / Esc     Back to the session list           Shift+Tab   Previous question                │
-  │  j / ↓       Scroll down                        o           Write a free-text answer         │
-  │  k / ↑       Scroll up                          Enter       Send the answer                  │
-  │  PgDn        Page down                        Question card — free text                      │
-  │  PgUp        Page up                            Enter       Accept the text                  │
+  │Anywhere                                         k / ↑       Scroll the terminal up           │
+▸ │  ?           Toggle this cheat sheet          Help                                           │
+  │  q           Quit cctui                         j / ↓       Scroll down                      │
+  │  Ctrl+g      Jump to the next pending approval  k / ↑       Scroll up                        │
+  │Session list                                     PgDn        Page down                        │
+  │  j / ↓       Next session                       PgUp        Page up                          │
+  │  k / ↑       Previous session                   ? / q / Esc Close this cheat sheet           │
+  │  g           First session                    Permission card                                │
+  │  G           Last session                       y           Allow                            │
+  │  Enter       Open the conversation              n           Deny                             │
+  │  z / Tab     Fold or open the subagent group    A           Allow and auto-approve           │
+  │  S           Fold or open the section         Question card                                  │
+  │  Z           Fold or open everything            Esc         Answer later                     │
+  │Conversation                                     j / ↓       Next option                      │
+  │  1-9         Jump to session by number          k / ↑       Previous option                  │
+  │  q / Esc     Back to the session list           1-9         Pick an option by number         │
+  │  j / ↓       Scroll down                        Space       Toggle the focused option        │
+  │  k / ↑       Scroll up                          Tab         Next question                    │
+  │  PgDn        Page down                          Shift+Tab   Previous question                │
+  │  PgUp        Page up                            o           Write a free-text answer         │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

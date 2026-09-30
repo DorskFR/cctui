@@ -5,6 +5,7 @@ pub mod help;
 pub mod history;
 pub mod prompt;
 pub mod sessions;
+pub mod terminal;
 
 use ratatui::Frame;
 
@@ -19,6 +20,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
         }
+        View::Terminal => terminal::draw(frame, app),
         View::HistoryPicker => {
             match app.router.below() {
                 Some(View::Conversation) => conversation::draw(frame, app),

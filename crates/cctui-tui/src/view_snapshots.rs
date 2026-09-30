@@ -289,6 +289,30 @@ fn session_list_sections_folded() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+/// A pane whose feed came in as one relayed chunk, with the frame and the
+/// cursor line a real agent TUI paints.
+#[test]
+fn terminal_pane() {
+    use base64::Engine as _;
+
+    let mut app = app_in_conversation();
+    crate::app::reduce(
+        &mut app,
+        crate::app::Action::Terminal(crate::app::terminal::TerminalAction::Toggle),
+    );
+    let screen = concat!(
+        "\u{1b}[2J\u{1b}[H",
+        "╭─ claude ─────────────╮\r\n",
+        "│ > run the tests      │\r\n",
+        "╰──────────────────────╯\r\n",
+        "\u{1b}[1mRunning 42 tests\u{1b}[0m\r\n",
+        "  ✓ every one of them",
+    );
+    let pane = app.terminal.as_mut().expect("an open pane");
+    assert!(pane.feed(&base64::engine::general_purpose::STANDARD.encode(screen)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 #[test]
 fn conversation() {
     let mut app = app_in_conversation();

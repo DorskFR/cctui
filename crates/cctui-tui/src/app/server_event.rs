@@ -7,6 +7,7 @@ use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::state::PendingPermission;
+use super::terminal::TerminalAction;
 use super::toast::Level;
 
 /// The websocket's only entry point into the store. Exhaustive on purpose: a
@@ -110,7 +111,9 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::GithubEvent { .. } => {
             waived("PR links come from the session rows the REST refresh returns")
         }
-        ServerEvent::PtyChunk { .. } => waived("the TUI has no terminal pane"),
+        ServerEvent::PtyChunk { session_id, data } => {
+            vec![Action::Terminal(TerminalAction::Chunk { session_id, data })]
+        }
         ServerEvent::ScheduledLaunch { .. } => waived("the TUI has no drafts view"),
         ServerEvent::RoomMembers { .. } => waived("the TUI list does not group by room"),
         ServerEvent::UserActions { .. } => waived("the TUI has no needs-you list yet"),

@@ -154,6 +154,13 @@ async fn run(
             }
             Vec::new()
         }
+        Effect::WatchTerminal { session_id, watch } => {
+            if let Err(e) = ws.watch_terminal(session_id, watch).await {
+                tracing::warn!(%e, watch, "terminal watch failed");
+                return vec![Action::Toast(Level::Error, "terminal watch failed".to_owned())];
+            }
+            Vec::new()
+        }
         Effect::SendMessage { send_id, session_id, content, ask_picks, turn_id } => {
             let client_msg_id = uuid::Uuid::new_v4().to_string();
             let turn_id = turn_id.unwrap_or_else(uuid::Uuid::new_v4);
