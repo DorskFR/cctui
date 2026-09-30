@@ -116,10 +116,14 @@ pub fn draw(frame: &mut Frame, keys: &Keymap, scroll: &mut usize) {
     let inner = block.inner(area);
     let column_width = (inner.width as usize) / columns;
 
+    // One column of gutter, so a description that exactly fills its cell still
+    // reads as separate from the next column's heading.
+    let gutter = usize::from(columns > 1);
     let lines: Vec<Line> = (*scroll..per_column.min(*scroll + height))
         .map(|i| {
-            let mut out = spans(&rows[i], column_width);
+            let mut out = spans(&rows[i], column_width - gutter);
             if let Some(right) = rows.get(i + per_column) {
+                out.push(Span::raw(" ".repeat(gutter)));
                 out.extend(spans(right, column_width));
             }
             Line::from(out)

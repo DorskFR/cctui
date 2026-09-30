@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Tab         Answer the waiting prompt          j / ↓       Scroll the plan down             │
-▸ │Composer                                         k / ↑       Scroll the plan up               │
-  │  Esc         Close the composer               Plan card — refine                             │
-  │  Enter       Send the message                   Enter       Accept the text                  │
-  │  Ctrl+j / A… Insert a newline                   Esc         Discard the text                 │
-  │  ↑           Recall an earlier prompt         Row glyphs                                     │
-  │  ↓           Recall a later prompt              ●           working                          │
-  │  Ctrl+r      Search sent prompts                ◐           stale or asleep                  │
-  │  Tab         Take the session completion        ○           idle                             │
-  │  Ctrl+t      Insert a canned prompt             ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │Pinned messages                                  ●N          unread messages                  │
-  │  Esc         Close the pinned messages          ⚡           auto-approve on                  │
-  │  Ctrl+n / ↓  Next pin                           ✕reason     how it ended                     │
-  │  Ctrl+p / ↑  Previous pin                       ⚙N age      tool calls, age of the last      │
-  │  Enter       Jump to the pinned message                                                      │
+  │  Tab         Take the session completion        Enter       Accept the text                  │
+▸ │  Ctrl+t      Insert a canned prompt             Esc         Discard the text                 │
+  │Search and commands                            Row glyphs                                     │
+  │  Enter       Run it                             ●           working                          │
+  │  Esc         Abandon it                         ◐           stale or asleep                  │
+  │Filter menu                                      ○           idle                             │
+  │  F / q / Esc Choose which lines to show         ☾           hibernated                       │
+  │  a           Show every category                ↳           subagent                         │
+  │  r           Back to the default filter         ▸ / ▾       folded / open group              │
+  │  Space / En… Show or hide this category         !           permission waiting on you        │
+  │  j / ↓       Next category                      ?           question waiting on you          │
+  │  k / ↑       Previous category                  P           plan waiting for approval        │
+  │Prompt history                                   ●N          unread messages                  │
+  │  Esc         Close the prompt list              ⚡           auto-approve on                  │
+  │  Ctrl+n / ↓  Next prompt                        ⏸           account soft-limited             │
+  │  Ctrl+p / ↑  Previous prompt                    ⚠           account traffic never seen       │
+  │  Enter       Put this prompt in the composer    ❄           cache cold, next turn re-reads   │
+  │Pinned messages                                  ✕reason     how it ended                     │
+  │  Esc         Close the pinned messages          ⚙N age      tool calls, age of the last      │
+  │  Ctrl+n / ↓  Next pin                                                                        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

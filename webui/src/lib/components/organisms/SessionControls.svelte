@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
 	import { Button, Field, FilterSearchBar, Heading, Icon, Popover, type Schema } from '@dorsk/tsumikit';
@@ -27,6 +28,7 @@
 		view = $bindable(),
 		tiles = true,
 		sticky = true,
+		flush = false,
 		colorBy,
 		groupBy,
 		onColorBy,
@@ -36,6 +38,7 @@
 		onStartSelect,
 		onCancelSelect,
 		onNew,
+		trailing,
 		onUpdateLabel,
 		onDeleteLabel
 	}: {
@@ -60,6 +63,11 @@
 		onCancelSelect: () => void;
 		// Absent when the docked spawn panel replaces the "+ New" button.
 		onNew?: () => void;
+		// Bar-level extras the page owns, e.g. the tiles overflow chip, which must
+		// cost no vertical space of its own above the grid.
+		trailing?: Snippet;
+		// Tiles measure their own area: the bar must not leave a gap below it.
+		flush?: boolean;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
@@ -135,7 +143,7 @@
 	{/if}
 {/snippet}
 
-<div class="bar row" class:sticky bind:this={barEl}>
+<div class="bar row" class:sticky class:flush bind:this={barEl}>
 	<span class="title-wrap">
 		<Heading level={1} size="xl">{m.sessions_title()}</Heading>
 	</span>
@@ -152,6 +160,7 @@
 		</Field>
 	</div>
 	<span class="ctl-item"><SectionFilter bind:sections /></span>
+	{#if trailing}<span class="ctl-item">{@render trailing()}</span>{/if}
 	<!-- Above the fold the foldable controls render inline as bar-level flex items
 	     (display:contents); below it they move into the ⋯ menu instead. -->
 	{#if !narrow}
@@ -204,6 +213,9 @@
 		position: sticky;
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
+	}
+	.bar.flush {
+		margin-bottom: 0;
 	}
 	.bar {
 		margin-bottom: var(--sp-4);

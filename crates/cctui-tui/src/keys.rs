@@ -1,9 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PromptFocus;
-use crate::app::action::Action;
+use crate::app::action::{Action, CopyWhat};
 use crate::app::attention::{AttentionAction, Decision};
+use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::conversation::ConversationAction;
+use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
 use crate::app::drafts::DraftAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
@@ -11,6 +13,7 @@ use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::state::View;
+use crate::app::terminal::TerminalAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -27,9 +30,32 @@ pub enum InputEvent {
 /// Which card holds the keyboard is [`App::prompt_focus`]'s call, not this
 /// function's: a permission request blocks the turn and is answered in one
 /// keystroke, so it outranks an ask or plan card, which can be deferred.
-pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFocus>) -> Context {
+///
+/// `overlay` is [`App::key_overlay`]'s answer: a modal strip or panel that holds
+/// the keyboard while it is open. A feature adds itself there, not here.
+///
+/// A pushed overlay view (the pickers, diagnose, the terminal) outranks a strip:
+/// each of those swallows the key that would open the other, so the two cannot
+/// be open at once, and the one on the router is the one on screen.
+pub const fn context_for(
+    view: View,
+    input_active: bool,
+    prompt: Option<PromptFocus>,
+    overlay: Option<Context>,
+) -> Context {
     if let Some(modal) = modal_context(view) {
         return modal;
+    }
+    if matches!(view, View::Diagnose) {
+        return Context::Diagnose;
+    }
+    // The pane is modal and read-only: nothing under it claims a key, and no
+    // key typed at it reaches the composer.
+    if matches!(view, View::Terminal) {
+        return Context::Terminal;
+    }
+    if let Some(overlay) = overlay {
+        return overlay;
     }
     if input_active {
         return Context::Composer;
@@ -50,15 +76,20 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
         View::HistoryPicker => Context::History,
         View::Pins => Context::Pins,
         View::Macros => Context::Macros,
+        View::Diagnose => Context::Diagnose,
+        View::Terminal => Context::Terminal,
     }
 }
 
-/// A modal overlay owns the keyboard outright, composer or card underneath.
+/// An overlay view owns the keyboard outright: composer, card or strip
+/// underneath.
 const fn modal_context(view: View) -> Option<Context> {
     match view {
         View::HistoryPicker => Some(Context::History),
         View::Pins => Some(Context::Pins),
         View::Macros => Some(Context::Macros),
+        View::Diagnose => Some(Context::Diagnose),
+        View::Terminal => Some(Context::Terminal),
         _ => None,
     }
 }
@@ -70,11 +101,12 @@ pub fn map_input(
     view: View,
     input_active: bool,
     prompt: Option<PromptFocus>,
+    overlay: Option<Context>,
     input: InputEvent,
 ) -> Option<Action> {
     match input {
         InputEvent::Key(key) => {
-            let context = context_for(view, input_active, prompt);
+            let context = context_for(view, input_active, prompt, overlay);
             let chord = Chord::from_event(key);
             keys.lookup(context, chord)
                 .and_then(|id| to_action(id, chord))
@@ -83,11 +115,15 @@ pub fn map_input(
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
+            View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(3))),
+            View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
             View::Help | View::HistoryPicker | View::Pins | View::Macros => None,
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
+            View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(-3))),
+            View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
             View::Help | View::HistoryPicker | View::Pins | View::Macros => None,
         },
     }
@@ -100,6 +136,7 @@ pub fn is_wired(id: ActionId) -> bool {
 
 /// Actions a later wave still owns return `None`: the key then behaves as if it
 /// were unbound rather than being silently swallowed.
+#[allow(clippy::too_many_lines)]
 fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
     Some(match id {
         ActionId::Help => Action::OpenHelp,
@@ -128,10 +165,31 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::InterruptSelected,
+        ActionId::TerminalOpen => Action::Terminal(TerminalAction::Toggle),
+        ActionId::TerminalClose => Action::Terminal(TerminalAction::Close),
+        ActionId::TerminalScrollDown => Action::Terminal(TerminalAction::Scroll(-1)),
+        ActionId::TerminalScrollUp => Action::Terminal(TerminalAction::Scroll(1)),
         ActionId::RetrySend => Action::Send(SendAction::Retry(chord.event())),
         ActionId::EditSend => Action::Send(SendAction::Edit(chord.event())),
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
+
+        ActionId::CopyMessage => Action::Copy(CopyWhat::Line),
+        ActionId::CopyCodeBlock => Action::Copy(CopyWhat::CodeBlock),
+        ActionId::CopySessionLink => Action::Copy(CopyWhat::SessionLink),
+        ActionId::Search => Action::CmdLine(CmdAction::Open(CmdMode::Search)),
+        ActionId::SearchNext => Action::CmdLine(CmdAction::NextHit),
+        ActionId::SearchPrev => Action::CmdLine(CmdAction::PrevHit),
+        ActionId::Command => Action::CmdLine(CmdAction::Open(CmdMode::Command)),
+        ActionId::CmdLineCommit => Action::CmdLine(CmdAction::Commit),
+        ActionId::CmdLineCancel => Action::CmdLine(CmdAction::Cancel),
+        ActionId::FilterCycle => Action::CmdLine(CmdAction::CycleFilter),
+        ActionId::FilterMenu => Action::CmdLine(CmdAction::ToggleFilterMenu),
+        ActionId::FilterMenuToggle => Action::CmdLine(CmdAction::FilterMenuToggle),
+        ActionId::FilterMenuNext => Action::CmdLine(CmdAction::FilterMenuNext),
+        ActionId::FilterMenuPrev => Action::CmdLine(CmdAction::FilterMenuPrev),
+        ActionId::FilterShowAll => Action::CmdLine(CmdAction::FilterShowAll),
+        ActionId::FilterReset => Action::CmdLine(CmdAction::FilterReset),
 
         ActionId::CancelInput => Action::CancelInput,
         ActionId::SubmitInput => Action::SubmitInput,
@@ -186,6 +244,17 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PlanScrollDown => Action::Prompt(PromptAction::PlanScroll(1)),
         ActionId::PlanScrollUp => Action::Prompt(PromptAction::PlanScroll(-1)),
 
+        ActionId::Diagnose => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)),
+        ActionId::Info => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)),
+        ActionId::DiagnoseClose => Action::Diagnose(DiagnoseAction::Close),
+        ActionId::DiagnoseScrollDown => Action::Diagnose(DiagnoseAction::Scroll(1)),
+        ActionId::DiagnoseScrollUp => Action::Diagnose(DiagnoseAction::Scroll(-1)),
+        ActionId::DiagnosePageDown => Action::Diagnose(DiagnoseAction::Scroll(15)),
+        ActionId::DiagnosePageUp => Action::Diagnose(DiagnoseAction::Scroll(-15)),
+        ActionId::DiagnoseTop => Action::Diagnose(DiagnoseAction::ScrollTop),
+        ActionId::DiagnoseRefresh => Action::Diagnose(DiagnoseAction::Refresh),
+        ActionId::DiagnoseCopyId => Action::Diagnose(DiagnoseAction::CopyId),
+
         _ => return None,
     })
 }
@@ -196,6 +265,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 /// else still reaches the composer.
 const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
+        Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
@@ -210,8 +280,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use super::{
-        Action, AttentionAction, Decision, DraftAction, InputEvent, Keymap, PromptFocus, View,
-        map_input,
+        Action, AttentionAction, Decision, DiagnoseAction, DiagnoseMode, DraftAction, InputEvent,
+        Keymap, PromptFocus, View, map_input,
     };
     use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
@@ -227,11 +297,11 @@ mod tests {
     }
 
     fn map(view: View, input_active: bool, code: KeyCode) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(key(code)))
+        map_input(&Keymap::default(), view, input_active, None, None, InputEvent::Key(key(code)))
     }
 
     fn map_event(view: View, input_active: bool, event: KeyEvent) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(event))
+        map_input(&Keymap::default(), view, input_active, None, None, InputEvent::Key(event))
     }
 
     fn map_card(code: KeyCode) -> Option<Action> {
@@ -244,6 +314,7 @@ mod tests {
             View::Conversation,
             false,
             Some(focus),
+            None,
             InputEvent::Key(key(code)),
         )
     }
@@ -335,16 +406,76 @@ mod tests {
         }
     }
 
-    /// A global bound to an action no wave implements yet must not eat the key.
+    /// A global bound to an action no wave implements yet must not eat the key:
+    /// `switch-view` is the last one still reserved, and `1-9` has to stay inert
+    /// in the list rather than resolving to something else.
     #[test]
-    fn a_reserved_global_still_reaches_the_composer() {
-        for code in [KeyCode::Char('i'), KeyCode::Char('/'), KeyCode::Char('n')] {
-            assert!(
-                matches!(map(View::Conversation, false, code), Some(Action::ActivateInputWith(_))),
-                "{code:?} should fall through"
-            );
+    fn a_reserved_global_claims_nothing() {
+        for code in [KeyCode::Char('1'), KeyCode::Char('9')] {
+            assert!(map(View::SessionList, false, code).is_none(), "{code:?} should stay reserved");
         }
-        assert!(map(View::SessionList, false, KeyCode::Char('i')).is_none());
+    }
+
+    #[test]
+    fn the_diagnose_globals_reach_both_views() {
+        for view in [View::SessionList, View::Conversation] {
+            assert!(matches!(
+                map(view, false, KeyCode::Char('D')),
+                Some(Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)))
+            ));
+            assert!(matches!(
+                map(view, false, KeyCode::Char('i')),
+                Some(Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_open_panel_is_modal_and_owns_its_own_keys() {
+        let map_panel = |code| map(View::Diagnose, false, code);
+        assert!(matches!(
+            map_panel(KeyCode::Char('j')),
+            Some(Action::Diagnose(DiagnoseAction::Scroll(1)))
+        ));
+        assert!(matches!(
+            map_panel(KeyCode::Char('r')),
+            Some(Action::Diagnose(DiagnoseAction::Refresh))
+        ));
+        assert!(matches!(
+            map_panel(KeyCode::Char('y')),
+            Some(Action::Diagnose(DiagnoseAction::CopyId))
+        ));
+        assert!(matches!(
+            map_panel(KeyCode::Char('g')),
+            Some(Action::Diagnose(DiagnoseAction::ScrollTop))
+        ));
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            assert!(matches!(map_panel(code), Some(Action::Diagnose(DiagnoseAction::Close))));
+        }
+        assert!(
+            map_panel(KeyCode::Char('?')).is_none(),
+            "a modal panel does not fall through to the globals"
+        );
+        assert!(map_panel(KeyCode::Char('z')).is_none());
+    }
+
+    /// `/` and `n`/`N` are decision 7's globals, wired here rather than given a
+    /// second binding of their own.
+    #[test]
+    fn the_global_search_keys_drive_the_transcript_search() {
+        use crate::app::cmdline::{CmdAction, Mode};
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('/')),
+            Some(Action::CmdLine(CmdAction::Open(Mode::Search)))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('n')),
+            Some(Action::CmdLine(CmdAction::NextHit))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('N')),
+            Some(Action::CmdLine(CmdAction::PrevHit))
+        ));
     }
 
     #[test]
@@ -493,6 +624,7 @@ mod tests {
                 View::Conversation,
                 true,
                 Some(PromptFocus::Permission),
+                None,
                 InputEvent::Key(key(code)),
             );
             assert!(matches!(action, Some(Action::InputKey(_))), "{code:?} must be typed");
@@ -513,14 +645,14 @@ mod tests {
     fn the_mouse_wheel_navigates_the_list_and_scrolls_the_conversation() {
         let keys = Keymap::default();
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, None, InputEvent::ScrollDown),
+            map_input(&keys, View::SessionList, false, None, None, InputEvent::ScrollDown),
             Some(Action::SelectNext)
         ));
         assert!(matches!(
-            map_input(&keys, View::Conversation, false, None, InputEvent::ScrollUp),
+            map_input(&keys, View::Conversation, false, None, None, InputEvent::ScrollUp),
             Some(Action::Scroll { lines: -3, release_follow: true })
         ));
-        assert!(map_input(&keys, View::Help, false, None, InputEvent::ScrollUp).is_none());
+        assert!(map_input(&keys, View::Help, false, None, None, InputEvent::ScrollUp).is_none());
     }
 
     #[test]
@@ -596,6 +728,7 @@ mod tests {
                 View::Conversation,
                 true,
                 Some(PromptFocus::Ask),
+                None,
                 InputEvent::Key(key(KeyCode::Char('2'))),
             ),
             Some(Action::InputKey(_))
@@ -694,7 +827,7 @@ mod tests {
         let mut keys = Keymap::default();
         keys.set(Context::SessionList, "ctrl+n", "select-next").expect("valid");
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, None, InputEvent::Key(ctrl('n'))),
+            map_input(&keys, View::SessionList, false, None, None, InputEvent::Key(ctrl('n'))),
             Some(Action::SelectNext)
         ));
     }

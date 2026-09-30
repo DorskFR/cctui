@@ -28,6 +28,9 @@ ratatui = "0.30"
 crossterm = "0.29"
 reqwest.workspace = true
 ratatui-textarea = "0.9.2"
+# Clipboard fallback for terminals that ignore OSC 52; no X11/wayland feature
+# is forced, so a headless build still links.
+arboard = { version = "3", default-features = false }
 unicode-width = "0.2"
 supports-color = "3"
 pulldown-cmark = "0.13"
@@ -43,6 +46,9 @@ similar = "3.1.1"
 semver.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+tui-term = "0.3.4"
+vt100 = "0.16.2"
+base64.workspace = true
 
 [dev-dependencies]
 insta = "1"

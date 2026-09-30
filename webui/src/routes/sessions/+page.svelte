@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack, onMount } from 'svelte';
+	import type { SessionListItem } from '@bindings/SessionListItem';
 	import {
 		useSessions,
 		useSessionActions,
@@ -22,6 +23,7 @@
 	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
 	import SessionSections from './SessionSections.svelte';
 	import SessionTiles from './SessionTiles.svelte';
+	import TilesOverflowChip from './TilesOverflowChip.svelte';
 	import SessionsBulkBar from './SessionsBulkBar.svelte';
 	import EditDraftModal from './EditDraftModal.svelte';
 	import { drafts, clearSpawnSlot, currentSpawnSlot, readSpawnSlot } from '$lib/drafts';
@@ -136,6 +138,7 @@
 	// of skipping the list. `mounted` is reactive so the
 	// drawer→URL effect re-runs once the initial sync is in place.
 	let mounted = $state(false);
+	let tilesOverflow = $state<SessionListItem[]>([]);
 	// Derive the session id from the URL pathname rather than `page.params`.
 	// `setUrlSession` navigates with shallow routing (pushState/replaceState),
 	// which updates `page.url` but does NOT re-resolve the matched route — so
@@ -229,6 +232,10 @@
 </script>
 
 
+{#snippet overflowChip()}
+	<TilesOverflowChip items={tilesOverflow} onOpen={(s) => (sp.openSession = s)} />
+{/snippet}
+
 <SessionControls
 	bind:rawQuery={sp.rawQuery}
 	searchSchema={sp.searchSchema}
@@ -238,6 +245,7 @@
 	bind:view={sp.viewMode}
 	tiles={!sp.mobile}
 	sticky={!sp.tiles}
+	flush={sp.tiles}
 	colorBy={sp.colorBy}
 	groupBy={sp.groupBy}
 	onColorBy={sp.setColorBy}
@@ -247,6 +255,7 @@
 	onStartSelect={() => (sp.list.selecting = true)}
 	onCancelSelect={sp.list.exitSelect}
 	onNew={sp.dockSide ? undefined : () => (sp.showSpawn = true)}
+	trailing={sp.tiles && tilesOverflow.length ? overflowChip : undefined}
 	onUpdateLabel={sp.updateLabel}
 	onDeleteLabel={sp.deleteLabel}
 />
@@ -260,7 +269,7 @@
 		<SessionTiles
 			sessions={sp.tileSessions}
 			onNavigate={(sid) => void sp.navigateToForked(sid)}
-			onOpen={(s) => (sp.openSession = s)}
+			onoverflow={(items) => (tilesOverflow = items)}
 		/>
 		{#snippet failed()}
 			<Callout tone="danger">{m.tiles_failed()}</Callout>

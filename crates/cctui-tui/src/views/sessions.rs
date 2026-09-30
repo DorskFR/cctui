@@ -187,8 +187,12 @@ fn session_line_spans(
     let stale = session_status::is_stale_working(s, now);
     let liveness = session_status::row_liveness(s, stale);
     let act = session_status::tool_activity(s, now);
-    let badges =
-        session_status::RowBadges::of(s, app.permissions.has(&s.id), app.prompt_marker(&s.id));
+    let badges = session_status::RowBadges::of(
+        s,
+        app.permissions.has(&s.id),
+        app.prompt_marker(&s.id),
+        app.soft_limited.contains(&s.id),
+    );
     let compact = app.config.prefs.compact_rows;
 
     let project = s

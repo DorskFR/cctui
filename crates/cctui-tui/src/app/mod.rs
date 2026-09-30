@@ -1,9 +1,14 @@
 pub mod action;
 pub mod attention;
+pub mod cmdline;
+pub mod command;
 pub mod conversation;
 pub mod conversation_store;
+pub mod copy;
+pub mod diagnose;
 pub mod drafts;
 pub mod effects;
+pub mod export;
 pub mod identity;
 pub mod line;
 pub mod macros;
@@ -18,8 +23,10 @@ pub mod session_list;
 pub mod session_live;
 pub mod session_status;
 pub mod state;
+pub mod terminal;
 pub mod toast;
 pub mod transcript;
+pub mod transcript_filter;
 
 pub use action::Action;
 #[cfg(test)]

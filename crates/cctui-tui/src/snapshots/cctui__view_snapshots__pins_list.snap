@@ -3,13 +3,14 @@ source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
  infra (main) on orion ── opus ── $1.25 ── ⚑ 3
+                                                                                                   ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
 ⚑  Read  crates/cctui-tui/src/main.rs  read                                                        ▕
-└ 984 lines                                                                                        ▕
- Bash ┌ Pinned messages ─────────────────────────────────────────────────────────────────────┐     ▕
-└ ✗ ex│❯ #1 user add a snapshot harness                                                      │     ▐
-      │  #3 tool crates/cctui-tui/src/main.rs                                                │     ▐
-● Assi│  #99 — (not loaded)                                                                  │     ▐
+└ 984 ┌ Pinned messages ─────────────────────────────────────────────────────────────────────┐     ▕
+ Bash │❯ #1 user add a snapshot harness                                                      │     ▐
+└ ✗ ex│  #3 tool crates/cctui-tui/src/main.rs                                                │     ▐
+      │  #99 — (not loaded)                                                                  │     ▐
+● Assi│                                                                                      │     ▐
 Lookin│                                                                                      │     ▐
       │                                                                                      │     ▐
 - one │                                                                                      │     ▐
@@ -19,7 +20,6 @@ Lookin│                                                                       
       │                                                                                      │     ▐
 ◆ lane│                                                                                      │     ▐
 the pa│                                                                                      │     ▐
-· keep│                                                                                      │     ▐
 ⟳ cont│ ↑↓ Pick  Enter Jump  m/d Unpin  Esc Close                                            │     ▐
       └──────────────────────────────────────────────────────────────────────────────────────┘     ▐
 ◁ Reply done                                                                                       ▐

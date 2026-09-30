@@ -1,6 +1,8 @@
 pub mod banner;
 pub mod cards;
 pub mod conversation;
+pub mod diagnose;
+pub mod filters;
 pub mod help;
 pub mod history;
 pub mod macros;
@@ -8,6 +10,7 @@ pub mod mentions;
 pub mod pins;
 pub mod prompt;
 pub mod sessions;
+pub mod terminal;
 
 use ratatui::Frame;
 
@@ -31,6 +34,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
         }
+        View::Diagnose => {
+            match app.router.below() {
+                Some(View::Conversation) => conversation::draw(frame, app),
+                _ => sessions::draw(frame, app),
+            }
+            diagnose::draw(frame, app);
+        }
+        View::Terminal => terminal::draw(frame, app),
         View::HistoryPicker => {
             draw_below(frame, app);
             if let Some(picker) = app.drafts.picker.as_ref() {
