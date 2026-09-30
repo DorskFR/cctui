@@ -162,6 +162,25 @@ export const metrics = (page: Page) =>
 			scrollW: (document.scrollingElement ?? document.documentElement).scrollWidth,
 			winW: window.innerWidth,
 			docks: document.querySelectorAll('aside.dock').length,
+			rows: new Set(
+				[...document.querySelectorAll<HTMLElement>('[data-journey="session-tiles"] .tile')].map(
+					(t) => Math.round(t.getBoundingClientRect().top)
+				)
+			).size,
+			cols: new Set(
+				[...document.querySelectorAll<HTMLElement>('[data-journey="session-tiles"] .tile')].map(
+					(t) => Math.round(t.getBoundingClientRect().left)
+				)
+			).size,
+			gridTop: grid?.getBoundingClientRect().top ?? 0,
+			barBottom: document.querySelector('.bar')?.getBoundingClientRect().bottom ?? 0,
+			lastComposerBottom: Math.max(
+				0,
+				...[...document.querySelectorAll('[data-journey="composer"]')].map(
+					(c) => c.getBoundingClientRect().bottom
+				)
+			),
+			navTop: document.querySelector('.nav:not(.inline)')?.getBoundingClientRect().top ?? 0,
 			view: localStorage.getItem('cctui_list_view')
 		};
 	});

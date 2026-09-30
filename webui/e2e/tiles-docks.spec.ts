@@ -24,12 +24,14 @@ const stub = (nav: 'top' | 'bottom') => ({
 });
 
 const VIEWPORTS = [
-	{ w: 1920, h: 1080, tag: '1920x1080' },
-	{ w: 3440, h: 1440, tag: '3440x1440' }
+	{ w: 1920, h: 1080, tag: '1920x1080', panes: 4, grid: [2, 2] },
+	// A real FHD browser window: 1080 less tabs and the address bar.
+	{ w: 1920, h: 960, tag: '1920x960', panes: 4, grid: [2, 2] },
+	{ w: 3440, h: 1440, tag: '3440x1440', panes: 10, grid: [5, 2] }
 ] as const;
 
 for (const nav of ['bottom', 'top'] as const) {
-	for (const { w, h, tag } of VIEWPORTS) {
+	for (const { w, h, tag, panes, grid } of VIEWPORTS) {
 		test(`tiles hide both docks and never scroll the page — ${nav} nav, ${tag}`, async ({
 			page
 		}) => {
@@ -56,6 +58,21 @@ for (const nav of ['bottom', 'top'] as const) {
 
 			expect(m.scrollH, 'document does not scroll vertically').toBeLessThanOrEqual(m.winH);
 			expect(m.scrollW, 'document does not scroll horizontally').toBeLessThanOrEqual(m.winW);
+
+			expect(m.panes, `${tag} mounts ${panes} panes`).toBe(panes);
+			expect([m.cols, m.rows], `${tag} grid shape`).toEqual([grid[0], grid[1]]);
+
+			// The overflow chip lives in the toolbar, so the grid starts against it.
+			expect(m.gridTop - m.barBottom, 'no empty band above the grid').toBeLessThanOrEqual(6);
+			expect(m.gridTop).toBeGreaterThanOrEqual(m.barBottom - 1);
+
+			// `overflow: clip` hides a too-tall last row from scrollHeight, so
+			// measure the bottom row's composer against the chrome directly.
+			const floor = nav === 'bottom' ? m.navTop : m.winH;
+			expect(m.lastComposerBottom, 'a composer was measured').toBeGreaterThan(0);
+			expect(m.lastComposerBottom, 'the bottom row is not clipped').toBeLessThanOrEqual(
+				floor + 1
+			);
 
 			const scrolled = await page.evaluate(() => {
 				const tile = document.querySelector('[data-journey="session-tiles"] .tile');

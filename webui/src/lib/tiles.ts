@@ -135,8 +135,13 @@ export function paneCapacity(viewport: Viewport): number {
  * Playwright project if the pane grows another row.
  */
 export const MIN_PANE_CHROME = 254;
-/** Transcript that must be left over, or the pane is all chrome and no content. */
-export const MIN_TRANSCRIPT_HEIGHT = 200;
+/**
+ * Transcript that must be left over, or the pane is all chrome and no content.
+ * A few lines, not a comfortable read: a tile is glanceable and scrolls. Any
+ * higher and a real 1080p window — inner height ~960 once the browser chrome is
+ * off, ~800 of tiles area under the bottom nav — loses its second row.
+ */
+export const MIN_TRANSCRIPT_HEIGHT = 96;
 export const MIN_PANE_HEIGHT = MIN_PANE_CHROME + MIN_TRANSCRIPT_HEIGHT;
 
 /**
