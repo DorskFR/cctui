@@ -498,7 +498,9 @@ export function buildLines(
 			const body = e.content.trim();
 			const op = e.operation ?? 'queued';
 			if (op !== 'queued') {
-				closes.push({ key: queueKey(body), absorbed: op === 'absorbed' });
+				// Only the human withdrawing a prompt strikes it out; `dequeued`
+				// is Claude taking it off the queue to run it.
+				closes.push({ key: queueKey(body), absorbed: op !== 'removed' && op !== 'cleared' });
 				continue;
 			}
 			if (!body || !ctx.visible('user')) continue;

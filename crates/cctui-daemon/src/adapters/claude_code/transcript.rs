@@ -427,6 +427,14 @@ fn first_num(line: &Value, keys: &[&str]) -> Option<u64> {
 
 const EXCERPT_CHARS: usize = 120;
 
+/// Claude enumerates no closed set of queue-operation `reason`s, and a prompt it
+/// consumed mid-turn must never read as one the human withdrew: a remove counts
+/// as a cancel only on positive evidence of one.
+fn user_cancelled(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    ["cancel", "user", "abort", "escape", "interrupt"].iter().any(|w| r.contains(w))
+}
+
 /// One-line, length-capped excerpt for a marker label.
 fn excerpt(text: &str) -> String {
     let line = text.trim().lines().next().unwrap_or_default().trim();
@@ -777,17 +785,17 @@ fn session_state_marker(marker: &str, line: &Value) -> Option<Value> {
             let verb = match op {
                 "enqueue" | "add" | "queued" => "queued",
                 "dequeue" | "dequeued" => "dequeued",
-                "remove" | "removed" if reason == "absorbed_mid_turn" => "absorbed",
-                "remove" | "removed" => "removed",
+                "remove" | "removed" if user_cancelled(reason) => "removed",
+                "remove" | "removed" => "absorbed",
                 "popAll" | "clear" => "cleared",
                 other => other,
             };
             let raw = first_str(line, &["prompt", "text", "content", "value"]).unwrap_or_default();
             let body = excerpt(raw);
             let text = if body.is_empty() { verb.to_owned() } else { format!("{verb}: {body}") };
-            // The client correlates a queued prompt with its delivered user turn
-            // by first line, which `excerpt` truncates; carry it untruncated.
-            let queue_text = raw.trim().lines().next().unwrap_or_default().trim();
+            // The client renders the queued prompt itself, so it needs the whole
+            // body; `text` stays the one-line excerpt the session list previews.
+            let queue_text = raw.trim();
             json!({
                 "role": "system_marker",
                 "marker": marker,
@@ -2100,12 +2108,12 @@ mod tests {
     }
 
     #[test]
-    fn queue_verbs_distinguish_remove_from_dequeue() {
+    fn queue_verbs_map_to_the_client_operations() {
         let cases = [
             ("enqueue", "queued"),
             ("add", "queued"),
             ("dequeue", "dequeued"),
-            ("remove", "removed"),
+            ("remove", "absorbed"),
             ("popAll", "cleared"),
         ];
         for (op, want) in cases {
@@ -2122,16 +2130,22 @@ mod tests {
     }
 
     #[test]
-    fn a_remove_keeps_its_reason_and_absorbed_mid_turn_is_not_a_cancel() {
-        let mut out = Vec::new();
-        parse_line(
-            "s",
-            &json!({"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","prompt":"ship it"}),
-            &mut out,
-        );
-        let msgs = message_payloads(&out);
-        assert_eq!(msgs[0].get("operation").and_then(Value::as_str), Some("absorbed"));
-        assert_eq!(msgs[0].get("reason").and_then(Value::as_str), Some("absorbed_mid_turn"));
+    fn a_remove_keeps_its_reason_and_only_a_user_cancel_is_a_cancel() {
+        for reason in ["absorbed_mid_turn", "", "consumed", "delivered_to_turn"] {
+            let mut out = Vec::new();
+            parse_line(
+                "s",
+                &json!({"type":"queue-operation","operation":"remove","reason":reason,"prompt":"ship it"}),
+                &mut out,
+            );
+            let msgs = message_payloads(&out);
+            assert_eq!(
+                msgs[0].get("operation").and_then(Value::as_str),
+                Some("absorbed"),
+                "reason {reason:?} is not a user cancel"
+            );
+            assert_eq!(msgs[0].get("reason").and_then(Value::as_str), Some(reason));
+        }
 
         let mut out = Vec::new();
         parse_line(
@@ -2222,17 +2236,18 @@ mod tests {
     }
 
     #[test]
-    fn queue_operations_carry_the_untruncated_first_line() {
+    fn queue_operations_carry_the_untruncated_body() {
         let first = "x".repeat(200);
+        let body = format!("{first}\nsecond line");
         let mut out = Vec::new();
         parse_line(
             "s",
-            &json!({"type":"queue-operation","operation":"enqueue","prompt":format!("{first}\nsecond line")}),
+            &json!({"type":"queue-operation","operation":"enqueue","prompt":body.clone()}),
             &mut out,
         );
         let msgs = message_payloads(&out);
         let queue_text = msgs[0].get("queue_text").and_then(Value::as_str).unwrap();
-        assert_eq!(queue_text, first, "queue_text keeps the whole first line");
+        assert_eq!(queue_text, body, "queue_text keeps every line of the prompt");
         let text = msgs[0].get("text").and_then(Value::as_str).unwrap();
         assert!(text.starts_with("queued: "), "the legacy excerpt stays: {text}");
         assert!(text.chars().count() < queue_text.chars().count(), "excerpt is still truncated");
