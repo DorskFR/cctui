@@ -14,10 +14,7 @@ export interface ProxyIdentity {
   plugin: string;
 }
 
-export type ProxyRejection =
-  | "missing_headers"
-  | "stale_timestamp"
-  | "bad_signature";
+export type ProxyRejection = "missing_headers" | "stale_timestamp" | "bad_signature";
 
 /**
  * The canonical string cctui-server signs. Must stay byte-identical to
@@ -35,7 +32,9 @@ export function sign(
   ts: number,
   userId: string,
 ): string {
-  return createHmac("sha256", secret).update(canonical(method, path, ts, userId)).digest("hex");
+  return createHmac("sha256", secret)
+    .update(canonical(method, path, ts, userId))
+    .digest("hex");
 }
 
 /** The path the signature covers: one leading slash, no query or fragment. */

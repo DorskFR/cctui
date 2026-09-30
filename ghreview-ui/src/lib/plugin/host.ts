@@ -1,5 +1,5 @@
-import { getContext } from "svelte";
 import type { Component } from "svelte";
+import { getContext } from "svelte";
 
 export const PLUGIN_ID = "ghreview";
 

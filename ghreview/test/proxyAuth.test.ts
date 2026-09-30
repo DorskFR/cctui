@@ -65,9 +65,7 @@ describe("shared signature vectors", () => {
   });
 
   test("the canonical string is method, path, ts and user joined by newlines", () => {
-    expect(canonical("GET", "/v1/pulls", 1_700_000_000, "u")).toBe(
-      "GET\n/v1/pulls\n1700000000\nu",
-    );
+    expect(canonical("GET", "/v1/pulls", 1_700_000_000, "u")).toBe("GET\n/v1/pulls\n1700000000\nu");
   });
 
   test("the signed path drops the query and normalises the leading slash", () => {
