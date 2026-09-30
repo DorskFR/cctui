@@ -2,12 +2,21 @@
   "version": 1,
   "plugins": [
     {
+      "id": "ghreview",
+      "name": "GitHub review",
+      "description": "A pull-request inbox next to your sessions. Buckets the PRs that need you, shows diffs and threads, and lets you review and merge without leaving cctui.",
+      "version": "0.1.0",
+      "url": "https://github.com/DorskFR/ghreview/releases/download/v0.1.0/ghreview-0.1.0.tgz",
+      "sha256": "1c692459e665b7aaab27696f0c4c9704a218d85cc1e58d27bab0900ceff6f403",
+      "homepage": "https://github.com/DorskFR/ghreview"
+    },
+    {
       "id": "yubisashi",
       "name": "Review",
       "description": "Frames your running dev app next to the conversation. Point at an element and its source location lands in the composer, ready for your comment.",
-      "version": "0.5.2",
-      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.5.2/yubisashi-0.5.2.tgz",
-      "sha256": "3aa31bb529f23a306854f2282192b8597904268855627c58048d7b162ff072ac",
+      "version": "0.5.3",
+      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.5.3/yubisashi-0.5.3.tgz",
+      "sha256": "c64796ae47a8fa3ee618ad643898bf829257b14a499865aa02fb4b856503f594",
       "homepage": "https://github.com/DorskFR/yubisashi"
     }
   ]

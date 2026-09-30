@@ -323,10 +323,6 @@ jobs:
             context: .
             file: webui/Dockerfile
             bins: false
-          - image: cctui-ghreview
-            context: ghreview
-            file: ghreview/Dockerfile
-            bins: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -394,10 +390,6 @@ jobs:
           - image: cctui-ui
             context: .
             file: webui/Dockerfile
-            bins: false
-          - image: cctui-ghreview
-            context: ghreview
-            file: ghreview/Dockerfile
             bins: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
