@@ -11,6 +11,10 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use cctui_proto::api::plugins::{
+    PluginBackend, PluginHostToken, PluginInstanceSetting, PluginPage, PluginSetting, PluginSource,
+};
+
 /// The major of the host/plugin contract this server speaks.
 pub const CCTUI_API: u32 = 1;
 const MAX_ID_LEN: usize = 40;
@@ -54,59 +58,6 @@ pub struct PluginManifest {
     pub host_token: Option<PluginHostToken>,
 }
 
-/// The env name a host-minted, `read`-scoped cctui token is exported under.
-/// There is deliberately no scope field: the one cctui API a plugin's skill can
-/// reach is its own backend proxy, which asks for `read`.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct PluginHostToken {
-    pub env: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct PluginPage {
-    pub title: String,
-    /// Tsumikit icon name for the nav entry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct PluginSetting {
-    pub key: String,
-    pub label: String,
-    pub env: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-}
-
-/// One instance-level setting. `secret` values are sealed at rest and never
-/// leave the server, not even to the admin who wrote them.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct PluginInstanceSetting {
-    pub key: String,
-    pub label: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    #[serde(default)]
-    pub secret: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct PluginBackend {
-    /// The `instanceSettings` key holding the upstream base URL.
-    pub upstream_setting: String,
-}
-
 pub const MAX_SETTING_VALUE_CHARS: usize = 512;
 /// Instance settings hold URLs and tokens, not the 512-char per-user strings.
 pub const MAX_INSTANCE_SETTING_VALUE_CHARS: usize = 2048;
@@ -117,14 +68,6 @@ fn valid_setting_key(key: &str) -> bool {
     chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && key.len() <= 40
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "lowercase")]
-pub enum PluginSource {
-    Directory,
-    Installed,
 }
 
 /// Where a plugin's files live: a folder on disk, or the extracted archive.

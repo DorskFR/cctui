@@ -7,7 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
@@ -15,59 +15,16 @@ use crate::error::AppError;
 use crate::state::AppState;
 use crate::store::usage_samples::{self, CloseRow, HistoryRow, RETENTION_DAYS};
 
+pub use cctui_proto::api::usage_history::{
+    HistorySample, UsageHistory, WastedSummary, WindowClose, WindowCloses,
+};
+
 const DEFAULT_LOOKBACK: Duration = Duration::days(7);
 
 #[derive(Debug, Deserialize)]
 pub struct HistoryQuery {
     pub window: Option<String>,
     pub from: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "UsageHistorySample"))]
-pub struct HistorySample {
-    pub window_key: String,
-    pub utilization: f64,
-    pub amount_usd: Option<f64>,
-    pub resets_at: Option<DateTime<Utc>>,
-    pub sampled_at: DateTime<Utc>,
-    pub source: String,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct UsageHistory {
-    pub account_id: Uuid,
-    pub samples: Vec<HistorySample>,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "UsageWindowClose"))]
-pub struct WindowClose {
-    pub account_id: Uuid,
-    pub window_key: String,
-    pub resets_at: DateTime<Utc>,
-    pub final_utilization: f64,
-    pub wasted_pct: f64,
-    pub closed_at: DateTime<Utc>,
-    pub source: String,
-}
-
-/// Mean unused share of the closed instances of one window key.
-#[derive(Debug, Serialize, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct WastedSummary {
-    pub window_key: String,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub windows: usize,
-    pub mean_wasted_pct: f64,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "UsageWindowCloses"))]
-pub struct WindowCloses {
-    pub closes: Vec<WindowClose>,
-    pub summary: Vec<WastedSummary>,
 }
 
 fn clamp_from(from: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DateTime<Utc> {

@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use uuid::Uuid;
 
-use super::gateway::toolguard::{ToolPolicy, invalidate_policy_cache};
+use super::gateway::toolguard::{ToolPolicy, invalidate_policy_cache, normalize_policy};
 use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -50,7 +50,7 @@ pub async fn put_tool_policy(
     Json(req): Json<ToolPolicy>,
 ) -> Result<Json<ToolPolicy>, AppError> {
     owned(&state, &ctx, id).await?;
-    let policy = req.normalized().map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
+    let policy = normalize_policy(req).map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
     if policy == ToolPolicy::default() {
         sqlx::query("DELETE FROM account_tool_policies WHERE account_id = $1")
             .bind(id)

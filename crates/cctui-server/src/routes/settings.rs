@@ -11,10 +11,9 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-#[cfg(feature = "ts")]
-use ts_rs::TS;
+
+pub use cctui_proto::api::settings::SettingsPayload;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -22,13 +21,6 @@ use crate::state::AppState;
 
 /// Current settings payload schema version. Bump when adding a `migrate` arm.
 const CURRENT_VERSION: i32 = 1;
-
-#[derive(Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct SettingsPayload {
-    pub version: i32,
-    pub data: Value,
-}
 
 /// Upgrade a settings `data` payload from `from` up to [`CURRENT_VERSION`].
 ///

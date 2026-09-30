@@ -4,17 +4,15 @@
 
 use axum::extract::State;
 use axum::{Extension, Json};
-use cctui_proto::models::MachineLiveness;
 use cctui_proto::resources::MachineResources;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
-#[cfg(feature = "ts")]
-use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
+
+pub use cctui_proto::api::machine_resources::MachineResourcesRow;
 
 /// Upsert the daemon's latest snapshot. Fire-and-forget: a failed write only
 /// loses one heartbeat's figures, the next one overwrites anyway.
@@ -86,25 +84,6 @@ fn materially_changed(prev: &MachineResources, next: &MachineResources) -> bool 
             (Some(a), Some(b)) => moved(a, b, LOAD_THRESHOLD),
             (a, b) => a.is_some() != b.is_some(),
         }
-}
-
-/// One enrolled daemon machine and its last-known resource snapshot, for the
-/// Settings › Resource monitoring list and the header gauge.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct MachineResourcesRow {
-    pub machine_id: Uuid,
-    pub name: String,
-    pub display_name: Option<String>,
-    /// Operator-set badge hue (0-359). `None` = hash of the name.
-    pub hue: Option<i16>,
-    pub liveness: MachineLiveness,
-    /// `None` until the machine's daemon has sent a heartbeat carrying a
-    /// snapshot (older daemon, non-Linux host): the gauge shows "?" then.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resources: Option<MachineResources>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(sqlx::FromRow)]

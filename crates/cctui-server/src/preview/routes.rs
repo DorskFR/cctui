@@ -4,33 +4,13 @@ use axum::Json;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use cctui_proto::api::ApiError;
-use serde::Serialize;
 use uuid::Uuid;
 
 use super::Preview;
 use crate::auth::AuthContext;
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewInfo {
-    pub id: String,
-    pub port: u16,
-    pub url: String,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub opened_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewTicket {
-    pub ticket: String,
-    /// Absolute URL that redeems the ticket and lands on the preview.
-    pub auth_url: String,
-    pub expires_in_secs: u32,
-}
+pub use cctui_proto::api::previews::{PreviewInfo, PreviewTicket};
 
 fn info(state: &AppState, preview: &Preview) -> PreviewInfo {
     PreviewInfo {

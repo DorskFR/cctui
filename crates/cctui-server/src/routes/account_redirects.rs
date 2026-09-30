@@ -8,7 +8,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use uuid::Uuid;
 
 use super::accounts::resolve_owner;
@@ -17,26 +17,9 @@ use crate::error::err;
 use crate::state::AppState;
 use crate::store::account_redirects::{self, AccountRedirect};
 
-type ApiErr = (StatusCode, Json<serde_json::Value>);
+pub use cctui_proto::api::account_redirects::PutRedirectRequest;
 
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct PutRedirectRequest {
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
-    pub to_account: Option<Uuid>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub to_model: Option<String>,
-    pub family: String,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub match_model: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
-    pub until: Option<DateTime<Utc>>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub reason: Option<String>,
-    /// The admin token has no user identity and must name the rule's owner.
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
-    pub user_id: Option<Uuid>,
-}
+type ApiErr = (StatusCode, Json<serde_json::Value>);
 
 /// `GET /redirects` — the caller's live rules (every user's for the admin
 /// token).

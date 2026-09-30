@@ -14,64 +14,7 @@ use super::{Account, session_id_for_token, usage_for_soft_limit};
 use crate::soft_limit::{SoftLimits, UsageWindow};
 use crate::state::AppState;
 
-pub const DEFAULT_STEP_PCT: u32 = 10;
-
-/// `{ "enabled": bool, "step_pct": int }` on the provider row. NULL ⇒ off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct UsageNotices {
-    pub enabled: bool,
-    pub step_pct: u32,
-}
-
-impl Default for UsageNotices {
-    fn default() -> Self {
-        Self { enabled: false, step_pct: DEFAULT_STEP_PCT }
-    }
-}
-
-impl UsageNotices {
-    pub fn from_json(value: Option<&serde_json::Value>) -> Self {
-        let obj = value.and_then(serde_json::Value::as_object);
-        let enabled = obj
-            .and_then(|o| o.get("enabled"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let step_pct = obj
-            .and_then(|o| o.get("step_pct"))
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|n| u32::try_from(n).ok())
-            .filter(|n| (1..=100).contains(n))
-            .unwrap_or(DEFAULT_STEP_PCT);
-        Self { enabled, step_pct }
-    }
-
-    /// Validate a PATCH/create payload into the stored blob; `Ok(None)` clears the
-    /// column (off).
-    pub fn build_json(
-        value: Option<&serde_json::Value>,
-    ) -> Result<Option<serde_json::Value>, String> {
-        let Some(v) = value.filter(|v| !v.is_null()) else { return Ok(None) };
-        let Some(obj) = v.as_object() else { return Err("usage_notices must be an object".into()) };
-        let enabled = match obj.get("enabled") {
-            None | Some(serde_json::Value::Null) => false,
-            Some(serde_json::Value::Bool(b)) => *b,
-            Some(_) => return Err("usage_notices.enabled must be a boolean".into()),
-        };
-        let step_pct = match obj.get("step_pct") {
-            None | Some(serde_json::Value::Null) => DEFAULT_STEP_PCT,
-            Some(n) => n
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .filter(|n| (1..=100).contains(n))
-                .ok_or_else(|| "usage_notices.step_pct must be an integer in 1..=100".to_owned())?,
-        };
-        if !enabled && step_pct == DEFAULT_STEP_PCT {
-            return Ok(None);
-        }
-        Ok(Some(serde_json::json!({ "enabled": enabled, "step_pct": step_pct })))
-    }
-}
+pub use cctui_proto::api::gateway::{DEFAULT_STEP_PCT, UsageNotices};
 
 pub fn bucket(utilization: f64, step_pct: u32) -> u32 {
     let step = f64::from(step_pct.max(1));

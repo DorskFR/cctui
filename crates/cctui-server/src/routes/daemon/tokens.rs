@@ -1,30 +1,15 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use chrono::Utc;
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, mint_secret, sha256_hex, user_token};
 use crate::error::AppError;
 use crate::state::AppState;
 
+pub use cctui_proto::api::admin::{MintTokenRequest, MintTokenResponse};
+
 // ---- /api/v1/users/{id}/tokens ----
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct MintTokenRequest {
-    pub label: Option<String>,
-    pub expires_at: Option<chrono::DateTime<Utc>>,
-}
-
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct MintTokenResponse {
-    pub token: String,
-    pub label: Option<String>,
-    pub expires_at: Option<chrono::DateTime<Utc>>,
-}
 
 /// Only a human credential may mint a human token: a machine or dispatcher key
 /// would otherwise escalate itself. Admin may mint for anyone, a user only for

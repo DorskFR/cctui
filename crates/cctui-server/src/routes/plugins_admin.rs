@@ -6,17 +6,20 @@ use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
 use axum::{Extension, Json};
 use cctui_proto::api::ApiError;
-use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
-use ts_rs::TS;
+use serde::Deserialize;
 
 use crate::auth::{AuthContext, Scope};
 use crate::plugin_archive::ArchiveError;
 use crate::plugin_catalog::{self, CatalogEntry};
 use crate::plugin_settings;
 use crate::plugin_store::{self, InstallError};
-use crate::plugins::{Plugin, PluginInstanceSetting, PluginSource};
+use crate::plugins::{Plugin, PluginSource};
 use crate::state::AppState;
+
+pub use cctui_proto::api::plugins::{
+    AdminPluginInfo, CatalogPluginInfo, PluginCatalogInstallRequest, PluginEnableRequest,
+    PluginInstallRequest, PluginInstanceSettings, PluginInstanceSettingsRequest, PluginProxySecret,
+};
 
 type ApiErr = (StatusCode, Json<ApiError>);
 
@@ -27,26 +30,6 @@ fn err(status: StatusCode, msg: impl Into<String>) -> ApiErr {
 fn db_err(e: &sqlx::Error) -> ApiErr {
     tracing::error!("db error: {e}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct AdminPluginInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub source: PluginSource,
-    /// The instance-wide toggle; directory plugins are always on.
-    pub enabled: bool,
-    /// Declarations for the admin settings form.
-    pub instance_settings: Vec<PluginInstanceSetting>,
-    /// The plugin declares a backend, so it needs an upstream and a secret.
-    pub backend: bool,
-    /// Set by an install that minted a fresh proxy secret; the only response
-    /// that ever carries it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proxy_secret: Option<String>,
 }
 
 impl From<&Plugin> for AdminPluginInfo {
@@ -66,41 +49,10 @@ impl From<&Plugin> for AdminPluginInfo {
 }
 
 #[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct PluginInstallRequest {
-    /// https URL of a `.tar.gz` plugin archive.
-    pub url: String,
-}
-
-/// Install a published plugin by catalog id; the server resolves its url and
-/// sha256 itself and never trusts client-supplied ones.
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct PluginCatalogInstallRequest {
-    pub catalog: String,
-}
-
-#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum InstallBody {
     Catalog(PluginCatalogInstallRequest),
     Url(PluginInstallRequest),
-}
-
-/// A catalog entry as the admin UI sees it: the published metadata plus what
-/// this instance has installed.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct CatalogPluginInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub homepage: Option<String>,
-    /// `None` until this instance installs it.
-    pub installed_version: Option<String>,
-    /// The catalog version differs from the installed one.
-    pub update_available: bool,
 }
 
 fn annotate(entry: &CatalogEntry, installed: Option<&str>) -> CatalogPluginInfo {
@@ -161,12 +113,6 @@ async fn catalog_archive(id: &str) -> Result<Vec<u8>, ApiErr> {
     let bytes = plugin_store::fetch_archive(&entry.url).await.map_err(install_error)?;
     verify_digest(&entry, &bytes)?;
     Ok(bytes)
-}
-
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct PluginEnableRequest {
-    pub enabled: bool,
 }
 
 pub async fn list(
@@ -284,37 +230,6 @@ pub async fn uninstall(
     } else {
         Err(err(StatusCode::NOT_FOUND, "no installed plugin with that id"))
     }
-}
-
-/// The admin settings form for one plugin. Secret values are represented only
-/// by `secrets_set`.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct PluginInstanceSettings {
-    pub id: String,
-    pub instance_settings: Vec<PluginInstanceSetting>,
-    pub values: std::collections::BTreeMap<String, String>,
-    pub secrets_set: std::collections::BTreeMap<String, bool>,
-    /// The `instanceSettings` key the backend proxy reads the upstream from.
-    pub backend_upstream_setting: Option<String>,
-    /// Whether a proxy secret exists; its value is only ever shown at rotation.
-    pub proxy_secret_set: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct PluginInstanceSettingsRequest {
-    /// Keys to write. An empty value clears the setting; omitted keys keep
-    /// their current value.
-    pub values: std::collections::BTreeMap<String, String>,
-}
-
-/// A rotated proxy secret, returned exactly once.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct PluginProxySecret {
-    pub id: String,
-    pub secret: String,
 }
 
 async fn plugin_by_id(state: &AppState, id: &str) -> Result<Plugin, ApiErr> {

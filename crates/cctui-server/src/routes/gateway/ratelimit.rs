@@ -23,35 +23,7 @@ use crate::state::AppState;
 /// tokens-per-minute.
 pub const RATE_WINDOW: Duration = Duration::from_mins(1);
 
-/// Per-(account, provider) rate limits. Both optional; `None` ⇒ that dimension is
-/// unlimited. Persisted as `{ "rpm": int?, "tpm": int? }` on the provider row.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct RateLimits {
-    /// Max requests admitted per rolling 60s window.
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
-    pub rpm: Option<u32>,
-    /// Max tokens counted per rolling 60s window.
-    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
-    pub tpm: Option<u64>,
-}
-
-impl RateLimits {
-    /// Parse the stored `rate_limits_json` blob. A zero / negative / missing value
-    /// leaves that dimension unlimited, so an operator clears a limit by zeroing it.
-    pub fn from_json(value: Option<&serde_json::Value>) -> Self {
-        let obj = value.and_then(serde_json::Value::as_object);
-        let positive = |key: &str| {
-            obj.and_then(|o| o.get(key)).and_then(serde_json::Value::as_u64).filter(|&n| n > 0)
-        };
-        Self { rpm: positive("rpm").and_then(|n| u32::try_from(n).ok()), tpm: positive("tpm") }
-    }
-
-    /// Nothing to enforce ⇒ the proxy skips the window entirely.
-    pub const fn is_unset(&self) -> bool {
-        self.rpm.is_none() && self.tpm.is_none()
-    }
-}
+pub use cctui_proto::api::gateway::RateLimits;
 
 /// One provider's rolling request + token samples, pruned to [`RATE_WINDOW`].
 #[derive(Default)]
