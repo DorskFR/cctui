@@ -16,7 +16,6 @@ pub enum Action {
     SelectLast,
     SelectIndex(usize),
 
-    ToggleShowAllSessions,
     ToggleTimestamps,
 
     OpenHelp,

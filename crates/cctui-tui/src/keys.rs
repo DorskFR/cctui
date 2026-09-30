@@ -50,7 +50,6 @@ const fn map_session_list(code: KeyCode) -> Option<Action> {
         KeyCode::Char('k') | KeyCode::Up => Action::SelectPrev,
         KeyCode::Char('g') => Action::SelectFirst,
         KeyCode::Char('G') => Action::SelectLast,
-        KeyCode::Char('a') => Action::ToggleShowAllSessions,
         KeyCode::Char('?') => Action::OpenHelp,
         KeyCode::Enter => Action::OpenSelectedConversation,
         _ => return None,
