@@ -8,9 +8,9 @@ use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
 use super::router::Router;
 use super::session_live::RefreshCounters;
-pub use crate::config::uistate::UiState;
 pub use super::session_list::uptime_secs;
 use super::toast::{Level, StatusCounters, Toasts};
+pub use crate::config::uistate::UiState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {

@@ -79,8 +79,8 @@ fn toggle_fold(app: &mut App) -> Vec<Effect> {
     if scope.is_empty() {
         return Vec::new();
     }
-    for (group_id, total) in &scope {
-        app.ui.toggle_group(group_id, *total);
+    for (group, total) in &scope {
+        app.ui.toggle_group(group, *total);
     }
     settle(app)
 }

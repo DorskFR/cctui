@@ -68,9 +68,7 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     let items: Vec<ListItem> = rows
         .iter()
         .map(|row| match row {
-            session_list::Row::Header { group, total, open } => {
-                group_header(*group, *total, *open)
-            }
+            session_list::Row::Header { group, total, open } => group_header(*group, *total, *open),
             session_list::Row::SubHeader { label, total, running, open, depth, .. } => {
                 sub_header(label, *total, *running, *open, *depth)
             }
@@ -91,7 +89,7 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 const FOLDED: &str = "▸";
 const OPEN: &str = "▾";
 
-fn arrow(open: bool) -> &'static str {
+const fn arrow(open: bool) -> &'static str {
     if open { OPEN } else { FOLDED }
 }
 

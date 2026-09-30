@@ -128,7 +128,7 @@ pub fn sub_groups<'a>(kids: &[&'a SessionListItem]) -> Vec<SubGroup<'a>> {
     let mut plain: Vec<&'a SessionListItem> = Vec::new();
     let mut order: Vec<&'a str> = Vec::new();
     let mut by_run: HashMap<&'a str, (Option<&'a str>, Vec<&'a SessionListItem>)> = HashMap::new();
-    for k in kids {
+    for &k in kids {
         let Some(run) = meta_str(k, "workflow_run_id") else {
             plain.push(k);
             continue;

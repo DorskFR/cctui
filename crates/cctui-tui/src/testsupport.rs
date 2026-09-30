@@ -44,13 +44,14 @@ fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
 }
 
 pub fn session(id: &str, project: &str, status: &str, bucket: &str) -> SessionListItem {
+    let liveness = if status == "active" { "active" } else { "dead" };
     serde_json::from_value(json!({
         "id": id,
         "parent_id": null,
         "machine_id": "orion",
         "working_dir": format!("/home/dev/{project}"),
         "status": status,
-        "liveness": if status == "active" { "active" } else { "dead" },
+        "liveness": liveness,
         "bucket": bucket,
         "token_usage": {"tokens_in": 12_000, "tokens_out": 3_400, "cost_usd": 1.25},
         "metadata": {"project_name": project, "git_branch": "main", "model": "opus"},
