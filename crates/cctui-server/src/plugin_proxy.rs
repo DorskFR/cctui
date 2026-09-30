@@ -1,6 +1,6 @@
 //! Authenticated reverse proxy to a plugin's own backend.
 //!
-//! `ANY /api/v1/plugins/{id}/backend/{*path}` authenticates with the normal
+//! `GET|POST|PUT|PATCH|DELETE /api/v1/plugins/{id}/backend/{*path}` authenticates with the normal
 //! cctui cookie or bearer, then forwards to the upstream an admin configured,
 //! carrying a signed identity instead of any cctui credential. The plugin
 //! backend therefore needs no cctui database grant and no browser token: it
