@@ -60,6 +60,7 @@ pub enum Action {
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
+    CmdLine(super::cmdline::CmdAction),
     Prompt(PromptAction),
 
     StreamLine {

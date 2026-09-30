@@ -1,14 +1,13 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 555
+assertion_line: 447
 expression: render_screen(&mut app)
 ---
- cctui (main) on orion ── opus ── $1.25
-                                                                                                   ▕
+ infra (main) on orion ── opus ── $1.25
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
 └ 984 lines                                                                                        ▕
- Bash  cargo test  write                                                                           ▐
+ Bash  cargo test  write                                                                           ▕
 └ ✗ exit 101 · 3 failed  (2 more · o)                                                              ▐
                                                                                                    ▐
 ● Assistant                                                                                        ▐
@@ -21,9 +20,10 @@ Looking at the views first.                                                     
                                                                                                    ▐
 ◆ lane-b                                                                                           ▐
 the parser lane is rebased                                                                         ▐
+· keep-alive tick                                                                                  ▐
 ⟳ context reset (/clear)                                                                           ▐
                                                                                                    ▐
 ◁ Reply done                                                                                       ▐
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- ■ ended · crashed  composer closed
- this session has ended — nothing more can be sent
+ ◆ waiting for input
+❯  Type a message...

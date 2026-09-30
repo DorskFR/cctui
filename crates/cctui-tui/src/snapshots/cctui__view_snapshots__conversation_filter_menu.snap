@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 429
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25
+                                                                                                   ▕
+∴ thinking (2 lines)  (2 more ·┌ show which lines ──────────────────┐                              ▕
+ Read  crates/cctui-tui/src/mai│   [x] Assistant prose              │                              ▕
+└ 984 lines                    │ ❯ [x] Thinking                     │                              ▕
+ Bash  cargo test  write       │   [x] Redacted thinking            │                              ▐
+└ ✗ exit 101 · 3 failed  (2 mor│   [x] Your messages                │                              ▐
+                               │   [x] Loop wake-ups                │                              ▐
+● Assistant                    │   [x] Peer messages                │                              ▐
+Looking at the views first.    │   [x] Injected / system            │                              ▐
+                               │   [x] Tool calls                   │                              ▐
+- one                          │   [ ] MCP tool calls               │                              ▐
+- two                          │   [x] Provider tool calls          │                              ▐
+⏱ 12.4k in / 1.1k out          │   [x] Tool results                 │                              ▐
+⏱ 38s                          │   [x] Failed results               │                              ▐
+                               │   [ ] Markers                      │                              ▐
+◆ lane-b                       │   [x] Turn footers                 │                              ▐
+the parser lane is rebased     │   [x] Compaction                   │                              ▐
+⟳ context reset (/clear)       │   [x] Context resets               │                              ▐
+                               │   space · a all · r reset · F close│                              ▐
+◁ Reply done                   └────────────────────────────────────┘                              ▐
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ waiting for input
+❯  Type a message...

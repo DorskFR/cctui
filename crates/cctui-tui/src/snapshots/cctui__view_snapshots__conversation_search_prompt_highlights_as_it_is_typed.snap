@@ -1,9 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 555
+assertion_line: 395
 expression: render_screen(&mut app)
 ---
- cctui (main) on orion ── opus ── $1.25
+ infra (main) on orion ── opus ── $1.25 ── /parser 0/3
                                                                                                    ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
@@ -24,6 +24,6 @@ the parser lane is rebased                                                      
 ⟳ context reset (/clear)                                                                           ▐
                                                                                                    ▐
 ◁ Reply done                                                                                       ▐
-────────────────────────────────────────────────────────────────────────────────────────────────────
- ■ ended · crashed  composer closed
- this session has ended — nothing more can be sent
+/parser▏
+
+❯  Type a message...

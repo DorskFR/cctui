@@ -222,6 +222,17 @@ pub struct App {
     pub render_cache_starts: Vec<usize>,
     /// Focused entry in line-select mode; `None` means normal scrolling.
     pub line_cursor: Option<usize>,
+    /// Which transcript categories are on screen, restored from disk at startup.
+    pub filter: super::transcript_filter::Filter,
+    /// Focused row of the `F` menu while it is open.
+    pub filter_menu: Option<usize>,
+    /// The `/` or `:` prompt at the bottom of the conversation.
+    pub cmdline: super::cmdline::CmdLine,
+    /// The committed search and its hits.
+    pub find: super::cmdline::Find,
+    /// `filter.cache_key()` the render cache was built with: a filter change
+    /// adds or removes rows, which no append-only cache can absorb.
+    pub render_cache_filter: String,
     /// Which way the next bulk toggle goes; the per-entry state is the store's.
     pub expand_all: bool,
     /// An older page landed: the next render re-anchors the viewport onto the
@@ -297,6 +308,11 @@ impl App {
             render_cache_timestamps: false,
             render_cache_starts: Vec::new(),
             line_cursor: None,
+            filter: super::transcript_filter::Filter::default(),
+            filter_menu: None,
+            cmdline: super::cmdline::CmdLine::default(),
+            find: super::cmdline::Find::default(),
+            render_cache_filter: String::new(),
             expand_all: false,
             pending_prepend: false,
             toasts: Toasts::default(),
@@ -338,6 +354,20 @@ impl App {
     #[cfg(test)]
     pub fn conversation(&self, session_id: &str) -> Option<&ConversationStore> {
         self.conversations.get(session_id)
+    }
+
+    /// The modal strip or panel holding the keyboard, if any. A feature with
+    /// its own context adds an arm here.
+    #[must_use]
+    pub const fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
+        use crate::config::keymap::Context;
+        if self.cmdline.open.is_some() {
+            return Some(Context::CmdLine);
+        }
+        if self.filter_menu.is_some() {
+            return Some(Context::FilterMenu);
+        }
+        None
     }
 
     pub fn conversation_mut(&mut self, session_id: &str) -> &mut ConversationStore {

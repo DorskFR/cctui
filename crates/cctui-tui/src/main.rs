@@ -244,6 +244,7 @@ async fn run(
                             app.view(),
                             app.input_active,
                             app.prompt_focus(),
+                            app.key_overlay(),
                             input,
                         )
                     })
@@ -295,6 +296,7 @@ fn apply_config(app: &mut App) {
     let loaded = config::load();
     app.config = loaded.config;
     app.ui = config::uistate::load();
+    app.filter = app::cmdline::restore(&app.ui);
     for problem in loaded.problems {
         app.toast(Level::Warn, format!("tui.toml: {problem}"));
     }

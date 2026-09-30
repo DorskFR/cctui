@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::PromptFocus;
 use crate::app::action::Action;
 use crate::app::attention::{AttentionAction, Decision};
+use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::conversation::ConversationAction;
 use crate::app::drafts::DraftAction;
 use crate::app::prompt::PromptAction;
@@ -25,9 +26,20 @@ pub enum InputEvent {
 /// Which card holds the keyboard is [`App::prompt_focus`]'s call, not this
 /// function's: a permission request blocks the turn and is answered in one
 /// keystroke, so it outranks an ask or plan card, which can be deferred.
-pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFocus>) -> Context {
+///
+/// `overlay` is [`App::key_overlay`]'s answer: a modal strip or panel that holds
+/// the keyboard while it is open. A feature adds itself there, not here.
+pub const fn context_for(
+    view: View,
+    input_active: bool,
+    prompt: Option<PromptFocus>,
+    overlay: Option<Context>,
+) -> Context {
     if matches!(view, View::HistoryPicker) {
         return Context::History;
+    }
+    if let Some(overlay) = overlay {
+        return overlay;
     }
     if input_active {
         return Context::Composer;
@@ -56,11 +68,12 @@ pub fn map_input(
     view: View,
     input_active: bool,
     prompt: Option<PromptFocus>,
+    overlay: Option<Context>,
     input: InputEvent,
 ) -> Option<Action> {
     match input {
         InputEvent::Key(key) => {
-            let context = context_for(view, input_active, prompt);
+            let context = context_for(view, input_active, prompt, overlay);
             let chord = Chord::from_event(key);
             keys.lookup(context, chord)
                 .and_then(|id| to_action(id, chord))
@@ -119,6 +132,19 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
 
+        ActionId::Search => Action::CmdLine(CmdAction::Open(CmdMode::Search)),
+        ActionId::SearchNext => Action::CmdLine(CmdAction::NextHit),
+        ActionId::SearchPrev => Action::CmdLine(CmdAction::PrevHit),
+        ActionId::CmdLineCommit => Action::CmdLine(CmdAction::Commit),
+        ActionId::CmdLineCancel => Action::CmdLine(CmdAction::Cancel),
+        ActionId::FilterCycle => Action::CmdLine(CmdAction::CycleFilter),
+        ActionId::FilterMenu => Action::CmdLine(CmdAction::ToggleFilterMenu),
+        ActionId::FilterMenuToggle => Action::CmdLine(CmdAction::FilterMenuToggle),
+        ActionId::FilterMenuNext => Action::CmdLine(CmdAction::FilterMenuNext),
+        ActionId::FilterMenuPrev => Action::CmdLine(CmdAction::FilterMenuPrev),
+        ActionId::FilterShowAll => Action::CmdLine(CmdAction::FilterShowAll),
+        ActionId::FilterReset => Action::CmdLine(CmdAction::FilterReset),
+
         ActionId::CancelInput => Action::CancelInput,
         ActionId::SubmitInput => Action::SubmitInput,
         ActionId::InputNewline => Action::InputNewline,
@@ -167,6 +193,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 /// else still reaches the composer.
 const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
+        Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
@@ -195,11 +222,11 @@ mod tests {
     }
 
     fn map(view: View, input_active: bool, code: KeyCode) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(key(code)))
+        map_input(&Keymap::default(), view, input_active, None, None, InputEvent::Key(key(code)))
     }
 
     fn map_event(view: View, input_active: bool, event: KeyEvent) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(event))
+        map_input(&Keymap::default(), view, input_active, None, None, InputEvent::Key(event))
     }
 
     fn map_card(code: KeyCode) -> Option<Action> {
@@ -212,6 +239,7 @@ mod tests {
             View::Conversation,
             false,
             Some(focus),
+            None,
             InputEvent::Key(key(code)),
         )
     }
@@ -306,13 +334,32 @@ mod tests {
     /// A global bound to an action no wave implements yet must not eat the key.
     #[test]
     fn a_reserved_global_still_reaches_the_composer() {
-        for code in [KeyCode::Char('i'), KeyCode::Char('/'), KeyCode::Char('n')] {
+        for code in [KeyCode::Char('i'), KeyCode::Char('D')] {
             assert!(
                 matches!(map(View::Conversation, false, code), Some(Action::ActivateInputWith(_))),
                 "{code:?} should fall through"
             );
         }
         assert!(map(View::SessionList, false, KeyCode::Char('i')).is_none());
+    }
+
+    /// `/` and `n`/`N` are decision 7's globals, wired here rather than given a
+    /// second binding of their own.
+    #[test]
+    fn the_global_search_keys_drive_the_transcript_search() {
+        use crate::app::cmdline::{CmdAction, Mode};
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('/')),
+            Some(Action::CmdLine(CmdAction::Open(Mode::Search)))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('n')),
+            Some(Action::CmdLine(CmdAction::NextHit))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('N')),
+            Some(Action::CmdLine(CmdAction::PrevHit))
+        ));
     }
 
     #[test]
@@ -461,6 +508,7 @@ mod tests {
                 View::Conversation,
                 true,
                 Some(PromptFocus::Permission),
+                None,
                 InputEvent::Key(key(code)),
             );
             assert!(matches!(action, Some(Action::InputKey(_))), "{code:?} must be typed");
@@ -481,14 +529,14 @@ mod tests {
     fn the_mouse_wheel_navigates_the_list_and_scrolls_the_conversation() {
         let keys = Keymap::default();
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, None, InputEvent::ScrollDown),
+            map_input(&keys, View::SessionList, false, None, None, InputEvent::ScrollDown),
             Some(Action::SelectNext)
         ));
         assert!(matches!(
-            map_input(&keys, View::Conversation, false, None, InputEvent::ScrollUp),
+            map_input(&keys, View::Conversation, false, None, None, InputEvent::ScrollUp),
             Some(Action::Scroll { lines: -3, release_follow: true })
         ));
-        assert!(map_input(&keys, View::Help, false, None, InputEvent::ScrollUp).is_none());
+        assert!(map_input(&keys, View::Help, false, None, None, InputEvent::ScrollUp).is_none());
     }
 
     #[test]
@@ -564,6 +612,7 @@ mod tests {
                 View::Conversation,
                 true,
                 Some(PromptFocus::Ask),
+                None,
                 InputEvent::Key(key(KeyCode::Char('2'))),
             ),
             Some(Action::InputKey(_))
@@ -591,7 +640,7 @@ mod tests {
         let mut keys = Keymap::default();
         keys.set(Context::SessionList, "ctrl+n", "select-next").expect("valid");
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, None, InputEvent::Key(ctrl('n'))),
+            map_input(&keys, View::SessionList, false, None, None, InputEvent::Key(ctrl('n'))),
             Some(Action::SelectNext)
         ));
     }

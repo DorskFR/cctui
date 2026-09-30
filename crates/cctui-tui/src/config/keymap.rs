@@ -11,6 +11,10 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The `/` search and `:` command prompt.
+    CmdLine,
+    /// The `F` category menu.
+    FilterMenu,
     History,
     Help,
     Permission,
@@ -25,6 +29,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::SessionList,
     Context::Conversation,
     Context::Composer,
+    Context::CmdLine,
+    Context::FilterMenu,
     Context::History,
     Context::Help,
     Context::Permission,
@@ -41,6 +47,8 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::CmdLine => "cmdline",
+            Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::Help => "help",
             Self::Permission => "permission",
@@ -57,6 +65,8 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::CmdLine => "Search and commands",
+            Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::Help => "Help",
             Self::Permission => "Permission card",
@@ -149,6 +159,15 @@ actions! {
     EditSend => "edit-send", "Edit the undelivered message";
     DiscardSend => "discard-send", "Drop the undelivered message";
     CopyMessage => "copy-message", "Copy the selected message";
+    FilterCycle => "filter-cycle", "Cycle assistant / you / tools";
+    FilterMenu => "filter-menu", "Choose which lines to show";
+    FilterShowAll => "filter-show-all", "Show every category";
+    FilterReset => "filter-reset", "Back to the default filter";
+    FilterMenuToggle => "filter-menu-toggle", "Show or hide this category";
+    FilterMenuNext => "filter-menu-next", "Next category";
+    FilterMenuPrev => "filter-menu-prev", "Previous category";
+    CmdLineCommit => "cmdline-commit", "Search for it";
+    CmdLineCancel => "cmdline-cancel", "Abandon it";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
 
     CancelInput => "cancel-input", "Close the composer";
@@ -255,6 +274,8 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Conversation, "f", ActionId::FilterCycle),
+    spec(Context::Conversation, "F", ActionId::FilterMenu),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
 ];
 
@@ -267,6 +288,22 @@ const COMPOSER: &[BindingSpec] = &[
     spec(Context::Composer, "up", ActionId::HistoryPrev),
     spec(Context::Composer, "down", ActionId::HistoryNext),
     spec(Context::Composer, "ctrl+r", ActionId::HistoryOpen),
+];
+
+/// Typed characters reach the buffer through the unbound fall-through, so only
+/// the two keys that end the prompt live here.
+const CMDLINE: &[BindingSpec] = &[
+    spec(Context::CmdLine, "enter", ActionId::CmdLineCommit),
+    spec(Context::CmdLine, "esc", ActionId::CmdLineCancel),
+];
+
+const FILTER_MENU: &[BindingSpec] = &[
+    spec(Context::FilterMenu, "esc, q, F", ActionId::FilterMenu),
+    spec(Context::FilterMenu, "j, down", ActionId::FilterMenuNext),
+    spec(Context::FilterMenu, "k, up", ActionId::FilterMenuPrev),
+    spec(Context::FilterMenu, "space, enter", ActionId::FilterMenuToggle),
+    spec(Context::FilterMenu, "a", ActionId::FilterShowAll),
+    spec(Context::FilterMenu, "r", ActionId::FilterReset),
 ];
 
 const HISTORY: &[BindingSpec] = &[
@@ -330,6 +367,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     SESSION_LIST,
     CONVERSATION,
     COMPOSER,
+    CMDLINE,
+    FILTER_MENU,
     HISTORY,
     HELP,
     PERMISSION,

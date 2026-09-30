@@ -1,5 +1,6 @@
 pub mod action;
 pub mod attention;
+pub mod cmdline;
 pub mod conversation;
 pub mod conversation_store;
 pub mod drafts;
@@ -17,6 +18,7 @@ pub mod session_status;
 pub mod state;
 pub mod toast;
 pub mod transcript;
+pub mod transcript_filter;
 
 pub use action::Action;
 #[cfg(test)]

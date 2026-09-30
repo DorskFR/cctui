@@ -377,6 +377,62 @@ fn conversation_with_timestamps() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+fn search_for(app: &mut crate::app::App, query: &str) {
+    use crate::app::cmdline::{CmdAction, Mode};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    reduce(app, Action::CmdLine(CmdAction::Open(Mode::Search)));
+    for c in query.chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(app, Action::CmdLine(CmdAction::Key(key)));
+    }
+}
+
+#[test]
+fn conversation_search_prompt_highlights_as_it_is_typed() {
+    let mut app = app_in_conversation();
+    search_for(&mut app, "parser");
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_search_committed_shows_the_hit_count() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    search_for(&mut app, "parser");
+    reduce(&mut app, Action::CmdLine(CmdAction::Commit));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_filter_menu() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::ToggleFilterMenu));
+    reduce(&mut app, Action::CmdLine(CmdAction::FilterMenuNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_quick_filter_narrows_to_the_assistant() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::CycleFilter));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_show_all_reveals_the_hidden_categories() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::FilterShowAll));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 #[test]
 fn conversation_without_data() {
     let mut app = app_with_sessions();
