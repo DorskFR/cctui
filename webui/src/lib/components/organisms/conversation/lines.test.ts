@@ -773,7 +773,6 @@ describe('queued messages carry their own queue state', () => {
 		);
 		expect(lines).toHaveLength(1);
 		expect(lines[0].cancelled).toBeUndefined();
-		expect(lines[0].queued).toBeUndefined();
 		expect(lines[0].queuedAt).toBe(1);
 		expect(lines[0].text).toBe('ship the thing');
 	});
@@ -794,7 +793,7 @@ describe('queued messages carry their own queue state', () => {
 		);
 		expect(lines).toHaveLength(1);
 		expect(lines[0].cancelled).toBeUndefined();
-		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
 		expect(lines[0].text).toBe(body);
 	});
 

@@ -9,7 +9,12 @@ describe('compact', () => {
 	it('formats thousands', () => {
 		expect(compact(1000)).toBe('1.0k');
 		expect(compact(9_999)).toBe('10.0k');
-		expect(compact(999_949)).toBe('999k');
+		expect(compact(999_499)).toBe('999k');
+	});
+
+	it('promotes as soon as the k tier would round to 1000', () => {
+		expect(compact(999_500)).toBe('1.0M');
+		expect(compact(999_949)).toBe('1.0M');
 	});
 
 	it('promotes instead of showing 1000 in a unit', () => {
