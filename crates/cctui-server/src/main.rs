@@ -32,6 +32,7 @@ mod pace;
 mod peer_policy;
 mod plugin_archive;
 mod plugin_catalog;
+mod plugin_host_token;
 mod plugin_proxy;
 mod plugin_settings;
 mod plugin_store;

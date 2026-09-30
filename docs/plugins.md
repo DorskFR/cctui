@@ -139,6 +139,10 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
   and the daemon's own contract vars).
 - `instanceSettings` (optional): see below.
 - `backend` (optional): see [Plugin backends](#plugin-backends).
+- `hostToken` (optional): `{ "env": "GHREVIEW_CCTUI_TOKEN" }` — have the host
+  mint this user a `read`-scoped cctui token on enable rather than asking them
+  to paste one in. `env` follows the `settings` `env` rules and may not collide
+  with one. See [Host-minted tokens](#host-minted-tokens-hosttoken).
 
 ## Instance settings (admin-owned)
 
@@ -414,6 +418,43 @@ Everything user-facing lives in the user's settings blob:
 
 `PUT /settings` keeps only installed plugin ids, only declared keys, and
 string values of at most 512 characters.
+
+## Host-minted tokens (`hostToken`)
+
+A plugin whose skill calls back into cctui must not ask its user to paste a
+cctui token into cctui. Declaring `hostToken` makes the host mint one instead:
+
+```json
+{ "hostToken": { "env": "GHREVIEW_CCTUI_TOKEN" } }
+```
+
+- **Enable mints.** The moment a user enables the plugin, the server mints that
+  user a cctui API token labelled `plugin:<id>` (a normal `user_tokens` row plus
+  its `auth_keys`/`key_acls` rows — no separate credential system) and seals the
+  plaintext with the vault key into the user's own settings row under
+  `plugins.hostTokens.<id>`.
+- **Disable, instance-disable and uninstall destroy.** The rows are deleted, not
+  flagged, and the auth cache is purged, so the secret stops resolving at once.
+  An uninstall does this for every user who held one.
+- **Re-enabling is idempotent**: a token still sealed for that user is reused, so
+  one user never accumulates two live credentials for one plugin.
+- **The scope is `read`, always.** There is deliberately no scope field in the
+  manifest. The only cctui API a plugin's skill can reach is its own backend
+  proxy at `/api/v1/plugins/<id>/backend/*`, which asks for `read` — the
+  narrowest scope the system has — and a manifest is authored by whoever wrote
+  the plugin, so letting it name its own scopes would be an escalation surface.
+  The grant is additionally intersected with the user's own ceiling: enabling a
+  plugin can never hand a user a capability they do not already hold.
+- **The token is never shown.** `plugins.hostTokens` is server-owned: `PUT
+  /settings` discards whatever a client sends for it, `GET /settings` and the
+  `PUT` response strip it, and `GET /api/v1/plugins` only ever reports declared
+  `settings` keys. The admin token list shows the row's metadata and preview,
+  like any other token, but never the secret.
+- `hostToken.env` follows the same name rules as a setting `env` and may not
+  collide with one.
+
+The value reaches agent sessions exactly like a declared setting's `env`, via
+the gateway-env pull described below.
 
 ## Per-session data slots
 

@@ -134,6 +134,7 @@ export type * from './PermissionMode';
 export type * from './PluginBackend';
 export type * from './PluginCatalogInstallRequest';
 export type * from './PluginEnableRequest';
+export type * from './PluginHostToken';
 export type * from './PluginInfo';
 export type * from './PluginInstallRequest';
 export type * from './PluginInstanceSetting';

@@ -231,6 +231,7 @@ mod tests {
             settings: vec![],
             instance_settings: vec![decl("upstream", "url", false), decl("token", "string", true)],
             backend: None,
+            host_token: None,
         }
     }
 
