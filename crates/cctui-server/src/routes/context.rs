@@ -205,11 +205,7 @@ pub fn scope_matches(item: &ContextItem, scope: &SpawnScope) -> bool {
 /// replaces the user's first turn, which must stay an explicit choice.
 #[must_use]
 pub fn resolve_auto(items: &[ContextItem], scope: &SpawnScope) -> Vec<ContextItem> {
-    items
-        .iter()
-        .filter(|i| i.kind == "memory" && scope_matches(i, scope))
-        .cloned()
-        .collect()
+    items.iter().filter(|i| i.kind == "memory" && scope_matches(i, scope)).cloned().collect()
 }
 
 /// Explicit picks (by name, any kind) unioned with [`resolve_auto`] when
@@ -231,8 +227,11 @@ pub fn resolve_for_spawn(
         }
     }
     chosen.sort_by(|a, b| {
-        (a.kind != "memory", a.title.to_lowercase(), a.id)
-            .cmp(&(b.kind != "memory", b.title.to_lowercase(), b.id))
+        (a.kind != "memory", a.title.to_lowercase(), a.id).cmp(&(
+            b.kind != "memory",
+            b.title.to_lowercase(),
+            b.id,
+        ))
     });
     chosen.truncate(MAX_ITEMS_PER_SPAWN);
     chosen
@@ -564,7 +563,10 @@ mod tests {
             working_dir: Some("/w/repo/crates".into()),
             label_ids: vec!["lab-1".into()],
         };
-        assert_eq!(names(&resolve_auto(&items, &scope)), ["always", "in-repo", "this-box", "tagged"]);
+        assert_eq!(
+            names(&resolve_auto(&items, &scope)),
+            ["always", "in-repo", "this-box", "tagged"]
+        );
     }
 
     #[test]
@@ -580,7 +582,8 @@ mod tests {
     fn prompt_templates_are_never_auto_resolved() {
         let items = vec![item("prompt", "reviewer", "user", None)];
         assert!(resolve_auto(&items, &SpawnScope::default()).is_empty());
-        let picked = resolve_for_spawn(&items, &["reviewer".to_owned()], true, &SpawnScope::default());
+        let picked =
+            resolve_for_spawn(&items, &["reviewer".to_owned()], true, &SpawnScope::default());
         assert_eq!(names(&picked), ["reviewer"]);
     }
 
@@ -593,9 +596,14 @@ mod tests {
         ];
         let picks = ["always".to_owned(), "hand-picked".to_owned(), "reviewer".to_owned()];
         let got = resolve_for_spawn(&items, &picks, true, &SpawnScope::default());
-        assert_eq!(names(&got), ["always", "hand-picked", "reviewer"], "memories first, prompt last");
+        assert_eq!(
+            names(&got),
+            ["always", "hand-picked", "reviewer"],
+            "memories first, prompt last"
+        );
 
-        let manual = resolve_for_spawn(&items, &["hand-picked".to_owned()], false, &SpawnScope::default());
+        let manual =
+            resolve_for_spawn(&items, &["hand-picked".to_owned()], false, &SpawnScope::default());
         assert_eq!(names(&manual), ["hand-picked"], "auto off means only the picks");
         assert!(resolve_for_spawn(&items, &[], false, &SpawnScope::default()).is_empty());
     }
@@ -671,9 +679,10 @@ mod tests {
         let decoded: cctui_proto::api::SpawnContext =
             serde_json::from_str(r#"{"items":["always"]}"#).expect("decodes");
         assert!(!decoded.auto);
-        assert_eq!(names(&resolve_for_spawn(&items, &decoded.items, decoded.auto, &scope)), [
-            "always"
-        ]);
+        assert_eq!(
+            names(&resolve_for_spawn(&items, &decoded.items, decoded.auto, &scope)),
+            ["always"]
+        );
     }
 
     #[test]

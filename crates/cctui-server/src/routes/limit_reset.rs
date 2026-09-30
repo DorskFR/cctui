@@ -183,9 +183,8 @@ fn juniper_tide_entry(jt: &serde_json::Value) -> LimitResetEntry {
         resets_left: None,
         requires_limit: Some(true),
         usable,
-        unusable_reason: (!usable).then(|| {
-            str_at(jt, "ineligible_reason").unwrap_or_else(|| "not_available".to_owned())
-        }),
+        unusable_reason: (!usable)
+            .then(|| str_at(jt, "ineligible_reason").unwrap_or_else(|| "not_available".to_owned())),
     }
 }
 
@@ -1307,11 +1306,17 @@ mod tests {
 
         let mut ineligible = status;
         ineligible["cedar_ember"]["eligible"] = serde_json::json!(false);
-        assert_eq!(claude_claim_target(&ineligible, Some("other_grant")), ClaudeTarget::Unavailable);
+        assert_eq!(
+            claude_claim_target(&ineligible, Some("other_grant")),
+            ClaudeTarget::Unavailable
+        );
 
         let at_wall = serde_json::json!({ "juniper_tide": { "eligible": true } });
         assert_eq!(claude_claim_target(&at_wall, None), ClaudeTarget::AtWall);
-        assert_eq!(claude_claim_target(&at_wall, Some("opus_55_explore")), ClaudeTarget::Unavailable);
+        assert_eq!(
+            claude_claim_target(&at_wall, Some("opus_55_explore")),
+            ClaudeTarget::Unavailable
+        );
     }
 
     #[test]

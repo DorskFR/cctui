@@ -444,10 +444,7 @@ mod tests {
     #[test]
     fn the_envelope_is_the_shape_the_renderers_detect() {
         let text = envelope(&node("sess-1", Some("lane a")), "check the tests");
-        assert!(
-            text.starts_with("<cross-session-message from=\"sess-1\" from-name=\""),
-            "{text}"
-        );
+        assert!(text.starts_with("<cross-session-message from=\"sess-1\" from-name=\""), "{text}");
         assert!(text.contains("from-name=\"lane a (claude-code on box-a)\""), "{text}");
         assert!(text.ends_with("</cross-session-message>"), "{text}");
         assert!(text.contains("check the tests"));
@@ -462,10 +459,13 @@ mod tests {
         let head = text.lines().next().unwrap();
         assert_eq!(head.matches('"').count(), 4, "{head}");
         assert!(!head.contains("onload=<"), "{head}");
-        assert_eq!(crate::normalize::client_category(&json!({
-            "type": "text", "content": format!("▷ User: {text}"),
-        }))
-        .0, "peer");
+        assert_eq!(
+            crate::normalize::client_category(&json!({
+                "type": "text", "content": format!("▷ User: {text}"),
+            }))
+            .0,
+            "peer"
+        );
     }
 
     #[test]
@@ -667,10 +667,9 @@ mod tests {
             limit: Some(DEFAULT_HISTORY_EVENTS),
             ..Default::default()
         };
-        let mut rows =
-            crate::routes::sessions::renderable_rows(&pool, &parent, "claude-code", &q)
-                .await
-                .expect("rows");
+        let mut rows = crate::routes::sessions::renderable_rows(&pool, &parent, "claude-code", &q)
+            .await
+            .expect("rows");
         rows.reverse();
         let events: Vec<(i64, Value)> = rows.into_iter().map(|(id, v, _, _)| (id, v)).collect();
         let node = peer_policy::load_node(&pool, &parent).await.unwrap().unwrap();
@@ -688,11 +687,13 @@ mod tests {
         assert!(all.text.contains("plan the migration"), "{}", all.text);
         assert!(all.text.contains("state: archived"), "{}", all.text);
 
-        let only_user = transcript_md::render(&header, &events, &["user".into()], HISTORY_BUDGET_BYTES);
+        let only_user =
+            transcript_md::render(&header, &events, &["user".into()], HISTORY_BUDGET_BYTES);
         assert_eq!(only_user.events, 1);
 
         // Pagination: one event at a time, walking back with `before`.
-        let page = crate::routes::sessions::ConversationQuery { limit: Some(1), ..Default::default() };
+        let page =
+            crate::routes::sessions::ConversationQuery { limit: Some(1), ..Default::default() };
         let newest = crate::routes::sessions::renderable_rows(&pool, &parent, "claude-code", &page)
             .await
             .expect("newest page");

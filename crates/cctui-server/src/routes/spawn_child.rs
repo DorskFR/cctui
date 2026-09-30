@@ -478,11 +478,8 @@ pub async fn spawn_child(
     } else {
         None
     };
-    let child_cwd = req
-        .cwd
-        .clone()
-        .filter(|c| !c.trim().is_empty())
-        .or_else(|| parent.working_dir.clone());
+    let child_cwd =
+        req.cwd.clone().filter(|c| !c.trim().is_empty()).or_else(|| parent.working_dir.clone());
     // Same resolution the webui spawn runs, keyed on the child's own launch
     // key, so a profile's context set means the same thing from the tool as
     // from the browser.

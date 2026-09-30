@@ -130,7 +130,8 @@ mod tests {
 
     #[test]
     fn notes_render_as_one_titled_document() {
-        let items = vec![item("memory", "House style", "  be terse  "), item("memory", "Ops", "no prod")];
+        let items =
+            vec![item("memory", "House style", "  be terse  "), item("memory", "Ops", "no prod")];
         let doc = render_context(&items).expect("a document");
         assert!(doc.starts_with("# Session context\n"), "{doc}");
         assert!(doc.contains("## House style\n\nbe terse\n"), "{doc}");
@@ -187,8 +188,7 @@ mod tests {
         assert!(block.starts_with("<session-context>\n"), "{block}");
         assert!(block.ends_with("</session-context>"), "{block}");
         assert!(block.contains("context: 1 attached"), "{block}");
-        let _ =
-            std::fs::remove_dir_all(std::path::Path::new("/tmp/cctui-uploads").join(&session));
+        let _ = std::fs::remove_dir_all(std::path::Path::new("/tmp/cctui-uploads").join(&session));
     }
 
     #[test]

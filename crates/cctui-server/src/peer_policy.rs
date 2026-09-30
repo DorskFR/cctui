@@ -123,7 +123,8 @@ impl SessionNode {
     /// `name (adapter on machine)` — the sender label the envelope carries.
     #[must_use]
     pub fn label(&self) -> String {
-        let name = self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&self.id);
+        let name =
+            self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&self.id);
         let adapter = self.adapter_id.as_deref().unwrap_or("unknown");
         let machine = self.machine_name.as_deref().unwrap_or("unknown machine");
         format!("{name} ({adapter} on {machine})")
@@ -451,9 +452,7 @@ mod tests {
     /// emit is a [`Relation`] the policy also knows.
     #[test]
     fn the_roster_sql_labels_match_the_relation_vocabulary() {
-        for relation in
-            [Relation::Parent, Relation::Child, Relation::Sibling, Relation::Room]
-        {
+        for relation in [Relation::Parent, Relation::Child, Relation::Sibling, Relation::Room] {
             assert!(
                 ROSTER_SQL.contains(&format!("'{}'", relation.as_str())),
                 "{} missing from the roster CASE",

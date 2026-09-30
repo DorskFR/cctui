@@ -271,10 +271,7 @@ impl ServerClient {
 
     /// The server's `{"error": …}` body is the refusal reason the model must
     /// see; anything else is passed through verbatim.
-    async fn peer_json(
-        resp: reqwest::Response,
-        tool: &str,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn peer_json(resp: reqwest::Response, tool: &str) -> anyhow::Result<serde_json::Value> {
         let status = resp.status();
         if status.is_success() {
             return Ok(resp.json().await?);

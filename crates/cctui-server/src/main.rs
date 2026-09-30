@@ -369,10 +369,7 @@ fn outer_routes() -> Router<AppState> {
         // machine-key self-auth as gateway-env.
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
-        .route(
-            "/api/v1/daemon/sessions/{id}/user-actions",
-            post(routes::user_actions::daemon_add),
-        )
+        .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
             post(routes::user_actions::daemon_tick),

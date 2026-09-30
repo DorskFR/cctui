@@ -97,7 +97,12 @@ pub fn block(payload: &Value) -> Option<(&'static str, String)> {
 /// The budget is spent from the NEWEST end: a truncated page keeps the tail of
 /// the conversation, which is what a reader asking "what happened here" wants.
 #[must_use]
-pub fn render(header: &Header, events: &[(i64, Value)], roles: &[String], budget: usize) -> Rendered {
+pub fn render(
+    header: &Header,
+    events: &[(i64, Value)],
+    roles: &[String],
+    budget: usize,
+) -> Rendered {
     let wanted = |role: &str| roles.is_empty() || roles.iter().any(|r| r == role);
     let mut blocks: Vec<(i64, String)> = Vec::new();
     let mut spent = 0usize;
@@ -171,8 +176,7 @@ mod tests {
 
     #[test]
     fn a_transcript_renders_with_a_header_and_role_labelled_blocks() {
-        let events =
-            vec![(1, user("do the thing")), (2, assistant("done")), (3, user("thanks"))];
+        let events = vec![(1, user("do the thing")), (2, assistant("done")), (3, user("thanks"))];
         let out = render(&header(), &events, &[], 64 * 1024);
         assert_eq!(out.events, 3);
         assert_eq!(out.first_seq, Some(1));
@@ -258,7 +262,8 @@ mod tests {
     /// history can tell which turns came from another agent.
     #[test]
     fn a_peer_turn_renders_under_the_peer_role() {
-        let raw = "▷ User: <cross-session-message from=\"x\">check the tests</cross-session-message>";
+        let raw =
+            "▷ User: <cross-session-message from=\"x\">check the tests</cross-session-message>";
         let out = render(&header(), &[(1, json!({ "type": "text", "content": raw }))], &[], 4096);
         assert_eq!(out.events, 1);
         assert!(out.text.contains("**peer**"), "{}", out.text);
@@ -266,7 +271,8 @@ mod tests {
 
     #[test]
     fn a_tool_input_is_summarised_not_dumped() {
-        let big = json!({ "type": "tool_call", "tool": "Write", "input": { "body": "z".repeat(5_000) } });
+        let big =
+            json!({ "type": "tool_call", "tool": "Write", "input": { "body": "z".repeat(5_000) } });
         let out = render(&header(), &[(1, big)], &[], 64 * 1024);
         assert!(out.text.contains('…'), "{}", out.text);
         assert!(out.text.len() < 1_200, "{}", out.text.len());

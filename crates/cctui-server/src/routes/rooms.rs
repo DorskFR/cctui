@@ -66,10 +66,7 @@ pub struct UpdateRoomRequest {
 /// Read before the room is flagged, because the flag is not what selects them —
 /// `room_id` is, and it deliberately survives the archive so the list keeps
 /// grouping archived sessions under their room.
-async fn sessions_in_room(
-    pool: &sqlx::PgPool,
-    room_id: Uuid,
-) -> Result<Vec<String>, sqlx::Error> {
+async fn sessions_in_room(pool: &sqlx::PgPool, room_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT id FROM sessions WHERE room_id = $1 AND status <> 'archived' \
          ORDER BY registered_at",
@@ -165,9 +162,10 @@ pub async fn update_room(
             counts = archive_room_sessions(&state, id).await;
         }
     }
-    state
-        .bus
-        .publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id: id, user_id: ctx.user_id });
+    state.bus.publish_server(cctui_proto::ws::ServerEvent::RoomMembers {
+        room_id: id,
+        user_id: ctx.user_id,
+    });
     let room = owned(&state, id, ctx.user_id).await?;
     let mut out = json!(room);
     out["archived_sessions"] = json!(counts.archived);
@@ -187,9 +185,10 @@ pub async fn delete_room(
         .bind(ctx.user_id)
         .execute(&state.pool)
         .await?;
-    state
-        .bus
-        .publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id: id, user_id: ctx.user_id });
+    state.bus.publish_server(cctui_proto::ws::ServerEvent::RoomMembers {
+        room_id: id,
+        user_id: ctx.user_id,
+    });
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -251,8 +250,7 @@ pub async fn set_session_room(
     if room.archived {
         return Err(AppError::new(StatusCode::CONFLICT, "this room is archived"));
     }
-    if room.members.len() >= MAX_MEMBERS
-        && !room.members.iter().any(|m| m.session_id == session_id)
+    if room.members.len() >= MAX_MEMBERS && !room.members.iter().any(|m| m.session_id == session_id)
     {
         return Err(AppError::new(
             StatusCode::CONFLICT,
@@ -392,9 +390,11 @@ mod tests {
         let a = Uuid::new_v4().to_string();
         let b = Uuid::new_v4().to_string();
         let outsider = Uuid::new_v4().to_string();
-        for (id, m, adapter) in
-            [(&a, machine_a, "claude-code"), (&b, machine_b, "codex"), (&outsider, machine_a, "codex")]
-        {
+        for (id, m, adapter) in [
+            (&a, machine_a, "claude-code"),
+            (&b, machine_b, "codex"),
+            (&outsider, machine_a, "codex"),
+        ] {
             sqlx::query(
                 "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, \
                  adapter_id, session_name, status) \
@@ -430,8 +430,10 @@ mod tests {
         let room = rooms::load(&pool, room_id, uid).await.unwrap().expect("room");
         assert_eq!(room.members.len(), 2);
         assert_eq!(room.name, "wave 23");
-        assert!(rooms::load(&pool, room_id, Uuid::new_v4()).await.unwrap().is_none(),
-            "another owner must not see the room");
+        assert!(
+            rooms::load(&pool, room_id, Uuid::new_v4()).await.unwrap().is_none(),
+            "another owner must not see the room"
+        );
 
         // Room membership authorises the pair for the peer tools, and leaves the
         // outsider refused.

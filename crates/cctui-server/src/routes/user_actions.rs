@@ -307,9 +307,9 @@ pub async fn ui_tick(
         UserActionResolver::User,
     )
     .await?;
-    ticked.map(Json).ok_or_else(|| {
-        AppError::new(StatusCode::NOT_FOUND, "no such user action on this session")
-    })
+    ticked
+        .map(Json)
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such user action on this session"))
 }
 
 #[cfg(test)]

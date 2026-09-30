@@ -1662,9 +1662,8 @@ pub async fn get_session(
                 launch_at: None,
                 launch_error: None,
             };
-            item.user_actions = fetch_user_actions(&state, std::slice::from_ref(&item.id))
-                .await?
-                .remove(&item.id);
+            item.user_actions =
+                fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
             return Ok(Json(item));
         }
     }
@@ -1759,9 +1758,8 @@ pub async fn get_session(
             state.config.archive_after_secs,
         );
     }
-    item.user_actions = fetch_user_actions(&state, std::slice::from_ref(&item.id))
-        .await?
-        .remove(&item.id);
+    item.user_actions =
+        fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
     Ok(Json(item))
 }
 
@@ -3433,9 +3431,7 @@ mod tests {
                 super::ConversationQuery { limit: Some(limit), before, after: None, order };
             let pool = pool.clone();
             let sid = sid.clone();
-            async move {
-                super::renderable_rows(&pool, &sid, "claude-code", &params).await.unwrap()
-            }
+            async move { super::renderable_rows(&pool, &sid, "claude-code", &params).await.unwrap() }
         };
 
         let newest = page(1, None, super::ConversationOrder::Desc).await;

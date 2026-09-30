@@ -59,10 +59,7 @@ pub fn tool_kind(name: &str) -> Option<&'static str> {
 
 /// The tool a socket `kind` came from, for naming it in an error.
 fn tool_of_kind(kind: &str) -> &'static str {
-    ROUND_TRIP_KINDS
-        .iter()
-        .find(|(_, k)| *k == kind)
-        .map_or(TOOL_NAME, |(tool, _)| *tool)
+    ROUND_TRIP_KINDS.iter().find(|(_, k)| *k == kind).map_or(TOOL_NAME, |(tool, _)| *tool)
 }
 
 /// MCP protocol revision this server implements.
@@ -328,7 +325,6 @@ pub fn room_tool_schema() -> Value {
         },
     })
 }
-
 
 /// The split both user-action tools must state, so a model does not file its own
 /// steps here or the user's here into its own plan.
@@ -859,8 +855,7 @@ mod tests {
                 );
                 writeln!(stream, "{}", json!({ "ok": true, "result": "fine" })).unwrap();
             });
-            let (text, is_error) =
-                call_daemon("s1", &sock_path, kind, &args, None, &Outbox::new());
+            let (text, is_error) = call_daemon("s1", &sock_path, kind, &args, None, &Outbox::new());
             server.join().unwrap();
             assert!(!is_error, "{tool}: {text}");
             assert_eq!(text, "fine");

@@ -146,7 +146,8 @@ fn parse_call(line: &str) -> Result<Call, String> {
             let Some(target) = string_arg(&args, "session_id") else {
                 return Err("session_id is required: the peer to send to".to_owned());
             };
-            let message = args.get("message").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+            let message =
+                args.get("message").and_then(Value::as_str).unwrap_or("").trim().to_owned();
             if message.is_empty() {
                 return Err("message is required".to_owned());
             }
@@ -173,8 +174,7 @@ fn parse_call(line: &str) -> Result<Call, String> {
             let Some(target) = string_arg(&args, "session_id") else {
                 return Err("session_id is required: the peer whose history to read".to_owned());
             };
-            let mut query: Vec<(&'static str, String)> =
-                vec![("session_id", target.clone())];
+            let mut query: Vec<(&'static str, String)> = vec![("session_id", target.clone())];
             for key in ["after", "before", "limit"] {
                 if let Some(n) = args.get(key).and_then(Value::as_i64) {
                     query.push((key, n.to_string()));
@@ -415,8 +415,7 @@ fn render_room(action: &str, me: &str, v: &Value) -> String {
             let mut lines = vec![format!("{room} — {} member(s), plus the human:", members.len())];
             for mem in members {
                 let s = |k: &str| mem.get(k).and_then(Value::as_str).unwrap_or("?");
-                let name =
-                    mem.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+                let name = mem.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
                 lines.push(format!(
                     "- {} [{}] {} · {} on {} · {}",
                     s("session_id"),
@@ -462,7 +461,9 @@ fn render_history(v: &Value) -> String {
     if let Some(first) = v.get("first_seq").and_then(Value::as_i64) {
         note.push_str(&format!(" · oldest seq {first}"));
         if v.get("truncated").and_then(Value::as_bool).unwrap_or(false) {
-            note.push_str(&format!(" · truncated: call again with before={first} for the page before this one"));
+            note.push_str(&format!(
+                " · truncated: call again with before={first} for the page before this one"
+            ));
         }
     }
     note.push(']');
@@ -1900,8 +1901,8 @@ mod tests {
     #[test]
     fn a_peer_call_resolves_the_launch_key_alias() {
         bind_session_alias("peer-launch-key", "ses_realpeer");
-        let line = json!({ "kind": "peers", "session_id": "peer-launch-key", "args": {} })
-            .to_string();
+        let line =
+            json!({ "kind": "peers", "session_id": "peer-launch-key", "args": {} }).to_string();
         assert_eq!(parse_call(&line).unwrap().session_id, "ses_realpeer");
     }
 
@@ -2014,9 +2015,8 @@ mod tests {
     #[test]
     fn peek_and_members_need_no_message_but_post_does() {
         for action in ["peek", "members"] {
-            let line =
-                json!({ "kind": "room", "session_id": "s1", "args": { "action": action } })
-                    .to_string();
+            let line = json!({ "kind": "room", "session_id": "s1", "args": { "action": action } })
+                .to_string();
             let CallKind::Room(req) = parse_call(&line).unwrap().kind else {
                 panic!("expected room")
             };
@@ -2024,7 +2024,8 @@ mod tests {
             assert!(req.message.is_none());
             assert!(req.room_id.is_none(), "an omitted room means the caller's only room");
         }
-        let no_message = json!({ "kind": "room", "session_id": "s1", "args": { "action": "post" } });
+        let no_message =
+            json!({ "kind": "room", "session_id": "s1", "args": { "action": "post" } });
         assert!(
             parse_call(&no_message.to_string()).unwrap_err().contains("message is required"),
             "a post with nothing to say must be rejected before it reaches the server"
@@ -2117,7 +2118,10 @@ mod tests {
         );
         assert!(out.starts_with("wave 23 — 2 member(s), plus the human:"), "{out}");
         assert!(out.contains("- a [member] lane a · codex on box-b · live"), "{out}");
-        assert!(out.contains("- b [observer] (unnamed) · claude-code on box-a · archived"), "{out}");
+        assert!(
+            out.contains("- b [observer] (unnamed) · claude-code on box-a · archived"),
+            "{out}"
+        );
     }
 
     #[test]

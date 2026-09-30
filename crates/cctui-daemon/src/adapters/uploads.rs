@@ -209,7 +209,8 @@ mod tests {
         assert_eq!(again, path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# two");
 
-        let _ = std::fs::remove_dir_all(std::path::Path::new("/tmp/cctui-uploads").join(&session_id));
+        let _ =
+            std::fs::remove_dir_all(std::path::Path::new("/tmp/cctui-uploads").join(&session_id));
     }
 
     #[test]

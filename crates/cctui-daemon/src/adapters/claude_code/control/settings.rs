@@ -1000,7 +1000,8 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         };
-        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[], None);
+        let block =
+            build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[], None);
         assert!(block.starts_with("<session-context>\n"));
         assert!(block.ends_with("</session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));

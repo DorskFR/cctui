@@ -56,8 +56,12 @@ impl Member {
     /// `name (adapter on machine)`, the same shape the peer envelope uses.
     #[must_use]
     pub fn label(&self) -> String {
-        let name =
-            self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&self.session_id);
+        let name = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&self.session_id);
         format!(
             "{name} ({} on {})",
             self.adapter.as_deref().unwrap_or("unknown"),
@@ -154,13 +158,12 @@ pub async fn load(
     room_id: Uuid,
     owner: Uuid,
 ) -> Result<Option<Room>, sqlx::Error> {
-    let row: Option<(Uuid, String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
-        "SELECT id, name, archived_at FROM rooms WHERE id = $1 AND user_id = $2",
-    )
-    .bind(room_id)
-    .bind(owner)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(Uuid, String, Option<chrono::DateTime<chrono::Utc>>)> =
+        sqlx::query_as("SELECT id, name, archived_at FROM rooms WHERE id = $1 AND user_id = $2")
+            .bind(room_id)
+            .bind(owner)
+            .fetch_optional(pool)
+            .await?;
     let Some((id, name, archived_at)) = row else { return Ok(None) };
     Ok(Some(Room {
         id,
@@ -269,7 +272,10 @@ impl std::fmt::Display for PostRefusal {
                  (a path, a session id), not a payload."
             ),
             Self::EnvelopeBreak => {
-                write!(f, "message must not contain {ENVELOPE_CLOSE}: it would truncate the envelope")
+                write!(
+                    f,
+                    "message must not contain {ENVELOPE_CLOSE}: it would truncate the envelope"
+                )
             }
             Self::Archived => f.write_str("this room is archived and takes no new messages"),
             Self::NotAMember => f.write_str("this session is not in that room"),
@@ -354,10 +360,8 @@ pub async fn post(
     check_sender(room, sender.map(|m| m.session_id.as_str()))?;
     // One broadcast spends one send from the caller's window, on the same key a
     // direct CctuiSend uses, so the two cannot be played against each other.
-    let key = sender.map_or_else(
-        || format!("room-human:{}", room.id),
-        |m| format!("send:{}", m.session_id),
-    );
+    let key = sender
+        .map_or_else(|| format!("room-human:{}", room.id), |m| format!("send:{}", m.session_id));
     if !crate::routes::peer::limiter().admit(&key, SEND_PER_MIN, std::time::Instant::now()) {
         return Err(PostRefusal::RateLimited.into());
     }
@@ -482,9 +486,7 @@ pub async fn clear_room(
 }
 
 fn announce_members(state: &AppState, room_id: Uuid, owner: Uuid) {
-    state
-        .bus
-        .publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id, user_id: owner });
+    state.bus.publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id, user_id: owner });
 }
 
 #[cfg(test)]
@@ -535,10 +537,7 @@ mod tests {
         let big = "x".repeat(MAX_MESSAGE_BYTES + 1);
         assert_eq!(check_body(&big), Err(PostRefusal::TooLarge(MAX_MESSAGE_BYTES + 1)));
         assert_eq!(check_body("a </cctui-room> b"), Err(PostRefusal::EnvelopeBreak));
-        assert_eq!(
-            check_body(&"x".repeat(MAX_MESSAGE_BYTES)).map(str::len),
-            Ok(MAX_MESSAGE_BYTES)
-        );
+        assert_eq!(check_body(&"x".repeat(MAX_MESSAGE_BYTES)).map(str::len), Ok(MAX_MESSAGE_BYTES));
     }
 
     #[test]
@@ -580,16 +579,8 @@ mod tests {
                 created_at: chrono::Utc::now(),
             },
             receipts: vec![
-                Receipt {
-                    session_id: "b".into(),
-                    label: "lane b".into(),
-                    outcome: "delivered",
-                },
-                Receipt {
-                    session_id: "c".into(),
-                    label: "lane c".into(),
-                    outcome: "archived",
-                },
+                Receipt { session_id: "b".into(), label: "lane b".into(), outcome: "delivered" },
+                Receipt { session_id: "c".into(), label: "lane c".into(), outcome: "archived" },
                 Receipt { session_id: "d".into(), label: "lane d".into(), outcome: "offline" },
             ],
         };
