@@ -518,7 +518,7 @@ mod tests {
 
         let request = axum::http::Request::builder()
             .method("GET")
-            .uri(&format!("/api/v1/plugins/{PLUGIN_ID}/backend/v1/pulls?state=open"))
+            .uri(format!("/api/v1/plugins/{PLUGIN_ID}/backend/v1/pulls?state=open"))
             .header(axum::http::header::COOKIE, "cctui_auth=secret; cctui_preview=t; theirs=1")
             .header(axum::http::header::AUTHORIZATION, "Bearer cctui-token")
             .header(USER_ID_HEADER, "spoofed")
