@@ -6,13 +6,17 @@ use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
 use super::identity::AuthAction;
+use super::macros::MacroAction;
+use super::pins::PinAction;
 use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::state::ConversationLine;
+use super::terminal::TerminalAction;
 use super::toast::Level;
 
 /// Everything that can change the app. Key handlers, the websocket and
@@ -68,7 +72,11 @@ pub enum Action {
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
+    CmdLine(super::cmdline::CmdAction),
+    /// `y` / `Y` / the link key, all resolved against the focused line.
+    Copy(CopyWhat),
     Prompt(PromptAction),
+    Diagnose(DiagnoseAction),
 
     StreamLine {
         session_id: String,
@@ -88,7 +96,13 @@ pub enum Action {
 
     Auth(AuthAction),
     Drafts(DraftAction),
+    Pins(PinAction),
+    Macros(MacroAction),
+    /// Take the highlighted `#session` completion. Carries the key so a
+    /// composer with no popup open still types it.
+    AcceptMention(KeyEvent),
     Send(SendAction),
+    Terminal(TerminalAction),
     SessionLive(SessionLiveAction),
 
     /// A pure clock advance: it moves delivery deadlines, re-evaluates the
@@ -101,6 +115,17 @@ pub enum Action {
     UndecodableWsMessage(String),
     /// Persisted agent events the TUI could not deserialize.
     UndecodableAgentEvents(usize),
+}
+
+/// What a copy key asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyWhat {
+    /// The focused line as a Markdown block.
+    Line,
+    /// Just the code under the cursor.
+    CodeBlock,
+    /// A link to this session in the webui.
+    SessionLink,
 }
 
 /// Token/cost figures a heartbeat carries for the session row.
@@ -128,8 +153,34 @@ pub enum Effect {
     MarkSeen {
         session_id: String,
     },
+    /// `OSC 52` first so a copy works over ssh, then the local clipboard.
+    Copy {
+        text: String,
+        label: &'static str,
+    },
+    /// Refetches the whole transcript: the store holds rendered lines, and an
+    /// export needs the events behind them.
+    ExportConversation {
+        session_id: String,
+        meta: Box<super::export::Meta>,
+        filter: Box<super::transcript_filter::Filter>,
+        format: super::export::Format,
+        path: std::path::PathBuf,
+    },
     /// `GET /drafts`: every unsent draft, pulled once at startup.
     LoadDraftIndex,
+    /// `GET /sessions/{id}/pins`: the caller's pins in one session.
+    LoadPins {
+        session_id: String,
+    },
+    PinMessage {
+        session_id: String,
+        seq: i64,
+    },
+    UnpinMessage {
+        session_id: String,
+        seq: i64,
+    },
     /// Re-read one session's draft and prompt history.
     LoadDrafts {
         session_id: String,
@@ -148,6 +199,11 @@ pub enum Effect {
     },
     Unsubscribe {
         session_id: String,
+    },
+    /// Start or stop the PTY relay for one session.
+    WatchTerminal {
+        session_id: String,
+        watch: bool,
     },
     SendMessage {
         send_id: u64,
@@ -193,6 +249,10 @@ pub enum Effect {
     OpenInOsViewer {
         name: String,
         bytes: Vec<u8>,
+    },
+    /// `GET /sessions/{id}/diagnose`: everything the daemon and the server know.
+    FetchDiagnose {
+        session_id: String,
     },
     /// Persist the fold state to `tui-state.json`.
     SaveUiState(crate::config::uistate::UiState),

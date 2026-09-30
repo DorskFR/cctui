@@ -1,6 +1,7 @@
 import { MediaQuery } from 'svelte/reactivity';
 import { settings, type SpawnDockSide } from './settings.svelte';
 import { resolveDocks, type DockLayout } from './dock';
+import { sessionsView } from './sessionsView.svelte';
 
 export { SPAWN_DOCK_WIDTH, STATS_DOCK_WIDTH } from './dock';
 
@@ -17,13 +18,14 @@ export function dockLayout(): DockLayout {
 		spawn: settings.spawnDock,
 		stats: settings.statsDock,
 		wide: wide.current,
-		veryWide: veryWide.current
+		veryWide: veryWide.current,
+		tiles: sessionsView.tiles
 	});
 }
 
 /** Which edge the spawn panel is docked to right now, or `null` when the
  *  Sessions screen should show the "+ New" button and modal instead (setting
- *  off, or the viewport is too narrow for a side panel). */
+ *  off, tiles mode, or the viewport is too narrow for a side panel). */
 export function spawnDockSide(): SpawnDockSide | null {
 	return dockLayout().spawn;
 }

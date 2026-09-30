@@ -1,14 +1,15 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 557
+assertion_line: 840
 expression: render_screen(&mut app)
 ---
  infra (main) on orion ── opus ── $1.25
+∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
 └ 984 lines                                                                                        ▕
  Bash  cargo test  write                                                                           ▕
-└ ✗ exit 101 · 3 failed  (2 more · o)                                                              ▕
-                                                                                                   ▕
+└ ✗ exit 101 · 3 failed  (2 more · o)                                                              ▐
+                                                                                                   ▐
 ● Assistant                                                                                        ▐
 Looking at the views first.                                                                        ▐
                                                                                                    ▐
@@ -19,7 +20,6 @@ Looking at the views first.                                                     
                                                                                                    ▐
 ◆ lane-b                                                                                           ▐
 the parser lane is rebased                                                                         ▐
-· keep-alive tick                                                                                  ▐
 ⟳ context reset (/clear)                                                                           ▐
                                                                                                    ▐
 ◁ Reply done                                                                                       ▐

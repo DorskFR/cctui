@@ -1,16 +1,18 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 330
 expression: render_screen(&mut app)
 ---
  infra (main) on orion ── opus ── $1.25
+                                                                                                   ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
-└ 984 lines                                                                                        ▕
- Bash ┌ Prompt history ──────────────────────────────────────────────────────────────────────┐     ▕
-└ ✗ ex│ filter ▏                                                                             │     ▐
-      │                                                                                      │     ▐
-● Assi│❯ second prompt                                                                       │     ▐
-Lookin│  first prompt                                                                        │     ▐
+└ 984 ┌ Prompt history ──────────────────────────────────────────────────────────────────────┐     ▕
+ Bash │ filter ▏                                                                             │     ▐
+└ ✗ ex│                                                                                      │     ▐
+      │❯ second prompt                                                                       │     ▐
+● Assi│  first prompt                                                                        │     ▐
+Lookin│                                                                                      │     ▐
       │                                                                                      │     ▐
 - one │                                                                                      │     ▐
 - two │                                                                                      │     ▐
@@ -19,7 +21,6 @@ Lookin│  first prompt                                                         
       │                                                                                      │     ▐
 ◆ lane│                                                                                      │     ▐
 the pa│                                                                                      │     ▐
-· keep│                                                                                      │     ▐
 ⟳ cont│ ↑↓ Pick  Enter Recall  Esc Cancel                                                    │     ▐
       └──────────────────────────────────────────────────────────────────────────────────────┘     ▐
 ◁ Reply done                                                                                       ▐

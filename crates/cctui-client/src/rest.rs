@@ -6,6 +6,7 @@ use cctui_proto::api::{
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
+use cctui_proto::models::MessagePin;
 use reqwest::StatusCode;
 use reqwest::header::{ETAG, IF_NONE_MATCH};
 use serde::de::DeserializeOwned;
@@ -500,6 +501,23 @@ impl Client {
         self.unit(Self::route("delete_drafts_by_*key")?, &[("*key", key)], None).await
     }
 
+    /// The caller's pinned messages in a session, oldest `seq` first.
+    pub async fn list_pins(&self, session_id: &str) -> Result<Vec<MessagePin>, ClientError> {
+        self.json(Self::route("get_sessions_by_id_pins")?, &[("id", session_id)], &[], None).await
+    }
+
+    /// Pin a message by its stream `seq`.
+    pub async fn pin_message(&self, session_id: &str, seq: i64) -> Result<MessagePin, ClientError> {
+        let body = serde_json::json!({ "seq": seq, "message_id": Value::Null });
+        self.json(Self::route("post_sessions_by_id_pins")?, &[("id", session_id)], &[], Some(&body))
+            .await
+    }
+
+    pub async fn unpin_message(&self, session_id: &str, seq: i64) -> Result<(), ClientError> {
+        let route = Self::route("delete_sessions_by_id_pins_by_seq")?;
+        self.unit(route, &[("id", session_id), ("seq", &seq.to_string())], None).await
+    }
+
     /// Revoke the key this client authenticates with (`cctui logout --revoke`).
     pub async fn revoke_current_key(&self) -> Result<(), ClientError> {
         self.unit(Self::route("delete_me_key")?, &[], None).await
@@ -629,6 +647,9 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "get_sessions_by_id_pins",
+            "post_sessions_by_id_pins",
+            "delete_sessions_by_id_pins_by_seq",
         ] {
             assert!(Client::route(id).is_ok(), "missing route id {id}");
         }

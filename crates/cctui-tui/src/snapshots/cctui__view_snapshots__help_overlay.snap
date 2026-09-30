@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 399
+assertion_line: 542
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                       File viewer                                    │
-▸ │  ?           Toggle this cheat sheet            j / ↓       Scroll down                      │
-  │  q           Quit cctui                         k / ↑       Scroll up                        │
-  │  Ctrl+g      Jump to the next pending approval  PgDn        Page down                        │
-  │Session list                                     PgUp        Page up                          │
-  │  j / ↓       Next session                       g           Jump to the top                  │
-  │  k / ↑       Previous session                   q / Esc     Close the file viewer            │
-  │  g           First session                      o           Open in the desktop viewer       │
-  │  G           Last session                     Help                                           │
-  │  Enter       Open the conversation              j / ↓       Scroll down                      │
-  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll up                        │
-  │  S           Fold or open the section           PgDn        Page down                        │
-  │  Z           Fold or open everything            PgUp        Page up                          │
-  │Conversation                                     ? / q / Esc Close this cheat sheet           │
-  │  1-9         Jump to session by number        Permission card                                │
-  │  q / Esc     Back to the session list           y           Allow                            │
-  │  j / ↓       Scroll down                        n           Deny                             │
-  │  k / ↑       Scroll up                          A           Allow and auto-approve           │
-  │  PgDn        Page down                        Question card                                  │
-  │  PgUp        Page up                            Esc         Answer later                     │
+  │Anywhere                                         PgDn        Page down                        │
+▸ │  ?           Toggle this cheat sheet            PgUp        Page up                          │
+  │  q           Quit cctui                         g           Jump to the top                  │
+  │  /           Search the current view            q / Esc     Close the file viewer            │
+  │  n           Next search hit                    o           Open in the desktop viewer       │
+  │  N           Previous search hit              Pinned messages                                │
+  │  D           Diagnose the selected session      Esc         Close the pinned messages        │
+  │  i           Session info                       Ctrl+n / ↓  Next pin                         │
+  │  Ctrl+g      Jump to the next pending approv…   Ctrl+p / ↑  Previous pin                     │
+  │Session list                                     Enter       Jump to the pinned message       │
+  │  j / ↓       Next session                       d / m       Unpin this message               │
+  │  k / ↑       Previous session                 Macros                                         │
+  │  g           First session                      Esc         Close the macro list             │
+  │  G           Last session                       Ctrl+n / ↓  Next macro                       │
+  │  Enter       Open the conversation              Ctrl+p / ↑  Previous macro                   │
+  │  z / Tab     Fold or open the subagent group    Enter       Put this prompt in the composer  │
+  │  S           Fold or open the section         Terminal pane                                  │
+  │  Z           Fold or open everything            T / q / Esc Close the terminal pane          │
+  │Conversation                                     j / ↓       Scroll the terminal down         │
+  │  1-9         Jump to session by number          k / ↑       Scroll the terminal up           │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

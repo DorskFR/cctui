@@ -18,6 +18,10 @@ use serde::{Deserialize, Serialize};
 pub struct UiState {
     pub toggled_groups: BTreeSet<String>,
     pub folded_sections: BTreeSet<String>,
+    /// The transcript quick filter (`f`) by name; empty means the default.
+    pub transcript_quick: String,
+    /// Categories the `F` menu is holding back.
+    pub transcript_hidden: BTreeSet<String>,
     /// A probe state that reports everything open, so a caller can enumerate the
     /// groups a fully-unfolded list would show. Never persisted.
     #[serde(skip)]

@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 407
+assertion_line: 550
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+o      Attach a file                      r           Refine the plan                  │
-▸ │  Bksp        Remove the focused attachment      j / ↓       Scroll the plan down             │
-  │  Alt+Bksp    Focus the attachment chips         k / ↑       Scroll the plan up               │
-  │  →           Next attachment chip             Plan card — refine                             │
-  │  ←           Previous attachment chip           Enter       Accept the text                  │
-  │  Esc         Close the composer                 Esc         Discard the text                 │
-  │  Enter       Send the message                 Row glyphs                                     │
-  │  Ctrl+j / A… Insert a newline                   ●           working                          │
-  │  ↑           Recall an earlier prompt           ◐           stale or asleep                  │
-  │  ↓           Recall a later prompt              ○           idle                             │
-  │  Ctrl+r      Search sent prompts                ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │Attach a file                                    ●N          unread messages                  │
-  │  Enter       Attach this path                   ⚡           auto-approve on                  │
-  │  Esc         Cancel attaching                   ✕reason     how it ended                     │
-  │  Tab         Complete the path                  ⚙N age      tool calls, age of the last      │
+  │  Ctrl+t      Insert a canned prompt             Enter       Accept the text                  │
+▸ │Search and commands                              Esc         Discard the text                 │
+  │  Enter       Run it                           Row glyphs                                     │
+  │  Esc         Abandon it                         ●           working                          │
+  │  Tab         Complete the path                  ◐           stale or asleep                  │
+  │Filter menu                                      ○           idle                             │
+  │  F / q / Esc Choose which lines to show         ☾           hibernated                       │
+  │  a           Show every category                ↳           subagent                         │
+  │  r           Back to the default filter         ▸ / ▾       folded / open group              │
+  │  Space / En… Show or hide this category         !           permission waiting on you        │
+  │  j / ↓       Next category                      ?           question waiting on you          │
+  │  k / ↑       Previous category                  P           plan waiting for approval        │
+  │Prompt history                                   ●N          unread messages                  │
+  │  Esc         Close the prompt list              ⚡           auto-approve on                  │
+  │  Ctrl+n / ↓  Next prompt                        ⏸           account soft-limited             │
+  │  Ctrl+p / ↑  Previous prompt                    ⚠           account traffic never seen       │
+  │  Enter       Put this prompt in the composer    ❄           cache cold, next turn re-reads   │
+  │File viewer                                      ✕reason     how it ended                     │
+  │  j / ↓       Scroll down                        ⚙N age      tool calls, age of the last      │
+  │  k / ↑       Scroll up                                                                       │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

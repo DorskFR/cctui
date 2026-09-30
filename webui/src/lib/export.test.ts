@@ -6,6 +6,7 @@ import {
   defaultFilter,
 } from "$lib/components/organisms/conversation/filters";
 import type { MsgCategory } from "$lib/components/organisms/conversation/types";
+import { parityFixture } from "$lib/parity/fixtures";
 import {
   buildConversationHtml,
   conversationToMarkdown,
@@ -177,5 +178,25 @@ describe("buildConversationHtml", () => {
     });
     expect(html).toContain("here-is-the-answer");
     expect(html).toContain("tool-result-payload");
+  });
+});
+
+// The Rust port in `crates/cctui-tui/src/app/export.rs` replays this same file,
+// so a change to either implementation fails on both sides until they agree.
+describe("exportMarkdown parity fixture", () => {
+  interface Fixture {
+    session: Record<string, string | null>;
+    events: AgentEvent[];
+    expected: string;
+  }
+
+  it("renders the golden transcript byte for byte", () => {
+    const fx = parityFixture<Fixture>("exportMarkdown");
+    const md = conversationToMarkdown(
+      fx.session as unknown as SessionListItem,
+      fx.events,
+      opts(),
+    );
+    expect(md).toBe(fx.expected);
   });
 });

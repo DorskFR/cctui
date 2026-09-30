@@ -11,11 +11,18 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The `/` search and `:` command prompt.
+    CmdLine,
+    /// The `F` category menu.
+    FilterMenu,
     History,
-    AttachPrompt,
     FileViewer,
+    Pins,
+    Macros,
+    Terminal,
     Help,
     Permission,
+    Diagnose,
     Ask,
     AskText,
     Plan,
@@ -27,11 +34,16 @@ pub const CONTEXTS: &[Context] = &[
     Context::SessionList,
     Context::Conversation,
     Context::Composer,
+    Context::CmdLine,
+    Context::FilterMenu,
     Context::History,
-    Context::AttachPrompt,
     Context::FileViewer,
+    Context::Pins,
+    Context::Macros,
+    Context::Terminal,
     Context::Help,
     Context::Permission,
+    Context::Diagnose,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -45,11 +57,16 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::CmdLine => "cmdline",
+            Self::FilterMenu => "filter-menu",
             Self::History => "history",
-            Self::AttachPrompt => "attach-prompt",
             Self::FileViewer => "file-viewer",
+            Self::Pins => "pins",
+            Self::Macros => "macros",
+            Self::Terminal => "terminal",
             Self::Help => "help",
             Self::Permission => "permission",
+            Self::Diagnose => "diagnose",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -63,11 +80,16 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::CmdLine => "Search and commands",
+            Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
-            Self::AttachPrompt => "Attach a file",
             Self::FileViewer => "File viewer",
+            Self::Pins => "Pinned messages",
+            Self::Macros => "Macros",
+            Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::Permission => "Permission card",
+            Self::Diagnose => "Diagnose / info",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -156,9 +178,6 @@ actions! {
     FocusAttachments => "focus-attachments", "Focus the attachment chips";
     AttachmentNext => "attachment-next", "Next attachment chip";
     AttachmentPrev => "attachment-prev", "Previous attachment chip";
-    AttachConfirm => "attach-confirm", "Attach this path";
-    AttachCancel => "attach-cancel", "Cancel attaching";
-    AttachComplete => "attach-complete", "Complete the path";
     OpenLinkedFile => "open-linked-file", "Open the file under the cursor";
     FileViewerClose => "file-viewer-close", "Close the file viewer";
     FileViewerOsOpen => "file-viewer-os-open", "Open in the desktop viewer";
@@ -167,8 +186,25 @@ actions! {
     RetrySend => "retry-send", "Retry the undelivered message";
     EditSend => "edit-send", "Edit the undelivered message";
     DiscardSend => "discard-send", "Drop the undelivered message";
-    CopyMessage => "copy-message", "Copy the selected message";
+    CopyMessage => "copy-message", "Copy the focused line as Markdown";
+    CopyCodeBlock => "copy-code-block", "Copy the code under the cursor";
+    CopySessionLink => "copy-session-link", "Copy a link to this session";
+    Command => "command", "Run a command (:export)";
+    FilterCycle => "filter-cycle", "Cycle assistant / you / tools";
+    FilterMenu => "filter-menu", "Choose which lines to show";
+    FilterShowAll => "filter-show-all", "Show every category";
+    FilterReset => "filter-reset", "Back to the default filter";
+    FilterMenuToggle => "filter-menu-toggle", "Show or hide this category";
+    FilterMenuNext => "filter-menu-next", "Next category";
+    FilterMenuPrev => "filter-menu-prev", "Previous category";
+    CmdLineCommit => "cmdline-commit", "Run it";
+    CmdLineCancel => "cmdline-cancel", "Abandon it";
+    CmdLineComplete => "cmdline-complete", "Complete the path";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    TerminalOpen => "terminal-open", "Watch the live terminal";
+    TerminalClose => "terminal-close", "Close the terminal pane";
+    TerminalScrollDown => "terminal-scroll-down", "Scroll the terminal down";
+    TerminalScrollUp => "terminal-scroll-up", "Scroll the terminal up";
 
     CancelInput => "cancel-input", "Close the composer";
     SubmitInput => "submit-input", "Send the message";
@@ -182,7 +218,31 @@ actions! {
     HistorySelectPrev => "history-select-prev", "Previous prompt";
     HistoryRecall => "history-recall", "Put this prompt in the composer";
 
+    PinToggle => "pin-toggle", "Pin or unpin the focused line";
+    PinsOpen => "pins-open", "Open the pinned messages";
+    PinsClose => "pins-close", "Close the pinned messages";
+    PinsSelectNext => "pins-select-next", "Next pin";
+    PinsSelectPrev => "pins-select-prev", "Previous pin";
+    PinsJump => "pins-jump", "Jump to the pinned message";
+    PinsUnpin => "pins-unpin", "Unpin this message";
+
+    MentionAccept => "mention-accept", "Take the session completion";
+    MacrosOpen => "macros-open", "Insert a canned prompt";
+    MacrosClose => "macros-close", "Close the macro list";
+    MacrosSelectNext => "macros-select-next", "Next macro";
+    MacrosSelectPrev => "macros-select-prev", "Previous macro";
+    MacrosInsert => "macros-insert", "Put this prompt in the composer";
+
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    DiagnoseClose => "diagnose-close", "Close the panel";
+    DiagnoseScrollDown => "diagnose-scroll-down", "Scroll the panel down";
+    DiagnoseScrollUp => "diagnose-scroll-up", "Scroll the panel up";
+    DiagnosePageDown => "diagnose-page-down", "Page the panel down";
+    DiagnosePageUp => "diagnose-page-up", "Page the panel up";
+    DiagnoseTop => "diagnose-top", "Jump to the top of the panel";
+    DiagnoseRefresh => "diagnose-refresh", "Refresh the report";
+    DiagnoseCopyId => "diagnose-copy-id", "Copy the session id";
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
@@ -274,7 +334,23 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Conversation, "y", ActionId::CopyMessage),
+    spec(Context::Conversation, "Y", ActionId::CopyCodeBlock),
+    spec(Context::Conversation, "ctrl+y", ActionId::CopySessionLink),
+    spec(Context::Conversation, ":", ActionId::Command),
+    spec(Context::Conversation, "f", ActionId::FilterCycle),
+    spec(Context::Conversation, "F", ActionId::FilterMenu),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
+    spec(Context::Conversation, "m", ActionId::PinToggle),
+    spec(Context::Conversation, "'", ActionId::PinsOpen),
+    spec(Context::Conversation, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Conversation, "T", ActionId::TerminalOpen),
+];
+
+const TERMINAL: &[BindingSpec] = &[
+    spec(Context::Terminal, "esc, q, T", ActionId::TerminalClose),
+    spec(Context::Terminal, "j, down", ActionId::TerminalScrollDown),
+    spec(Context::Terminal, "k, up", ActionId::TerminalScrollUp),
 ];
 
 /// `shift+enter` is unreported by most terminals, so a newline also has a
@@ -286,6 +362,24 @@ const COMPOSER: &[BindingSpec] = &[
     spec(Context::Composer, "up", ActionId::HistoryPrev),
     spec(Context::Composer, "down", ActionId::HistoryNext),
     spec(Context::Composer, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Composer, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Composer, "tab", ActionId::MentionAccept),
+];
+
+/// Typed characters reach the buffer through the unbound fall-through, so only
+/// the two keys that end the prompt live here.
+const CMDLINE: &[BindingSpec] = &[
+    spec(Context::CmdLine, "enter", ActionId::CmdLineCommit),
+    spec(Context::CmdLine, "esc", ActionId::CmdLineCancel),
+];
+
+const FILTER_MENU: &[BindingSpec] = &[
+    spec(Context::FilterMenu, "esc, q, F", ActionId::FilterMenu),
+    spec(Context::FilterMenu, "j, down", ActionId::FilterMenuNext),
+    spec(Context::FilterMenu, "k, up", ActionId::FilterMenuPrev),
+    spec(Context::FilterMenu, "space, enter", ActionId::FilterMenuToggle),
+    spec(Context::FilterMenu, "a", ActionId::FilterShowAll),
+    spec(Context::FilterMenu, "r", ActionId::FilterReset),
 ];
 
 const HISTORY: &[BindingSpec] = &[
@@ -295,13 +389,13 @@ const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "enter", ActionId::HistoryRecall),
 ];
 
+/// `Ctrl-O` opens L3's command line with `attach ` already typed, so there is
+/// one command line rather than a second prompt beside it.
 const ATTACH: &[BindingSpec] = &[
     spec(Context::Composer, "ctrl+o", ActionId::AttachFile),
     spec(Context::Conversation, "ctrl+o", ActionId::AttachFile),
     spec(Context::Composer, "alt+backspace", ActionId::FocusAttachments),
-    spec(Context::AttachPrompt, "enter", ActionId::AttachConfirm),
-    spec(Context::AttachPrompt, "esc", ActionId::AttachCancel),
-    spec(Context::AttachPrompt, "tab", ActionId::AttachComplete),
+    spec(Context::CmdLine, "tab", ActionId::CmdLineComplete),
 ];
 
 /// The chip row only has focus while a chip is selected, which is why these live
@@ -321,6 +415,36 @@ const FILE_VIEWER: &[BindingSpec] = &[
     spec(Context::FileViewer, "pageup", ActionId::PageUp),
     spec(Context::FileViewer, "g", ActionId::ScrollToTop),
     spec(Context::FileViewer, "o", ActionId::FileViewerOsOpen),
+];
+
+const PINS: &[BindingSpec] = &[
+    spec(Context::Pins, "esc", ActionId::PinsClose),
+    spec(Context::Pins, "down, ctrl+n", ActionId::PinsSelectNext),
+    spec(Context::Pins, "up, ctrl+p", ActionId::PinsSelectPrev),
+    spec(Context::Pins, "enter", ActionId::PinsJump),
+    spec(Context::Pins, "m, d", ActionId::PinsUnpin),
+];
+
+const MACROS: &[BindingSpec] = &[
+    spec(Context::Macros, "esc", ActionId::MacrosClose),
+    spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
+    spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
+    spec(Context::Macros, "enter", ActionId::MacrosInsert),
+];
+
+/// The panel is modal, so it claims its own scrolling rather than falling
+/// through to the view underneath.
+const DIAGNOSE: &[BindingSpec] = &[
+    spec(Context::Diagnose, "esc, q", ActionId::DiagnoseClose),
+    spec(Context::Diagnose, "j, down", ActionId::DiagnoseScrollDown),
+    spec(Context::Diagnose, "k, up", ActionId::DiagnoseScrollUp),
+    spec(Context::Diagnose, "pagedown", ActionId::DiagnosePageDown),
+    spec(Context::Diagnose, "pageup", ActionId::DiagnosePageUp),
+    spec(Context::Diagnose, "g", ActionId::DiagnoseTop),
+    spec(Context::Diagnose, "r", ActionId::DiagnoseRefresh),
+    spec(Context::Diagnose, "y", ActionId::DiagnoseCopyId),
+    spec(Context::Diagnose, "D", ActionId::Diagnose),
+    spec(Context::Diagnose, "i", ActionId::Info),
 ];
 
 const HELP: &[BindingSpec] = &[
@@ -380,9 +504,15 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     ATTACH,
     CHIPS,
     FILE_VIEWER,
+    CMDLINE,
+    FILTER_MENU,
     HISTORY,
+    PINS,
+    MACROS,
+    TERMINAL,
     HELP,
     PERMISSION,
+    DIAGNOSE,
     ASK,
     ASK_TEXT,
     PLAN,

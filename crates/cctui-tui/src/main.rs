@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod clipboard;
 mod config;
 mod install;
 mod keys;
@@ -214,6 +215,7 @@ async fn run(
 ) -> Result<()> {
     let server = Arc::new(Client::new(&base_url, &token));
     let mut app = App::new();
+    app.server_url = base_url.clone();
     apply_config(&mut app);
     apply_server_settings(&server, &mut app).await;
     theme::init(app.config.theme);
@@ -253,6 +255,7 @@ async fn run(
                             app.view(),
                             app.input_active,
                             app.prompt_focus(),
+                            app.key_overlay(),
                             pending,
                             input,
                         )
@@ -305,6 +308,7 @@ fn apply_config(app: &mut App) {
     let loaded = config::load();
     app.config = loaded.config;
     app.ui = config::uistate::load();
+    app.filter = app::cmdline::restore(&app.ui);
     for problem in loaded.problems {
         app.toast(Level::Warn, format!("tui.toml: {problem}"));
     }
@@ -315,6 +319,7 @@ fn apply_config(app: &mut App) {
 async fn apply_server_settings(server: &Client, app: &mut App) {
     if let Ok(payload) = server.settings().await {
         app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
+        app.macros = app::macros::from_settings(&payload.data);
     }
     app.show_timestamps = app.config.prefs.timestamps;
 }

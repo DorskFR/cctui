@@ -12,15 +12,20 @@ use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
+use super::pins::PinAction;
 use super::send::SendAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
 const QUEUE: usize = 256;
+
+/// Rows per page while walking a transcript for an export.
+const EXPORT_PAGE: i64 = 500;
 
 /// How long a composer sits still before its draft is written, matching the
 /// web UI: a keystroke must not be a request.
@@ -133,6 +138,22 @@ async fn run(
             }
             Vec::new()
         }
+        Effect::LoadPins { session_id } => match server.list_pins(&session_id).await {
+            Ok(pins) => vec![Action::Pins(PinAction::Loaded {
+                session_id,
+                seqs: pins.iter().map(|p| p.seq).collect(),
+            })],
+            Err(e) => {
+                tracing::warn!(%e, session_id, "pin list fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::PinMessage { session_id, seq } => pin(server, session_id, seq, true).await,
+        Effect::UnpinMessage { session_id, seq } => pin(server, session_id, seq, false).await,
+        Effect::Copy { text, label } => copy(&text, label),
+        Effect::ExportConversation { session_id, meta, filter, format, path } => {
+            export(server, &session_id, &meta, &filter, format, &path).await
+        }
         Effect::LoadDraftIndex => load_draft_index(server).await,
         Effect::LoadDrafts { session_id } => load_drafts(server, session_id).await,
         Effect::SaveDraft { key, text } => {
@@ -153,6 +174,13 @@ async fn run(
         Effect::Unsubscribe { session_id } => {
             if let Err(e) = ws.unsubscribe(session_id).await {
                 tracing::warn!(%e, "unsubscribe failed");
+            }
+            Vec::new()
+        }
+        Effect::WatchTerminal { session_id, watch } => {
+            if let Err(e) = ws.watch_terminal(session_id, watch).await {
+                tracing::warn!(%e, watch, "terminal watch failed");
+                return vec![Action::Toast(Level::Error, "terminal watch failed".to_owned())];
             }
             Vec::new()
         }
@@ -216,6 +244,37 @@ async fn run(
             }
             Vec::new()
         }
+        Effect::FetchDiagnose { session_id } => match server.diagnose(&session_id).await {
+            Ok(report) => {
+                vec![Action::Diagnose(DiagnoseAction::Loaded {
+                    session_id,
+                    report: Box::new(report),
+                })]
+            }
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, session_id, "diagnose fetch failed");
+                vec![Action::Diagnose(DiagnoseAction::Failed { session_id, error: e.to_string() })]
+            }
+        },
+    }
+}
+
+/// A pin is applied once the server owns it, so a failed write leaves no
+/// marker the next list fetch would contradict.
+async fn pin(server: &Client, session_id: String, seq: i64, pinned: bool) -> Vec<Action> {
+    let outcome = if pinned {
+        server.pin_message(&session_id, seq).await.map(|_| ())
+    } else {
+        server.unpin_message(&session_id, seq).await
+    };
+    match outcome {
+        Ok(()) => vec![Action::Pins(PinAction::Changed { session_id, seq, pinned })],
+        Err(e) => {
+            tracing::warn!(%e, session_id, seq, "pin write failed");
+            let what = if pinned { "pin" } else { "unpin" };
+            vec![Action::Toast(Level::Error, format!("could not {what} that message"))]
+        }
     }
 }
 
@@ -270,6 +329,82 @@ async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
 async fn subscribe(ws: &WsClient, session_id: String) {
     if let Err(e) = ws.subscribe(session_id).await {
         tracing::warn!(%e, "subscribe failed");
+    }
+}
+
+/// Every copy in the TUI lands here, so both routes and the toast are decided in
+/// one place.
+fn copy(text: &str, label: &'static str) -> Vec<Action> {
+    if crate::clipboard::copy_with_fallback(text) {
+        vec![Action::Toast(Level::Info, format!("copied the {label}"))]
+    } else {
+        vec![Action::Toast(Level::Warn, format!("cannot copy the {label}"))]
+    }
+}
+
+/// Walks the whole transcript, oldest page first: the store holds rendered
+/// lines, and an export needs the events behind them.
+async fn export(
+    server: &Client,
+    session_id: &str,
+    meta: &super::export::Meta,
+    filter: &super::transcript_filter::Filter,
+    format: super::export::Format,
+    path: &std::path::Path,
+) -> Vec<Action> {
+    let mut events: Vec<AgentEvent> = Vec::new();
+    let mut before = None;
+    loop {
+        let page = Page { before, after: None, limit: Some(EXPORT_PAGE) };
+        let fetch = match server.conversation(session_id, page, None).await {
+            Ok(fetch) => fetch,
+            Err(e) => {
+                tracing::warn!(%e, session_id, "the export could not read the transcript");
+                return vec![Action::Toast(
+                    Level::Error,
+                    "export failed: cannot read the transcript".to_owned(),
+                )];
+            }
+        };
+        let ConversationFetch::Page { rows, .. } = fetch else { break };
+        if rows.is_empty() {
+            break;
+        }
+        let oldest = rows.iter().map(|r| r.seq).min();
+        let mut page_events: Vec<AgentEvent> = rows
+            .into_iter()
+            .filter_map(|row| serde_json::from_value::<AgentEvent>(row.event).ok())
+            .collect();
+        page_events.append(&mut events);
+        events = page_events;
+        match oldest {
+            Some(seq) => before = Some(seq),
+            None => break,
+        }
+    }
+
+    let body = match format {
+        super::export::Format::Markdown => super::export::to_markdown(meta, &events, filter),
+        super::export::Format::Html => super::export::to_html(meta, &events, filter),
+    };
+    if let Some(dir) = path.parent()
+        && let Err(e) = tokio::fs::create_dir_all(dir).await
+    {
+        tracing::warn!(%e, "cannot create the export directory");
+        return vec![Action::Toast(
+            Level::Error,
+            "export failed: cannot create the directory".to_owned(),
+        )];
+    }
+    match tokio::fs::write(path, body).await {
+        Ok(()) => vec![Action::Toast(
+            Level::Info,
+            format!("exported {} events to {}", events.len(), path.display()),
+        )],
+        Err(e) => {
+            tracing::warn!(%e, path = %path.display(), "cannot write the export");
+            vec![Action::Toast(Level::Error, format!("export failed: {e}"))]
+        }
     }
 }
 

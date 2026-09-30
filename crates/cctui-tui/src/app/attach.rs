@@ -117,14 +117,6 @@ impl Attachments {
 }
 
 pub enum AttachAction {
-    /// `Ctrl-O`: open the path prompt.
-    OpenPrompt,
-    ClosePrompt,
-    PromptKey(crossterm::event::KeyEvent),
-    /// `Tab` in the prompt: complete the longest unambiguous path.
-    CompletePrompt,
-    /// The prompt was accepted; its text is a path to read.
-    SubmitPrompt,
     /// A path's bytes arrived from the disk.
     Read {
         session_id: String,
@@ -158,28 +150,6 @@ pub enum AttachAction {
 
 pub fn reduce_attach(app: &mut App, action: AttachAction) -> Vec<Effect> {
     match action {
-        AttachAction::OpenPrompt => {
-            app.attach_prompt = Some(AttachPrompt::default());
-            app.router.push(super::state::View::AttachPrompt);
-            Vec::new()
-        }
-        AttachAction::ClosePrompt => {
-            close_prompt(app);
-            Vec::new()
-        }
-        AttachAction::PromptKey(key) => {
-            if let Some(prompt) = app.attach_prompt.as_mut() {
-                prompt.key(key);
-            }
-            Vec::new()
-        }
-        AttachAction::CompletePrompt => {
-            if let Some(prompt) = app.attach_prompt.as_mut() {
-                prompt.completion = None;
-            }
-            complete_prompt(app)
-        }
-        AttachAction::SubmitPrompt => submit_prompt(app),
         AttachAction::Read { session_id, name, bytes, content_type, dimensions } => {
             add(app, &session_id, name, bytes, content_type, dimensions)
         }
@@ -322,109 +292,6 @@ fn remove_focused(app: &mut App) -> Vec<Effect> {
     super::drafts::on_input(app)
 }
 
-/// The path prompt `Ctrl-O` opens. `:attach <path>` is accepted too, so the
-/// webui's command muscle memory types something that works.
-#[derive(Debug, Default, Clone)]
-pub struct AttachPrompt {
-    pub text: String,
-    /// The last completion offered, so repeated `Tab` does not re-append it.
-    pub completion: Option<String>,
-}
-
-impl AttachPrompt {
-    /// The path the prompt refers to, with any `:attach ` prefix and `~` gone.
-    #[must_use]
-    pub fn path(&self) -> String {
-        let raw = self.text.trim();
-        let raw = raw.strip_prefix(":attach").map_or(raw, str::trim_start);
-        expand_home(raw.trim())
-    }
-
-    fn key(&mut self, key: crossterm::event::KeyEvent) {
-        use crossterm::event::KeyCode;
-        self.completion = None;
-        match key.code {
-            KeyCode::Char(c) => self.text.push(c),
-            KeyCode::Backspace => {
-                self.text.pop();
-            }
-            _ => {}
-        }
-    }
-}
-
-/// `~` and `~/x` resolve against `$HOME`; anything else is returned as given.
-#[must_use]
-pub fn expand_home(path: &str) -> String {
-    let Some(rest) = path.strip_prefix('~') else { return path.to_owned() };
-    let Some(home) = std::env::var_os("HOME") else { return path.to_owned() };
-    let home = home.to_string_lossy().into_owned();
-    if rest.is_empty() { home } else { format!("{home}{rest}") }
-}
-
-fn close_prompt(app: &mut App) {
-    if app.attach_prompt.take().is_some() {
-        app.router.pop();
-    }
-}
-
-fn submit_prompt(app: &mut App) -> Vec<Effect> {
-    let Some(prompt) = app.attach_prompt.clone() else { return Vec::new() };
-    close_prompt(app);
-    let path = prompt.path();
-    if path.is_empty() {
-        return Vec::new();
-    }
-    let Some(session_id) = app.selected_session_id() else { return Vec::new() };
-    vec![Effect::ReadAttachment { session_id, path }]
-}
-
-/// Longest unambiguous completion of the prompt's path, from the directory it
-/// names. A directory completion keeps its trailing slash so the next `Tab`
-/// descends into it.
-fn complete_prompt(app: &mut App) -> Vec<Effect> {
-    let Some(prompt) = app.attach_prompt.as_ref() else { return Vec::new() };
-    let path = prompt.path();
-    let (dir, prefix) =
-        path.rfind('/').map_or(("./", path.as_str()), |at| (&path[..=at], &path[at + 1..]));
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut matches: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with(prefix) {
-            continue;
-        }
-        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-        matches.push(if is_dir { format!("{name}/") } else { name });
-    }
-    if matches.is_empty() {
-        return Vec::new();
-    }
-    matches.sort();
-    let common = longest_common_prefix(&matches);
-    if let Some(prompt) = app.attach_prompt.as_mut() {
-        prompt.text = format!("{dir}{common}");
-        prompt.completion = (matches.len() > 1).then(|| matches.join("  "));
-    }
-    Vec::new()
-}
-
-fn longest_common_prefix(names: &[String]) -> String {
-    let Some(first) = names.first() else { return String::new() };
-    let mut end = first.len();
-    for name in &names[1..] {
-        end = end.min(
-            first
-                .char_indices()
-                .zip(name.chars())
-                .take_while(|((_, a), b)| a == b)
-                .last()
-                .map_or(0, |((i, a), _)| i + a.len_utf8()),
-        );
-    }
-    first[..end].to_owned()
-}
-
 /// The upload a send has to do first, or `None` when nothing is staged and the
 /// send can go straight out.
 #[must_use]
@@ -442,7 +309,7 @@ pub fn upload_effect(app: &App, session_id: &str, content: &str) -> Option<Effec
 
 #[cfg(test)]
 mod tests {
-    use super::{AttachAction, AttachPrompt, PASTE_THRESHOLD_BYTES, expand_home};
+    use super::{AttachAction, PASTE_THRESHOLD_BYTES};
     use crate::app::action::Effect;
     use crate::app::{Action, App, reduce};
     use crate::testsupport::session;
@@ -647,77 +514,6 @@ mod tests {
         let effects = reduce(&mut app, Action::SubmitInput);
         assert!(effects.iter().any(|e| matches!(e, Effect::SendMessage { .. })));
         assert!(!effects.iter().any(|e| matches!(e, Effect::UploadAttachments { .. })));
-    }
-
-    #[test]
-    fn the_prompt_accepts_a_bare_path_or_the_attach_command() {
-        let mut prompt = AttachPrompt { text: "  /tmp/a.txt ".to_owned(), completion: None };
-        assert_eq!(prompt.path(), "/tmp/a.txt");
-        prompt.text = ":attach /tmp/a.txt".to_owned();
-        assert_eq!(prompt.path(), "/tmp/a.txt");
-        prompt.text = ":attach".to_owned();
-        assert_eq!(prompt.path(), "");
-    }
-
-    #[test]
-    fn a_home_relative_path_expands() {
-        let home = std::env::var("HOME").expect("HOME");
-        assert_eq!(expand_home("~/x.txt"), format!("{home}/x.txt"));
-        assert_eq!(expand_home("~"), home);
-        assert_eq!(expand_home("/abs/x"), "/abs/x");
-        assert_eq!(expand_home("rel/x"), "rel/x");
-    }
-
-    #[test]
-    fn submitting_the_prompt_asks_for_the_file_and_closes_it() {
-        let mut app = app();
-        attach(&mut app, AttachAction::OpenPrompt);
-        assert!(app.attach_prompt.is_some());
-        if let Some(prompt) = app.attach_prompt.as_mut() {
-            prompt.text = "/tmp/a.txt".to_owned();
-        }
-        let effects = attach(&mut app, AttachAction::SubmitPrompt);
-        match effects.as_slice() {
-            [Effect::ReadAttachment { session_id, path }] => {
-                assert_eq!(session_id, "s-a");
-                assert_eq!(path, "/tmp/a.txt");
-            }
-            _ => panic!("expected a read effect"),
-        }
-        assert!(app.attach_prompt.is_none());
-    }
-
-    #[test]
-    fn an_empty_prompt_asks_for_nothing() {
-        let mut app = app();
-        attach(&mut app, AttachAction::OpenPrompt);
-        assert!(attach(&mut app, AttachAction::SubmitPrompt).is_empty());
-    }
-
-    #[test]
-    fn tab_completes_against_the_real_directory() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        std::fs::write(dir.path().join("alpha.txt"), b"x").expect("write");
-        std::fs::write(dir.path().join("alphabet.txt"), b"x").expect("write");
-        std::fs::write(dir.path().join("beta.txt"), b"x").expect("write");
-
-        let mut app = app();
-        attach(&mut app, AttachAction::OpenPrompt);
-        if let Some(prompt) = app.attach_prompt.as_mut() {
-            prompt.text = format!("{}/al", dir.path().display());
-        }
-        attach(&mut app, AttachAction::CompletePrompt);
-        let prompt = app.attach_prompt.as_ref().expect("the prompt");
-        assert_eq!(prompt.text, format!("{}/alpha", dir.path().display()));
-        assert!(prompt.completion.is_some(), "two candidates are listed");
-
-        if let Some(prompt) = app.attach_prompt.as_mut() {
-            prompt.text = format!("{}/b", dir.path().display());
-        }
-        attach(&mut app, AttachAction::CompletePrompt);
-        let prompt = app.attach_prompt.as_ref().expect("the prompt");
-        assert_eq!(prompt.text, format!("{}/beta.txt", dir.path().display()));
-        assert!(prompt.completion.is_none(), "one candidate needs no list");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
@@ -6,6 +6,7 @@ use ratatui_textarea::TextArea;
 
 use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
+use super::diagnose::DiagnosePanel;
 use super::identity::AuthState;
 use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
@@ -18,12 +19,14 @@ pub use crate::config::uistate::UiState;
 pub enum View {
     /// The overlay pager for an agent-linked local file.
     FileViewer,
-    /// The `Ctrl-O` path prompt.
-    AttachPrompt,
     SessionList,
     Conversation,
     Help,
     HistoryPicker,
+    Pins,
+    Macros,
+    Diagnose,
+    Terminal,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -201,6 +204,10 @@ pub struct App {
     pub asks: HashMap<String, AskCard>,
     /// Live plan-approval prompt per session, cleared on `PlanResolved`.
     pub plans: HashMap<String, PlanCard>,
+    /// The open diagnose/info overlay, `None` when it is closed.
+    pub diagnose: Option<DiagnosePanel>,
+    /// Sessions parked behind an account soft limit, from the WS frames.
+    pub soft_limited: HashSet<String>,
     pub scroll_offset: usize,
     /// First cheat-sheet row shown; clamped by the overlay when it draws.
     pub help_scroll: usize,
@@ -221,11 +228,25 @@ pub struct App {
     /// `show_timestamps` the cache was built with: the prefix is baked into
     /// every cached row, so toggling it has to rebuild.
     pub render_cache_timestamps: bool,
+    pub render_cache_pins: u64,
     /// First display row of each cached entry; the line cursor maps an entry
     /// onto its rows through this.
     pub render_cache_starts: Vec<usize>,
     /// Focused entry in line-select mode; `None` means normal scrolling.
     pub line_cursor: Option<usize>,
+    /// Which transcript categories are on screen, restored from disk at startup.
+    pub filter: super::transcript_filter::Filter,
+    /// Focused row of the `F` menu while it is open.
+    pub filter_menu: Option<usize>,
+    /// The `/` or `:` prompt at the bottom of the conversation.
+    pub cmdline: super::cmdline::CmdLine,
+    /// The committed search and its hits.
+    pub find: super::cmdline::Find,
+    /// `filter.cache_key()` the render cache was built with: a filter change
+    /// adds or removes rows, which no append-only cache can absorb.
+    pub render_cache_filter: String,
+    /// Where the server is, for a copyable session link. Empty in tests.
+    pub server_url: String,
     /// Which way the next bulk toggle goes; the per-entry state is the store's.
     pub expand_all: bool,
     /// An older page landed: the next render re-anchors the viewport onto the
@@ -235,12 +256,13 @@ pub struct App {
     pub status: StatusCounters,
     pub auth: AuthState,
     pub drafts: super::drafts::DraftState,
+    pub pins: super::pins::PinState,
+    pub mentions: super::mentions::MentionState,
+    pub macros: super::macros::MacroState,
     /// Sends that have left the composer but are not confirmed delivered.
     pub outbox: super::send::Outbox,
     /// Files staged for the composer, uploaded on send.
     pub attachments: super::attach::Attachments,
-    /// The `Ctrl-O` path prompt, while it is open.
-    pub attach_prompt: Option<super::attach::AttachPrompt>,
     /// A held lead chord (the `g` of `gf`), cleared by the next key.
     pub pending_chord: Option<crate::config::chord::Chord>,
     /// The file the viewer is showing, while it is open.
@@ -256,6 +278,8 @@ pub struct App {
     pub refresh: RefreshCounters,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
+    /// The watched session's emulated screen, open only while the pane is.
+    pub terminal: Option<super::terminal::TerminalPane>,
 }
 
 impl App {
@@ -280,6 +304,27 @@ impl App {
         self.message_input = textarea;
     }
 
+    /// The same, with the caret at a character offset: a completion inserts
+    /// mid-text and the user keeps typing after the token, not at the end.
+    pub fn set_input_text_at(&mut self, text: &str, caret: usize) {
+        self.set_input_text(text);
+        let mut row = 0_usize;
+        let mut col = caret;
+        for line in text.split('\n') {
+            let len = line.chars().count();
+            if col <= len {
+                break;
+            }
+            col -= len + 1;
+            row += 1;
+        }
+        let jump = ratatui_textarea::CursorMove::Jump(
+            u16::try_from(row).unwrap_or(u16::MAX),
+            u16::try_from(col).unwrap_or(u16::MAX),
+        );
+        self.message_input.move_cursor(jump);
+    }
+
     pub fn new() -> Self {
         Self {
             router: Router::new(View::SessionList),
@@ -295,6 +340,8 @@ impl App {
             permissions: PermissionInbox::default(),
             asks: HashMap::new(),
             plans: HashMap::new(),
+            diagnose: None,
+            soft_limited: HashSet::new(),
             scroll_offset: 0,
             help_scroll: 0,
             follow_tail: true,
@@ -307,17 +354,26 @@ impl App {
             render_cache_entries: 0,
             render_cache_epoch: 0,
             render_cache_timestamps: false,
+            render_cache_pins: 0,
             render_cache_starts: Vec::new(),
             line_cursor: None,
+            filter: super::transcript_filter::Filter::default(),
+            filter_menu: None,
+            cmdline: super::cmdline::CmdLine::default(),
+            find: super::cmdline::Find::default(),
+            render_cache_filter: String::new(),
+            server_url: String::new(),
             expand_all: false,
             pending_prepend: false,
             toasts: Toasts::default(),
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
+            pins: super::pins::PinState::default(),
+            mentions: super::mentions::MentionState::default(),
+            macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
             attachments: super::attach::Attachments::new(),
-            attach_prompt: None,
             pending_chord: None,
             file_view: None,
             clock_ms: 0,
@@ -326,6 +382,7 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             ui: UiState::default(),
+            terminal: None,
         }
     }
 
@@ -354,6 +411,29 @@ impl App {
     #[cfg(test)]
     pub fn conversation(&self, session_id: &str) -> Option<&ConversationStore> {
         self.conversations.get(session_id)
+    }
+
+    /// The modal strip or panel holding the keyboard, if any. A feature with
+    /// its own context adds an arm here.
+    #[must_use]
+    pub const fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
+        use crate::config::keymap::Context;
+        if self.cmdline.open.is_some() {
+            return Some(Context::CmdLine);
+        }
+        if self.filter_menu.is_some() {
+            return Some(Context::FilterMenu);
+        }
+        None
+    }
+
+    /// The line the cursor is on, or `None` outside line-select.
+    #[must_use]
+    pub fn focused_line(&self) -> Option<&ConversationLine> {
+        let cursor = self.line_cursor?;
+        let session_id = self.selected_session_id()?;
+        let entry = self.conversations.get(&session_id)?.entries().get(cursor)?;
+        Some(&entry.line)
     }
 
     pub fn conversation_mut(&mut self, session_id: &str) -> &mut ConversationStore {
