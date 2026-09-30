@@ -98,7 +98,7 @@ pub struct Hit {
 impl CompiledPolicy {
     /// `None` when the policy matches nothing, so no guard is installed.
     pub fn compile(p: &ToolPolicy) -> Option<Self> {
-        if is_inert(&p) {
+        if is_inert(p) {
             return None;
         }
         Some(Self {
