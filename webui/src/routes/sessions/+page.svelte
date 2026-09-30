@@ -19,14 +19,15 @@
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import { ConfirmModal } from '@dorsk/tsumikit';
+	import { Callout, ConfirmModal } from '@dorsk/tsumikit';
 	import SessionSections from './SessionSections.svelte';
 	import SessionTiles from './SessionTiles.svelte';
 	import SessionsBulkBar from './SessionsBulkBar.svelte';
 	import EditDraftModal from './EditDraftModal.svelte';
 	import { drafts, clearSpawnSlot, currentSpawnSlot, readSpawnSlot } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
-	import { holdFullBleed } from '$lib/fullBleed.svelte';
+	import { isViewMode, parseViewMode } from '$lib/sessionsView.svelte';
+	import { TILES_BOOT_KEY } from './tilesBoot';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionIdFromLocation, sessionHrefFor, toGroupDimension } from './sessions.logic';
@@ -70,35 +71,41 @@
 		sessionsLoading: () => sessions.isLoading,
 		allSessions: () => allSessions.data?.sessions ?? [],
 		labels: () => labelsQuery.data?.labels,
-		renderedOrder: renderedIds,
-		mobile: () => mobile
+		renderedOrder: renderedIds
 	});
 
-	// Tiles need a window to split, so they are not offered below the drawer's
-	// own breakpoint.
-	let mobile = $state(false);
+	// Escape hatch: /sessions?view=list|grid|tiles sets (and persists) the mode,
+	// so a stored choice that misbehaves can always be overridden by URL.
 	$effect(() => {
-		const mq = window.matchMedia('(max-width: 959px)');
-		const sync = () => (mobile = mq.matches);
-		sync();
-		mq.addEventListener('change', sync);
-		return () => mq.removeEventListener('change', sync);
-	});
-
-	// `/tiles` forwards here; consume the hint once so it does not re-apply on
-	// every later navigation.
-	$effect(() => {
-		if (page.url.searchParams.get('view') !== 'tiles') return;
-		untrack(() => (sp.viewMode = 'tiles'));
+		const want = page.url.searchParams.get('view');
+		if (!want || !(isViewMode(want) || want === 'card')) return;
+		untrack(() => (sp.viewMode = parseViewMode(want)));
 		const url = new URL(page.url);
 		url.searchParams.delete('view');
 		replaceState(url, page.state);
 	});
 
+	// A tiles render that takes the tab down never clears this breadcrumb, so the
+	// next load finds it and starts in the list instead of crashing again. Read at
+	// init: an effect would race the effect below that sets it.
+	const tilesCrashed = sessionStorage.getItem(TILES_BOOT_KEY) === '1';
+	if (tilesCrashed) {
+		sessionStorage.removeItem(TILES_BOOT_KEY);
+		if (sp.tiles) sp.viewMode = 'list';
+	}
+	onMount(() => {
+		if (tilesCrashed) toasts.error(m.tiles_failed());
+	});
 	$effect(() => {
 		if (!sp.tiles) return;
-		return holdFullBleed();
+		sessionStorage.setItem(TILES_BOOT_KEY, '1');
+		const done = requestAnimationFrame(() => sessionStorage.removeItem(TILES_BOOT_KEY));
+		return () => {
+			cancelAnimationFrame(done);
+			sessionStorage.removeItem(TILES_BOOT_KEY);
+		};
 	});
+
 	// The full (incl. archived) list, only fetched while a pinned parent may
 	// have archived subagents to splice back under it.
 	const allSessions = useSessions(
@@ -230,6 +237,7 @@
 	bind:labelFilter={sp.labelFilter}
 	bind:view={sp.viewMode}
 	tiles={!sp.mobile}
+	sticky={!sp.tiles}
 	colorBy={sp.colorBy}
 	groupBy={sp.groupBy}
 	onColorBy={sp.setColorBy}
@@ -248,7 +256,16 @@
 {/if}
 
 {#if sp.tiles}
-	<SessionTiles sessions={sp.tileSessions} onNavigate={(sid) => void sp.navigateToForked(sid)} />
+	<svelte:boundary onerror={(e) => sp.abandonTiles(e)}>
+		<SessionTiles
+			sessions={sp.tileSessions}
+			onNavigate={(sid) => void sp.navigateToForked(sid)}
+			onOpen={(s) => (sp.openSession = s)}
+		/>
+		{#snippet failed()}
+			<Callout tone="danger">{m.tiles_failed()}</Callout>
+		{/snippet}
+	</svelte:boundary>
 {:else}
 	<SessionSections {sp} {pending} {machineLiveness} />
 {/if}

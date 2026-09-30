@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { rowCounts, stableTileOrder, tileGrid, tileLayout } from './tiles';
+import {
+	MAX_PANES,
+	fittingPaneCount,
+	MIN_PANE_CHROME,
+	MIN_PANE_HEIGHT,
+	MIN_TRANSCRIPT_HEIGHT,
+	paneCapacity,
+	rowCounts,
+	stableTileOrder,
+	tileGrid,
+	tileLayout
+} from './tiles';
 
 const MONITOR = { width: 1920, height: 1080 };
 const ULTRAWIDE = { width: 3840, height: 1080 };
@@ -99,5 +110,128 @@ describe('stableTileOrder', () => {
 
 	it('seeds straight from the sort when nothing is placed', () => {
 		expect(stableTileOrder([], ['a', 'b'])).toEqual(['a', 'b']);
+	});
+});
+
+describe('paneCapacity', () => {
+	it('mounts nothing before the area has been measured', () => {
+		expect(paneCapacity({ width: 0, height: 0 })).toBe(0);
+		expect(paneCapacity({ width: 1920, height: 0 })).toBe(0);
+	});
+
+	// The four viewports the cap is specified against. Widths/heights are the
+	// tiles area measured in the browser, not the window: the header and the
+	// controls bar are already subtracted.
+	it('is worth four panes on a 1080p window', () => {
+		expect(paneCapacity({ width: 1912, height: 928 })).toBe(4);
+	});
+
+	it('is worth eight on a 4K screen at 150%', () => {
+		expect(paneCapacity({ width: 2552, height: 1288 })).toBe(8);
+	});
+
+	it('is worth ten on a 3440x1440 ultrawide', () => {
+		expect(paneCapacity({ width: 3432, height: 1288 })).toBe(10);
+	});
+
+	it('stops at the ceiling on a 4K screen at 100%', () => {
+		expect(paneCapacity({ width: 3832, height: 2008 })).toBe(MAX_PANES);
+	});
+
+	it('never exceeds the ceiling, however much screen there is', () => {
+		expect(paneCapacity({ width: 7680, height: 4320 })).toBe(MAX_PANES);
+		expect(paneCapacity({ width: 100_000, height: 100_000 })).toBe(MAX_PANES);
+	});
+
+	it('always allows one pane, however cramped', () => {
+		expect(paneCapacity({ width: 320, height: 200 })).toBe(1);
+		expect(paneCapacity({ width: 1, height: 1 })).toBe(1);
+		expect(paneCapacity({ width: 1912, height: 300 })).toBe(1);
+	});
+
+	it('grows monotonically with the area', () => {
+		let last = 0;
+		for (let w = 400; w <= 4000; w += 200) {
+			const cap = paneCapacity({ width: w, height: 1000 });
+			expect(cap).toBeGreaterThanOrEqual(last);
+			last = cap;
+		}
+	});
+});
+
+describe('the grid the cap is laid out in', () => {
+	const FHD = { width: 1912, height: 928 };
+	const UW = { width: 3432, height: 1288 };
+
+	it('lays a full 1080p cap out as 2x2', () => {
+		expect(tileGrid(paneCapacity(FHD), FHD)).toEqual({ cols: 2, rows: 2 });
+	});
+
+	it('lays a full ultrawide cap out as 5x2', () => {
+		expect(tileGrid(paneCapacity(UW), UW)).toEqual({ cols: 5, rows: 2 });
+	});
+
+	it('still picks by aspect ratio below the cap', () => {
+		expect(tileGrid(1, FHD)).toEqual({ cols: 1, rows: 1 });
+		expect(tileGrid(2, FHD)).toEqual({ cols: 2, rows: 1 });
+		expect(tileGrid(3, FHD)).toEqual({ cols: 3, rows: 1 });
+		expect(tileGrid(6, UW)).toEqual({ cols: 3, rows: 2 });
+	});
+
+	it('produces a grid that holds every pane the cap allows', () => {
+		for (const vp of [FHD, UW, { width: 2552, height: 1288 }, { width: 1280, height: 600 }]) {
+			const cap = paneCapacity(vp);
+			for (let n = 1; n <= cap; n++) {
+				const { cols, rows } = tileGrid(n, vp);
+				expect(cols * rows, `n=${n} in ${vp.width}x${vp.height}`).toBeGreaterThanOrEqual(n);
+			}
+		}
+	});
+});
+
+describe('the readable floor', () => {
+	const FHD = { width: 1912, height: 928 };
+	const UW = { width: 3432, height: 1288 };
+
+	it('is the measured chrome plus a usable transcript', () => {
+		expect(MIN_PANE_HEIGHT).toBe(MIN_PANE_CHROME + MIN_TRANSCRIPT_HEIGHT);
+	});
+
+	it('mounts nothing before the area has been measured', () => {
+		expect(fittingPaneCount(8, { width: 0, height: 0 })).toBe(0);
+		expect(fittingPaneCount(0, FHD)).toBe(0);
+	});
+
+	it('mounts the whole roster when it is under the cap', () => {
+		expect(fittingPaneCount(3, FHD)).toBe(3);
+		expect(fittingPaneCount(1, FHD)).toBe(1);
+	});
+
+	it('mounts no more than the area is worth', () => {
+		expect(fittingPaneCount(24, FHD)).toBe(4);
+		expect(fittingPaneCount(24, UW)).toBe(10);
+	});
+
+	it('drops panes until one fits rather than showing slivers', () => {
+		// Short area: the cap would allow two, but two rows leave 190px a pane.
+		const short = { width: 1912, height: 380 };
+		expect(paneCapacity(short)).toBe(2);
+		expect(fittingPaneCount(2, short)).toBe(1);
+	});
+
+	it('leaves every pane it does mount above the floor, or a single pane', () => {
+		for (const vp of [FHD, UW, { width: 2552, height: 1288 }, { width: 3832, height: 2008 }]) {
+			const k = fittingPaneCount(24, vp);
+			const { rows } = tileGrid(k, vp);
+			const where = `${vp.width}x${vp.height}`;
+			expect(k, where).toBeGreaterThanOrEqual(1);
+			if (k > 1) expect(vp.height / rows, where).toBeGreaterThanOrEqual(MIN_PANE_HEIGHT);
+		}
+	});
+
+	it('never mounts more panes than asked for', () => {
+		for (let n = 0; n <= 12; n++) {
+			expect(fittingPaneCount(n, UW)).toBeLessThanOrEqual(n);
+		}
 	});
 });

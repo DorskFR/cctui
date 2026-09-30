@@ -1,16 +1,19 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { EmptyState } from '@dorsk/tsumikit';
+	import { Button, EmptyState, Popover, Text } from '@dorsk/tsumikit';
 	import ConversationPane from '$lib/components/organisms/ConversationPane.svelte';
-	import { tileLayout } from '$lib/tiles';
+	import { fittingPaneCount, tileLayout } from '$lib/tiles';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		sessions,
-		onNavigate
+		onNavigate,
+		onOpen
 	}: {
 		sessions: SessionListItem[];
 		onNavigate?: (id: string) => void;
+		/** Open a session the grid had no room for, in the normal drawer. */
+		onOpen?: (s: SessionListItem) => void;
 	} = $props();
 
 	let maximized = $state<string | null>(null);
@@ -22,18 +25,51 @@
 			? sessions.filter((s) => s.id === maximized)
 			: sessions
 	);
-	const layout = $derived(tileLayout(shown.length, { width, height }));
+	// 0 until the area has been measured, so no pane mounts — and no history is
+	// fetched — for a tile of unknown size.
+	const capacity = $derived(fittingPaneCount(shown.length, { width, height }));
+	const panes = $derived(shown.slice(0, capacity));
+	const overflow = $derived(shown.slice(capacity));
+	const layout = $derived(tileLayout(panes.length, { width, height }));
 </script>
+
+{#if overflow.length}
+	<div class="more">
+		<Popover
+			label={m.tiles_more({ count: overflow.length })}
+			variant="default"
+			tone="accent"
+			size="sm"
+			pill
+		>
+			{#snippet trigger()}{m.tiles_more({ count: overflow.length })}{/snippet}
+			<div class="more-list">
+				<Text size="xs" tone="muted">{m.tiles_more_help()}</Text>
+				{#each overflow as s (s.id)}
+					<Button
+						size="sm"
+						variant="ghost"
+						block
+						style="justify-content:flex-start"
+						onclick={() => onOpen?.(s)}
+					>
+						{s.name || s.working_dir}
+					</Button>
+				{/each}
+			</div>
+		</Popover>
+	</div>
+{/if}
 
 <div
 	class="tiles"
 	data-journey="session-tiles"
 	bind:clientWidth={width}
 	bind:clientHeight={height}
-	style:grid-template-columns="repeat({layout.tracks}, 1fr)"
-	style:grid-template-rows="repeat({Math.max(layout.rows, 1)}, 1fr)"
+	style:grid-template-columns="repeat({layout.tracks}, minmax(0, 1fr))"
+	style:grid-template-rows="repeat({Math.max(layout.rows, 1)}, minmax(0, 1fr))"
 >
-	{#each shown as s, i (s.id)}
+	{#each panes as s, i (s.id)}
 		{@const place = layout.placements[i]}
 		<div
 			class="tile"
@@ -50,7 +86,7 @@
 			/>
 		</div>
 	{/each}
-	{#if shown.length === 0}
+	{#if sessions.length === 0}
 		<div class="empty">
 			<EmptyState icon="grid" title={m.tiles_empty_title()} description={m.tiles_empty_body()} />
 		</div>
@@ -58,13 +94,31 @@
 </div>
 
 <style>
+	.more {
+		flex: none;
+		display: flex;
+		justify-content: flex-end;
+		padding: 0 var(--sp-2) var(--sp-1);
+	}
+	.more-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+		max-height: 50vh;
+		overflow-y: auto;
+		min-width: 16rem;
+	}
 	/* The 1px gap IS the border: one hairline between neighbours instead of two
 	   abutting ones, drawn by the grid's own background showing through. */
+	/* minmax(0, …) on both axes, not `1fr`: a bare `1fr` floors at the pane's
+	   min-content height, so the rows refuse to shrink and the page grows a
+	   scrollbar instead of the transcripts scrolling inside their tiles. */
 	.tiles {
 		flex: 1;
 		min-height: 0;
 		display: grid;
 		gap: 1px;
+		overflow: hidden;
 		background: var(--border-strong);
 	}
 	.tile {
