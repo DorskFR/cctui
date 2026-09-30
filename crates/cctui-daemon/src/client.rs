@@ -206,6 +206,71 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    /// `GET /api/v1/daemon/sessions/{id}/peers` — the `CctuiPeers` roster.
+    pub async fn peers(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/peers",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.get(&url).bearer_auth(machine_key).send().await?;
+        Self::peer_json(resp, "CctuiPeers").await
+    }
+
+    /// `POST /api/v1/daemon/sessions/{id}/message-peer` — the `CctuiSend` relay.
+    pub async fn message_peer(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        req: &cctui_proto::api::PeerMessageRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/message-peer",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(req).send().await?;
+        Self::peer_json(resp, "CctuiSend").await
+    }
+
+    /// `GET /api/v1/daemon/sessions/{id}/peer-conversation` — `CctuiHistory`.
+    pub async fn peer_conversation(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        query: &[(&str, String)],
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/peer-conversation",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.get(&url).bearer_auth(machine_key).query(query).send().await?;
+        Self::peer_json(resp, "CctuiHistory").await
+    }
+
+    /// The server's `{"error": …}` body is the refusal reason the model must
+    /// see; anything else is passed through verbatim.
+    async fn peer_json(
+        resp: reqwest::Response,
+        tool: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp.json().await?);
+        }
+        let text = resp.text().await.unwrap_or_default();
+        let reason = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+            .unwrap_or(text);
+        anyhow::bail!("{tool} refused ({status}): {reason}");
+    }
+
     pub async fn message_child(
         &self,
         machine_key: &str,

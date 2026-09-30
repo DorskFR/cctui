@@ -30,6 +30,7 @@ pub mod me;
 pub mod message_pins;
 pub mod metrics;
 pub mod passkeys;
+pub mod peer;
 pub mod permissions;
 pub mod plugins;
 pub mod plugins_admin;

@@ -143,6 +143,14 @@ pub struct SpawnChildRequest {
     pub name: Option<String>,
 }
 
+/// Body for `POST /api/v1/daemon/sessions/{id}/message-peer`: `session_id` is
+/// the TARGET, the caller being the path segment.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PeerMessageRequest {
+    pub session_id: String,
+    pub message: String,
+}
+
 /// Body for `POST /api/v1/daemon/sessions/{id}/message-child`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageChildRequest {

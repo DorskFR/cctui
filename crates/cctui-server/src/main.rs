@@ -29,6 +29,7 @@ mod ntfy;
 mod openapi;
 mod outbound;
 mod pace;
+mod peer_policy;
 mod plugin_archive;
 mod plugin_catalog;
 mod plugin_proxy;
@@ -51,6 +52,7 @@ mod soft_limit;
 mod spawn_labels;
 mod state;
 mod store;
+mod transcript_md;
 mod update_check;
 mod uploads;
 mod usage_history;
@@ -366,6 +368,12 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
         .route("/api/v1/daemon/sessions/{id}/spawn-child", post(routes::spawn_child::spawn_child))
+        .route("/api/v1/daemon/sessions/{id}/peers", get(routes::peer::list_peers))
+        .route("/api/v1/daemon/sessions/{id}/message-peer", post(routes::peer::message_peer))
+        .route(
+            "/api/v1/daemon/sessions/{id}/peer-conversation",
+            get(routes::peer::peer_conversation),
+        )
         .route(
             "/api/v1/daemon/sessions/{id}/message-child",
             post(routes::spawn_child::message_child),

@@ -1745,7 +1745,7 @@ type ConversationRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<uu
 
 /// `(id, client payload, created_at, turn_id)`: a stored row the client can
 /// render, in the query's own order (newest-first for `Desc`).
-type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
+pub(crate) type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
 
 /// Reads rows until `limit` of them survive [`crate::normalize::for_client`],
 /// or the table is exhausted in the paging direction. Some stored rows carry
@@ -1758,7 +1758,7 @@ type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>)
 /// the causal `seq` and a strict total order, so a late-flushed
 /// `AskUserQuestion` card+preamble keep their insert position even when their
 /// `created_at` ties or lands after the user's answer.
-async fn fetch_renderable_rows(
+pub(crate) async fn renderable_rows(
     pool: &sqlx::PgPool,
     session_id: &str,
     adapter_id: &str,
@@ -1903,7 +1903,7 @@ pub async fn get_conversation(
         crate::store::sessions::adapter_id(&state.pool, &session_id).await?;
 
     let adapter_id = adapter.as_deref().unwrap_or("claude-code");
-    let mut rows = fetch_renderable_rows(&state.pool, &session_id, adapter_id, &params).await?;
+    let mut rows = renderable_rows(&state.pool, &session_id, adapter_id, &params).await?;
     if params.order == ConversationOrder::Desc {
         rows.reverse();
     }
@@ -3369,7 +3369,7 @@ mod tests {
             let pool = pool.clone();
             let sid = sid.clone();
             async move {
-                super::fetch_renderable_rows(&pool, &sid, "claude-code", &params).await.unwrap()
+                super::renderable_rows(&pool, &sid, "claude-code", &params).await.unwrap()
             }
         };
 
@@ -3385,7 +3385,7 @@ mod tests {
         let head = page(2, None, super::ConversationOrder::Asc).await;
         assert_eq!(contents(&head), ["one", "two"]);
 
-        let all = super::fetch_renderable_rows(
+        let all = super::renderable_rows(
             &pool,
             &sid,
             "claude-code",
