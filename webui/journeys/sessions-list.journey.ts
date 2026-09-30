@@ -1,6 +1,10 @@
 import { defineJourney } from '@dorsk/journey';
 
 const SESSIONS = '/sessions';
+// The kit's FilterSearchBar forwards no attributes to its input, so the field is
+// addressed by accessible name within the cctui wrapper. Targeting the wrapper
+// works for a typing human but not for the book, which fills the element itself.
+const BOX = { label: 'Search sessions', within: 'search' } as const;
 
 export default defineJourney({
 	id: 'sessions-list',
@@ -72,7 +76,7 @@ export default defineJourney({
 		},
 		{
 			id: 'search',
-			target: 'search',
+			target: BOX,
 			do: { kind: 'fill', value: { $param: 'var.query' } },
 			say: {
 				title: { en: 'And you can always just type', fr: 'Et vous pouvez toujours taper' },
@@ -82,7 +86,7 @@ export default defineJourney({
 		},
 		{
 			id: 'clear',
-			target: 'search',
+			target: BOX,
 			do: { kind: 'fill', value: { $param: 'var.blank' } },
 			say: {
 				title: { en: 'Empty it to get everyone back', fr: 'Videz-la pour tout retrouver' },

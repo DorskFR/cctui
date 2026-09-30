@@ -199,6 +199,25 @@ describe('public journey set', () => {
 		}
 	});
 
+	it('fills a real field, not the wrapper its anchor sits on', () => {
+		// A typing human's input event bubbles, so a wrapper works in guide mode and
+		// fails in the book, which fills the resolved element itself. These are the
+		// anchors that sit on a field rather than around one.
+		const FIELDS = ['label', 'prompt', 'message'];
+		for (const id of PUBLIC_JOURNEYS) {
+			for (const step of pub(id).steps) {
+				if (step.do.kind !== 'fill') continue;
+				const where = `${id}/${step.id}`;
+				if (typeof step.target === 'object') {
+					expect(step.target, where).toMatchObject({ within: expect.any(String) });
+					continue;
+				}
+				const leaf = String(step.target).split('/').at(-1)!.split('[')[0];
+				expect(FIELDS, `${where} fills "${leaf}", which is not a known field anchor`).toContain(leaf);
+			}
+		}
+	});
+
 	it('never parks a guide on state the user has not created yet', () => {
 		// A probe expectation in guide mode polls until `step.timeout`, and a guide
 		// that waits for a machine to enrol is a guide that never ends.
