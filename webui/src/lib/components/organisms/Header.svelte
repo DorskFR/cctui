@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { ws } from '$lib/ws.svelte';
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
+	import { setUploadCaps } from '$lib/uploadCaps.svelte';
 	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -16,6 +17,7 @@
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
+	import ProviderStatusDot from '$lib/components/molecules/ProviderStatusDot.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import {
 		DEFAULT_SETTINGS_PAGE,
@@ -31,6 +33,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	let updateOpen = $state(false);
 	const instanceName = $derived(version.data?.instance_name ?? null);
 	$effect(() => notify.setInstanceName(instanceName));
+	$effect(() => setUploadCaps(version.data?.upload_caps));
 
 	// Global "needs input" watcher. Header is always mounted inside
 	// the query provider, so it's the natural home for the cross-route watcher.
@@ -173,7 +176,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 			{/if}
 		</div>
 		<div class="tail">
-			<span class="batt"><ResourceBattery /><UsageBattery /></span>
+			<span class="batt"><ProviderStatusDot /><ResourceBattery /><UsageBattery /></span>
 			<span class="divider" aria-hidden="true"></span>
 			<span class="prefs">
 				<ThemePicker

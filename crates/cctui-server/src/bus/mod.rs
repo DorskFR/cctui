@@ -17,8 +17,8 @@ use std::sync::Arc;
 use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
 use cctui_proto::git::GitInfo;
 use cctui_proto::ws::{
-    AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ReadFileErrorKind,
-    ReadFileOk, ServerEvent,
+    AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ReadFileOk,
+    ReadFileRefusal, ServerEvent,
 };
 use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -39,7 +39,7 @@ type GitInfoOutcome = Result<GitInfo, String>;
 
 /// Outcome of a file read: the payload on success, or the refusal kind + a
 /// message on failure.
-type ReadFileOutcome = Result<ReadFileOk, (ReadFileErrorKind, String)>;
+type ReadFileOutcome = Result<ReadFileOk, ReadFileRefusal>;
 
 /// How long [`Bus::request_daemon`] waits for the daemon's `StageFilesResult`
 /// before giving up. Staging is local filesystem work after a small base64
@@ -97,8 +97,8 @@ pub enum BusError {
     ListDirs(String),
     #[error("daemon could not read git info: {0}")]
     GitInfo(String),
-    #[error("daemon could not read the file: {1}")]
-    ReadFile(ReadFileErrorKind, String),
+    #[error("daemon could not read the file: {}", .0.message)]
+    ReadFile(ReadFileRefusal),
     #[error("db error: {0}")]
     Db(#[from] sqlx::Error),
     #[error("reconcile build error: {0}")]
@@ -784,7 +784,7 @@ impl Bus {
         }
         match tokio::time::timeout(READ_FILE_TIMEOUT, reply_rx).await {
             Ok(Ok(Ok(file))) => Ok(DaemonResponse::File(file)),
-            Ok(Ok(Err((kind, msg)))) => Err(BusError::ReadFile(kind, msg)),
+            Ok(Ok(Err(refusal))) => Err(BusError::ReadFile(refusal)),
             Ok(Err(_)) => {
                 self.inner.pending_readfile.remove(&request_id);
                 Err(BusError::Closed)
@@ -1662,6 +1662,7 @@ mod tests {
             dispatch: DiagnoseFact::missing("dispatch", "n/a"),
             gateway: DiagnoseFact::missing("daemon-config", "n/a"),
             codex: None,
+            opencode: None,
         }
     }
 

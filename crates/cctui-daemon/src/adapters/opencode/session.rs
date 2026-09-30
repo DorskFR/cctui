@@ -23,6 +23,7 @@ use super::client::{
 use super::config::{ModelRef, SessionHome, session_config};
 use super::events::{OcEvent, SseDecoder, StatusKind, status_kind};
 use super::normalize::{self, Kind};
+use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TRANSPORT_SSE, TrafficRings};
 
 /// A just-started server accepts the connection before its handlers are wired
 /// and never answers that first request; probes are bounded so the startup poll
@@ -44,10 +45,30 @@ pub struct LiveSession {
 
 #[derive(Debug)]
 pub enum SessionCommand {
-    Prompt { session_id: String, text: String, command_id: Option<Uuid> },
-    Kill { session_id: String },
-    Fork { parent: String, prompt: Option<String>, name: Option<String>, command_id: Option<Uuid> },
-    Permission { session_id: String, request_id: String, allow: bool },
+    Prompt {
+        session_id: String,
+        text: String,
+        command_id: Option<Uuid>,
+    },
+    Kill {
+        session_id: String,
+    },
+    Fork {
+        parent: String,
+        prompt: Option<String>,
+        name: Option<String>,
+        command_id: Option<Uuid>,
+    },
+    Permission {
+        session_id: String,
+        request_id: String,
+        allow: bool,
+    },
+    /// Gather a point-in-time snapshot of the live driver's internal state for
+    /// the adapter-neutral diagnose report and return it on `reply`.
+    Diagnose {
+        reply: mpsc::Sender<OpenCodeLiveSnapshot>,
+    },
 }
 
 impl SessionCommand {
@@ -55,9 +76,64 @@ impl SessionCommand {
     pub const fn command_id(&self) -> Option<Uuid> {
         match self {
             Self::Prompt { command_id, .. } | Self::Fork { command_id, .. } => *command_id,
-            Self::Kill { .. } | Self::Permission { .. } => None,
+            Self::Kill { .. } | Self::Permission { .. } | Self::Diagnose { .. } => None,
         }
     }
+}
+
+/// Point-in-time snapshot of a live opencode session's driver state, gathered
+/// on demand for the diagnose report and the live view.
+#[derive(Debug, Clone, Default)]
+pub struct OpenCodeLiveSnapshot {
+    pub server_url: Option<String>,
+    pub server_pid: Option<u32>,
+    pub server_version: Option<String>,
+    pub owned_sessions: Vec<String>,
+    pub in_flight: bool,
+    pub sse_connected: bool,
+    pub last_sse_event_ms: Option<i64>,
+    pub pending_permissions: Vec<String>,
+    pub protocol_errors: Vec<cctui_proto::diagnose::TrafficError>,
+    pub stderr_tail: Vec<cctui_proto::diagnose::TrafficStderrLine>,
+    pub rpc_tail: Vec<cctui_proto::diagnose::TrafficFrame>,
+}
+
+/// Liveness of the `GET /event` stream, shared with the pump task: the whole
+/// adapter goes quiet when that stream is down, and "no events" has to be
+/// distinguishable from "no traffic at all".
+#[derive(Debug, Default)]
+pub struct SseStatus {
+    connected: std::sync::atomic::AtomicBool,
+    last_event_ms: std::sync::atomic::AtomicI64,
+}
+
+impl SseStatus {
+    fn set_connected(&self, connected: bool) {
+        self.connected.store(connected, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn note_event(&self) {
+        self.last_event_ms.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn connected(&self) -> bool {
+        self.connected.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn last_event_ms(&self) -> Option<i64> {
+        let ms = self.last_event_ms.load(std::sync::atomic::Ordering::Relaxed);
+        (ms > 0).then_some(ms)
+    }
+}
+
+fn now_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 /// Adapter-level knobs from `adapters_enabled.config`.
@@ -145,6 +221,9 @@ pub struct SpawnParams {
     pub agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
     /// Mirrored `skills/` roots for this session's `skills.paths`.
     pub skill_roots: Vec<std::path::PathBuf>,
+    /// Limit hold + MCP-readiness wait, awaited between session creation and
+    /// the first turn. `None` outside a real daemon run.
+    pub preflight: Option<crate::preflight::Preflight>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +232,9 @@ enum Stall {
     Crashed,
 }
 
+// Four independent flags with nothing to group them: two are construction-time
+// facts (`oneshot`, `turn_end_supported`), two are turn state.
+#[allow(clippy::struct_excessive_bools)]
 pub struct OpenCodeSession {
     params: SpawnParams,
     events: mpsc::Sender<AdapterEvent>,
@@ -169,6 +251,14 @@ pub struct OpenCodeSession {
     oneshot: bool,
     saw_assistant: bool,
     in_flight: bool,
+    rings: Arc<TrafficRings>,
+    sse: Arc<SseStatus>,
+    server_url: Option<String>,
+    server_pid: Option<u32>,
+    server_version: Option<String>,
+    pending_permissions: HashSet<String>,
+    /// Snapshotted at construction rather than read per turn.
+    turn_end_supported: bool,
 }
 
 impl OpenCodeSession {
@@ -195,6 +285,13 @@ impl OpenCodeSession {
             oneshot,
             saw_assistant: false,
             in_flight: false,
+            rings: Arc::new(TrafficRings::new(TRANSPORT_HTTP)),
+            sse: Arc::new(SseStatus::default()),
+            server_url: None,
+            server_pid: None,
+            server_version: None,
+            pending_permissions: HashSet::new(),
+            turn_end_supported: crate::adapters::turn_end::supported(),
         }
     }
 
@@ -286,12 +383,13 @@ impl OpenCodeSession {
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("spawn `{} serve`", self.params.cfg.bin))?;
-        drain_child_logs(&mut child);
+        self.server_pid = child.id();
+        drain_child_logs(&mut child, &self.rings);
 
-        let client = Arc::new(OpenCodeClient::new(
-            format!("http://{}:{port}", self.params.cfg.hostname),
-            password,
-        ));
+        let base = format!("http://{}:{port}", self.params.cfg.hostname);
+        self.server_url = Some(base.clone());
+        let client =
+            Arc::new(OpenCodeClient::new(base, password).observed(Arc::clone(&self.rings)));
         self.await_health(&client).await?;
 
         let session = client
@@ -325,9 +423,18 @@ impl OpenCodeSession {
         }
 
         let (evt_tx, mut evt_rx) = mpsc::channel(256);
-        let mut stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone()));
+        let mut stream = tokio::spawn(pump_sse(
+            client.clone(),
+            evt_tx,
+            self.shutdown.clone(),
+            Arc::clone(&self.sse),
+        ));
 
-        if let Some(text) = self.first_turn()
+        if let Some(preflight) = &self.params.preflight {
+            preflight.run_bound(&session.id).await;
+        }
+
+        if let Some(text) = self.first_turn(&session.id)
             && !self.prompt_or_crash(&client, &session.id, &text, model.as_ref(), None).await
         {
             stream.abort();
@@ -375,7 +482,7 @@ impl OpenCodeSession {
                     stream.abort();
                     let (tx, rx) = mpsc::channel(256);
                     evt_rx = rx;
-                    stream = tokio::spawn(pump_sse(client.clone(), tx, self.shutdown.clone()));
+                    stream = tokio::spawn(pump_sse(client.clone(), tx, self.shutdown.clone(), Arc::clone(&self.sse)));
                 }
             }
         }
@@ -435,22 +542,33 @@ impl OpenCodeSession {
         self.params.agent.clone().or_else(|| self.params.cfg.default_agent.clone())
     }
 
-    fn first_turn(&self) -> Option<String> {
+    /// The spawn prompt, behind the harness-neutral preamble. opencode has no
+    /// instruction channel of its own, so the preamble rides the first turn —
+    /// and is delivered even when the spawn carried no prompt at all.
+    fn first_turn(&self, local_id: &str) -> Option<String> {
         let prompt = self.params.prompt.clone().unwrap_or_default();
-        if self.params.attachments.is_empty() {
-            return (!prompt.trim().is_empty()).then_some(prompt);
-        }
-        let files = self.params.attachments.join("\n");
-        Some(format!("{prompt}\n\nAttached files:\n{files}").trim().to_owned())
+        let body = if self.params.attachments.is_empty() {
+            prompt.trim().to_owned()
+        } else {
+            let files = self.params.attachments.join("\n");
+            format!("{prompt}\n\nAttached files:\n{files}").trim().to_owned()
+        };
+        let preamble = crate::preamble::block(&self.params.cwd, Some(local_id));
+        crate::preamble::merge(preamble, (!body.is_empty()).then_some(body))
     }
 
-    async fn await_health(&self, client: &OpenCodeClient) -> Result<()> {
+    async fn await_health(&mut self, client: &OpenCodeClient) -> Result<()> {
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_millis(self.params.cfg.startup_timeout_ms);
         let mut last: Option<String> = None;
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, client.health()).await {
-                Ok(Ok(h)) if h.healthy => return Ok(()),
+                Ok(Ok(h)) if h.healthy => {
+                    if !h.version.is_empty() {
+                        self.server_version = Some(h.version);
+                    }
+                    return Ok(());
+                }
                 Ok(Ok(h)) => last = Some(format!("unhealthy (version {})", h.version)),
                 Ok(Err(err)) => last = Some(err.to_string()),
                 Err(_) => last = Some("health probe timed out".to_owned()),
@@ -629,13 +747,38 @@ impl OpenCodeSession {
                 {
                     tracing::warn!(%err, %session_id, "opencode permission response failed");
                 }
+                self.pending_permissions.remove(&request_id);
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionResolved { local_id: session_id, request_id })
                     .await;
             }
+            SessionCommand::Diagnose { reply } => {
+                let _ = reply.send(self.snapshot()).await;
+            }
         }
         true
+    }
+
+    fn snapshot(&self) -> OpenCodeLiveSnapshot {
+        let mut owned_sessions: Vec<String> = self.owned.iter().cloned().collect();
+        owned_sessions.sort();
+        let mut pending_permissions: Vec<String> =
+            self.pending_permissions.iter().cloned().collect();
+        pending_permissions.sort();
+        OpenCodeLiveSnapshot {
+            server_url: self.server_url.clone(),
+            server_pid: self.server_pid,
+            server_version: self.server_version.clone(),
+            owned_sessions,
+            in_flight: self.in_flight,
+            sse_connected: self.sse.connected(),
+            last_sse_event_ms: self.sse.last_event_ms(),
+            pending_permissions,
+            protocol_errors: self.rings.protocol_errors(),
+            stderr_tail: self.rings.stderr_tail(),
+            rpc_tail: self.rings.rpc_tail(),
+        }
     }
 
     async fn on_fork(
@@ -681,6 +824,22 @@ impl OpenCodeSession {
     }
 
     /// Returns `false` when the driver should stop.
+    /// `session.idle` is where opencode knows the turn is over. Returns whether
+    /// the session lives on: a oneshot child that has produced its output is
+    /// done, since `opencode serve` never exits on its own.
+    async fn on_idle(&mut self, session_id: &str) -> bool {
+        self.in_flight = false;
+        // Sent before the oneshot bail-out so a child's last turn still
+        // reports one.
+        crate::adapters::turn_end::emit_gated(&self.events, session_id, self.turn_end_supported)
+            .await;
+        if self.oneshot && self.saw_assistant {
+            return false;
+        }
+        let _ = self.events.send(status(session_id, Some("idle".to_owned()), None, None)).await;
+        true
+    }
+
     async fn on_event(&mut self, client: &OpenCodeClient, evt: OcEvent) -> bool {
         let Some(session_id) = evt.session_id().map(str::to_owned) else { return true };
         if !self.owned.contains(&session_id) {
@@ -710,16 +869,7 @@ impl OpenCodeSession {
             OcEvent::PartUpdated { properties } => {
                 self.emit_part(&session_id, &properties.part).await;
             }
-            OcEvent::SessionIdle { .. } => {
-                self.in_flight = false;
-                if self.oneshot && self.saw_assistant {
-                    return false;
-                }
-                let _ = self
-                    .events
-                    .send(status(&session_id, Some("idle".to_owned()), None, None))
-                    .await;
-            }
+            OcEvent::SessionIdle { .. } => return self.on_idle(&session_id).await,
             OcEvent::SessionStatus { properties } => {
                 if let Some(kind) = status_kind(&properties.status) {
                     let (tempo, detail) = match kind {
@@ -756,6 +906,7 @@ impl OpenCodeSession {
                     .await;
             }
             OcEvent::PermissionAsked { properties } => {
+                self.pending_permissions.insert(properties.id.clone());
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionRequest {
@@ -768,6 +919,7 @@ impl OpenCodeSession {
                 let _ = client;
             }
             OcEvent::PermissionReplied { properties } => {
+                self.pending_permissions.remove(&properties.id);
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionResolved {
@@ -869,6 +1021,7 @@ async fn pump_sse(
     client: Arc<OpenCodeClient>,
     out: mpsc::Sender<OcEvent>,
     shutdown: CancellationToken,
+    sse: Arc<SseStatus>,
 ) {
     use futures_util::StreamExt;
 
@@ -878,18 +1031,32 @@ async fn pump_sse(
         }
         match client.events().await {
             Ok(resp) => {
+                sse.set_connected(true);
                 let mut decoder = SseDecoder::new();
                 let mut stream = resp.bytes_stream();
                 loop {
                     tokio::select! {
-                        () = shutdown.cancelled() => return,
+                        () = shutdown.cancelled() => {
+                            sse.set_connected(false);
+                            return;
+                        }
                         chunk = stream.next() => {
                             let Some(chunk) = chunk else { break };
                             let Ok(bytes) = chunk else { break };
                             for data in decoder.push(&String::from_utf8_lossy(&bytes)) {
+                                sse.note_event();
+                                if let Some(rings) = client.rings() {
+                                    rings.note_frame(
+                                        TRANSPORT_SSE,
+                                        "in",
+                                        &sse_label(&data),
+                                        &data,
+                                    );
+                                }
                                 match serde_json::from_str::<OcEvent>(&data) {
                                     Ok(evt) => {
                                         if out.send(evt).await.is_err() {
+                                            sse.set_connected(false);
                                             return;
                                         }
                                     }
@@ -901,11 +1068,30 @@ async fn pump_sse(
                         }
                     }
                 }
+                sse.set_connected(false);
+                if let Some(rings) = client.rings() {
+                    rings.note_protocol_error_on(TRANSPORT_SSE, "event stream closed");
+                }
             }
-            Err(err) => tracing::warn!(%err, "opencode event stream unavailable"),
+            Err(err) => {
+                sse.set_connected(false);
+                tracing::warn!(%err, "opencode event stream unavailable");
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+}
+
+/// The event `type`, so a ring line reads `session.idle` rather than the first
+/// 400 characters of its payload.
+fn sse_label(data: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("event")
+        .to_owned()
 }
 
 /// How long `opencode serve` gets to exit on SIGTERM before the group is
@@ -957,19 +1143,23 @@ fn signal_group_pid(pgid: i32, signal: rustix::process::Signal) {
     }
 }
 
-fn drain_child_logs(child: &mut tokio::process::Child) {
+fn drain_child_logs(child: &mut tokio::process::Child, rings: &Arc<TrafficRings>) {
     if let Some(stdout) = child.stdout.take() {
+        let rings = Arc::clone(rings);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                rings.note_stderr(&line);
                 tracing::debug!(target: "opencode_serve", "{line}");
             }
         });
     }
     if let Some(stderr) = child.stderr.take() {
+        let rings = Arc::clone(rings);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                rings.note_stderr(&line);
                 tracing::debug!(target: "opencode_serve_stderr", "{line}");
             }
         });
@@ -1025,6 +1215,78 @@ mod tests {
         assert!(port > 0);
     }
 
+    #[test]
+    fn an_sse_frame_is_labelled_by_its_event_type() {
+        assert_eq!(sse_label(r#"{"type":"session.idle","properties":{}}"#), "session.idle");
+        assert_eq!(sse_label("not json"), "event");
+        assert_eq!(sse_label(r#"{"properties":{}}"#), "event");
+    }
+
+    /// The two paths must be distinguishable in one tail: HTTP calls flowing
+    /// while the event stream is dead is exactly the failure this tagging
+    /// exists to expose.
+    #[test]
+    fn http_calls_and_sse_events_land_on_one_ring_under_their_own_transports() {
+        let rings = TrafficRings::new(TRANSPORT_HTTP);
+        rings.note_frame(TRANSPORT_HTTP, "out", "POST /session/ses_1/prompt_async", "{}");
+        rings.note_frame(TRANSPORT_SSE, "in", "session.idle", r#"{"type":"session.idle"}"#);
+        rings.note_protocol_error_on(TRANSPORT_SSE, "event stream closed");
+
+        let tail = rings.rpc_tail();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].transport, TRANSPORT_HTTP);
+        assert_eq!(tail[0].label, "POST /session/ses_1/prompt_async");
+        assert_eq!(tail[1].transport, TRANSPORT_SSE);
+        assert_eq!(rings.protocol_errors()[0].transport, TRANSPORT_SSE);
+    }
+
+    /// A tool's output is echoed into the SSE ring verbatim, so a
+    /// user-configured pattern that the builtins do not know must still be
+    /// masked before it reaches the diagnose report.
+    #[test]
+    fn a_user_configured_pattern_is_redacted_out_of_an_sse_tool_output() {
+        crate::adapters::traffic_rings::set_ring_scrub(&[(
+            "acme_key".to_owned(),
+            "ACME-[0-9]{6}".to_owned(),
+        )]);
+        let rings = TrafficRings::new(TRANSPORT_HTTP);
+        let event = serde_json::json!({
+            "type": "message.part.updated",
+            "properties": {
+                "sessionID": "ses_1",
+                "part": {
+                    "type": "tool",
+                    "state": { "status": "completed", "output": "printenv: ACME-424242" }
+                }
+            }
+        })
+        .to_string();
+        rings.note_frame(TRANSPORT_SSE, "in", &sse_label(&event), &event);
+
+        let frame = &rings.rpc_tail()[0];
+        assert!(!frame.json.contains("ACME-424242"), "{}", frame.json);
+        assert!(frame.json.contains("[REDACTED:acme_key"), "{}", frame.json);
+        assert_eq!(frame.label, "message.part.updated");
+
+        crate::adapters::traffic_rings::set_ring_scrub(&[]);
+    }
+
+    #[test]
+    fn sse_status_reports_connection_and_last_event() {
+        let sse = SseStatus::default();
+        assert!(!sse.connected());
+        assert!(sse.last_event_ms().is_none());
+
+        sse.set_connected(true);
+        sse.note_event();
+        assert!(sse.connected());
+        assert!(sse.last_event_ms().is_some_and(|ms| ms > 0));
+
+        sse.set_connected(false);
+        assert!(!sse.connected());
+        assert!(sse.last_event_ms().is_some(), "a drop must not erase the last event");
+    }
+
     /// End-to-end against a real `opencode` binary: point `CCTUI_OPENCODE_BIN`
     /// at one and run with `--ignored`. Ignored by default — CI images have no
     /// opencode.
@@ -1056,6 +1318,7 @@ mod tests {
             command_id: Some(command_id),
             parent_local_id: None,
             agent_mcp: None,
+            preflight: None,
             skill_roots: Vec::new(),
         };
         let live = LiveRegistry::default();
@@ -1132,6 +1395,7 @@ mod tests {
             command_id: None,
             parent_local_id,
             agent_mcp: None,
+            preflight: None,
             skill_roots: Vec::new(),
         };
         let mut session =
@@ -1140,6 +1404,96 @@ mod tests {
         let client =
             Arc::new(OpenCodeClient::new("http://127.0.0.1:1".to_owned(), "pw".to_owned()));
         (session, rx, client)
+    }
+
+    /// opencode delivers the harness-neutral preamble on its first turn: it
+    /// has no instruction channel of its own.
+    #[test]
+    fn a_spawn_beside_a_live_session_is_told_they_share_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let neighbour = format!("nb-{}", Uuid::new_v4());
+        crate::neighbours::global().observe(
+            "codex",
+            &AdapterEvent::SessionStarted {
+                local_id: neighbour.clone(),
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some(dir.path().to_string_lossy().into_owned()),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "started_at_ms": crate::neighbours::now_ms() }),
+                },
+            },
+        );
+
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+
+        let turn = session.first_turn("ses_me").expect("a first turn");
+        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.contains("shared cwd: 1 other live session"), "{turn}");
+        assert!(turn.contains("review the diff"), "the spawn prompt survives: {turn}");
+
+        crate::neighbours::global().forget(&[neighbour]);
+    }
+
+    /// The notice is worth a turn on its own: a spawn with no prompt still
+    /// has to learn it is not alone in the tree.
+    #[test]
+    fn a_promptless_spawn_still_receives_the_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let neighbour = format!("nb-{}", Uuid::new_v4());
+        crate::neighbours::global().observe(
+            "codex",
+            &AdapterEvent::SessionStarted {
+                local_id: neighbour.clone(),
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some(dir.path().to_string_lossy().into_owned()),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "started_at_ms": crate::neighbours::now_ms() }),
+                },
+            },
+        );
+
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        session.params.prompt = None;
+        let turn = session.first_turn("ses_me").expect("the notice is the whole turn");
+        assert!(turn.contains("do not switch branches"), "{turn}");
+
+        crate::neighbours::global().forget(&[neighbour]);
+    }
+
+    /// A session alone in its tree is sent its prompt and nothing else.
+    #[test]
+    fn a_spawn_alone_in_its_tree_gets_only_its_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        assert_eq!(session.first_turn("ses_me").as_deref(), Some("review the diff"));
+        session.params.prompt = None;
+        assert_eq!(session.first_turn("ses_me"), None);
+    }
+
+    /// The session must never report itself as its own neighbour: `first_turn`
+    /// runs after the session is registered on the roster.
+    #[test]
+    fn a_spawn_is_not_its_own_neighbour() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = format!("ses-{}", Uuid::new_v4());
+        crate::neighbours::global().observe(
+            "opencode",
+            &AdapterEvent::SessionStarted {
+                local_id: me.clone(),
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some(dir.path().to_string_lossy().into_owned()),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "started_at_ms": crate::neighbours::now_ms() }),
+                },
+            },
+        );
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        assert_eq!(session.first_turn(&me).as_deref(), Some("review the diff"));
+        crate::neighbours::global().forget(&[me]);
     }
 
     fn idle() -> OcEvent {
@@ -1177,6 +1531,34 @@ mod tests {
         match rx.recv().await.unwrap() {
             AdapterEvent::Status { tempo, .. } => assert_eq!(tempo.as_deref(), Some("idle")),
             other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    /// `session.idle` is where opencode already knows the turn is over, so it
+    /// is where the client-visible signal comes from — ahead of the Status the
+    /// same arm sends, which is persisted but never broadcast.
+    #[tokio::test]
+    async fn idle_reports_a_turn_end_to_a_capable_server() {
+        let (mut session, mut rx, client) = test_session(None);
+        session.turn_end_supported = true;
+        assert!(session.on_event(&client, idle()).await);
+        match rx.recv().await.unwrap() {
+            AdapterEvent::TurnEnd { local_id, ts } => {
+                assert_eq!(local_id, "ses_1");
+                assert!(ts.is_some_and(|ts| ts > 0));
+            }
+            other => panic!("expected a TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_reports_nothing_new_to_a_server_without_the_capability() {
+        let (mut session, mut rx, client) = test_session(None);
+        session.turn_end_supported = false;
+        assert!(session.on_event(&client, idle()).await);
+        match rx.recv().await.unwrap() {
+            AdapterEvent::Status { tempo, .. } => assert_eq!(tempo.as_deref(), Some("idle")),
+            other => panic!("an older server must only see the Status, got {other:?}"),
         }
     }
 
@@ -1459,6 +1841,7 @@ mod tests {
             command_id: None,
             parent_local_id: Some("parent-1".to_owned()),
             agent_mcp: None,
+            preflight: None,
             skill_roots: Vec::new(),
         };
         params.cfg.bin = "/definitely/not/a/binary".to_owned();

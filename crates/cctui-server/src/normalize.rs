@@ -685,9 +685,193 @@ fn passthrough_if_canonical(payload: Value) -> Option<Value> {
     if payload.get("type").and_then(Value::as_str).is_some() { Some(payload) } else { None }
 }
 
+/// The prefix history stores a human turn under, mirroring `USER_PREFIX` in
+/// `webui/src/lib/ws/frames.ts`.
+const USER_PREFIX: &str = "▷ User:";
+
+/// Keep in sync with `META_TAGS` (`webui/.../conversation/format.ts`) and
+/// `META_MARKERS` (the daemon's transcript parser): the same structural
+/// markers that tell a harness-injected turn from human prose.
+const META_MARKERS: [&str; 12] = [
+    "<task-notification",
+    "<system-reminder",
+    "<command-name",
+    "<command-message",
+    "<local-command",
+    "<bash-input",
+    "<bash-stdout",
+    "<bash-stderr",
+    "[SYSTEM NOTIFICATION",
+    "Base directory for this skill:",
+    "Stop hook feedback:",
+    "# Autonomous loop",
+];
+
+const META_HEAD_LINES: usize = 4;
+
+fn user_text_is_meta(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(META_HEAD_LINES)
+        .any(|line| META_MARKERS.iter().any(|m| line.starts_with(m)))
+}
+
+/// A turn whose body opens on a peer envelope, matching `PEER_TAG_RE`.
+fn is_peer_text(body: &str) -> bool {
+    body.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .is_some_and(|l| l.starts_with("<cross-session-message") || l.starts_with("<agent-message"))
+}
+
+/// The `MsgCategory` the webui would file a canonical client payload under,
+/// plus the tool id when the payload carries one. Reads [`for_client`]'s own
+/// output so the two stay one mapping.
+///
+/// `poll` is not reproduced: the client derives it from consecutive-duplicate
+/// state across the whole transcript, which a per-row classifier cannot see.
+/// Those rows read as `user` here.
+#[must_use]
+pub fn client_category(v: &Value) -> (&'static str, Option<String>) {
+    let s = |k: &str| v.get(k).and_then(Value::as_str);
+    let tool = || s("tool").map(str::to_owned);
+    match s("type").unwrap_or_default() {
+        "text" => match s("kind") {
+            Some("thinking") => ("thinking", None),
+            Some("redacted_thinking") => ("redacted", None),
+            Some("attachment") => ("attachment", None),
+            Some("system_marker") => ("marker", None),
+            Some("queue_op") => ("user", None),
+            Some("turn_annotation") => ("", None),
+            _ => {
+                let content = s("content").unwrap_or_default();
+                let Some(body) = content.strip_prefix(USER_PREFIX) else {
+                    return ("assistant", None);
+                };
+                let body = body.trim_start();
+                if is_peer_text(body) {
+                    ("peer", None)
+                } else if user_text_is_meta(body) {
+                    ("system", None)
+                } else {
+                    ("user", None)
+                }
+            }
+        },
+        "reply" => ("user", None),
+        "tool_call" => {
+            let name = s("tool").unwrap_or_default();
+            let cat = if s("kind") == Some("server_tool_use") {
+                "server_tool"
+            } else if name.starts_with("mcp__") {
+                "mcp"
+            } else {
+                "tool"
+            };
+            (cat, tool())
+        }
+        "tool_result" => {
+            let cat = if v.get("error").and_then(Value::as_bool).unwrap_or(false) {
+                "error"
+            } else if s("kind") == Some("server_tool_result") {
+                "server_result"
+            } else {
+                "result"
+            };
+            (cat, tool())
+        }
+        "turn_summary" => ("summary", None),
+        "compact_summary" => ("compact", None),
+        "context_reset" => ("reset", None),
+        _ => ("", None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_category_matches_the_webui_msg_categories() {
+        let cat = |v: Value| {
+            let (role, tool) = client_category(&v);
+            (role, tool)
+        };
+        let text = |content: &str| json!({ "type": "text", "content": content });
+
+        assert_eq!(cat(text("hello")), ("assistant", None));
+        assert_eq!(cat(text("▷ User: hello")), ("user", None));
+        assert_eq!(
+            cat(text("▷ User: <system-reminder>do this</system-reminder>")),
+            ("system", None)
+        );
+        assert_eq!(
+            cat(text("▷ User: <cross-session-message from=\"peer\">hi</cross-session-message>")),
+            ("peer", None)
+        );
+        assert_eq!(
+            cat(json!({ "type": "text", "content": "x", "kind": "thinking" })),
+            ("thinking", None)
+        );
+        assert_eq!(
+            cat(json!({ "type": "text", "content": "x", "kind": "redacted_thinking" })),
+            ("redacted", None)
+        );
+        assert_eq!(
+            cat(json!({ "type": "text", "content": "· x", "kind": "system_marker" })),
+            ("marker", None)
+        );
+        assert_eq!(
+            cat(json!({ "type": "text", "content": "x", "kind": "queue_op" })),
+            ("user", None)
+        );
+        assert_eq!(
+            cat(json!({ "type": "text", "content": "x", "kind": "turn_annotation" })).0,
+            "",
+            "annotations are never lines of their own"
+        );
+
+        assert_eq!(
+            cat(json!({ "type": "tool_call", "tool": "Bash" })),
+            ("tool", Some("Bash".to_owned()))
+        );
+        assert_eq!(
+            cat(json!({ "type": "tool_call", "tool": "mcp__gh__issue" })).0,
+            "mcp",
+            "the `mcp__` prefix is what makes an mcp call"
+        );
+        assert_eq!(
+            cat(json!({ "type": "tool_call", "tool": "web_search", "kind": "server_tool_use" })).0,
+            "server_tool"
+        );
+        assert_eq!(cat(json!({ "type": "tool_result", "tool": "Bash" })).0, "result");
+        assert_eq!(
+            cat(json!({ "type": "tool_result", "tool": "Bash", "error": true })).0,
+            "error",
+            "errors win so one filter isolates every failed result"
+        );
+        assert_eq!(
+            cat(json!({ "type": "tool_result", "kind": "server_tool_result" })).0,
+            "server_result"
+        );
+        assert_eq!(cat(json!({ "type": "turn_summary" })).0, "summary");
+        assert_eq!(cat(json!({ "type": "compact_summary" })).0, "compact");
+        assert_eq!(cat(json!({ "type": "context_reset" })).0, "reset");
+        assert_eq!(cat(json!({ "type": "heartbeat" })).0, "");
+    }
+
+    #[test]
+    fn client_category_reads_for_client_output() {
+        let p = json!({ "role": "assistant_thinking", "text": "pondering" });
+        let n = for_client("claude-code", "message", p).unwrap();
+        assert_eq!(client_category(&n).0, "thinking");
+
+        let n =
+            for_client("claude-code", "session_ended", json!({ "reason": { "kind": "killed" } }))
+                .unwrap();
+        assert_eq!(client_category(&n).0, "marker");
+    }
 
     #[test]
     fn session_ended_becomes_final_system_line() {

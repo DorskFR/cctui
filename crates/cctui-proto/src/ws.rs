@@ -37,6 +37,16 @@ pub enum ReadFileErrorKind {
     Io,
 }
 
+/// A refused read, with the folders the daemon checked the path against so a
+/// client can list them without parsing `message`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadFileRefusal {
+    pub kind: ReadFileErrorKind,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_folders: Vec<String>,
+}
+
 /// Larger files go through the blob store.
 pub const READ_FILE_INLINE_BYTES: u64 = 1024 * 1024;
 
@@ -114,6 +124,9 @@ pub enum DaemonFrameUp {
         error_kind: Option<ReadFileErrorKind>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Folders a `Denied` was checked against. Empty from older daemons.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allowed_folders: Vec<String>,
     },
     /// One chunk of an up-frame split by [`crate::chunk`]. `transfer_id` is the
     /// payload hash; `data` is base64. `codec: Some("zstd")` means the joined
@@ -578,6 +591,20 @@ pub enum TuiCommand {
 
 // --- Server → TUI ---
 
+/// Transition a scheduled draft launch just made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledLaunchState {
+    Scheduled,
+    Cancelled,
+    Launched,
+    /// Failed with a retry still to come.
+    Failed,
+    /// Failed for good; the draft keeps its row.
+    Dead,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -711,6 +738,19 @@ pub enum ServerEvent {
     PtyChunk {
         session_id: String,
         data: String,
+    },
+    /// A scheduled draft launch changed state. `launch_at` is the schedule the
+    /// draft now carries, absent once it is gone.
+    ScheduledLaunch {
+        draft_id: String,
+        /// Whose drafts list this belongs to; the draft row may already be gone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_id: Option<uuid::Uuid>,
+        state: ScheduledLaunchState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_at: Option<chrono::DateTime<chrono::Utc>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
     },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
@@ -954,6 +994,39 @@ mod tests {
         assert!(json.contains(r#""type":"event""#));
         assert!(json.contains(r#""adapter_id":"claude-code""#));
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+    }
+
+    /// Why `AdapterEvent::TurnEnd` is gated on
+    /// [`crate::capability::TURN_END`]: an older server cannot skip a kind it
+    /// does not know — the tag failure rejects the whole frame, and inside a
+    /// batch it would take the real events beside it down too.
+    #[test]
+    fn an_unknown_event_kind_rejects_the_whole_frame() {
+        let turn_end = r#"{"type":"event","adapter_id":"claude-code",
+            "event":{"kind":"turn_end","local_id":"abc","ts":7}}"#;
+        match serde_json::from_str::<DaemonFrameUp>(turn_end).expect("this build knows turn_end") {
+            DaemonFrameUp::Event { event: AdapterEvent::TurnEnd { local_id, ts }, .. } => {
+                assert_eq!(local_id, "abc");
+                assert_eq!(ts, Some(7));
+            }
+            other => panic!("expected a turn_end event, got {other:?}"),
+        }
+
+        let from_the_future = r#"{"type":"event","adapter_id":"claude-code",
+            "event":{"kind":"not_invented_yet","local_id":"abc"}}"#;
+        assert!(
+            serde_json::from_str::<DaemonFrameUp>(from_the_future).is_err(),
+            "an unknown kind must be assumed lost, not tolerated"
+        );
+
+        let batch = r#"{"type":"batch","frames":[
+            {"type":"session_registered","adapter_id":"claude-code","local_id":"abc"},
+            {"type":"event","adapter_id":"claude-code",
+             "event":{"kind":"not_invented_yet","local_id":"abc"}}]}"#;
+        assert!(
+            serde_json::from_str::<DaemonFrameUp>(batch).is_err(),
+            "one unknown kind costs the whole batch"
+        );
     }
 
     #[test]
@@ -1308,6 +1381,7 @@ mod tests {
             }),
             error_kind: None,
             error: None,
+            allowed_folders: Vec::new(),
         };
         let json = serde_json::to_string(&up).unwrap();
         assert!(json.contains(r#""type":"read_file_result""#));
@@ -1320,10 +1394,34 @@ mod tests {
             file: None,
             error_kind: Some(ReadFileErrorKind::TooLarge),
             error: Some("too big".into()),
+            allowed_folders: Vec::new(),
         };
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains(r#""error_kind":"too_large""#));
+        assert!(!json.contains("allowed_folders"), "an empty list is skipped: {json}");
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+
+        let denied = DaemonFrameUp::ReadFileResult {
+            request_id: uuid::Uuid::nil(),
+            ok: false,
+            file: None,
+            error_kind: Some(ReadFileErrorKind::Denied),
+            error: Some("/x is outside the allowed roots: /tmp".into()),
+            allowed_folders: vec!["/tmp".into(), "/srv/app".into()],
+        };
+        let json = serde_json::to_string(&denied).unwrap();
+        assert!(json.contains(r#""allowed_folders":["/tmp","/srv/app"]"#), "{json}");
+        let back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, DaemonFrameUp::ReadFileResult { allowed_folders, .. }
+                if allowed_folders == ["/tmp", "/srv/app"]));
+
+        let legacy_result = r#"{"type":"read_file_result","request_id":"00000000-0000-0000-0000-000000000000","ok":false,"error_kind":"denied","error":"nope"}"#;
+        let back: DaemonFrameUp = serde_json::from_str(legacy_result).unwrap();
+        assert!(
+            matches!(back, DaemonFrameUp::ReadFileResult { allowed_folders, .. }
+                if allowed_folders.is_empty()),
+            "an older daemon simply lists nothing"
+        );
     }
 
     #[test]

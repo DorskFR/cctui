@@ -24,6 +24,8 @@ struct PersistedRecord {
     gateway_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     spawn_relay: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    started_at_ms: Option<u64>,
 }
 
 const GATEWAY_BASE_URL: &str = "OPENAI_BASE_URL";
@@ -46,6 +48,7 @@ pub fn to_json(records: &HashMap<String, SessionRecord>) -> String {
                     cfg: r.cfg.clone(),
                     gateway_base_url: r.env.get(GATEWAY_BASE_URL).cloned(),
                     spawn_relay: r.spawn_relay,
+                    started_at_ms: r.started_at_ms,
                 },
             )
         })
@@ -74,6 +77,7 @@ pub fn from_json(text: &str) -> HashMap<String, SessionRecord> {
                                 })
                                 .unwrap_or_default(),
                             spawn_relay: r.spawn_relay,
+                            started_at_ms: r.started_at_ms,
                         },
                     )
                 })
@@ -148,6 +152,7 @@ mod tests {
             name: name.map(str::to_owned),
             env: std::iter::once(("OPENAI_API_KEY".to_owned(), "secret".to_owned())).collect(),
             spawn_relay: false,
+            started_at_ms: None,
         }
     }
 
@@ -203,6 +208,33 @@ mod tests {
             !back.get("plain").expect("record survives").spawn_relay,
             "a session that never had the relay must not gain it"
         );
+    }
+
+    /// Without this, a thread restored after a restart dates itself from the
+    /// restore and the shared-checkout notice reports a wrong age for it.
+    #[test]
+    fn round_trip_preserves_the_start_time() {
+        let mut rec = record("/repo", None);
+        rec.started_at_ms = Some(1_784_143_530_428);
+        let mut map = HashMap::new();
+        map.insert("tid".to_owned(), rec);
+        map.insert("undated".to_owned(), record("/other", None));
+        let back = from_json(&to_json(&map));
+        assert_eq!(
+            back.get("tid").expect("record survives").started_at_ms,
+            Some(1_784_143_530_428)
+        );
+        assert_eq!(
+            back.get("undated").expect("record survives").started_at_ms,
+            None,
+            "no start beats an invented one"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_written_before_the_start_time_field_restores_without_it() {
+        let back = from_json(r#"{"tid":{"cwd":"/repo"}}"#);
+        assert_eq!(back.get("tid").expect("record survives").started_at_ms, None);
     }
 
     #[test]

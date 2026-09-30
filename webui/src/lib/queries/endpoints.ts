@@ -14,6 +14,7 @@ import type { UsageAnalytics } from "@bindings/UsageAnalytics";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
+import type { ConversationSearchResponse } from "@bindings/ConversationSearchResponse";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
@@ -51,6 +52,9 @@ import type { SelfUpdateTargetInfo } from "@bindings/SelfUpdateTargetInfo";
 import type { SelfUpdateTargetRequest } from "@bindings/SelfUpdateTargetRequest";
 import type { SpawnDefaults } from "@bindings/SpawnDefaults";
 import type { SpawnDefaultsInfo } from "@bindings/SpawnDefaultsInfo";
+import type { UploadCaps } from "@bindings/UploadCaps";
+import type { UploadCapsInfo } from "@bindings/UploadCapsInfo";
+import type { UploadCapsRequest } from "@bindings/UploadCapsRequest";
 import type { UpstreamHostsInfo } from "@bindings/UpstreamHostsInfo";
 import type { UpstreamHostsRequest } from "@bindings/UpstreamHostsRequest";
 import type { HarnessAutoupdateInfo } from "@bindings/HarnessAutoupdateInfo";
@@ -130,6 +134,13 @@ export const endpoints = {
   /** `null` fields fall back to env, then the built-in default (admin). */
   setSpawnDefaults: (settings: SpawnDefaults) =>
     api.put<SpawnDefaultsInfo>("/admin/instance/spawn-defaults", settings),
+  /** Effective per-upload caps plus the boot-time ceiling (admin). */
+  uploadCaps: () => api.get<UploadCapsInfo>("/admin/instance/upload-caps"),
+  /** `null` restores the built-in caps (admin). */
+  setUploadCaps: (caps: UploadCaps | null) =>
+    api.put<UploadCapsInfo>("/admin/instance/upload-caps", {
+      caps,
+    } satisfies UploadCapsRequest),
   upstreamHosts: () => api.get<UpstreamHostsInfo>("/admin/instance/upstream-hosts"),
   /** `null` resets the list to the env seed (admin). */
   setUpstreamHosts: (hosts: string[] | null) =>
@@ -284,6 +295,14 @@ export const endpoints = {
       before: opts?.before,
       after: opts?.after,
       order: opts?.order,
+    }),
+  /** Find-in-conversation hit list for ONE session, oldest → newest. The
+   *  server is the source of truth for the total: the DOM only holds the
+   *  currently paged window. */
+  conversationSearch: (id: string, q: string, limit?: number) =>
+    api.get<ConversationSearchResponse>(`/sessions/${id}/search`, {
+      q,
+      limit,
     }),
   messagePins: (id: string) =>
     api.get<MessagePin[]>(`/sessions/${id}/pins`),

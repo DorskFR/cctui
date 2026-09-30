@@ -21,6 +21,7 @@ mod model_list;
 mod persist;
 mod pty_view;
 mod rate_limits;
+pub mod sandbox_probe;
 mod thread_list;
 pub mod thread_read;
 
@@ -93,6 +94,29 @@ fn uses_uds_mode(config: &serde_json::Value) -> bool {
     config.get("mode").and_then(|v| v.as_str()) == Some("uds")
 }
 
+/// Why an `auto` spawn must not start, when the sandbox probe found bubblewrap
+/// unusable. `None` lets the spawn proceed.
+///
+/// Only `auto` is gated. `ask` maps to `untrusted`, where every command is
+/// human-approved and codex reruns a bwrap failure unsandboxed after approval,
+/// so the session works; `yolo` asks for no sandbox in the first place. `auto`
+/// is the one posture that silently relies on the sandbox for every command.
+fn sandbox_refusal(
+    mode: Option<cctui_proto::adapter::PermissionMode>,
+    sandbox: Option<&cctui_proto::harness::CodexSandbox>,
+    fallback: app_server::SandboxFallback,
+) -> Option<String> {
+    if mode != Some(cctui_proto::adapter::PermissionMode::Auto) {
+        return None;
+    }
+    if fallback == app_server::SandboxFallback::FullAccess {
+        return None;
+    }
+    let sandbox = sandbox?;
+    let detail = sandbox.detail()?;
+    Some(format!("{}\n{detail}", cctui_proto::harness::CODEX_SANDBOX_FIX))
+}
+
 pub struct CodexAdapter;
 
 #[async_trait::async_trait]
@@ -136,6 +160,7 @@ impl Adapter for CodexAdapter {
 /// rollout files an app-server session already owns (no double-ingest).
 async fn run_default(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     let app_cfg = AppServerConfig::from_value(&ctx.config);
+    sandbox_probe::refresh(&app_cfg.bin).await;
     let registry: SessionRegistry = SessionRegistry::default();
     let live: LiveSessionRegistry = LiveSessionRegistry::default();
     *LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live.clone());
@@ -430,6 +455,19 @@ impl CommandPump {
         cfg
     }
 
+    /// The launch preflight for a codex thread: the limit hold, plus the
+    /// readiness wait when this session declares a `CctuiAgent` relay. Bound
+    /// to its card only once codex has minted the thread id.
+    fn preflight(
+        &self,
+        model: Option<String>,
+        agent_mcp: Option<&crate::adapters::agent_mcp::AgentMcp>,
+    ) -> crate::preflight::Preflight {
+        crate::preflight::Preflight::new(self.events.clone(), model)
+            .with_limits(self.server.as_ref(), self.machine_key.as_deref())
+            .with_relay(agent_mcp.map(|relay| relay.session_key().to_owned()))
+    }
+
     // codex mints its own thread id, so the server-pre-minted `session_id` is
     // not the thread's id: it keys the launch and is echoed as `spawn_key` on
     // `SessionStarted`, which is how the server moves the gateway token onto
@@ -445,6 +483,15 @@ impl CommandPump {
             self.reject(command_id, "working_dir required".to_owned()).await;
             return;
         };
+        if let Some(refusal) = sandbox_refusal(
+            spec.permission_mode,
+            sandbox_probe::last().as_ref(),
+            self.app_cfg.sandbox_fallback,
+        ) {
+            tracing::error!(%refusal, "codex spawn: refusing an auto spawn with no usable sandbox");
+            self.reject(command_id, refusal).await;
+            return;
+        }
         // pull the launch-time gateway env from the server's durable binding,
         // keyed by the id the server bound the gateway token to — the
         // pre-minted session id when present, else `command_id` (codex mints
@@ -494,6 +541,11 @@ impl CommandPump {
                     return;
                 }
             };
+        let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
+            &launch_key,
+            launch.spawn_capability.as_ref(),
+        );
+        let preflight = self.preflight(cfg.model.clone(), agent_mcp.as_ref());
         let session = CodexSession::new_fresh(
             cfg,
             working_dir,
@@ -509,10 +561,8 @@ impl CommandPump {
             self.registry.clone(),
             self.shutdown.clone(),
         )
-        .with_agent_mcp(crate::adapters::agent_mcp::AgentMcp::for_capability(
-            &launch_key,
-            launch.spawn_capability.as_ref(),
-        ))
+        .with_agent_mcp(agent_mcp)
+        .with_preflight(Some(preflight))
         .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
@@ -553,6 +603,7 @@ impl CommandPump {
             }
         };
         let cfg = self.launch_cfg(spec, served_settings.as_ref());
+        let preflight = self.preflight(cfg.model.clone(), None);
         let skills =
             crate::plugins::resolve_session_skills(self.server.as_ref(), &launch_key, &plugins)
                 .await;
@@ -581,6 +632,7 @@ impl CommandPump {
             self.registry.clone(),
             self.shutdown.clone(),
         )
+        .with_preflight(Some(preflight))
         .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
@@ -793,6 +845,7 @@ async fn build_diagnose(
         dispatch: na(),
         gateway,
         codex: Some(codex),
+        opencode: None,
     }
 }
 
@@ -1108,6 +1161,86 @@ mod tests {
     use cctui_proto::adapter::EndReason;
     use std::time::Duration;
 
+    mod sandbox_gate {
+        use cctui_proto::adapter::PermissionMode;
+        use cctui_proto::harness::CodexSandbox;
+
+        use super::super::app_server::SandboxFallback;
+        use super::super::sandbox_refusal;
+
+        fn denied() -> CodexSandbox {
+            CodexSandbox::UsernsDenied {
+                detail: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted".to_owned(),
+            }
+        }
+
+        #[test]
+        fn an_auto_spawn_is_refused_with_the_fix_and_the_detail() {
+            let refusal = sandbox_refusal(
+                Some(PermissionMode::Auto),
+                Some(&denied()),
+                SandboxFallback::Error,
+            )
+            .expect("auto must be refused");
+            assert!(refusal.contains("AppArmor"), "{refusal}");
+            assert!(refusal.contains("RTM_NEWADDR"), "{refusal}");
+        }
+
+        /// `ask` is human-approved per command and codex reruns a bwrap failure
+        /// unsandboxed after approval; `yolo` asked for no sandbox at all.
+        #[test]
+        fn ask_and_yolo_still_spawn() {
+            for mode in [PermissionMode::Ask, PermissionMode::Yolo, PermissionMode::Whip] {
+                assert!(
+                    sandbox_refusal(Some(mode), Some(&denied()), SandboxFallback::Error).is_none(),
+                    "{mode:?} must not be gated"
+                );
+            }
+            assert!(sandbox_refusal(None, Some(&denied()), SandboxFallback::Error).is_none());
+        }
+
+        #[test]
+        fn a_healthy_or_unprobed_sandbox_never_refuses() {
+            assert!(
+                sandbox_refusal(
+                    Some(PermissionMode::Auto),
+                    Some(&CodexSandbox::Ok),
+                    SandboxFallback::Error
+                )
+                .is_none()
+            );
+            assert!(
+                sandbox_refusal(Some(PermissionMode::Auto), None, SandboxFallback::Error).is_none()
+            );
+        }
+
+        /// An unrecognized probe failure still gates: cctui cannot tell that
+        /// commands will work, and starting a session where every one fails is
+        /// the outcome this exists to prevent.
+        #[test]
+        fn an_unknown_probe_failure_also_refuses() {
+            let unknown = CodexSandbox::Unknown { detail: "bwrap: something else".to_owned() };
+            assert!(
+                sandbox_refusal(Some(PermissionMode::Auto), Some(&unknown), SandboxFallback::Error)
+                    .is_some()
+            );
+        }
+
+        /// Dropping to no sandbox is a security downgrade, so it happens only
+        /// when the operator opted in.
+        #[test]
+        fn the_full_access_fallback_lets_an_auto_spawn_through() {
+            assert!(
+                sandbox_refusal(
+                    Some(PermissionMode::Auto),
+                    Some(&denied()),
+                    SandboxFallback::FullAccess
+                )
+                .is_none()
+            );
+        }
+    }
+
     fn unrecoverable_cfg() -> AppServerConfig {
         AppServerConfig {
             bin: "/nonexistent/cctui-test-codex".to_owned(),
@@ -1164,6 +1297,7 @@ mod tests {
                 name: None,
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
         let (tx, mut rx) = mpsc::channel(8);

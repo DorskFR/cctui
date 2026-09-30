@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cctui_proto::diagnose::{CodexProtocolError, CodexRpcFrame, CodexStderrLine};
+use cctui_proto::diagnose::{TrafficError, TrafficFrame, TrafficStderrLine};
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
@@ -67,9 +67,9 @@ pub struct CodexLiveSnapshot {
     pub pid: Option<u32>,
     pub active_turn_id: Option<String>,
     pub pending_rpc_methods: Vec<String>,
-    pub protocol_errors: Vec<CodexProtocolError>,
-    pub stderr_tail: Vec<CodexStderrLine>,
-    pub rpc_tail: Vec<CodexRpcFrame>,
+    pub protocol_errors: Vec<TrafficError>,
+    pub stderr_tail: Vec<TrafficStderrLine>,
+    pub rpc_tail: Vec<TrafficFrame>,
     pub rollout_path: Option<String>,
     pub rollout_size_bytes: Option<u64>,
 }
@@ -99,6 +99,10 @@ pub struct SessionRecord {
     /// because the relay map is process-local and a resume carries no
     /// capability to re-derive the decision from.
     pub spawn_relay: bool,
+    /// Wall-clock start of the thread, epoch ms. Persisted so a thread
+    /// restored after a daemon restart keeps its real age instead of dating
+    /// itself from the restore.
+    pub started_at_ms: Option<u64>,
 }
 
 /// `local_id` → cctui-owned Codex thread metadata.
@@ -167,6 +171,7 @@ mod tests {
                 name: Some("n".to_owned()),
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
 
@@ -196,6 +201,7 @@ mod tests {
                 name: Some("stale".to_owned()),
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
 

@@ -597,6 +597,7 @@ pub fn owned_records(
                     // restart-then-resume window. See.
                     env: std::collections::BTreeMap::new(),
                     spawn_relay: false,
+                    started_at_ms: None,
                 },
             )
         })
@@ -652,6 +653,7 @@ pub fn record_for(
         name: entry.name.clone(),
         env: std::collections::BTreeMap::new(),
         spawn_relay: false,
+        started_at_ms: None,
     })
 }
 
@@ -1258,6 +1260,7 @@ mod tests {
                 name: Some("keep-me".into()),
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
         let entries = vec![
@@ -1314,6 +1317,7 @@ mod tests {
                 name: None,
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
         let inv = ThreadListInventory::new(

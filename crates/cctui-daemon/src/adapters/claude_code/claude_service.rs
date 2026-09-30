@@ -30,15 +30,13 @@ const PLIST_LABEL: &str = "dev.claude.daemon";
 const PLIST_TEMPLATE: &str =
     include_str!("../../../../../packaging/launchd/dev.claude.daemon.plist");
 
-/// Ensure the managed claude-daemon service is installed, loaded and started.
-///
-/// Idempotent and cheap on the hot path: if the service is already active and
-/// the installed unit matches the bundled template it short-circuits, so
-/// calling this from every kickstart poll does not churn the running
-/// supervisor. A stale unit is rewritten and daemon-reloaded in place (Linux)
-/// — no restart, so live session jobs survive the refresh. Best-effort — the
-/// caller logs failures and retries; a still-missing socket surfaces as the
-/// usual poll/dispatch error.
+/// Ensure a claude daemon **supervisor is running**. Callers only reach this
+/// once `locate_live()` came back empty, so unit state answers nothing: with
+/// `ExitType=cgroup` the unit stays `active` for as long as any adopted worker
+/// lives, which is exactly the case where no supervisor is left to serve the
+/// socket. [`ensure_supervisor`] holds the decision. A stale unit is rewritten
+/// and daemon-reloaded in place, never restarted, so live session jobs survive.
+/// Best-effort — the caller falls back to a direct spawn.
 pub(super) fn ensure(claude_bin: &str) -> Result<()> {
     if !manager_usable() {
         anyhow::bail!("{BLOCKED}");
@@ -77,6 +75,57 @@ pub(super) fn restart(claude_bin: &str) -> Result<()> {
 }
 
 const BLOCKED: &str = "the OS user service manager is not usable in this build";
+
+/// The service-manager operations [`ensure_supervisor`] needs. Injected so the
+/// decision is exercised without a real `systemctl` anywhere near it.
+///
+/// Only systemd hits the `ExitType=cgroup` trap; launchd tracks the real
+/// process, so the macOS path does not implement this.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) trait ServiceManager {
+    /// Bring the installed unit up to the bundled template. No start, no restart.
+    fn sync_unit(&self) -> Result<()>;
+    fn is_active(&self) -> bool;
+    /// The unit's live main process. `None` once systemd lost it — which
+    /// `ExitType=cgroup` makes routine after the claude CLI's upgrade
+    /// self-restart, and is indistinguishable from "the supervisor died".
+    fn main_pid(&self) -> Option<u32>;
+    /// `enable --now` an inactive unit.
+    fn start_unit(&self) -> Result<()>;
+    /// Launch a supervisor *into the active unit's cgroup*, without restarting
+    /// it: a restart would `KillMode=control-group` the adopted workers.
+    fn adopt_supervisor(&self) -> Result<()>;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) enum Ensured {
+    UnitStarted,
+    /// A supervisor process is up; it simply has not bound the socket yet.
+    SupervisorStarting,
+    Adopted,
+}
+
+/// Decide how to get a supervisor back, knowing the caller saw no socket.
+///
+/// An active unit with no main process is the `ExitType=cgroup` trap: systemd
+/// will never fire `Restart=` (the cgroup is not empty, the unit never fails),
+/// `start` is a no-op on an active unit, and `restart` kills every live
+/// session. Adoption into the existing cgroup is the only move that both
+/// launches a supervisor now and leaves the workers alone.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ensure_supervisor(mgr: &impl ServiceManager) -> Result<Ensured> {
+    mgr.sync_unit()?;
+    if !mgr.is_active() {
+        mgr.start_unit()?;
+        return Ok(Ensured::UnitStarted);
+    }
+    if mgr.main_pid().is_some() {
+        return Ok(Ensured::SupervisorStarting);
+    }
+    mgr.adopt_supervisor()?;
+    Ok(Ensured::Adopted)
+}
 
 /// A test build must never write the developer's real systemd unit or launchd
 /// plist, nor run `systemctl --user` / `launchctl`: every entry point here
@@ -205,27 +254,103 @@ mod linux {
         Ok(())
     }
 
-    pub(super) fn ensure(claude_bin: &str) -> Result<()> {
-        let dir = unit_dir()?;
-        let path = dir.join(UNIT_NAME);
-        let rendered = render_unit(claude_bin);
-        let stale =
-            std::fs::read_to_string(&path).is_ok_and(|cur| cur != rendered) || !path.is_file();
-        if !stale && is_active() {
-            return Ok(());
-        }
-        if stale {
+    /// The real `systemctl --user` behind [`super::ServiceManager`]. Only ever
+    /// constructed from [`ensure`], which the `manager_usable` gate keeps out
+    /// of test builds.
+    struct Systemctl<'a> {
+        claude_bin: &'a str,
+    }
+
+    impl super::ServiceManager for Systemctl<'_> {
+        fn sync_unit(&self) -> Result<()> {
+            let dir = unit_dir()?;
+            let path = dir.join(UNIT_NAME);
+            let rendered = render_unit(self.claude_bin);
+            if std::fs::read_to_string(&path).is_ok_and(|cur| cur == rendered) {
+                return Ok(());
+            }
             std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-            write_and_reload(&path, &rendered)?;
+            write_and_reload(&path, &rendered)
         }
-        if is_active() {
-            return Ok(());
+
+        fn is_active(&self) -> bool {
+            is_active()
         }
-        // `enable --now` is idempotent: it enables the unit and starts it if
-        // not already running. Its own user unit -> its own cgroup, never
-        // cctui-daemon.service's KillMode=control-group cgroup.
-        systemctl(&["enable", "--now", UNIT_NAME])?;
-        tracing::info!(unit = UNIT_NAME, "installed and started managed claude daemon");
+
+        fn main_pid(&self) -> Option<u32> {
+            let pid: u32 = show("MainPID")?.parse().ok()?;
+            (pid != 0 && std::path::Path::new(&format!("/proc/{pid}")).exists()).then_some(pid)
+        }
+
+        fn start_unit(&self) -> Result<()> {
+            // Its own user unit -> its own cgroup, never cctui-daemon.service's
+            // KillMode=control-group cgroup.
+            systemctl(&["enable", "--now", UNIT_NAME])?;
+            tracing::info!(unit = UNIT_NAME, "installed and started managed claude daemon");
+            Ok(())
+        }
+
+        fn adopt_supervisor(&self) -> Result<()> {
+            let cgroup = show("ControlGroup")
+                .filter(|c| c.starts_with('/'))
+                .with_context(|| format!("{UNIT_NAME} is active but reports no control group"))?;
+            let procs = std::path::Path::new("/sys/fs/cgroup")
+                .join(cgroup.trim_start_matches('/'))
+                .join("cgroup.procs");
+            let mut child = spawn_supervisor(self.claude_bin)?;
+            let pid = child.id();
+            // A supervisor in the wrong cgroup still serves the socket, so a
+            // failed move is a warning, not a failure.
+            match std::fs::write(&procs, pid.to_string()) {
+                Ok(()) => tracing::info!(pid, unit = UNIT_NAME, "adopted a new claude supervisor"),
+                Err(err) => tracing::warn!(
+                    %err, pid, procs = %procs.display(),
+                    "claude supervisor started but could not be moved into the unit cgroup"
+                ),
+            }
+            // We remain its parent whatever cgroup it sits in, so it still
+            // has to be reaped.
+            std::thread::spawn(move || {
+                let status = child.wait();
+                tracing::info!(pid, ?status, "adopted claude supervisor exited");
+            });
+            Ok(())
+        }
+    }
+
+    /// `systemctl --user show -p <prop> --value`, trimmed; `None` when empty.
+    fn show(prop: &str) -> Option<String> {
+        let out = Command::new("systemctl")
+            .args(["--user", "show", "-p", prop, "--value", UNIT_NAME])
+            .output()
+            .ok()?;
+        let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        (out.status.success() && !v.is_empty()).then_some(v)
+    }
+
+    /// Detached `claude daemon run`, reaped by whoever ends up its parent.
+    fn spawn_supervisor(claude_bin: &str) -> Result<std::process::Child> {
+        use crate::childenv::ScrubChildEnv as _;
+        use std::process::Stdio;
+
+        let mut cmd = Command::new(claude_bin);
+        cmd.args(["daemon", "run"])
+            .env("PATH", crate::childenv::child_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.scrub_child_env();
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            cmd.process_group(0);
+        }
+        cmd.spawn().with_context(|| format!("spawning `{claude_bin} daemon run`"))
+    }
+
+    pub(super) fn ensure(claude_bin: &str) -> Result<()> {
+        let outcome = super::ensure_supervisor(&Systemctl { claude_bin })?;
+        tracing::debug!(?outcome, unit = UNIT_NAME, "claude supervisor ensured");
         Ok(())
     }
 
@@ -253,7 +378,13 @@ mod linux {
     }
 
     pub(super) fn restart(claude_bin: &str) -> Result<()> {
-        ensure(claude_bin)?;
+        use super::ServiceManager as _;
+
+        let mgr = Systemctl { claude_bin };
+        mgr.sync_unit()?;
+        if !mgr.is_active() {
+            return mgr.start_unit();
+        }
         systemctl(&["restart", UNIT_NAME])?;
         tracing::info!(unit = UNIT_NAME, "restarted managed claude daemon");
         Ok(())
@@ -365,6 +496,67 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    #[derive(Default)]
+    struct FakeManager {
+        active: bool,
+        main_pid: Option<u32>,
+        synced: Cell<bool>,
+        started: Cell<bool>,
+        adopted: Cell<bool>,
+    }
+
+    impl ServiceManager for FakeManager {
+        fn sync_unit(&self) -> Result<()> {
+            self.synced.set(true);
+            Ok(())
+        }
+        fn is_active(&self) -> bool {
+            self.active
+        }
+        fn main_pid(&self) -> Option<u32> {
+            self.main_pid
+        }
+        fn start_unit(&self) -> Result<()> {
+            self.started.set(true);
+            Ok(())
+        }
+        fn adopt_supervisor(&self) -> Result<()> {
+            self.adopted.set(true);
+            Ok(())
+        }
+    }
+
+    /// The `ExitType=cgroup` trap: the unit is active only because adopted
+    /// workers still live in its cgroup, and no supervisor answers. Nothing
+    /// systemd does on its own can fix that, so a supervisor must be launched.
+    #[test]
+    fn an_active_unit_with_no_supervisor_gets_one_launched_into_its_cgroup() {
+        let mgr = FakeManager { active: true, main_pid: None, ..FakeManager::default() };
+        assert_eq!(ensure_supervisor(&mgr).unwrap(), Ensured::Adopted);
+        assert!(mgr.adopted.get(), "a supervisor must be launched");
+        assert!(!mgr.started.get(), "`start` is a no-op on an active unit");
+        assert!(mgr.synced.get(), "the unit is brought up to the template first");
+    }
+
+    #[test]
+    fn an_inactive_unit_is_started_through_the_service_manager() {
+        let mgr = FakeManager { active: false, main_pid: None, ..FakeManager::default() };
+        assert_eq!(ensure_supervisor(&mgr).unwrap(), Ensured::UnitStarted);
+        assert!(mgr.started.get());
+        assert!(!mgr.adopted.get(), "nothing to adopt: the unit owns its own cgroup");
+    }
+
+    /// A live main process means a supervisor exists and is merely slow to
+    /// bind; a second one would race it for the socket.
+    #[test]
+    fn a_live_main_process_is_left_alone() {
+        let mgr = FakeManager { active: true, main_pid: Some(4242), ..FakeManager::default() };
+        assert_eq!(ensure_supervisor(&mgr).unwrap(), Ensured::SupervisorStarting);
+        assert!(!mgr.adopted.get());
+        assert!(!mgr.started.get());
+    }
 
     #[test]
     fn unit_runs_claude_daemon_run_with_augmented_path() {

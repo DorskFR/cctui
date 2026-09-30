@@ -103,6 +103,25 @@ impl Default for DriverConfig {
     }
 }
 
+/// Machine-local override for `supervise_daemon`. The `adapters_enabled.config`
+/// key is server-side state an operator standing at the machine cannot reach,
+/// so the machine that owns the claude daemon gets the last word.
+const SUPERVISE_ENV: &str = "CCTUI_CLAUDE_SUPERVISE_DAEMON";
+
+/// `0`/`false`/`no`/`off` disable supervision, `1`/`true`/`yes`/`on` force it
+/// on; anything else (including unset and empty) leaves the config alone.
+fn supervise_env_override(raw: Option<&str>) -> Option<bool> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "0" | "false" | "no" | "off" => Some(false),
+        "1" | "true" | "yes" | "on" => Some(true),
+        "" => None,
+        other => {
+            tracing::warn!(value = other, var = SUPERVISE_ENV, "ignoring unparseable override");
+            None
+        }
+    }
+}
+
 impl DriverConfig {
     pub fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = Self::default();
@@ -131,6 +150,9 @@ impl DriverConfig {
             cfg.claude_bin = s.to_string();
         }
         if let Some(b) = v.get("supervise_daemon").and_then(serde_json::Value::as_bool) {
+            cfg.supervise_daemon = b;
+        }
+        if let Some(b) = supervise_env_override(std::env::var(SUPERVISE_ENV).ok().as_deref()) {
             cfg.supervise_daemon = b;
         }
         cfg.hook_socket_path = super::resolve_legacy_socket_path(v);
@@ -287,96 +309,7 @@ pub struct DeferredDispatch {
     short: String,
     what: String,
     session_id: String,
-    gate: Option<LaunchGate>,
-}
-
-/// Everything the launch needs to ask the server whether the job's model may
-/// run yet, and to report the wait on the session card.
-pub struct LaunchGate {
-    server: crate::client::ServerClient,
-    machine_key: String,
-    session_id: String,
-    short: String,
-    model: Option<String>,
-    events: mpsc::Sender<AdapterEvent>,
-}
-
-impl LaunchGate {
-    /// Block until the job's model is allowed, the hold outlives
-    /// [`crate::launchgate::MAX_HOLD`], or the limits call fails.
-    async fn hold(&self) {
-        let began = Instant::now();
-        let mut waiting = false;
-        loop {
-            let limits = match self
-                .server
-                .session_limits(&self.machine_key, &self.session_id, self.model.as_deref())
-                .await
-            {
-                Ok(limits) => limits,
-                // Fail open: a limits endpoint having a bad day must not stop
-                // launches.
-                Err(err) => {
-                    tracing::warn!(session = %self.session_id, %err, "launch limits check failed; launching anyway");
-                    return;
-                }
-            };
-            let Some(hold) = crate::launchgate::hold_from_limits(&limits, self.model.as_deref())
-            else {
-                if waiting {
-                    tracing::info!(
-                        session = %self.session_id,
-                        waited_secs = %began.elapsed().as_secs(),
-                        "launch limit cleared; dispatching"
-                    );
-                    self.report(None).await;
-                }
-                return;
-            };
-            if crate::launchgate::expired(began) {
-                tracing::warn!(
-                    session = %self.session_id,
-                    reason = %hold.reason,
-                    "launch held too long; dispatching anyway"
-                );
-                self.report(None).await;
-                return;
-            }
-            if !waiting {
-                tracing::info!(
-                    session = %self.session_id,
-                    model = ?self.model,
-                    reason = %hold.reason,
-                    retry_after_secs = %hold.retry_after.as_secs(),
-                    "holding launch: the model is limit blocked"
-                );
-            }
-            waiting = true;
-            self.report(Some(&hold)).await;
-            tokio::time::sleep(crate::launchgate::backoff(&hold)).await;
-        }
-    }
-
-    /// Put the wait (or its end) on the session card.
-    async fn report(&self, hold: Option<&crate::launchgate::Hold>) {
-        let state = if hold.is_some() { "held" } else { "starting" };
-        let _ = self
-            .events
-            .send(AdapterEvent::Status {
-                local_id: self.short.clone(),
-                tempo: None,
-                state: Some(state.to_owned()),
-                detail: hold.map(crate::launchgate::Hold::card_detail),
-                activity: None,
-                name: None,
-                intent: None,
-                model: self.model.clone(),
-                effort: None,
-                permission_mode: None,
-                children: Vec::new(),
-            })
-            .await;
-    }
+    gate: Option<crate::preflight::Preflight>,
 }
 
 pub struct Driver {

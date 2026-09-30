@@ -10,6 +10,7 @@ import { qk } from './queries/keys';
 const SID = 's1';
 const ACCOUNT = '7d1c0a52-3f0e-4c47-9d8c-2b1e5f6a9c01';
 const MACHINE = '0b6f2c1e-8a4d-4e2b-9f3a-5c7d1e2f3a4b';
+const USER = '3f9a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8';
 
 const fixtures = {
 	stream: {
@@ -102,6 +103,13 @@ const fixtures = {
 	soft_limit_cleared: { type: 'soft_limit_cleared', session_id: SID },
 	tool_call_blocked: { type: 'tool_call_blocked', session_id: SID, tool_name: 'Bash', rule: 'rm -rf' },
 	pty_chunk: { type: 'pty_chunk', session_id: SID, data: 'aGk=' },
+	scheduled_launch: {
+		type: 'scheduled_launch',
+		draft_id: SID,
+		user_id: USER,
+		state: 'scheduled',
+		launch_at: '2026-10-02T07:30:00Z'
+	},
 	heartbeat: { type: 'heartbeat' },
 	resync: { type: 'resync', session_id: SID }
 } satisfies { [K in ServerEvent['type']]: Extract<ServerEvent, { type: K }> };
@@ -184,6 +192,41 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 			expect(c.changeTick).toBe(before + 1);
 		}
 	);
+
+	it('a scheduled_launch patches the drafts list in place, with no refetch', () => {
+		const { c, sock } = setup();
+		const patches: unknown[] = [];
+		c.onListPatch((p) => patches.push(p));
+		const before = c.changeTick;
+		sock.deliver(fixtures.scheduled_launch);
+		sock.deliver({ ...fixtures.scheduled_launch, state: 'cancelled', launch_at: null });
+		sock.deliver({
+			...fixtures.scheduled_launch,
+			state: 'failed',
+			launch_at: null,
+			last_error: 'machine offline'
+		});
+		sock.deliver({ ...fixtures.scheduled_launch, state: 'dead', launch_at: null, last_error: 'gone' });
+		expect(patches).toEqual([
+			{ session_id: SID, launch_at: '2026-10-02T07:30:00Z', launch_error: null },
+			{ session_id: SID, launch_at: null, launch_error: null },
+			{ session_id: SID, launch_error: 'machine offline' },
+			{ session_id: SID, launch_error: 'gone' }
+		]);
+		vi.advanceTimersByTime(2000);
+		expect(c.changeTick).toBe(before);
+	});
+
+	it('a launched draft is gone from the list, so it bumps the refresh tick', () => {
+		const { c, sock } = setup();
+		const patches: unknown[] = [];
+		c.onListPatch((p) => patches.push(p));
+		const before = c.changeTick;
+		sock.deliver({ ...fixtures.scheduled_launch, state: 'launched', launch_at: null });
+		expect(patches).toEqual([]);
+		vi.advanceTimersByTime(2000);
+		expect(c.changeTick).toBe(before + 1);
+	});
 
 	it('permission_request adds a prompt and permission_resolved removes it', () => {
 		const { c, sock } = setup();

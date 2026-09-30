@@ -24,7 +24,7 @@ use base64::Engine;
 use cctui_proto::git::GitInfo;
 use cctui_proto::media::{is_inline_type, sniff_media_type};
 use cctui_proto::models::{Liveness, SessionStatus};
-use cctui_proto::ws::{READ_FILE_MAX_BYTES, ReadFileErrorKind, ReadFileOk};
+use cctui_proto::ws::{READ_FILE_MAX_BYTES, ReadFileErrorKind, ReadFileOk, ReadFileRefusal};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -146,10 +146,12 @@ pub async fn read_file(
                     "timed out waiting for the daemon",
                 ));
             }
-            Err(bus::BusError::ReadFile(kind, msg)) => {
-                let status = read_error_status(kind);
-                tracing::warn!(%machine_id, %path, ?kind, %msg, "read-file refused");
-                return Err(AppError::new(status, msg));
+            Err(bus::BusError::ReadFile(refusal)) => {
+                tracing::warn!(
+                    %machine_id, %path, kind = ?refusal.kind, msg = %refusal.message,
+                    "read-file refused"
+                );
+                return Ok(refusal_response(&refusal));
             }
             Err(e) => return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
         };
@@ -204,6 +206,94 @@ async fn authorize_read(
         return Err(AppError::new(StatusCode::FORBIDDEN, "path was not linked in this session"));
     }
     Ok(cwd)
+}
+
+/// Where a linked path actually lives, so a viewer refused on its own machine
+/// can re-ask the machine that owns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LinkedFileOwner {
+    /// Session the agent linked the path in.
+    pub session_id: String,
+    pub machine_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LinkedFileOwnerParams {
+    pub path: String,
+}
+
+/// How many link rows are considered before giving up. A path linked in more
+/// sessions than this is served by whichever of the first few the caller can
+/// read; the viewer only needs one that works.
+const OWNER_CANDIDATES: i64 = 16;
+
+/// `GET /sessions/{id}/linked-file-owner?path=…`. The session and machine that
+/// linked `path`, for a viewer whose own session did not.
+///
+/// A path linked by a child session running on another machine is refused by
+/// the wrong daemon; this names the right one so the viewer re-issues its read
+/// against `/machines/{machine_id}/fs/file` with the owning `session_id`. Every
+/// gate on that route still applies — this route only discloses sessions the
+/// caller may already read.
+pub async fn linked_file_owner(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Query(params): Query<LinkedFileOwnerParams>,
+) -> Result<Json<LinkedFileOwner>, AppError> {
+    let path = params.path.trim();
+    if path.is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "path is required"));
+    }
+    find_link_owner(&state.pool, &ctx, path, &session_id).await?.map_or_else(
+        || {
+            Err(AppError::new(
+                StatusCode::NOT_FOUND,
+                "path is not linked in any session you can read",
+            ))
+        },
+        |owner| Ok(Json(owner)),
+    )
+}
+
+/// `(session_id, machine_uuid, status, registered_at, last_heartbeat)` of one
+/// candidate owner of a linked path.
+type LinkOwnerRow = (String, Option<Uuid>, String, DateTime<Utc>, DateTime<Utc>);
+
+/// The first session other than `asked` that linked `path`, is live, and the
+/// caller may read. Newest link first, so a re-run of the same work wins.
+async fn find_link_owner(
+    pool: &sqlx::PgPool,
+    ctx: &AuthContext,
+    path: &str,
+    asked: &str,
+) -> Result<Option<LinkedFileOwner>, AppError> {
+    let rows: Vec<LinkOwnerRow> = sqlx::query_as(
+        "SELECT l.session_id, s.machine_uuid, s.status, s.registered_at, s.last_heartbeat \
+         FROM session_file_links l JOIN sessions s ON s.id = l.session_id \
+         WHERE l.path = $1 AND l.session_id <> $2 AND s.machine_uuid IS NOT NULL \
+         ORDER BY l.first_seen_at DESC LIMIT $3",
+    )
+    .bind(path)
+    .bind(asked)
+    .bind(OWNER_CANDIDATES)
+    .fetch_all(pool)
+    .await?;
+    for (sid, machine, status, registered_at, last_heartbeat) in rows {
+        let Some(machine_id) = machine else { continue };
+        let (session_status, liveness) = crate::routes::sessions::resolve_status_liveness(
+            &status,
+            registered_at,
+            last_heartbeat,
+        );
+        if session_status == SessionStatus::Archived || liveness == Liveness::Dead {
+            continue;
+        }
+        if crate::authz::authorize_session_read(ctx, &sid, pool).await.is_ok() {
+            return Ok(Some(LinkedFileOwner { session_id: sid, machine_id }));
+        }
+    }
+    Ok(None)
 }
 
 const MAX_LINKS_PER_EVENT: usize = 64;
@@ -387,6 +477,31 @@ fn extension_of(cand: &str) -> Option<&str> {
 
 fn has_extension(cand: &str) -> bool {
     extension_of(cand).is_some()
+}
+
+/// Body of a refused read. A superset of `ApiError`, so a client that only
+/// knows `error` is unaffected, while the viewer reads the folder list instead
+/// of finding it inside the prose.
+#[derive(Debug, Serialize)]
+pub struct ReadFileRefusalBody {
+    pub error: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed_folders: Vec<String>,
+}
+
+pub fn refusal_body(refusal: &ReadFileRefusal) -> (StatusCode, ReadFileRefusalBody) {
+    (
+        read_error_status(refusal.kind),
+        ReadFileRefusalBody {
+            error: refusal.message.clone(),
+            allowed_folders: refusal.allowed_folders.clone(),
+        },
+    )
+}
+
+fn refusal_response(refusal: &ReadFileRefusal) -> Response {
+    let (status, body) = refusal_body(refusal);
+    (status, Json(body)).into_response()
 }
 
 const fn read_error_status(kind: ReadFileErrorKind) -> StatusCode {
@@ -671,6 +786,88 @@ mod tests {
             AppError::Status(s, _) => *s,
             other => panic!("expected a status error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_denial_body_lists_the_folders_instead_of_only_wording_them() {
+        let refusal = ReadFileRefusal {
+            kind: ReadFileErrorKind::Denied,
+            message: "/x is outside the allowed roots: /tmp, /srv/app".into(),
+            allowed_folders: vec!["/tmp".into(), "/srv/app".into()],
+        };
+        let (status, body) = refusal_body(&refusal);
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body.allowed_folders, ["/tmp", "/srv/app"]);
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["error"], refusal.message, "the prose stays, for older clients");
+        assert_eq!(json["allowed_folders"], serde_json::json!(["/tmp", "/srv/app"]));
+
+        let too_large = ReadFileRefusal {
+            kind: ReadFileErrorKind::TooLarge,
+            message: "too big".into(),
+            allowed_folders: Vec::new(),
+        };
+        let (status, body) = refusal_body(&too_large);
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("allowed_folders").is_none(), "no list where there is nothing to list");
+    }
+
+    #[tokio::test]
+    async fn a_path_linked_by_a_session_elsewhere_names_that_session_and_machine() {
+        let Some(f) = fixture("linked_file_owner").await else { return };
+        let path = "/home/u/proj/out/report.md";
+        let viewer = format!("{}-viewer", f.session);
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
+             VALUES ($1, $2, $2, $3, '/home/u/other', 'active')",
+        )
+        .bind(&viewer)
+        .bind(f.machine)
+        .bind(f.owner.user_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            find_link_owner(&f.pool, &f.owner, path, &viewer).await.unwrap(),
+            None,
+            "nothing is linked yet"
+        );
+        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(path))).await.unwrap();
+        assert_eq!(
+            find_link_owner(&f.pool, &f.owner, path, &viewer).await.unwrap(),
+            Some(LinkedFileOwner { session_id: f.session.clone(), machine_id: f.machine }),
+            "the owning session and its machine, for the viewer to re-ask"
+        );
+        assert_eq!(
+            find_link_owner(&f.pool, &f.owner, path, &f.session).await.unwrap(),
+            None,
+            "the session that asked is never its own answer"
+        );
+        assert_eq!(
+            find_link_owner(&f.pool, &f.stranger, path, &viewer).await.unwrap(),
+            None,
+            "a session the caller cannot read is not disclosed"
+        );
+
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+            .bind(&f.session)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            find_link_owner(&f.pool, &f.owner, path, &viewer).await.unwrap(),
+            None,
+            "an archived owner is as unreadable here as on its own route"
+        );
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&viewer)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        cleanup(&f).await;
     }
 
     #[tokio::test]

@@ -50,6 +50,7 @@ export class ProviderEdit {
 	baseUrl = $state('');
 	credential = $state('');
 	authScheme = $state<'bearer' | 'api_key' | 'keep'>('keep');
+	usageProbe = $state('');
 	pinned = $state<boolean | null>(null);
 
 	private readonly orig;
@@ -74,6 +75,7 @@ export class ProviderEdit {
 		this.settings = { ...(p.settings_json ?? {}) };
 		this.providerSettings = { ...(p.provider_settings ?? {}) };
 		this.models = (p.models ?? []).map((mo) => ({ ...mo }));
+		this.usageProbe = p.usage_probe ?? '';
 		this.orig = {
 			aliases: { ...(p.model_aliases ?? {}) },
 			soft: softFlat(seedSoft(p)),
@@ -81,7 +83,8 @@ export class ProviderEdit {
 			notices: { ...this.notices },
 			settings: { ...this.settings },
 			providerSettings: { ...this.providerSettings },
-			models: indexed(this.models)
+			models: indexed(this.models),
+			usageProbe: this.usageProbe
 		};
 	}
 
@@ -130,7 +133,8 @@ export class ProviderEdit {
 					knobs +
 					(this.baseUrl.trim() ? 1 : 0) +
 					(this.credential.trim() ? 1 : 0) +
-					(this.authScheme === 'keep' ? 0 : 1)
+					(this.authScheme === 'keep' ? 0 : 1) +
+					(this.usageProbe === this.orig.usageProbe ? 0 : 1)
 				);
 			default:
 				return knobs;
@@ -157,6 +161,9 @@ export class ProviderEdit {
 			if (this.baseUrl.trim()) out.base_url = this.baseUrl.trim();
 			if (this.credential.trim()) out.access_token = this.credential.trim();
 			if (this.authScheme !== 'keep') out.auth_scheme = this.authScheme;
+			// Always sent: an empty value is how the probe is cleared, which an
+			// omitted field cannot express.
+			out.usage_probe = this.usageProbe;
 		}
 		return out;
 	}

@@ -41,6 +41,29 @@ pub struct AppServerConfig {
     /// by issuing `model/list` over this session's authenticated app-server
     /// connection. `false` (`model_catalog = false`) disables the refresh.
     pub model_catalog: bool,
+    /// What an `auto` spawn does when the sandbox probe says bubblewrap cannot
+    /// start. Defaults to refusing: dropping to no sandbox is a security
+    /// downgrade the operator must opt into.
+    pub sandbox_fallback: SandboxFallback,
+}
+
+/// `codex_sandbox_fallback` in `daemon.toml`. Serialized because it rides
+/// [`AppServerConfig`] into the durable per-session record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxFallback {
+    #[default]
+    Error,
+    FullAccess,
+}
+
+impl SandboxFallback {
+    fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "full-access" | "danger-full-access" => Self::FullAccess,
+            _ => Self::Error,
+        }
+    }
 }
 
 impl Default for AppServerConfig {
@@ -54,6 +77,7 @@ impl Default for AppServerConfig {
             model: None,
             service_tier: None,
             model_catalog: true,
+            sandbox_fallback: SandboxFallback::Error,
         }
     }
 }
@@ -126,6 +150,9 @@ impl AppServerConfig {
         }
         cfg.service_tier = normalize_service_tier(v.get("service_tier").and_then(Value::as_str));
         cfg.model_catalog = model_list::catalog_enabled(v);
+        if let Some(f) = v.get("codex_sandbox_fallback").and_then(Value::as_str) {
+            cfg.sandbox_fallback = SandboxFallback::parse(f);
+        }
         cfg
     }
 }
@@ -255,6 +282,32 @@ pub(super) fn shared_overlay(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Anything but an explicit opt-in means refuse: a typo must not silently
+    /// drop the sandbox.
+    #[test]
+    fn the_sandbox_fallback_defaults_to_error_and_only_opts_in_explicitly() {
+        assert_eq!(
+            AppServerConfig::from_value(&json!({})).sandbox_fallback,
+            SandboxFallback::Error
+        );
+        for raw in ["full-access", "full_access", "danger-full-access", " FULL-ACCESS "] {
+            assert_eq!(
+                AppServerConfig::from_value(&json!({ "codex_sandbox_fallback": raw }))
+                    .sandbox_fallback,
+                SandboxFallback::FullAccess,
+                "{raw}"
+            );
+        }
+        for raw in ["error", "", "nonsense"] {
+            assert_eq!(
+                AppServerConfig::from_value(&json!({ "codex_sandbox_fallback": raw }))
+                    .sandbox_fallback,
+                SandboxFallback::Error,
+                "{raw}"
+            );
+        }
+    }
 
     #[test]
     fn gateway_provider_overrides_route_via_gateway_when_env_bound() {

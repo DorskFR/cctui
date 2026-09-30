@@ -116,6 +116,7 @@ impl Driver {
             dispatch,
             gateway,
             codex: None,
+            opencode: None,
         };
         self.events
             .send(AdapterEvent::Diagnose {

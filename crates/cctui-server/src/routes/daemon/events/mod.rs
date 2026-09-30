@@ -121,6 +121,13 @@ impl Tail {
                 crate::normalize::to_agent_event(adapter_id, "tool_use", payload)
                     .map(|ae| (local_id.clone(), ae))
             }
+            AdapterEvent::TurnEnd { local_id, ts } => Some((
+                local_id.clone(),
+                cctui_proto::ws::AgentEvent::TurnEnd {
+                    ts: ts.unwrap_or_else(|| chrono::Utc::now().timestamp()),
+                    seq: None,
+                },
+            )),
             AdapterEvent::SessionEnded { local_id, reason } => crate::normalize::to_agent_event(
                 adapter_id,
                 "session_ended",
@@ -163,6 +170,43 @@ impl Tail {
                 data.set_turn_id(turn_id);
             }
             state.bus.publish_server(cctui_proto::ws::ServerEvent::Stream { session_id, data });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The turn end must reach clients as `AgentEvent::TurnEnd` — the kind the
+    /// webui already drops its activity indicator on — so idle does not wait
+    /// for the next status poll.
+    #[test]
+    fn a_turn_end_broadcasts_a_client_visible_turn_end() {
+        let tail = Tail::of(
+            "claude-code",
+            &AdapterEvent::TurnEnd { local_id: "sess-1".into(), ts: Some(7) },
+        );
+        match tail.broadcast {
+            Some((session_id, cctui_proto::ws::AgentEvent::TurnEnd { ts, seq })) => {
+                assert_eq!(session_id, "sess-1");
+                assert_eq!(ts, 7);
+                assert_eq!(seq, None);
+            }
+            other => panic!("expected a broadcast turn_end, got {other:?}"),
+        }
+        assert!(tail.bump.is_none(), "a turn ending is not activity");
+    }
+
+    /// A daemon too old to stamp `ts` still has to land at a sane timestamp.
+    #[test]
+    fn a_turn_end_without_a_timestamp_is_stamped_on_arrival() {
+        let before = chrono::Utc::now().timestamp();
+        let tail =
+            Tail::of("codex", &AdapterEvent::TurnEnd { local_id: "sess-2".into(), ts: None });
+        match tail.broadcast {
+            Some((_, cctui_proto::ws::AgentEvent::TurnEnd { ts, .. })) => assert!(ts >= before),
+            other => panic!("expected a broadcast turn_end, got {other:?}"),
         }
     }
 }

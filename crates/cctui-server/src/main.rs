@@ -23,6 +23,7 @@ mod langfuse;
 mod live_sessions;
 mod machine_liveness;
 mod machine_resources;
+mod metrics;
 mod normalize;
 mod ntfy;
 mod openapi;
@@ -36,6 +37,7 @@ mod policy;
 mod pool_usage;
 mod presence;
 mod preview;
+mod provider_status;
 mod registry;
 mod routes;
 mod scheduled_messages;
@@ -50,6 +52,7 @@ mod store;
 mod update_check;
 mod uploads;
 mod usage_history;
+mod usage_probe;
 mod webauthn;
 mod webhook;
 mod ws;
@@ -199,7 +202,9 @@ async fn build_state(
         spawn_capabilities: Arc::new(dashmap::DashMap::new()),
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
+        upload_caps: Arc::new(std::sync::RwLock::new(uploads::UploadCaps::default())),
         update_check: update_check::UpdateCheck::shared(),
+        provider_status: provider_status::ProviderStatusCache::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
     })
@@ -234,11 +239,22 @@ async fn init_bus(
 async fn start_background_tasks(state: &AppState) {
     routes::server_settings::refresh_upstream_allowlist(&state.pool).await;
     tokio::spawn(routes::server_settings::upstream_allowlist_task(state.pool.clone()));
+    routes::server_settings::refresh_upload_caps(state).await;
+    tokio::spawn(routes::server_settings::upload_caps_task(state.clone()));
 
     // Slow upstream release probe feeding `/version.latest_version`;
     // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
     if update_check::enabled_from_env() {
         tokio::spawn(update_check::task(state.update_check.clone(), state.http_client.clone()));
+    }
+
+    // Statuspage poller behind `GET /provider-status` and the usage payloads;
+    // `CCTUI_PROVIDER_STATUS=0` keeps every family on `unknown`.
+    if provider_status::enabled_from_env() {
+        tokio::spawn(provider_status::task(
+            state.provider_status.clone(),
+            state.http_client.clone(),
+        ));
     }
 
     // Warm the reauth gate from the persisted flag so a restart doesn't
@@ -309,6 +325,11 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
 fn outer_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        // Prometheus scrape. Self-authenticating (same token scheme as
+        // `/api/v1`, unless `CCTUI_METRICS_PUBLIC` opts out), so it sits here
+        // rather than under the `/api/v1` auth layer: a scrape config expects
+        // `/metrics` at the root.
+        .route("/metrics", get(routes::metrics::metrics))
         // Self-describing API surface. Both are unauthenticated meta
         // routes — like `/health` — because they expose ONLY the public shape of
         // the API (paths/methods/auth model/summaries), never any data. An agent
@@ -764,6 +785,8 @@ mod tests {
             "PUT /admin/instance/self-update Bearer Scope(Admin)",
             "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
             "PUT /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "GET /admin/instance/upload-caps Bearer Scope(Admin)",
+            "PUT /admin/instance/upload-caps Bearer Scope(Admin)",
             "GET /admin/instance/upstream-hosts Bearer Scope(Admin)",
             "PUT /admin/instance/upstream-hosts Bearer Scope(Admin)",
             "DELETE /admin/machines/{id} Bearer Scope(Admin)",
@@ -838,6 +861,7 @@ mod tests {
             "GET /prompts/resolve Bearer Authenticated",
             "DELETE /prompts/{id} Bearer Authenticated",
             "GET /prompts/{id} Bearer Authenticated",
+            "GET /provider-status Bearer Authenticated",
             "GET /redirects Bearer Human",
             "DELETE /redirects/{id} Bearer Human",
             "GET /sessions Bearer Authenticated",
@@ -880,6 +904,7 @@ mod tests {
             r#"DELETE /sessions/{id}/labels/{label_id} Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/langfuse Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/linked-file-owner Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/message Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/messages/scheduled Bearer Resource(Session, Read, Path("id"))"#,
             r#"DELETE /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,
@@ -895,6 +920,7 @@ mod tests {
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/schedule-launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/search Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,

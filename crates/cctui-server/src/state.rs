@@ -21,7 +21,6 @@ pub struct AppState {
     pub registry: SharedRegistry,
     pub permission_store: SharedPermissionStore,
     pub bus: Bus,
-    #[allow(dead_code)]
     pub auth_config: AuthConfig,
     /// `None` when no secure public URL is configured; passkey routes then
     /// answer "unavailable".
@@ -43,6 +42,9 @@ pub struct AppState {
     pub account_locks: Arc<DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
     pub http_client: reqwest::Client,
     pub update_check: Arc<crate::update_check::UpdateCheck>,
+    /// Upstream incident readings, refreshed by a background poller; never read
+    /// from a status host on the request path.
+    pub provider_status: Arc<crate::provider_status::ProviderStatusCache>,
     /// Serialises "Update" clicks: one self-update agent per release at a time.
     pub self_update: Arc<crate::routes::self_update::SelfUpdateGuard>,
     /// Commands awaiting their daemon `CommandResult`, keyed by `command_id`.
@@ -86,6 +88,9 @@ pub struct AppState {
     pub mark_ack_daemons: Arc<DashMap<Uuid, ()>>,
     /// Rolling RPM/TPM windows, keyed by provider row id.
     pub gateway_rate_windows: Arc<DashMap<Uuid, crate::routes::gateway::RateWindow>>,
+    /// Cached `instance_settings.upload_caps`, so the upload path never hits
+    /// Postgres. Written on `PUT` and by a periodic reload for other replicas.
+    pub upload_caps: Arc<std::sync::RwLock<crate::uploads::UploadCaps>>,
 }
 
 #[derive(Clone)]
@@ -177,7 +182,9 @@ impl AppState {
             session_usd_budgets: Arc::new(DashMap::new()),
             mark_ack_daemons: Arc::new(DashMap::new()),
             gateway_rate_windows: Arc::new(DashMap::new()),
+            upload_caps: Arc::new(std::sync::RwLock::new(crate::uploads::UploadCaps::default())),
             update_check: crate::update_check::UpdateCheck::shared(),
+            provider_status: crate::provider_status::ProviderStatusCache::shared(),
             self_update: Arc::new(crate::routes::self_update::SelfUpdateGuard::default()),
             pending_commands: Arc::new(DashMap::new()),
             pool,

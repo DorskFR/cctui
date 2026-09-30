@@ -368,7 +368,7 @@ fn ensure_hook_settings_in(
     // `CctuiAgent` call can beat the relay's `initialize`.
     if let Some(block) = agent_relay_session.and_then(|session| {
         let sock = crate::agenttool::socket_for_launch().to_string_lossy().into_owned();
-        mcp_ready_hook(&exe, session, &sock, mcp_ready_wait_secs())
+        mcp_ready_hook(&exe, session, &sock, crate::preflight::mcp_ready_wait_secs())
     }) {
         hooks["SessionStart"] = block;
     }
@@ -430,16 +430,6 @@ pub(super) fn mcp_ready_hook(
             }],
         }])
     })
-}
-
-/// Seconds the `SessionStart` hook may hold the first turn waiting for the MCP
-/// relay. `CCTUI_MCP_READY_WAIT_SECS=0` disables the gate entirely.
-pub(super) fn mcp_ready_wait_secs() -> u64 {
-    std::env::var("CCTUI_MCP_READY_WAIT_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(8)
-        .min(60)
 }
 
 /// Write the per-session MCP config registering the `CctuiAgent` tool, and

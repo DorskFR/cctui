@@ -29,6 +29,10 @@
 	// The embedded review center manages its own full-height layout, so
 	// it renders outside the width-capped Container and without content padding.
 	const isReview = $derived(page.url.pathname.startsWith('/github'));
+	// Tiles is a grid of full-height conversations: same deal, no width cap and
+	// no content padding of its own.
+	const isTiles = $derived(page.url.pathname.startsWith('/tiles'));
+	const fullBleed = $derived(isReview || isTiles);
 
 	// Every route renders in the --content-wide column; only the session list's
 	// width is user-settable (Settings › Session list), and the cap only bites
@@ -152,12 +156,13 @@
 				<main
 					class="content"
 					class:review={isReview}
+					class:tiles={isTiles}
 					class:dock-left={!!docks?.left}
 					class:dock-right={!!docks?.right}
 					style:--dock-left-w={docks?.left ?? undefined}
 					style:--dock-right-w={docks?.right ?? undefined}
 				>
-					{#if isReview}
+					{#if fullBleed}
 						{@render children?.()}
 					{:else}
 						<Container size={contentSize}>
@@ -195,7 +200,8 @@
 	}
 	/* The review center fills the viewport between header and nav and scrolls
 	   internally, so drop the content padding and pin a definite height. */
-	.content.review {
+	.content.review,
+	.content.tiles {
 		display: flex;
 		flex-direction: column;
 		height: 100dvh;

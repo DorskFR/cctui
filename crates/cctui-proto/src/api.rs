@@ -21,6 +21,13 @@ pub struct DaemonAuthResponse {
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub machine_id: Uuid,
     pub user_id: Uuid,
+    /// Optional event kinds this server understands, from
+    /// [`crate::capability`]. A server too old to answer omits the field, and
+    /// the daemon must then not send those kinds: an unknown `kind` fails the
+    /// whole `DaemonFrameUp` deserialization, taking any batched sibling events
+    /// down with it.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 /// What a session may spawn through `CctuiAgent`. Set only by the launcher;
@@ -422,6 +429,31 @@ pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
 }
 
+/// One transcript match inside a single session. `seq` is `stream_events.id`,
+/// the same address pins and the client's jump primitive use; `role` is the
+/// webui's `MsgCategory`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ConversationHit {
+    pub seq: i64,
+    pub ts: i64,
+    pub role: String,
+    pub tool: Option<String>,
+    pub snippet: String,
+}
+
+/// `total` counts the hits returned; `truncated` says the scan stopped at the
+/// cap, so the real total is higher.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ConversationSearchResponse {
+    pub hits: Vec<ConversationHit>,
+    pub total: u32,
+    pub truncated: bool,
+    /// Tool ids seen among the hits, for the `tool:` autocomplete.
+    pub tools: Vec<String>,
+}
+
 /// Session counts from SQL aggregates, not the capped list.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -794,4 +826,24 @@ pub struct SkillIndexEntry {
     pub uploaded_by_machine: Option<Uuid>,
     pub uploaded_at: chrono::DateTime<chrono::Utc>,
     pub content_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DaemonAuthResponse;
+
+    /// A server that predates capability advertising answers without the field;
+    /// a newer daemon must read that as "no new event kinds".
+    #[test]
+    fn an_older_servers_auth_response_still_decodes_with_no_capabilities() {
+        let legacy = r#"{
+            "session_token": "t",
+            "expires_at": "2026-01-01T00:00:00Z",
+            "machine_id": "00000000-0000-0000-0000-000000000001",
+            "user_id": "00000000-0000-0000-0000-000000000002"
+        }"#;
+        let resp: DaemonAuthResponse = serde_json::from_str(legacy).expect("legacy auth response");
+        assert!(resp.capabilities.is_empty());
+        assert!(!crate::capability::has(resp.capabilities.as_slice(), crate::capability::TURN_END));
+    }
 }

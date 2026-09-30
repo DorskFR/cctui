@@ -62,7 +62,7 @@ fn group_of(path: &str) -> &'static str {
         "labels" => "labels",
         "prompts" => "prompts",
         "bookmarks" => "bookmarks",
-        "settings" | "me" | "capabilities" | "version" => "meta",
+        "settings" | "me" | "capabilities" | "version" | "provider-status" => "meta",
         "skills" => "skills",
         "admin" | "users" => "admin",
         "machines" | "manifest" | "daemon" | "enroll" | "deenroll" => "machines",

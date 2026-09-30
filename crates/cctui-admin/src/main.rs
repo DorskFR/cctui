@@ -53,6 +53,14 @@ enum Command {
         #[arg(long, env = "CCTUI_USER_TOKEN")]
         user_token: Option<String>,
     },
+    /// Print this instance's account usage windows (the numbers `/metrics`
+    /// exports), for a status bar or a script.
+    Usage {
+        /// Emit the machine-readable envelope instead of a table. Field names
+        /// are stable — third parties pin to them.
+        #[arg(long)]
+        json: bool,
+    },
     /// Sync `~/.claude/skills/<name>/` bundles with the server.
     Skills {
         #[command(subcommand)]
@@ -171,6 +179,9 @@ async fn main() -> Result<()> {
         Command::Machine(cmd) => machine_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await,
         Command::Enroll { hostname, user_token } => {
             enroll_cmd(&client, &cli.server, user_token, hostname).await
+        }
+        Command::Usage { json } => {
+            usage_cmd(&client, &cli.server, cli.token.as_deref(), json).await
         }
         Command::Skills { cmd } => {
             skills_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
@@ -313,6 +324,113 @@ fn resolve_read_auth(server_flag: &str, token: Option<&str>) -> Result<(String, 
         "no credentials — enrol this host (`cctui-admin enroll`) or pass --token / \
          CCTUI_USER_TOKEN"
     )
+}
+
+/// One window as the accounts API reports it. Only the fields the export needs;
+/// anything else the server adds is ignored.
+#[derive(Debug, Deserialize)]
+struct UsageWindowRow {
+    key: String,
+    label: String,
+    #[serde(default)]
+    utilization: f64,
+    #[serde(default)]
+    amount_usd: Option<f64>,
+    #[serde(default)]
+    resets_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pace: Option<UsagePaceRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsagePaceRow {
+    #[serde(default)]
+    ratio: f64,
+    #[serde(default)]
+    projected_wall_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageEntryRow {
+    account_id: Uuid,
+    provider: String,
+    account_name: String,
+    #[serde(default)]
+    age_secs: u64,
+    #[serde(default)]
+    windows: Vec<UsageWindowRow>,
+}
+
+/// `cctui-admin usage` — the same numbers `/metrics` exposes, in the shape a
+/// status bar wants. The JSON field names are a contract: add, never rename.
+async fn usage_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    as_json: bool,
+) -> Result<()> {
+    let (server, token) = resolve_read_auth(server, token)?;
+    let url = format!("{server}/api/v1/accounts/usage");
+    let rows: Vec<UsageEntryRow> = get_json(client, &url, &token).await?;
+    let now = Utc::now();
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&usage_envelope(&rows, now))?);
+        return Ok(());
+    }
+    for r in &rows {
+        println!("{} · {}", r.account_name, r.provider);
+        for w in &r.windows {
+            let value = w
+                .amount_usd
+                .map_or_else(|| format!("{:.1}%", w.utilization), |usd| format!("${usd:.2}"));
+            let reset = w.resets_at.map_or_else(String::new, |at| {
+                format!("  resets in {}", human_secs(secs_until(at, now)))
+            });
+            println!("  {:<24} {value}{reset}", w.label);
+        }
+        if r.windows.is_empty() {
+            println!("  (no usage data)");
+        }
+    }
+    if rows.is_empty() {
+        println!("no credentials configured");
+    }
+    Ok(())
+}
+
+/// Seconds until `at`, floored at zero — a window already past its reset is
+/// `0`, never negative.
+fn secs_until(at: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    (at - now).num_seconds().max(0)
+}
+
+fn human_secs(secs: i64) -> String {
+    let (h, m) = (secs / 3600, (secs % 3600) / 60);
+    if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") }
+}
+
+/// The stable JSON envelope. Pure so the field names are pinned by a test
+/// rather than by a running server.
+fn usage_envelope(rows: &[UsageEntryRow], now: DateTime<Utc>) -> serde_json::Value {
+    json!({
+        "accounts": rows.iter().map(|r| json!({
+            "account": r.account_name,
+            "provider": r.provider,
+            "credential": r.account_id,
+            "usage_known": !r.windows.is_empty(),
+            "age_seconds": r.age_secs,
+            "windows": r.windows.iter().map(|w| json!({
+                "key": w.key,
+                "label": w.label,
+                "utilization_pct": w.utilization,
+                "spend_usd": w.amount_usd,
+                "resets_at": w.resets_at,
+                "seconds_to_reset": w.resets_at.map(|at| secs_until(at, now)),
+                "pace_ratio": w.pace.as_ref().map(|p| p.ratio),
+                "projected_wall_at": w.pace.as_ref().and_then(|p| p.projected_wall_at),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 async fn skills_cmd(
@@ -541,6 +659,70 @@ mod tests {
     #[test]
     fn cli_parses() {
         Cli::command().debug_assert();
+    }
+
+    fn usage_rows() -> Vec<UsageEntryRow> {
+        serde_json::from_value(json!([{
+            "account_id": "00000000-0000-0000-0000-000000000001",
+            "provider": "anthropic",
+            "account_name": "prod",
+            "age_secs": 12,
+            "windows": [
+                {
+                    "key": "session",
+                    "kind": "session",
+                    "label": "5h",
+                    "utilization": 42.5,
+                    "resets_at": "2026-09-30T14:00:00Z",
+                    "pace": {"elapsed_fraction": 0.5, "expected_pct": 50.0, "ratio": 0.85,
+                             "projected_wall_at": "2026-09-30T18:00:00Z"}
+                },
+                {"key": "usd_7d", "kind": "usd", "label": "7d spend", "utilization": 0.0, "amount_usd": 3.25}
+            ]
+        }]))
+        .unwrap()
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-30T12:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn the_usage_envelope_field_names_are_the_documented_ones() {
+        let env = usage_envelope(&usage_rows(), now());
+        let a = &env["accounts"][0];
+        assert_eq!(a["account"], "prod");
+        assert_eq!(a["provider"], "anthropic");
+        assert_eq!(a["credential"], "00000000-0000-0000-0000-000000000001");
+        assert_eq!(a["usage_known"], true);
+        assert_eq!(a["age_seconds"], 12);
+        let session = &a["windows"][0];
+        assert_eq!(session["key"], "session");
+        assert_eq!(session["label"], "5h");
+        assert_eq!(session["utilization_pct"], 42.5);
+        assert_eq!(session["spend_usd"], serde_json::Value::Null);
+        assert_eq!(session["seconds_to_reset"], 7200);
+        assert_eq!(session["pace_ratio"], 0.85);
+        assert_eq!(session["projected_wall_at"], "2026-09-30T18:00:00Z");
+        let spend = &a["windows"][1];
+        assert_eq!(spend["spend_usd"], 3.25);
+        assert_eq!(spend["seconds_to_reset"], serde_json::Value::Null);
+        assert_eq!(spend["pace_ratio"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn an_instance_with_no_credentials_still_emits_the_envelope() {
+        assert_eq!(usage_envelope(&[], now()), json!({"accounts": []}));
+    }
+
+    #[test]
+    fn a_window_past_its_reset_reports_zero_not_a_negative_countdown() {
+        let past =
+            DateTime::parse_from_rfc3339("2026-09-30T11:00:00Z").unwrap().with_timezone(&Utc);
+        assert_eq!(secs_until(past, now()), 0);
+        assert_eq!(human_secs(0), "0m");
+        assert_eq!(human_secs(7200), "2h 0m");
+        assert_eq!(human_secs(300), "5m");
     }
 
     #[test]

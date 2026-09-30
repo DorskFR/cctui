@@ -648,6 +648,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::AskResolved { .. }
         | ServerEvent::SoftLimitReached { .. }
         | ServerEvent::PtyChunk { .. }
+        | ServerEvent::ScheduledLaunch { .. }
         | ServerEvent::Heartbeat { .. }
         | ServerEvent::Resync { .. }
         | ServerEvent::ToolCallBlocked { .. }

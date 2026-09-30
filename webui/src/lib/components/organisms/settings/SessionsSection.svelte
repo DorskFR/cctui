@@ -8,9 +8,11 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import StorageSection from './StorageSection.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { clampFollowupWhenCold } from '$lib/followup';
+	import { TILES_MAX, TILES_MIN, type SplitDirection } from '$lib/tiles';
 	import { GROUP_DIMENSIONS, nextSort } from '../../../../routes/sessions/sessions.logic';
 
 	const sl = $derived(settings.state.sessionList);
@@ -18,6 +20,7 @@
 	const statsDock = $derived(settings.statsDock);
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
 	const autoResume = $derived(settings.autoResumeOnConnectionLoss);
+	const tiles = $derived(settings.state.tiles);
 
 	const viewOptions: SegmentOption[] = [
 		{ value: 'list', label: m.settings_view_list() },
@@ -27,6 +30,14 @@
 		{ value: 'left', label: m.settings_spawn_dock_side_left() },
 		{ value: 'right', label: m.settings_spawn_dock_side_right() }
 	];
+	const splitOptions: SegmentOption[] = [
+		{ value: 'vertical', label: m.settings_tiles_split_vertical() },
+		{ value: 'horizontal', label: m.settings_tiles_split_horizontal() }
+	];
+	const maxTileOptions = Array.from({ length: TILES_MAX - TILES_MIN + 1 }, (_, i) => {
+		const n = String(TILES_MIN + i);
+		return { value: n, label: n };
+	});
 	const followupColdOptions: SegmentOption[] = [
 		{ value: 'off', label: m.settings_followup_when_cold_off() },
 		{ value: 'offer', label: m.settings_followup_when_cold_offer() },
@@ -134,6 +145,34 @@
 		</SettingRow>
 	</SettingGroup>
 
+	<SettingGroup title={m.settings_tiles_title()}>
+		<SettingRow label={m.settings_tiles_split_label()} help={m.settings_tiles_split_help()} selfLabelled>
+			<SegmentedControl
+				options={splitOptions}
+				label={m.settings_tiles_split_label()}
+				control
+				bind:value={
+					() => tiles.splitDirection,
+					(v) => settings.setTiles({ splitDirection: v as SplitDirection })
+				}
+			/>
+		</SettingRow>
+		<SettingRow label={m.settings_tiles_max_label()} help={m.settings_tiles_max_help()}>
+			<Select
+				value={String(tiles.maxTiles)}
+				style="width:100%"
+				onchange={(e) =>
+					settings.setTiles({
+						maxTiles: Number((e.currentTarget as HTMLSelectElement).value)
+					})}
+			>
+				{#each maxTileOptions as o (o.value)}
+					<option value={o.value}>{o.label}</option>
+				{/each}
+			</Select>
+		</SettingRow>
+	</SettingGroup>
+
 	<SettingGroup title={m.settings_stats_title()}>
 		<SettingRow label={m.settings_stats_dock_label()} help={m.settings_stats_dock_help()}>
 			<Switch
@@ -206,4 +245,5 @@
 			/>
 		</SettingRow>
 	</SettingGroup>
+	<StorageSection />
 </SettingSection>

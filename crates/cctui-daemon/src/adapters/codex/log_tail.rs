@@ -777,6 +777,7 @@ mod tests {
                 name: None,
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
         tail.set_owned(registry);

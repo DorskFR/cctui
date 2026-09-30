@@ -27,6 +27,13 @@ export function isSubmitChord(e: KeyboardEvent): boolean {
  *  "either modifier" like the submit chord) so it doesn't clobber the other
  *  platform's native Ctrl+E text-editing binding (move-to-end-of-line on macOS).
  *  Alt/Shift combos are excluded so it never fires on a wider chord. */
+/** ⌘F / Ctrl+F — find in the focused conversation. */
+export function isFindChord(e: KeyboardEvent): boolean {
+	if (e.altKey || e.shiftKey) return false;
+	if (e.key !== 'f' && e.key !== 'F') return false;
+	return isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+}
+
 export function isArchiveChord(e: KeyboardEvent): boolean {
 	if (e.altKey || e.shiftKey) return false;
 	if (e.key !== 'e' && e.key !== 'E') return false;

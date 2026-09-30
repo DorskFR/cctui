@@ -29,11 +29,7 @@
 		pins = [],
 		lines = [],
 		onjumpseq,
-		onunpin,
-		hitCount = 0,
-		hitIndex = -1,
-		onprevhit,
-		onnexthit
+		onunpin
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -48,11 +44,6 @@
 		/** Omit both to hide the pins button (e.g. no session context). */
 		onjumpseq?: (seq: number) => void;
 		onunpin?: (seq: number) => void;
-		/** Search-hit stepping; the whole group hides when there are no hits. */
-		hitCount?: number;
-		hitIndex?: number;
-		onprevhit?: () => void;
-		onnexthit?: () => void;
 	} = $props();
 
 	// One pinned height for every control, so glyph fonts can't size them.
@@ -126,19 +117,6 @@
 			/>
 		</Popover>
 	</div>
-	{#if hitCount > 0}
-		<div class="hitbar row" role="group" aria-label={m.conversation_hits_aria()}>
-			<Toggle pressed={false} style={CTL} title={m.conversation_hit_prev()} onclick={onprevhit}
-				><span class="glyph">↑</span></Toggle
-			>
-			<Toggle pressed={false} style={CTL} title={m.conversation_hit_next()} onclick={onnexthit}
-				><span class="glyph">↓</span></Toggle
-			>
-			<span class="hit-count" aria-live="polite"
-				>{m.conversation_hit_counter({ n: hitIndex + 1, total: hitCount })}</span
-			>
-		</div>
-	{/if}
 	<div class="behbar row" role="group" aria-label={m.conversation_behavior_aria()}>
 		<Toggle
 			pressed={autoApprove}
@@ -209,8 +187,7 @@
 		--sp-3: 12px;
 	}
 	.tagbar,
-	.behbar,
-	.hitbar {
+	.behbar {
 		gap: var(--sp-1);
 		flex-wrap: nowrap;
 		align-items: center;
@@ -228,30 +205,16 @@
 		flex: 0 1 auto;
 		overflow: hidden;
 	}
-	.behbar,
-	.hitbar {
-		flex: none;
-	}
 	.behbar {
+		flex: none;
 		margin-left: auto;
-	}
-	.hitbar {
-		align-items: center;
-	}
-	.hit-count {
-		color: var(--text-muted);
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
-	}
-	.behbar,
-	.hitbar {
 		padding-left: var(--sp-3);
 		border-left: 1px solid var(--border);
 	}
 	.narrow {
 		display: none;
 	}
-	/* The full form needs ~940px in the longest locale with search hits shown. */
+	/* The full form needs ~940px in the longest locale. */
 	@container drawer-toolbar (max-width: 1000px) {
 		.wide {
 			display: none;

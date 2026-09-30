@@ -96,6 +96,9 @@ pub struct CodexSession {
     /// the session spawn rights. `None` means the tool is absent — a session
     /// without a capability must not be able to see it.
     pub(super) agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
+    /// Limit hold + MCP-readiness wait, awaited between `thread/start` and the
+    /// first turn. `None` outside a real daemon run.
+    pub(super) preflight: Option<crate::preflight::Preflight>,
     /// Plugin skills and cctui's own vars for this thread: env for its shell
     /// tool plus the catalog it reads skills from. Empty for a session whose
     /// owner enabled no plugins.
@@ -113,6 +116,12 @@ impl CodexSession {
         agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
     ) -> Self {
         self.agent_mcp = agent_mcp;
+        self
+    }
+
+    #[must_use]
+    pub fn with_preflight(mut self, preflight: Option<crate::preflight::Preflight>) -> Self {
+        self.preflight = preflight;
         self
     }
 
@@ -147,6 +156,7 @@ impl CodexSession {
             spawn_key,
             parent_local_id,
             agent_mcp: None,
+            preflight: None,
             skills: crate::plugins::SessionSkills::none(),
             events,
             live,
@@ -179,6 +189,7 @@ impl CodexSession {
             spawn_key: None,
             parent_local_id: None,
             agent_mcp: None,
+            preflight: None,
             skills: crate::plugins::SessionSkills::none(),
             events,
             live,
@@ -208,6 +219,7 @@ impl CodexSession {
             spawn_key: None,
             parent_local_id: None,
             agent_mcp: None,
+            preflight: None,
             skills: crate::plugins::SessionSkills::none(),
             events,
             live,
@@ -268,9 +280,28 @@ impl CodexSession {
     pub(super) fn thread_config(&self, shared: bool) -> ThreadConfig {
         let config = ThreadConfig::new(&self.env, self.cfg.service_tier.as_deref())
             .with_tool_env(self.skills.env.clone())
-            .with_developer_instructions(self.skills.catalog.clone())
+            .with_developer_instructions(self.developer_instructions())
             .with_permissions(&self.cfg.approval_policy, &self.cfg.sandbox_mode);
         if shared { config.with_overlay(shared_overlay(&self.cfg, &self.env)) } else { config }
+    }
+
+    /// The skill catalog plus the harness-neutral spawn preamble. Codex has no
+    /// prompt of its own to fold the preamble into, so it rides the only
+    /// per-thread instruction channel the app-server offers.
+    fn developer_instructions(&self) -> Option<String> {
+        crate::preamble::merge(
+            self.skills.catalog.clone(),
+            crate::preamble::block(&self.cwd, self.roster_self()),
+        )
+    }
+
+    /// The roster id this session already holds, so the preamble does not
+    /// report the session to itself. A fresh thread has none yet.
+    const fn roster_self(&self) -> Option<&str> {
+        match &self.launch {
+            SessionLaunch::Resume { thread_id, .. } => Some(thread_id.as_str()),
+            SessionLaunch::Fresh { .. } | SessionLaunch::Fork { .. } => None,
+        }
     }
 
     pub(super) fn thread_request(&self, config: &ThreadConfig) -> (Value, &'static str) {
@@ -702,6 +733,7 @@ mod tests {
             name: Some("worker".to_owned()),
             env: std::iter::once(("OPENAI_API_KEY".to_owned(), "sk-live".to_owned())).collect(),
             spawn_relay,
+            started_at_ms: None,
         }
     }
 
@@ -783,6 +815,7 @@ mod tests {
                 name: None,
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
         let (tx, mut rx) = mpsc::channel(8);
@@ -892,6 +925,7 @@ mod tests {
             spawn_key: None,
             parent_local_id: None,
             agent_mcp: None,
+            preflight: None,
             skills: crate::plugins::SessionSkills::none(),
             events,
             live: LiveSessionRegistry::default(),
@@ -960,6 +994,76 @@ mod tests {
             !req["params"]["config"]["model_providers"].is_object(),
             "an unbound session still declares no provider"
         );
+    }
+
+    /// Register `local_id` as a live session in `cwd` on the process-wide
+    /// roster, so a neighbour exists for the preamble to report.
+    fn note_neighbour(local_id: &str, cwd: &std::path::Path) {
+        crate::neighbours::global().observe(
+            "claude-code",
+            &AdapterEvent::SessionStarted {
+                local_id: local_id.to_owned(),
+                meta: SessionMeta {
+                    working_dir: Some(cwd.to_string_lossy().into_owned()),
+                    parent_local_id: None,
+                    extra: json!({ "started_at_ms": crate::neighbours::now_ms() }),
+                },
+            },
+        );
+    }
+
+    /// Codex has no prompt preamble of its own, so the shared-checkout notice
+    /// has to ride `developerInstructions` — alongside the skill catalog, not
+    /// instead of it.
+    #[test]
+    fn a_thread_started_beside_a_live_session_is_told_they_share_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let neighbour = format!("nb-{}", uuid::Uuid::new_v4());
+        note_neighbour(&neighbour, dir.path());
+
+        let mut session = session_with_tier(fresh_launch(), None);
+        session.cwd = dir.path().to_string_lossy().into_owned();
+        session.skills = skills_of("launch-key-9", "<cctui_skills>yubisashi</cctui_skills>");
+        let (req, method) = session.stdio_thread_request();
+        assert_eq!(method, "thread/start");
+        let instructions = req["params"]["developerInstructions"].as_str().expect("instructions");
+        assert!(instructions.contains("<cctui_skills>yubisashi</cctui_skills>"), "{instructions}");
+        assert!(instructions.contains("shared cwd: 1 other live session"), "{instructions}");
+        assert!(instructions.contains("do not switch branches"), "{instructions}");
+
+        crate::neighbours::global().forget(&[neighbour]);
+    }
+
+    /// A resume is already on the roster; the notice must not report the
+    /// session to itself.
+    #[test]
+    fn a_resumed_thread_is_not_its_own_neighbour() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread_id = format!("tid-{}", uuid::Uuid::new_v4());
+        note_neighbour(&thread_id, dir.path());
+
+        let mut session = session_with_tier(
+            SessionLaunch::Resume { thread_id: thread_id.clone(), initial_commands: Vec::new() },
+            None,
+        );
+        session.cwd = dir.path().to_string_lossy().into_owned();
+        let (req, _) = session.stdio_thread_request();
+        assert!(
+            req["params"]["developerInstructions"].is_null(),
+            "the only live session in the tree is this one"
+        );
+
+        crate::neighbours::global().forget(&[thread_id]);
+    }
+
+    /// A session alone in its tree gets no instructions it did not ask for.
+    #[test]
+    fn a_thread_alone_in_its_tree_carries_no_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = session_with_tier(fresh_launch(), None);
+        session.cwd = dir.path().to_string_lossy().into_owned();
+        let (req, _) = session.stdio_thread_request();
+        assert!(req["params"]["developerInstructions"].is_null());
     }
 
     #[test]
@@ -1103,6 +1207,7 @@ mod tests {
                 name: None,
                 env: std::collections::BTreeMap::default(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
         let action = route_or_prepare_resume(

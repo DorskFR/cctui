@@ -36,6 +36,10 @@ pub struct VersionInfo {
     /// (`CCTUI_UPDATE_COMMAND`), so the update runs the operator's own command
     /// instead of a YOLO agent. Drives what the update modal promises.
     pub self_update_hook: bool,
+    /// Effective per-upload caps, so the composer's pre-flight check matches
+    /// what the server enforces without a second request. Defaults for an
+    /// anonymous caller, like the rest of the deployment state.
+    pub upload_caps: crate::uploads::UploadCaps,
 }
 
 #[derive(Serialize)]
@@ -109,6 +113,7 @@ async fn manifest_info(state: &AppState) -> VersionInfo {
         instance_name: None,
         self_update_ready: false,
         self_update_hook: false,
+        upload_caps: crate::uploads::UploadCaps::default(),
     }
 }
 
@@ -122,7 +127,13 @@ async fn info(state: &AppState) -> VersionInfo {
         Some(machine) => crate::routes::update_hook::machine_has_hook(&state.pool, machine).await,
         None => false,
     };
-    VersionInfo { instance_name, self_update_ready, self_update_hook, ..manifest_info(state).await }
+    VersionInfo {
+        instance_name,
+        self_update_ready,
+        self_update_hook,
+        upload_caps: crate::routes::server_settings::cached_upload_caps(state),
+        ..manifest_info(state).await
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +194,7 @@ mod tests {
             "instance_name",
             "self_update_ready",
             "self_update_hook",
+            "upload_caps",
         ];
         for key in v.as_object().unwrap().keys() {
             assert!(public_fields.contains(&key.as_str()), "unclassified field {key} on /version");

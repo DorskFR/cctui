@@ -11,9 +11,10 @@
 	import PrivacySection from './PrivacySection.svelte';
 	import NotificationsSection from './NotificationsSection.svelte';
 	import MonitoringSection from './MonitoringSection.svelte';
-import SecuritySection from './SecuritySection.svelte';
+	import SecuritySection from './SecuritySection.svelte';
 	import GuidesSection from './GuidesSection.svelte';
 	import InstanceSection from './InstanceSection.svelte';
+	import UploadsSection from './UploadsSection.svelte';
 	import type { SettingsPage } from './settings.logic';
 
 	let { current, isAdmin }: { current: SettingsPage; isAdmin: boolean } = $props();
@@ -44,13 +45,16 @@ import SecuritySection from './SecuritySection.svelte';
 	<MonitoringSection />
 </div>
 <div class="pg" class:on={current === 'security'} data-settings-page="security" data-journey="page" data-journey-key="security">
-	<SecuritySection {isAdmin} />
+	<SecuritySection />
+</div>
+<div class="pg" class:on={current === 'guides'} data-settings-page="guides" data-journey="page" data-journey-key="guides">
+	<GuidesSection />
 </div>
 <div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
 	<InstanceSection {isAdmin} />
 </div>
-<div class="pg" class:on={current === 'guides'} data-settings-page="guides" data-journey="page" data-journey-key="guides">
-	<GuidesSection />
+<div class="pg" class:on={current === 'uploads'} data-settings-page="uploads" data-journey="page" data-journey-key="uploads">
+	<UploadsSection {isAdmin} />
 </div>
 
 <style>

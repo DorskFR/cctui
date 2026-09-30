@@ -67,5 +67,6 @@ pub async fn auth(
         expires_at: Utc::now() + chrono::Duration::hours(24),
         machine_id,
         user_id: ctx.user_id,
+        capabilities: cctui_proto::capability::ALL.iter().map(|c| (*c).to_owned()).collect(),
     }))
 }

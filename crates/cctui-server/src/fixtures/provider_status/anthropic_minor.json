@@ -1,0 +1,38 @@
+{
+  "page": {
+    "id": "6dw5z8lqzlpn",
+    "name": "Anthropic",
+    "url": "https://status.claude.com",
+    "updated_at": "2026-09-07T10:31:00Z"
+  },
+  "components": [
+    {
+      "id": "l4dlchf9vd5v",
+      "name": "Claude API (api.anthropic.com)",
+      "status": "degraded_performance",
+      "group": false
+    },
+    {
+      "id": "r0t2gm3hqvb1",
+      "name": "Claude Code",
+      "status": "operational",
+      "group": false
+    }
+  ],
+  "incidents": [
+    {
+      "id": "8tn6m6sl2wqk",
+      "name": "Elevated error rates on the Claude API",
+      "status": "investigating",
+      "impact": "minor",
+      "shortlink": "https://stspg.io/abc123",
+      "created_at": "2026-09-07T10:20:00Z",
+      "updated_at": "2026-09-07T10:30:00Z"
+    }
+  ],
+  "scheduled_maintenances": [],
+  "status": {
+    "indicator": "minor",
+    "description": "Partially Degraded Service"
+  }
+}

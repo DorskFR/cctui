@@ -7,6 +7,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TrafficRings};
+
 /// Version the worker image bakes and the adapter is written against.
 pub const OPENCODE_PINNED_VERSION: &str = "1.18.7";
 
@@ -255,6 +257,7 @@ pub struct OpenCodeClient {
     base: String,
     password: String,
     http: reqwest::Client,
+    rings: Option<std::sync::Arc<TrafficRings>>,
 }
 
 impl OpenCodeClient {
@@ -268,12 +271,61 @@ impl OpenCodeClient {
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .build()
                 .unwrap_or_default(),
+            rings: None,
         }
+    }
+
+    /// Record every call on `rings`, so a stuck session's Diagnose and live view
+    /// show the HTTP traffic. Off by default: the probe client has no session.
+    #[must_use]
+    pub fn observed(mut self, rings: std::sync::Arc<TrafficRings>) -> Self {
+        self.rings = Some(rings);
+        self
     }
 
     #[must_use]
     pub fn base(&self) -> &str {
         &self.base
+    }
+
+    #[must_use]
+    pub const fn rings(&self) -> Option<&std::sync::Arc<TrafficRings>> {
+        self.rings.as_ref()
+    }
+
+    /// Send a request, recording the call and its outcome on the rings. The
+    /// response body is *not* logged: `GET /session/{id}/message` returns the
+    /// whole transcript, and a ring full of one reply is worse than no ring.
+    async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let label = format!("{method} {path}");
+        if let Some(rings) = &self.rings {
+            rings.note_frame(TRANSPORT_HTTP, "out", &label, body.unwrap_or(""));
+        }
+        let outcome = request.send().await;
+        match outcome {
+            Ok(resp) => {
+                let status = resp.status();
+                if let Some(rings) = &self.rings {
+                    rings.note_frame(TRANSPORT_HTTP, "in", &label, &status.to_string());
+                    if !status.is_success() {
+                        rings.note_protocol_error_on(TRANSPORT_HTTP, &format!("{label}: {status}"));
+                    }
+                }
+                Ok(resp.error_for_status().with_context(|| label)?)
+            }
+            Err(err) => {
+                if let Some(rings) = &self.rings {
+                    rings.note_protocol_error_on(TRANSPORT_HTTP, &format!("{label}: {err}"));
+                }
+                Err(anyhow::Error::new(err).context(label))
+            }
+        }
     }
 
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
@@ -295,51 +347,42 @@ impl OpenCodeClient {
     }
 
     pub async fn health(&self) -> Result<Health> {
-        let resp = self.get("/global/health").send().await?.error_for_status()?;
+        let resp = self.send(self.get("/global/health"), "GET", "/global/health", None).await?;
         Ok(resp.json().await?)
     }
 
     pub async fn create_session(&self, body: &CreateSession) -> Result<SessionInfo> {
-        let resp = self
-            .post("/session")
-            .json(body)
-            .send()
-            .await
-            .context("POST /session")?
-            .error_for_status()?;
+        let json = serde_json::to_string(body).unwrap_or_default();
+        let resp =
+            self.send(self.post("/session").json(body), "POST", "/session", Some(&json)).await?;
         Ok(resp.json().await?)
     }
 
     /// Fire-and-forget prompt: the turn is observed through the event stream
     /// rather than a blocking response.
     pub async fn prompt_async(&self, session_id: &str, body: &PromptRequest) -> Result<()> {
-        self.post(&format!("/session/{session_id}/prompt_async"))
-            .json(body)
-            .send()
-            .await
-            .context("POST prompt_async")?
-            .error_for_status()?;
+        let path = format!("/session/{session_id}/prompt_async");
+        let json = serde_json::to_string(body).unwrap_or_default();
+        self.send(self.post(&path).json(body), "POST", &path, Some(&json)).await?;
         Ok(())
     }
 
     pub async fn messages(&self, session_id: &str) -> Result<Vec<MessageWithParts>> {
-        let resp = self.get(&format!("/session/{session_id}/message")).send().await?;
-        Ok(resp.error_for_status()?.json().await?)
+        let path = format!("/session/{session_id}/message");
+        let resp = self.send(self.get(&path), "GET", &path, None).await?;
+        Ok(resp.json().await?)
     }
 
     pub async fn abort(&self, session_id: &str) -> Result<bool> {
-        let resp = self.post(&format!("/session/{session_id}/abort")).send().await?;
-        Ok(resp.error_for_status()?.json().await?)
+        let path = format!("/session/{session_id}/abort");
+        let resp = self.send(self.post(&path), "POST", &path, None).await?;
+        Ok(resp.json().await?)
     }
 
     pub async fn fork(&self, session_id: &str) -> Result<SessionInfo> {
-        let resp = self
-            .post(&format!("/session/{session_id}/fork"))
-            .json(&serde_json::json!({}))
-            .send()
-            .await
-            .context("POST fork")?
-            .error_for_status()?;
+        let path = format!("/session/{session_id}/fork");
+        let resp =
+            self.send(self.post(&path).json(&serde_json::json!({})), "POST", &path, None).await?;
         Ok(resp.json().await?)
     }
 
@@ -350,25 +393,18 @@ impl OpenCodeClient {
         permission_id: &str,
         response: &str,
     ) -> Result<()> {
-        self.post(&format!("/session/{session_id}/permissions/{permission_id}"))
-            .json(&serde_json::json!({ "response": response }))
-            .send()
-            .await
-            .context("POST permission response")?
-            .error_for_status()?;
+        let path = format!("/session/{session_id}/permissions/{permission_id}");
+        let body = serde_json::json!({ "response": response });
+        self.send(self.post(&path).json(&body), "POST", &path, Some(&body.to_string())).await?;
         Ok(())
     }
 
     /// Open the SSE event stream. The caller decodes frames with
     /// [`super::events::SseDecoder`].
     pub async fn events(&self) -> Result<reqwest::Response> {
-        Ok(self
-            .stream_get("/event")
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .send()
-            .await
-            .context("GET /event")?
-            .error_for_status()?)
+        let request =
+            self.stream_get("/event").header(reqwest::header::ACCEPT, "text/event-stream");
+        self.send(request, "GET", "/event", None).await
     }
 }
 

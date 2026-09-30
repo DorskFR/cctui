@@ -42,3 +42,31 @@ managed LiteLLM account points at it.
 
 Only allow hosts you trust with arbitrary requests from any user who can create
 an account.
+
+## Usage probes for a compatible endpoint
+
+Routing to an `anthropic-compatible` / `openai-compatible` credential works with
+no extra configuration, but such a credential is **measurement-blind**: no usage
+windows, so no pace, no soft limit, and `account_pick` ranks it
+`usage_known: false` — it can neither be trusted nor excluded.
+
+Setting **Usage probe** in the provider drawer (Advanced) names an entry in the
+server's probe registry (`crates/cctui-server/src/usage_probe.rs`). The probe
+reads that upstream's own quota endpoint and reports it under the existing
+canonical window keys, so pace, soft limits and pool election pick it up with no
+further configuration. The credential stays generic — a probe is measurement,
+not a new provider kind, and the family count in the UI stays at two.
+
+| Probe | Reads | Reports |
+|---|---|---|
+| `openrouter` | `GET {base}/api/v1/key` with the stored credential as a Bearer | `usd_7d` from `usage_weekly`, resetting Monday 00:00 UTC |
+| `litellm` | `GET {base}/key/info` | `usd_5h` or `usd_7d` from the virtual key's `spend`, when its `budget_duration` is one of those lengths |
+
+A probe reports nothing rather than guess. A LiteLLM key on a 30-day budget has
+no canonical window of that length, so it stays unmeasured until the canonical
+vocabulary in `soft_limit.rs` is extended deliberately — mapping it onto `usd_7d`
+would make every reset time downstream a lie.
+
+Probe failure (transport, non-2xx, unexpected shape) falls back to the last
+cached reading and, with none, to `usage_known: false`. It never degrades to a
+zeroed, wide-open quota.

@@ -8,6 +8,10 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
 use axum::routing::post;
 
+fn body_limit() -> usize {
+    crate::config::upload_body_limit() as usize
+}
+
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
         &[Method::POST],
@@ -30,21 +34,21 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/sessions/spawn",
         "Spawn a new session on a machine, with optional file uploads.",
-        // Multipart spawn with file uploads: the route enforces a
-        // 20 MB total cap itself; allow a little headroom over it for
-        // multipart framing + base64 isn't applied until after parsing.
-        post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        // Multipart spawn with file uploads: the route enforces the configured
+        // total cap itself, which must stay strictly below this ceiling so an
+        // over-cap upload yields its 413 rather than a body-limit error.
+        post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(body_limit())),
         Authn::Bearer,
         // In-handler machine-owner check (`is_admin || user_id == owner`).
         Authenticated,
     )
     .add(
         // Mid-chat file attachments — same multipart shape + caps
-        // as spawn, same body-limit headroom.
+        // as spawn, same body-limit ceiling.
         &[Method::POST],
         "/sessions/{id}/files",
         "Attach files to a live session mid-conversation.",
-        post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(body_limit())),
         Authn::Bearer,
         sess_write(),
     )

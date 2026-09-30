@@ -40,6 +40,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/{id}/search",
+            "Find-in-conversation hit list for one session's transcript.",
+            get(routes::sessions::search_conversation),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
             "/sessions/{id}/images/{image_id}",
             "Fetch an agent-posted image blob.",
             get(routes::images::get_session_image),
@@ -59,6 +67,14 @@ pub(super) fn register(r: Routes) -> Routes {
             "/sessions/{id}/attachments",
             "List the files the user uploaded into a session (served via blobs).",
             get(routes::attachments::get_session_attachments),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
+            "/sessions/{id}/linked-file-owner",
+            "Which session and machine linked a path, when this session did not.",
+            get(routes::fs::linked_file_owner),
             Authn::Bearer,
             sess_read(),
         )

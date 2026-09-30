@@ -95,4 +95,10 @@ provider_settings: Record<string, unknown> | null,
  * Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`, enforced in
  * the proxy path. NULL ⇒ no throttling.
  */
-rate_limits: RateLimits | null, };
+rate_limits: RateLimits | null, 
+/**
+ * Quota probe from the server's registry used to measure this
+ * compatible-endpoint credential. NULL ⇒ unmeasured (no windows, so no pace
+ * and no soft limit).
+ */
+usage_probe: string | null, };

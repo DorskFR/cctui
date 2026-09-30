@@ -1,9 +1,23 @@
 <script lang="ts">
 	import { Button, Text } from '@dorsk/tsumikit';
+	import { goto } from '$app/navigation';
 	import { m } from '$lib/paraglide/messages';
+	import { settings } from '$lib/settings.svelte';
+	import { tilesHref } from '$lib/tilesLink';
+	import { toasts } from '$lib/toast.svelte';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	let { sp }: { sp: SessionsPage } = $props();
+
+	// The grid is capped, so a selection over it opens the first `maxTiles` and
+	// says so rather than silently dropping the rest.
+	function openInTiles() {
+		const max = settings.state.tiles.maxTiles;
+		const picked = [...sp.list.selected];
+		if (picked.length > max) toasts.info(m.tiles_over_cap({ max }));
+		sp.list.exitSelect();
+		void goto(tilesHref(picked.slice(0, max)));
+	}
 </script>
 
 <div class="bulkbar row">
@@ -11,6 +25,12 @@
 	<Button onclick={sp.list.selectAll}>{m.sessions_select_all()}</Button>
 	<Text size="xs" tone="muted">{m.sessions_select_range_hint()}</Text>
 	<div class="spacer"></div>
+	<Button
+		disabled={sp.list.selected.size === 0}
+		onclick={openInTiles}
+	>
+		{m.tiles_open_count({ count: sp.list.selected.size || '' })}
+	</Button>
 	<Button
 		variant="danger"
 		loading={sp.archiving}

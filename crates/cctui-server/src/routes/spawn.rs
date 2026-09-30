@@ -31,6 +31,7 @@ use crate::auth::AuthContext;
 use crate::authz::{Shareable, shareable_owner};
 use crate::error::{AppError, DB_ERROR};
 use crate::registry::MachineCommand;
+use crate::routes::server_settings::cached_upload_caps;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 use crate::uploads::parse_upload_multipart;
@@ -54,7 +55,7 @@ pub async fn spawn_session(
     Extension(ctx): Extension<AuthContext>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
-    let parsed = parse_upload_multipart(multipart)
+    let parsed = parse_upload_multipart(multipart, cached_upload_caps(&state))
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let uploads = parsed.files;
@@ -908,7 +909,8 @@ pub async fn schedule_draft_launch(
     if SessionRowStatus::parse(&status) != Some(SessionRowStatus::Draft) {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "session is not a draft"));
     }
-    crate::scheduled_spawns::schedule(&state.pool, &session_id, Some(ctx.user_id), at).await?;
+    crate::scheduled_spawns::schedule(&state.pool, &state.bus, &session_id, Some(ctx.user_id), at)
+        .await?;
     tracing::info!(draft = %session_id, launch_at = %at, "draft launch scheduled");
     Ok(StatusCode::ACCEPTED)
 }
@@ -919,7 +921,7 @@ pub async fn cancel_draft_launch(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    if !crate::scheduled_spawns::cancel(&state.pool, &session_id).await? {
+    if !crate::scheduled_spawns::cancel(&state.pool, &state.bus, &session_id).await? {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft is not scheduled"));
     }
     tracing::info!(draft = %session_id, "draft launch schedule cancelled");
@@ -955,7 +957,7 @@ pub async fn stage_session_files(
     Path(session_id): Path<String>,
     multipart: Multipart,
 ) -> Result<Json<cctui_proto::api::StageFilesResponse>, AppError> {
-    let parsed = parse_upload_multipart(multipart)
+    let parsed = parse_upload_multipart(multipart, cached_upload_caps(&state))
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     if parsed.files.is_empty() {

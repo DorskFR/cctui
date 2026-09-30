@@ -52,6 +52,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
+            "/admin/instance/upload-caps",
+            "Read or set the per-upload file count and size caps (admin).",
+            get(routes::server_settings::get_upload_caps).put(routes::server_settings::update_upload_caps),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
             "/admin/harness-autoupdate",
             "Read the harness auto-update settings of every machine, or set the instance default (admin).",
             get(routes::harness_update::read).put(routes::harness_update::set_instance),

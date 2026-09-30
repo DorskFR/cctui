@@ -4,6 +4,7 @@ import type { SessionDiagnoseResponse } from '@bindings/SessionDiagnoseResponse'
 import type { SessionDiagnose } from '@bindings/SessionDiagnose';
 import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 import type { CodexDiagnose } from '@bindings/CodexDiagnose';
+import type { OpenCodeDiagnose } from '@bindings/OpenCodeDiagnose';
 import { endReasonLabel } from './sessionEnd';
 import {
 	diagnoseBlocks,
@@ -191,6 +192,71 @@ describe('diagnoseRows: other failures', () => {
 	it('flags a dead claude socket orange', () => {
 		const d = daemon({ claude_socket: fact({ path: null, live: false, candidates: [] }) });
 		expect(block(diagnoseRows(session(), report({ daemon: d }), NOW), 'transport').status).toBe('warn');
+	});
+});
+
+describe('diagnoseRows: opencode', () => {
+	function oc(over: Partial<OpenCodeDiagnose> = {}): OpenCodeDiagnose {
+		return {
+			server_url: 'http://127.0.0.1:41234',
+			server_pid: 4242,
+			pinned_version: '1.18.7',
+			server_version: '1.18.7',
+			version_matches: true,
+			live: true,
+			owned_sessions: ['ses_1'],
+			turn_status: 'working',
+			sse_connected: true,
+			last_sse_event_ms: NOW - 1_000,
+			pending_permissions: [],
+			protocol_errors: [],
+			stderr_tail: [],
+			rpc_tail: [
+				{ ts_ms: NOW - 2_000, direction: 'out', label: 'POST /session', json: '{}', transport: 'http' },
+				{ ts_ms: NOW - 1_000, direction: 'in', label: 'session.idle', json: '{}', transport: 'sse' }
+			],
+			...over
+		} as OpenCodeDiagnose;
+	}
+
+	const rowsFor = (over: Partial<OpenCodeDiagnose> = {}) =>
+		diagnoseRows(session({ adapter_id: 'opencode' }), report({ daemon: daemon({ opencode: oc(over) }) }), NOW);
+
+	it('shows the serve pid and its url, and stays green while healthy', () => {
+		const p = block(rowsFor(), 'process');
+		expect(p.status).toBe('ok');
+		expect(p.rows.some((r) => r.short === 'pid 4242')).toBe(true);
+		expect(p.rows.some((r) => r.detail?.includes('http://127.0.0.1:41234'))).toBe(true);
+		expect(block(rowsFor(), 'transport').status).toBe('ok');
+	});
+
+	it('turns the transport red when the event stream is down', () => {
+		const t = block(rowsFor({ sse_connected: false }), 'transport');
+		expect(t.status).toBe('error');
+		expect(t.short).toContain('event stream is not connected');
+	});
+
+	it('names the event path as the blind spot when only HTTP frames exist', () => {
+		const t = block(
+			rowsFor({
+				last_sse_event_ms: null,
+				rpc_tail: [
+					{ ts_ms: NOW - 1_000, direction: 'out', label: 'POST /session', json: '{}', transport: 'http' }
+				]
+			}),
+			'transport'
+		);
+		expect(`${t.short}\n${t.rows[0].detail ?? ''}`).toContain('GET /event');
+	});
+
+	it('appends the serve stderr tail to the process row', () => {
+		const p = block(rowsFor({ live: false, stderr_tail: [{ ts_ms: NOW - 100, line: 'serve exited 1' }] }), 'process');
+		expect(p.status).toBe('error');
+		expect(p.rows.some((r) => r.detail?.includes('serve exited 1'))).toBe(true);
+	});
+
+	it('does not paint an idle session orange just for being idle', () => {
+		expect(block(rowsFor({ turn_status: 'idle' }), 'transport').status).toBe('ok');
 	});
 });
 

@@ -520,6 +520,7 @@ pub(super) fn session_scope(frame: &DaemonFrameUp) -> Option<&str> {
                 | AdapterEvent::Diagnose { local_id, .. }
                 | AdapterEvent::PtyChunk { local_id, .. }
                 | AdapterEvent::TranscriptMark { local_id, .. }
+                | AdapterEvent::TurnEnd { local_id, .. }
                 | AdapterEvent::RateLimits { local_id, .. },
             ..
         } => Some(local_id),
@@ -555,6 +556,7 @@ pub(super) fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::PermissionResolved { local_id, .. }
         | AdapterEvent::TokenUsage { local_id, .. }
         | AdapterEvent::TranscriptMark { local_id, .. }
+        | AdapterEvent::TurnEnd { local_id, .. }
         | AdapterEvent::RateLimits { local_id, .. } => local_id,
         _ => "",
     }
@@ -571,6 +573,7 @@ pub(super) const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::PermissionRequest { .. } => "permission_request",
         AdapterEvent::PermissionResolved { .. } => "permission_resolved",
         AdapterEvent::TranscriptMark { .. } => "transcript_mark",
+        AdapterEvent::TurnEnd { .. } => "turn_end",
         _ => "other",
     }
 }

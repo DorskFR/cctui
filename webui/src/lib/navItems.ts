@@ -15,6 +15,7 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 	return [
 		{ href: '/', label: m.nav_overview(), icon: '◧' },
 		{ href: '/sessions', label: m.nav_sessions(), icon: '◰' },
+		{ href: '/tiles', label: m.nav_tiles(), icon: '◫' },
 		{ href: '/bookmarks', label: m.nav_bookmarks(), icon: '◈' },
 		{ href: '/access', label: m.nav_access(), icon: '◍' },
 		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },

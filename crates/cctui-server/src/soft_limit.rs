@@ -269,10 +269,29 @@ fn parse_percent(v: &serde_json::Value) -> Option<f64> {
 /// Missing/malformed entries omit only themselves — one unknown limit never
 /// collapses the valid ones.
 pub fn normalize_usage_windows(usage: &serde_json::Value) -> Vec<UsageWindow> {
-    if let Some(arr) = usage.get("limits").and_then(serde_json::Value::as_array) {
-        return arr.iter().filter_map(normalize_structured_limit).collect();
+    let mut out = usage.get("limits").and_then(serde_json::Value::as_array).map_or_else(
+        || normalize_fixed_fields(usage),
+        |arr| arr.iter().filter_map(normalize_structured_limit).collect(),
+    );
+    // Dollar windows are top-level under their canonical key in every shape, so
+    // a payload carrying both (a probe reporting a percent window and a spend)
+    // keeps both.
+    push_usd_windows(usage, &mut out);
+    out
+}
+
+/// Top-level `session_usd` / `usd_5h` / `usd_7d` blocks → dollar windows.
+fn push_usd_windows(usage: &serde_json::Value, out: &mut Vec<UsageWindow>) {
+    for key in [KEY_SESSION_USD, KEY_USD_5H, KEY_USD_7D] {
+        if out.iter().any(|w| w.key == key) {
+            continue;
+        }
+        if let Some(w) = usage.get(key)
+            && let Some(amount_usd) = w.get("amount_usd").and_then(serde_json::Value::as_f64)
+        {
+            out.push(usd_window(key, amount_usd, parse_resets_at(w)));
+        }
     }
-    normalize_fixed_fields(usage)
 }
 
 /// One entry of the new `limits[]` array → a window (or `None` if malformed).
@@ -406,13 +425,6 @@ fn normalize_fixed_fields(usage: &serde_json::Value) -> Vec<UsageWindow> {
         "Weekly Sonnet",
         Some("sonnet"),
     );
-    for key in [KEY_SESSION_USD, KEY_USD_5H, KEY_USD_7D] {
-        if let Some(w) = usage.get(key)
-            && let Some(amount_usd) = w.get("amount_usd").and_then(serde_json::Value::as_f64)
-        {
-            out.push(usd_window(key, amount_usd, parse_resets_at(w)));
-        }
-    }
     out
 }
 
