@@ -766,14 +766,45 @@ describe('queued messages carry their own queue state', () => {
 		expect(lines[0].cancelled).toBeUndefined();
 	});
 
-	it('marks a queued prompt cancelled when it is dequeued with no user event', () => {
+	it('shows a dequeued prompt with no user event as delivered, not withdrawn', () => {
 		const lines = buildLines(
 			[queueOp('queued', 'ship the thing', 1, 5), queueOp('dequeued', '', 2, 6)],
 			ctx()
 		);
 		expect(lines).toHaveLength(1);
-		expect(lines[0].cancelled).toBe(true);
+		expect(lines[0].cancelled).toBeUndefined();
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
 		expect(lines[0].text).toBe('ship the thing');
+	});
+
+	it('keeps every line of a multi-line queued prompt', () => {
+		const body = ['Your token: please rotate it', '', '- one', '- two'].join('\n');
+		const lines = buildLines([queueOp('queued', body, 1, 5)], ctx());
+		expect(lines).toHaveLength(1);
+		expect(lines[0].text).toBe(body);
+		expect(lines[0].html).toContain('- two');
+	});
+
+	it('shows a multi-line prompt consumed mid-turn once, as delivered', () => {
+		const body = ['Your token: please rotate it', '', 'the rest of the message'].join('\n');
+		const lines = buildLines(
+			[queueOp('queued', body, 1, 5), queueOp('absorbed', body, 2, 6)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].cancelled).toBeUndefined();
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].text).toBe(body);
+	});
+
+	it('still strikes a prompt the user removed', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), queueOp('cleared', '', 2, 6)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].cancelled).toBe(true);
 	});
 
 	it('marks a queued prompt cancelled when a remove op names it', () => {
