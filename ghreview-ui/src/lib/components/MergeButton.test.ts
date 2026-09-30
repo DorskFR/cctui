@@ -51,7 +51,9 @@ describe("MergeButton", () => {
 
     expect(document.querySelector(".merge-button.full-width")).not.toBeNull();
     const trigger = document.querySelector('.merge-button [data-tsu="Popover"]');
-    expect(trigger?.textContent).toBe("Merge");
+    expect(trigger?.textContent?.trim()).toBe("Merge");
+    expect(trigger?.getAttribute("aria-label")).toBe("Merge pull request");
+    expect(trigger?.querySelector(".pop-count")).toBeNull();
     expect(trigger?.classList.contains("trigger-sm")).toBe(true);
     expect(trigger?.classList.contains("trigger-primary")).toBe(true);
     expect(trigger?.classList.contains("trigger-tone-success")).toBe(true);
