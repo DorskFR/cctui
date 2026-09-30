@@ -20,6 +20,17 @@
   }
 }
 
+/* Tiles own the viewport exactly (+layout.svelte publishes the flag). `clip`
+ * on both axes takes the document off the scroll-container path entirely, so
+ * neither a body-level overlay nor a pane's min-content width can give the
+ * page a scrollbar; the transcripts scroll inside their own tiles. */
+:root[data-tiles="on"],
+:root[data-tiles="on"] body {
+  height: 100%;
+  overflow: clip;
+  overscroll-behavior: none;
+}
+
 .muted {
   color: var(--text-muted);
 }

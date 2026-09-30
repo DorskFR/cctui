@@ -212,11 +212,28 @@ describe('the readable floor', () => {
 		expect(fittingPaneCount(24, UW)).toBe(10);
 	});
 
-	it('drops panes until one fits rather than showing slivers', () => {
-		// Short area: the cap would allow two, but two rows leave 190px a pane.
-		const short = { width: 1912, height: 380 };
-		expect(paneCapacity(short)).toBe(2);
-		expect(fittingPaneCount(2, short)).toBe(1);
+	it('keeps 2x2 on a real Full HD window, bottom nav included', () => {
+		// A 1080p screen gives a browser ~960 of inner height, and the bottom nav
+		// plus header and toolbar leave ~800 of tiles area.
+		for (const h of [928, 875, 800]) {
+			const vp = { width: 1912, height: h };
+			expect(fittingPaneCount(24, vp), `${h}`).toBe(4);
+			expect(tileGrid(4, vp), `${h}`).toEqual({ cols: 2, rows: 2 });
+		}
+	});
+
+	it('gives a short area one full-height row instead of slivers', () => {
+		// A short area gets one row, not two half-height ones: the ratio score
+		// already prefers it, and every pane keeps the full height.
+		for (const vp of [
+			{ width: 2600, height: 650 },
+			{ width: 1912, height: 380 }
+		]) {
+			const k = fittingPaneCount(24, vp);
+			const { rows } = tileGrid(k, vp);
+			expect(rows, `${vp.width}x${vp.height}`).toBe(1);
+			expect(vp.height / rows).toBeGreaterThanOrEqual(MIN_PANE_HEIGHT);
+		}
 	});
 
 	it('leaves every pane it does mount above the floor, or a single pane', () => {

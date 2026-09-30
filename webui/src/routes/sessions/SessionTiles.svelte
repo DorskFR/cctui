@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { Button, EmptyState, Popover, Text } from '@dorsk/tsumikit';
+	import { EmptyState } from '@dorsk/tsumikit';
 	import ConversationPane from '$lib/components/organisms/ConversationPane.svelte';
 	import { fittingPaneCount, tileLayout } from '$lib/tiles';
 	import { m } from '$lib/paraglide/messages';
@@ -8,12 +8,14 @@
 	let {
 		sessions,
 		onNavigate,
-		onOpen
+		onoverflow
 	}: {
 		sessions: SessionListItem[];
 		onNavigate?: (id: string) => void;
-		/** Open a session the grid had no room for, in the normal drawer. */
-		onOpen?: (s: SessionListItem) => void;
+		/** The sessions the grid had no room for. Reported rather than rendered:
+		 *  a chip above the grid would eat the height the capacity is measured
+		 *  from, so the toolbar shows it instead. */
+		onoverflow?: (items: SessionListItem[]) => void;
 	} = $props();
 
 	let maximized = $state<string | null>(null);
@@ -31,35 +33,11 @@
 	const panes = $derived(shown.slice(0, capacity));
 	const overflow = $derived(shown.slice(capacity));
 	const layout = $derived(tileLayout(panes.length, { width, height }));
-</script>
 
-{#if overflow.length}
-	<div class="more">
-		<Popover
-			label={m.tiles_more({ count: overflow.length })}
-			variant="default"
-			tone="accent"
-			size="sm"
-			pill
-		>
-			{#snippet trigger()}{m.tiles_more({ count: overflow.length })}{/snippet}
-			<div class="more-list">
-				<Text size="xs" tone="muted">{m.tiles_more_help()}</Text>
-				{#each overflow as s (s.id)}
-					<Button
-						size="sm"
-						variant="ghost"
-						block
-						style="justify-content:flex-start"
-						onclick={() => onOpen?.(s)}
-					>
-						{s.name || s.working_dir}
-					</Button>
-				{/each}
-			</div>
-		</Popover>
-	</div>
-{/if}
+	$effect(() => {
+		onoverflow?.(overflow);
+	});
+</script>
 
 <div
 	class="tiles"
@@ -94,20 +72,6 @@
 </div>
 
 <style>
-	.more {
-		flex: none;
-		display: flex;
-		justify-content: flex-end;
-		padding: 0 var(--sp-2) var(--sp-1);
-	}
-	.more-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		max-height: 50vh;
-		overflow-y: auto;
-		min-width: 16rem;
-	}
 	/* The 1px gap IS the border: one hairline between neighbours instead of two
 	   abutting ones, drawn by the grid's own background showing through. */
 	/* minmax(0, …) on both axes, not `1fr`: a bare `1fr` floors at the pane's

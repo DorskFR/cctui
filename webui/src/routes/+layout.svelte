@@ -58,6 +58,16 @@
 		document.documentElement.dataset.nav = topNav ? 'top' : 'bottom';
 	});
 
+	// Tiles fill the viewport exactly, so the document must not be a scroll
+	// container at all: `main`'s own `overflow` cannot stop a body-level portal
+	// or a sibling from growing it. Published here, where the view mode's owner
+	// is already read, rather than raised from inside the Sessions subtree.
+	$effect(() => {
+		const root = document.documentElement;
+		if (isTiles) root.dataset.tiles = 'on';
+		else delete root.dataset.tiles;
+	});
+
 	// Docked panels (Settings › New session / Stats panel): the Sessions screen
 	// pins the spawn form and/or the stats panel to an edge, so the content
 	// reserves that edge for them. The panels themselves are rendered by the
@@ -158,7 +168,7 @@
 	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
 		{#if auth.isAuthed}
-			<div class="app">
+			<div class="app" class:tiles={isTiles}>
 				<Header />
 				<main
 					class="content"
@@ -198,6 +208,14 @@
 		min-height: 100dvh;
 		display: flex;
 		flex-direction: column;
+	}
+	/* `min-height` would let anything rendered beside the tiles push the shell
+	   past the window; `clip` rather than `hidden` keeps it off the scroll-
+	   container path so nothing below turns sticky-positioned. */
+	.app.tiles {
+		height: 100dvh;
+		min-height: 0;
+		overflow: clip;
 	}
 	.content {
 		flex: 1;
