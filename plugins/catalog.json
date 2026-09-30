@@ -5,9 +5,9 @@
       "id": "ghreview",
       "name": "GitHub review",
       "description": "A pull-request inbox next to your sessions. Buckets the PRs that need you, shows diffs and threads, and lets you review and merge without leaving cctui.",
-      "version": "0.1.1",
-      "url": "https://github.com/DorskFR/ghreview/releases/download/v0.1.1/ghreview-0.1.1.tgz",
-      "sha256": "0ce872f72b40e98265ecd47a83e293a6576f8d950265a55e566e630b2affb4c5",
+      "version": "0.1.2",
+      "url": "https://github.com/DorskFR/ghreview/releases/download/v0.1.2/ghreview-0.1.2.tgz",
+      "sha256": "fc10b78d33caba8e714bed92680ccbb2e96f4fe2020f6e4c7d11024d6badcb6a",
       "homepage": "https://github.com/DorskFR/ghreview"
     },
     {
