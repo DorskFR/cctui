@@ -11,23 +11,27 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 
-/// Longest accepted draft key. Spawn slot keys embed a machine id and a working
-/// directory, so this is generous; it exists to bound the index, not to shape
-/// the namespace.
+/// Longest accepted draft key.
+///
+/// Spawn slot keys embed a machine id and a working directory, so this is
+/// generous; it bounds the index, it does not shape the namespace.
 pub const DRAFT_KEY_MAX: usize = 512;
 
-/// Longest accepted draft body. Well above any composer prompt (attachments
-/// travel separately, as blobs), and below anything that would make the row a
-/// problem.
+/// Longest accepted draft body.
+///
+/// Well above any composer prompt (attachments travel separately, as blobs),
+/// and below anything that would make the row a problem.
 pub const DRAFT_TEXT_MAX: usize = 256 * 1024;
 
-/// How many spawn-memory entries a user keeps. Writes past the cap evict the
-/// least recently written entries.
+/// How many spawn-memory entries a user keeps.
+///
+/// Writes past the cap evict the least recently written entries.
 pub const SPAWN_MEMORY_CAP: usize = 50;
 
-/// The ASCII unit separator: absent from machine ids, dispatcher ids, working
-/// directories and repo names, and — unlike NUL — storable in the JSONB
-/// settings blob, so it separates the parts of a composite key unambiguously.
+/// The composite-key separator, the ASCII unit separator.
+///
+/// Absent from machine ids, dispatcher ids, working directories and repo
+/// names, and — unlike NUL — storable in the JSONB settings blob.
 pub const KEY_SEP: char = '\u{1f}';
 
 /// One stored draft.
@@ -55,9 +59,10 @@ pub struct PutDraftRequest {
     pub text: String,
 }
 
-/// The spawn configuration remembered for one target. Mirrors the fields the
-/// spawn form recalls; `account_provider` is carried for display only, the form
-/// recomputes it from the account.
+/// The spawn configuration remembered for one target.
+///
+/// Mirrors the fields the spawn form recalls; `account_provider` is carried for
+/// display only, the form recomputes it from the account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnMemoryEntry {
