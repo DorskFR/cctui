@@ -21,6 +21,7 @@ pub enum View {
     Help,
     HistoryPicker,
     ModelPicker,
+    Sidebar,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -247,6 +248,8 @@ pub struct App {
     pub ui: UiState,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
+    /// Cursor state of the todo/subagent sidebar.
+    pub sidebar: super::sidebar::Sidebar,
 }
 
 impl App {
@@ -314,6 +317,7 @@ impl App {
             refresh: RefreshCounters::default(),
             ui: UiState::default(),
             controls: super::controls::Controls::default(),
+            sidebar: super::sidebar::Sidebar::default(),
         }
     }
 

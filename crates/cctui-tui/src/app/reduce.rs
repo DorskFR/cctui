@@ -158,6 +158,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
 
         Action::Controls(action) => super::controls::reduce_controls(app, action),
+        Action::Sidebar(action) => super::sidebar::reduce_sidebar(app, action),
         Action::ToggleAutoApproveSelected => app
             .selected_session()
             .map(|s| (s.id.clone(), !s.auto_approve))

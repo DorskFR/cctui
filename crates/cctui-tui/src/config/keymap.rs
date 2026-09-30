@@ -14,6 +14,7 @@ pub enum Context {
     History,
     Help,
     ModelPicker,
+    Sidebar,
     Permission,
     Ask,
     AskText,
@@ -29,6 +30,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::History,
     Context::Help,
     Context::ModelPicker,
+    Context::Sidebar,
     Context::Permission,
     Context::Ask,
     Context::AskText,
@@ -46,6 +48,7 @@ impl Context {
             Self::History => "history",
             Self::Help => "help",
             Self::ModelPicker => "model-picker",
+            Self::Sidebar => "sidebar",
             Self::Permission => "permission",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
@@ -63,6 +66,7 @@ impl Context {
             Self::History => "Prompt history",
             Self::Help => "Help",
             Self::ModelPicker => "Model picker",
+            Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
@@ -146,6 +150,12 @@ actions! {
     ToggleTimestamps => "toggle-timestamps", "Show timestamps";
     Interrupt => "interrupt", "Interrupt the turn";
     ModelPicker => "model-picker", "Change model and effort";
+    ToggleSidebar => "toggle-sidebar", "Todo and subagent sidebar";
+    SidebarNext => "sidebar-next", "Next subagent";
+    SidebarPrev => "sidebar-prev", "Previous subagent";
+    SidebarOpen => "sidebar-open", "Open the subagent";
+    SidebarClose => "sidebar-close", "Close the sidebar";
+    OpenParent => "open-parent", "Go to the parent session";
     PickerClose => "picker-close", "Close the picker";
     PickerNext => "picker-next", "Next entry";
     PickerPrev => "picker-prev", "Previous entry";
@@ -265,6 +275,8 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "x", ActionId::DiscardSend),
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "M", ActionId::ModelPicker),
+    spec(Context::Conversation, ">", ActionId::ToggleSidebar),
+    spec(Context::Conversation, "u", ActionId::OpenParent),
     spec(Context::Conversation, "ctrl+f", ActionId::Fork),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
@@ -295,6 +307,16 @@ const HELP: &[BindingSpec] = &[
     spec(Context::Help, "k, up", ActionId::ScrollUp),
     spec(Context::Help, "pagedown", ActionId::PageDown),
     spec(Context::Help, "pageup", ActionId::PageUp),
+];
+
+/// Focused but not modal: it claims its own keys and leaves the rest to the
+/// conversation, so the transcript still scrolls with the panel up.
+const SIDEBAR: &[BindingSpec] = &[
+    spec(Context::Sidebar, "esc, >", ActionId::SidebarClose),
+    spec(Context::Sidebar, "j, down", ActionId::SidebarNext),
+    spec(Context::Sidebar, "k, up", ActionId::SidebarPrev),
+    spec(Context::Sidebar, "enter", ActionId::SidebarOpen),
+    spec(Context::Sidebar, "u", ActionId::OpenParent),
 ];
 
 /// Modal over the conversation: everything it does not claim stays claimed,
@@ -357,6 +379,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     HISTORY,
     HELP,
     MODEL_PICKER,
+    SIDEBAR,
     PERMISSION,
     ASK,
     ASK_TEXT,
@@ -443,7 +466,7 @@ impl Keymap {
 
     const fn fallbacks(context: Context) -> &'static [Context] {
         match context {
-            Context::Permission => &[Context::Conversation, Context::Global],
+            Context::Permission | Context::Sidebar => &[Context::Conversation, Context::Global],
             Context::SessionList | Context::Conversation | Context::Help => &[Context::Global],
             _ => &[],
         }

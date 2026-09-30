@@ -39,7 +39,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let cost = format!("${:.2}", session.token_usage.cost_usd);
     let machine = &session.machine_id;
 
-    let main_area = frame.area();
+    // The sidebar takes a column off the right and the vertical layout below
+    // runs on what is left, so nothing else moves when it opens.
+    let full_area = frame.area();
+    let sidebar_open = super::sidebar::visible(app, full_area.width);
+    let (main_area, sidebar_area) = if sidebar_open {
+        let [main, side] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(crate::app::sidebar::WIDTH),
+        ])
+        .areas(full_area);
+        (main, Some(side))
+    } else {
+        (full_area, None)
+    };
+
     let input_lines = app.message_input.lines().len().max(1);
     let max_input = (main_area.height as usize / 2).max(1);
     let input_height = input_lines.clamp(1, 12_usize.min(max_input)) as u16;
@@ -67,6 +81,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if card_height > 0 {
         frame.render_widget(Paragraph::new(cards), card_area);
+    }
+
+    if let Some(area) = sidebar_area {
+        super::sidebar::draw(frame, area, app, &session, app.view() == crate::app::View::Sidebar);
     }
 
     // Header

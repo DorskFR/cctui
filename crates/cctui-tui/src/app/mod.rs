@@ -15,6 +15,7 @@ pub mod server_event;
 pub mod session_list;
 pub mod session_live;
 pub mod session_status;
+pub mod sidebar;
 pub mod state;
 pub mod toast;
 pub mod transcript;

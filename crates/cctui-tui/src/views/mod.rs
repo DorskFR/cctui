@@ -6,6 +6,7 @@ pub mod history;
 pub mod model_picker;
 pub mod prompt;
 pub mod sessions;
+pub mod sidebar;
 
 use ratatui::Frame;
 
@@ -14,7 +15,9 @@ use crate::app::{App, View};
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view() {
         View::SessionList => sessions::draw(frame, app),
-        View::Conversation => conversation::draw(frame, app),
+        // The sidebar is focus only: the conversation draws the panel itself,
+        // so taking the keyboard never redraws the transcript differently.
+        View::Conversation | View::Sidebar => conversation::draw(frame, app),
         // Help always renders over the session list, whatever it was opened from.
         View::Help => {
             sessions::draw(frame, app);

@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 pub struct UiState {
     pub toggled_groups: BTreeSet<String>,
     pub folded_sections: BTreeSet<String>,
+    /// Whether the conversation's todo/subagent sidebar is showing.
+    pub sidebar_open: bool,
     /// A probe state that reports everything open, so a caller can enumerate the
     /// groups a fully-unfolded list would show. Never persisted.
     #[serde(skip)]

@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::drafts::DraftAction;
+use crate::app::sidebar::SidebarAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, edit_permission_request,
@@ -583,4 +584,63 @@ fn model_picker_on_a_gated_model() {
     reduce(&mut app, Action::Controls(ControlsAction::ModelsLoaded(Box::new(picker_models()))));
     reduce(&mut app, Action::Controls(ControlsAction::PickerMove(1)));
     insta::assert_snapshot!(render_screen(&mut app));
+}
+
+// -- CCT-1237: todo panel and subagent navigation --
+
+fn app_with_a_subagent() -> crate::app::App {
+    let mut app = app_on("s-working");
+    let s = session_mut(&mut app, "s-working");
+    s.todos = vec![
+        todo("completed", "Read the brief", None),
+        todo("in_progress", "Wire the panel", Some("Wiring the panel")),
+        todo("pending", "Write the tests", None),
+    ];
+    focus(&mut app, "s-working");
+    app
+}
+
+#[test]
+fn conversation_sidebar_open() {
+    let mut app = app_with_a_subagent();
+    reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_sidebar_cursor_on_the_second_subagent() {
+    let mut app = app_with_a_subagent();
+    session_mut(&mut app, "s-child").hibernated = true;
+    let mut extra = crate::testsupport::subagent("s-child-2", "s-working", "writer");
+    extra.bucket = cctui_proto::classifier::Bucket::Blocked;
+    app.sessions.push(extra);
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
+    reduce(&mut app, Action::Sidebar(SidebarAction::Move(1)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// From a child the panel offers the way back up.
+#[test]
+fn conversation_sidebar_on_a_subagent() {
+    let mut app = app_on("s-child");
+    focus(&mut app, "s-child");
+    reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_sidebar_with_nothing_to_show() {
+    let mut app = app_on("s-blocked");
+    focus(&mut app, "s-blocked");
+    reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Too narrow for a column: the transcript keeps the width.
+#[test]
+fn conversation_sidebar_suppressed_when_narrow() {
+    let mut app = app_with_a_subagent();
+    reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }

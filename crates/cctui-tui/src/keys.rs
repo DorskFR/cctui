@@ -9,6 +9,7 @@ use crate::app::drafts::DraftAction;
 use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
+use crate::app::sidebar::SidebarAction;
 use crate::app::state::View;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
@@ -33,6 +34,9 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
     if matches!(view, View::ModelPicker) {
         return Context::ModelPicker;
     }
+    if matches!(view, View::Sidebar) {
+        return Context::Sidebar;
+    }
     if input_active {
         return Context::Composer;
     }
@@ -51,6 +55,7 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
         View::ModelPicker => Context::ModelPicker,
+        View::Sidebar => Context::Sidebar,
     }
 }
 
@@ -72,12 +77,16 @@ pub fn map_input(
                 .or_else(|| unbound(context, key))
         }
         InputEvent::ScrollUp => match view {
-            View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
+            View::Conversation | View::Sidebar => {
+                Some(Action::Scroll { lines: -3, release_follow: true })
+            }
             View::SessionList => Some(Action::SelectPrev),
             View::Help | View::HistoryPicker | View::ModelPicker => None,
         },
         InputEvent::ScrollDown => match view {
-            View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
+            View::Conversation | View::Sidebar => {
+                Some(Action::Scroll { lines: 3, release_follow: false })
+            }
             View::SessionList => Some(Action::SelectNext),
             View::Help | View::HistoryPicker | View::ModelPicker => None,
         },
@@ -131,6 +140,13 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
             Action::Controls(ControlsAction::PickerColumn(PickerColumn::Effort))
         }
         ActionId::PickerApply => Action::Controls(ControlsAction::PickerApply),
+
+        ActionId::ToggleSidebar => Action::Sidebar(SidebarAction::Toggle),
+        ActionId::SidebarClose => Action::Sidebar(SidebarAction::Close),
+        ActionId::SidebarNext => Action::Sidebar(SidebarAction::Move(1)),
+        ActionId::SidebarPrev => Action::Sidebar(SidebarAction::Move(-1)),
+        ActionId::SidebarOpen => Action::Sidebar(SidebarAction::OpenChild),
+        ActionId::OpenParent => Action::Sidebar(SidebarAction::OpenParent),
         ActionId::RetrySend => Action::Send(SendAction::Retry(chord.event())),
         ActionId::EditSend => Action::Send(SendAction::Edit(chord.event())),
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),

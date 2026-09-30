@@ -11,6 +11,7 @@ use super::identity::AuthAction;
 use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
+use super::sidebar::SidebarAction;
 use super::state::ConversationLine;
 use super::toast::Level;
 
@@ -50,6 +51,7 @@ pub enum Action {
     SubmitInput,
 
     Controls(ControlsAction),
+    Sidebar(SidebarAction),
     ToggleAutoApproveSelected,
     AutoApproveSet {
         session_id: String,
