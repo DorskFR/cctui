@@ -9,6 +9,7 @@ pub mod bookmarks;
 pub mod cache_loss;
 pub mod capabilities;
 pub mod codex_models;
+pub mod context;
 pub mod credentials;
 pub mod daemon;
 pub mod diagnose;

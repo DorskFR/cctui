@@ -4,6 +4,7 @@ mod account_usage;
 mod accounts;
 mod admin_instance;
 mod admin_users;
+mod context;
 mod daemon;
 mod dispatch;
 mod keys;
@@ -48,6 +49,7 @@ const fn sess_write() -> Authz {
 pub fn register(r: Routes) -> Routes {
     let r = passkeys::register(r);
     let r = plugins::register(r);
+    let r = context::register(r);
     let r = version::register(r);
     let r = session_lifecycle::register(r);
     let r = dispatch::register(r);

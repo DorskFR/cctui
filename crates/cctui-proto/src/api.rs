@@ -181,6 +181,45 @@ pub struct GatewayEnvResponse {
     /// whatever channel that harness has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<SessionPlugin>,
+    /// Memory notes and the prompt template this session was launched with,
+    /// already scope-resolved by the server.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<SessionContextItem>,
+}
+
+/// One resolved context item as the daemon needs it: enough to stage the body
+/// and name it to the agent. Server-side scoping is already applied.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContextItem {
+    /// `memory` or `prompt`.
+    pub kind: String,
+    pub name: String,
+    pub title: String,
+    pub body: String,
+    pub version: i32,
+}
+
+/// What a spawn asks for by way of reusable context. `auto` adds every
+/// scope-matching memory on top of the explicit picks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SpawnContext {
+    /// Item names, any kind.
+    #[serde(default)]
+    pub items: Vec<String>,
+    #[serde(default = "crate::api::auto_context_default")]
+    pub auto: bool,
+}
+
+impl Default for SpawnContext {
+    fn default() -> Self {
+        Self { items: Vec::new(), auto: true }
+    }
+}
+
+#[must_use]
+pub const fn auto_context_default() -> bool {
+    true
 }
 
 /// One enabled plugin's skill bundle, as served under
@@ -672,6 +711,15 @@ pub struct SpawnRequest {
     pub relation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// Reusable context to attach. Resolved server-side so a webui spawn, a
+    /// `CctuiAgent` child and a dispatch all get the same kit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<SpawnContext>,
+    /// Profile this spawn came from. Only its context set is applied here;
+    /// the other knobs still arrive as explicit fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
+    pub profile_id: Option<uuid::Uuid>,
 }
 
 impl std::fmt::Debug for SpawnRequest {
@@ -698,6 +746,8 @@ impl std::fmt::Debug for SpawnRequest {
             .field("env_keys", &self.env_keys)
             .field("attachment_names", &self.attachment_names)
             .field("label_ids", &self.label_ids)
+            .field("context", &self.context)
+            .field("profile_id", &self.profile_id)
             .field("spawn_capability", &self.spawn_capability)
             .field("relation", &self.relation)
             .field("parent_session_id", &self.parent_session_id)
