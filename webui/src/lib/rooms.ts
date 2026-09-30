@@ -58,15 +58,6 @@ export const unsharePeer = (sessionId: string, peerSessionId: string) =>
 
 // --- pure helpers ---
 
-/** A member as one line: `name (adapter on machine)`, falling back to the id. */
-export function memberLabel(m: RoomMember): string {
-	const name = m.name?.trim() || m.session_id;
-	return `${name} (${m.adapter ?? 'unknown'} on ${m.machine ?? 'unknown machine'})`;
-}
-
-/** A member that can no longer receive a broadcast is shown greyed out. */
-export const isDormant = (m: RoomMember) => m.state !== 'live';
-
 /** Live rooms, newest first, for the picker. */
 export const pickable = (all: Room[]): Room[] => all.filter((r) => !r.archived);
 

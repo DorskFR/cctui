@@ -3,7 +3,7 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws } from '$lib/ws.svelte';
-	import { endpoints, useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
+	import { endpoints, useConversation, useSessionActions, useLabels, useSessions, qk } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '$lib/rooms';
@@ -111,6 +111,18 @@
 	// both stay in sync.
 	const labelsQuery = useLabels();
 	const allLabels = $derived(labelsQuery.data?.labels ?? []);
+
+	// Shares the sessions-page cache entry, so the share picker costs nothing on
+	// a page that already loaded the list.
+	const peerList = useSessions(() => false);
+	const shareCandidates = $derived(
+		(peerList.data?.sessions ?? []).map((s) => ({
+			id: s.id,
+			name: s.name ?? null,
+			adapter: s.adapter_id ?? null,
+			machine: s.machine_name ?? null
+		}))
+	);
 	const togglePin = (s: SessionListItem) => (s.pinned ? actions.unpin(s.id) : actions.pin(s.id));
 
 	// Room is a field on the session, so a change invalidates the session list
@@ -414,6 +426,7 @@
 				onDeleteLabel={actions.deleteLabel}
 				onsetroom={setRoom}
 				onclearroom={clearRoom}
+				{shareCandidates}
 			/>
 
 			<DrawerToolbar

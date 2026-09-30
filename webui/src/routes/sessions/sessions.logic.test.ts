@@ -370,6 +370,12 @@ describe('dimension color / group', () => {
 			expect(dimGroupsOf(session({ room_id: null, room_name: null }), 'room')[0].key).toBe(
 				DIM_NONE_KEY
 			);
+		});
+
+		// An archived room comes back with `room_name` NULL (the list query drops
+		// archived rooms from its join), so a session in one stops grouping at the
+		// same moment it stops being able to address its peers.
+		it('ungroups a session whose room is archived, even though room_id survives', () => {
 			expect(dimGroupsOf(session({ room_id: 'r-1', room_name: null }), 'room')[0].key).toBe(
 				DIM_NONE_KEY
 			);

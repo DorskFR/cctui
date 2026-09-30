@@ -1,47 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import {
-	canCreate,
-	isDormant,
-	matchByName,
-	memberLabel,
-	pickable,
-	type Room,
-	type RoomMember
-} from './rooms';
+import { canCreate, matchByName, pickable, type Room, type RoomMember } from './rooms';
 
-function member(id: string, over: Partial<RoomMember> = {}): RoomMember {
+function member(id: string): RoomMember {
 	return {
 		session_id: id,
 		name: `lane ${id}`,
 		adapter: 'claude-code',
 		machine: 'box-a',
 		state: 'live',
-		last_delivered_seq: 0,
-		...over
+		last_delivered_seq: 0
 	};
 }
 
 function room(id: string, name: string, archived = false): Room {
 	return { id, name, archived, members: [member('a')] };
 }
-
-describe('memberLabel', () => {
-	it('falls back to the session id and to unknown parts', () => {
-		expect(memberLabel(member('a'))).toBe('lane a (claude-code on box-a)');
-		expect(memberLabel(member('a', { name: '  ' }))).toBe('a (claude-code on box-a)');
-		expect(memberLabel(member('a', { name: null, adapter: null, machine: null }))).toBe(
-			'a (unknown on unknown machine)'
-		);
-	});
-});
-
-describe('isDormant', () => {
-	it('is true for anything that can no longer receive a broadcast', () => {
-		expect(isDormant(member('a'))).toBe(false);
-		expect(isDormant(member('a', { state: 'ended' }))).toBe(true);
-		expect(isDormant(member('a', { state: 'archived' }))).toBe(true);
-	});
-});
 
 describe('pickable', () => {
 	it('offers only live rooms', () => {

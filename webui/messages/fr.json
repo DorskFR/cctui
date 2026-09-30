@@ -2077,5 +2077,11 @@
   "rooms_clear": "Aucune salle",
   "rooms_rename": "Renommer la salle",
   "rooms_move_count": "Déplacer {count} vers une salle",
-  "sessions_dim_room": "Salle"
+  "sessions_dim_room": "Salle",
+  "rooms_share_peer": "Autoriser une autre session à écrire à celle-ci",
+  "rooms_share_peer_none": "Partagée avec aucune session.",
+  "rooms_share_peer_find": "Chercher une session…",
+  "rooms_share_peer_no_match": "Aucune session correspondante.",
+  "rooms_share_peer_hint": "Deux sessions partagées peuvent s'écrire et lire leurs historiques, sans être dans la même salle.",
+  "rooms_unshare_peer": "Ne plus partager"
 }

@@ -2077,5 +2077,11 @@
   "rooms_clear": "No room",
   "rooms_rename": "Rename room",
   "rooms_move_count": "Move {count} to a room",
-  "sessions_dim_room": "Room"
+  "sessions_dim_room": "Room",
+  "rooms_share_peer": "Let another session message this one",
+  "rooms_share_peer_none": "Not shared with any session.",
+  "rooms_share_peer_find": "Find a session…",
+  "rooms_share_peer_no_match": "No session matches.",
+  "rooms_share_peer_hint": "A shared pair can message each other and read each other's history, without being in the same room.",
+  "rooms_unshare_peer": "Stop sharing"
 }
