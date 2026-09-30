@@ -17,6 +17,7 @@ mod backfill;
 mod claude_service;
 mod control;
 pub(crate) use control::stage_mid_chat_files;
+mod composer;
 mod diagnose;
 mod discovery;
 mod dispatch_done;
