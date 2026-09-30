@@ -47,6 +47,7 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
     app.follow_tail = true;
     app.scroll_offset = 0;
     app.router.push(View::Conversation);
+    app.subscribed = Some(session_id.clone());
 
     let store = app.conversation_mut(&session_id);
     let page = store.latest_request();
@@ -58,7 +59,24 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
             page,
             etag,
         },
-        Effect::Subscribe { session_id },
+        Effect::Subscribe { session_id: session_id.clone() },
+        Effect::MarkSeen { session_id },
+    ]
+}
+
+pub fn leave(app: &mut App) -> Vec<Effect> {
+    app.subscribed
+        .take()
+        .map(|session_id| vec![Effect::Unsubscribe { session_id }])
+        .unwrap_or_default()
+}
+
+pub fn reconnect(app: &mut App) -> Vec<Effect> {
+    let Some(session_id) = app.subscribed.clone() else { return Vec::new() };
+    let page = app.conversation_mut(&session_id).gap_request();
+    vec![
+        Effect::Subscribe { session_id: session_id.clone() },
+        Effect::LoadConversationPage { session_id, kind: PageKind::Gap, page, etag: None },
     ]
 }
 
@@ -77,7 +95,7 @@ pub fn stream(app: &mut App, session_id: &str, seq: Option<i64>, line: Conversat
 
 #[cfg(test)]
 mod tests {
-    use super::{ConversationAction, PageKind, load_older, open};
+    use super::{ConversationAction, PageKind, load_older, open, reconnect};
     use crate::app::action::Effect;
     use crate::app::state::{App, ConversationLine, LineKind};
     use crate::app::{Action, reduce};
@@ -115,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_fetches_the_latest_page_and_subscribes() {
+    fn opening_fetches_subscribes_and_marks_seen() {
         let mut app = app();
         let effects = open(&mut app, "s-a".to_owned());
         assert!(matches!(
@@ -123,8 +141,10 @@ mod tests {
             [
                 Effect::LoadConversationPage { kind: PageKind::Latest, etag: None, .. },
                 Effect::Subscribe { .. },
+                Effect::MarkSeen { .. },
             ]
         ));
+        assert_eq!(app.subscribed.as_deref(), Some("s-a"));
     }
 
     #[test]
@@ -164,8 +184,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn leaving_unsubscribes_exactly_once() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        let effects = reduce(&mut app, Action::LeaveConversation);
+        assert!(matches!(effects.as_slice(), [Effect::Unsubscribe { session_id }] if session_id == "s-a"));
+        assert!(app.subscribed.is_none());
+        assert!(reduce(&mut app, Action::LeaveConversation).is_empty());
+    }
 
+    #[test]
+    fn reconnecting_refetches_the_gap_after_the_newest_seq() {
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(4, "a"), (5, "b")], false);
 
+        let effects = reconnect(&mut app);
+        match effects.as_slice() {
+            [Effect::Subscribe { .. }, Effect::LoadConversationPage { kind, page, .. }] => {
+                assert_eq!(*kind, PageKind::Gap);
+                assert_eq!(page.after, Some(5));
+            }
+            _ => panic!("expected a resubscribe and a gap fetch"),
+        }
+    }
+
+    #[test]
+    fn reconnecting_outside_a_conversation_fetches_nothing() {
+        let mut app = app();
+        assert!(reconnect(&mut app).is_empty());
+    }
 
     #[test]
     fn scrolling_to_the_top_loads_one_older_page_at_a_time() {

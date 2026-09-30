@@ -94,8 +94,18 @@ async fn run(
         Effect::LoadConversationPage { session_id, kind, page, etag } => {
             load_conversation_page(server, &session_id, kind, page, etag.as_deref()).await
         }
+        Effect::MarkSeen { session_id } => {
+            if let Err(e) = server.mark_seen(&session_id).await {
+                tracing::warn!(%e, "marking the session seen failed");
+            }
+            Vec::new()
+        }
         Effect::Subscribe { session_id } => {
             send_command(commands, TuiCommand::Subscribe { session_id }).await;
+            Vec::new()
+        }
+        Effect::Unsubscribe { session_id } => {
+            send_command(commands, TuiCommand::Unsubscribe { session_id }).await;
             Vec::new()
         }
         Effect::SendMessage { session_id, content } => {

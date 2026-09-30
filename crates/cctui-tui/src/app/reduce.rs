@@ -54,7 +54,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         // over, so it collapses the stack exactly as leaving a conversation does.
         Action::CloseHelp | Action::LeaveConversation => {
             app.router.reset(View::SessionList);
-            Vec::new()
+            conversation::leave(app)
         }
         Action::OpenSelectedConversation => {
             let Some(session_id) = app.selected_session_id() else { return Vec::new() };
@@ -189,12 +189,8 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
-            let mut effects = vec![Effect::RefreshSessions];
-            if app.view() == View::Conversation
-                && let Some(session_id) = app.selected_session_id()
-            {
-                effects.insert(0, Effect::Subscribe { session_id });
-            }
+            let mut effects = conversation::reconnect(app);
+            effects.push(Effect::RefreshSessions);
             effects
         }
         Action::Toast(level, text) => {
@@ -320,6 +316,9 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
 fn deregister_session(app: &mut App, session_id: &str) {
     app.sessions.retain(|s| s.id != session_id);
     app.conversations.remove(session_id);
+    if app.subscribed.as_deref() == Some(session_id) {
+        app.subscribed = None;
+    }
     let len = app.flattened_sessions().len();
     if len > 0 && app.selected_index >= len {
         app.selected_index = len - 1;
@@ -388,25 +387,28 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_conversation_loads_the_page_and_subscribes() {
+    fn opening_a_conversation_loads_subscribes_and_marks_seen() {
         let mut app = app();
         let effects = reduce(&mut app, Action::OpenSelectedConversation);
         assert_eq!(app.view(), View::Conversation);
         match effects.as_slice() {
-            [Effect::LoadConversationPage { session_id, .. }, Effect::Subscribe { .. }] => {
-                assert_eq!(session_id, "s-a");
-            }
-            _ => panic!("expected a load and a subscribe"),
+            [
+                Effect::LoadConversationPage { session_id, .. },
+                Effect::Subscribe { .. },
+                Effect::MarkSeen { .. },
+            ] => assert_eq!(session_id, "s-a"),
+            _ => panic!("expected a load, a subscribe and a seen mark"),
         }
     }
 
     #[test]
-    fn leaving_a_conversation_returns_to_the_list() {
+    fn leaving_a_conversation_returns_to_the_list_and_unsubscribes() {
         let mut app = app();
         reduce(&mut app, Action::OpenSelectedConversation);
-        reduce(&mut app, Action::LeaveConversation);
+        let effects = reduce(&mut app, Action::LeaveConversation);
         assert_eq!(app.view(), View::SessionList);
         assert_eq!(app.router.depth(), 1);
+        assert!(matches!(effects.as_slice(), [Effect::Unsubscribe { .. }]));
     }
 
     #[test]
@@ -611,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnecting_resubscribes_only_from_the_conversation() {
+    fn reconnecting_resubscribes_and_refetches_only_from_the_conversation() {
         let mut app = app();
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
@@ -621,7 +623,7 @@ mod tests {
         reduce(&mut app, Action::OpenSelectedConversation);
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
-            [Effect::Subscribe { .. }, Effect::RefreshSessions]
+            [Effect::Subscribe { .. }, Effect::LoadConversationPage { .. }, Effect::RefreshSessions]
         ));
     }
 

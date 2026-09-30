@@ -101,7 +101,13 @@ pub enum Effect {
         page: PageRequest,
         etag: Option<String>,
     },
+    MarkSeen {
+        session_id: String,
+    },
     Subscribe {
+        session_id: String,
+    },
+    Unsubscribe {
         session_id: String,
     },
     SendMessage {

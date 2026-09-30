@@ -123,6 +123,18 @@ impl ServerClient {
         Ok(ConversationFetch::Page { rows, etag, has_more })
     }
 
+    pub async fn mark_seen(&self, session_id: &str) -> Result<()> {
+        let url = format!("{}/api/v1/sessions/{session_id}/seen", self.base_url);
+        self.http
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("POST seen")?
+            .error_for_status()
+            .context("seen response status")?;
+        Ok(())
+    }
 
     /// Interrupt the in-flight turn without tearing the session down.
     pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {
