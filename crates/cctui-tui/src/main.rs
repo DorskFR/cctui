@@ -190,6 +190,7 @@ async fn run(
     init_sessions(&server, &mut app).await;
     let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), cmd_tx);
+    effects.dispatch(app::action::Effect::FetchIdentity);
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
     let mut input_rx = spawn_input_task();

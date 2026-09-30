@@ -7,6 +7,8 @@ use super::toast::Level;
 #[allow(clippy::too_many_lines)]
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
+        Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+
         Action::Quit => {
             app.should_quit = true;
             Vec::new()

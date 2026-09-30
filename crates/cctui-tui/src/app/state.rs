@@ -4,6 +4,7 @@ use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
+use super::identity::AuthState;
 use super::router::Router;
 use super::toast::{Level, StatusCounters, Toasts};
 
@@ -91,6 +92,7 @@ pub struct App {
     pub render_cache_len: usize,
     pub toasts: Toasts,
     pub status: StatusCounters,
+    pub auth: AuthState,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -131,6 +133,7 @@ impl App {
             render_cache_len: 0,
             toasts: Toasts::default(),
             status: StatusCounters::default(),
+            auth: AuthState::Unknown,
             clock_ms: 0,
         }
     }

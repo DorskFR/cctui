@@ -4,9 +4,10 @@ use cctui_proto::ws::{AgentEvent, TuiCommand};
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
+use super::identity::AuthAction;
 use super::line::agent_event_to_line;
 use super::toast::Level;
-use crate::client::ServerClient;
+use crate::client::{ApiError, ServerClient};
 
 const QUEUE: usize = 256;
 
@@ -86,6 +87,14 @@ async fn run(
             Err(e) => {
                 tracing::warn!(%e, "session refresh failed");
                 vec![Action::Toast(Level::Warn, "session refresh failed".to_owned())]
+            }
+        },
+        Effect::FetchIdentity => match server.me().await {
+            Ok(me) => vec![Action::Auth(AuthAction::Identified(Box::new(me)))],
+            Err(ApiError::Unauthorized) => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, "identity fetch failed");
+                Vec::new()
             }
         },
         Effect::LoadConversation { session_id, fetch } => {

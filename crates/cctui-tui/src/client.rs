@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use cctui_proto::api::SessionListResponse;
+use cctui_proto::api::me::MeResponse;
 use cctui_proto::ws::{ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -23,6 +24,23 @@ pub fn decode_frame(text: &str) -> Incoming {
     }
 }
 
+/// A failed request, with the rejected credential told apart from everything
+/// else: only a 401 means the key is the problem.
+#[derive(Debug)]
+pub enum ApiError {
+    Unauthorized,
+    Other(String),
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => f.write_str("unauthorized"),
+            Self::Other(e) => f.write_str(e),
+        }
+    }
+}
+
 pub struct ServerClient {
     base_url: String,
     token: String,
@@ -33,6 +51,30 @@ impl ServerClient {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
         let _ = rustls::crypto::ring::default_provider().install_default();
         Self { base_url: base_url.into(), token: token.into(), http: reqwest::Client::new() }
+    }
+
+    /// The identity behind the configured key. Routed through the shared route
+    /// table so the path is never spelled here.
+    pub async fn me(&self) -> std::result::Result<MeResponse, ApiError> {
+        let route = cctui_proto::api::routes::by_id("get_me").ok_or_else(|| {
+            ApiError::Other("route table has no get_me entry".to_owned())
+        })?;
+        let url = format!("{}{}", self.base_url, route.url(&[]));
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| ApiError::Other(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Unauthorized);
+        }
+        resp.error_for_status()
+            .map_err(|e| ApiError::Other(e.to_string()))?
+            .json::<MeResponse>()
+            .await
+            .map_err(|e| ApiError::Other(e.to_string()))
     }
 
     pub async fn list_sessions(&self) -> Result<SessionListResponse> {
