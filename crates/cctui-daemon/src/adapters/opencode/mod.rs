@@ -326,14 +326,20 @@ impl Pump {
 }
 
 /// Which opencode agent profile the spawn runs under: named by the dispatch
-/// payload (`CCTUI_OPENCODE_AGENT`), else the adapter default, else the
-/// locked-down reviewer — opencode's own default agent has edit rights,
-/// arbitrary bash and no step bound, which no cctui spawn may fall back to.
+/// payload (`CCTUI_OPENCODE_AGENT`), else the bounded builder when the spawn
+/// asked for `yolo` or `whip`, else the adapter default, else the locked-down
+/// reviewer — opencode's own default agent has edit rights, arbitrary bash and
+/// no step bound, which no cctui spawn may fall back to.
 fn agent_of(spec: &cctui_proto::adapter::SessionSpec, cfg: &OpenCodeConfig) -> Option<String> {
+    use cctui_proto::adapter::PermissionMode;
     spec.env
         .get(AGENT_ENV)
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            matches!(spec.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip))
+                .then(|| config::BUILDER_AGENT.to_owned())
+        })
         .or_else(|| cfg.default_agent.clone())
         .or_else(|| Some(config::REVIEWER_AGENT.to_owned()))
 }
@@ -498,6 +504,28 @@ mod tests {
             agent_of(&spec_with_env(&[(AGENT_ENV, "  ")]), &OpenCodeConfig::default()).as_deref(),
             Some(config::REVIEWER_AGENT)
         );
+    }
+
+    #[test]
+    fn a_yolo_or_whip_spawn_gets_the_builder() {
+        use cctui_proto::adapter::PermissionMode;
+        let cfg = OpenCodeConfig {
+            default_agent: Some(config::REVIEWER_AGENT.to_owned()),
+            ..OpenCodeConfig::default()
+        };
+        for mode in [PermissionMode::Yolo, PermissionMode::Whip] {
+            let mut spec = spec_with_env(&[]);
+            spec.permission_mode = Some(mode);
+            assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(config::BUILDER_AGENT));
+        }
+        for mode in [PermissionMode::Ask, PermissionMode::Auto] {
+            let mut spec = spec_with_env(&[]);
+            spec.permission_mode = Some(mode);
+            assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(config::REVIEWER_AGENT));
+        }
+        let mut spec = spec_with_env(&[(AGENT_ENV, config::REVIEWER_AGENT)]);
+        spec.permission_mode = Some(PermissionMode::Yolo);
+        assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(config::REVIEWER_AGENT));
     }
 
     #[test]
