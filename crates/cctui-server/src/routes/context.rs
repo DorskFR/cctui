@@ -205,7 +205,23 @@ pub fn scope_matches(item: &ContextItem, scope: &SpawnScope) -> bool {
 /// replaces the user's first turn, which must stay an explicit choice.
 #[must_use]
 pub fn resolve_auto(items: &[ContextItem], scope: &SpawnScope) -> Vec<ContextItem> {
-    items.iter().filter(|i| i.kind == "memory" && scope_matches(i, scope)).cloned().collect()
+    let mut chosen: Vec<ContextItem> =
+        items.iter().filter(|i| i.kind == "memory" && scope_matches(i, scope)).cloned().collect();
+    sort_for_delivery(&mut chosen);
+    chosen
+}
+
+/// Memories first in title order, then the prompt template. The picker, the
+/// preamble and the launch all show this set, so its order is fixed here rather
+/// than inherited from whatever order the rows were read in.
+fn sort_for_delivery(items: &mut [ContextItem]) {
+    items.sort_by(|a, b| {
+        (a.kind != "memory", a.title.to_lowercase(), a.id).cmp(&(
+            b.kind != "memory",
+            b.title.to_lowercase(),
+            b.id,
+        ))
+    });
 }
 
 /// Explicit picks (by name, any kind) unioned with [`resolve_auto`] when
@@ -226,13 +242,7 @@ pub fn resolve_for_spawn(
             chosen.push(item.clone());
         }
     }
-    chosen.sort_by(|a, b| {
-        (a.kind != "memory", a.title.to_lowercase(), a.id).cmp(&(
-            b.kind != "memory",
-            b.title.to_lowercase(),
-            b.id,
-        ))
-    });
+    sort_for_delivery(&mut chosen);
     chosen.truncate(MAX_ITEMS_PER_SPAWN);
     chosen
 }
@@ -565,7 +575,8 @@ mod tests {
         };
         assert_eq!(
             names(&resolve_auto(&items, &scope)),
-            ["always", "in-repo", "this-box", "tagged"]
+            ["always", "in-repo", "tagged", "this-box"],
+            "one per scope kind, in title order and never in row order"
         );
     }
 
