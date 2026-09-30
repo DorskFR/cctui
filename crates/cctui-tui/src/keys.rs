@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::PromptFocus;
 use crate::app::action::Action;
+use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::state::View;
 use crate::config::chord::Chord;
@@ -13,9 +15,18 @@ pub enum InputEvent {
     ScrollDown,
 }
 
-pub const fn context_for(view: View, input_active: bool) -> Context {
+/// A live card outranks the transcript but never the open composer.
+pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFocus>) -> Context {
     if input_active {
         return Context::Composer;
+    }
+    if let (View::Conversation, Some(focus)) = (view, prompt) {
+        return match focus {
+            PromptFocus::Ask => Context::Ask,
+            PromptFocus::AskText => Context::AskText,
+            PromptFocus::Plan => Context::Plan,
+            PromptFocus::PlanText => Context::PlanText,
+        };
     }
     match view {
         View::SessionList => Context::SessionList,
@@ -31,11 +42,12 @@ pub fn map_input(
     keys: &Keymap,
     view: View,
     input_active: bool,
+    prompt: Option<PromptFocus>,
     input: InputEvent,
 ) -> Option<Action> {
     match input {
         InputEvent::Key(key) => {
-            let context = context_for(view, input_active);
+            let context = context_for(view, input_active, prompt);
             let chord = Chord::from_event(key);
             keys.lookup(context, chord)
                 .and_then(|id| to_action(id, chord))
@@ -95,6 +107,25 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PermissionAllow => Action::ResolvePermission { allow: true },
         ActionId::PermissionDeny => Action::ResolvePermission { allow: false },
 
+        ActionId::FocusPrompt => Action::Prompt(PromptAction::Focus),
+        ActionId::PromptDefer => Action::Prompt(PromptAction::Defer),
+        ActionId::AskNextOption => Action::Prompt(PromptAction::NextOption),
+        ActionId::AskPrevOption => Action::Prompt(PromptAction::PrevOption),
+        ActionId::AskPickIndex => Action::Prompt(PromptAction::PickIndex(chord.digit()?)),
+        ActionId::AskToggleOption => Action::Prompt(PromptAction::Toggle),
+        ActionId::AskNextQuestion => Action::Prompt(PromptAction::NextQuestion),
+        ActionId::AskPrevQuestion => Action::Prompt(PromptAction::PrevQuestion),
+        ActionId::AskEditOther => Action::Prompt(PromptAction::EditOther),
+        ActionId::AskSubmit => Action::Prompt(PromptAction::Submit),
+        ActionId::PromptTextCommit => Action::Prompt(PromptAction::TextCommit),
+        ActionId::PromptTextCancel => Action::Prompt(PromptAction::TextCancel),
+        ActionId::PlanApproveAuto => Action::Prompt(PromptAction::PlanChoose(0)),
+        ActionId::PlanApproveManual => Action::Prompt(PromptAction::PlanChoose(1)),
+        ActionId::PlanKeepPlanning => Action::Prompt(PromptAction::PlanChoose(2)),
+        ActionId::PlanRefine => Action::Prompt(PromptAction::PlanRefine),
+        ActionId::PlanScrollDown => Action::Prompt(PromptAction::PlanScroll(1)),
+        ActionId::PlanScrollUp => Action::Prompt(PromptAction::PlanScroll(-1)),
+
         _ => return None,
     })
 }
@@ -105,6 +136,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::Conversation => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
+        Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
         _ => None,
     }
 }
@@ -113,7 +145,8 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    use super::{Action, InputEvent, Keymap, View, map_input};
+    use super::{Action, InputEvent, Keymap, PromptFocus, View, map_input};
+    use crate::app::prompt::PromptAction;
     use crate::config::keymap::Context;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -125,11 +158,21 @@ mod tests {
     }
 
     fn map(view: View, input_active: bool, code: KeyCode) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, InputEvent::Key(key(code)))
+        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(key(code)))
     }
 
     fn map_event(view: View, input_active: bool, event: KeyEvent) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, InputEvent::Key(event))
+        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(event))
+    }
+
+    fn map_prompt(focus: PromptFocus, code: KeyCode) -> Option<Action> {
+        map_input(
+            &Keymap::default(),
+            View::Conversation,
+            false,
+            Some(focus),
+            InputEvent::Key(key(code)),
+        )
     }
 
     #[test]
@@ -259,14 +302,101 @@ mod tests {
     fn the_mouse_wheel_navigates_the_list_and_scrolls_the_conversation() {
         let keys = Keymap::default();
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, InputEvent::ScrollDown),
+            map_input(&keys, View::SessionList, false, None, InputEvent::ScrollDown),
             Some(Action::SelectNext)
         ));
         assert!(matches!(
-            map_input(&keys, View::Conversation, false, InputEvent::ScrollUp),
+            map_input(&keys, View::Conversation, false, None, InputEvent::ScrollUp),
             Some(Action::Scroll { lines: -3, release_follow: true })
         ));
-        assert!(map_input(&keys, View::Help, false, InputEvent::ScrollUp).is_none());
+        assert!(map_input(&keys, View::Help, false, None, InputEvent::ScrollUp).is_none());
+    }
+
+    #[test]
+    fn a_live_question_card_takes_the_conversation_keys() {
+        assert!(matches!(
+            map_prompt(PromptFocus::Ask, KeyCode::Char('2')),
+            Some(Action::Prompt(PromptAction::PickIndex(1)))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Ask, KeyCode::Char(' ')),
+            Some(Action::Prompt(PromptAction::Toggle))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Ask, KeyCode::Tab),
+            Some(Action::Prompt(PromptAction::NextQuestion))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Ask, KeyCode::Enter),
+            Some(Action::Prompt(PromptAction::Submit))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Ask, KeyCode::Esc),
+            Some(Action::Prompt(PromptAction::Defer))
+        ));
+        assert!(map_prompt(PromptFocus::Ask, KeyCode::Char('z')).is_none());
+    }
+
+    #[test]
+    fn the_free_text_field_types_everything_the_card_does_not_claim() {
+        assert!(matches!(
+            map_prompt(PromptFocus::AskText, KeyCode::Char('o')),
+            Some(Action::Prompt(PromptAction::TextKey(_)))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::AskText, KeyCode::Enter),
+            Some(Action::Prompt(PromptAction::TextCommit))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::PlanText, KeyCode::Esc),
+            Some(Action::Prompt(PromptAction::TextCancel))
+        ));
+    }
+
+    #[test]
+    fn the_plan_card_answers_by_digit_or_refines() {
+        assert!(matches!(
+            map_prompt(PromptFocus::Plan, KeyCode::Char('1')),
+            Some(Action::Prompt(PromptAction::PlanChoose(0)))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Plan, KeyCode::Char('2')),
+            Some(Action::Prompt(PromptAction::PlanChoose(1)))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Plan, KeyCode::Char('3')),
+            Some(Action::Prompt(PromptAction::PlanChoose(2)))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Plan, KeyCode::Char('r')),
+            Some(Action::Prompt(PromptAction::PlanRefine))
+        ));
+        assert!(matches!(
+            map_prompt(PromptFocus::Plan, KeyCode::Char('j')),
+            Some(Action::Prompt(PromptAction::PlanScroll(1)))
+        ));
+    }
+
+    #[test]
+    fn an_open_composer_outranks_a_live_card() {
+        assert!(matches!(
+            map_input(
+                &Keymap::default(),
+                View::Conversation,
+                true,
+                Some(PromptFocus::Ask),
+                InputEvent::Key(key(KeyCode::Char('2'))),
+            ),
+            Some(Action::InputKey(_))
+        ));
+    }
+
+    #[test]
+    fn tab_takes_a_deferred_card_back() {
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Tab),
+            Some(Action::Prompt(PromptAction::Focus))
+        ));
     }
 
     #[test]
@@ -282,7 +412,7 @@ mod tests {
         let mut keys = Keymap::default();
         keys.set(Context::SessionList, "ctrl+n", "select-next").expect("valid");
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, InputEvent::Key(ctrl('n'))),
+            map_input(&keys, View::SessionList, false, None, InputEvent::Key(ctrl('n'))),
             Some(Action::SelectNext)
         ));
     }

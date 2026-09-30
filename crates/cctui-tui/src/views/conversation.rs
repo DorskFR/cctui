@@ -4,6 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
+use crate::app::conversation_store::ConversationStore;
 use crate::app::{App, ConversationLine, LineKind, LineStatus, send};
 use crate::theme;
 use crate::ui::{diff_render, markdown_render};
@@ -31,20 +32,34 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let max_input = (main_area.height as usize / 2).max(1);
     let input_height = input_lines.clamp(1, 12_usize.min(max_input)) as u16;
 
-    let [header_area, content_area, separator_area, input_area] = Layout::vertical([
+    let card = super::prompt::card_lines(
+        app,
+        &session.id,
+        main_area.width as usize,
+        (main_area.height as usize / 2).max(1),
+    );
+    let card_height = u16::try_from(card.len()).unwrap_or(u16::MAX);
+
+    let [header_area, content_area, card_area, separator_area, input_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(card_height),
         Constraint::Length(1),
         Constraint::Length(input_height),
     ])
     .areas(main_area);
 
+    if card_height > 0 {
+        frame.render_widget(Paragraph::new(card), card_area);
+    }
+
     // Header
     let auto = if session.auto_approve { " ── ✓ auto-approve" } else { "" };
+    let waiting = app.prompt_marker(&session.id).map_or_else(String::new, |m| format!(" ── {m}"));
     let header_text = if branch.is_empty() {
-        format!(" {project} on {machine} ── {model} ── {cost}{auto}")
+        format!(" {project} on {machine} ── {model} ── {cost}{auto}{waiting}")
     } else {
-        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}")
+        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}{waiting}")
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
     header_spans.extend(crate::widgets::status::status_spans(app));
@@ -55,8 +70,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let store = app.conversations.get(&session.id).filter(|s| !s.is_empty());
     if store.is_some() || !pending.is_empty() {
         let visible_height = content_area.height as usize;
-        let entries = store.map_or(&[][..], |s| s.entries());
-        let epoch = store.map_or(0, |s| s.epoch());
+        let entries = store.map_or(&[][..], ConversationStore::entries);
+        let epoch = store.map_or(0, ConversationStore::epoch);
 
         // The cache may only be appended to: any entry that landed earlier than
         // the end bumps `epoch` and forces a rebuild.
@@ -321,10 +336,9 @@ fn status_span(status: Option<&LineStatus>) -> Option<Span<'static>> {
             (format!("  ⟳ retrying ({attempt}/{max})"), theme::dim())
         }
         LineStatus::Delivered => ("  ✓ sent".to_owned(), theme::dim()),
-        LineStatus::Failed(reason) => (
-            format!("  ✗ failed: {reason} — R retry  e edit  x drop"),
-            theme::error(),
-        ),
+        LineStatus::Failed(reason) => {
+            (format!("  ✗ failed: {reason} — R retry  e edit  x drop"), theme::error())
+        }
         LineStatus::Queued => ("  ⧗ queued".to_owned(), theme::dim()),
         LineStatus::Removed => ("  ⧗ removed from queue".to_owned(), theme::dim()),
     };

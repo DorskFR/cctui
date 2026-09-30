@@ -91,11 +91,17 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             }
             Vec::new()
         }
-        Effect::SendMessage { send_id, session_id, content, turn_id } => {
+        Effect::SendMessage { send_id, session_id, content, ask_picks, turn_id } => {
             let client_msg_id = uuid::Uuid::new_v4().to_string();
             let turn_id = turn_id.unwrap_or_else(uuid::Uuid::new_v4);
             match ws
-                .send_message_as(session_id, content, client_msg_id.clone(), None, Some(turn_id))
+                .send_message_as(
+                    session_id,
+                    content,
+                    client_msg_id.clone(),
+                    ask_picks,
+                    Some(turn_id),
+                )
                 .await
             {
                 Ok(()) => {

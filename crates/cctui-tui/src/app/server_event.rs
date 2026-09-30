@@ -2,6 +2,7 @@ use cctui_proto::ws::{AgentEvent, ServerEvent};
 
 use super::action::{Action, HeartbeatUsage};
 use super::line::agent_event_to_line;
+use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::state::PendingPermission;
 use super::toast::Level;
@@ -82,10 +83,23 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::MessageAck { client_msg_id, ok, error, command_id, .. } => {
             vec![Action::Send(SendAction::Acked { client_msg_id, ok, error, command_id })]
         }
-        ServerEvent::AskQuestion { .. } => waived("the TUI cannot answer asks yet"),
-        ServerEvent::AskResolved { .. } => waived("the TUI cannot answer asks yet"),
-        ServerEvent::PlanRequest { .. } => waived("the TUI has no plan-approval dialog yet"),
-        ServerEvent::PlanResolved { .. } => waived("the TUI has no plan-approval dialog yet"),
+        ServerEvent::AskQuestion { session_id, question, questions, preamble } => {
+            vec![Action::Prompt(PromptAction::AskRequested {
+                session_id,
+                question,
+                questions,
+                preamble,
+            })]
+        }
+        ServerEvent::AskResolved { session_id } => {
+            vec![Action::Prompt(PromptAction::AskResolved { session_id })]
+        }
+        ServerEvent::PlanRequest { session_id, plan, preamble } => {
+            vec![Action::Prompt(PromptAction::PlanRequested { session_id, plan, preamble })]
+        }
+        ServerEvent::PlanResolved { session_id } => {
+            vec![Action::Prompt(PromptAction::PlanResolved { session_id })]
+        }
         ServerEvent::MachineLiveness { .. } => waived("the TUI shows no machine list"),
         ServerEvent::MachineResources { .. } => waived("the TUI shows no machine list"),
         ServerEvent::DispatcherLiveness { .. } => waived("the TUI shows no dispatcher list"),

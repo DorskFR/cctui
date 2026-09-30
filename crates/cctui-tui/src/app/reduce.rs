@@ -1,7 +1,7 @@
 use super::action::{Action, Effect, HeartbeatUsage};
 use super::state::{App, PendingPermission, View};
-use super::{conversation, send};
 use super::toast::Level;
+use super::{conversation, send};
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
@@ -107,7 +107,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.input_active = false;
             match target {
                 Some(session_id) if !content.trim().is_empty() => {
-                    send::submit(app, session_id, content)
+                    send::submit(app, session_id, content, None)
                 }
                 _ => Vec::new(),
             }
@@ -163,6 +163,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
@@ -460,7 +461,7 @@ mod tests {
         app.message_input.insert_str("hello there");
         let effects = reduce(&mut app, Action::SubmitInput);
         match effects.as_slice() {
-            [Effect::SendMessage { session_id, content, .. }] => {
+            [Effect::SendMessage { session_id, content, ask_picks: None, .. }] => {
                 assert_eq!(session_id, "s-a");
                 assert_eq!(content, "hello there");
             }

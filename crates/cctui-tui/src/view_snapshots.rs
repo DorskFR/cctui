@@ -1,7 +1,74 @@
 use crate::app::View;
 use crate::testsupport::{
-    app_with_sessions, conversation_store, permission_request, render_screen, render_screen_sized,
+    app_with_sessions, ask_card, conversation_store, permission_request, plan_card, render_screen,
+    render_screen_sized,
 };
+
+fn app_in_conversation() -> crate::app::App {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    app
+}
+
+#[test]
+fn conversation_ask_card() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    app.asks.insert(id, ask_card());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_ask_card_answered_second_question() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let mut card = ask_card();
+    card.chosen[0].insert(0);
+    card.current = 1;
+    card.chosen[1].insert(1);
+    app.asks.insert(id, card);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_ask_card_free_text() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let mut card = ask_card();
+    card.editing_other = true;
+    card.other[0] = "mysql".to_owned();
+    app.asks.insert(id, card);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_plan_card() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    app.plans.insert(id, plan_card());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_plan_card_refining() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let mut card = plan_card();
+    card.refining = true;
+    card.refine = "make it smaller".to_owned();
+    app.plans.insert(id, card);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_shows_a_waiting_prompt_marker() {
+    let mut app = app_with_sessions();
+    app.asks.insert("s-working".to_owned(), ask_card());
+    app.plans.insert("s-blocked".to_owned(), plan_card());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
 
 #[test]
 fn session_list() {

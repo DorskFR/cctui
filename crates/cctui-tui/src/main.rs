@@ -237,7 +237,13 @@ async fn run(
             maybe_input = input_rx.recv() => {
                 maybe_input
                     .and_then(|input| {
-                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                        keys::map_input(
+                            &app.config.keys,
+                            app.view(),
+                            app.input_active,
+                            app.prompt_focus(),
+                            input,
+                        )
                     })
                     .map_or_else(Vec::new, |action| vec![action])
             }

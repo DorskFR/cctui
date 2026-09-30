@@ -6,6 +6,7 @@ use ratatui_textarea::TextArea;
 
 use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
+use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
 pub use super::session_list::uptime_secs;
 use super::toast::{Level, StatusCounters, Toasts};
@@ -57,7 +58,10 @@ impl ConversationLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineStatus {
     Sending,
-    Retrying { attempt: u32, max: u32 },
+    Retrying {
+        attempt: u32,
+        max: u32,
+    },
     Delivered,
     Failed(String),
     /// Waiting behind the running turn on the agent's own queue.
@@ -94,6 +98,10 @@ pub struct App {
     pub should_quit: bool,
     /// Queue of pending permission requests; first is shown as dialog.
     pub permission_queue: std::collections::VecDeque<PendingPermission>,
+    /// Live `AskUserQuestion` per session, cleared on `AskResolved`.
+    pub asks: HashMap<String, AskCard>,
+    /// Live plan-approval prompt per session, cleared on `PlanResolved`.
+    pub plans: HashMap<String, PlanCard>,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
@@ -147,6 +155,8 @@ impl App {
             input_active: false,
             should_quit: false,
             permission_queue: std::collections::VecDeque::new(),
+            asks: HashMap::new(),
+            plans: HashMap::new(),
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,

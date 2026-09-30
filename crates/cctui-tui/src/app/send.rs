@@ -53,6 +53,9 @@ pub struct TrackedSend {
     /// Stable across retries, so a retried frame the server did receive
     /// produces the same turn as the first attempt.
     pub turn_id: Option<Uuid>,
+    /// Carried on every attempt so a retried answer still drives the agent's
+    /// own form rather than dismissing it.
+    pub ask_picks: Option<Vec<Vec<usize>>>,
     /// Correlation id of the current attempt; rotates on every dispatch.
     pub client_msg_id: Option<String>,
     pub command_id: Option<Uuid>,
@@ -107,7 +110,6 @@ struct Orphan {
 const MAX_ORPHANS: usize = 8;
 
 impl Outbox {
-    #[must_use]
     pub fn tracked(&self) -> impl Iterator<Item = &TrackedSend> {
         self.sends.iter()
     }
@@ -152,6 +154,7 @@ fn dispatch(send: &mut TrackedSend, now: i64) -> Effect {
         send_id: send.id,
         session_id: send.session_id.clone(),
         content: send.content.clone(),
+        ask_picks: send.ask_picks.clone(),
         turn_id: send.turn_id,
     }
 }
@@ -181,13 +184,19 @@ fn delivered(send: &mut TrackedSend, now: i64) {
 }
 
 /// Hands one message to the outbox and dispatches its first attempt.
-pub fn submit(app: &mut App, session_id: String, content: String) -> Vec<Effect> {
+pub fn submit(
+    app: &mut App,
+    session_id: String,
+    content: String,
+    ask_picks: Option<Vec<Vec<usize>>>,
+) -> Vec<Effect> {
     app.outbox.next_id += 1;
     let mut send = TrackedSend {
         id: app.outbox.next_id,
         session_id,
         content,
         turn_id: None,
+        ask_picks,
         client_msg_id: None,
         command_id: None,
         attempt: 0,
@@ -268,6 +277,7 @@ pub fn seed(app: &mut App, session_id: &str, content: &str, phase: Phase, reason
         session_id: session_id.to_owned(),
         content: content.to_owned(),
         turn_id: None,
+        ask_picks: None,
         client_msg_id: None,
         command_id: None,
         attempt: 1,
@@ -278,10 +288,26 @@ pub fn seed(app: &mut App, session_id: &str, content: &str, phase: Phase, reason
 }
 
 pub enum SendAction {
-    Dispatched { send_id: u64, client_msg_id: String, turn_id: Uuid },
-    DispatchFailed { send_id: u64, reason: String },
-    Acked { client_msg_id: String, ok: bool, error: Option<String>, command_id: Option<Uuid> },
-    DeliveryResult { command_id: Uuid, ok: bool, error: Option<String> },
+    Dispatched {
+        send_id: u64,
+        client_msg_id: String,
+        turn_id: Uuid,
+    },
+    DispatchFailed {
+        send_id: u64,
+        reason: String,
+    },
+    Acked {
+        client_msg_id: String,
+        ok: bool,
+        error: Option<String>,
+        command_id: Option<Uuid>,
+    },
+    DeliveryResult {
+        command_id: Uuid,
+        ok: bool,
+        error: Option<String>,
+    },
     /// The key that asked for it, so a session with nothing failed still opens
     /// the composer on that character instead of swallowing it.
     Retry(KeyEvent),
@@ -578,7 +604,11 @@ mod tests {
         dispatched(&mut app, id, "cid-2");
 
         ack(&mut app, "cid-1", true, None);
-        assert_eq!(status(&app), Some(LineStatus::Sending), "the old id resolves nothing");
+        assert_eq!(
+            status(&app),
+            Some(LineStatus::Retrying { attempt: 2, max: MAX_ATTEMPTS }),
+            "the superseded id must not deliver the attempt now in flight"
+        );
     }
 
     #[test]

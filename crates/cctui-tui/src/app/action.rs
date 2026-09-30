@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::identity::AuthAction;
+use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
@@ -63,6 +64,7 @@ pub enum Action {
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
+    Prompt(PromptAction),
 
     StreamLine {
         session_id: String,
@@ -123,6 +125,10 @@ pub enum Effect {
         send_id: u64,
         session_id: String,
         content: String,
+        /// 0-based option picks per question when the message answers a prompt.
+        /// Replayed on every retry, so the daemon can still drive the real
+        /// form after a frame the server never received.
+        ask_picks: Option<Vec<Vec<usize>>>,
         /// Minted on the first attempt and replayed on every retry.
         turn_id: Option<uuid::Uuid>,
     },

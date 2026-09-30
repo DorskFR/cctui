@@ -4,6 +4,7 @@ pub mod conversation_store;
 pub mod effects;
 pub mod identity;
 pub mod line;
+pub mod prompt;
 pub mod reduce;
 pub mod router;
 pub mod send;
@@ -15,5 +16,6 @@ pub mod toast;
 pub use action::Action;
 #[cfg(test)]
 pub use conversation_store::ConversationStore;
+pub use prompt::PromptFocus;
 pub use reduce::reduce;
 pub use state::{App, ConversationLine, LineKind, LineStatus, PendingPermission, View};
