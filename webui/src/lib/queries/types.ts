@@ -11,6 +11,7 @@ export type { CreateAccount } from "@bindings/CreateAccount";
 export type { CreateProvider } from "@bindings/CreateProvider";
 export type { DailyCacheLoss } from "@bindings/DailyCacheLoss";
 export type { GrantShare } from "@bindings/GrantShare";
+export type { LimitResetEntry } from "@bindings/LimitResetEntry";
 export type { LimitResetResponse } from "@bindings/LimitResetResponse";
 export type { LimitResetStatus } from "@bindings/LimitResetStatus";
 export type { OAuthAccount } from "@bindings/OAuthAccount";

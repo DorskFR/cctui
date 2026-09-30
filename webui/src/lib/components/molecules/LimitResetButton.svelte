@@ -7,7 +7,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
-	import { limitResetClears, limitResetHint, limitResetLabel } from './limit-reset';
+	import { limitResetClears, limitResetLabel, limitResetTooltip } from './limit-reset';
 
 	let { providerId, enabled = true }: { providerId: string; enabled?: boolean } = $props();
 
@@ -16,6 +16,7 @@
 		() => enabled
 	);
 	const reset = $derived(q.data?.limit_reset ?? null);
+	const entries = $derived(q.data?.limit_resets ?? []);
 	const claim = useLimitReset();
 	let claiming = $state(false);
 	let confirming = $state(false);
@@ -37,13 +38,13 @@
 	}
 </script>
 
-{#if reset}
+{#if reset && entries.length > 0}
 	<IconButton
 		icon="retry"
 		inline
 		size={14}
 		label={limitResetLabel(reset)}
-		title={reset.available ? limitResetLabel(reset) : limitResetHint(reset)}
+		title={limitResetTooltip(entries, reset)}
 		disabled={!reset.available || claiming}
 		loading={claiming}
 		onclick={() => (confirming = true)}

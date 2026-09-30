@@ -14,6 +14,7 @@ describe('pagesFor', () => {
 		expect(pagesFor('anthropic')).toEqual([
 			'aliases',
 			'limits',
+			'resets',
 			'ui',
 			'privacy',
 			'tools',
@@ -27,6 +28,7 @@ describe('pagesFor', () => {
 		expect(pagesFor('openai')).toEqual([
 			'aliases',
 			'limits',
+			'resets',
 			'speed',
 			'reasoning',
 			'privacy',
@@ -48,6 +50,20 @@ describe('pagesFor', () => {
 			'gateway',
 			'advanced'
 		]);
+	});
+
+	it('offers limit resets to both first-party families, right after limits', () => {
+		for (const kind of ['anthropic', 'openai']) {
+			const pages = pagesFor(kind);
+			expect(pages).toContain('resets');
+			expect(pages.indexOf('resets')).toBe(pages.indexOf('limits') + 1);
+		}
+		expect(pagesFor('anthropic-compatible')).not.toContain('resets');
+		expect(pagesFor('fireworks')).not.toContain('resets');
+	});
+
+	it('knows resets is a page id', () => {
+		expect(isPageId('resets')).toBe(true);
 	});
 });
 

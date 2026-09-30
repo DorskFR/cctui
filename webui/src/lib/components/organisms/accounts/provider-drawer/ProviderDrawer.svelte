@@ -4,8 +4,10 @@
 	import {
 		useAccountActions,
 		useAccountUsage,
+		useLimitReset,
 		useSettingsCatalog,
 		type AccountProvider,
+		type LimitResetEntry,
 		type OAuthAccount
 	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -22,6 +24,7 @@
 	import { ProviderEdit } from './editor.svelte';
 	import AliasesPage from './AliasesPage.svelte';
 	import LimitsPage from './LimitsPage.svelte';
+	import LimitResetsPage from './LimitResetsPage.svelte';
 	import ModelsPage from './ModelsPage.svelte';
 	import SettingsPage from './SettingsPage.svelte';
 	import AdvancedPage from './AdvancedPage.svelte';
@@ -77,6 +80,7 @@
 	const LABELS: Record<PageId, () => string> = {
 		aliases: m.provider_page_aliases,
 		limits: m.provider_page_limits,
+		resets: m.provider_page_resets,
 		ui: m.provider_page_ui,
 		privacy: m.provider_page_privacy,
 		tools: m.provider_page_tools,
@@ -108,6 +112,24 @@
 			onclose();
 		} catch (e) {
 			toasts.error(errMessage(e));
+		}
+	}
+
+	const claimReset = useLimitReset();
+	let claiming = $state<string | null>(null);
+
+	async function claim(entry: LimitResetEntry) {
+		if (claiming) return;
+		claiming = entry.id;
+		try {
+			const r = await claimReset(p.id, entry.id);
+			const text = m.sessions_limit_reset_outcome({ outcome: r.outcome });
+			if (r.outcome === 'reset') toasts.ok(text);
+			else toasts.error(text);
+		} catch (e) {
+			toasts.error(errMessage(e));
+		} finally {
+			claiming = null;
 		}
 	}
 
@@ -204,6 +226,8 @@
 			{#if kind === 'anthropic' || kind === 'openai'}
 				<UsageNoticesEditor bind:value={edit.notices} />
 			{/if}
+		{:else if edit.page === 'resets'}
+			<LimitResetsPage entries={usage.data?.limit_resets ?? []} {claiming} onclaim={claim} />
 		{:else if edit.page === 'models'}
 			<ModelsPage
 				fireworks={edit.isFireworks}
