@@ -17,7 +17,7 @@ pub(crate) fn render_screen(app: &mut App) -> String {
 
 pub(crate) fn render_screen_sized(app: &mut App, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
-    terminal.draw(|frame| crate::render(frame, app)).expect("draw");
+    terminal.draw(|frame| crate::views::render(frame, app)).expect("draw");
     buffer_text(terminal.backend().buffer())
 }
 

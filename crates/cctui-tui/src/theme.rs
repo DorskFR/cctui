@@ -14,6 +14,7 @@ pub const HOTKEY_DESC: Style = Style::new().fg(Color::DarkGray);
 pub const STATUS_BAR_BG: Style = Style::new().fg(Color::White).bg(Color::DarkGray);
 pub const DIM: Style = Style::new().fg(Color::DarkGray);
 pub const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+pub const ERROR: Style = Style::new().fg(Color::Red);
 
 // Session list details
 pub const MODEL: Style = Style::new().fg(Color::DarkGray);

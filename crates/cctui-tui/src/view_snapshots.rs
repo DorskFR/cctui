@@ -37,14 +37,14 @@ fn conversation() {
     let mut app = app_with_sessions();
     let id = app.selected_session().expect("a selected session").id.clone();
     app.stream_buffer.insert(id, conversation_lines());
-    app.view = View::Conversation;
+    app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
 #[test]
 fn conversation_without_data() {
     let mut app = app_with_sessions();
-    app.view = View::Conversation;
+    app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -53,14 +53,14 @@ fn conversation_narrow() {
     let mut app = app_with_sessions();
     let id = app.selected_session().expect("a selected session").id.clone();
     app.stream_buffer.insert(id, conversation_lines());
-    app.view = View::Conversation;
+    app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }
 
 #[test]
 fn help_overlay() {
     let mut app = app_with_sessions();
-    app.view = View::Help;
+    app.router.push(View::Help);
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -68,7 +68,6 @@ fn help_overlay() {
 fn permission_dialog() {
     let mut app = app_with_sessions();
     app.permission_queue.push_back(permission_request());
-    app.pre_permission_view = View::SessionList;
-    app.view = View::PermissionDialog;
+    app.router.push(View::PermissionDialog);
     insta::assert_snapshot!(render_screen(&mut app));
 }
