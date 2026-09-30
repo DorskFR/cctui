@@ -13,6 +13,7 @@ use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
+use super::send::SendAction;
 use super::state::ConversationLine;
 use super::toast::Level;
 
@@ -127,13 +128,7 @@ async fn run(
             }
             Vec::new()
         }
-        Effect::LoadDraftIndex => match server.list_drafts().await {
-            Ok(list) => vec![Action::Drafts(DraftAction::IndexLoaded(Box::new(list)))],
-            Err(e) => {
-                tracing::warn!(%e, "draft index fetch failed");
-                Vec::new()
-            }
-        },
+        Effect::LoadDraftIndex => load_draft_index(server).await,
         Effect::LoadDrafts { session_id } => load_drafts(server, session_id).await,
         Effect::SaveDraft { key, text } => {
             drafts.save(key, text);
@@ -156,12 +151,27 @@ async fn run(
             }
             Vec::new()
         }
-        Effect::SendMessage { session_id, content } => {
-            if let Err(e) = ws.send_message(session_id, content, None, None).await {
-                tracing::warn!(%e, "message send failed");
-                return vec![Action::Toast(Level::Error, "message send failed".to_owned())];
+        Effect::SendMessage { send_id, session_id, content, ask_picks, turn_id } => {
+            let client_msg_id = uuid::Uuid::new_v4().to_string();
+            let turn_id = turn_id.unwrap_or_else(uuid::Uuid::new_v4);
+            match ws
+                .send_message_as(
+                    session_id,
+                    content,
+                    client_msg_id.clone(),
+                    ask_picks,
+                    Some(turn_id),
+                )
+                .await
+            {
+                Ok(()) => {
+                    vec![Action::Send(SendAction::Dispatched { send_id, client_msg_id, turn_id })]
+                }
+                Err(e) => vec![Action::Send(SendAction::DispatchFailed {
+                    send_id,
+                    reason: e.to_string(),
+                })],
             }
-            Vec::new()
         }
         Effect::Interrupt { session_id } => match server.interrupt(&session_id).await {
             Ok(()) => Vec::new(),
@@ -184,6 +194,16 @@ async fn run(
             {
                 tracing::warn!(%e, "permission response failed");
             }
+            Vec::new()
+        }
+    }
+}
+
+async fn load_draft_index(server: &Client) -> Vec<Action> {
+    match server.list_drafts().await {
+        Ok(list) => vec![Action::Drafts(DraftAction::IndexLoaded(Box::new(list)))],
+        Err(e) => {
+            tracing::warn!(%e, "draft index fetch failed");
             Vec::new()
         }
     }

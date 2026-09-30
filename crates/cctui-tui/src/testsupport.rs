@@ -93,12 +93,7 @@ pub fn conversation_lines() -> Vec<ConversationLine> {
     vec![
         line(LineKind::User, "add a snapshot harness"),
         line(LineKind::Assistant, "Looking at the views first.\n\n- one\n- two"),
-        ConversationLine {
-            timestamp: 0,
-            kind: LineKind::ToolCall,
-            text: "[Read] crates/cctui-tui/src/main.rs".to_owned(),
-            tool_input: None,
-        },
+        line(LineKind::ToolCall, "[Read] crates/cctui-tui/src/main.rs"),
         line(LineKind::ToolResult, "  → 984 lines"),
         line(LineKind::System, "⟳ context reset (/clear · /compact)"),
         line(LineKind::Reply, "done"),
@@ -116,7 +111,33 @@ pub fn conversation_store() -> crate::app::ConversationStore {
 }
 
 fn line(kind: LineKind, text: &str) -> ConversationLine {
-    ConversationLine { timestamp: 0, kind, text: text.to_owned(), tool_input: None }
+    ConversationLine::new(kind, text, 0)
+}
+
+pub fn ask_card() -> crate::app::prompt::AskCard {
+    let questions = json!([
+            {
+                "header": "Storage",
+                "question": "Which database?",
+                "options": [
+                    {"label": "Postgres", "description": "the default"},
+                    {"label": "SQLite"}
+                ]
+            },
+            {
+                "question": "Which features?",
+                "multiSelect": true,
+                "options": [{"label": "auth"}, {"label": "billing"}]
+            }
+    ]);
+    crate::app::prompt::AskCard::new("Which database?".to_owned(), Some(&questions), None)
+}
+
+pub fn plan_card() -> crate::app::prompt::PlanCard {
+    crate::app::prompt::PlanCard::new(
+        "# Plan\n\n- rework the reducer\n- add the card".to_owned(),
+        None,
+    )
 }
 
 pub fn permission_request() -> PendingPermission {

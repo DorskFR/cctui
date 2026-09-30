@@ -4,8 +4,75 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::drafts::DraftAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
-    app_with_sessions, conversation_store, permission_request, render_screen, render_screen_sized,
+    app_with_sessions, ask_card, conversation_store, permission_request, plan_card, render_screen,
+    render_screen_sized,
 };
+
+fn app_in_conversation() -> crate::app::App {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    app
+}
+
+#[test]
+fn conversation_ask_card() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    app.asks.insert(id, ask_card());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_ask_card_answered_second_question() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let mut card = ask_card();
+    card.chosen[0].insert(0);
+    card.current = 1;
+    card.chosen[1].insert(1);
+    app.asks.insert(id, card);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_ask_card_free_text() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let mut card = ask_card();
+    card.editing_other = true;
+    card.other[0] = "mysql".to_owned();
+    app.asks.insert(id, card);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_plan_card() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    app.plans.insert(id, plan_card());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_plan_card_refining() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let mut card = plan_card();
+    card.refining = true;
+    card.refine = "make it smaller".to_owned();
+    app.plans.insert(id, card);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_shows_a_waiting_prompt_marker() {
+    let mut app = app_with_sessions();
+    app.asks.insert("s-working".to_owned(), ask_card());
+    app.plans.insert("s-blocked".to_owned(), plan_card());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
 
 #[test]
 fn session_list() {
@@ -83,10 +150,7 @@ fn conversation() {
 
 #[test]
 fn conversation_with_an_unsent_draft() {
-    let mut app = app_with_sessions();
-    let id = app.selected_session().expect("a selected session").id.clone();
-    app.conversations.insert(id, conversation_store());
-    app.router.push(View::Conversation);
+    let mut app = app_in_conversation();
     app.input_active = true;
     let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
     reduce(&mut app, Action::InputKey(key));
@@ -95,10 +159,8 @@ fn conversation_with_an_unsent_draft() {
 
 #[test]
 fn history_picker() {
-    let mut app = app_with_sessions();
+    let mut app = app_in_conversation();
     let id = app.selected_session().expect("a selected session").id.clone();
-    app.conversations.insert(id.clone(), conversation_store());
-    app.router.push(View::Conversation);
     let history = Draft {
         key: session_history_key(&id),
         text: "[\"first prompt\", \"second prompt\"]".to_owned(),
@@ -107,6 +169,32 @@ fn history_picker() {
     let list = DraftList { drafts: vec![history] };
     reduce(&mut app, Action::Drafts(DraftAction::IndexLoaded(Box::new(list))));
     reduce(&mut app, Action::Drafts(DraftAction::OpenPicker));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_delivery_states() {
+    use crate::app::send::{Phase, seed};
+    use crate::app::state::{ConversationLine, LineStatus};
+    use crate::app::{ConversationStore, LineKind};
+
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    let mut store = ConversationStore::new();
+    store.push_live(
+        Some(1),
+        ConversationLine::new(LineKind::User, "deploy the thing", 0)
+            .with_status(LineStatus::Queued),
+    );
+    store.push_live(
+        Some(2),
+        ConversationLine::new(LineKind::System, "roll back the release", 0)
+            .with_status(LineStatus::Removed),
+    );
+    app.conversations.insert(id.clone(), store);
+    seed(&mut app, &id, "tail the logs", Phase::Pending, None);
+    seed(&mut app, &id, "restart the worker", Phase::Failed, Some("no daemon connected"));
+    app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

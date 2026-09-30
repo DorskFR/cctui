@@ -14,6 +14,10 @@ pub enum Context {
     History,
     Help,
     Permission,
+    Ask,
+    AskText,
+    Plan,
+    PlanText,
 }
 
 pub const CONTEXTS: &[Context] = &[
@@ -24,6 +28,10 @@ pub const CONTEXTS: &[Context] = &[
     Context::History,
     Context::Help,
     Context::Permission,
+    Context::Ask,
+    Context::AskText,
+    Context::Plan,
+    Context::PlanText,
 ];
 
 impl Context {
@@ -36,6 +44,10 @@ impl Context {
             Self::History => "history",
             Self::Help => "help",
             Self::Permission => "permission",
+            Self::Ask => "ask",
+            Self::AskText => "ask-text",
+            Self::Plan => "plan",
+            Self::PlanText => "plan-text",
         }
     }
 
@@ -48,6 +60,10 @@ impl Context {
             Self::History => "Prompt history",
             Self::Help => "Help",
             Self::Permission => "Permission dialog",
+            Self::Ask => "Question card",
+            Self::AskText => "Question card — free text",
+            Self::Plan => "Plan card",
+            Self::PlanText => "Plan card — refine",
         }
     }
 
@@ -123,6 +139,9 @@ actions! {
     ToggleTimestamps => "toggle-timestamps", "Show timestamps";
     Interrupt => "interrupt", "Interrupt the turn";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
+    RetrySend => "retry-send", "Retry the undelivered message";
+    EditSend => "edit-send", "Edit the undelivered message";
+    DiscardSend => "discard-send", "Drop the undelivered message";
     CopyMessage => "copy-message", "Copy the selected message";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
 
@@ -142,6 +161,25 @@ actions! {
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
+
+    FocusPrompt => "focus-prompt", "Answer the waiting prompt";
+    PromptDefer => "prompt-defer", "Answer later";
+    AskNextOption => "ask-next-option", "Next option";
+    AskPrevOption => "ask-prev-option", "Previous option";
+    AskPickIndex => "ask-pick-index", "Pick an option by number";
+    AskToggleOption => "ask-toggle-option", "Toggle the focused option";
+    AskNextQuestion => "ask-next-question", "Next question";
+    AskPrevQuestion => "ask-prev-question", "Previous question";
+    AskEditOther => "ask-edit-other", "Write a free-text answer";
+    AskSubmit => "ask-submit", "Send the answer";
+    PromptTextCommit => "prompt-text-commit", "Accept the text";
+    PromptTextCancel => "prompt-text-cancel", "Discard the text";
+    PlanApproveAuto => "plan-approve-auto", "Approve, auto-accept edits";
+    PlanApproveManual => "plan-approve-manual", "Approve, manually approve edits";
+    PlanKeepPlanning => "plan-keep-planning", "Keep planning";
+    PlanRefine => "plan-refine", "Refine the plan";
+    PlanScrollDown => "plan-scroll-down", "Scroll the plan down";
+    PlanScrollUp => "plan-scroll-up", "Scroll the plan up";
 }
 
 impl ActionId {
@@ -196,9 +234,13 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "G", ActionId::ScrollToBottom),
     spec(Context::Conversation, "t", ActionId::ToggleTimestamps),
     spec(Context::Conversation, "1-9", ActionId::SelectIndex),
+    spec(Context::Conversation, "R", ActionId::RetrySend),
+    spec(Context::Conversation, "e", ActionId::EditSend),
+    spec(Context::Conversation, "x", ActionId::DiscardSend),
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Conversation, "tab", ActionId::FocusPrompt),
 ];
 
 /// `shift+enter` is unreported by most terminals, so a newline also has a
@@ -226,9 +268,52 @@ const PERMISSION: &[BindingSpec] = &[
     spec(Context::Permission, "n, esc", ActionId::PermissionDeny),
 ];
 
+const ASK: &[BindingSpec] = &[
+    spec(Context::Ask, "j, down", ActionId::AskNextOption),
+    spec(Context::Ask, "k, up", ActionId::AskPrevOption),
+    spec(Context::Ask, "1-9", ActionId::AskPickIndex),
+    spec(Context::Ask, "space", ActionId::AskToggleOption),
+    spec(Context::Ask, "tab", ActionId::AskNextQuestion),
+    spec(Context::Ask, "backtab, shift+backtab, shift+tab", ActionId::AskPrevQuestion),
+    spec(Context::Ask, "o", ActionId::AskEditOther),
+    spec(Context::Ask, "enter", ActionId::AskSubmit),
+    spec(Context::Ask, "esc", ActionId::PromptDefer),
+];
+
+const ASK_TEXT: &[BindingSpec] = &[
+    spec(Context::AskText, "enter", ActionId::PromptTextCommit),
+    spec(Context::AskText, "esc", ActionId::PromptTextCancel),
+];
+
+const PLAN: &[BindingSpec] = &[
+    spec(Context::Plan, "1", ActionId::PlanApproveAuto),
+    spec(Context::Plan, "2", ActionId::PlanApproveManual),
+    spec(Context::Plan, "3", ActionId::PlanKeepPlanning),
+    spec(Context::Plan, "r", ActionId::PlanRefine),
+    spec(Context::Plan, "j, down", ActionId::PlanScrollDown),
+    spec(Context::Plan, "k, up", ActionId::PlanScrollUp),
+    spec(Context::Plan, "esc", ActionId::PromptDefer),
+];
+
+const PLAN_TEXT: &[BindingSpec] = &[
+    spec(Context::PlanText, "enter", ActionId::PromptTextCommit),
+    spec(Context::PlanText, "esc", ActionId::PromptTextCancel),
+];
+
 /// Where a feature registers its default bindings: add one slice here.
-pub const DEFAULT_BINDINGS: &[&[BindingSpec]] =
-    &[GLOBAL, SESSION_LIST, CONVERSATION, COMPOSER, HISTORY, HELP, PERMISSION];
+pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
+    GLOBAL,
+    SESSION_LIST,
+    CONVERSATION,
+    COMPOSER,
+    HISTORY,
+    HELP,
+    PERMISSION,
+    ASK,
+    ASK_TEXT,
+    PLAN,
+    PLAN_TEXT,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {

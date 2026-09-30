@@ -62,7 +62,7 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         .map(|row| match *row {
             session_list::Row::Header(group) => group_header(group),
             session_list::Row::Session { session, .. } => {
-                session_line(session, app.config.prefs.compact_rows)
+                session_line(session, app.config.prefs.compact_rows, app.prompt_marker(&session.id))
             }
         })
         .collect();
@@ -82,7 +82,11 @@ fn group_header(group: session_list::Group) -> ListItem<'static> {
 
 /// `compact` keeps a row to its identity — status, project, branch — and drops
 /// the model, cost and activity detail.
-fn session_line(s: &SessionListItem, compact: bool) -> ListItem<'static> {
+fn session_line(
+    s: &SessionListItem,
+    compact: bool,
+    prompt_marker: Option<&'static str>,
+) -> ListItem<'static> {
     let icon = theme::status_icon(s.status);
     let icon_style = theme::status_style(s.status);
 
@@ -111,6 +115,10 @@ fn session_line(s: &SessionListItem, compact: bool) -> ListItem<'static> {
 
     if !branch.is_empty() {
         spans.push(Span::styled(format!(" ({branch})"), theme::branch()));
+    }
+
+    if let Some(marker) = prompt_marker {
+        spans.push(Span::styled(format!(" {marker}"), theme::hotkey()));
     }
 
     if compact {

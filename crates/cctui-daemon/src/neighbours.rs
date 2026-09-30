@@ -299,8 +299,17 @@ mod tests {
 
     /// Run `git` in `dir` with signing and the user's identity pinned off, so a
     /// fixture repo never reaches the developer's signing key.
+    ///
+    /// Every inherited `GIT_*` variable is dropped: under a git hook `GIT_DIR`
+    /// points at the real repository and would take precedence over `dir`.
     fn git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
+        let mut cmd = std::process::Command::new("git");
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("GIT_") {
+                cmd.env_remove(key);
+            }
+        }
+        let out = cmd
             .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
             .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
             .args(args)

@@ -1445,28 +1445,28 @@ module = "app/server_event.rs"
 
 [[ws_event]]
 name = "ask_question"
-tui = "planned"
-ticket = "CCT-1219"
+tui = "handled"
+module = "app/prompt.rs"
 
 [[ws_event]]
 name = "ask_resolved"
-tui = "planned"
-ticket = "CCT-1219"
+tui = "handled"
+module = "app/prompt.rs"
 
 [[ws_event]]
 name = "plan_request"
-tui = "planned"
-ticket = "CCT-1220"
+tui = "handled"
+module = "app/prompt.rs"
 
 [[ws_event]]
 name = "plan_resolved"
-tui = "planned"
-ticket = "CCT-1220"
+tui = "handled"
+module = "app/prompt.rs"
 
 [[ws_event]]
 name = "command_result"
-tui = "planned"
-ticket = "CCT-1221"
+tui = "handled"
+module = "app/server_event.rs"
 
 [[ws_event]]
 name = "session_ended"
@@ -1475,8 +1475,8 @@ module = "app/server_event.rs"
 
 [[ws_event]]
 name = "message_ack"
-tui = "planned"
-ticket = "CCT-1213"
+tui = "handled"
+module = "app/server_event.rs"
 
 [[ws_event]]
 name = "archive_manifest"

@@ -1,7 +1,7 @@
 use super::action::{Action, Effect, HeartbeatUsage};
-use super::conversation;
 use super::state::{App, PendingPermission, View};
 use super::toast::Level;
+use super::{conversation, send};
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
@@ -16,6 +16,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
+        Action::Send(action) => send::reduce_send(app, action),
+        Action::Tick => send::tick(app),
 
         Action::Quit => {
             app.should_quit = true;
@@ -110,12 +112,15 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             let target = app.selected_session_id();
             app.reset_input();
             app.input_active = false;
-            let Some(session_id) = target else { return Vec::new() };
-            let mut effects = super::drafts::on_send(app, &session_id, &content);
-            if !content.trim().is_empty() {
-                effects.push(Effect::SendMessage { session_id, content });
+            match target {
+                Some(session_id) if !content.trim().is_empty() => {
+                    send::submit(app, session_id, content, None)
+                }
+                // Nothing to send, but the emptied composer is still a draft
+                // change the store has to hear about.
+                Some(session_id) => super::drafts::on_send(app, &session_id, &content),
+                None => Vec::new(),
             }
-            effects
         }
 
         Action::InterruptSelected => app
@@ -168,6 +173,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
@@ -195,6 +201,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
             let mut effects = conversation::reconnect(app);
+            effects.extend(send::redispatch_parked(app));
             effects.push(Effect::RefreshSessions);
             effects
         }
@@ -353,12 +360,7 @@ mod tests {
     }
 
     fn line(text: &str) -> crate::app::state::ConversationLine {
-        crate::app::state::ConversationLine {
-            timestamp: 0,
-            kind: LineKind::Assistant,
-            text: text.to_owned(),
-            tool_input: None,
-        }
+        crate::app::state::ConversationLine::new(LineKind::Assistant, text, 0)
     }
 
     #[test]
@@ -469,12 +471,16 @@ mod tests {
         app.input_active = true;
         app.message_input.insert_str("hello there");
         let effects = reduce(&mut app, Action::SubmitInput);
-        match effects.as_slice() {
-            [Effect::SendMessage { session_id, content }] => {
+        let sent = effects
+            .iter()
+            .find(|e| matches!(e, Effect::SendMessage { .. }))
+            .expect("expected a send effect");
+        match sent {
+            Effect::SendMessage { session_id, content, ask_picks: None, .. } => {
                 assert_eq!(session_id, "s-a");
                 assert_eq!(content, "hello there");
             }
-            _ => panic!("expected a send effect"),
+            _ => unreachable!("filtered above"),
         }
         assert!(!app.input_active);
         assert_eq!(app.message_input.lines().join("\n"), "");

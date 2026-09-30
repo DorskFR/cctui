@@ -109,7 +109,11 @@ pub enum DraftAction {
     /// `GET /drafts` answered: every draft this user owns.
     IndexLoaded(Box<DraftList>),
     /// One session's draft and history, re-read as its conversation opened.
-    Loaded { session_id: String, text: Option<String>, history: Option<String> },
+    Loaded {
+        session_id: String,
+        text: Option<String>,
+        history: Option<String>,
+    },
     HistoryPrev,
     HistoryNext,
     OpenPicker,
@@ -183,7 +187,7 @@ fn loaded(
     if let Some(text) = text
         && !app.drafts.has_draft(&session_id)
     {
-        app.drafts.set_text(session_id.clone(), text);
+        app.drafts.set_text(session_id, text);
         restore_composer(app);
     }
     Vec::new()
@@ -214,7 +218,7 @@ pub fn sync_composer(app: &mut App) -> Vec<Effect> {
         app.drafts.set_text(previous, text);
     }
     app.drafts.nav.reset_all();
-    app.drafts.composer_session = current.clone();
+    app.drafts.composer_session.clone_from(&current);
     let Some(session_id) = current else {
         app.reset_input();
         return Vec::new();

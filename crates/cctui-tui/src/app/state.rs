@@ -6,6 +6,7 @@ use ratatui_textarea::TextArea;
 
 use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
+use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
 pub use super::session_list::uptime_secs;
 use super::toast::{Level, StatusCounters, Toasts};
@@ -36,6 +37,38 @@ pub struct ConversationLine {
     pub text: String,
     /// Raw tool input JSON (kept for Edit/Write to generate diffs).
     pub tool_input: Option<serde_json::Value>,
+    /// Delivery or queue state; `None` is a settled line.
+    pub status: Option<LineStatus>,
+}
+
+impl ConversationLine {
+    #[must_use]
+    pub fn new(kind: LineKind, text: impl Into<String>, timestamp: i64) -> Self {
+        Self { timestamp, kind, text: text.into(), tool_input: None, status: None }
+    }
+
+    #[must_use]
+    pub fn with_status(mut self, status: LineStatus) -> Self {
+        self.status = Some(status);
+        self
+    }
+}
+
+/// What a line is still waiting for: delivery of the user's own send, or the
+/// agent taking a queued prompt off its queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineStatus {
+    Sending,
+    Retrying {
+        attempt: u32,
+        max: u32,
+    },
+    Delivered,
+    Failed(String),
+    /// Waiting behind the running turn on the agent's own queue.
+    Queued,
+    /// Withdrawn from that queue before the agent ran it.
+    Removed,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -66,6 +99,10 @@ pub struct App {
     pub should_quit: bool,
     /// Queue of pending permission requests; first is shown as dialog.
     pub permission_queue: std::collections::VecDeque<PendingPermission>,
+    /// Live `AskUserQuestion` per session, cleared on `AskResolved`.
+    pub asks: HashMap<String, AskCard>,
+    /// Live plan-approval prompt per session, cleared on `PlanResolved`.
+    pub plans: HashMap<String, PlanCard>,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
@@ -88,6 +125,8 @@ pub struct App {
     pub status: StatusCounters,
     pub auth: AuthState,
     pub drafts: super::drafts::DraftState,
+    /// Sends that have left the composer but are not confirmed delivered.
+    pub outbox: super::send::Outbox,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -128,6 +167,8 @@ impl App {
             input_active: false,
             should_quit: false,
             permission_queue: std::collections::VecDeque::new(),
+            asks: HashMap::new(),
+            plans: HashMap::new(),
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,
@@ -143,6 +184,7 @@ impl App {
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
+            outbox: super::send::Outbox::default(),
             clock_ms: 0,
         }
     }

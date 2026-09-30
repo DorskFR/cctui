@@ -218,6 +218,10 @@ async fn run(
     effects.dispatch(app::action::Effect::LoadDraftIndex);
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
+    // Delivery deadlines are the reducer's, and the reducer only moves when it
+    // is called: without this the retry ladder would run at the refresh rate.
+    let mut delivery_interval = time::interval(Duration::from_millis(500));
+    delivery_interval.tick().await;
     let mut input_rx = spawn_input_task();
     let mut ws_closed = false;
     let mut ws_ever_connected = false;
@@ -234,7 +238,13 @@ async fn run(
             maybe_input = input_rx.recv() => {
                 maybe_input
                     .and_then(|input| {
-                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                        keys::map_input(
+                            &app.config.keys,
+                            app.view(),
+                            app.input_active,
+                            app.prompt_focus(),
+                            input,
+                        )
                     })
                     .map_or_else(Vec::new, |action| vec![action])
             }
@@ -261,6 +271,7 @@ async fn run(
                 )
             }
             _ = refresh_interval.tick() => vec![Action::RefreshSessions],
+            _ = delivery_interval.tick() => vec![Action::Tick],
         };
 
         for action in actions {
