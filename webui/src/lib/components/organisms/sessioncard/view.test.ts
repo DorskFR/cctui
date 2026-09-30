@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { scheduledLaunchOf, titleOf } from './view';
+import { needsYouOf, scheduledLaunchOf, titleOf } from './view';
 
 const session = (over: Partial<SessionListItem>): SessionListItem =>
 	({ id: 'a1e5bd0f2c3d4e5f6', labels: [], working_dir: '/home/me/cctui', ...over }) as SessionListItem;
@@ -41,5 +41,35 @@ describe('scheduledLaunchOf', () => {
 
 	it('ignores an unparseable launch time rather than rendering Invalid Date', () => {
 		expect(scheduledLaunchOf(session({ launch_at: 'never' }))).toBeNull();
+	});
+});
+
+describe('needsYouOf', () => {
+	it('is null when the server sent no counts, or only zeroes', () => {
+		expect(needsYouOf(session({}))).toBeNull();
+		expect(
+			needsYouOf(session({ user_actions: { open: 0, blocking: 0, child_open: 0, child_blocking: 0 } }))
+		).toBeNull();
+	});
+
+	it('reports the open items on the session itself and whether any blocks', () => {
+		const got = needsYouOf(
+			session({ user_actions: { open: 3, blocking: 1, child_open: 0, child_blocking: 0 } })
+		);
+		expect(got).toEqual({ count: 3, child: 0, blocking: true });
+	});
+
+	it('surfaces a child that is blocked on the user even when the parent is not', () => {
+		const got = needsYouOf(
+			session({ user_actions: { open: 0, blocking: 0, child_open: 2, child_blocking: 1 } })
+		);
+		expect(got).toEqual({ count: 0, child: 2, blocking: true });
+	});
+
+	it('does not treat a non-blocking child item as blocking', () => {
+		const got = needsYouOf(
+			session({ user_actions: { open: 1, blocking: 0, child_open: 1, child_blocking: 0 } })
+		);
+		expect(got?.blocking).toBe(false);
 	});
 });

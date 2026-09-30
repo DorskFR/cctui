@@ -6,6 +6,7 @@
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
 	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
 	import TodoCard from '$lib/components/organisms/TodoCard.svelte';
+	import UserActionsCard from '$lib/components/organisms/UserActionsCard.svelte';
 	import type { ConversationStream } from './stream.svelte';
 	import type { Line } from './types';
 
@@ -81,6 +82,12 @@
 		/>
 	{/key}
 {/if}
+
+<UserActionsCard
+	actions={stream.userActions}
+	interactive={!archived}
+	ontick={(id, status) => stream.tickUserAction(id, status)}
+/>
 
 {#if stream.todos}
 	<TodoCard todos={stream.todos} />

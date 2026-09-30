@@ -7,7 +7,7 @@
 	import { Badge, Text, Timestamp } from '@dorsk/tsumikit';
 	import { accountTrafficWarning } from '../../../../routes/sessions/sessions.logic';
 	import Gutter from './Gutter.svelte';
-	import type { SessionActions, SessionView } from './view';
+	import { needsYouOf, type SessionActions, type SessionView } from './view';
 
 	// gutter · star/dot/machine/account glyphs · title · labels · ⚙N cadence — the lead
 	// group both the compact row and the detailed card header open with.
@@ -27,6 +27,7 @@
 	// The in-progress task's activeForm is the more specific version of the
 	// daemon's spinner text, so it wins the single bounded headline slot.
 	const headline = $derived(act.todoActive ?? act.detail);
+	const needsYou = $derived(needsYouOf(s));
 </script>
 
 <Gutter
@@ -94,6 +95,16 @@
 				>{act.todoDone}/{act.todoTotal}</span
 			>
 		{/if}
+		{#if needsYou}
+			<span
+				class="act-needs"
+				class:blocking={needsYou.blocking}
+				title={needsYou.child > 0
+					? m.sessions_needs_you_child_title({ count: needsYou.child })
+					: m.sessions_needs_you_title()}
+				>{m.sessions_needs_you({ count: needsYou.count + needsYou.child })}</span
+			>
+		{/if}
 		{#if headline && !row}<span class="act-detail">{headline}</span>{/if}
 	</span>
 {/if}
@@ -159,6 +170,17 @@
 	}
 	.act-todos.running {
 		color: var(--accent);
+		font-weight: 600;
+	}
+	/* Never faint: an unanswered request to the human is the one thing on this
+	   row that must not read as decoration. */
+	.act-needs {
+		flex: none;
+		color: var(--text);
+		font-variant-numeric: tabular-nums;
+	}
+	.act-needs.blocking {
+		color: var(--warn);
 		font-weight: 600;
 	}
 	/* `act-detail` carries arbitrary-length agent prose (the in_progress

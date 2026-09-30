@@ -85,6 +85,29 @@ export interface SessionActions {
 	onCancelSchedule?: (s: SessionListItem) => void;
 }
 
+export interface NeedsYou {
+	/** Open items on the session itself. */
+	count: number;
+	/** Open items on its subagents, rolled up. */
+	child: number;
+	blocking: boolean;
+}
+
+/**
+ * The "needs you: N" indicator for a card, or `null` when nothing is open.
+ * A child's blocking item counts too: a parent following a child has to see
+ * that the child is stopped on the user.
+ */
+export function needsYouOf(s: SessionListItem): NeedsYou | null {
+	const c = s.user_actions;
+	if (!c || (c.open === 0 && c.child_open === 0)) return null;
+	return {
+		count: c.open,
+		child: c.child_open,
+		blocking: c.blocking > 0 || c.child_blocking > 0
+	};
+}
+
 export function prLinksOf(s: SessionListItem): PrLink[] {
 	return (s.pr_links ?? []).map((href) => {
 		const parts = href.replace(/\/+$/, '').split('/');

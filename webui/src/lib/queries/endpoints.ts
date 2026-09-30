@@ -17,6 +17,8 @@ import type { UsageAnalytics } from "@bindings/UsageAnalytics";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
+import type { UserActionList } from "@bindings/UserActionList";
+import type { UserActionStatus } from "@bindings/UserActionStatus";
 import type { ConversationSearchResponse } from "@bindings/ConversationSearchResponse";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
@@ -352,6 +354,14 @@ export const endpoints = {
     }),
   unpinMessage: (id: string, seq: number) =>
     api.del<void>(`/sessions/${id}/pins/${seq}`),
+  /** What the agent is waiting on from the user. The WS only pushes changes, so
+   *  an opening pane reads the list once here. */
+  userActions: (id: string) =>
+    api.get<UserActionList>(`/sessions/${id}/user-actions`),
+  tickUserAction: (id: string, actionId: string, status: UserActionStatus) =>
+    api.post<UserActionList>(`/sessions/${id}/user-actions/${actionId}/tick`, {
+      status,
+    }),
   /** One-call session diagnose: everything the daemon knows about
    *  the session — each fact dated + sourced, plus the arbitration verdict —
    *  merged with the server-side gateway/account binding facts. */

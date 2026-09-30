@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ServerEvent } from '@bindings/ServerEvent';
+import type { UserAction } from '@bindings/UserAction';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
 import type { QueryClient } from '@tanstack/svelte-query';
@@ -24,7 +25,8 @@ import {
 	type PermCb,
 	type PlanCb,
 	type SoftLimitCb,
-	type ToolBlockCb
+	type ToolBlockCb,
+	type UserActionsCb
 } from './prompts';
 import { SessionStreams, type StreamCb } from './stream';
 import { LiveSocket, type Status } from './socket.svelte';
@@ -404,6 +406,15 @@ export class WsClient {
 
 	onToolBlock(id: string, cb: ToolBlockCb): () => void {
 		return this.prompts.onToolBlock(id, cb);
+	}
+
+	onUserActions(id: string, cb: UserActionsCb): () => void {
+		return this.prompts.onUserActions(id, cb);
+	}
+
+	/** Seed the list from an HTTP read (the WS only pushes changes). */
+	setUserActions(id: string, list: UserAction[]) {
+		this.prompts.setUserActions(id, list);
 	}
 
 	dismissToolBlock(id: string) {

@@ -81,7 +81,10 @@ pub async fn list(pool: &sqlx::PgPool, session_id: &str) -> Result<Vec<UserActio
 }
 
 async fn list_of(state: &AppState, session_id: &str) -> Result<UserActionList, AppError> {
-    Ok(UserActionList { session_id: session_id.to_owned(), items: list(&state.pool, session_id).await? })
+    Ok(UserActionList {
+        session_id: session_id.to_owned(),
+        items: list(&state.pool, session_id).await?,
+    })
 }
 
 /// Publish the current list so every open tab on this session updates.
@@ -94,8 +97,10 @@ async fn broadcast(state: &AppState, list: &UserActionList) {
 
 /// A session that can no longer act on its list still shows it; only writes stop.
 async fn writable(pool: &sqlx::PgPool, session_id: &str) -> Result<bool, AppError> {
-    let status: Option<String> =
-        sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1").bind(session_id).fetch_optional(pool).await?;
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(status.is_some_and(|s| s != "archived"))
 }
 

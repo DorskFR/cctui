@@ -110,6 +110,20 @@ const fixtures = {
 		state: 'scheduled',
 		launch_at: '2026-10-02T07:30:00Z'
 	},
+	user_actions: {
+		type: 'user_actions',
+		session_id: SID,
+		actions: [
+			{
+				id: 'ua-1',
+				title: 'Approve PR #12',
+				kind: 'decision',
+				blocking: true,
+				status: 'open',
+				created_at: '2026-09-30T10:00:00Z'
+			}
+		]
+	},
 	heartbeat: { type: 'heartbeat' },
 	resync: { type: 'resync', session_id: SID }
 } satisfies { [K in ServerEvent['type']]: Extract<ServerEvent, { type: K }> };
@@ -353,6 +367,31 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		c.onPty(SID, (d) => chunks.push(d));
 		sock.deliver(fixtures.pty_chunk);
 		expect(Array.from(chunks[0])).toEqual([104, 105]);
+	});
+
+	it('user_actions reaches the per-session listener and flags the session as needing input', () => {
+		const { c, sock } = setup();
+		const seen: unknown[] = [];
+		const patches: unknown[] = [];
+		c.onUserActions(SID, (list) => seen.push(list));
+		c.onListPatch((p) => patches.push(p));
+		sock.deliver(fixtures.user_actions);
+		// The listener fires once with the empty seed, then with the pushed list.
+		expect(seen.at(-1)).toEqual(fixtures.user_actions.actions);
+		expect(patches).toEqual([
+			{ session_id: SID, attention: 'needs_input', bucket: 'blocked' }
+		]);
+	});
+
+	it('a list with no blocking item does not claim the session needs input', () => {
+		const { c, sock } = setup();
+		const patches: unknown[] = [];
+		c.onListPatch((p) => patches.push(p));
+		sock.deliver({
+			...fixtures.user_actions,
+			actions: [{ ...fixtures.user_actions.actions[0], blocking: false }]
+		});
+		expect(patches).toEqual([]);
 	});
 
 	it('resync invalidates the session conversation', () => {

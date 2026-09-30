@@ -7,6 +7,8 @@
 // than read off the ws singleton from a $derived — a $derived reading the
 // singleton's keyed state does NOT re-run on mutation (see ws.svelte.ts header).
 import type { AgentEvent } from '@bindings/AgentEvent';
+import type { UserAction } from '@bindings/UserAction';
+import type { UserActionStatus } from '@bindings/UserActionStatus';
 import {
 	ws,
 	userMsgKey,
@@ -85,6 +87,9 @@ export class ConversationStream {
 	// Folded last-write-wins: the list mutates many times per turn and only its
 	// latest state is meaningful.
 	todos = $state<TodoItem[] | null>(null);
+	// What the agent is waiting on from the user. Server-authoritative: seeded by
+	// an HTTP read on subscribe, then replaced whole by every ws push.
+	userActions = $state<UserAction[]>([]);
 	// Activity-banner state. Stamped with the browser clock at receipt rather
 	// than the event's daemon `ts`, which is a different clock and would skew
 	// every elapsed reading.
@@ -196,6 +201,17 @@ export class ConversationStream {
 		const offToolBlock = ws.onToolBlock(sid, (b) => {
 			this.toolBlock = b;
 		});
+		const offUserActions = ws.onUserActions(sid, (list) => {
+			this.userActions = list;
+		});
+		// The ws only carries changes, so a pane opening on a session that already
+		// has a list would otherwise show nothing until the next add or tick.
+		void endpoints.userActions(sid).then(
+			(res) => {
+				if (this.#opts.id() === sid) ws.setUserActions(sid, res.items);
+			},
+			() => {}
+		);
 		// Mirror the singleton's per-session delivery state. Fires
 		// immediately with the current snapshot and on every ack / auto-retry.
 		const offDelivery = ws.onDelivery(sid, (snap) => {
@@ -213,6 +229,7 @@ export class ConversationStream {
 			offPlan();
 			offSoftLimit();
 			offToolBlock();
+			offUserActions();
 			offDelivery();
 			ws.unsubscribe(sid);
 			// The same session can be open in the drawer and in a tile; dropping
@@ -419,6 +436,16 @@ export class ConversationStream {
 		await endpoints.switchAccount(id, account);
 		this.softLimit = null;
 		ws.clearSoftLimit(id);
+		this.#opts.invalidateSessions();
+	}
+
+	// Tick one "needs you" item as the user. The server answers with the whole
+	// list and broadcasts it, so the local state is replaced from its reply rather
+	// than patched optimistically — a rejected tick must not look accepted.
+	async tickUserAction(actionId: string, status: UserActionStatus): Promise<void> {
+		const id = this.#opts.id();
+		const res = await endpoints.tickUserAction(id, actionId, status);
+		ws.setUserActions(id, res.items);
 		this.#opts.invalidateSessions();
 	}
 

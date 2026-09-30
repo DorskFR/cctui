@@ -706,8 +706,11 @@ fn render_user_action(item: &Value) -> String {
     let kind = item.get("kind").and_then(Value::as_str).unwrap_or("action");
     let id = item.get("id").and_then(Value::as_str).unwrap_or("");
     let mut line = if status == "open" {
-        let blocking =
-            if item.get("blocking").and_then(Value::as_bool).unwrap_or(false) { " BLOCKING" } else { "" };
+        let blocking = if item.get("blocking").and_then(Value::as_bool).unwrap_or(false) {
+            " BLOCKING"
+        } else {
+            ""
+        };
         format!("[ ]{blocking} {title} ({kind}, id {id})")
     } else {
         let by = item
@@ -733,8 +736,11 @@ fn render_user_action_result(v: &Value) -> String {
     if let Some(added) = v.get("added").and_then(Value::as_str) {
         out.push(format!("item id: {added}"));
     }
-    let items: Vec<&Value> =
-        v.pointer("/list/items").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+    let items: Vec<&Value> = v
+        .pointer("/list/items")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
     if items.is_empty() {
         out.push("the user action list is empty".to_owned());
     } else {
