@@ -88,9 +88,7 @@ pub fn plugin_info(
         instance_setting_values: if enabled {
             instance_values
                 .into_iter()
-                .filter(|(key, _)| {
-                    m.instance_settings.iter().any(|d| &d.key == key && !d.secret)
-                })
+                .filter(|(key, _)| m.instance_settings.iter().any(|d| &d.key == key && !d.secret))
                 .collect()
         } else {
             BTreeMap::new()

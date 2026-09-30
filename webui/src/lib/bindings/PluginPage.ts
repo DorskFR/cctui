@@ -4,4 +4,4 @@ export type PluginPage = { title: string,
 /**
  * Tsumikit icon name for the nav entry.
  */
-icon?: string, };
+icon?: string | null, };

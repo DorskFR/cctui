@@ -11,12 +11,12 @@
 //! the shared vectors in `docs/plugin-proxy-signature-vectors.json` must agree
 //! with byte for byte.
 
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
-use axum::http::header::{HeaderMap, HeaderName, HeaderValue};
 use axum::http::StatusCode;
+use axum::http::header::{HeaderMap, HeaderName, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use axum::Extension;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::sync::LazyLock;
@@ -70,8 +70,8 @@ pub fn canonical(method: &str, path: &str, ts: i64, user_id: &str) -> String {
 
 #[must_use]
 pub fn sign(secret: &str, method: &str, path: &str, ts: i64, user_id: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .expect("hmac accepts any key length");
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac accepts any key length");
     mac.update(canonical(method, path, ts, user_id).as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
@@ -213,14 +213,7 @@ pub async fn backend(
 
     let sent = client()
         .request(parts.method.clone(), &url)
-        .headers(forwarded_headers(
-            &parts.headers,
-            &id,
-            &user_id,
-            &user_name,
-            ts,
-            &signature,
-        ))
+        .headers(forwarded_headers(&parts.headers, &id, &user_id, &user_name, ts, &signature))
         .body(reqwest::Body::wrap_stream(body.into_data_stream()))
         .send()
         .await;
@@ -347,8 +340,14 @@ mod tests {
             upstream_url("https://gh.example", "/v1/pulls", Some("state=open")),
             "https://gh.example/v1/pulls?state=open"
         );
-        assert_eq!(upstream_url("https://gh.example/", "/v1/pulls", None), "https://gh.example/v1/pulls");
-        assert_eq!(upstream_url("https://gh.example/api", "/v1/x", None), "https://gh.example/api/v1/x");
+        assert_eq!(
+            upstream_url("https://gh.example/", "/v1/pulls", None),
+            "https://gh.example/v1/pulls"
+        );
+        assert_eq!(
+            upstream_url("https://gh.example/api", "/v1/x", None),
+            "https://gh.example/api/v1/x"
+        );
         assert_eq!(upstream_url("https://gh.example", "/", Some("")), "https://gh.example/");
     }
 
@@ -438,9 +437,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let (secret, _) = crate::plugin_settings::ensure_proxy_secret(&pool, "proxydemo")
-            .await
-            .unwrap();
+        let (secret, _) =
+            crate::plugin_settings::ensure_proxy_secret(&pool, "proxydemo").await.unwrap();
 
         let user_id = uuid::Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'Proxy Tester', $2)")

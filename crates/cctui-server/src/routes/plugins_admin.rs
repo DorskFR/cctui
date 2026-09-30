@@ -238,9 +238,10 @@ pub async fn install(
     tracing::info!(id = %plugin.manifest.id, version = %plugin.manifest.version, "plugin installed");
     let mut info = AdminPluginInfo::from(&plugin);
     if plugin.manifest.backend.is_some() {
-        let (secret, fresh) = plugin_settings::ensure_proxy_secret(&state.pool, &plugin.manifest.id)
-            .await
-            .map_err(|e| db_err(&e))?;
+        let (secret, fresh) =
+            plugin_settings::ensure_proxy_secret(&state.pool, &plugin.manifest.id)
+                .await
+                .map_err(|e| db_err(&e))?;
         info.proxy_secret = fresh.then_some(secret);
     }
     Ok(Json(info))
@@ -318,7 +319,10 @@ async fn plugin_by_id(state: &AppState, id: &str) -> Result<Plugin, ApiErr> {
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no plugin with that id"))
 }
 
-async fn settings_view(state: &AppState, plugin: &Plugin) -> Result<PluginInstanceSettings, ApiErr> {
+async fn settings_view(
+    state: &AppState,
+    plugin: &Plugin,
+) -> Result<PluginInstanceSettings, ApiErr> {
     let m = &plugin.manifest;
     let view = plugin_settings::admin_view(&state.pool, m).await.map_err(|e| db_err(&e))?;
     let proxy_secret_set =
@@ -421,9 +425,8 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = catalog(State(state()), Extension(user())).await.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, _) = get_settings(State(state()), Extension(user()), Path("demo".into()))
-            .await
-            .unwrap_err();
+        let (status, _) =
+            get_settings(State(state()), Extension(user()), Path("demo".into())).await.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = put_settings(
             State(state()),

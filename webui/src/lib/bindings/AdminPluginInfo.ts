@@ -19,4 +19,4 @@ backend: boolean,
  * Set by an install that minted a fresh proxy secret; the only response
  * that ever carries it.
  */
-proxy_secret?: string, };
+proxy_secret: string | null, };

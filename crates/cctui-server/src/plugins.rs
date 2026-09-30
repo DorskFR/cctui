@@ -298,10 +298,7 @@ pub fn validate_manifest(
     Ok(())
 }
 
-fn validate_instance_settings(
-    manifest: &PluginManifest,
-    id: &str,
-) -> Result<(), ManifestError> {
+fn validate_instance_settings(manifest: &PluginManifest, id: &str) -> Result<(), ManifestError> {
     if manifest.instance_settings.len() > MAX_SETTINGS {
         return Err(ManifestError::BadInstanceSetting(
             id.to_owned(),
@@ -311,9 +308,7 @@ fn validate_instance_settings(
     }
     let mut keys = std::collections::HashSet::new();
     for setting in &manifest.instance_settings {
-        let bad = |why| {
-            ManifestError::BadInstanceSetting(id.to_owned(), setting.key.clone(), why)
-        };
+        let bad = |why| ManifestError::BadInstanceSetting(id.to_owned(), setting.key.clone(), why);
         if !valid_setting_key(&setting.key) {
             return Err(bad("key must match [a-zA-Z][a-zA-Z0-9_-]{0,39}"));
         }

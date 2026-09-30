@@ -34,9 +34,7 @@ async fn stored(pool: &PgPool, plugin_id: &str) -> sqlx::Result<BTreeMap<String,
         .as_ref()
         .and_then(serde_json::Value::as_object)
         .map(|o| {
-            o.iter()
-                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
-                .collect()
+            o.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))).collect()
         })
         .unwrap_or_default())
 }
@@ -188,10 +186,7 @@ pub async fn rotate_proxy_secret(pool: &PgPool, plugin_id: &str) -> sqlx::Result
 /// The proxy secret, minting one when the plugin has none. Returns the
 /// plaintext together with whether it was freshly generated, so an install can
 /// show a new secret once and a re-install never re-shows the old one.
-pub async fn ensure_proxy_secret(
-    pool: &PgPool,
-    plugin_id: &str,
-) -> sqlx::Result<(String, bool)> {
+pub async fn ensure_proxy_secret(pool: &PgPool, plugin_id: &str) -> sqlx::Result<(String, bool)> {
     if let Some(existing) = proxy_secret(pool, plugin_id).await? {
         return Ok((existing, false));
     }
@@ -234,10 +229,7 @@ mod tests {
             page: None,
             styles: vec![],
             settings: vec![],
-            instance_settings: vec![
-                decl("upstream", "url", false),
-                decl("token", "string", true),
-            ],
+            instance_settings: vec![decl("upstream", "url", false), decl("token", "string", true)],
             backend: None,
         }
     }
