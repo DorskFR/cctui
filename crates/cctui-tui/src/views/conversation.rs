@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
-use crate::app::{App, ConversationLine, LineKind};
+use crate::app::{App, ConversationLine, LineKind, LineStatus, send};
 use crate::theme;
 use crate::ui::{diff_render, markdown_render};
 
@@ -51,10 +51,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
 
     // Conversation
-    if let Some(store) = app.conversations.get(&session.id).filter(|s| !s.is_empty()) {
+    let pending = send::pending_lines(app, &session.id);
+    let store = app.conversations.get(&session.id).filter(|s| !s.is_empty());
+    if store.is_some() || !pending.is_empty() {
         let visible_height = content_area.height as usize;
-        let entries = store.entries();
-        let epoch = store.epoch();
+        let entries = store.map_or(&[][..], |s| s.entries());
+        let epoch = store.map_or(0, |s| s.epoch());
 
         // The cache may only be appended to: any entry that landed earlier than
         // the end bumps `epoch` and forces a rebuild.
@@ -74,8 +76,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.render_cache_entries = entries.len();
         }
 
+        let pending_lines: Vec<Line<'static>> =
+            pending.iter().flat_map(|line| render_line(line, app.show_timestamps)).collect();
+
         let previous_total = app.total_display_lines;
-        let total = app.render_cache.len();
+        let total = app.render_cache.len() + pending_lines.len();
         app.viewport_height = visible_height;
         app.total_display_lines = total;
 
@@ -89,8 +94,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let max_offset = total.saturating_sub(visible_height);
         let offset = if app.follow_tail { max_offset } else { app.scroll_offset.min(max_offset) };
 
-        let display_lines: Vec<Line> =
-            app.render_cache.iter().skip(offset).take(visible_height).cloned().collect();
+        let display_lines: Vec<Line> = app
+            .render_cache
+            .iter()
+            .chain(pending_lines.iter())
+            .skip(offset)
+            .take(visible_height)
+            .cloned()
+            .collect();
 
         frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), content_area);
 
@@ -178,7 +189,9 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
             // Two blank lines before user message — clear turn separator
             result.push(Line::from(""));
             result.push(Line::from(""));
-            result.push(Line::from(vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)]));
+            let mut head = vec![Span::raw(ts), Span::styled("❯ You", LABEL_YOU)];
+            head.extend(status_span(line.status.as_ref()));
+            result.push(Line::from(head));
             for text_line in line.text.lines() {
                 result.push(Line::from(Span::styled(
                     text_line.to_string(),
@@ -275,7 +288,15 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
             }
         }
         LineKind::System => {
-            if !line.text.is_empty() {
+            if line.status == Some(LineStatus::Removed) {
+                let body = line.text.lines().next().unwrap_or_default();
+                let note = if body.is_empty() {
+                    "⧗ removed from queue".to_owned()
+                } else {
+                    format!("⧗ removed from queue: {body}")
+                };
+                result.push(Line::from(Span::styled(note, theme::dim())));
+            } else if !line.text.is_empty() {
                 result.push(Line::from(Span::styled(line.text.clone(), theme::dim())));
             }
         }
@@ -290,6 +311,24 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
     }
 
     result
+}
+
+/// The delivery or queue badge a user line carries, if any.
+fn status_span(status: Option<&LineStatus>) -> Option<Span<'static>> {
+    let (text, style) = match status? {
+        LineStatus::Sending => ("  … sending".to_owned(), theme::dim()),
+        LineStatus::Retrying { attempt, max } => {
+            (format!("  ⟳ retrying ({attempt}/{max})"), theme::dim())
+        }
+        LineStatus::Delivered => ("  ✓ sent".to_owned(), theme::dim()),
+        LineStatus::Failed(reason) => (
+            format!("  ✗ failed: {reason} — R retry  e edit  x drop"),
+            theme::error(),
+        ),
+        LineStatus::Queued => ("  ⧗ queued".to_owned(), theme::dim()),
+        LineStatus::Removed => ("  ⧗ removed from queue".to_owned(), theme::dim()),
+    };
+    Some(Span::styled(text, style))
 }
 
 /// Render a scrollbar overlay on the right edge of the content area.

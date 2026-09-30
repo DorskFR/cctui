@@ -35,6 +35,35 @@ pub struct ConversationLine {
     pub text: String,
     /// Raw tool input JSON (kept for Edit/Write to generate diffs).
     pub tool_input: Option<serde_json::Value>,
+    /// Delivery or queue state; `None` is a settled line.
+    pub status: Option<LineStatus>,
+}
+
+impl ConversationLine {
+    #[must_use]
+    pub fn new(kind: LineKind, text: impl Into<String>, timestamp: i64) -> Self {
+        Self { timestamp, kind, text: text.into(), tool_input: None, status: None }
+    }
+
+    #[must_use]
+    pub fn with_status(mut self, status: LineStatus) -> Self {
+        self.status = Some(status);
+        self
+    }
+}
+
+/// What a line is still waiting for: delivery of the user's own send, or the
+/// agent taking a queued prompt off its queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineStatus {
+    Sending,
+    Retrying { attempt: u32, max: u32 },
+    Delivered,
+    Failed(String),
+    /// Waiting behind the running turn on the agent's own queue.
+    Queued,
+    /// Withdrawn from that queue before the agent ran it.
+    Removed,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -86,6 +115,8 @@ pub struct App {
     pub toasts: Toasts,
     pub status: StatusCounters,
     pub auth: AuthState,
+    /// Sends that have left the composer but are not confirmed delivered.
+    pub outbox: super::send::Outbox,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -130,6 +161,7 @@ impl App {
             toasts: Toasts::default(),
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
+            outbox: super::send::Outbox::default(),
             clock_ms: 0,
         }
     }

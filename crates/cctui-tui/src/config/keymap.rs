@@ -119,6 +119,9 @@ actions! {
     ToggleTimestamps => "toggle-timestamps", "Show timestamps";
     Interrupt => "interrupt", "Interrupt the turn";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
+    RetrySend => "retry-send", "Retry the undelivered message";
+    EditSend => "edit-send", "Edit the undelivered message";
+    DiscardSend => "discard-send", "Drop the undelivered message";
     CopyMessage => "copy-message", "Copy the selected message";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
 
@@ -184,6 +187,9 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "G", ActionId::ScrollToBottom),
     spec(Context::Conversation, "t", ActionId::ToggleTimestamps),
     spec(Context::Conversation, "1-9", ActionId::SelectIndex),
+    spec(Context::Conversation, "R", ActionId::RetrySend),
+    spec(Context::Conversation, "e", ActionId::EditSend),
+    spec(Context::Conversation, "x", ActionId::DiscardSend),
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
 ];

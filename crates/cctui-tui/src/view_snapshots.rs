@@ -78,6 +78,32 @@ fn conversation() {
 }
 
 #[test]
+fn conversation_delivery_states() {
+    use crate::app::send::{Phase, seed};
+    use crate::app::state::{ConversationLine, LineStatus};
+    use crate::app::{ConversationStore, LineKind};
+
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    let mut store = ConversationStore::new();
+    store.push_live(
+        Some(1),
+        ConversationLine::new(LineKind::User, "deploy the thing", 0)
+            .with_status(LineStatus::Queued),
+    );
+    store.push_live(
+        Some(2),
+        ConversationLine::new(LineKind::System, "roll back the release", 0)
+            .with_status(LineStatus::Removed),
+    );
+    app.conversations.insert(id.clone(), store);
+    seed(&mut app, &id, "tail the logs", Phase::Pending, None);
+    seed(&mut app, &id, "restart the worker", Phase::Failed, Some("no daemon connected"));
+    app.router.push(View::Conversation);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn conversation_without_data() {
     let mut app = app_with_sessions();
     app.router.push(View::Conversation);

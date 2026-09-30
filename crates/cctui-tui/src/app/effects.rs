@@ -9,6 +9,7 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
+use super::send::SendAction;
 use super::state::ConversationLine;
 use super::toast::Level;
 
@@ -90,12 +91,21 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             }
             Vec::new()
         }
-        Effect::SendMessage { session_id, content } => {
-            if let Err(e) = ws.send_message(session_id, content, None, None).await {
-                tracing::warn!(%e, "message send failed");
-                return vec![Action::Toast(Level::Error, "message send failed".to_owned())];
+        Effect::SendMessage { send_id, session_id, content, turn_id } => {
+            let client_msg_id = uuid::Uuid::new_v4().to_string();
+            let turn_id = turn_id.unwrap_or_else(uuid::Uuid::new_v4);
+            match ws
+                .send_message_as(session_id, content, client_msg_id.clone(), None, Some(turn_id))
+                .await
+            {
+                Ok(()) => {
+                    vec![Action::Send(SendAction::Dispatched { send_id, client_msg_id, turn_id })]
+                }
+                Err(e) => vec![Action::Send(SendAction::DispatchFailed {
+                    send_id,
+                    reason: e.to_string(),
+                })],
             }
-            Vec::new()
         }
         Effect::Interrupt { session_id } => match server.interrupt(&session_id).await {
             Ok(()) => Vec::new(),

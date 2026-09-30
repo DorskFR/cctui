@@ -1,6 +1,6 @@
 use super::action::{Action, Effect, HeartbeatUsage};
-use super::conversation;
 use super::state::{App, PendingPermission, View};
+use super::{conversation, send};
 use super::toast::Level;
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
@@ -9,6 +9,8 @@ use super::toast::Level;
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Send(action) => send::reduce_send(app, action),
+        Action::Tick => send::tick(app),
 
         Action::Quit => {
             app.should_quit = true;
@@ -105,7 +107,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.input_active = false;
             match target {
                 Some(session_id) if !content.trim().is_empty() => {
-                    vec![Effect::SendMessage { session_id, content }]
+                    send::submit(app, session_id, content)
                 }
                 _ => Vec::new(),
             }
@@ -188,6 +190,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
             let mut effects = conversation::reconnect(app);
+            effects.extend(send::redispatch_parked(app));
             effects.push(Effect::RefreshSessions);
             effects
         }
@@ -345,12 +348,7 @@ mod tests {
     }
 
     fn line(text: &str) -> crate::app::state::ConversationLine {
-        crate::app::state::ConversationLine {
-            timestamp: 0,
-            kind: LineKind::Assistant,
-            text: text.to_owned(),
-            tool_input: None,
-        }
+        crate::app::state::ConversationLine::new(LineKind::Assistant, text, 0)
     }
 
     #[test]
@@ -462,7 +460,7 @@ mod tests {
         app.message_input.insert_str("hello there");
         let effects = reduce(&mut app, Action::SubmitInput);
         match effects.as_slice() {
-            [Effect::SendMessage { session_id, content }] => {
+            [Effect::SendMessage { session_id, content, .. }] => {
                 assert_eq!(session_id, "s-a");
                 assert_eq!(content, "hello there");
             }

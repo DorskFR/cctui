@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::action::Action;
+use crate::app::send::SendAction;
 use crate::app::state::View;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
@@ -82,6 +83,9 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ScrollToBottom => Action::ScrollToBottom,
         ActionId::ToggleTimestamps => Action::ToggleTimestamps,
         ActionId::Interrupt => Action::InterruptSelected,
+        ActionId::RetrySend => Action::Send(SendAction::Retry(chord.event())),
+        ActionId::EditSend => Action::Send(SendAction::Edit(chord.event())),
+        ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
 
         ActionId::CancelInput => Action::CancelInput,
@@ -189,6 +193,25 @@ mod tests {
             map_event(View::Conversation, false, ctrl('a')),
             Some(Action::ToggleAutoApproveSelected)
         ));
+    }
+
+    #[test]
+    fn the_delivery_affordances_are_bound_in_the_conversation() {
+        for (code, expected) in [
+            (KeyCode::Char('R'), "retry"),
+            (KeyCode::Char('e'), "edit"),
+            (KeyCode::Char('x'), "discard"),
+        ] {
+            let action = map(View::Conversation, false, code);
+            let got = match action {
+                Some(Action::Send(crate::app::send::SendAction::Retry(_))) => "retry",
+                Some(Action::Send(crate::app::send::SendAction::Edit(_))) => "edit",
+                Some(Action::Send(crate::app::send::SendAction::Discard(_))) => "discard",
+                _ => "none",
+            };
+            assert_eq!(got, expected, "{code:?}");
+        }
+        assert!(map(View::SessionList, false, KeyCode::Char('R')).is_none());
     }
 
     #[test]

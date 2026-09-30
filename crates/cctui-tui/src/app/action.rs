@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::identity::AuthAction;
+use super::send::SendAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -77,6 +78,10 @@ pub enum Action {
     SessionDeregistered(String),
 
     Auth(AuthAction),
+    Send(SendAction),
+
+    /// A pure clock advance: the only thing that moves a delivery deadline.
+    Tick,
 
     Reconnected,
     Toast(Level, String),
@@ -115,8 +120,11 @@ pub enum Effect {
         session_id: String,
     },
     SendMessage {
+        send_id: u64,
         session_id: String,
         content: String,
+        /// Minted on the first attempt and replayed on every retry.
+        turn_id: Option<uuid::Uuid>,
     },
     Interrupt {
         session_id: String,

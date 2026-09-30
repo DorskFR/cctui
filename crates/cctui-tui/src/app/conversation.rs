@@ -109,12 +109,7 @@ mod tests {
     }
 
     fn line(text: &str) -> ConversationLine {
-        ConversationLine {
-            timestamp: 0,
-            kind: LineKind::Assistant,
-            text: text.to_owned(),
-            tool_input: None,
-        }
+        ConversationLine::new(LineKind::Assistant, text, 0)
     }
 
     fn page(app: &mut App, kind: PageKind, rows: &[(i64, &str)], has_more: bool) {

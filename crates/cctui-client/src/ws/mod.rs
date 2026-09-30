@@ -103,6 +103,28 @@ impl WsClient {
         self.send(TuiCommand::PermissionResponse { session_id, request_id, behavior }).await
     }
 
+    /// Sends a user message under a `client_msg_id` the caller owns.
+    ///
+    /// No ack is registered: the `message_ack` reaches the consumer on the
+    /// event stream, for a caller that correlates delivery itself.
+    pub async fn send_message_as(
+        &self,
+        session_id: String,
+        content: String,
+        client_msg_id: String,
+        ask_picks: Option<Vec<Vec<usize>>>,
+        turn_id: Option<uuid::Uuid>,
+    ) -> Result<(), ClientError> {
+        self.send(TuiCommand::Message {
+            session_id,
+            content,
+            client_msg_id: Some(client_msg_id),
+            ask_picks,
+            turn_id,
+        })
+        .await
+    }
+
     /// Sends a user message under a freshly minted `client_msg_id` and returns
     /// the handle its `message_ack` resolves.
     pub async fn send_message(
@@ -409,6 +431,22 @@ mod tests {
         assert_eq!(wire["type"], "message");
         assert_eq!(wire["client_msg_id"], handle.client_msg_id());
         assert!(uuid::Uuid::parse_str(handle.client_msg_id()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_caller_owned_id_reaches_the_wire_unregistered() {
+        let (connector, mut sockets) = scripted(1);
+        let mut socket = sockets.remove(0);
+        let (client, mut incoming) = WsClient::start(connector);
+        assert!(matches!(next_incoming(&mut incoming).await, Incoming::Connected));
+
+        client
+            .send_message_as("s1".to_owned(), "hi".to_owned(), "mine-1".to_owned(), None, None)
+            .await
+            .unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&next_sent(&mut socket).await).unwrap();
+        assert_eq!(wire["client_msg_id"], "mine-1");
+        assert_eq!(client.pending_acks(), 0);
     }
 
     #[tokio::test]

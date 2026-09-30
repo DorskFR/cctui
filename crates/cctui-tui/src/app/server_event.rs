@@ -2,6 +2,7 @@ use cctui_proto::ws::{AgentEvent, ServerEvent};
 
 use super::action::{Action, HeartbeatUsage};
 use super::line::agent_event_to_line;
+use super::send::SendAction;
 use super::state::PendingPermission;
 use super::toast::Level;
 
@@ -73,8 +74,14 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
 
         ServerEvent::ArchiveManifest { .. } => waived("the TUI has no archive browser"),
         ServerEvent::ArchiveUploaded { .. } => waived("the TUI has no archive browser"),
-        ServerEvent::CommandResult { .. } => waived("no delivery-state UI in the TUI yet"),
-        ServerEvent::MessageAck { .. } => waived("no delivery-state UI in the TUI yet"),
+        ServerEvent::CommandResult { command_id, ok, error, .. } => {
+            uuid::Uuid::parse_str(&command_id).ok().map_or_else(Vec::new, |command_id| {
+                vec![Action::Send(SendAction::DeliveryResult { command_id, ok, error })]
+            })
+        }
+        ServerEvent::MessageAck { client_msg_id, ok, error, command_id, .. } => {
+            vec![Action::Send(SendAction::Acked { client_msg_id, ok, error, command_id })]
+        }
         ServerEvent::AskQuestion { .. } => waived("the TUI cannot answer asks yet"),
         ServerEvent::AskResolved { .. } => waived("the TUI cannot answer asks yet"),
         ServerEvent::PlanRequest { .. } => waived("the TUI has no plan-approval dialog yet"),

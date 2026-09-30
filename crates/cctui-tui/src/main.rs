@@ -217,6 +217,10 @@ async fn run(
     effects.dispatch(app::action::Effect::FetchIdentity);
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
+    // Delivery deadlines are the reducer's, and the reducer only moves when it
+    // is called: without this the retry ladder would run at the refresh rate.
+    let mut delivery_interval = time::interval(Duration::from_millis(500));
+    delivery_interval.tick().await;
     let mut input_rx = spawn_input_task();
     let mut ws_closed = false;
     let mut ws_ever_connected = false;
@@ -260,6 +264,7 @@ async fn run(
                 )
             }
             _ = refresh_interval.tick() => vec![Action::RefreshSessions],
+            _ = delivery_interval.tick() => vec![Action::Tick],
         };
 
         for action in actions {
