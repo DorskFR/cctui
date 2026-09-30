@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25
+No conversation data
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  Type a message...

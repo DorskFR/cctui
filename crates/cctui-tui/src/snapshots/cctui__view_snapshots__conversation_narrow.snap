@@ -1,0 +1,24 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: "render_screen_sized(&mut app, 60, 20)"
+---
+ infra (main) on orion ── opus ── $1.25
+
+
+❯ You
+add a snapshot harness
+
+
+● Assistant
+Looking at the views first.
+
+- one
+- two
+ Read  crates/cctui-tui/src/main.rs
+→ 984 lines
+⟳ context reset (/clear · /compact)
+
+◁ Reply done
+
+────────────────────────────────────────────────────────────
+❯  Type a message...
