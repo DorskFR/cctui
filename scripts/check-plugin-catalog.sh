@@ -56,7 +56,10 @@ while IFS=$'\t' read -r id version url want; do
     problems=$((problems + 1))
     continue
   fi
-  if ! tar tzf "$tmp/$id.tgz" | grep -qx "$id/plugin.json"; then
+  # Read the whole listing first: `grep -q` exits on the first match, and under
+  # pipefail the SIGPIPE it deals `tar` would fail a correct archive at random.
+  listing=$(tar tzf "$tmp/$id.tgz")
+  if ! grep -qx "$id/plugin.json" <<<"$listing"; then
     echo "::error::$id archive has no $id/plugin.json (an npm tarball puts files under package/)"
     problems=$((problems + 1))
     continue
