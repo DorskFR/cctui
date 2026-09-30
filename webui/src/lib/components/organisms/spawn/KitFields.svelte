@@ -11,12 +11,8 @@
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import PermissionModes from './PermissionModes.svelte';
-	import {
-		DEFAULT_MODELS,
-		declaredModelOptions,
-		modelHintText,
-		withDeclaredModels
-	} from '$lib/harnessModels';
+	import { declaredModelOptions, modelHintText, withDeclaredModels } from '$lib/harnessModels';
+	import { harnessModelsFallback } from '$lib/domainTables';
 	import {
 		accountBacksAdapter,
 		accountPickOptions,
@@ -80,7 +76,9 @@
 		() => machineId,
 		() => draft.model_alias ?? ''
 	);
-	const nativeModels = $derived(harnessModels.data?.models ?? DEFAULT_MODELS);
+	const nativeModels = $derived(
+		harnessModels.data?.models ?? harnessModelsFallback(draft.harness).models
+	);
 	const modelOptions = $derived.by<SelectOption[]>(() => {
 		const list = usesAccountModels
 			? declaredModelOptions(provider?.models)
@@ -101,7 +99,9 @@
 		if (current && !out.some((o) => o.value === current)) out.push({ value: current, label: current });
 		return out;
 	});
-	const efforts = $derived(harnessModels.data?.efforts ?? ['']);
+	const efforts = $derived(
+		harnessModels.data?.efforts ?? harnessModelsFallback(draft.harness).efforts
+	);
 
 	function pickHarness(harness: string) {
 		if (harness === draft.harness) return;

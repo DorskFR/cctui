@@ -4,7 +4,7 @@
 	// `payload` (name, identity, repo, ticket, prompt, prompt file, model, timeout,
 	// effort). The adapter picker chooses the claude or codex worker; the
 	// model/effort sets follow it.
-	import { DEFAULT_MODELS } from '$lib/harnessModels';
+	import { harnessModelsFallback } from '$lib/domainTables';
 	import EffortSlider from './EffortSlider.svelte';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import { Button, Field, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
@@ -72,19 +72,24 @@
 	// machine-scoped catalog, so codex dispatch reads the cross-machine merge
 	// (static offline list when empty); claude families are annotated with the
 	// account's alias targets.
+	const harness = $derived(isCodex ? 'codex' : 'claude-code');
 	const harnessModels = useHarnessModels(
-		() => (isCodex ? 'codex' : 'claude-code'),
+		() => harness,
 		() => '',
 		() => (isCodex ? form.model_codex : '')
 	);
-	const nativeModels = $derived(harnessModels.data?.models ?? DEFAULT_MODELS);
+	const nativeModels = $derived(
+		harnessModels.data?.models ?? harnessModelsFallback(harness).models
+	);
 	const nativeModelOptions = $derived(
 		withDeclaredModels(
 			selectedProvider?.models,
 			isCodex ? nativeModels : withAliasTargets(nativeModels, selectedProvider?.model_aliases)
 		)
 	);
-	const nativeEfforts = $derived(harnessModels.data?.efforts ?? ['']);
+	const nativeEfforts = $derived(
+		harnessModels.data?.efforts ?? harnessModelsFallback(harness).efforts
+	);
 
 	$effect(() => {
 		if (form.account && !dispatchAccounts.some((a) => a.name === form.account)) {

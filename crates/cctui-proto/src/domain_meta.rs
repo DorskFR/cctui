@@ -1,6 +1,8 @@
-//! The static domain tables a client needs to render without encoding any of
-//! the rules itself: provider metadata, quota probes, end-reason tones and the
-//! permission-mode order. Labels that are translated stay client-side.
+//! The static domain tables a client renders from.
+//!
+//! Provider metadata, quota probes, end-reason tones and the permission-mode
+//! order, so neither client encodes the rules itself. Labels that are
+//! translated stay client-side.
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
@@ -21,8 +23,9 @@ pub struct DomainMeta {
 }
 
 impl DomainMeta {
-    /// `usage_probes` comes from the server's probe registry, which is the only
-    /// part this crate cannot enumerate.
+    /// `usage_probes` comes from the server's probe registry.
+    ///
+    /// It is the only part this crate cannot enumerate itself.
     #[must_use]
     pub fn new(usage_probes: Vec<UsageProbeInfo>) -> Self {
         Self {

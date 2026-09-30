@@ -426,9 +426,9 @@ pub struct SessionDiagnoseResponse {
     pub daemon_error: Option<String>,
     pub server: ServerDiagnose,
     /// Why the session looks silent, derived server-side from `daemon` so both
-    /// clients answer the question identically. Empty when there is no
-    /// adapter section to reason about.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// clients answer the question identically. Always present; empty when
+    /// there is no adapter section to reason about.
+    #[serde(default)]
     pub silence: Vec<crate::silence::SilenceReason>,
 }
 

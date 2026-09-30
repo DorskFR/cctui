@@ -52,9 +52,9 @@ export const useSelfUpdateRun = (enabled: () => boolean) =>
     refetchInterval: (query) => (query.state.data?.done ? false : 3_000),
   }));
 
-/** The static domain tables (providers, probes, end tones, permission modes).
- *  Constant per server version, so cache it for the whole session; the result
- *  also feeds the synchronous lookups in `$lib/domainMeta`. */
+/** The server-owned half of the domain metadata — today the quota-probe
+ *  registry. Constant per server version, so cache it for the whole session.
+ *  The closed tables are `$lib/domainTables`, not this. */
 export const useDomainMeta = () =>
   createQuery(() => ({
     queryKey: qk.domainMeta,

@@ -1,0 +1,74 @@
+{
+  "end_reasons": [
+    { "reason": "completed", "tone": "ok", "muted": false, "failed_start": false },
+    { "reason": "killed", "tone": "neutral", "muted": false, "failed_start": false },
+    { "reason": "crashed", "tone": "danger", "muted": false, "failed_start": false },
+    { "reason": "daemon_lost", "tone": "warn", "muted": false, "failed_start": false },
+    { "reason": "machine_offline", "tone": "warn", "muted": false, "failed_start": false },
+    { "reason": "reaped_inactive", "tone": "neutral", "muted": true, "failed_start": false },
+    { "reason": "resume_failed", "tone": "danger", "muted": false, "failed_start": true },
+    { "reason": "spawn_failed", "tone": "danger", "muted": false, "failed_start": true },
+    { "reason": "other", "tone": "neutral", "muted": false, "failed_start": false }
+  ],
+  "providers": [
+    {
+      "id": "anthropic",
+      "label": "Claude",
+      "picker_label": "Claude (anthropic)",
+      "family": "anthropic",
+      "static_credential": false
+    },
+    {
+      "id": "openai",
+      "label": "Codex",
+      "picker_label": "Codex (openai)",
+      "family": "openai",
+      "static_credential": false
+    },
+    {
+      "id": "anthropic-compatible",
+      "label": "Anthropic-compatible",
+      "picker_label": "Anthropic-compatible endpoint",
+      "family": "anthropic",
+      "static_credential": true
+    },
+    {
+      "id": "openai-compatible",
+      "label": "OpenAI-compatible",
+      "picker_label": "OpenAI-compatible endpoint",
+      "family": "openai",
+      "static_credential": true
+    },
+    {
+      "id": "fireworks",
+      "label": "Fireworks",
+      "picker_label": "Fireworks",
+      "family": "fireworks",
+      "static_credential": true
+    }
+  ],
+  "harness_models": [
+    {
+      "harness": "claude-code",
+      "models": [
+        { "v": "", "label": "Default", "disabled": false },
+        { "v": "haiku", "label": "Haiku", "disabled": false },
+        { "v": "sonnet", "label": "Sonnet", "disabled": false },
+        { "v": "opus", "label": "Opus", "disabled": false },
+        { "v": "fable", "label": "Fable", "disabled": false }
+      ],
+      "efforts": ["", "low", "medium", "high", "xhigh", "max"]
+    },
+    {
+      "harness": "codex",
+      "models": [{ "v": "", "label": "Default", "disabled": false }],
+      "efforts": ["", "low", "medium", "high", "xhigh", "max", "ultra"]
+    },
+    {
+      "harness": "opencode",
+      "models": [{ "v": "", "label": "Default", "disabled": false }],
+      "efforts": []
+    }
+  ],
+  "permission_modes": ["ask", "auto", "yolo", "whip"]
+}

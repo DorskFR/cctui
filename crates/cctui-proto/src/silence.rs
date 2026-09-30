@@ -9,12 +9,13 @@ use ts_rs::TS;
 
 use crate::diagnose::{CodexDiagnose, OpenCodeDiagnose};
 
-/// How long an outstanding request may go without a frame before it counts as
-/// stalled.
+/// How long an outstanding request may go without a frame before it stalls.
 pub const STALLED_RPC_MS: i64 = 60_000;
 
-/// One independent reason a session can look silent. Each variant carries the
-/// numbers its message needs; the client owns the wording.
+/// One independent reason a session can look silent.
+///
+/// Each variant carries the numbers its message needs; the client owns the
+/// wording.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -62,7 +63,7 @@ pub enum SilenceReason {
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn len_u32(n: usize) -> u32 {
+const fn len_u32(n: usize) -> u32 {
     n as u32
 }
 
@@ -109,9 +110,11 @@ pub fn codex_silence_reasons(cx: &CodexDiagnose, generated_at_ms: i64) -> Vec<Si
     out
 }
 
-/// The same question for opencode. Its transports are HTTP and SSE, and the
-/// asymmetry matters: a request/response call failing is loud (the caller sees
-/// the status), while the event stream going down is completely silent.
+/// The same question for opencode.
+///
+/// Its transports are HTTP and SSE, and the asymmetry matters: a
+/// request/response call failing is loud (the caller sees the status), while
+/// the event stream going down is completely silent.
 #[must_use]
 pub fn opencode_silence_reasons(oc: &OpenCodeDiagnose, generated_at_ms: i64) -> Vec<SilenceReason> {
     let mut out = Vec::new();

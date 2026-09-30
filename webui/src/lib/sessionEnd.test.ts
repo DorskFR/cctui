@@ -1,31 +1,6 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import type { DomainMeta } from '@bindings/DomainMeta';
-import type { EndReasonInfo } from '@bindings/EndReasonInfo';
-import { setDomainMeta } from './domainMeta.svelte';
+import { describe, expect, it } from 'vitest';
+import { END_REASONS } from './domainTables';
 import { endBadgeText, endReasonTone, sessionEnd, sessionEndTitle } from './sessionEnd';
-
-// The tone/muted rules are the server's; this mirrors what `/meta/domain`
-// serves so the mapping can be exercised without a network.
-const END_REASONS: EndReasonInfo[] = [
-	{ reason: 'completed', tone: 'ok', muted: false, failed_start: false },
-	{ reason: 'killed', tone: 'neutral', muted: false, failed_start: false },
-	{ reason: 'crashed', tone: 'danger', muted: false, failed_start: false },
-	{ reason: 'daemon_lost', tone: 'warn', muted: false, failed_start: false },
-	{ reason: 'machine_offline', tone: 'warn', muted: false, failed_start: false },
-	{ reason: 'reaped_inactive', tone: 'neutral', muted: true, failed_start: false },
-	{ reason: 'resume_failed', tone: 'danger', muted: false, failed_start: true },
-	{ reason: 'spawn_failed', tone: 'danger', muted: false, failed_start: true },
-	{ reason: 'other', tone: 'neutral', muted: false, failed_start: false }
-];
-
-beforeAll(() => {
-	setDomainMeta({
-		providers: [],
-		usage_probes: [],
-		end_reasons: END_REASONS,
-		permission_modes: ['ask', 'auto', 'yolo', 'whip']
-	} satisfies DomainMeta);
-});
 
 describe('sessionEnd', () => {
 	it('is null for a live session', () => {
@@ -33,7 +8,7 @@ describe('sessionEnd', () => {
 		expect(sessionEnd({})).toBeNull();
 	});
 
-	it('takes each reason’s colour from the server table', () => {
+	it('takes each reason’s colour from the parity table', () => {
 		for (const row of END_REASONS) expect(endReasonTone(row.reason)).toBe(row.tone);
 	});
 

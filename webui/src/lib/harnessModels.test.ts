@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelOption } from '@bindings/ModelOption';
+import { harnessModelsFallback } from '$lib/domainTables';
 import {
-	DEFAULT_MODELS,
 	OTHER_MODEL,
 	customModelValue,
 	declaredModelOptions,
@@ -11,6 +11,7 @@ import {
 } from './harnessModels';
 
 const option = (v: string, label: string): ModelOption => ({ v, label, disabled: false });
+const CODEX_MODELS = harnessModelsFallback('codex').models;
 
 describe('customModelValue', () => {
 	it('trims and treats blank as default', () => {
@@ -21,7 +22,7 @@ describe('customModelValue', () => {
 
 describe('withCurrentModel', () => {
 	it('lists an unknown current id as its own option', () => {
-		expect(withCurrentModel(DEFAULT_MODELS, 'gpt-nonesuch').at(-1)).toEqual({
+		expect(withCurrentModel(CODEX_MODELS, 'gpt-nonesuch').at(-1)).toEqual({
 			v: 'gpt-nonesuch',
 			label: 'gpt-nonesuch',
 			disabled: false
@@ -29,12 +30,12 @@ describe('withCurrentModel', () => {
 	});
 
 	it('leaves the list alone for a known or empty value', () => {
-		expect(withCurrentModel(DEFAULT_MODELS, '')).toBe(DEFAULT_MODELS);
-		expect(withCurrentModel(DEFAULT_MODELS, DEFAULT_MODELS[0].v)).toBe(DEFAULT_MODELS);
+		expect(withCurrentModel(CODEX_MODELS, '')).toBe(CODEX_MODELS);
+		expect(withCurrentModel(CODEX_MODELS, CODEX_MODELS[0].v)).toBe(CODEX_MODELS);
 	});
 
 	it('never mistakes the sentinel for a model', () => {
-		expect(DEFAULT_MODELS.some((o) => o.v === OTHER_MODEL)).toBe(false);
+		expect(CODEX_MODELS.some((o) => o.v === OTHER_MODEL)).toBe(false);
 	});
 });
 

@@ -1,6 +1,6 @@
 import type { EndTone } from '@bindings/EndTone';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
-import { endReasonInfo } from '$lib/domainMeta.svelte';
+import { endReasonInfo } from '$lib/domainTables';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { m } from '$lib/paraglide/messages';
 

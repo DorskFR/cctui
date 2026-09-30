@@ -10,10 +10,6 @@ export type { ModelOption };
 // Select sentinel for the free-text "Other model…" entry; never a real id.
 export const OTHER_MODEL = '\u0000other';
 
-/** Shown while the server list is still in flight, and for a harness with
- *  nothing to offer but the harness's own default. */
-export const DEFAULT_MODELS: ModelOption[] = [{ v: '', label: 'Default', disabled: false }];
-
 export function modelHintText(hint: ModelHint | undefined): string | undefined {
 	if (!hint) return undefined;
 	return hint.kind === 'gated'

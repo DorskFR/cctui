@@ -1,11 +1,7 @@
-// The server's domain tables, held for the synchronous lookups the render path
-// needs (end tones, provider families). `useDomainMeta` fills them; until it
-// resolves the lookups answer with the neutral/identity value rather than a
-// second copy of the rules.
+// The parts of `GET /meta/domain` only the server can know: today the
+// quota-probe registry. The closed tables live in `$lib/domainTables`, so the
+// render path never waits on this.
 import type { DomainMeta } from '@bindings/DomainMeta';
-import type { EndReasonInfo } from '@bindings/EndReasonInfo';
-import type { ProviderInfo } from '@bindings/ProviderInfo';
-import type { SessionEndReason } from '@bindings/SessionEndReason';
 
 let meta = $state<DomainMeta | null>(null);
 
@@ -15,18 +11,6 @@ export function setDomainMeta(next: DomainMeta): void {
 
 export function domainMeta(): DomainMeta | null {
 	return meta;
-}
-
-export function endReasonInfo(reason: SessionEndReason): EndReasonInfo | undefined {
-	return meta?.end_reasons.find((r) => r.reason === reason);
-}
-
-export function providerInfo(id: string): ProviderInfo | undefined {
-	return meta?.providers.find((p) => p.id === id);
-}
-
-export function providerKinds(): ProviderInfo[] {
-	return meta?.providers ?? [];
 }
 
 export function usageProbes(): { id: string; label: string }[] {
