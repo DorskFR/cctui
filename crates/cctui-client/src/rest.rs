@@ -1,13 +1,18 @@
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
-use cctui_proto::api::{AutoApproveRequest, SessionListItem, SessionListResponse};
+use cctui_proto::api::{
+    AutoApproveRequest, ForkRequest, ForkResponse, SessionListItem, SessionListResponse,
+    SetModelRequest, StageFilesResponse,
+};
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
+use cctui_proto::harness_models::HarnessModels;
+use cctui_proto::models::MessagePin;
 use reqwest::StatusCode;
 use reqwest::header::{ETAG, IF_NONE_MATCH};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::ClientError;
@@ -99,6 +104,60 @@ impl Page {
 pub enum ConversationFetch {
     NotModified,
     Page { rows: Vec<ConversationRow>, etag: Option<String>, has_more: bool },
+}
+
+/// One file handed to `stage_session_files`.
+pub struct UploadFile {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// A refused file read, kept as data so the caller can word it. `status` is 0
+/// for a transport failure, which the viewer words as "network".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRefusal {
+    pub status: u16,
+    pub detail: String,
+    /// The route's structured list; empty from a server that sends none, and
+    /// then the prose in `detail` is all there is.
+    pub allowed_folders: Vec<String>,
+}
+
+impl FileRefusal {
+    #[must_use]
+    pub const fn network() -> Self {
+        Self { status: 0, detail: String::new(), allowed_folders: Vec::new() }
+    }
+
+    /// Pull `error` and `allowed_folders` out of a refusal body; a body that is
+    /// not the expected JSON leaves both empty rather than failing the read.
+    #[must_use]
+    pub fn parse(status: u16, body: &str) -> Self {
+        #[derive(Deserialize, Default)]
+        struct Body {
+            #[serde(default)]
+            error: String,
+            #[serde(default)]
+            allowed_folders: Vec<String>,
+        }
+        let parsed: Body = serde_json::from_str(body).unwrap_or_default();
+        Self { status, detail: parsed.error, allowed_folders: parsed.allowed_folders }
+    }
+}
+
+/// What a machine-file read produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileRead {
+    Ok { content_type: String, bytes: Vec<u8> },
+    Refused(FileRefusal),
+}
+
+/// Where a linked path actually lives, so a viewer refused on its own machine
+/// can re-ask the machine that owns it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct LinkedFileOwner {
+    pub session_id: String,
+    pub machine_id: String,
 }
 
 /// Typed REST client. Every URL is built from
@@ -296,6 +355,53 @@ impl Client {
         Ok(ConversationFetch::Page { rows, etag, has_more })
     }
 
+    /// Change a running session's model and/or effort. An empty string means
+    /// the harness default; `None` leaves that dial alone.
+    pub async fn set_model(
+        &self,
+        session_id: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_by_id_set_model")?;
+        let body = serde_json::to_value(SetModelRequest {
+            model: model.map(str::to_owned),
+            effort: effort.map(str::to_owned),
+        })
+        .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    /// Fork a whole session. Every field of [`ForkRequest`] is inherited, so
+    /// the fork needs no options.
+    pub async fn fork(&self, session_id: &str) -> Result<ForkResponse, ClientError> {
+        let route = Self::route("post_sessions_by_id_fork")?;
+        let body = serde_json::to_value(ForkRequest::default())
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[("id", session_id)], &[], Some(&body)).await
+    }
+
+    /// The model and effort lists a picker for `harness` should offer.
+    ///
+    /// `machine_id` narrows the codex catalog and is only sent when it is a
+    /// uuid, which is what the route accepts; `model` scopes the effort list.
+    pub async fn harness_models(
+        &self,
+        harness: &str,
+        machine_id: Option<&str>,
+        model: &str,
+    ) -> Result<HarnessModels, ClientError> {
+        let mut query: Vec<(&'static str, String)> = Vec::new();
+        if let Some(machine) = machine_id.filter(|m| uuid::Uuid::parse_str(m).is_ok()) {
+            query.push(("machine_id", machine.to_owned()));
+        }
+        if !model.is_empty() {
+            query.push(("model", model.to_owned()));
+        }
+        self.json(Self::route("get_models_by_harness")?, &[("harness", harness)], &query, None)
+            .await
+    }
+
     pub async fn interrupt(&self, session_id: &str) -> Result<(), ClientError> {
         self.unit(Self::route("post_sessions_by_id_interrupt")?, &[("id", session_id)], None).await
     }
@@ -330,6 +436,93 @@ impl Client {
         self.unit(Self::route("post_sessions_by_id_seen")?, &[("id", session_id)], None).await
     }
 
+    /// Stage files into a live session's working dir, returning the absolute
+    /// path each one was written to, in request order. `post_sessions_by_id_files`
+    /// is multipart, and the server renames a clash, so the reply — not the
+    /// request — says what a `[name]` token must point at.
+    pub async fn stage_session_files(
+        &self,
+        session_id: &str,
+        files: Vec<UploadFile>,
+    ) -> Result<StageFilesResponse, ClientError> {
+        let route = Self::route("post_sessions_by_id_files")?;
+        let mut form = reqwest::multipart::Form::new();
+        for file in files {
+            let part = reqwest::multipart::Part::bytes(file.bytes).file_name(file.name.clone());
+            form = form.part("files", part);
+        }
+        let resp = self
+            .http
+            .post(self.url_for(route, &[("id", session_id)]))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|source| ClientError::Transport { route: route.id, source })?;
+        decode_body(route.id, check_status(route.id, resp).await?).await
+    }
+
+    /// Read one agent-linked file on a machine. Refusals come back as data, not
+    /// as an error: the viewer words 403 and 404 differently, and a 403 carries
+    /// the roots the path was checked against.
+    pub async fn read_machine_file(
+        &self,
+        machine_id: &str,
+        path: &str,
+        session_id: &str,
+    ) -> Result<FileRead, ClientError> {
+        let route = Self::route("get_machines_by_machine_fs_file")?;
+        let resp = self
+            .http
+            .get(self.url_for(route, &[("machine_id", machine_id)]))
+            .bearer_auth(&self.token)
+            .query(&[("path", path), ("session_id", session_id)])
+            .send()
+            .await;
+        // Status 0 is the viewer's "network" wording, matching the webui.
+        let Ok(resp) = resp else { return Ok(FileRead::Refused(FileRefusal::network())) };
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Ok(FileRead::Refused(FileRefusal::parse(status.as_u16(), &body)));
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|source| ClientError::Transport { route: route.id, source })?
+            .to_vec();
+        Ok(FileRead::Ok { content_type, bytes })
+    }
+
+    /// Which session and machine linked `path`, when this session did not.
+    /// `None` when nobody the caller can read did.
+    pub async fn linked_file_owner(
+        &self,
+        session_id: &str,
+        path: &str,
+    ) -> Result<Option<LinkedFileOwner>, ClientError> {
+        let route = Self::route("get_sessions_by_id_linked_file_owner")?;
+        match self
+            .json::<LinkedFileOwner>(
+                route,
+                &[("id", session_id)],
+                &[("path", path.to_owned())],
+                None,
+            )
+            .await
+        {
+            Ok(owner) => Ok(Some(owner)),
+            Err(ClientError::NotFound { .. } | ClientError::Forbidden { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Every draft the caller owns, in one call.
     pub async fn list_drafts(&self) -> Result<DraftList, ClientError> {
         self.json(Self::route("get_drafts")?, &[], &[], None).await
@@ -355,6 +548,23 @@ impl Client {
 
     pub async fn delete_draft(&self, key: &str) -> Result<(), ClientError> {
         self.unit(Self::route("delete_drafts_by_*key")?, &[("*key", key)], None).await
+    }
+
+    /// The caller's pinned messages in a session, oldest `seq` first.
+    pub async fn list_pins(&self, session_id: &str) -> Result<Vec<MessagePin>, ClientError> {
+        self.json(Self::route("get_sessions_by_id_pins")?, &[("id", session_id)], &[], None).await
+    }
+
+    /// Pin a message by its stream `seq`.
+    pub async fn pin_message(&self, session_id: &str, seq: i64) -> Result<MessagePin, ClientError> {
+        let body = serde_json::json!({ "seq": seq, "message_id": Value::Null });
+        self.json(Self::route("post_sessions_by_id_pins")?, &[("id", session_id)], &[], Some(&body))
+            .await
+    }
+
+    pub async fn unpin_message(&self, session_id: &str, seq: i64) -> Result<(), ClientError> {
+        let route = Self::route("delete_sessions_by_id_pins_by_seq")?;
+        self.unit(route, &[("id", session_id), ("seq", &seq.to_string())], None).await
     }
 
     /// Revoke the key this client authenticates with (`cctui logout --revoke`).
@@ -473,9 +683,15 @@ mod tests {
             "get_sessions_by_id_conversation",
             "get_sessions_by_id_diagnose",
             "post_sessions_by_id_interrupt",
+            "post_sessions_by_id_set_model",
+            "post_sessions_by_id_fork",
+            "get_models_by_harness",
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
             "get_permissions_pending",
+            "post_sessions_by_id_files",
+            "get_machines_by_machine_fs_file",
+            "get_sessions_by_id_linked_file_owner",
             "get_me",
             "get_settings",
             "delete_me_key",
@@ -483,6 +699,9 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "get_sessions_by_id_pins",
+            "post_sessions_by_id_pins",
+            "delete_sessions_by_id_pins_by_seq",
         ] {
             assert!(Client::route(id).is_ok(), "missing route id {id}");
         }

@@ -66,6 +66,13 @@ fn rows(keys: &Keymap) -> Vec<Row> {
         for (action, chords) in entries {
             rows.push(Row::Binding { keys: keys_label(&chords), desc: action.description() });
         }
+        // Sequences carry no single chord, so `entries` cannot report them.
+        for action in crate::config::keymap::ACTION_IDS {
+            let labels = keys.sequence_labels(*context, *action);
+            if !labels.is_empty() && is_wired(*action) {
+                rows.push(Row::Binding { keys: labels.join(" / "), desc: action.description() });
+            }
+        }
     }
     rows.push(Row::Heading("Row glyphs"));
     for &(glyph, desc) in crate::app::session_status::GLYPH_LEGEND {
@@ -116,10 +123,14 @@ pub fn draw(frame: &mut Frame, keys: &Keymap, scroll: &mut usize) {
     let inner = block.inner(area);
     let column_width = (inner.width as usize) / columns;
 
+    // One column of gutter, so a description that exactly fills its cell still
+    // reads as separate from the next column's heading.
+    let gutter = usize::from(columns > 1);
     let lines: Vec<Line> = (*scroll..per_column.min(*scroll + height))
         .map(|i| {
-            let mut out = spans(&rows[i], column_width);
+            let mut out = spans(&rows[i], column_width - gutter);
             if let Some(right) = rows.get(i + per_column) {
+                out.push(Span::raw(" ".repeat(gutter)));
                 out.extend(spans(right, column_width));
             }
             Line::from(out)

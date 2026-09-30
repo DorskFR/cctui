@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 438
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25 ── ⛛ assistant · 2 hidden
+
+● Assistant
+Looking at the views first.
+
+- one
+- two
+⏱ 12.4k in / 1.1k out
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ waiting for input
+❯  Type a message...

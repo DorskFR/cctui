@@ -11,9 +11,20 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The `/` search and `:` command prompt.
+    CmdLine,
+    /// The `F` category menu.
+    FilterMenu,
     History,
+    FileViewer,
+    Pins,
+    Macros,
+    Terminal,
     Help,
+    ModelPicker,
+    Sidebar,
     Permission,
+    Diagnose,
     Ask,
     AskText,
     Plan,
@@ -25,9 +36,18 @@ pub const CONTEXTS: &[Context] = &[
     Context::SessionList,
     Context::Conversation,
     Context::Composer,
+    Context::CmdLine,
+    Context::FilterMenu,
     Context::History,
+    Context::FileViewer,
+    Context::Pins,
+    Context::Macros,
+    Context::Terminal,
     Context::Help,
+    Context::ModelPicker,
+    Context::Sidebar,
     Context::Permission,
+    Context::Diagnose,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -41,9 +61,18 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::CmdLine => "cmdline",
+            Self::FilterMenu => "filter-menu",
             Self::History => "history",
+            Self::FileViewer => "file-viewer",
+            Self::Pins => "pins",
+            Self::Macros => "macros",
+            Self::Terminal => "terminal",
             Self::Help => "help",
+            Self::ModelPicker => "model-picker",
+            Self::Sidebar => "sidebar",
             Self::Permission => "permission",
+            Self::Diagnose => "diagnose",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -57,9 +86,18 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::CmdLine => "Search and commands",
+            Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
+            Self::FileViewer => "File viewer",
+            Self::Pins => "Pinned messages",
+            Self::Macros => "Macros",
+            Self::Terminal => "Terminal pane",
             Self::Help => "Help",
+            Self::ModelPicker => "Model picker",
+            Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
+            Self::Diagnose => "Diagnose / info",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -141,15 +179,53 @@ actions! {
     ScrollToBottom => "scroll-to-bottom", "Jump to the bottom";
     ToggleTimestamps => "toggle-timestamps", "Show timestamps";
     Interrupt => "interrupt", "Interrupt the turn";
+    ModelPicker => "model-picker", "Change model and effort";
+    ToggleSidebar => "toggle-sidebar", "Todo and subagent sidebar";
+    SidebarNext => "sidebar-next", "Next subagent";
+    SidebarPrev => "sidebar-prev", "Previous subagent";
+    SidebarOpen => "sidebar-open", "Open the subagent";
+    SidebarClose => "sidebar-close", "Close the sidebar";
+    OpenParent => "open-parent", "Go to the parent session";
+    PickerClose => "picker-close", "Close the picker";
+    PickerNext => "picker-next", "Next entry";
+    PickerPrev => "picker-prev", "Previous entry";
+    PickerModelColumn => "picker-model-column", "Focus the model list";
+    PickerEffortColumn => "picker-effort-column", "Focus the effort list";
+    PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    AttachFile => "attach-file", "Attach a file";
+    RemoveAttachment => "remove-attachment", "Remove the focused attachment";
+    FocusAttachments => "focus-attachments", "Focus the attachment chips";
+    AttachmentNext => "attachment-next", "Next attachment chip";
+    AttachmentPrev => "attachment-prev", "Previous attachment chip";
+    OpenLinkedFile => "open-linked-file", "Open the file under the cursor";
+    FileViewerClose => "file-viewer-close", "Close the file viewer";
+    FileViewerOsOpen => "file-viewer-os-open", "Open in the desktop viewer";
     ToggleExpand => "toggle-expand", "Expand the focused line";
     ToggleExpandAll => "toggle-expand-all", "Expand every thinking and result block";
     RetrySend => "retry-send", "Retry the undelivered message";
     EditSend => "edit-send", "Edit the undelivered message";
     DiscardSend => "discard-send", "Drop the undelivered message";
-    CopyMessage => "copy-message", "Copy the selected message";
+    CopyMessage => "copy-message", "Copy the focused line as Markdown";
+    CopyCodeBlock => "copy-code-block", "Copy the code under the cursor";
+    CopySessionLink => "copy-session-link", "Copy a link to this session";
+    Command => "command", "Run a command (:export)";
+    FilterCycle => "filter-cycle", "Cycle assistant / you / tools";
+    FilterMenu => "filter-menu", "Choose which lines to show";
+    FilterShowAll => "filter-show-all", "Show every category";
+    FilterReset => "filter-reset", "Back to the default filter";
+    FilterMenuToggle => "filter-menu-toggle", "Show or hide this category";
+    FilterMenuNext => "filter-menu-next", "Next category";
+    FilterMenuPrev => "filter-menu-prev", "Previous category";
+    CmdLineCommit => "cmdline-commit", "Run it";
+    CmdLineCancel => "cmdline-cancel", "Abandon it";
+    CmdLineComplete => "cmdline-complete", "Complete the path";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    TerminalOpen => "terminal-open", "Watch the live terminal";
+    TerminalClose => "terminal-close", "Close the terminal pane";
+    TerminalScrollDown => "terminal-scroll-down", "Scroll the terminal down";
+    TerminalScrollUp => "terminal-scroll-up", "Scroll the terminal up";
 
     CancelInput => "cancel-input", "Close the composer";
     SubmitInput => "submit-input", "Send the message";
@@ -163,7 +239,31 @@ actions! {
     HistorySelectPrev => "history-select-prev", "Previous prompt";
     HistoryRecall => "history-recall", "Put this prompt in the composer";
 
+    PinToggle => "pin-toggle", "Pin or unpin the focused line";
+    PinsOpen => "pins-open", "Open the pinned messages";
+    PinsClose => "pins-close", "Close the pinned messages";
+    PinsSelectNext => "pins-select-next", "Next pin";
+    PinsSelectPrev => "pins-select-prev", "Previous pin";
+    PinsJump => "pins-jump", "Jump to the pinned message";
+    PinsUnpin => "pins-unpin", "Unpin this message";
+
+    MentionAccept => "mention-accept", "Take the session completion";
+    MacrosOpen => "macros-open", "Insert a canned prompt";
+    MacrosClose => "macros-close", "Close the macro list";
+    MacrosSelectNext => "macros-select-next", "Next macro";
+    MacrosSelectPrev => "macros-select-prev", "Previous macro";
+    MacrosInsert => "macros-insert", "Put this prompt in the composer";
+
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    DiagnoseClose => "diagnose-close", "Close the panel";
+    DiagnoseScrollDown => "diagnose-scroll-down", "Scroll the panel down";
+    DiagnoseScrollUp => "diagnose-scroll-up", "Scroll the panel up";
+    DiagnosePageDown => "diagnose-page-down", "Page the panel down";
+    DiagnosePageUp => "diagnose-page-up", "Page the panel up";
+    DiagnoseTop => "diagnose-top", "Jump to the top of the panel";
+    DiagnoseRefresh => "diagnose-refresh", "Refresh the report";
+    DiagnoseCopyId => "diagnose-copy-id", "Copy the session id";
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
@@ -253,9 +353,29 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "e", ActionId::EditSend),
     spec(Context::Conversation, "x", ActionId::DiscardSend),
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
+    spec(Context::Conversation, "M", ActionId::ModelPicker),
+    spec(Context::Conversation, ">", ActionId::ToggleSidebar),
+    spec(Context::Conversation, "u", ActionId::OpenParent),
+    spec(Context::Conversation, "ctrl+f", ActionId::Fork),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Conversation, "y", ActionId::CopyMessage),
+    spec(Context::Conversation, "Y", ActionId::CopyCodeBlock),
+    spec(Context::Conversation, "ctrl+y", ActionId::CopySessionLink),
+    spec(Context::Conversation, ":", ActionId::Command),
+    spec(Context::Conversation, "f", ActionId::FilterCycle),
+    spec(Context::Conversation, "F", ActionId::FilterMenu),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
+    spec(Context::Conversation, "m", ActionId::PinToggle),
+    spec(Context::Conversation, "'", ActionId::PinsOpen),
+    spec(Context::Conversation, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Conversation, "T", ActionId::TerminalOpen),
+];
+
+const TERMINAL: &[BindingSpec] = &[
+    spec(Context::Terminal, "esc, q, T", ActionId::TerminalClose),
+    spec(Context::Terminal, "j, down", ActionId::TerminalScrollDown),
+    spec(Context::Terminal, "k, up", ActionId::TerminalScrollUp),
 ];
 
 /// `shift+enter` is unreported by most terminals, so a newline also has a
@@ -267,6 +387,24 @@ const COMPOSER: &[BindingSpec] = &[
     spec(Context::Composer, "up", ActionId::HistoryPrev),
     spec(Context::Composer, "down", ActionId::HistoryNext),
     spec(Context::Composer, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Composer, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Composer, "tab", ActionId::MentionAccept),
+];
+
+/// Typed characters reach the buffer through the unbound fall-through, so only
+/// the two keys that end the prompt live here.
+const CMDLINE: &[BindingSpec] = &[
+    spec(Context::CmdLine, "enter", ActionId::CmdLineCommit),
+    spec(Context::CmdLine, "esc", ActionId::CmdLineCancel),
+];
+
+const FILTER_MENU: &[BindingSpec] = &[
+    spec(Context::FilterMenu, "esc, q, F", ActionId::FilterMenu),
+    spec(Context::FilterMenu, "j, down", ActionId::FilterMenuNext),
+    spec(Context::FilterMenu, "k, up", ActionId::FilterMenuPrev),
+    spec(Context::FilterMenu, "space, enter", ActionId::FilterMenuToggle),
+    spec(Context::FilterMenu, "a", ActionId::FilterShowAll),
+    spec(Context::FilterMenu, "r", ActionId::FilterReset),
 ];
 
 const HISTORY: &[BindingSpec] = &[
@@ -276,12 +414,91 @@ const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "enter", ActionId::HistoryRecall),
 ];
 
+/// `Ctrl-O` opens L3's command line with `attach ` already typed, so there is
+/// one command line rather than a second prompt beside it.
+const ATTACH: &[BindingSpec] = &[
+    spec(Context::Composer, "ctrl+o", ActionId::AttachFile),
+    spec(Context::Conversation, "ctrl+o", ActionId::AttachFile),
+    spec(Context::Composer, "alt+backspace", ActionId::FocusAttachments),
+    spec(Context::CmdLine, "tab", ActionId::CmdLineComplete),
+];
+
+/// The chip row only has focus while a chip is selected, which is why these live
+/// in the composer context rather than one of their own.
+const CHIPS: &[BindingSpec] = &[
+    spec(Context::Composer, "backspace", ActionId::RemoveAttachment),
+    spec(Context::Composer, "left", ActionId::AttachmentPrev),
+    spec(Context::Composer, "right", ActionId::AttachmentNext),
+];
+
+const FILE_VIEWER: &[BindingSpec] = &[
+    spec(Context::Conversation, "g f", ActionId::OpenLinkedFile),
+    spec(Context::FileViewer, "esc, q", ActionId::FileViewerClose),
+    spec(Context::FileViewer, "j, down", ActionId::ScrollDown),
+    spec(Context::FileViewer, "k, up", ActionId::ScrollUp),
+    spec(Context::FileViewer, "pagedown", ActionId::PageDown),
+    spec(Context::FileViewer, "pageup", ActionId::PageUp),
+    spec(Context::FileViewer, "g", ActionId::ScrollToTop),
+    spec(Context::FileViewer, "o", ActionId::FileViewerOsOpen),
+];
+
+const PINS: &[BindingSpec] = &[
+    spec(Context::Pins, "esc", ActionId::PinsClose),
+    spec(Context::Pins, "down, ctrl+n", ActionId::PinsSelectNext),
+    spec(Context::Pins, "up, ctrl+p", ActionId::PinsSelectPrev),
+    spec(Context::Pins, "enter", ActionId::PinsJump),
+    spec(Context::Pins, "m, d", ActionId::PinsUnpin),
+];
+
+const MACROS: &[BindingSpec] = &[
+    spec(Context::Macros, "esc", ActionId::MacrosClose),
+    spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
+    spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
+    spec(Context::Macros, "enter", ActionId::MacrosInsert),
+];
+
+/// The panel is modal, so it claims its own scrolling rather than falling
+/// through to the view underneath.
+const DIAGNOSE: &[BindingSpec] = &[
+    spec(Context::Diagnose, "esc, q", ActionId::DiagnoseClose),
+    spec(Context::Diagnose, "j, down", ActionId::DiagnoseScrollDown),
+    spec(Context::Diagnose, "k, up", ActionId::DiagnoseScrollUp),
+    spec(Context::Diagnose, "pagedown", ActionId::DiagnosePageDown),
+    spec(Context::Diagnose, "pageup", ActionId::DiagnosePageUp),
+    spec(Context::Diagnose, "g", ActionId::DiagnoseTop),
+    spec(Context::Diagnose, "r", ActionId::DiagnoseRefresh),
+    spec(Context::Diagnose, "y", ActionId::DiagnoseCopyId),
+    spec(Context::Diagnose, "D", ActionId::Diagnose),
+    spec(Context::Diagnose, "i", ActionId::Info),
+];
+
 const HELP: &[BindingSpec] = &[
     spec(Context::Help, "esc, q, ?", ActionId::CloseHelp),
     spec(Context::Help, "j, down", ActionId::ScrollDown),
     spec(Context::Help, "k, up", ActionId::ScrollUp),
     spec(Context::Help, "pagedown", ActionId::PageDown),
     spec(Context::Help, "pageup", ActionId::PageUp),
+];
+
+/// Focused but not modal: it claims its own keys and leaves the rest to the
+/// conversation, so the transcript still scrolls with the panel up.
+const SIDEBAR: &[BindingSpec] = &[
+    spec(Context::Sidebar, "esc, >", ActionId::SidebarClose),
+    spec(Context::Sidebar, "j, down", ActionId::SidebarNext),
+    spec(Context::Sidebar, "k, up", ActionId::SidebarPrev),
+    spec(Context::Sidebar, "enter", ActionId::SidebarOpen),
+    spec(Context::Sidebar, "u", ActionId::OpenParent),
+];
+
+/// Modal over the conversation: everything it does not claim stays claimed,
+/// so a stray key cannot type into the composer behind it.
+const MODEL_PICKER: &[BindingSpec] = &[
+    spec(Context::ModelPicker, "esc, q", ActionId::PickerClose),
+    spec(Context::ModelPicker, "j, down", ActionId::PickerNext),
+    spec(Context::ModelPicker, "k, up", ActionId::PickerPrev),
+    spec(Context::ModelPicker, "h, left", ActionId::PickerModelColumn),
+    spec(Context::ModelPicker, "l, right, tab", ActionId::PickerEffortColumn),
+    spec(Context::ModelPicker, "enter", ActionId::PickerApply),
 ];
 
 /// The card is inline, not modal: only the answer keys live here and
@@ -330,9 +547,20 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     SESSION_LIST,
     CONVERSATION,
     COMPOSER,
+    ATTACH,
+    CHIPS,
+    FILE_VIEWER,
+    CMDLINE,
+    FILTER_MENU,
     HISTORY,
+    PINS,
+    MACROS,
+    TERMINAL,
     HELP,
+    MODEL_PICKER,
+    SIDEBAR,
     PERMISSION,
+    DIAGNOSE,
     ASK,
     ASK_TEXT,
     PLAN,
@@ -342,11 +570,15 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {
     bindings: HashMap<(Context, Chord), ActionId>,
+    /// Two-chord bindings, written `"g f"` in a spec. A chord that only ever
+    /// leads a sequence resolves to nothing on its own, which is what lets `g`
+    /// prefix `gf` without shadowing anything bound to plain `g`.
+    sequences: HashMap<(Context, Chord, Chord), ActionId>,
 }
 
 impl Default for Keymap {
     fn default() -> Self {
-        let mut map = Self { bindings: HashMap::new() };
+        let mut map = Self { bindings: HashMap::new(), sequences: HashMap::new() };
         let mut problems = Vec::new();
         map.load_defaults(&mut problems);
         debug_assert!(problems.is_empty(), "built-in keymap: {problems:?}");
@@ -356,7 +588,7 @@ impl Default for Keymap {
 
 impl Keymap {
     pub fn new(problems: &mut Vec<String>) -> Self {
-        let mut map = Self { bindings: HashMap::new() };
+        let mut map = Self { bindings: HashMap::new(), sequences: HashMap::new() };
         map.load_defaults(problems);
         map
     }
@@ -364,6 +596,22 @@ impl Keymap {
     fn load_defaults(&mut self, problems: &mut Vec<String>) {
         for group in DEFAULT_BINDINGS {
             for spec in *group {
+                if let Some((lead, rest)) = spec.keys.split_once(' ')
+                    && !rest.trim().is_empty()
+                    && !lead.trim().is_empty()
+                    && !spec.keys.contains(',')
+                {
+                    match (Chord::parse(lead.trim()), Chord::parse(rest.trim())) {
+                        (Ok(lead), Ok(second)) => {
+                            self.sequences.insert((spec.context, lead, second), spec.action);
+                        }
+                        _ => problems.push(format!(
+                            "default sequence for `{}`: `{}` is not two chords",
+                            spec.action, spec.keys
+                        )),
+                    }
+                    continue;
+                }
                 let chords = match Chord::parse_list(spec.keys) {
                     Ok(chords) => chords,
                     Err(err) => {
@@ -416,10 +664,38 @@ impl Keymap {
             .find_map(|c| self.bindings.get(&(c, chord)).copied())
     }
 
+    /// Whether `chord` leads a two-chord binding in `context` (or a fallback),
+    /// so the caller holds it and waits for the second key.
+    #[must_use]
+    pub fn is_prefix(&self, context: Context, chord: Chord) -> bool {
+        std::iter::once(context)
+            .chain(Self::fallbacks(context).iter().copied())
+            .any(|c| self.sequences.keys().any(|(kc, lead, _)| *kc == c && *lead == chord))
+    }
+
+    /// The action a held `lead` plus `second` resolves to.
+    #[must_use]
+    pub fn lookup_sequence(
+        &self,
+        context: Context,
+        lead: Chord,
+        second: Chord,
+    ) -> Option<ActionId> {
+        std::iter::once(context)
+            .chain(Self::fallbacks(context).iter().copied())
+            .find_map(|c| self.sequences.get(&(c, lead, second)).copied())
+    }
+
     const fn fallbacks(context: Context) -> &'static [Context] {
         match context {
-            Context::Permission => &[Context::Conversation, Context::Global],
-            Context::SessionList | Context::Conversation | Context::Help => &[Context::Global],
+            // The sidebar is focused but not modal: it claims its own keys and
+            // leaves the rest to the transcript underneath.
+            Context::Permission | Context::Sidebar => &[Context::Conversation, Context::Global],
+            // The pager is a plain reader and keeps the globals; the attach
+            // prompt swallows typed characters and falls through to nothing.
+            Context::SessionList | Context::Conversation | Context::FileViewer | Context::Help => {
+                &[Context::Global]
+            }
             _ => &[],
         }
     }
@@ -438,6 +714,20 @@ impl Keymap {
             (named, c.to_string())
         });
         chords
+    }
+
+    /// Two-chord labels (`g f`) bound to `action` in `context`, for the cheat
+    /// sheet: a sequence has no single [`Chord`] to report.
+    #[must_use]
+    pub fn sequence_labels(&self, context: Context, action: ActionId) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .sequences
+            .iter()
+            .filter(|((c, _, _), a)| *c == context && **a == action)
+            .map(|((_, lead, second), _)| format!("{} {}", lead.label(), second.label()))
+            .collect();
+        out.sort();
+        out
     }
 
     /// Bound actions of a context, in declaration order, each with its chords.

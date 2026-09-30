@@ -2,11 +2,13 @@ use cctui_proto::ws::{AgentEvent, ServerEvent};
 
 use super::action::{Action, HeartbeatUsage};
 use super::attention::AttentionAction;
+use super::diagnose::DiagnoseAction;
 use super::line::agent_event_to_line;
 use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::state::PendingPermission;
+use super::terminal::TerminalAction;
 use super::toast::Level;
 
 /// The websocket's only entry point into the store. Exhaustive on purpose: a
@@ -47,19 +49,15 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             vec![Action::Attention(AttentionAction::SessionEnded { session_id, reason, detail })]
         }
         ServerEvent::SoftLimitReached { session_id, account_name, retry_after_secs, .. } => {
-            vec![Action::Toast(
-                Level::Error,
-                format!(
-                    "{} hit the {account_name} soft limit; retry in {retry_after_secs}s",
-                    short_id(&session_id)
-                ),
-            )]
+            let toast = format!(
+                "{} hit the {account_name} soft limit; retry in {retry_after_secs}s",
+                short_id(&session_id)
+            );
+            soft_limit(session_id, true, Level::Error, toast)
         }
         ServerEvent::SoftLimitCleared { session_id } => {
-            vec![Action::Toast(
-                Level::Info,
-                format!("{} soft limit cleared", short_id(&session_id)),
-            )]
+            let toast = format!("{} soft limit cleared", short_id(&session_id));
+            soft_limit(session_id, false, Level::Info, toast)
         }
         ServerEvent::ToolCallBlocked { session_id, tool_name, rule } => {
             vec![Action::Toast(
@@ -110,12 +108,22 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::GithubEvent { .. } => {
             waived("PR links come from the session rows the REST refresh returns")
         }
-        ServerEvent::PtyChunk { .. } => waived("the TUI has no terminal pane"),
+        ServerEvent::PtyChunk { session_id, data } => {
+            vec![Action::Terminal(TerminalAction::Chunk { session_id, data })]
+        }
         ServerEvent::ScheduledLaunch { .. } => waived("the TUI has no drafts view"),
         ServerEvent::RoomMembers { .. } => waived("the TUI list does not group by room"),
         ServerEvent::UserActions { .. } => waived("the TUI has no needs-you list yet"),
         ServerEvent::Heartbeat { .. } => waived("liveness tick with nothing to render"),
     }
+}
+
+/// A soft-limit frame both marks the row and says so once in the status line.
+fn soft_limit(session_id: String, active: bool, level: Level, toast: String) -> Vec<Action> {
+    vec![
+        Action::Diagnose(DiagnoseAction::SoftLimit { session_id, active }),
+        Action::Toast(level, toast),
+    ]
 }
 
 fn waived(reason: &'static str) -> Vec<Action> {

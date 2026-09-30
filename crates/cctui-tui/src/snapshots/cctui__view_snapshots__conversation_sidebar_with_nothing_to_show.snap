@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25                           │ Todo
+                                                                 ▕│ no todo list yet
+∴ thinking (2 lines)  (2 more · o)                               ▕│
+ Read  crates/cctui-tui/src/main.rs  read                        ▕│ Subagents
+└ 984 lines                                                      ▕│ no subagents
+ Bash  cargo test  write                                         ▐│
+└ ✗ exit 101 · 3 failed  (2 more · o)                            ▐│
+                                                                 ▐│
+● Assistant                                                      ▐│
+Looking at the views first.                                      ▐│
+                                                                 ▐│
+- one                                                            ▐│
+- two                                                            ▐│
+⏱ 12.4k in / 1.1k out                                            ▐│
+⏱ 38s                                                            ▐│
+                                                                 ▐│
+◆ lane-b                                                         ▐│
+the parser lane is rebased                                       ▐│
+⟳ context reset (/clear)                                         ▐│
+                                                                 ▐│
+◁ Reply done                                                     ▐│
+──────────────────────────────────────────────────────────────────│
+ ◆ waiting for input                                              │
+❯  Type a message...                                              │

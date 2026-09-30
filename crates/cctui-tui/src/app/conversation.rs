@@ -37,7 +37,7 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
                     *cursor += merge.inserted;
                 }
             }
-            Vec::new()
+            super::pins::after_page(app, &session_id)
         }
         ConversationAction::ToggleLineCursor => {
             toggle_line_cursor(app);
@@ -69,6 +69,7 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
         }
         ConversationAction::Failed { session_id, kind } => {
             app.conversation_mut(&session_id).page_failed(kind);
+            super::pins::page_failed(app);
             Vec::new()
         }
     }
@@ -95,8 +96,21 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
             etag,
         },
         Effect::Subscribe { session_id: session_id.clone() },
+        super::pins::on_open(&session_id),
         Effect::MarkSeen { session_id },
     ]
+}
+
+/// Move the whole view to another session: leave whatever is subscribed, put
+/// the selection on the target and open it.
+pub fn switch_to(app: &mut App, session_id: String) -> Vec<Effect> {
+    let Some(index) = app.flattened_sessions().iter().position(|s| s.id == session_id) else {
+        return Vec::new();
+    };
+    app.selected_index = index;
+    let mut effects = leave(app);
+    effects.extend(open(app, session_id));
+    effects
 }
 
 pub fn leave(app: &mut App) -> Vec<Effect> {
@@ -128,36 +142,46 @@ pub fn stream(app: &mut App, session_id: &str, seq: Option<i64>, line: Conversat
     app.conversation_mut(session_id).push_live(seq, line);
 }
 
-fn entry_count(app: &mut App) -> usize {
-    app.selected_session_id().map_or(0, |id| app.conversation_mut(&id).entries().len())
-}
-
 /// Line-select starts at the newest line and holds the viewport there: the
 /// cursor and `follow_tail` would otherwise fight over the scroll offset.
 fn toggle_line_cursor(app: &mut App) {
     if app.line_cursor.take().is_some() {
         return;
     }
-    let count = entry_count(app);
-    if count > 0 {
-        app.line_cursor = Some(count - 1);
+    if let Some(last) = selectable(app).last().copied() {
+        app.line_cursor = Some(last);
         app.follow_tail = false;
     }
 }
 
+/// Entry indices the filter is letting through, which is what the cursor may
+/// land on: a hidden line renders no rows, so stopping on it looks like a hang.
+fn selectable(app: &mut App) -> Vec<usize> {
+    let Some(session_id) = app.selected_session_id() else { return Vec::new() };
+    let filter = app.filter.clone();
+    app.conversation_mut(&session_id)
+        .entries()
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| filter.visible(&entry.line))
+        .map(|(index, _)| index)
+        .collect()
+}
+
 fn move_cursor(app: &mut App, delta: i32) {
     let Some(current) = app.line_cursor else { return };
-    let count = entry_count(app);
-    if count == 0 {
+    let rows = selectable(app);
+    if rows.is_empty() {
         app.line_cursor = None;
         return;
     }
+    let at = rows.iter().position(|i| *i >= current).unwrap_or(rows.len() - 1);
     let next = if delta < 0 {
-        current.saturating_sub(delta.unsigned_abs() as usize)
+        at.saturating_sub(delta.unsigned_abs() as usize)
     } else {
-        current.saturating_add(delta as usize)
+        (at + delta as usize).min(rows.len() - 1)
     };
-    app.line_cursor = Some(next.min(count - 1));
+    app.line_cursor = Some(rows[next]);
 }
 
 /// True while line-select owns `j`/`k`.
@@ -207,6 +231,7 @@ mod tests {
             [
                 Effect::LoadConversationPage { kind: PageKind::Latest, etag: None, .. },
                 Effect::Subscribe { .. },
+                Effect::LoadPins { .. },
                 Effect::MarkSeen { .. },
             ]
         ));

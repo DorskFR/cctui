@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod clipboard;
 mod config;
 mod install;
 mod keys;
@@ -28,7 +29,8 @@ use app::toast::Level;
 use app::{Action, App, reduce, server_event};
 use cctui_client::{Client, Incoming};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEventKind, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -184,14 +186,19 @@ async fn run_tui() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run(&mut terminal, base_url, token).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -208,6 +215,7 @@ async fn run(
 ) -> Result<()> {
     let server = Arc::new(Client::new(&base_url, &token));
     let mut app = App::new();
+    app.server_url = base_url.clone();
     apply_config(&mut app);
     apply_server_settings(&server, &mut app).await;
     theme::init(app.config.theme);
@@ -237,6 +245,9 @@ async fn run(
             biased;
 
             maybe_input = input_rx.recv() => {
+                // A held lead chord lives exactly one key long, whatever that
+                // key turns out to mean.
+                let pending = app.pending_chord.take();
                 maybe_input
                     .and_then(|input| {
                         keys::map_input(
@@ -244,6 +255,8 @@ async fn run(
                             app.view(),
                             app.input_active,
                             app.prompt_focus(),
+                            app.key_overlay(),
+                            pending,
                             input,
                         )
                     })
@@ -295,6 +308,7 @@ fn apply_config(app: &mut App) {
     let loaded = config::load();
     app.config = loaded.config;
     app.ui = config::uistate::load();
+    app.filter = app::cmdline::restore(&app.ui);
     for problem in loaded.problems {
         app.toast(Level::Warn, format!("tui.toml: {problem}"));
     }
@@ -305,6 +319,7 @@ fn apply_config(app: &mut App) {
 async fn apply_server_settings(server: &Client, app: &mut App) {
     if let Ok(payload) = server.settings().await {
         app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
+        app.macros = app::macros::from_settings(&payload.data);
     }
     app.show_timestamps = app.config.prefs.timestamps;
 }
@@ -368,6 +383,7 @@ fn spawn_input_task() -> mpsc::Receiver<InputEvent> {
             let Ok(ev) = event::read() else { return };
             let mapped = match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => Some(InputEvent::Key(key)),
+                Event::Paste(text) => Some(InputEvent::Paste(text)),
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => Some(InputEvent::ScrollUp),
                     MouseEventKind::ScrollDown => Some(InputEvent::ScrollDown),

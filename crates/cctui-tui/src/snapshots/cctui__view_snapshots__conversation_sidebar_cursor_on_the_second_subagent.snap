@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ cctui (main) on orion ── opus ── $1.25                           │ Todo 1/3
+                                                                 ▕│ [x] Read the brief
+∴ thinking (2 lines)  (2 more · o)                               ▕│ [~] Wiring the panel
+ Read  crates/cctui-tui/src/main.rs  read                        ▕│ [ ] Write the tests
+└ 984 lines                                                      ▕│
+ Bash  cargo test  write                                         ▐│ Subagents 1/2 live
+└ ✗ exit 101 · 3 failed  (2 more · o)                            ▐│   cctui-sub  asleep
+                                                                 ▐│ ▸ writer  Needs input
+● Assistant                                                      ▐│
+Looking at the views first.                                      ▐│
+                                                                 ▐│
+- one                                                            ▐│
+- two                                                            ▐│
+⏱ 12.4k in / 1.1k out                                            ▐│
+⏱ 38s                                                            ▐│
+                                                                 ▐│
+◆ lane-b                                                         ▐│
+the parser lane is rebased                                       ▐│
+⟳ context reset (/clear)                                         ▐│
+                                                                 ▐│
+◁ Reply done                                                     ▐│
+──────────────────────────────────────────────────────────────────│
+ ⠋ working                                                        │
+❯  Type a message...                                              │

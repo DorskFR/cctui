@@ -3,6 +3,8 @@ import type { ForkExtract } from "./ForkExtract";
 
 /**
  * Omitted fields inherit from the parent; working dir, adapter and account always do.
+ *
+ * [`Default`] is a whole-session fork: every dial inherited, no prompt.
  */
 export type ForkRequest = { model?: string | null, effort?: string | null, prompt?: string | null, name?: string | null, 
 /**

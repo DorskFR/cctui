@@ -469,8 +469,8 @@ ticket = "CCT-1257"
 [[route]]
 id = "get_machines_by_machine_fs_file"
 # GET /machines/{machine_id}/fs/file — Read one file on a machine (agent-linked path): inline or blob redirect.
-tui = "planned"
-ticket = "CCT-1234"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_machines_by_machine_codex_models"
@@ -493,8 +493,8 @@ ticket = "CCT-1258"
 [[route]]
 id = "get_models_by_harness"
 # GET /models/{harness} — Model and effort options for a harness picker (optional machine_id).
-tui = "planned"
-ticket = "CCT-1258"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_meta_domain"
@@ -967,8 +967,8 @@ ticket = "CCT-1264"
 [[route]]
 id = "post_sessions_by_id_set_model"
 # POST /sessions/{id}/set-model — Change a session's model.
-tui = "planned"
-ticket = "CCT-1236"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_switch_account"
@@ -1003,8 +1003,8 @@ ticket = "CCT-1256"
 [[route]]
 id = "post_sessions_by_id_files"
 # POST /sessions/{id}/files — Attach files to a live session mid-conversation.
-tui = "planned"
-ticket = "CCT-1232"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions"
@@ -1093,20 +1093,20 @@ ticket = "CCT-1245"
 [[route]]
 id = "get_sessions_by_id_pins"
 # GET /sessions/{id}/pins — List the caller's pinned messages in a session.
-tui = "planned"
-ticket = "CCT-1235"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_pins"
 # POST /sessions/{id}/pins — Pin a message (by stream seq) in a session.
-tui = "planned"
-ticket = "CCT-1235"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_sessions_by_id_pins_by_seq"
 # DELETE /sessions/{id}/pins/{seq} — Unpin a message in a session.
-tui = "planned"
-ticket = "CCT-1235"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_seen"
@@ -1123,8 +1123,8 @@ ticket = "CCT-1251"
 [[route]]
 id = "post_sessions_by_id_fork"
 # POST /sessions/{id}/fork — Fork a session into a new one.
-tui = "planned"
-ticket = "CCT-1264"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_auto_approve"
@@ -1219,8 +1219,8 @@ ticket = "CCT-1232"
 [[route]]
 id = "get_sessions_by_id_linked_file_owner"
 # GET /sessions/{id}/linked-file-owner — Which session and machine linked a path, when this session did not.
-tui = "planned"
-ticket = "CCT-1234"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_by_id_diagnose"
@@ -1530,8 +1530,8 @@ module = "app/server_event.rs"
 
 [[ws_event]]
 name = "pty_chunk"
-tui = "planned"
-ticket = "CCT-1229"
+tui = "handled"
+module = "app/server_event.rs"
 
 [[ws_event]]
 name = "scheduled_launch"
