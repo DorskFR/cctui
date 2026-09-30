@@ -237,6 +237,22 @@ impl ServerClient {
         Self::peer_json(resp, "CctuiSend").await
     }
 
+    /// `POST /api/v1/daemon/sessions/{id}/room` — the `CctuiRoom` relay.
+    pub async fn room(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        req: &cctui_proto::api::RoomToolRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/room",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(req).send().await?;
+        Self::peer_json(resp, "CctuiRoom").await
+    }
+
     /// `GET /api/v1/daemon/sessions/{id}/peer-conversation` — `CctuiHistory`.
     pub async fn peer_conversation(
         &self,

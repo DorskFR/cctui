@@ -27,6 +27,7 @@ pub const USAGE_TOOL_NAME: &str = "CctuiUsage";
 pub const PEERS_TOOL_NAME: &str = "CctuiPeers";
 pub const SEND_TOOL_NAME: &str = "CctuiSend";
 pub const HISTORY_TOOL_NAME: &str = "CctuiHistory";
+pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
 
 /// A limits lookup is one cached server read; it must never hold a turn open
 /// the way a followed child does. The peer tools are the same shape: one
@@ -39,6 +40,7 @@ const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (PEERS_TOOL_NAME, "peers"),
     (SEND_TOOL_NAME, "send_peer"),
     (HISTORY_TOOL_NAME, "peer_history"),
+    (ROOM_TOOL_NAME, "room"),
 ];
 
 /// The socket `kind` a tool call becomes. `spawn_agent` is the only kind that
@@ -281,6 +283,46 @@ pub fn history_tool_schema() -> Value {
     })
 }
 
+/// `CctuiRoom`: post to, read, or inspect a room this session belongs to.
+#[must_use]
+pub fn room_tool_schema() -> Value {
+    json!({
+        "name": ROOM_TOOL_NAME,
+        "description": "Talk to a cctui ROOM: a named group of sessions, plus the human, sharing \
+    one conversation. A human adds sessions to a room; you cannot join one yourself. `post` sends \
+    a message to every other member as a turn in their session, and to the human's Room panel. \
+    IMPORTANT: only an explicit post reaches the room — your ordinary replies stay in your own \
+    conversation, so working normally never echoes you into the room. Messages you receive wrapped \
+    in <cctui-room> came from another member, not from the human who runs you. `peek` re-reads the \
+    timeline (including what arrived while you were busy), `members` lists who is in it. Omit \
+    room_id when you are in exactly one room. Rate-limited to 10 posts a minute, and size-capped \
+    — post a pointer, not a payload.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["post", "peek", "members"],
+                    "description": "`post` to say something to the room, `peek` to read the \
+    timeline, `members` to see who is in it.",
+                },
+                "room_id": {
+                    "type": "string",
+                    "description": "Which room. Optional when this session is in exactly one; \
+    required otherwise, and the error lists the options.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "What to post. Required for `post`, ignored otherwise. Write \
+    it for the other agents and the human reading along.",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": false,
+        },
+    })
+}
+
 /// Every tool this relay advertises, in a stable order. One list, one relay:
 /// registering it for codex or opencode (`adapters::agent_mcp`) offers exactly
 /// the same surface as claude_code's `--mcp-config`.
@@ -292,6 +334,7 @@ pub fn tool_schemas() -> Vec<Value> {
         peers_tool_schema(),
         send_tool_schema(),
         history_tool_schema(),
+        room_tool_schema(),
     ]
 }
 
@@ -598,8 +641,30 @@ mod tests {
                 PEERS_TOOL_NAME,
                 SEND_TOOL_NAME,
                 HISTORY_TOOL_NAME,
+                ROOM_TOOL_NAME,
             ]
         );
+    }
+
+    /// A room tool that let a model pick its own action strings would fail
+    /// server-side; the enum is what keeps the three actions honest.
+    #[test]
+    fn the_room_tool_enumerates_its_actions_and_states_the_loop_guard() {
+        let schema = room_tool_schema();
+        assert_eq!(schema["inputSchema"]["required"], json!(["action"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["action"]["enum"], json!(["post", "peek", "members"]));
+        for key in ["action", "room_id", "message"] {
+            assert!(props.contains_key(key), "{key} missing from the schema");
+        }
+        let desc = schema["description"].as_str().unwrap();
+        assert!(
+            desc.contains("only an explicit post reaches the room"),
+            "the loop guard must be in the tool description too: {desc}"
+        );
+        assert!(desc.contains("<cctui-room>"), "{desc}");
+        assert!(desc.contains("exactly one room"), "{desc}");
+        assert_eq!(tool_kind(ROOM_TOOL_NAME), Some("room"));
     }
 
     /// Every advertised tool must map onto a socket kind, or a model would call
@@ -673,6 +738,7 @@ mod tests {
             (PEERS_TOOL_NAME, "peers", json!({})),
             (SEND_TOOL_NAME, "send_peer", json!({ "session_id": "t", "message": "hi" })),
             (HISTORY_TOOL_NAME, "peer_history", json!({ "session_id": "t", "limit": 10 })),
+            (ROOM_TOOL_NAME, "room", json!({ "action": "post", "message": "hi" })),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let sock_path = dir.path().join("agent.sock");
@@ -706,6 +772,7 @@ mod tests {
             (PEERS_TOOL_NAME, "peers"),
             (SEND_TOOL_NAME, "send_peer"),
             (HISTORY_TOOL_NAME, "peer_history"),
+            (ROOM_TOOL_NAME, "room"),
         ] {
             let (text, is_error) = call_daemon(
                 "s1",

@@ -752,6 +752,25 @@ pub enum ServerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_error: Option<String>,
     },
+    /// A message was posted to a room, for the Room panel. `sender_session_id`
+    /// absent means the human posted it.
+    RoomMessage {
+        room_id: uuid::Uuid,
+        room_name: String,
+        /// Whose rooms list this belongs to; scopes delivery to the owner.
+        user_id: uuid::Uuid,
+        seq: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_session_id: Option<String>,
+        sender_label: String,
+        body: String,
+    },
+    /// A room's membership changed, so an open Room panel and the card badges
+    /// reload rather than guess.
+    RoomMembers {
+        room_id: uuid::Uuid,
+        user_id: uuid::Uuid,
+    },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
     /// This socket lagged. Refetch the session, or everything when `None`.

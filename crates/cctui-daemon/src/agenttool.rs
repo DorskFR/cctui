@@ -12,7 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cctui_proto::api::{MessageChildRequest, PeerMessageRequest, SpawnChildRequest};
+use cctui_proto::api::{
+    MessageChildRequest, PeerMessageRequest, RoomToolRequest, SpawnChildRequest,
+};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -57,6 +59,8 @@ enum CallKind {
     /// [`Self::Message`] it never follows the target — a peer is not a child and
     /// owes the caller no answer.
     SendPeer(PeerMessageRequest),
+    /// `CctuiRoom`: post to, read or inspect a room this session is in.
+    Room(RoomToolRequest),
     /// `CctuiHistory`: a bounded page of a peer's transcript.
     PeerHistory {
         session_id: String,
@@ -143,6 +147,23 @@ fn parse_call(line: &str) -> Result<Call, String> {
                 return Err("message is required".to_owned());
             }
             CallKind::SendPeer(PeerMessageRequest { session_id: target, message })
+        }
+        Some("room") => {
+            let action = args
+                .get("action")
+                .and_then(Value::as_str)
+                .map(|a| a.trim().to_ascii_lowercase())
+                .filter(|a| !a.is_empty())
+                .ok_or("action is required: \"post\", \"peek\" or \"members\"")?;
+            let message = string_arg(&args, "message");
+            if action == "post" && message.is_none() {
+                return Err("message is required to post to a room".to_owned());
+            }
+            CallKind::Room(RoomToolRequest {
+                action,
+                room_id: string_arg(&args, "room_id"),
+                message,
+            })
         }
         Some("peer_history") => {
             let Some(target) = string_arg(&args, "session_id") else {
@@ -286,6 +307,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
         CallKind::Usage { .. }
         | CallKind::Peers
         | CallKind::SendPeer(_)
+        | CallKind::Room(_)
         | CallKind::PeerHistory { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
@@ -317,6 +339,63 @@ fn render_peers(v: &Value) -> String {
         ));
     }
     lines.join("\n")
+}
+
+/// A room reply, rendered per action. `post` confirms the reach so a model knows
+/// how many agents it just interrupted; `peek` and `members` render the timeline
+/// and the roster as lines.
+fn render_room(action: &str, me: &str, v: &Value) -> String {
+    let room = v.get("room").and_then(Value::as_str).unwrap_or("the room");
+    match action {
+        "post" => {
+            let n = v.get("recipients").and_then(Value::as_u64).unwrap_or(0);
+            let seq = v.get("seq").and_then(Value::as_i64).unwrap_or(0);
+            format!(
+                "posted to {room} as #{seq}; {n} other member(s) will receive it as a turn, and \
+                 the human sees it in the Room panel. They answer when they choose — nothing \
+                 comes back through this call."
+            )
+        }
+        "members" => {
+            let members =
+                v.get("members").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            let mut lines = vec![format!("{room} — {} member(s), plus the human:", members.len())];
+            for mem in members {
+                let s = |k: &str| mem.get(k).and_then(Value::as_str).unwrap_or("?");
+                let name =
+                    mem.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+                lines.push(format!(
+                    "- {} [{}] {} · {} on {} · {}",
+                    s("session_id"),
+                    s("role"),
+                    name.unwrap_or("(unnamed)"),
+                    s("adapter"),
+                    s("machine"),
+                    s("state"),
+                ));
+            }
+            lines.join("\n")
+        }
+        _ => {
+            let messages =
+                v.get("messages").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            if messages.is_empty() {
+                return format!("{room} has no messages yet.");
+            }
+            let seen = v.get("last_delivered_seq").and_then(Value::as_i64).unwrap_or(0);
+            let mut lines = vec![format!("{room} — {} message(s):", messages.len())];
+            for msg in messages {
+                let seq = msg.get("seq").and_then(Value::as_i64).unwrap_or(0);
+                let from = msg.get("sender_label").and_then(Value::as_str).unwrap_or("?");
+                let body = msg.get("body").and_then(Value::as_str).unwrap_or("");
+                let mine =
+                    msg.get("sender_session_id").and_then(Value::as_str).is_some_and(|s| s == me);
+                let mark = if mine { " (you)" } else if seq > seen { " (new to you)" } else { "" };
+                lines.push(format!("#{seq} {from}{mark}: {}", snippet(body, 2_000)));
+            }
+            lines.join("\n")
+        }
+    }
 }
 
 /// A history page as the markdown the tool promised, with the cursor line a
@@ -600,6 +679,14 @@ async fn run_call(
                 Err(err) => json!({ "ok": false, "error": err.to_string() }),
             };
         }
+        CallKind::Room(req) => {
+            return match server.room(machine_key, &call.session_id, req).await {
+                Ok(v) => {
+                    json!({ "ok": true, "result": render_room(&req.action, &call.session_id, &v) })
+                }
+                Err(err) => json!({ "ok": false, "error": err.to_string() }),
+            };
+        }
         CallKind::PeerHistory { query, .. } => {
             return match server.peer_conversation(machine_key, &call.session_id, query).await {
                 Ok(v) => json!({ "ok": true, "result": render_history(&v) }),
@@ -664,6 +751,7 @@ async fn run_call(
         CallKind::Usage { .. }
         | CallKind::Peers
         | CallKind::SendPeer(_)
+        | CallKind::Room(_)
         | CallKind::PeerHistory { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
@@ -1662,6 +1750,100 @@ mod tests {
         }));
         assert!(out.contains("\"role\": \"user\""), "{out}");
         assert!(out.contains("[1 event(s)]"), "{out}");
+    }
+
+    #[test]
+    fn a_room_call_parses_its_action_and_normalizes_the_spelling() {
+        let line = json!({
+            "kind": "room",
+            "session_id": "s1",
+            "args": { "action": " PoSt ", "message": " the gate is green ", "room_id": " r-1 " },
+        })
+        .to_string();
+        let CallKind::Room(req) = parse_call(&line).unwrap().kind else { panic!("expected room") };
+        assert_eq!(req.action, "post");
+        assert_eq!(req.message.as_deref(), Some("the gate is green"));
+        assert_eq!(req.room_id.as_deref(), Some("r-1"));
+        assert_eq!(dispatch_note(&CallKind::Room(req), Duration::from_secs(30)), "");
+    }
+
+    #[test]
+    fn peek_and_members_need_no_message_but_post_does() {
+        for action in ["peek", "members"] {
+            let line =
+                json!({ "kind": "room", "session_id": "s1", "args": { "action": action } })
+                    .to_string();
+            let CallKind::Room(req) = parse_call(&line).unwrap().kind else {
+                panic!("expected room")
+            };
+            assert_eq!(req.action, action);
+            assert!(req.message.is_none());
+            assert!(req.room_id.is_none(), "an omitted room means the caller's only room");
+        }
+        let no_message = json!({ "kind": "room", "session_id": "s1", "args": { "action": "post" } });
+        assert!(
+            parse_call(&no_message.to_string()).unwrap_err().contains("message is required"),
+            "a post with nothing to say must be rejected before it reaches the server"
+        );
+        let no_action = json!({ "kind": "room", "session_id": "s1", "args": {} });
+        assert!(parse_call(&no_action.to_string()).unwrap_err().contains("action is required"));
+    }
+
+    /// A post reply must not read like a request/response: the model has to know
+    /// no answer is coming back through the call.
+    #[test]
+    fn a_post_reply_names_the_reach_and_says_no_answer_is_coming() {
+        let out = render_room(
+            "post",
+            "me",
+            &json!({ "room": "wave 23", "room_id": "r-1", "seq": 7, "recipients": 2 }),
+        );
+        assert!(out.contains("posted to wave 23 as #7"), "{out}");
+        assert!(out.contains("2 other member(s)"), "{out}");
+        assert!(out.contains("nothing comes back through this call"), "{out}");
+    }
+
+    #[test]
+    fn peek_renders_the_timeline_and_marks_what_is_new_and_what_is_mine() {
+        let out = render_room(
+            "peek",
+            "me",
+            &json!({
+                "room": "wave 23",
+                "last_delivered_seq": 1,
+                "messages": [
+                    { "seq": 1, "sender_label": "lane a (codex on box-b)",
+                      "sender_session_id": "other", "body": "started" },
+                    { "seq": 2, "sender_label": "me (claude-code on box-a)",
+                      "sender_session_id": "me", "body": "on it" },
+                    { "seq": 3, "sender_label": "you (human)", "body": "ship it" },
+                ],
+            }),
+        );
+        assert!(out.starts_with("wave 23 — 3 message(s):"), "{out}");
+        assert!(out.contains("#1 lane a (codex on box-b): started"), "{out}");
+        assert!(out.contains("#2 me (claude-code on box-a) (you): on it"), "{out}");
+        assert!(out.contains("#3 you (human) (new to you): ship it"), "{out}");
+
+        let empty = render_room("peek", "me", &json!({ "room": "wave 23", "messages": [] }));
+        assert!(empty.contains("no messages yet"), "{empty}");
+    }
+
+    #[test]
+    fn members_renders_one_line_per_member_with_its_role_and_state() {
+        let out = render_room(
+            "members",
+            "me",
+            &json!({ "room": "wave 23", "members": [
+                { "session_id": "a", "name": "lane a", "adapter": "codex", "machine": "box-b",
+                  "state": "live", "role": "member" },
+                { "session_id": "b", "name": "  ", "adapter": "claude-code", "machine": "box-a",
+                  "state": "archived", "role": "observer" },
+            ] }),
+        );
+        assert!(out.starts_with("wave 23 — 2 member(s), plus the human:"), "{out}");
+        assert!(out.contains("- a [member] lane a · codex on box-b · live"), "{out}");
+        assert!(out.contains("- b [observer] (unnamed) · claude-code on box-a · archived"), "{out}");
     }
 
     #[test]
