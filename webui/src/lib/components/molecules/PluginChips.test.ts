@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import PluginChips from './PluginChips.svelte';
 import { setYouTrackLookup } from '$lib/plugins/youtrackLookup';
@@ -12,7 +12,7 @@ afterEach(() => {
 	setYouTrackLookup(null);
 });
 
-function render(props: Record<string, unknown>) {
+function render(props: ComponentProps<typeof PluginChips>) {
 	comp = mount(PluginChips, { target: document.body, props });
 	flushSync();
 }
