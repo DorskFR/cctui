@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::identity::AuthAction;
+use super::session_live::SessionLiveAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -77,6 +78,7 @@ pub enum Action {
     SessionDeregistered(String),
 
     Auth(AuthAction),
+    SessionLive(SessionLiveAction),
 
     Reconnected,
     Toast(Level, String),

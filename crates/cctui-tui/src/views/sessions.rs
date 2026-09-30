@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::app::state::uptime_secs;
-use crate::app::{App, session_list, session_status};
+use crate::app::{App, session_list, session_live, session_status};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -42,6 +42,13 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw("  "),
         Span::styled(format!("● {active} active"), theme::active()),
     ];
+    if app.refresh.requested > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("⟳ {}/{}", app.refresh.sent, app.refresh.requested),
+            theme::dim(),
+        ));
+    }
     spans.extend(crate::widgets::status::status_spans(app));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -158,6 +165,18 @@ fn session_line_spans(app: &App, s: &SessionListItem, width: u16) -> Vec<Span<'s
     ];
     if !branch.is_empty() {
         segs.push(Seg::new(6, theme::branch(), format!(" ({branch})")));
+    }
+    // Only a machine that is not online earns a glyph; a dot on every row is
+    // noise, and the row already says whether the session itself is live.
+    if let Some(tier) = session_live::machine_dot(app, &s.machine_id)
+        && tier != cctui_proto::models::MachineLiveness::Online
+    {
+        let style = if tier == cctui_proto::models::MachineLiveness::Stale {
+            theme::stale()
+        } else {
+            theme::error()
+        };
+        segs.push(Seg::new(7, style, format!(" {}", session_live::machine_glyph(tier))));
     }
 
     if !compact {
@@ -397,6 +416,18 @@ mod tests {
         let app = app_with(subagent("s-child", "s-parent", "sub"));
         let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
         assert!(rendered.starts_with("    ↳ "), "{rendered}");
+    }
+
+    #[test]
+    fn only_a_machine_that_is_not_online_marks_its_rows() {
+        use cctui_proto::models::MachineLiveness;
+        let mut app = app_with(session("s-off", "proj", "active", "working"));
+        assert!(!text(&session_line_spans(&app, &app.sessions[0], 100)).contains('✗'));
+        app.machine_liveness.insert("orion".to_owned(), MachineLiveness::Online);
+        assert!(!text(&session_line_spans(&app, &app.sessions[0], 100)).contains('▪'));
+        app.machine_liveness.insert("orion".to_owned(), MachineLiveness::Offline);
+        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
+        assert!(rendered.contains('✗'), "{rendered}");
     }
 
     #[test]

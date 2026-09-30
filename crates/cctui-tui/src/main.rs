@@ -24,6 +24,7 @@ use std::time::Duration;
 use anyhow::Result;
 use app::effects::Effects;
 use app::toast::Level;
+use app::session_live::{SessionLiveAction, TICK_MS};
 use app::{Action, App, reduce, server_event};
 use cctui_client::{Client, Incoming};
 use crossterm::event::{
@@ -215,8 +216,10 @@ async fn run(
     let (ws, mut event_rx) = server.connect_ws();
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
     effects.dispatch(app::action::Effect::FetchIdentity);
-    let mut refresh_interval = time::interval(Duration::from_secs(5));
-    refresh_interval.tick().await;
+    // One tick drives both jobs: it re-evaluates the clock-derived row signals
+    // every time, and asks for a poll only when one is actually due.
+    let mut tick = time::interval(Duration::from_millis(TICK_MS.unsigned_abs()));
+    tick.tick().await;
     let mut input_rx = spawn_input_task();
     let mut ws_closed = false;
     let mut ws_ever_connected = false;
@@ -248,7 +251,10 @@ async fn run(
                 maybe_event.map_or_else(
                     || {
                         ws_closed = true;
-                        vec![Action::Toast(Level::Error, "event stream closed".to_owned())]
+                        vec![
+                            Action::SessionLive(SessionLiveAction::WsHealth(false)),
+                            Action::Toast(Level::Error, "event stream closed".to_owned()),
+                        ]
                     },
                     |event| {
                         let mut actions = incoming_actions(event, &mut ws_ever_connected);
@@ -259,7 +265,7 @@ async fn run(
                     },
                 )
             }
-            _ = refresh_interval.tick() => vec![Action::RefreshSessions],
+            _ = tick.tick() => vec![Action::SessionLive(SessionLiveAction::Tick)],
         };
 
         for action in actions {
@@ -297,6 +303,8 @@ async fn init_sessions(server: &Client, app: &mut App) {
     if let Ok(resp) = server.list_sessions().await {
         app.sessions = resp.sessions;
         app.update_aggregates();
+        app.refresh.sent += 1;
+        app.last_refresh_ms = app.clock_ms;
     }
 }
 
@@ -307,15 +315,19 @@ fn incoming_actions(incoming: Incoming, ever_connected: &mut bool) -> Vec<Action
         Incoming::Event(event) => server_event::to_actions(*event),
         Incoming::Undecodable(reason) => vec![Action::UndecodableWsMessage(reason)],
         Incoming::Connected => {
+            let healthy = Action::SessionLive(SessionLiveAction::WsHealth(true));
             if std::mem::replace(ever_connected, true) {
-                vec![Action::Reconnected]
+                vec![healthy, Action::Reconnected]
             } else {
-                Vec::new()
+                vec![healthy]
             }
         }
         Incoming::Disconnected(reason) => {
             tracing::warn!(%reason, "websocket dropped; reconnecting");
-            vec![Action::Toast(Level::Warn, "connection lost — reconnecting".to_owned())]
+            vec![
+                Action::SessionLive(SessionLiveAction::WsHealth(false)),
+                Action::Toast(Level::Warn, "connection lost — reconnecting".to_owned()),
+            ]
         }
     }
 }

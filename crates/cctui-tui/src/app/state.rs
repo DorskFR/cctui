@@ -7,6 +7,7 @@ use ratatui_textarea::TextArea;
 use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
 use super::router::Router;
+use super::session_live::RefreshCounters;
 pub use super::session_list::uptime_secs;
 use super::toast::{Level, StatusCounters, Toasts};
 
@@ -89,6 +90,12 @@ pub struct App {
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
+    /// Live machine tiers from `machine_liveness`, keyed by machine id.
+    pub machine_liveness: HashMap<String, cctui_proto::models::MachineLiveness>,
+    /// The socket is delivering events, so the REST poll can slow down.
+    pub ws_healthy: bool,
+    pub last_refresh_ms: i64,
+    pub refresh: RefreshCounters,
 }
 
 impl App {
@@ -131,6 +138,10 @@ impl App {
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
             clock_ms: 0,
+            machine_liveness: HashMap::new(),
+            ws_healthy: false,
+            last_refresh_ms: 0,
+            refresh: RefreshCounters::default(),
         }
     }
 

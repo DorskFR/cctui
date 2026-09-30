@@ -1485,8 +1485,8 @@ reason = "the TUI has no archive browser"
 
 [[ws_event]]
 name = "machine_liveness"
-tui = "planned"
-ticket = "CCT-1250"
+tui = "handled"
+module = "app/server_event.rs"
 
 [[ws_event]]
 name = "machine_resources"

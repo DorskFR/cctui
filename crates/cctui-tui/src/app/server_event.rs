@@ -2,6 +2,7 @@ use cctui_proto::ws::{AgentEvent, ServerEvent};
 
 use super::action::{Action, HeartbeatUsage};
 use super::line::agent_event_to_line;
+use super::session_live::SessionLiveAction;
 use super::state::PendingPermission;
 use super::toast::Level;
 
@@ -40,11 +41,18 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             vec![Action::PermissionResolved { session_id, request_id }]
         }
         ServerEvent::SessionEnded { session_id, reason, detail } => {
-            let detail = detail.map_or_else(String::new, |d| format!(" — {d}"));
-            vec![Action::Toast(
-                Level::Info,
-                format!("{} ended: {reason:?}{detail}", short_id(&session_id)),
-            )]
+            let suffix = detail.as_deref().map_or_else(String::new, |d| format!(" — {d}"));
+            vec![
+                Action::SessionLive(SessionLiveAction::Ended {
+                    session_id: session_id.clone(),
+                    reason,
+                    detail,
+                }),
+                Action::Toast(
+                    Level::Info,
+                    format!("{} ended: {reason:?}{suffix}", short_id(&session_id)),
+                ),
+            ]
         }
         ServerEvent::SoftLimitReached { session_id, account_name, retry_after_secs, .. } => {
             vec![Action::Toast(
@@ -67,8 +75,14 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
                 format!("{} blocked {tool_name} ({rule})", short_id(&session_id)),
             )]
         }
-        // The socket lagged: the 5s REST refresh is the TUI's whole-state
-        // resync, so ask for one now rather than waiting for the tick.
+        ServerEvent::MachineLiveness { machine_id, liveness } => {
+            vec![Action::SessionLive(SessionLiveAction::MachineLiveness {
+                machine_id: machine_id.to_string(),
+                liveness,
+            })]
+        }
+        // The socket lagged: the REST refresh is the TUI's whole-state resync,
+        // so ask for one now rather than waiting for the poll.
         ServerEvent::Resync { .. } => vec![Action::RefreshSessions],
 
         ServerEvent::ArchiveManifest { .. } => waived("the TUI has no archive browser"),
@@ -79,7 +93,6 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::AskResolved { .. } => waived("the TUI cannot answer asks yet"),
         ServerEvent::PlanRequest { .. } => waived("the TUI has no plan-approval dialog yet"),
         ServerEvent::PlanResolved { .. } => waived("the TUI has no plan-approval dialog yet"),
-        ServerEvent::MachineLiveness { .. } => waived("the TUI shows no machine list"),
         ServerEvent::MachineResources { .. } => waived("the TUI shows no machine list"),
         ServerEvent::DispatcherLiveness { .. } => waived("the TUI shows no dispatcher list"),
         ServerEvent::AccountUsage { .. } => waived("the TUI shows no account panel"),

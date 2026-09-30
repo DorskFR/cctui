@@ -9,6 +9,7 @@ use super::toast::Level;
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::SessionLive(action) => super::session_live::reduce_session_live(app, action),
 
         Action::Quit => {
             app.should_quit = true;
@@ -154,7 +155,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
 
-        Action::RefreshSessions => vec![Effect::RefreshSessions],
+        Action::RefreshSessions => super::session_live::refresh(app),
         Action::SessionsLoaded(sessions) => {
             app.sessions = sessions;
             app.update_aggregates();
@@ -188,7 +189,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
             let mut effects = conversation::reconnect(app);
-            effects.push(Effect::RefreshSessions);
+            effects.extend(super::session_live::refresh(app));
             effects
         }
         Action::Toast(level, text) => {
@@ -618,6 +619,7 @@ mod tests {
         ));
 
         reduce(&mut app, Action::OpenSelectedConversation);
+        app.clock_ms += crate::app::session_live::REFRESH_DEBOUNCE_MS;
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
             [
