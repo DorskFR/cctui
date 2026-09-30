@@ -4,9 +4,12 @@ use cctui_proto::ws::{AgentEvent, TuiCommand};
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
+use super::conversation::ConversationAction;
+use super::conversation_store::{PageKind, PageRequest};
 use super::line::agent_event_to_line;
+use super::state::ConversationLine;
 use super::toast::Level;
-use crate::client::ServerClient;
+use crate::client::{ConversationFetch, Page, ServerClient};
 
 const QUEUE: usize = 256;
 
@@ -88,13 +91,8 @@ async fn run(
                 vec![Action::Toast(Level::Warn, "session refresh failed".to_owned())]
             }
         },
-        Effect::LoadConversation { session_id, fetch } => {
-            let mut actions = Vec::new();
-            if fetch {
-                actions.extend(load_conversation(server, &session_id).await);
-            }
-            send_command(commands, TuiCommand::Subscribe { session_id }).await;
-            actions
+        Effect::LoadConversationPage { session_id, kind, page, etag } => {
+            load_conversation_page(server, &session_id, kind, page, etag.as_deref()).await
         }
         Effect::Subscribe { session_id } => {
             send_command(commands, TuiCommand::Subscribe { session_id }).await;
@@ -145,19 +143,50 @@ async fn run(
     }
 }
 
-async fn load_conversation(server: &ServerClient, session_id: &str) -> Vec<Action> {
-    let Ok(events) = server.get_conversation(session_id).await else {
-        tracing::warn!(session_id, "conversation fetch failed");
-        return Vec::new();
+async fn load_conversation_page(
+    server: &ServerClient,
+    session_id: &str,
+    kind: PageKind,
+    page: PageRequest,
+    etag: Option<&str>,
+) -> Vec<Action> {
+    let request = Page { before: page.before, after: page.after, limit: page.limit };
+    let fetch = match server.conversation(session_id, request, etag).await {
+        Ok(fetch) => fetch,
+        Err(e) => {
+            tracing::warn!(%e, session_id, "conversation fetch failed");
+            return vec![Action::Conversation(ConversationAction::Failed {
+                session_id: session_id.to_owned(),
+                kind,
+            })];
+        }
     };
-    let total = events.len();
-    let lines: Vec<_> = events
-        .iter()
-        .filter_map(|v| serde_json::from_value::<AgentEvent>(v.clone()).ok())
-        .map(|e| agent_event_to_line(&e))
+
+    let ConversationFetch::Page { rows, etag, has_more } = fetch else {
+        return vec![Action::Conversation(ConversationAction::NotModified {
+            session_id: session_id.to_owned(),
+            kind,
+        })];
+    };
+
+    let total = rows.len();
+    let decoded: Vec<(i64, ConversationLine)> = rows
+        .into_iter()
+        .filter_map(|row| {
+            serde_json::from_value::<AgentEvent>(row.event)
+                .ok()
+                .map(|event| (row.seq, agent_event_to_line(&event)))
+        })
         .collect();
-    let undecodable = total - lines.len();
-    let mut actions = vec![Action::ConversationLoaded { session_id: session_id.to_owned(), lines }];
+    let undecodable = total - decoded.len();
+
+    let mut actions = vec![Action::Conversation(ConversationAction::Loaded {
+        session_id: session_id.to_owned(),
+        kind,
+        rows: decoded,
+        etag,
+        has_more,
+    })];
     if undecodable > 0 {
         actions.push(Action::UndecodableAgentEvents(undecodable));
     }

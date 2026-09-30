@@ -23,6 +23,38 @@ pub fn decode_frame(text: &str) -> Incoming {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Page {
+    pub before: Option<i64>,
+    pub after: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+/// `event` keeps the server's object untouched, so deserializing it to an
+/// `AgentEvent` still sees `seq`/`ts`/`turn_id`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationRow {
+    pub seq: i64,
+    pub ts: Option<i64>,
+    pub turn_id: Option<uuid::Uuid>,
+    pub event: Value,
+}
+
+pub enum ConversationFetch {
+    NotModified,
+    Page { rows: Vec<ConversationRow>, etag: Option<String>, has_more: bool },
+}
+
+impl ConversationRow {
+    fn from_event(event: Value) -> Option<Self> {
+        let seq = event.get("seq").and_then(Value::as_i64)?;
+        let ts = event.get("ts").and_then(Value::as_i64);
+        let turn_id =
+            event.get("turn_id").and_then(Value::as_str).and_then(|s| s.parse().ok());
+        Some(Self { seq, ts, turn_id, event })
+    }
+}
+
 pub struct ServerClient {
     base_url: String,
     token: String,
@@ -52,22 +84,45 @@ impl ServerClient {
         Ok(resp)
     }
 
-    pub async fn get_conversation(&self, session_id: &str) -> Result<Vec<Value>> {
-        let url = format!("{}/api/v1/sessions/{}/conversation", self.base_url, session_id);
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(&self.token)
-            .send()
-            .await
-            .context("GET conversation")?
-            .error_for_status()
-            .context("conversation response status")?
-            .json::<Vec<Value>>()
-            .await
-            .context("deserialize conversation")?;
-        Ok(resp)
+    /// One page of a session's transcript. `etag` is replayed as
+    /// `If-None-Match`; a 304 comes back as [`ConversationFetch::NotModified`].
+    pub async fn conversation(
+        &self,
+        session_id: &str,
+        page: Page,
+        etag: Option<&str>,
+    ) -> Result<ConversationFetch> {
+        let url = format!("{}/api/v1/sessions/{session_id}/conversation", self.base_url);
+        let mut request = self.http.get(&url).bearer_auth(&self.token);
+        for (key, value) in
+            [("before", page.before), ("after", page.after), ("limit", page.limit)]
+        {
+            if let Some(value) = value {
+                request = request.query(&[(key, value)]);
+            }
+        }
+        if let Some(etag) = etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+
+        let resp = request.send().await.context("GET conversation")?;
+        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(ConversationFetch::NotModified);
+        }
+        let resp = resp.error_for_status().context("conversation response status")?;
+        // Envoy strips `ETag` off compressed responses; the server mirrors it.
+        let etag = resp
+            .headers()
+            .get(reqwest::header::ETAG)
+            .or_else(|| resp.headers().get("x-etag"))
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let events = resp.json::<Vec<Value>>().await.context("deserialize conversation")?;
+        let has_more = page.limit.is_some_and(|l| i64::try_from(events.len()).unwrap_or(l) >= l);
+        let rows = events.into_iter().filter_map(ConversationRow::from_event).collect();
+        Ok(ConversationFetch::Page { rows, etag, has_more })
     }
+
 
     /// Interrupt the in-flight turn without tearing the session down.
     pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {

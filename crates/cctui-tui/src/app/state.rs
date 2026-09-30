@@ -4,6 +4,7 @@ use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
+use super::conversation_store::ConversationStore;
 use super::router::Router;
 use super::toast::{Level, StatusCounters, Toasts};
 
@@ -69,7 +70,7 @@ pub struct App {
     pub version: &'static str,
     pub sessions: Vec<SessionListItem>,
     pub selected_index: usize,
-    pub stream_buffer: HashMap<String, Vec<ConversationLine>>,
+    pub conversations: HashMap<String, ConversationStore>,
     pub message_input: TextArea<'static>,
     pub input_active: bool,
     pub should_quit: bool,
@@ -84,11 +85,16 @@ pub struct App {
     pub viewport_height: usize,
     /// Total display lines in current conversation (set during render).
     pub total_display_lines: usize,
-    /// Cached rendered display lines for the current conversation.
-    /// Invalidated when `render_cache_len` != `stream_buffer` length for the session.
+    /// Rendered display lines for the current conversation. Valid only while
+    /// the store has done nothing but append: `epoch` changes on any insert
+    /// that lands earlier, which no append-only cache can absorb.
     pub render_cache: Vec<ratatui::text::Line<'static>>,
     pub render_cache_session: String,
-    pub render_cache_len: usize,
+    pub render_cache_entries: usize,
+    pub render_cache_epoch: u64,
+    /// An older page landed: the next render re-anchors the viewport onto the
+    /// lines the user was reading instead of letting them slide down.
+    pub pending_prepend: bool,
     pub toasts: Toasts,
     pub status: StatusCounters,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
@@ -114,7 +120,7 @@ impl App {
             version: env!("CARGO_PKG_VERSION"),
             sessions: Vec::new(),
             selected_index: 0,
-            stream_buffer: HashMap::new(),
+            conversations: HashMap::new(),
             message_input: Self::new_input_textarea(),
             input_active: false,
             should_quit: false,
@@ -128,7 +134,9 @@ impl App {
             total_display_lines: 0,
             render_cache: Vec::new(),
             render_cache_session: String::new(),
-            render_cache_len: 0,
+            render_cache_entries: 0,
+            render_cache_epoch: 0,
+            pending_prepend: false,
             toasts: Toasts::default(),
             status: StatusCounters::default(),
             clock_ms: 0,
@@ -150,6 +158,14 @@ impl App {
 
     pub fn selected_session_id(&self) -> Option<String> {
         self.selected_session().map(|s| s.id.clone())
+    }
+
+    pub fn conversation(&self, session_id: &str) -> Option<&ConversationStore> {
+        self.conversations.get(session_id)
+    }
+
+    pub fn conversation_mut(&mut self, session_id: &str) -> &mut ConversationStore {
+        self.conversations.entry(session_id.to_owned()).or_default()
     }
 
     /// Session list ordered for display, with Task-tool subagents
