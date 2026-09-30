@@ -1273,8 +1273,8 @@ reason = "resource sharing is managed from the webui; no TUI ticket in this epic
 [[route]]
 id = "get_permissions_pending"
 # GET /permissions/pending — List pending tool-use permission requests.
-tui = "planned"
-ticket = "CCT-1226"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_skills_index"

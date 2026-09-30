@@ -39,6 +39,16 @@ impl<'de> serde::Deserialize<'de> for ConversationRow {
     }
 }
 
+/// One permission request the server is still holding.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct PendingPermissionItem {
+    pub session_id: String,
+    pub request_id: String,
+    pub tool_name: String,
+    pub description: String,
+    pub input_preview: String,
+}
+
 /// Which slice of a transcript to fetch. Rows always come back oldest-first.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Page {
@@ -310,6 +320,11 @@ impl Client {
         self.json(Self::route("get_settings")?, &[], &[], None).await
     }
 
+    /// Requests raised before this client connected, so a card still appears.
+    pub async fn pending_permissions(&self) -> Result<Vec<PendingPermissionItem>, ClientError> {
+        self.json(Self::route("get_permissions_pending")?, &[], &[], None).await
+    }
+
     pub async fn mark_seen(&self, session_id: &str) -> Result<(), ClientError> {
         self.unit(Self::route("post_sessions_by_id_seen")?, &[("id", session_id)], None).await
     }
@@ -411,6 +426,7 @@ mod tests {
             "post_sessions_by_id_interrupt",
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
+            "get_permissions_pending",
             "get_me",
             "get_settings",
             "delete_me_key",

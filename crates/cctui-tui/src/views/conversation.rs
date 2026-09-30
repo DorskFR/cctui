@@ -8,6 +8,9 @@ use crate::app::{App, ConversationLine, LineKind};
 use crate::theme;
 use crate::ui::{diff_render, markdown_render};
 
+/// Width the vendored diff renderer is given inside the transcript.
+const DIFF_WIDTH: usize = 120;
+
 #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let Some(session) = app.selected_session().cloned() else {
@@ -38,6 +41,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(input_height),
     ])
     .areas(main_area);
+
+    // Collected before the render cache is touched: `card_lines` needs the
+    // whole store, the cache below needs one field of it mutably.
+    let cards = super::cards::card_lines(app, &session.id, content_area.width);
 
     // Header
     let auto = if session.auto_approve { " ── ✓ auto-approve" } else { "" };
@@ -75,7 +82,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
 
         let previous_total = app.total_display_lines;
-        let total = app.render_cache.len();
+        let total = app.render_cache.len() + cards.len();
         app.viewport_height = visible_height;
         app.total_display_lines = total;
 
@@ -89,8 +96,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let max_offset = total.saturating_sub(visible_height);
         let offset = if app.follow_tail { max_offset } else { app.scroll_offset.min(max_offset) };
 
-        let display_lines: Vec<Line> =
-            app.render_cache.iter().skip(offset).take(visible_height).cloned().collect();
+        let display_lines: Vec<Line> = app
+            .render_cache
+            .iter()
+            .chain(cards.iter())
+            .skip(offset)
+            .take(visible_height)
+            .cloned()
+            .collect();
 
         frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), content_area);
 
@@ -98,11 +111,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if total > visible_height {
             render_scrollbar(frame, content_area, offset, total, visible_height);
         }
-    } else {
+    } else if cards.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled("No conversation data", theme::dim())),
             content_area,
         );
+    } else {
+        frame.render_widget(Paragraph::new(cards), content_area);
     }
 
     // Separator
@@ -236,11 +251,11 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
 
             // For Edit tool calls, generate and display a diff from old_string/new_string
             // For Edit/Write tool calls, show inline diffs
-            if let Some(diff_lines) = match tool_name {
-                "Edit" => generate_edit_diff(line, detail),
-                "Write" => generate_write_diff(line, detail),
+            if let Some(diff_lines) = line.tool_input.as_ref().and_then(|input| match tool_name {
+                "Edit" => edit_diff(input, detail, DIFF_WIDTH),
+                "Write" => write_diff(input, detail, DIFF_WIDTH),
                 _ => None,
-            } {
+            }) {
                 result.extend(diff_lines);
             }
         }
@@ -252,7 +267,7 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
                 // Detect file extension from the preceding tool call's detail
                 let lang = detect_diff_lang(result_text);
                 let diff_lines =
-                    diff_render::render_unified_diff(result_text, lang.as_deref(), 120);
+                    diff_render::render_unified_diff(result_text, lang.as_deref(), DIFF_WIDTH);
                 if diff_lines.is_empty() {
                     result.push(Line::from(vec![
                         Span::raw(ts),
@@ -321,9 +336,12 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, offset: usize, total: usize, 
     }
 }
 
-/// Generate a diff from an Edit tool call's `old_string`/`new_string` input.
-fn generate_edit_diff(line: &ConversationLine, file_path: &str) -> Option<Vec<Line<'static>>> {
-    let input = line.tool_input.as_ref()?;
+/// A diff from an `Edit` tool input's `old_string`/`new_string`.
+pub fn edit_diff(
+    input: &serde_json::Value,
+    file_path: &str,
+    width: usize,
+) -> Option<Vec<Line<'static>>> {
     let old = input.get("old_string")?.as_str()?;
     let new = input.get("new_string")?.as_str()?;
     if old == new {
@@ -342,20 +360,23 @@ fn generate_edit_diff(line: &ConversationLine, file_path: &str) -> Option<Vec<Li
     }
 
     let lang = file_path.rsplit('.').next();
-    let lines = diff_render::render_unified_diff(&unified, lang, 120);
+    let lines = diff_render::render_unified_diff(&unified, lang, width);
     if lines.is_empty() { None } else { Some(lines) }
 }
 
-/// Generate an all-add diff for a Write tool call (new file content).
-fn generate_write_diff(line: &ConversationLine, file_path: &str) -> Option<Vec<Line<'static>>> {
-    let input = line.tool_input.as_ref()?;
+/// An all-add diff for a `Write` tool input's new file content.
+pub fn write_diff(
+    input: &serde_json::Value,
+    file_path: &str,
+    width: usize,
+) -> Option<Vec<Line<'static>>> {
     let content = input.get("content")?.as_str()?;
     if content.is_empty() {
         return None;
     }
     let lang = file_path.rsplit('.').next();
     let lines =
-        diff_render::render_full_file(content, diff_render::DiffLineKind::Insert, lang, 120);
+        diff_render::render_full_file(content, diff_render::DiffLineKind::Insert, lang, width);
     if lines.is_empty() { None } else { Some(lines) }
 }
 

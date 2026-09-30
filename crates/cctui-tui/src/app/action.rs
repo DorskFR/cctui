@@ -2,10 +2,11 @@ use cctui_proto::api::SessionListItem;
 use cctui_proto::models::SessionStatus;
 use crossterm::event::KeyEvent;
 
+use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::identity::AuthAction;
-use super::state::{ConversationLine, PendingPermission};
+use super::state::ConversationLine;
 use super::toast::Level;
 
 /// Everything that can change the app. Key handlers, the websocket and
@@ -50,14 +51,7 @@ pub enum Action {
         enabled: bool,
     },
 
-    ResolvePermission {
-        allow: bool,
-    },
-    PermissionRequested(PendingPermission),
-    PermissionResolved {
-        session_id: String,
-        request_id: String,
-    },
+    Attention(AttentionAction),
 
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
@@ -99,6 +93,9 @@ pub enum Effect {
     RefreshSessions,
     /// `GET /me`: resolve the identity behind the configured key.
     FetchIdentity,
+    /// `GET /permissions/pending`: the requests the server still holds, so a
+    /// prompt raised before this client connected still gets a card.
+    FetchPendingPermissions,
     LoadConversationPage {
         session_id: String,
         kind: PageKind,

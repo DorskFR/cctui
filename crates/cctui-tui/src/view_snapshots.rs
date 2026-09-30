@@ -1,7 +1,16 @@
 use crate::app::View;
 use crate::testsupport::{
-    app_with_sessions, conversation_store, permission_request, render_screen, render_screen_sized,
+    app_with_sessions, conversation_store, edit_permission_request, permission_request,
+    render_screen, render_screen_sized,
 };
+
+fn conversation_app() -> crate::app::App {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    app
+}
 
 #[test]
 fn session_list() {
@@ -70,10 +79,7 @@ fn session_list_selection_moves() {
 
 #[test]
 fn conversation() {
-    let mut app = app_with_sessions();
-    let id = app.selected_session().expect("a selected session").id.clone();
-    app.conversations.insert(id, conversation_store());
-    app.router.push(View::Conversation);
+    let mut app = conversation_app();
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -86,10 +92,7 @@ fn conversation_without_data() {
 
 #[test]
 fn conversation_narrow() {
-    let mut app = app_with_sessions();
-    let id = app.selected_session().expect("a selected session").id.clone();
-    app.conversations.insert(id, conversation_store());
-    app.router.push(View::Conversation);
+    let mut app = conversation_app();
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }
 
@@ -101,9 +104,41 @@ fn help_overlay() {
 }
 
 #[test]
-fn permission_dialog() {
-    let mut app = app_with_sessions();
-    app.permission_queue.push_back(permission_request());
-    app.router.push(View::PermissionDialog);
+fn conversation_permission_card() {
+    let mut app = conversation_app();
+    app.permissions.push(permission_request());
     insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_permission_card_with_a_diff() {
+    let mut app = conversation_app();
+    app.permissions.push(edit_permission_request());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_two_permission_cards_stack() {
+    let mut app = conversation_app();
+    app.permissions.push(permission_request());
+    app.permissions.push(edit_permission_request());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The card belongs to another session: this one shows only the status-bar
+/// indicator, and its composer keeps every keystroke.
+#[test]
+fn conversation_pending_elsewhere_only_shows_the_indicator() {
+    let mut app = conversation_app();
+    let mut elsewhere = permission_request();
+    elsewhere.session_id = "s-blocked".to_owned();
+    app.permissions.push(elsewhere);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_permission_card_narrow() {
+    let mut app = conversation_app();
+    app.permissions.push(permission_request());
+    insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }

@@ -125,6 +125,21 @@ pub fn permission_request() -> PendingPermission {
         request_id: "req-1".to_owned(),
         tool_name: "Bash".to_owned(),
         description: "Run the workspace test suite".to_owned(),
-        input_preview: "cargo test --workspace".to_owned(),
+        input_preview: r#"{"command":"cargo test --workspace"}"#.to_owned(),
+    }
+}
+
+pub fn edit_permission_request() -> PendingPermission {
+    PendingPermission {
+        session_id: "s-working".to_owned(),
+        request_id: "req-2".to_owned(),
+        tool_name: "Edit".to_owned(),
+        description: "Edit a file".to_owned(),
+        input_preview: serde_json::json!({
+            "file_path": "src/main.rs",
+            "old_string": "let a = 1;",
+            "new_string": "let a = 2;",
+        })
+        .to_string(),
     }
 }

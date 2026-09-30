@@ -1,6 +1,6 @@
 use super::action::{Action, Effect, HeartbeatUsage};
 use super::conversation;
-use super::state::{App, PendingPermission, View};
+use super::state::{App, View};
 use super::toast::Level;
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
@@ -9,6 +9,7 @@ use super::toast::Level;
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Attention(attention) => super::attention::reduce_attention(app, attention),
 
         Action::Quit => {
             app.should_quit = true;
@@ -127,33 +128,6 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
 
-        Action::ResolvePermission { allow } => {
-            let behavior = if allow { "allow" } else { "deny" };
-            let effects = app
-                .permission_queue
-                .pop_front()
-                .map(|req| {
-                    vec![Effect::RespondPermission {
-                        session_id: req.session_id,
-                        request_id: req.request_id,
-                        behavior,
-                    }]
-                })
-                .unwrap_or_default();
-            if app.permission_queue.is_empty() {
-                app.router.pop();
-            }
-            effects
-        }
-        Action::PermissionRequested(req) => {
-            enqueue_permission_request(app, req);
-            Vec::new()
-        }
-        Action::PermissionResolved { session_id, request_id } => {
-            resolve_permission(app, &session_id, &request_id);
-            Vec::new()
-        }
-
         Action::RefreshSessions => vec![Effect::RefreshSessions],
         Action::SessionsLoaded(sessions) => {
             app.sessions = sessions;
@@ -189,6 +163,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.toast(Level::Info, "reconnected");
             let mut effects = conversation::reconnect(app);
             effects.push(Effect::RefreshSessions);
+            effects.push(Effect::FetchPendingPermissions);
             effects
         }
         Action::Toast(level, text) => {
@@ -215,28 +190,6 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 const fn snap_scroll_if_following(app: &mut App) {
     if app.follow_tail {
         app.scroll_offset = app.total_display_lines.saturating_sub(app.viewport_height);
-    }
-}
-
-fn enqueue_permission_request(app: &mut App, req: PendingPermission) {
-    let was_empty = app.permission_queue.is_empty();
-    app.permission_queue.push_back(req);
-    if was_empty {
-        app.router.push(View::PermissionDialog);
-    }
-}
-
-/// Drop any queued entry that matches; if it's the head and the dialog is
-/// currently showing, restore the pre-dialog view.
-fn resolve_permission(app: &mut App, session_id: &str, request_id: &str) {
-    let was_head_matching = app
-        .permission_queue
-        .front()
-        .is_some_and(|p| p.session_id == session_id && p.request_id == request_id);
-    app.permission_queue.retain(|p| !(p.session_id == session_id && p.request_id == request_id));
-    if was_head_matching && app.permission_queue.is_empty() && app.view() == View::PermissionDialog
-    {
-        app.router.pop();
     }
 }
 
@@ -314,6 +267,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
 fn deregister_session(app: &mut App, session_id: &str) {
     app.sessions.retain(|s| s.id != session_id);
     app.conversations.remove(session_id);
+    app.permissions.drop_session(session_id);
     if app.subscribed.as_deref() == Some(session_id) {
         app.subscribed = None;
     }
@@ -328,7 +282,7 @@ fn deregister_session(app: &mut App, session_id: &str) {
 mod tests {
     use super::{Action, App, Effect, Level, View, reduce};
     use crate::app::state::LineKind;
-    use crate::testsupport::{permission_request, session};
+    use crate::testsupport::session;
 
     fn conversation_len(app: &App, session_id: &str) -> usize {
         app.conversation(session_id).map_or(0, crate::app::ConversationStore::len)
@@ -493,57 +447,6 @@ mod tests {
         assert!(!app.sessions[0].auto_approve);
         reduce(&mut app, Action::AutoApproveSet { session_id: "s-a".to_owned(), enabled: true });
         assert!(app.sessions[0].auto_approve);
-    }
-
-    #[test]
-    fn a_permission_request_opens_the_dialog_over_the_current_view() {
-        let mut app = app();
-        reduce(&mut app, Action::OpenSelectedConversation);
-        reduce(&mut app, Action::PermissionRequested(permission_request()));
-        assert_eq!(app.view(), View::PermissionDialog);
-        assert_eq!(app.router.below(), Some(View::Conversation));
-
-        let effects = reduce(&mut app, Action::ResolvePermission { allow: true });
-        match effects.as_slice() {
-            [Effect::RespondPermission { request_id, behavior, .. }] => {
-                assert_eq!(request_id, "req-1");
-                assert_eq!(*behavior, "allow");
-            }
-            _ => panic!("expected a permission response effect"),
-        }
-        assert_eq!(app.view(), View::Conversation);
-    }
-
-    #[test]
-    fn a_queued_permission_keeps_the_dialog_open() {
-        let mut app = app();
-        reduce(&mut app, Action::PermissionRequested(permission_request()));
-        let mut second = permission_request();
-        second.request_id = "req-2".to_owned();
-        reduce(&mut app, Action::PermissionRequested(second));
-        assert_eq!(app.router.depth(), 2);
-
-        reduce(&mut app, Action::ResolvePermission { allow: false });
-        assert_eq!(app.view(), View::PermissionDialog);
-        assert_eq!(app.permission_queue.len(), 1);
-
-        reduce(&mut app, Action::ResolvePermission { allow: false });
-        assert_eq!(app.view(), View::SessionList);
-    }
-
-    #[test]
-    fn a_permission_resolved_elsewhere_closes_the_dialog() {
-        let mut app = app();
-        reduce(&mut app, Action::PermissionRequested(permission_request()));
-        reduce(
-            &mut app,
-            Action::PermissionResolved {
-                session_id: "s-working".to_owned(),
-                request_id: "req-1".to_owned(),
-            },
-        );
-        assert!(app.permission_queue.is_empty());
-        assert_eq!(app.view(), View::SessionList);
     }
 
     #[test]

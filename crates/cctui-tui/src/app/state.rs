@@ -4,6 +4,7 @@ use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
+use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
 use super::router::Router;
@@ -15,7 +16,6 @@ pub enum View {
     SessionList,
     Conversation,
     Help,
-    PermissionDialog,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -63,8 +63,9 @@ pub struct App {
     pub message_input: TextArea<'static>,
     pub input_active: bool,
     pub should_quit: bool,
-    /// Queue of pending permission requests; first is shown as dialog.
-    pub permission_queue: std::collections::VecDeque<PendingPermission>,
+    /// Pending permission requests for every session, rendered as a card at
+    /// the tail of the session they belong to.
+    pub permissions: PermissionInbox,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
@@ -115,7 +116,7 @@ impl App {
             message_input: Self::new_input_textarea(),
             input_active: false,
             should_quit: false,
-            permission_queue: std::collections::VecDeque::new(),
+            permissions: PermissionInbox::default(),
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,
@@ -149,6 +150,11 @@ impl App {
 
     pub fn selected_session_id(&self) -> Option<String> {
         self.selected_session().map(|s| s.id.clone())
+    }
+
+    /// Whether the session on screen is showing a permission card.
+    pub fn has_pending_card(&self) -> bool {
+        self.selected_session_id().is_some_and(|id| self.permissions.has(&id))
     }
 
     #[cfg(test)]

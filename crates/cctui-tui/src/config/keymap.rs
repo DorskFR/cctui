@@ -43,7 +43,7 @@ impl Context {
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
             Self::Help => "Help",
-            Self::Permission => "Permission dialog",
+            Self::Permission => "Permission card",
         }
     }
 
@@ -130,6 +130,8 @@ actions! {
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
+    PermissionAllowAlways => "permission-allow-always", "Allow and auto-approve";
+    JumpToPending => "jump-to-pending", "Jump to the next pending approval";
 }
 
 impl ActionId {
@@ -164,6 +166,7 @@ const GLOBAL: &[BindingSpec] = &[
     spec(Context::Global, "N", ActionId::SearchPrev),
     spec(Context::Global, "D", ActionId::Diagnose),
     spec(Context::Global, "i", ActionId::Info),
+    spec(Context::Global, "ctrl+g", ActionId::JumpToPending),
 ];
 
 const SESSION_LIST: &[BindingSpec] = &[
@@ -196,9 +199,12 @@ const COMPOSER: &[BindingSpec] = &[
 
 const HELP: &[BindingSpec] = &[spec(Context::Help, "esc, q, ?", ActionId::CloseHelp)];
 
+/// The card is inline, not modal: only the answer keys live here and
+/// everything else falls through to the conversation underneath.
 const PERMISSION: &[BindingSpec] = &[
-    spec(Context::Permission, "y, enter", ActionId::PermissionAllow),
-    spec(Context::Permission, "n, esc", ActionId::PermissionDeny),
+    spec(Context::Permission, "y", ActionId::PermissionAllow),
+    spec(Context::Permission, "n", ActionId::PermissionDeny),
+    spec(Context::Permission, "A", ActionId::PermissionAllowAlways),
 ];
 
 /// Where a feature registers its default bindings: add one slice here.
@@ -273,15 +279,21 @@ impl Keymap {
         Ok(())
     }
 
-    /// The context's own binding, else the global one. The composer swallows
-    /// typed characters and the permission dialog is modal, so neither of them
-    /// falls through.
+    /// The context's own binding, then its fallbacks. A permission card sits
+    /// inside a conversation, so it inherits both; the composer swallows typed
+    /// characters and inherits nothing.
     pub fn lookup(&self, context: Context, chord: Chord) -> Option<ActionId> {
-        self.bindings.get(&(context, chord)).copied().or_else(|| {
-            matches!(context, Context::SessionList | Context::Conversation | Context::Help)
-                .then(|| self.bindings.get(&(Context::Global, chord)).copied())
-                .flatten()
-        })
+        std::iter::once(context)
+            .chain(Self::fallbacks(context).iter().copied())
+            .find_map(|c| self.bindings.get(&(c, chord)).copied())
+    }
+
+    const fn fallbacks(context: Context) -> &'static [Context] {
+        match context {
+            Context::Permission => &[Context::Conversation, Context::Global],
+            Context::SessionList | Context::Conversation | Context::Help => &[Context::Global],
+            _ => &[],
+        }
     }
 
     /// Plain characters first, then named keys: a `HashMap` has no order of its
@@ -338,6 +350,21 @@ mod tests {
         assert_eq!(map.lookup(Context::SessionList, chord("q")), Some(ActionId::Quit));
         assert_eq!(map.lookup(Context::Conversation, chord("1")), Some(ActionId::SelectIndex));
         assert_eq!(map.lookup(Context::SessionList, chord("1")), Some(ActionId::SwitchView));
+    }
+
+    #[test]
+    fn a_permission_card_answers_first_and_inherits_the_conversation() {
+        let map = Keymap::default();
+        assert_eq!(map.lookup(Context::Permission, chord("y")), Some(ActionId::PermissionAllow));
+        assert_eq!(map.lookup(Context::Permission, chord("n")), Some(ActionId::PermissionDeny));
+        assert_eq!(
+            map.lookup(Context::Permission, chord("A")),
+            Some(ActionId::PermissionAllowAlways)
+        );
+        assert_eq!(map.lookup(Context::Permission, chord("j")), Some(ActionId::ScrollDown));
+        let leave = Some(ActionId::LeaveConversation);
+        assert_eq!(map.lookup(Context::Permission, chord("esc")), leave);
+        assert_eq!(map.lookup(Context::Permission, chord("?")), Some(ActionId::Help));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use cctui_proto::ws::{AgentEvent, ServerEvent};
 
 use super::action::{Action, HeartbeatUsage};
+use super::attention::AttentionAction;
 use super::line::agent_event_to_line;
 use super::state::PendingPermission;
 use super::toast::Level;
@@ -19,13 +20,13 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             tool_name,
             description,
             input_preview,
-        } => vec![Action::PermissionRequested(PendingPermission {
+        } => vec![Action::Attention(AttentionAction::PermissionRequested(PendingPermission {
             session_id,
             request_id,
             tool_name,
             description,
             input_preview,
-        })],
+        }))],
         ServerEvent::Stream { session_id, data } => vec![stream_action(session_id, &data)],
         ServerEvent::Status { session_id, status } => {
             vec![Action::SessionStatusChanged { session_id, status }]
@@ -37,7 +38,7 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             vec![Action::SessionDeregistered(session_id)]
         }
         ServerEvent::PermissionResolved { session_id, request_id } => {
-            vec![Action::PermissionResolved { session_id, request_id }]
+            vec![Action::Attention(AttentionAction::PermissionResolved { session_id, request_id })]
         }
         ServerEvent::SessionEnded { session_id, reason, detail } => {
             let detail = detail.map_or_else(String::new, |d| format!(" — {d}"));

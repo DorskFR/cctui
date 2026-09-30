@@ -215,6 +215,7 @@ async fn run(
     let (ws, mut event_rx) = server.connect_ws();
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
     effects.dispatch(app::action::Effect::FetchIdentity);
+    effects.dispatch(app::action::Effect::FetchPendingPermissions);
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
     let mut input_rx = spawn_input_task();
@@ -233,7 +234,13 @@ async fn run(
             maybe_input = input_rx.recv() => {
                 maybe_input
                     .and_then(|input| {
-                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                        keys::map_input(
+                            &app.config.keys,
+                            app.view(),
+                            app.input_active,
+                            app.has_pending_card(),
+                            input,
+                        )
                     })
                     .map_or_else(Vec::new, |action| vec![action])
             }

@@ -1,6 +1,6 @@
+pub mod cards;
 pub mod conversation;
 pub mod help;
-pub mod permission;
 pub mod sessions;
 
 use ratatui::Frame;
@@ -15,15 +15,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Help => {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys);
-        }
-        View::PermissionDialog => {
-            match app.router.below() {
-                Some(View::Conversation) => conversation::draw(frame, app),
-                _ => sessions::draw(frame, app),
-            }
-            if let Some(req) = app.permission_queue.front() {
-                permission::draw(frame, req);
-            }
         }
     }
 }

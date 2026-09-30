@@ -5,11 +5,12 @@ use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
+use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
-use super::state::ConversationLine;
+use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
 const QUEUE: usize = 256;
@@ -68,6 +69,26 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
             Err(e) => {
                 tracing::warn!(%e, "identity fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::FetchPendingPermissions => match server.pending_permissions().await {
+            Ok(items) => {
+                let items = items
+                    .into_iter()
+                    .map(|p| PendingPermission {
+                        session_id: p.session_id,
+                        request_id: p.request_id,
+                        tool_name: p.tool_name,
+                        description: p.description,
+                        input_preview: p.input_preview,
+                    })
+                    .collect();
+                vec![Action::Attention(AttentionAction::PendingPermissionsLoaded(items))]
+            }
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, "pending permission fetch failed");
                 Vec::new()
             }
         },
