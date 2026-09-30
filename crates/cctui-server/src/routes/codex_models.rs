@@ -503,7 +503,7 @@ pub async fn get_codex_models(
 
 /// The catalog a picker should be driven by: the machine's own when one is
 /// named and nothing authoritative outranks it, else the cross-machine merge.
-pub(crate) fn effective_catalog(state: &AppState, machine: Option<Uuid>) -> CodexModelCatalog {
+pub fn effective_catalog(state: &AppState, machine: Option<Uuid>) -> CodexModelCatalog {
     refresh_client_version_if_stale(state);
     refresh_account_catalogs_if_stale(state);
     let client_version = Some(codex_client_version(state));
