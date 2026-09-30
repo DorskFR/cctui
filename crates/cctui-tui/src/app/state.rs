@@ -46,7 +46,7 @@ pub enum LineKind {
 
 /// Display ordering for the classifier buckets in the session list:
 /// sessions that want the user's eyes float to the top.
-pub(crate) const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
+pub const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
     use cctui_proto::classifier::Bucket;
     match bucket {
         Bucket::Blocked => 0,
@@ -57,7 +57,7 @@ pub(crate) const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
 }
 
 /// Uptime derived from `registered_at`; 0 when unset.
-pub(crate) fn uptime_secs(s: &SessionListItem) -> i64 {
+pub fn uptime_secs(s: &SessionListItem) -> i64 {
     s.registered_at.map_or(0, |r| (chrono::Utc::now() - r).num_seconds())
 }
 

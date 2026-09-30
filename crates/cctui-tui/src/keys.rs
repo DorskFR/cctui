@@ -3,8 +3,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::action::Action;
 use crate::app::state::View;
 
-#[derive(Debug, Clone)]
-pub(crate) enum InputEvent {
+#[derive(Debug, Clone, Copy)]
+pub enum InputEvent {
     Key(KeyEvent),
     ScrollUp,
     ScrollDown,
@@ -12,7 +12,7 @@ pub(crate) enum InputEvent {
 
 /// Pure: terminal input in, at most one [`Action`] out. No state is touched
 /// here, so every binding is testable without a terminal.
-pub(crate) fn map_input(view: View, input_active: bool, input: InputEvent) -> Option<Action> {
+pub fn map_input(view: View, input_active: bool, input: InputEvent) -> Option<Action> {
     match input {
         InputEvent::Key(key) if input_active => Some(map_composer(key)),
         InputEvent::Key(key) => match view {
@@ -34,7 +34,7 @@ pub(crate) fn map_input(view: View, input_active: bool, input: InputEvent) -> Op
     }
 }
 
-fn map_composer(key: KeyEvent) -> Action {
+const fn map_composer(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc => Action::CancelInput,
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => Action::InputNewline,
@@ -43,7 +43,7 @@ fn map_composer(key: KeyEvent) -> Action {
     }
 }
 
-fn map_session_list(code: KeyCode) -> Option<Action> {
+const fn map_session_list(code: KeyCode) -> Option<Action> {
     Some(match code {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('j') | KeyCode::Down => Action::SelectNext,
@@ -59,7 +59,7 @@ fn map_session_list(code: KeyCode) -> Option<Action> {
 
 /// Ctrl-modified actions are matched first, then navigation; anything left over
 /// opens the composer and types itself.
-fn map_conversation(key: KeyEvent) -> Action {
+const fn map_conversation(key: KeyEvent) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('c') => return Action::InterruptSelected,
@@ -86,7 +86,7 @@ fn map_help(code: KeyCode) -> Option<Action> {
     matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')).then_some(Action::CloseHelp)
 }
 
-fn map_permission(code: KeyCode) -> Option<Action> {
+const fn map_permission(code: KeyCode) -> Option<Action> {
     Some(match code {
         KeyCode::Char('y') | KeyCode::Enter => Action::ResolvePermission { allow: true },
         KeyCode::Char('n') | KeyCode::Esc => Action::ResolvePermission { allow: false },

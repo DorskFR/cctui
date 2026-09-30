@@ -1,12 +1,12 @@
-pub(crate) mod action;
-pub(crate) mod effects;
-pub(crate) mod line;
-pub(crate) mod reduce;
-pub(crate) mod router;
-pub(crate) mod server_event;
-pub(crate) mod state;
-pub(crate) mod toast;
+pub mod action;
+pub mod effects;
+pub mod line;
+pub mod reduce;
+pub mod router;
+pub mod server_event;
+pub mod state;
+pub mod toast;
 
-pub(crate) use action::Action;
-pub(crate) use reduce::reduce;
-pub(crate) use state::{App, ConversationLine, LineKind, PendingPermission, View};
+pub use action::Action;
+pub use reduce::reduce;
+pub use state::{App, ConversationLine, LineKind, PendingPermission, View};

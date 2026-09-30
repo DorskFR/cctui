@@ -9,14 +9,14 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// A frame off the websocket. Anything that fails to deserialize arrives as
 /// [`Incoming::Undecodable`] rather than vanishing.
-pub(crate) enum Incoming {
+pub enum Incoming {
     Event(Box<ServerEvent>),
     Undecodable(String),
 }
 
 /// The single place a websocket frame becomes an [`Incoming`]. Shared with the
 /// contract test so it exercises the production decode, not a copy of it.
-pub(crate) fn decode_frame(text: &str) -> Incoming {
+pub fn decode_frame(text: &str) -> Incoming {
     match serde_json::from_str::<ServerEvent>(text) {
         Ok(event) => Incoming::Event(Box::new(event)),
         Err(e) => Incoming::Undecodable(e.to_string()),

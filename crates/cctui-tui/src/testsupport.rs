@@ -9,16 +9,16 @@ use serde_json::json;
 use crate::app::{App, ConversationLine, LineKind, PendingPermission};
 
 /// Pinned so a version bump cannot rewrite every snapshot.
-pub(crate) const VERSION: &str = "0.0.0-test";
+pub const VERSION: &str = "0.0.0-test";
 
-pub(crate) const WIDTH: u16 = 100;
-pub(crate) const HEIGHT: u16 = 24;
+pub const WIDTH: u16 = 100;
+pub const HEIGHT: u16 = 24;
 
-pub(crate) fn render_screen(app: &mut App) -> String {
+pub fn render_screen(app: &mut App) -> String {
     render_screen_sized(app, WIDTH, HEIGHT)
 }
 
-pub(crate) fn render_screen_sized(app: &mut App, width: u16, height: u16) -> String {
+pub fn render_screen_sized(app: &mut App, width: u16, height: u16) -> String {
     app.version = VERSION;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal.draw(|frame| crate::views::render(frame, app)).expect("draw");
@@ -43,7 +43,7 @@ fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
     rows.join("\n")
 }
 
-pub(crate) fn session(id: &str, project: &str, status: &str, bucket: &str) -> SessionListItem {
+pub fn session(id: &str, project: &str, status: &str, bucket: &str) -> SessionListItem {
     serde_json::from_value(json!({
         "id": id,
         "parent_id": null,
@@ -59,13 +59,13 @@ pub(crate) fn session(id: &str, project: &str, status: &str, bucket: &str) -> Se
     .expect("fixture session")
 }
 
-pub(crate) fn subagent(id: &str, parent_id: &str, project: &str) -> SessionListItem {
+pub fn subagent(id: &str, parent_id: &str, project: &str) -> SessionListItem {
     let mut s = session(id, project, "active", "working");
     s.parent_id = Some(parent_id.to_owned());
     s
 }
 
-pub(crate) fn app_with_sessions() -> App {
+pub fn app_with_sessions() -> App {
     let mut app = App::new();
     app.sessions = vec![
         session("s-working", "cctui", "active", "working"),
@@ -78,7 +78,7 @@ pub(crate) fn app_with_sessions() -> App {
     app
 }
 
-pub(crate) fn conversation_lines() -> Vec<ConversationLine> {
+pub fn conversation_lines() -> Vec<ConversationLine> {
     vec![
         line(LineKind::User, "add a snapshot harness"),
         line(LineKind::Assistant, "Looking at the views first.\n\n- one\n- two"),
@@ -98,7 +98,7 @@ fn line(kind: LineKind, text: &str) -> ConversationLine {
     ConversationLine { timestamp: 0, kind, text: text.to_owned(), tool_input: None }
 }
 
-pub(crate) fn permission_request() -> PendingPermission {
+pub fn permission_request() -> PendingPermission {
     PendingPermission {
         session_id: "s-working".to_owned(),
         request_id: "req-1".to_owned(),

@@ -12,7 +12,7 @@ const QUEUE: usize = 256;
 
 /// Handle onto the effects worker. [`Effects::dispatch`] never awaits, so the
 /// key-handling path never blocks on HTTP or the websocket.
-pub(crate) struct Effects {
+pub struct Effects {
     tx: mpsc::Sender<Effect>,
     commands: Arc<Mutex<mpsc::Sender<TuiCommand>>>,
 }
@@ -20,7 +20,7 @@ pub(crate) struct Effects {
 impl Effects {
     /// Effects are executed one at a time: two messages typed in quick
     /// succession must reach the server in the order they were sent.
-    pub(crate) fn start(
+    pub fn start(
         server: Arc<ServerClient>,
         commands: mpsc::Sender<TuiCommand>,
     ) -> (Self, mpsc::Receiver<Action>) {
@@ -44,19 +44,19 @@ impl Effects {
 
     /// Reconnects hand over a fresh command sender; effects already queued pick
     /// up the new one.
-    pub(crate) fn set_commands(&self, commands: mpsc::Sender<TuiCommand>) {
+    pub fn set_commands(&self, commands: mpsc::Sender<TuiCommand>) {
         if let Ok(mut slot) = self.commands.lock() {
             *slot = commands;
         }
     }
 
-    pub(crate) fn dispatch(&self, effect: Effect) {
+    pub fn dispatch(&self, effect: Effect) {
         if self.tx.try_send(effect).is_err() {
             tracing::warn!("effect queue full; dropping effect");
         }
     }
 
-    pub(crate) fn dispatch_all(&self, effects: Vec<Effect>) {
+    pub fn dispatch_all(&self, effects: Vec<Effect>) {
         for effect in effects {
             self.dispatch(effect);
         }
