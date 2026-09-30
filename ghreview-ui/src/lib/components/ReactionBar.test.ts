@@ -80,6 +80,39 @@ describe("ReactionBar", () => {
     expect(document.querySelector(".pill.mine")).not.toBeNull();
   });
 
+  it("marks the pills aria-disabled and refuses to toggle when disabled", async () => {
+    const onToggle = vi.fn(async (): Promise<ReactionSummary> => emptySummary());
+    component = mount(ReactionBar, {
+      target: document.body,
+      props: {
+        reactions: { "+1": 1, total_count: 1 },
+        viewerReactions: [],
+        onToggle,
+        disabled: true,
+      },
+    });
+
+    const pill = document.querySelector(".pill") as HTMLElement;
+    expect(pill.getAttribute("aria-disabled")).toBe("true");
+    pill.click();
+    await tick();
+
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  it("leaves aria-disabled off the pills when enabled", () => {
+    component = mount(ReactionBar, {
+      target: document.body,
+      props: {
+        reactions: { "+1": 1, total_count: 1 },
+        viewerReactions: [],
+        onToggle: async () => emptySummary(),
+      },
+    });
+
+    expect(document.querySelector(".pill")?.hasAttribute("aria-disabled")).toBe(false);
+  });
+
   it("opens the add-menu exposing the full reaction set", async () => {
     component = mount(ReactionBar, {
       target: document.body,
