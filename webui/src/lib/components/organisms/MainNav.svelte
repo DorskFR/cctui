@@ -9,7 +9,6 @@
 	import { pageNavItems } from '$lib/plugins/pageRoute';
 	import { settings } from '$lib/settings.svelte';
 	import { isNavActive, navItems, navKey } from '$lib/navItems';
-	import { hasGithubConnector } from '$lib/ghreviewConnectors.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let { placement = 'bottom' }: { placement?: 'bottom' | 'top' } = $props();
@@ -24,7 +23,6 @@
 	const plugins = usePlugins();
 	const items = $derived(
 		navItems({
-			hasGithubConnector: hasGithubConnector(),
 			pages: pageNavItems(plugins.data ?? [], settings.pluginsEnabled)
 		})
 	);

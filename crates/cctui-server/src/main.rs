@@ -45,6 +45,7 @@ mod routes;
 mod scheduled_messages;
 mod scheduled_spawns;
 mod session_emoji;
+mod session_plugins;
 mod settings_catalog;
 mod skill_store;
 mod soft_limit;
@@ -924,6 +925,7 @@ mod tests {
             r#"GET /sessions/{id}/pins Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/pins Bearer Resource(Session, Write, Path("id"))"#,
             r#"DELETE /sessions/{id}/pins/{seq} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PATCH /sessions/{id}/plugins/{plugin_id} Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/policy Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/previews Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,

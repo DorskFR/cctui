@@ -808,3 +808,83 @@ async fn machine_key_cannot_read_accounts_or_profiles() {
         assert_eq!(resp.status(), 200, "user key on /{path}");
     }
 }
+
+/// The plugin data slot: the owner and an admin write it, another user cannot,
+/// an unknown plugin id is a 404 and an oversize payload a 413.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn session_plugin_slot_is_owner_or_admin_and_capped() {
+    let client = client();
+    let base = server_url();
+    let (owner_key, owner_machine) = user_with_machine(&client, &base, "slot").await;
+    let (intruder_key, _) = user_with_machine(&client, &base, "slotx").await;
+    let sid = register_session(&client, &base, &owner_machine).await;
+    let url = format!("{base}/api/v1/sessions/{sid}/plugins/youtrack");
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&owner_key)
+        .json(&json!({"data": {"issue": "CCT-910"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let slots: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(slots["youtrack"]["issue"], "CCT-910");
+
+    let resp = client
+        .get(format!("{base}/api/v1/sessions/{sid}"))
+        .bearer_auth(&owner_key)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["metadata"]["plugins"]["youtrack"]["issue"], "CCT-910");
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&intruder_key)
+        .json(&json!({"data": {"issue": "CCT-1"}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(resp.status().as_u16(), 403 | 404), "intruder: {}", resp.status());
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(admin_token())
+        .json(&json!({"data": {"issue": "CCT-911"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .patch(format!("{base}/api/v1/sessions/{sid}/plugins/nosuchplugin"))
+        .bearer_auth(&owner_key)
+        .json(&json!({"data": {"issue": "CCT-1"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&owner_key)
+        .json(&json!({"data": {"issue": "x".repeat(8192)}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 413);
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&owner_key)
+        .json(&json!({"data": null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let slots: serde_json::Value = resp.json().await.unwrap();
+    assert!(slots.get("youtrack").is_none());
+}

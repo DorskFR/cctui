@@ -1,7 +1,7 @@
 {
   "name": "cctui-webui",
   "private": true,
-  "version": "0.23.0-beta.5",
+  "version": "0.23.0-beta.6",
   "type": "module",
   "packageManager": "npm@10.9.8",
   "scripts": {
@@ -52,7 +52,6 @@
     "@tanstack/svelte-query": "^6.1.38",
     "@tanstack/svelte-query-persist-client": "^6.1.48",
     "@xterm/xterm": "^6.0.0",
-    "cctui-ghreview-ui": "file:../ghreview-ui",
     "highlight.js": "^11.11.1",
     "html-to-image": "^1.11.13",
     "idb-keyval": "^6.3.0"

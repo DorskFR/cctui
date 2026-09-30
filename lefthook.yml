@@ -20,16 +20,6 @@ pre-commit:
       glob: "webui/src/**/*.ts"
       run: npx --no-install biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
-    biome-ghreview:
-      root: "ghreview/"
-      glob: "ghreview/**/*.{ts,js}"
-      run: bunx biome check --write --no-errors-on-unmatched {staged_files}
-      stage_fixed: true
-    biome-ghreview-ui:
-      root: "ghreview-ui/"
-      glob: "ghreview-ui/**/*.{ts,js,svelte}"
-      run: bunx biome check --write --no-errors-on-unmatched {staged_files}
-      stage_fixed: true
     # Ratchet against new :global(...) CSS overrides in the webui. Reaching into a
     # tsumikit atom's scoped class from a parent is banned (webui/DESIGN.md rule 4) —
     # style atoms via props/variants, or wrap in a LOCAL element so scoped CSS

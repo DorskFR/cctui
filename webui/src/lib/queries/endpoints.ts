@@ -430,6 +430,17 @@ export const endpoints = {
   /** Replace a draft's stored spawn payload in place (edit / autosave). */
   updateDraft: (sessionId: string, body: SpawnRequest) =>
     api.put<SpawnResponse>(`/sessions/${sessionId}/draft`, body),
+  /** Write (`data`) or clear (`null`) a session's per-plugin data slot under
+   *  `metadata.plugins.<pluginId>`. Returns the whole slot map. */
+  setSessionPlugin: (
+    sessionId: string,
+    pluginId: string,
+    data: Record<string, unknown> | null,
+  ) =>
+    api.patch<Record<string, Record<string, unknown>>>(
+      `/sessions/${sessionId}/plugins/${pluginId}`,
+      { data },
+    ),
   dispatch: (body: DispatchRequest) =>
     api.post<DispatchResponse>("/sessions/dispatch", body),
   /** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */

@@ -10,9 +10,11 @@
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
+	import PluginChips from '$lib/components/molecules/PluginChips.svelte';
+	import { detectIssueId } from '$lib/plugins/issueId';
 	import { Badge, Icon, IconButton, Popover, Select, WorkingDir } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
-	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
+	import { useCodexModels, useMergedCodexModels, useSessionActions } from '$lib/queries';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -35,6 +37,19 @@
 
 	const end = $derived(sessionEnd(session));
 	const branch = $derived(branchOf(session));
+
+	const actions = useSessionActions();
+	// The spawn prompt only survives on the row for drafts; a live session's
+	// detection falls back to its name and branch.
+	const spawnPrompt = $derived(
+		(session.metadata as { draft?: { prompt?: unknown } } | null)?.draft?.prompt
+	);
+	const detectedIssue = $derived(
+		detectIssueId(typeof spawnPrompt === 'string' ? spawnPrompt : null, session.name, branch)
+	);
+	function setPluginSlot(pluginId: string, data: Record<string, unknown> | null) {
+		void actions.setPluginSlot(session.id, pluginId, data);
+	}
 
 	// In-place model/effort editor, codex only.
 	let modelEditing = $state(false);
@@ -150,6 +165,14 @@
 	<div class="meta-trail">
 	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
 	<span class="langfuse"><LangfuseChip id={session.id} /></span>
+	<span class="plugins">
+		<PluginChips
+			metadata={session.metadata}
+			editable={!archived}
+			detected={detectedIssue}
+			onset={setPluginSlot}
+		/>
+	</span>
 	{@render modelMeta('drawer')}
 	<Popover
 		label={m.drawer_meta_details()}
@@ -208,6 +231,7 @@
 		min-width: 0;
 	}
 	.langfuse,
+	.plugins,
 	.tokens {
 		display: contents;
 	}

@@ -4,7 +4,7 @@ use super::{sess_read, sess_write};
 use crate::authz::{Authn, Routes};
 use crate::routes;
 use axum::http::Method;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
@@ -76,6 +76,14 @@ pub(super) fn register(r: Routes) -> Routes {
         "/sessions/{id}/policy",
         "Set a session's permission policy.",
         post(routes::sessions::set_session_policy),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
+        &[Method::PATCH],
+        "/sessions/{id}/plugins/{plugin_id}",
+        "Set or clear a session's per-plugin data slot.",
+        patch(routes::session_plugins::set_session_plugin),
         Authn::Bearer,
         sess_write(),
     )

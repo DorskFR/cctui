@@ -5,11 +5,7 @@
  * `--md-*` / `--syn-*` in variables.css) so themes adapt.
  */
 
-import {
-  escapeHtml,
-  highlightCode,
-  stripAnsi,
-} from "$ghreview/lib/markdown/highlight";
+import { escapeHtml, highlightCode, stripAnsi } from "$lib/highlight";
 
 export { escapeHtml, stripAnsi };
 

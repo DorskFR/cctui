@@ -1,0 +1,2 @@
+# Its XSS payload table holds a NUL byte, so git would call it binary.
+webui/src/lib/markdown.security.test.ts text diff

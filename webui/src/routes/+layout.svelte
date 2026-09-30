@@ -24,18 +24,15 @@
 	import { Container, Toaster } from '@dorsk/tsumikit';
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import { mountJourneys } from '$lib/journey';
-	import { loadGhreviewConnectors } from '$lib/ghreviewConnectors.svelte';
 
 	let { children } = $props();
 
-	// The review center, a plugin's full page and the tiles grid manage their own
-	// full-height layout, so they render outside the width-capped Container and
-	// without content padding.
-	const isReview = $derived(
-		page.url.pathname.startsWith('/github') || page.url.pathname.startsWith('/apps/')
-	);
+	// A plugin's full page and the tiles grid manage their own full-height
+	// layout, so they render outside the width-capped Container and without
+	// content padding.
+	const isApp = $derived(page.url.pathname.startsWith('/apps/'));
 	const isTiles = $derived(page.url.pathname.startsWith('/tiles'));
-	const fullBleed = $derived(isReview || isTiles);
+	const fullBleed = $derived(isApp || isTiles);
 
 	// Every route renders in the --content-wide column; only the session list's
 	// width is user-settable (Settings › Session list), and the cap only bites
@@ -138,11 +135,6 @@
 		if (auth.isAuthed) void mountJourneys(queryClient);
 	});
 
-	// Resolves the GitHub nav gate before the nav paints; minting the ghreview
-	// token needs a session, so it waits for auth.
-	$effect(() => {
-		if (auth.isAuthed) void loadGhreviewConnectors();
-	});
 </script>
 
 <PersistQueryClientProvider
@@ -158,7 +150,7 @@
 				<Header />
 				<main
 					class="content"
-					class:review={isReview}
+					class:app={isApp}
 					class:tiles={isTiles}
 					class:dock-left={!!docks?.left}
 					class:dock-right={!!docks?.right}
@@ -208,9 +200,9 @@
 	.content.dock-right {
 		padding-right: var(--dock-right-w);
 	}
-	/* The review center fills the viewport between header and nav and scrolls
+	/* A full-page plugin fills the viewport between header and nav and scrolls
 	   internally, so drop the content padding and pin a definite height. */
-	.content.review,
+	.content.app,
 	.content.tiles {
 		display: flex;
 		flex-direction: column;

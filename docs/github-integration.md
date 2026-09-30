@@ -5,10 +5,16 @@
 > skeleton) and Epic 1 (connector, webhook, reconcile, classifier feed) shipped
 > as specified. The fast diff viewer and the review-draft/publish UI (Epic 2, and
 > the UI half of Epic 3) were superseded by a standalone service, **ghreview**
-> (`ghreview/` + `ghreview-ui/`) — see `ghreview/README.md`. Those
+> (`ghreview/` + `ghreview-ui/`) — see <https://github.com/DorskFR/ghreview>. Those
 > sections below are kept for the parts still current: the connector/webhook/
 > capability design (§6.1, §7) and the agent MCP review-draft tool (§6.3, still
 > in `cctui-github`), and are historical for the removed diff-viewer plan (§6.2).
+>
+> **ghreview now lives outside this repo**, at
+> <https://github.com/DorskFR/ghreview>, and installs into cctui as the
+> `ghreview` plugin (Settings → Plugins, or `plugins/catalog.json`). It mounts
+> at `/apps/ghreview`; `/github` and `/review` redirect there. Every
+> `ghreview/` or `ghreview-ui/` path mentioned below is a path in that repo.
 
 ## 1. Goals
 
@@ -165,8 +171,8 @@ extra UI.
 This component (server diff proxy, virtualized viewer, review-draft/publish HTTP
 routes and their `github.*` tables) was originally planned to live in
 `cctui-github`, and an early version shipped there. It was later removed in
-favour of a standalone service, **ghreview** (`ghreview/` backend +
-`ghreview-ui` frontend) — see `ghreview/README.md` for the current diff-viewer
+favour of a standalone service, **ghreview** (backend + frontend in
+<https://github.com/DorskFR/ghreview>) — see its README for the current diff-viewer
 and review-publish design.
 
 ### 6.3 Component C — agent review sessions ("review *with* an agent")
@@ -332,7 +338,7 @@ Sized rough (S ≈ <1d, M ≈ 1–3d, L ≈ 1wk+). Deps in parentheses.
 ### Epic 2 — Fast diff viewer ("review efficiently") — superseded
 
 Shipped as GH-VIEW-1..6 inside `cctui-github`, then removed in favour of the
-standalone `ghreview` service (§6.2). See `ghreview/README.md` for the current
+standalone `ghreview` service (§6.2). See <https://github.com/DorskFR/ghreview> for the current
 design.
 
 ### Epic 3 — Agent review sessions ("review with an agent")
