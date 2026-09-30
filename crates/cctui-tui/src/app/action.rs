@@ -4,6 +4,7 @@ use crossterm::event::KeyEvent;
 
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
@@ -77,6 +78,7 @@ pub enum Action {
     SessionDeregistered(String),
 
     Auth(AuthAction),
+    Drafts(DraftAction),
 
     Reconnected,
     Toast(Level, String),
@@ -107,6 +109,21 @@ pub enum Effect {
     },
     MarkSeen {
         session_id: String,
+    },
+    /// `GET /drafts`: every unsent draft, pulled once at startup.
+    LoadDraftIndex,
+    /// Re-read one session's draft and prompt history.
+    LoadDrafts {
+        session_id: String,
+    },
+    /// Save a draft, debounced per key. Empty text deletes it.
+    SaveDraft {
+        key: String,
+        text: String,
+    },
+    /// Drop a draft now, cancelling any debounced save of it.
+    DiscardDraft {
+        key: String,
     },
     Subscribe {
         session_id: String,

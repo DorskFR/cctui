@@ -1,5 +1,6 @@
 pub mod conversation;
 pub mod help;
+pub mod history;
 pub mod permission;
 pub mod sessions;
 
@@ -23,6 +24,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
             if let Some(req) = app.permission_queue.front() {
                 permission::draw(frame, req);
+            }
+        }
+        View::HistoryPicker => {
+            match app.router.below() {
+                Some(View::Conversation) => conversation::draw(frame, app),
+                _ => sessions::draw(frame, app),
+            }
+            if let Some(picker) = app.drafts.picker.as_ref() {
+                history::draw(frame, picker);
             }
         }
     }

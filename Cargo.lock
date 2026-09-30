@@ -1299,6 +1299,7 @@ version = "0.23.0-beta.13"
 dependencies = [
  "anyhow",
  "cctui-client",
+ "cctui-clientcore",
  "cctui-proto",
  "chrono",
  "clap",

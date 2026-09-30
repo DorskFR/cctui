@@ -5,10 +5,17 @@ use super::toast::Level;
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
-#[allow(clippy::too_many_lines)]
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
+    let mut effects = reduce_action(app, action);
+    effects.extend(super::drafts::sync_composer(app));
+    effects
+}
+
+#[allow(clippy::too_many_lines)]
+fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
 
         Action::Quit => {
             app.should_quit = true;
@@ -84,7 +91,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         Action::ActivateInputWith(key) => {
             app.input_active = true;
             app.message_input.input(key);
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::CancelInput => {
             app.input_active = false;
@@ -92,23 +99,23 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::InputKey(key) => {
             app.message_input.input(key);
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::InputNewline => {
             app.message_input.insert_newline();
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::SubmitInput => {
             let content = app.message_input.lines().join("\n");
             let target = app.selected_session_id();
             app.reset_input();
             app.input_active = false;
-            match target {
-                Some(session_id) if !content.trim().is_empty() => {
-                    vec![Effect::SendMessage { session_id, content }]
-                }
-                _ => Vec::new(),
+            let Some(session_id) = target else { return Vec::new() };
+            let mut effects = super::drafts::on_send(app, &session_id, &content);
+            if !content.trim().is_empty() {
+                effects.push(Effect::SendMessage { session_id, content });
             }
+            effects
         }
 
         Action::InterruptSelected => app
@@ -314,6 +321,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
 fn deregister_session(app: &mut App, session_id: &str) {
     app.sessions.retain(|s| s.id != session_id);
     app.conversations.remove(session_id);
+    app.drafts.forget(session_id);
     if app.subscribed.as_deref() == Some(session_id) {
         app.subscribed = None;
     }

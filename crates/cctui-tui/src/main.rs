@@ -215,6 +215,7 @@ async fn run(
     let (ws, mut event_rx) = server.connect_ws();
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
     effects.dispatch(app::action::Effect::FetchIdentity);
+    effects.dispatch(app::action::Effect::LoadDraftIndex);
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
     let mut input_rx = spawn_input_task();

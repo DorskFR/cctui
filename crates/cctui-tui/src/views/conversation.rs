@@ -106,13 +106,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Separator
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "─".repeat(separator_area.width as usize),
-            theme::border_focused(),
-        ))),
-        separator_area,
-    );
+    let marker = if app.drafts.has_draft(&session.id) { " draft " } else { "" };
+    let rule = (separator_area.width as usize).saturating_sub(marker.chars().count());
+    let mut separator_spans = vec![Span::styled("─".repeat(rule), theme::border_focused())];
+    if !marker.is_empty() {
+        separator_spans.push(Span::styled(marker, theme::dim()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(separator_spans)), separator_area);
 
     // Input: [❯][textarea]
     let [prompt_area, textarea_area] = Layout::default()

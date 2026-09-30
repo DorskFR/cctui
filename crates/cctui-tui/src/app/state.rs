@@ -16,6 +16,7 @@ pub enum View {
     Conversation,
     Help,
     PermissionDialog,
+    HistoryPicker,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -86,6 +87,7 @@ pub struct App {
     pub toasts: Toasts,
     pub status: StatusCounters,
     pub auth: AuthState,
+    pub drafts: super::drafts::DraftState,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -101,6 +103,16 @@ impl App {
 
     pub fn reset_input(&mut self) {
         self.message_input = Self::new_input_textarea();
+    }
+
+    /// Replace the composer's content, leaving the caret after the last
+    /// character so typing continues where the text ends.
+    pub fn set_input_text(&mut self, text: &str) {
+        let mut textarea = Self::new_input_textarea();
+        if !text.is_empty() {
+            let _ = textarea.insert_str(text);
+        }
+        self.message_input = textarea;
     }
 
     pub fn new() -> Self {
@@ -130,6 +142,7 @@ impl App {
             toasts: Toasts::default(),
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
+            drafts: super::drafts::DraftState::default(),
             clock_ms: 0,
         }
     }

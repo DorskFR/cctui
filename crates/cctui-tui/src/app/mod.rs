@@ -1,6 +1,7 @@
 pub mod action;
 pub mod conversation;
 pub mod conversation_store;
+pub mod drafts;
 pub mod effects;
 pub mod identity;
 pub mod line;

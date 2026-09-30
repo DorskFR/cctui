@@ -1,4 +1,8 @@
-use crate::app::View;
+use cctui_proto::drafts::{Draft, DraftList, session_history_key};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::app::drafts::DraftAction;
+use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     app_with_sessions, conversation_store, permission_request, render_screen, render_screen_sized,
 };
@@ -74,6 +78,35 @@ fn conversation() {
     let id = app.selected_session().expect("a selected session").id.clone();
     app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_with_an_unsent_draft() {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    app.input_active = true;
+    let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    reduce(&mut app, Action::InputKey(key));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn history_picker() {
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    app.conversations.insert(id.clone(), conversation_store());
+    app.router.push(View::Conversation);
+    let history = Draft {
+        key: session_history_key(&id),
+        text: "[\"first prompt\", \"second prompt\"]".to_owned(),
+        updated_at: chrono::DateTime::from_timestamp(0, 0).expect("epoch"),
+    };
+    let list = DraftList { drafts: vec![history] };
+    reduce(&mut app, Action::Drafts(DraftAction::IndexLoaded(Box::new(list))));
+    reduce(&mut app, Action::Drafts(DraftAction::OpenPicker));
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

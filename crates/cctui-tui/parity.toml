@@ -1309,26 +1309,26 @@ ticket = "CCT-1249"
 [[route]]
 id = "get_drafts"
 # GET /drafts — List your unsent drafts.
-tui = "planned"
-ticket = "CCT-1222"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_drafts_by_*key"
 # GET /drafts/{*key} — Read, save or discard one draft.
-tui = "planned"
-ticket = "CCT-1222"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "put_drafts_by_*key"
 # PUT /drafts/{*key} — Read, save or discard one draft.
-tui = "planned"
-ticket = "CCT-1222"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_drafts_by_*key"
 # DELETE /drafts/{*key} — Read, save or discard one draft.
-tui = "planned"
-ticket = "CCT-1222"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_spawn_memory"

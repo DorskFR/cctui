@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::action::Action;
+use crate::app::drafts::DraftAction;
 use crate::app::state::View;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
@@ -12,11 +13,12 @@ pub enum InputEvent {
     ScrollDown,
 }
 
+/// The recall picker is modal: it keeps its own keys even though the composer
+/// it was opened from is still active underneath.
 pub const fn context_for(view: View, input_active: bool) -> Context {
-    if input_active {
-        return Context::Composer;
-    }
     match view {
+        View::HistoryPicker => Context::History,
+        _ if input_active => Context::Composer,
         View::SessionList => Context::SessionList,
         View::Conversation => Context::Conversation,
         View::Help => Context::Help,
@@ -43,12 +45,12 @@ pub fn map_input(
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
-            View::Help | View::PermissionDialog => None,
+            View::Help | View::PermissionDialog | View::HistoryPicker => None,
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
-            View::Help | View::PermissionDialog => None,
+            View::Help | View::PermissionDialog | View::HistoryPicker => None,
         },
     }
 }
@@ -88,6 +90,14 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SubmitInput => Action::SubmitInput,
         ActionId::InputNewline => Action::InputNewline,
 
+        ActionId::HistoryPrev => Action::Drafts(DraftAction::HistoryPrev),
+        ActionId::HistoryNext => Action::Drafts(DraftAction::HistoryNext),
+        ActionId::HistoryOpen => Action::Drafts(DraftAction::OpenPicker),
+        ActionId::HistoryClose => Action::Drafts(DraftAction::ClosePicker),
+        ActionId::HistorySelectNext => Action::Drafts(DraftAction::PickerSelectNext),
+        ActionId::HistorySelectPrev => Action::Drafts(DraftAction::PickerSelectPrev),
+        ActionId::HistoryRecall => Action::Drafts(DraftAction::PickerRecall),
+
         ActionId::PermissionAllow => Action::ResolvePermission { allow: true },
         ActionId::PermissionDeny => Action::ResolvePermission { allow: false },
 
@@ -96,11 +106,13 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 }
 
 /// A key no binding claimed: the conversation opens the composer with it, the
-/// composer types it, every other view ignores it.
+/// composer types it, the recall picker filters on it, every other view
+/// ignores it.
 const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::Conversation => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
+        Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         _ => None,
     }
 }
@@ -109,7 +121,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    use super::{Action, InputEvent, Keymap, View, map_input};
+    use super::{Action, DraftAction, InputEvent, Keymap, View, map_input};
     use crate::config::keymap::Context;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -216,6 +228,62 @@ mod tests {
             ..KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)
         };
         assert!(matches!(map_event(View::Conversation, true, event), Some(Action::InputNewline)));
+    }
+
+    #[test]
+    fn the_composer_recalls_prompts_with_the_arrows_and_ctrl_r() {
+        assert!(matches!(
+            map(View::Conversation, true, KeyCode::Up),
+            Some(Action::Drafts(DraftAction::HistoryPrev))
+        ));
+        assert!(matches!(
+            map(View::Conversation, true, KeyCode::Down),
+            Some(Action::Drafts(DraftAction::HistoryNext))
+        ));
+        assert!(matches!(
+            map_event(View::Conversation, true, ctrl('r')),
+            Some(Action::Drafts(DraftAction::OpenPicker))
+        ));
+        assert!(matches!(
+            map_event(View::Conversation, false, ctrl('r')),
+            Some(Action::Drafts(DraftAction::OpenPicker))
+        ));
+    }
+
+    /// `shift+enter` never arrives in most terminals, so the alternatives are
+    /// the ones that matter.
+    #[test]
+    fn a_newline_has_bindings_a_terminal_actually_reports() {
+        let ctrl_j = map_event(View::Conversation, true, ctrl('j'));
+        assert!(matches!(ctrl_j, Some(Action::InputNewline)));
+        let alt = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        assert!(matches!(map_event(View::Conversation, true, alt), Some(Action::InputNewline)));
+    }
+
+    #[test]
+    fn the_recall_picker_keeps_its_keys_over_an_active_composer() {
+        for active in [true, false] {
+            assert!(matches!(
+                map(View::HistoryPicker, active, KeyCode::Esc),
+                Some(Action::Drafts(DraftAction::ClosePicker))
+            ));
+            assert!(matches!(
+                map(View::HistoryPicker, active, KeyCode::Enter),
+                Some(Action::Drafts(DraftAction::PickerRecall))
+            ));
+            assert!(matches!(
+                map(View::HistoryPicker, active, KeyCode::Down),
+                Some(Action::Drafts(DraftAction::PickerSelectNext))
+            ));
+            assert!(matches!(
+                map(View::HistoryPicker, active, KeyCode::Char('x')),
+                Some(Action::Drafts(DraftAction::PickerKey(_)))
+            ));
+            assert!(matches!(
+                map(View::HistoryPicker, active, KeyCode::Backspace),
+                Some(Action::Drafts(DraftAction::PickerKey(_)))
+            ));
+        }
     }
 
     #[test]

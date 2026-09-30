@@ -11,6 +11,7 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    History,
     Help,
     Permission,
 }
@@ -20,6 +21,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::SessionList,
     Context::Conversation,
     Context::Composer,
+    Context::History,
     Context::Help,
     Context::Permission,
 ];
@@ -31,6 +33,7 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::History => "history",
             Self::Help => "help",
             Self::Permission => "permission",
         }
@@ -42,6 +45,7 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::History => "Prompt history",
             Self::Help => "Help",
             Self::Permission => "Permission dialog",
         }
@@ -125,6 +129,14 @@ actions! {
     CancelInput => "cancel-input", "Close the composer";
     SubmitInput => "submit-input", "Send the message";
     InputNewline => "input-newline", "Insert a newline";
+    HistoryPrev => "history-prev", "Recall an earlier prompt";
+    HistoryNext => "history-next", "Recall a later prompt";
+    HistoryOpen => "history-open", "Search sent prompts";
+
+    HistoryClose => "history-close", "Close the prompt list";
+    HistorySelectNext => "history-select-next", "Next prompt";
+    HistorySelectPrev => "history-select-prev", "Previous prompt";
+    HistoryRecall => "history-recall", "Put this prompt in the composer";
 
     CloseHelp => "close-help", "Close this cheat sheet";
 
@@ -186,12 +198,25 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "1-9", ActionId::SelectIndex),
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
+    spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
 ];
 
+/// `shift+enter` is unreported by most terminals, so a newline also has a
+/// modifier pair that always arrives.
 const COMPOSER: &[BindingSpec] = &[
     spec(Context::Composer, "esc", ActionId::CancelInput),
     spec(Context::Composer, "enter", ActionId::SubmitInput),
-    spec(Context::Composer, "shift+enter", ActionId::InputNewline),
+    spec(Context::Composer, "shift+enter, alt+enter, ctrl+j", ActionId::InputNewline),
+    spec(Context::Composer, "up", ActionId::HistoryPrev),
+    spec(Context::Composer, "down", ActionId::HistoryNext),
+    spec(Context::Composer, "ctrl+r", ActionId::HistoryOpen),
+];
+
+const HISTORY: &[BindingSpec] = &[
+    spec(Context::History, "esc", ActionId::HistoryClose),
+    spec(Context::History, "down, ctrl+n", ActionId::HistorySelectNext),
+    spec(Context::History, "up, ctrl+p", ActionId::HistorySelectPrev),
+    spec(Context::History, "enter", ActionId::HistoryRecall),
 ];
 
 const HELP: &[BindingSpec] = &[spec(Context::Help, "esc, q, ?", ActionId::CloseHelp)];
@@ -203,7 +228,7 @@ const PERMISSION: &[BindingSpec] = &[
 
 /// Where a feature registers its default bindings: add one slice here.
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] =
-    &[GLOBAL, SESSION_LIST, CONVERSATION, COMPOSER, HELP, PERMISSION];
+    &[GLOBAL, SESSION_LIST, CONVERSATION, COMPOSER, HISTORY, HELP, PERMISSION];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {

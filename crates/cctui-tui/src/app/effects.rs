@@ -1,18 +1,26 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cctui_client::{Client, ConversationFetch, Page, WsClient};
+use cctui_proto::drafts::{composer_draft_key, session_history_key};
 use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
 use super::state::ConversationLine;
 use super::toast::Level;
 
 const QUEUE: usize = 256;
+
+/// How long a composer sits still before its draft is written, matching the
+/// web UI: a keystroke must not be a request.
+const DRAFT_DEBOUNCE: Duration = Duration::from_millis(700);
 
 /// Handle onto the effects worker. [`Effects::dispatch`] never awaits, so the
 /// key-handling path never blocks on HTTP or the websocket.
@@ -28,8 +36,9 @@ impl Effects {
         let (action_tx, action_rx) = mpsc::channel::<Action>(QUEUE);
 
         tokio::spawn(async move {
+            let mut drafts = DraftSaver::new(Arc::clone(&server));
             while let Some(effect) = rx.recv().await {
-                for action in run(&server, &ws, effect).await {
+                for action in run(&server, &ws, &mut drafts, effect).await {
                     if action_tx.send(action).await.is_err() {
                         return;
                     }
@@ -53,7 +62,45 @@ impl Effects {
     }
 }
 
-async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
+/// Per-key debounce for draft writes: a pending save is replaced, not queued,
+/// and the request is off the effect queue so typing never waits on it.
+struct DraftSaver {
+    server: Arc<Client>,
+    pending: HashMap<String, tokio::task::JoinHandle<()>>,
+}
+
+impl DraftSaver {
+    fn new(server: Arc<Client>) -> Self {
+        Self { server, pending: HashMap::new() }
+    }
+
+    fn save(&mut self, key: String, text: String) {
+        self.pending.retain(|_, handle| !handle.is_finished());
+        self.cancel(&key);
+        let server = Arc::clone(&self.server);
+        let target = key.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            if let Err(e) = server.put_draft(&target, &text).await {
+                tracing::warn!(%e, "draft save failed");
+            }
+        });
+        self.pending.insert(key, handle);
+    }
+
+    fn cancel(&mut self, key: &str) {
+        if let Some(handle) = self.pending.remove(key) {
+            handle.abort();
+        }
+    }
+}
+
+async fn run(
+    server: &Client,
+    ws: &WsClient,
+    drafts: &mut DraftSaver,
+    effect: Effect,
+) -> Vec<Action> {
     match effect {
         Effect::RefreshSessions => match server.list_sessions().await {
             Ok(resp) => vec![Action::SessionsLoaded(resp.sessions)],
@@ -77,6 +124,25 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
         Effect::MarkSeen { session_id } => {
             if let Err(e) = server.mark_seen(&session_id).await {
                 tracing::warn!(%e, "marking the session seen failed");
+            }
+            Vec::new()
+        }
+        Effect::LoadDraftIndex => match server.list_drafts().await {
+            Ok(list) => vec![Action::Drafts(DraftAction::IndexLoaded(Box::new(list)))],
+            Err(e) => {
+                tracing::warn!(%e, "draft index fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::LoadDrafts { session_id } => load_drafts(server, session_id).await,
+        Effect::SaveDraft { key, text } => {
+            drafts.save(key, text);
+            Vec::new()
+        }
+        Effect::DiscardDraft { key } => {
+            drafts.cancel(&key);
+            if let Err(e) = server.delete_draft(&key).await {
+                tracing::warn!(%e, "draft discard failed");
             }
             Vec::new()
         }
@@ -121,6 +187,21 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             Vec::new()
         }
     }
+}
+
+/// A draft the web UI has since edited must win over the startup index, so the
+/// session's two keys are read again as its conversation opens.
+async fn load_drafts(server: &Client, session_id: String) -> Vec<Action> {
+    let text = server.get_draft(&composer_draft_key(&session_id)).await;
+    let history = server.get_draft(&session_history_key(&session_id)).await;
+    if let Err(e) = &text {
+        tracing::warn!(%e, session_id, "draft fetch failed");
+    }
+    vec![Action::Drafts(DraftAction::Loaded {
+        session_id,
+        text: text.unwrap_or_default(),
+        history: history.unwrap_or_default(),
+    })]
 }
 
 async fn subscribe(ws: &WsClient, session_id: String) {
