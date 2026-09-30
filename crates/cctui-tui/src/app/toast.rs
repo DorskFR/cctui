@@ -1,14 +1,14 @@
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Level {
+pub enum Level {
     Info,
     Warn,
     Error,
 }
 
 impl Level {
-    pub(crate) const fn marker(self) -> &'static str {
+    pub const fn marker(self) -> &'static str {
         match self {
             Self::Info => "·",
             Self::Warn => "!",
@@ -18,24 +18,24 @@ impl Level {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Toast {
-    pub(crate) level: Level,
-    pub(crate) text: String,
-    pub(crate) expires_ms: i64,
+pub struct Toast {
+    pub level: Level,
+    pub text: String,
+    pub expires_ms: i64,
 }
 
 /// Transient messages for the status line. Time is passed in rather than read:
 /// the reducer that pushes these must stay free of clock reads.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Toasts {
+pub struct Toasts {
     items: VecDeque<Toast>,
 }
 
 impl Toasts {
-    pub(crate) const TTL_MS: i64 = 6_000;
+    pub const TTL_MS: i64 = 6_000;
     const MAX: usize = 3;
 
-    pub(crate) fn push(&mut self, level: Level, text: impl Into<String>, now_ms: i64) {
+    pub fn push(&mut self, level: Level, text: impl Into<String>, now_ms: i64) {
         self.items.push_back(Toast {
             level,
             text: text.into(),
@@ -46,16 +46,16 @@ impl Toasts {
         }
     }
 
-    pub(crate) fn prune(&mut self, now_ms: i64) {
+    pub fn prune(&mut self, now_ms: i64) {
         self.items.retain(|t| t.expires_ms > now_ms);
     }
 
     /// The newest toast: the status line has room for exactly one.
-    pub(crate) fn latest(&self) -> Option<&Toast> {
+    pub fn latest(&self) -> Option<&Toast> {
         self.items.back()
     }
 
-    pub(crate) fn queued(&self) -> usize {
+    pub fn queued(&self) -> usize {
         self.items.len()
     }
 }
@@ -63,17 +63,17 @@ impl Toasts {
 /// Counts of things the TUI could not act on. Surfaced in the status line so a
 /// silent drop is never invisible.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StatusCounters {
-    pub(crate) undecodable_ws_messages: u64,
-    pub(crate) undecodable_agent_events: u64,
+pub struct StatusCounters {
+    pub undecodable_ws_messages: u64,
+    pub undecodable_agent_events: u64,
 }
 
 impl StatusCounters {
-    pub(crate) const fn total(self) -> u64 {
+    pub const fn total(self) -> u64 {
         self.undecodable_ws_messages + self.undecodable_agent_events
     }
 
-    pub(crate) const fn is_clean(self) -> bool {
+    pub const fn is_clean(self) -> bool {
         self.total() == 0
     }
 }

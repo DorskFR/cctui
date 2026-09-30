@@ -110,7 +110,7 @@ fn clean_user_message(text: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
-pub(crate) fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
+pub fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
     match event {
         AgentEvent::Text { content, meta, ts, kind: text_kind, .. } => {
             let marker = matches!(

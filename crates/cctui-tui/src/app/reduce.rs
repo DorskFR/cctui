@@ -5,7 +5,7 @@ use super::toast::Level;
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
 #[allow(clippy::too_many_lines)]
-pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
+pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Quit => {
             app.should_quit = true;
@@ -49,13 +49,9 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.router.push(View::Help);
             Vec::new()
         }
-        // Help always dismisses to the session list, never to the view it was
-        // opened over.
-        Action::CloseHelp => {
-            app.router.reset(View::SessionList);
-            Vec::new()
-        }
-        Action::LeaveConversation => {
+        // Help dismisses to the session list, never to the view it was opened
+        // over, so it collapses the stack exactly as leaving a conversation does.
+        Action::CloseHelp | Action::LeaveConversation => {
             app.router.reset(View::SessionList);
             Vec::new()
         }
@@ -89,10 +85,6 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
 
-        Action::ActivateInput => {
-            app.input_active = true;
-            Vec::new()
-        }
         Action::ActivateInputWith(key) => {
             app.input_active = true;
             app.message_input.input(key);
@@ -487,7 +479,7 @@ mod tests {
     #[test]
     fn submitting_sends_the_composer_text_and_clears_it() {
         let mut app = app();
-        reduce(&mut app, Action::ActivateInput);
+        app.input_active = true;
         app.message_input.insert_str("hello there");
         let effects = reduce(&mut app, Action::SubmitInput);
         match effects.as_slice() {

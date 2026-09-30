@@ -58,6 +58,12 @@ fn user_action() -> UserAction {
 }
 
 fn samples() -> Vec<ServerEvent> {
+    let mut all = session_samples();
+    all.extend(fleet_samples());
+    all
+}
+
+fn session_samples() -> Vec<ServerEvent> {
     vec![
         ServerEvent::Stream {
             session_id: "s-1".to_owned(),
@@ -108,6 +114,11 @@ fn samples() -> Vec<ServerEvent> {
             error: None,
             command_id: Some(uuid()),
         },
+    ]
+}
+
+fn fleet_samples() -> Vec<ServerEvent> {
+    vec![
         ServerEvent::ArchiveManifest { machine_id: uuid(), count: 3 },
         ServerEvent::MachineLiveness { machine_id: uuid(), liveness: MachineLiveness::Online },
         ServerEvent::MachineResources {
@@ -215,7 +226,7 @@ fn every_variant_decodes_through_the_tui_receive_path() {
             .unwrap_or_else(|e| panic!("{name} does not serialize: {e}"));
         match decode_frame(&wire) {
             Incoming::Event(decoded) => {
-                assert_eq!(variant_name(&decoded), name, "{name} decoded as a different variant",)
+                assert_eq!(variant_name(&decoded), name, "{name} decoded as a different variant");
             }
             Incoming::Undecodable(reason) => {
                 panic!("the TUI cannot decode {name}: {reason}\nwire: {wire}")

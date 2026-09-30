@@ -8,7 +8,10 @@ use super::toast::Level;
 /// The websocket's only entry point into the store. Exhaustive on purpose: a
 /// new [`ServerEvent`] variant must not compile until it is handled or waived
 /// here, and every waiver carries its reason on the arm.
-pub(crate) fn to_actions(event: ServerEvent) -> Vec<Action> {
+// Waived variants keep one arm each even where the reason repeats: the list is
+// meant to be read per variant in review.
+#[allow(clippy::match_same_arms)]
+pub fn to_actions(event: ServerEvent) -> Vec<Action> {
     match event {
         ServerEvent::PermissionRequest {
             session_id,

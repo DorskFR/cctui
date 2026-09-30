@@ -7,7 +7,7 @@ use super::toast::Level;
 
 /// Everything that can change the app. Key handlers, the websocket and
 /// completed effects all funnel through this one vocabulary.
-pub(crate) enum Action {
+pub enum Action {
     Quit,
 
     SelectNext,
@@ -33,7 +33,6 @@ pub(crate) enum Action {
     ScrollToTop,
     ScrollToBottom,
 
-    ActivateInput,
     /// A key that no navigation binding claimed: it both opens the composer
     /// and types its first character.
     ActivateInputWith(KeyEvent),
@@ -86,15 +85,15 @@ pub(crate) enum Action {
 }
 
 /// Token/cost figures a heartbeat carries for the session row.
-pub(crate) struct HeartbeatUsage {
-    pub(crate) tokens_in: u64,
-    pub(crate) tokens_out: u64,
-    pub(crate) cost_usd: f64,
+pub struct HeartbeatUsage {
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
 }
 
 /// The only way the reducer reaches the network. Nothing here runs on the
 /// key-handling path; the effects runner owns them.
-pub(crate) enum Effect {
+pub enum Effect {
     RefreshSessions,
     /// `fetch` is false when the conversation is already buffered; the
     /// subscribe still goes out either way.

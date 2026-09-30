@@ -3,33 +3,33 @@ use super::state::View;
 /// A never-empty stack of views. Overlays (help, dialogs) push; dismissing
 /// pops back to whatever was underneath.
 #[derive(Debug, Clone)]
-pub(crate) struct Router {
+pub struct Router {
     stack: Vec<View>,
 }
 
 impl Router {
-    pub(crate) fn new(root: View) -> Self {
+    pub fn new(root: View) -> Self {
         Self { stack: vec![root] }
     }
 
-    pub(crate) fn current(&self) -> View {
+    pub fn current(&self) -> View {
         self.stack.last().copied().unwrap_or(View::SessionList)
     }
 
-    pub(crate) fn below(&self) -> Option<View> {
+    pub fn below(&self) -> Option<View> {
         self.stack.len().checked_sub(2).and_then(|i| self.stack.get(i).copied())
     }
 
     /// Pushing the current view again is a no-op, so a repeated keypress
     /// cannot grow the stack without bound.
-    pub(crate) fn push(&mut self, view: View) {
+    pub fn push(&mut self, view: View) {
         if self.current() != view {
             self.stack.push(view);
         }
     }
 
     /// `false` at the root, which is never popped.
-    pub(crate) fn pop(&mut self) -> bool {
+    pub fn pop(&mut self) -> bool {
         if self.stack.len() <= 1 {
             return false;
         }
@@ -37,13 +37,13 @@ impl Router {
         true
     }
 
-    pub(crate) fn reset(&mut self, root: View) {
+    pub fn reset(&mut self, root: View) {
         self.stack.clear();
         self.stack.push(root);
     }
 
     #[cfg(test)]
-    pub(crate) fn depth(&self) -> usize {
+    pub const fn depth(&self) -> usize {
         self.stack.len()
     }
 }

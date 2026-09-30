@@ -14,7 +14,7 @@ const fn level_style(level: Level) -> ratatui::style::Style {
 
 /// Trailing segment shared by every view's top line: the newest toast, then a
 /// count of anything the TUI had to drop. Empty when there is nothing to say.
-pub(crate) fn status_spans(app: &App) -> Vec<Span<'static>> {
+pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     if let Some(toast) = app.toasts.latest() {
         let queued = app.toasts.queued();

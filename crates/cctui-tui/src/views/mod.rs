@@ -7,7 +7,7 @@ use ratatui::Frame;
 
 use crate::app::{App, View};
 
-pub(crate) fn render(frame: &mut Frame, app: &mut App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view() {
         View::SessionList => sessions::draw(frame, app),
         View::Conversation => conversation::draw(frame, app),
