@@ -20,6 +20,7 @@ pub mod models;
 pub mod release_sig;
 pub mod resources;
 pub mod updatehook;
+pub mod uploads;
 pub mod util;
 pub mod worker_env;
 pub mod ws;
