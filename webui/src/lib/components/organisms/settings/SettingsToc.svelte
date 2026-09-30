@@ -49,13 +49,16 @@
 	});
 </script>
 
-<div class="tabs">
+<!-- `settings-goto` is on whichever of these two is visible at this width, so a
+     guide can ask for "the page switcher" once instead of per viewport. The kit's
+     Tabs exposes no anchor on its triggers, so a tap bubbles to the strip. -->
+<div class="tabs" data-journey="settings-goto">
 	<Tabs {tabs} bind:value={tab} label={m.settings_title()}>
 		{#snippet panel()}{/snippet}
 	</Tabs>
 </div>
 
-<nav class="toc" aria-label={m.settings_title()}>
+<nav class="toc" aria-label={m.settings_title()} data-journey="settings-goto">
 	<div class="search">
 		<Input
 			icon="search"
@@ -74,6 +77,8 @@
 				href={settingsHref(e.page)}
 				class="toc-link"
 				aria-current={active === e.page ? 'page' : undefined}
+				data-journey="settings-nav"
+				data-journey-key={e.page}
 			>
 				<span class="toc-item" class:active={active === e.page}>
 					<span class="ico"><Text tone={active === e.page ? 'accent' : 'faint'}>{e.icon}</Text></span>

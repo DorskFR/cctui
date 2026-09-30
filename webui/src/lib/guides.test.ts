@@ -9,6 +9,8 @@ import {
 	CURRICULUM,
 	GUIDE_SECTIONS,
 	guideEntries,
+	guideText,
+	nextGuide,
 	guideStatus,
 	progressJourneyId,
 	replayGuide,
@@ -49,6 +51,35 @@ function through(section: GuideSectionId): Record<string, number> {
 	}
 	return seen;
 }
+
+describe('guideText', () => {
+	it('resolves a locale map without the mounted runtime', () => {
+		const journey = globalThis.window?.__journey;
+		if (globalThis.window) delete globalThis.window.__journey;
+		expect(guideText({ en: 'Read the fleet', fr: 'Lire la flotte' })).toBe('Read the fleet');
+		expect(guideText({ en: 'Read the fleet', fr: 'Lire la flotte' }, 'fr')).toBe('Lire la flotte');
+		if (globalThis.window && journey) globalThis.window.__journey = journey;
+	});
+
+	it('falls back to English, then to any locale the map does carry', () => {
+		expect(guideText({ en: 'English only' }, 'fr')).toBe('English only');
+		expect(guideText({ de: 'Nur Deutsch' } as unknown as Parameters<typeof guideText>[0], 'fr')).toBe(
+			'Nur Deutsch'
+		);
+	});
+
+	it('is empty only for absent copy', () => {
+		expect(guideText(undefined)).toBe('');
+		expect(guideText('literal')).toBe('literal');
+	});
+
+	it('never leaves an entry titled by its raw id', () => {
+		const titled = guideEntries([
+			{ id: 'sessions-list', title: { en: 'Read the fleet at a glance' }, steps: [] }
+		] as unknown as Journey[]);
+		expect(titled[0].title).toBe('Read the fleet at a glance');
+	});
+});
 
 describe('guideEntries', () => {
 	it('normalizes titles, descriptions and versions', () => {
@@ -179,6 +210,21 @@ describe('buildCurriculum', () => {
 		expect(run.guides[1].lockedBy).toEqual(['SPAWN-SESSION']);
 	});
 
+	it('does not announce Locked over a section whose guides are all done from live state', () => {
+		const done = { 'accounts-pools': true, 'enroll-machine': true };
+		const view = buildCurriculum(entries, onboarding(), done);
+		const setup = view.sections[1];
+		expect(setup.guides.map((g) => g.status)).toEqual(['done', 'done']);
+		expect(setup.locked).toBe(false);
+		expect(setup.lockedBy).toEqual([]);
+	});
+
+	it('still announces Locked when no guide in the section can be started', () => {
+		const view = buildCurriculum(entries, onboarding());
+		expect(view.sections[1].guides.every((g) => g.locked)).toBe(true);
+		expect(view.sections[1].locked).toBe(true);
+	});
+
 	it('never locks a guide that is already done', () => {
 		const view = buildCurriculum(entries, onboarding({ seenVersion: { 'settings-tour': 1 } }));
 		const tour = view.sections[3].guides.find((g) => g.id === 'settings-tour');
@@ -220,9 +266,37 @@ describe('buildCurriculum', () => {
 		const [guide] = buildCurriculum(entries, onboarding()).sections[0].guides;
 		expect(guideOptions(guide)).toEqual({
 			blockedBy: [],
-			conclusion: { title: 'WELCOME', xp: 10 },
+			conclusion: { title: 'WELCOME', xp: 10, next: undefined },
 			returnTo: GUIDES_ROUTE
 		});
+	});
+
+	it('names the next guide to take in the conclusion', () => {
+		const view = buildCurriculum(entries, onboarding());
+		const [guide] = view.sections[0].guides;
+		expect(guideOptions(guide, view).conclusion).toEqual({
+			title: 'WELCOME',
+			xp: 10,
+			next: 'SESSIONS-LIST'
+		});
+	});
+
+	it('skips guides already done when naming the next one', () => {
+		const view = buildCurriculum(entries, onboarding({ seenVersion: through('basics') }));
+		const [guide] = view.sections[0].guides;
+		expect(nextGuide(guide, view)?.id).toBe('accounts-pools');
+	});
+
+	it('never names a locked guide as the next one', () => {
+		const view = buildCurriculum(entries, onboarding());
+		const last = view.sections[0].guides[1];
+		expect(nextGuide(last, view)).toBeUndefined();
+	});
+
+	it('has no next guide once every guide is done', () => {
+		const view = buildCurriculum(entries, onboarding({ seenVersion: through('master') }));
+		const [guide] = view.sections[0].guides;
+		expect(nextGuide(guide, view)).toBeUndefined();
 	});
 
 	it('reads live-state completion for the guides that write no marker', () => {

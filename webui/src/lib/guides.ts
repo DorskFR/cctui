@@ -5,8 +5,10 @@ import {
 	publicJourneys,
 	type StartGuideOptions,
 	type StartOutcome,
-	startGuide
+	startGuide,
+	translate
 } from './journey';
+import { baseLocale, getLocale } from './paraglide/runtime';
 import type { OnboardingSettings } from './settings.svelte';
 import { settings } from './settings.svelte';
 
@@ -71,12 +73,23 @@ export interface CurriculumView {
 	totalCount: number;
 }
 
-/** A message ref or per-locale map needs the mounted runtime to resolve it. */
-export function guideText(text: Text | undefined): string {
+/** Resolved against the app's own locale rather than through the mounted runtime:
+ *  the runtime reads `document.documentElement.lang`, which a book shoot never
+ *  sets, and is absent altogether until it mounts. Both yielded the raw guide id. */
+export function guideText(text: Text | undefined, locale: string = currentLocale()): string {
 	if (text === undefined) return '';
 	if (typeof text === 'string') return text;
-	const runtime = globalThis.window?.__journey;
-	return typeof runtime?.translate === 'function' ? runtime.translate(text) : '';
+	if ('$msg' in text && typeof text.$msg === 'string') return translate(text.$msg) ?? text.$msg;
+	const table = text as Record<string, string>;
+	return table[locale] ?? table[baseLocale] ?? Object.values(table)[0] ?? '';
+}
+
+function currentLocale(): string {
+	try {
+		return getLocale();
+	} catch {
+		return baseLocale;
+	}
 }
 
 /** The compiled book still carries journeys whose public step count is zero. */
@@ -172,10 +185,13 @@ export function buildCurriculum(
 			} satisfies GuideView;
 		});
 
+		// Reading `blockers` here would announce "Locked" over guides already showing
+		// Done; locking on *any* locked guide would announce it over a startable one.
+		const lockedGuides = guides.filter((g) => g.locked);
 		sections.push({
 			id: sectionId,
-			locked: blockers.length > 0,
-			lockedBy: [...new Set(blockers)].map(titleOf),
+			locked: lockedGuides.length === guides.length,
+			lockedBy: [...new Set(lockedGuides.flatMap((g) => g.lockedBy))],
 			guides
 		});
 	}
@@ -205,12 +221,22 @@ export function resetGuides() {
 
 /** What the runtime needs to refuse a locked guide with the same words the page
  *  already shows, and to close the tour on its XP. */
-export function guideOptions(guide: GuideView): StartGuideOptions {
+export function guideOptions(guide: GuideView, curriculum?: CurriculumView): StartGuideOptions {
 	return {
 		blockedBy: guide.locked ? guide.lockedBy : [],
-		conclusion: { title: guide.title, xp: guide.xp },
+		conclusion: { title: guide.title, xp: guide.xp, next: nextGuide(guide, curriculum)?.title },
 		returnTo: GUIDES_ROUTE
 	};
+}
+
+/** The guide to offer once this one is finished: the next one in curriculum
+ *  order that is neither done nor locked, counting this one as done. */
+export function nextGuide(guide: GuideView, curriculum?: CurriculumView): GuideView | undefined {
+	if (!curriculum) return undefined;
+	const all = curriculum.sections.flatMap((s) => s.guides);
+	const from = all.findIndex((g) => g.id === guide.id);
+	if (from < 0) return undefined;
+	return all.slice(from + 1).find((g) => g.status !== 'done' && !g.locked);
 }
 
 /** Replaying drops the done marker so the guide reads as unfinished while it

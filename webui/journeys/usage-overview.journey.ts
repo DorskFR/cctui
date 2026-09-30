@@ -27,7 +27,6 @@ export default defineJourney({
 		},
 		{
 			id: 'attention',
-			route: HOME,
 			target: 'tile[needs_input]',
 			say: {
 				title: { en: 'The one number to act on', fr: 'Le chiffre sur lequel agir' },
@@ -37,7 +36,6 @@ export default defineJourney({
 		},
 		{
 			id: 'capacity',
-			route: HOME,
 			target: 'tile[machines]',
 			say: {
 				title: { en: 'How much capacity you have', fr: 'La capacité dont vous disposez' },
@@ -47,7 +45,6 @@ export default defineJourney({
 		},
 		{
 			id: 'periods',
-			route: HOME,
 			target: 'session-periods',
 			say: {
 				title: { en: 'Is today busier than usual?', fr: 'La journée est-elle plus chargée que d’habitude ?' },
@@ -58,7 +55,6 @@ export default defineJourney({
 		},
 		{
 			id: 'windows',
-			route: HOME,
 			target: 'windows',
 			say: {
 				title: { en: 'Tokens by time window', fr: 'Jetons par fenêtre de temps' },
@@ -69,17 +65,16 @@ export default defineJourney({
 		},
 		{
 			id: 'range',
-			route: HOME,
 			target: 'range',
+			do: { kind: 'click' },
 			say: {
 				title: { en: 'Choose the period you are reading', fr: 'Choisir la période que vous lisez' },
-				body: { en: 'This selector governs the charts below, not the tiles above. Widen it to judge a trend, narrow it to explain a single expensive day.', fr: 'Ce sélecteur gouverne les graphiques ci-dessous, pas les tuiles ci-dessus. Élargissez-le pour juger une tendance, réduisez-le pour expliquer une journée coûteuse.' }
+				body: { en: 'Pick a different period and watch the charts below redraw — this selector governs them, not the tiles above. Widen it to judge a trend, narrow it to explain a single expensive day.', fr: 'Choisissez une autre période et regardez les graphiques ci-dessous se redessiner — ce sélecteur les gouverne, pas les tuiles ci-dessus. Élargissez-la pour juger une tendance, réduisez-la pour expliquer une journée coûteuse.' }
 			},
 			expect: [{ visible: 'range' }]
 		},
 		{
 			id: 'analytics',
-			route: HOME,
 			target: 'analytics',
 			say: {
 				title: { en: 'Where the tokens went', fr: 'Où sont passés les jetons' },

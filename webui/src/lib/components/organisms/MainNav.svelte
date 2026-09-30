@@ -7,7 +7,7 @@
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { useSessions } from '$lib/queries';
 	import { settings } from '$lib/settings.svelte';
-	import { isNavActive, navItems } from '$lib/navItems';
+	import { isNavActive, navItems, navKey } from '$lib/navItems';
 	import { hasGithubConnector } from '$lib/ghreviewConnectors.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -33,7 +33,12 @@
 	<div class="nav-inner">
 		{#each items as it (it.href)}
 			{@const active = isNavActive(it.href, page.url.pathname)}
-			<NavLink href={it.href} aria-current={active ? 'page' : undefined}>
+			<NavLink
+				href={it.href}
+				aria-current={active ? 'page' : undefined}
+				data-journey="nav"
+				data-journey-key={navKey(it.href)}
+			>
 				<span class="cell" class:active>
 					<span class="ico"
 						>{it.icon}{#if it.href === '/sessions' && unread > 0}<span class="unread"

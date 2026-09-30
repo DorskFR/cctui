@@ -60,8 +60,33 @@ export default defineJourney({
 			expect: [{ visible: 'conversation/head-meta' }]
 		},
 		{
+			id: 'details',
+			target: 'conversation/head-details',
+			say: {
+				title: { en: 'The rest of the detail folds away', fr: 'Le reste du détail se replie' },
+				body: {
+					en: 'Everything that would crowd the header — the full path, the session id, its parent if it was forked — lives behind this toggle, so the two rows above stay readable.',
+					fr: 'Tout ce qui encombrerait l’en-tête — le chemin complet, l’identifiant de session, son parent en cas de bifurcation — se trouve derrière ce bouton, pour que les deux lignes ci-dessus restent lisibles.'
+				}
+			},
+			expect: [{ visible: 'conversation/head-details' }],
+			capture: 'details'
+		},
+		{
+			id: 'activity',
+			target: 'activity',
+			say: {
+				title: { en: 'What it is doing right now', fr: 'Ce qu’elle fait en ce moment' },
+				body: {
+					en: 'While a turn is live this strip names the step in progress, the tool it is running, how long the turn has taken and how far through its task list it is. Between turns it simply reads idle — which is how you tell a thinking agent from a finished one.',
+					fr: 'Pendant qu’un tour est en cours, cette bande nomme l’étape en progrès, l’outil exécuté, la durée du tour et l’avancement de sa liste de tâches. Entre deux tours, elle indique simplement « au repos » — c’est ainsi qu’on distingue un agent qui réfléchit d’un agent qui a fini.'
+				}
+			},
+			expect: [{ visible: 'activity' }],
+			capture: 'activity'
+		},
+		{
 			id: 'actions',
-			when: { viewport: 'desktop' },
 			target: 'conversation/actions',
 			say: {
 				title: { en: 'Branch instead of starting over', fr: 'Bifurquer plutôt que tout recommencer' },
@@ -124,18 +149,31 @@ export default defineJourney({
 		},
 		{
 			id: 'tools-only',
-			qaOnly: true,
 			target: 'filters/quick[assistant]',
 			do: { kind: 'click' },
 			say: {
-				title: { en: 'Hide the noise', fr: 'Masquer le bruit' },
+				title: { en: 'Try it: leave only what it touched', fr: 'Essayez : ne gardez que ce qu’elle a touché' },
 				body: {
-					en: 'Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched.',
-					fr: 'Masquer les messages de l’assistant ne laisse que les appels d’outils — le moyen le plus rapide d’auditer ce que l’agent a touché.'
+					en: 'Turn the assistant pill off. The prose disappears and the tool calls remain — the fastest way to audit what an agent actually did to your files.',
+					fr: 'Désactivez la pastille « assistant ». La prose disparaît, les appels d’outils restent — le moyen le plus rapide d’auditer ce que l’agent a vraiment fait à vos fichiers.'
 				}
 			},
-			expect: [{ visible: 'conversation/line[tool]' }, { hidden: 'conversation/line[assistant]' }],
+			expect: [{ hidden: 'conversation/line[assistant]' }],
 			capture: 'tools'
+		},
+		{
+			id: 'tools-restore',
+			target: 'filters/quick[assistant]',
+			do: { kind: 'click' },
+			say: {
+				title: { en: 'And put it back', fr: 'Et remettez-la' },
+				body: {
+					en: 'Click it again. Filters only ever change what this pane shows you — nothing was removed from the transcript, and the setting does not follow you to the next session.',
+					fr: 'Recliquez. Les filtres ne changent que ce que ce panneau affiche — rien n’a été retiré de la transcription, et le réglage ne vous suit pas dans la session suivante.'
+				}
+			},
+			expect: [{ visible: 'conversation/line[assistant]' }],
+			capture: 'restored'
 		},
 		{
 			id: 'reply',

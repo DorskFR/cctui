@@ -1,97 +1,121 @@
 import { defineJourney } from '@dorsk/journey';
 
+/**
+ * Pages are reached by having the user click the page switcher: `settings-goto`
+ * is on the wide list and on the narrow tab strip, exactly one of which is ever
+ * visible, so one step serves both widths. Each content step still declares its
+ * `route` — a no-op once the click arrived, and the fallback if it did not.
+ */
+const APPEARANCE = '/settings/appearance';
+
 export default defineJourney({
 	id: 'settings-tour',
 	title: { en: 'Tune how agents behave', fr: 'Régler le comportement des agents' },
-	description: { en: 'Settings cover the look of the app, how sessions run, and what never leaves the machine.', fr: 'Les réglages couvrent l’apparence de l’application, le déroulement des sessions et ce qui ne quitte jamais la machine.' },
-	route: '/settings/appearance',
+	description: { en: 'Settings cover the look of the app, how sessions run, and what never leaves the machine.', fr: 'Les réglages couvrent l’apparence de l’application, l’exécution des sessions et ce qui ne quitte jamais la machine.' },
+	route: APPEARANCE,
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
 	steps: [
 		{
-			id: 'appearance',
-			route: '/settings/appearance',
-			target: 'page[appearance]',
-			say: {
-				title: { en: 'Make it yours', fr: 'À votre image' },
-				body: { en: 'Theme, text size, language and where the navigation sits. Every one of these is remembered per account, so the app looks the same on your phone as on your desk.', fr: 'Thème, taille du texte, langue et position de la navigation. Chacun de ces réglages est mémorisé par compte : l’application est identique sur votre téléphone et sur votre bureau.' }
-			},
-			expect: [{ visible: 'page[appearance]' }],
-			capture: 'appearance'
-		},
-		{
 			id: 'theme',
-			route: '/settings/appearance',
-			target: 'page[appearance]/theme',
+			route: APPEARANCE,
+			target: 'theme',
 			say: {
-				title: { en: 'Pick a theme, or let it follow the system', fr: 'Choisir un thème, ou suivre le système' },
-				body: { en: 'Auto remembers one light and one dark theme and swaps between them as your system does. Pick a specific theme instead and it stays put at every hour of the day.', fr: 'Le mode auto mémorise un thème clair et un thème sombre et bascule comme votre système. Choisissez un thème précis et il ne bougera plus, quelle que soit l’heure.' }
+				title: { en: 'Start with the one you will look at all day', fr: 'Commencez par celui que vous regarderez toute la journée' },
+				body: { en: 'Pick a theme, or let it follow the system so it turns dark when your desktop does. Every setting on these pages saves itself the moment you change it — there is no Save button anywhere in Settings.', fr: 'Choisissez un thème, ou laissez-le suivre le système pour qu’il passe en sombre avec votre bureau. Chaque réglage de ces pages s’enregistre dès que vous le changez — il n’y a aucun bouton Enregistrer dans les Réglages.' }
 			},
-			expect: [{ visible: 'page[appearance]/theme' }],
+			expect: [{ visible: 'theme' }],
 			capture: 'theme'
 		},
 		{
 			id: 'language',
-			route: '/settings/appearance',
-			target: 'page[appearance]/language',
+			target: 'language',
 			say: {
 				title: { en: 'The interface language', fr: 'La langue de l’interface' },
-				body: { en: 'This changes the app, not your agents — what you write in a prompt is still up to you. Left on automatic it follows your browser.', fr: 'Ceci change l’application, pas vos agents : ce que vous écrivez dans une instruction reste votre choix. En automatique, la langue suit celle du navigateur.' }
+				body: { en: 'Switching it re-draws the app immediately, including a guide you happen to have open — this one will follow you into French mid-sentence if you try it.', fr: 'En changer redessine l’application immédiatement, y compris un guide ouvert — celui-ci vous suivra en anglais au milieu d’une phrase si vous essayez.' }
 			},
-			expect: [{ visible: 'page[appearance]/language' }]
+			expect: [{ visible: 'language' }],
+			capture: 'language'
+		},
+		{
+			id: 'to-sessions',
+			target: 'settings-goto',
+			do: { kind: 'click' },
+			say: {
+				title: { en: 'Settings are one page per subject', fr: 'Les réglages : une page par sujet' },
+				body: { en: 'The highlighted switcher is how you move between them — a list beside the page on a wide screen, a strip of tabs along the top on a narrow one. Pick “Sessions” from it, not from the app’s own nav.', fr: 'Le sélecteur en surbrillance permet de passer de l’une à l’autre — une liste à côté de la page sur grand écran, une rangée d’onglets en haut sur écran étroit. Choisissez « Sessions » dedans, pas dans la navigation de l’application.' }
+			}
 		},
 		{
 			id: 'sessions',
 			route: '/settings/sessions',
-			target: 'page[sessions]',
+			target: 'setting[auto-resume]',
 			say: {
-				title: { en: 'Defaults for every run', fr: 'Les réglages par défaut de chaque run' },
-				body: { en: 'How the list sorts and groups, and what a new session starts with, so you set it once instead of every time. The conversation options here also decide how much of a transcript you see at a glance.', fr: 'Le tri et le regroupement de la liste, et ce avec quoi démarre une nouvelle session : réglé une fois plutôt qu’à chaque fois. Les options de conversation décident aussi de ce que vous voyez d’une transcription d’un coup d’œil.' }
+				title: { en: 'Defaults for every run', fr: 'Les valeurs par défaut de chaque exécution' },
+				body: { en: 'This page decides how the sessions list and the conversation behave before you touch either — sort order, density, grouping, and this one: whether a dropped connection silently resumes the run or leaves it for you to notice.', fr: 'Cette page décide du comportement de la liste des sessions et de la conversation avant toute intervention — tri, densité, regroupement, et ceci : si une connexion perdue reprend l’exécution en silence ou vous laisse le constater.' }
 			},
-			expect: [{ visible: 'page[sessions]' }],
+			expect: [{ visible: 'setting[auto-resume]' }],
 			capture: 'sessions'
 		},
 		{
-			id: 'execution',
-			route: '/settings/execution',
-			target: 'page[execution]',
+			id: 'to-execution',
+			target: 'settings-goto',
+			do: { kind: 'click' },
 			say: {
-				title: { en: 'How much rope an agent gets', fr: 'La latitude laissée à un agent' },
-				body: { en: 'Permission handling, auto-approval and the phrases that mean an agent has stopped early rather than finished.', fr: 'La gestion des permissions, l’approbation automatique et les formules qui signalent qu’un agent s’est arrêté en chemin plutôt que terminé.' }
-			},
-			expect: [{ visible: 'page[execution]' }],
-			capture: 'execution'
+				title: { en: 'Now the one that matters most', fr: 'Passons au plus important' },
+				body: { en: 'Pick “Execution” from the highlighted switcher.', fr: 'Choisissez « Exécution » dans le sélecteur en surbrillance.' }
+			}
 		},
 		{
 			id: 'harness',
 			route: '/settings/execution',
-			target: 'page[execution]/harness-mode',
+			target: 'harness-mode',
 			say: {
 				title: { en: 'The single most consequential setting', fr: 'Le réglage le plus lourd de conséquences' },
-				body: { en: 'This decides whether an agent stops to ask before it acts, or proceeds on its own. Loosen it for throwaway work in a scratch folder; keep it tight anywhere a wrong edit would cost you.', fr: 'Il décide si un agent s’arrête pour demander avant d’agir, ou s’il continue seul. Relâchez-le pour du travail jetable dans un dossier de test ; gardez-le strict partout où une mauvaise modification coûterait cher.' }
+				body: { en: 'How much rope an agent gets: whether it asks before each action, or edits and runs commands on its own. Loosen it and agents finish far more without you — and can do far more damage unattended. Decide it deliberately, per machine you trust.', fr: 'La latitude laissée à un agent : demander avant chaque action, ou modifier et exécuter des commandes seul. En l’assouplissant, les agents terminent bien plus sans vous — et peuvent faire bien plus de dégâts sans surveillance. Décidez-en délibérément, machine par machine.' }
 			},
-			expect: [{ visible: 'page[execution]/harness-mode' }]
+			expect: [{ visible: 'harness-mode' }],
+			capture: 'execution'
 		},
 		{
-			id: 'privacy',
-			route: '/settings/privacy',
-			target: 'page[privacy]',
+			id: 'to-privacy',
+			target: 'settings-goto',
+			do: { kind: 'click' },
 			say: {
-				title: { en: 'Secrets never reach the transcript', fr: 'Les secrets n’atteignent jamais la transcription' },
-				body: { en: 'Tokens and keys are detected and replaced before anything is stored, so a leaked credential does not end up sitting in your history.', fr: 'Les jetons et les clés sont détectés et remplacés avant tout enregistrement : un identifiant qui fuit ne reste pas dans votre historique.' }
-			},
-			expect: [{ visible: 'page[privacy]' }],
-			capture: 'privacy'
+				title: { en: 'And what never leaves', fr: 'Et ce qui ne sort jamais' },
+				body: { en: 'Pick “Privacy” from the highlighted switcher.', fr: 'Choisissez « Confidentialité » dans le sélecteur en surbrillance.' }
+			}
 		},
 		{
 			id: 'patterns',
 			route: '/settings/privacy',
-			target: 'page[privacy]/redact-patterns',
+			target: 'redact-patterns',
 			say: {
-				title: { en: 'Add the secrets only you can recognise', fr: 'Ajoutez les secrets que vous seul reconnaissez' },
-				body: { en: 'The built-in detectors know the common credential shapes. Your own internal ticket or key formats are not among them — add a pattern per line and they are redacted too.', fr: 'Les détecteurs intégrés connaissent les formats d’identifiants courants. Vos formats internes de tickets ou de clés n’en font pas partie : ajoutez un motif par ligne et ils seront masqués aussi.' }
+				title: { en: 'Secrets never reach the transcript', fr: 'Les secrets n’atteignent jamais la transcription' },
+				body: { en: 'Anything matching these patterns is redacted before a transcript is stored, so a key pasted into a prompt does not end up in the history. Add the shapes only you would recognise — your own token prefixes, internal hostnames.', fr: 'Tout ce qui correspond à ces motifs est masqué avant l’enregistrement d’une transcription : une clé collée dans une instruction ne finit pas dans l’historique. Ajoutez les formes que vous seul reconnaissez — vos préfixes de jetons, vos noms d’hôtes internes.' }
 			},
-			expect: [{ visible: 'page[privacy]/redact-patterns' }]
+			expect: [{ visible: 'redact-patterns' }],
+			capture: 'privacy'
+		},
+		{
+			id: 'to-guides',
+			target: 'settings-goto',
+			do: { kind: 'click' },
+			say: {
+				title: { en: 'One page left', fr: 'Reste une page' },
+				body: { en: 'Pick “Guides” from the highlighted switcher — the page you started this from.', fr: 'Choisissez « Guides » dans le sélecteur en surbrillance — la page d’où vous avez lancé ceci.' }
+			}
+		},
+		{
+			id: 'guides',
+			route: '/settings/guides',
+			target: 'guide[welcome]',
+			say: {
+				title: { en: 'Every guide lives here', fr: 'Tous les guides vivent ici' },
+				body: { en: 'This page is the curriculum: what each guide teaches, what it is worth, and what is still locked. Replay any of them whenever you like — nothing here changes your instance. There are more pages than the four we walked; notifications, plugins, macros and the admin ones are all worth a look once you are running.', fr: 'Cette page est le programme : ce que chaque guide enseigne, sa valeur, et ce qui reste verrouillé. Rejouez-en un quand vous voulez — rien ici ne modifie votre instance. Il y a plus de pages que les quatre parcourues ; notifications, extensions, macros et les pages d’administration méritent un coup d’œil une fois lancé.' }
+			},
+			expect: [{ visible: 'guide[welcome]' }],
+			capture: 'guides'
 		}
 	]
 });
