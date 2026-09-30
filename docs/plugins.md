@@ -225,8 +225,15 @@ breaks either rule is refused at install.
 ### The route
 
 ```
-ANY /api/v1/plugins/{id}/backend/{*path}
+GET|POST|PUT|PATCH|DELETE /api/v1/plugins/{id}/backend/{*path}
 ```
+
+Those five methods, not a literal `ANY`. The authorization policy is attached with
+axum's `route_layer`, which only applies to named method slots — an `any` route
+fills the `MethodRouter` fallback instead, so the policy would be silently absent
+(in fact axum panics rather than allow it). Any other verb answers `405`. `HEAD`
+is served by the `GET` handler, and CORS preflight `OPTIONS` is answered by the
+global CORS layer ahead of the router.
 
 - Authenticates with the normal cctui **cookie or bearer** (`read` scope). No
   new credential exists, so nothing is minted into the browser.
@@ -379,7 +386,7 @@ sandbox, and there is no attempt at one:
 | Route | Auth | Purpose |
 | --- | --- | --- |
 | `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `page`, `styles` (resolved the same way), `enabled`, `settings` declarations and the caller's `config` values |
-| `ANY /api/v1/plugins/{id}/backend/{*path}` | bearer or cookie, read | proxy to the plugin's backend with signed identity headers; streams, incl. SSE |
+| `GET`/`POST`/`PUT`/`PATCH`/`DELETE` `/api/v1/plugins/{id}/backend/{*path}` | bearer or cookie, read | proxy to the plugin's backend with signed identity headers; streams, incl. SSE |
 | `POST /api/v1/plugins/rescan` | admin | re-read the plugins directory |
 | `GET /api/v1/admin/plugins` | admin | `AdminPluginInfo[]`: every plugin, installed or from the directory, with its instance toggle |
 | `GET /api/v1/admin/plugins/catalog` | admin | `CatalogPluginInfo[]`: the published catalog, annotated with `installed_version` and `update_available` |

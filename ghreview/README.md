@@ -99,7 +99,7 @@ The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
 gh-review is a plugin backend behind cctui's authenticated plugin proxy. The
 browser never holds a credential for it and it never reads cctui's database: in
 the default `GHREVIEW_AUTH_MODE=proxy`, every `/v1` request must arrive from
-`ANY /api/v1/plugins/ghreview/backend/*` carrying `X-Cctui-User-Id`,
+`/api/v1/plugins/ghreview/backend/*` (GET/POST/PUT/PATCH/DELETE) carrying `X-Cctui-User-Id`,
 `X-Cctui-User-Name`, `X-Cctui-Plugin`, `X-Cctui-Ts` and `X-Cctui-Sig`, where the
 signature is `HMAC-SHA256(GHREVIEW_PROXY_SECRET, method + "\n" + path + "\n" +
 ts + "\n" + userId)` — `path` with one leading slash and no query. It is
