@@ -21,11 +21,8 @@ pub fn default_title(body: &str) -> String {
 #[must_use]
 pub fn source_href(session_id: Option<&str>, seq: Option<i64>) -> Option<String> {
     let id = session_id?;
-    let mut href = format!("/sessions/{}", encode_uri_component(id));
-    if let Some(s) = seq {
-        href.push_str(&format!("?seq={s}"));
-    }
-    Some(href)
+    let query = seq.map(|s| format!("?seq={s}")).unwrap_or_default();
+    Some(format!("/sessions/{}{query}", encode_uri_component(id)))
 }
 
 #[must_use]
@@ -44,6 +41,14 @@ pub fn bookmark_markdown(title: &str, note: Option<&str>, body: &str) -> String 
     parts.join("\n\n")
 }
 
+fn push_trimmed(out: &mut Vec<String>, chars: &[char]) {
+    let joined: String = chars.iter().collect();
+    let trimmed = joined.trim();
+    if !trimmed.is_empty() {
+        out.push(trimmed.to_string());
+    }
+}
+
 /// Free-text terms of a query, for `highlight_terms`; quoted phrases stay whole.
 #[must_use]
 pub fn query_terms(q: &str) -> Vec<String> {
@@ -51,32 +56,23 @@ pub fn query_terms(q: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '"' {
-            if let Some(end) = chars[i + 1..].iter().position(|c| *c == '"') {
-                if end > 0 {
-                    let inner: String = chars[i + 1..i + 1 + end].iter().collect();
-                    let t = inner.trim();
-                    if !t.is_empty() {
-                        out.push(t.to_string());
-                    }
-                    i += end + 2;
-                    continue;
-                }
-            }
-        }
         if chars[i].is_whitespace() {
             i += 1;
+            continue;
+        }
+        if chars[i] == '"'
+            && let Some(end) = chars[i + 1..].iter().position(|c| *c == '"')
+            && end > 0
+        {
+            push_trimmed(&mut out, &chars[i + 1..i + 1 + end]);
+            i += end + 2;
             continue;
         }
         let start = i;
         while i < chars.len() && !chars[i].is_whitespace() {
             i += 1;
         }
-        let word: String = chars[start..i].iter().collect();
-        let t = word.trim();
-        if !t.is_empty() {
-            out.push(t.to_string());
-        }
+        push_trimmed(&mut out, &chars[start..i]);
     }
     out
 }

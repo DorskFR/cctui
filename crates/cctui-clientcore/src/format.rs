@@ -81,7 +81,7 @@ pub fn status_badge_tone(status: &str) -> BadgeTone {
 
 #[must_use]
 pub fn model_short(model: &str) -> String {
-    let leaf = model.split('/').filter(|s| !s.is_empty()).next_back().unwrap_or(model);
+    let leaf = model.split('/').rfind(|s| !s.is_empty()).unwrap_or(model);
     let lower = leaf.to_lowercase();
     for prefix in ["claude-", "anthropic-"] {
         if lower.starts_with(prefix) {

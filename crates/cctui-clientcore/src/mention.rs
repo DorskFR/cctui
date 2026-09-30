@@ -82,10 +82,9 @@ pub fn filter_mentions(sessions: &[MentionSession], query: &str) -> Vec<MentionS
 
 #[must_use]
 pub fn mention_token(id: &str, name: Option<&str>) -> String {
-    match name.map(str::trim).filter(|n| !n.is_empty()) {
-        Some(n) => format!("#{id} ({n})"),
-        None => format!("#{id}"),
-    }
+    name.map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map_or_else(|| format!("#{id}"), |n| format!("#{id} ({n})"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
