@@ -118,7 +118,7 @@ pub fn rows<'a>(flat: &[&'a SessionListItem]) -> Vec<Row<'a>> {
                 out.push(Row::Header(group));
             }
         }
-        out.push(Row::Session { session: *session, index });
+        out.push(Row::Session { session, index });
     }
     out
 }

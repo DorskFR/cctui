@@ -26,16 +26,6 @@ impl Identity {
     }
 
     #[must_use]
-    pub fn has_scope(&self, scope: &str) -> bool {
-        self.scopes.iter().any(|s| s == scope)
-    }
-
-    #[must_use]
-    pub fn is_admin(&self) -> bool {
-        self.has_scope("admin")
-    }
-
-    #[must_use]
     pub fn label(&self) -> String {
         self.user_name
             .as_deref()
@@ -55,26 +45,6 @@ pub enum AuthState {
 }
 
 impl AuthState {
-    /// Role gate for admin-only surfaces. An unresolved identity is not admin:
-    /// a gate that opens while we are still asking is not a gate.
-    #[must_use]
-    pub fn is_admin(&self) -> bool {
-        matches!(self, Self::Identified(id) if id.is_admin())
-    }
-
-    #[must_use]
-    pub fn has_scope(&self, scope: &str) -> bool {
-        matches!(self, Self::Identified(id) if id.has_scope(scope))
-    }
-
-    #[must_use]
-    pub const fn identity(&self) -> Option<&Identity> {
-        match self {
-            Self::Identified(id) => Some(id),
-            _ => None,
-        }
-    }
-
     /// The status-bar chip. `None` while unknown, so a TUI that has not asked
     /// yet says nothing rather than guessing.
     #[must_use]
@@ -116,7 +86,7 @@ pub fn reduce_auth(app: &mut App, action: AuthAction) -> Vec<Effect> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthAction, AuthState, Identity, REJECTED_MESSAGE, reduce_auth};
+    use super::{AuthAction, AuthState, REJECTED_MESSAGE, reduce_auth};
     use crate::app::App;
     use cctui_proto::api::me::MeResponse;
 
@@ -132,25 +102,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_identity_gates_admin_shut() {
-        let state = AuthState::Unknown;
-        assert!(!state.is_admin());
-        assert!(!state.has_scope("read"));
-        assert!(state.chip().is_none());
-    }
-
-    #[test]
-    fn scopes_drive_the_gate_not_the_role_string() {
-        let state = AuthState::Identified(Identity::from_response(me("admin", &["read"])));
-        assert!(!state.is_admin());
-        assert!(state.has_scope("read"));
+    fn an_unknown_identity_shows_no_chip() {
+        assert!(AuthState::Unknown.chip().is_none());
     }
 
     #[test]
     fn the_chip_names_the_user_and_role() {
         let mut app = App::new();
         let _ = reduce_auth(&mut app, AuthAction::Identified(Box::new(me("admin", &["admin"]))));
-        assert!(app.auth.is_admin());
         assert_eq!(app.auth.chip().expect("chip").text, "dorsk (admin)");
     }
 

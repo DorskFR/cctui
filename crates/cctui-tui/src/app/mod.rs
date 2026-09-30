@@ -12,7 +12,7 @@ pub mod state;
 pub mod toast;
 
 pub use action::Action;
-pub use conversation::ConversationAction;
+#[cfg(test)]
 pub use conversation_store::ConversationStore;
 pub use reduce::reduce;
 pub use state::{App, ConversationLine, LineKind, PendingPermission, View};

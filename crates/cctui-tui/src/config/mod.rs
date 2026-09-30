@@ -43,7 +43,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn apply_server(&mut self, server: &server::ServerPrefs) {
+    pub fn apply_server(&mut self, server: server::ServerPrefs) {
         if let Some(theme) = server.theme
             && !self.theme_pinned
         {
@@ -51,7 +51,7 @@ impl Config {
         }
         let mut prefs = Prefs::default();
         prefs.apply_server(server);
-        prefs.apply_file(&self.file);
+        prefs.apply_file(self.file);
         self.prefs = prefs;
     }
 }
@@ -109,7 +109,13 @@ pub fn load_from(path: &Path) -> Loaded {
 }
 
 fn defaults_with(problems: &mut Vec<String>) -> Config {
-    Config { theme: ThemeChoice::default(), keys: Keymap::new(problems), prefs: Prefs::default() }
+    Config {
+        theme: ThemeChoice::default(),
+        keys: Keymap::new(problems),
+        prefs: Prefs::default(),
+        file: prefs::PrefsFile::default(),
+        theme_pinned: false,
+    }
 }
 
 pub fn parse(text: &str) -> Loaded {
@@ -134,7 +140,7 @@ pub fn parse(text: &str) -> Loaded {
         }
     }
     config.file = file.preferences;
-    config.prefs.apply_file(&config.file);
+    config.prefs.apply_file(config.file);
 
     for (context_name, table) in &file.keys {
         let Some(context) = Context::parse(context_name) else {

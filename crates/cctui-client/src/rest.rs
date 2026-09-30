@@ -18,7 +18,7 @@ const ETAG_MIRROR: &str = "x-etag";
 ///
 /// `event` is the untouched server object (it still carries `seq`, `ts` and
 /// `turn_id`), so deserializing it as an `AgentEvent` loses nothing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationRow {
     pub seq: i64,
     pub ts: Option<i64>,
@@ -84,7 +84,7 @@ impl Page {
 }
 
 /// The outcome of a conditional conversation fetch.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationFetch {
     NotModified,
     Page { rows: Vec<ConversationRow>, etag: Option<String>, has_more: bool },
@@ -241,7 +241,7 @@ impl Client {
     }
 
     /// `POST` any route by id, deserialized into `R`.
-    pub async fn post_as<B: Serialize, R: DeserializeOwned>(
+    pub async fn post_as<B: Serialize + Sync, R: DeserializeOwned>(
         &self,
         route_id: &str,
         params: &[(&str, &str)],

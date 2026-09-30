@@ -1,5 +1,5 @@
 use super::action::Effect;
-use super::conversation_store::PageKind;
+use super::conversation_store::{ConversationStore, PageKind};
 use super::state::{App, ConversationLine, View};
 
 pub enum ConversationAction {
@@ -50,7 +50,7 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
     app.subscribed = Some(session_id.clone());
 
     let store = app.conversation_mut(&session_id);
-    let page = store.latest_request();
+    let page = ConversationStore::latest_request();
     let etag = store.etag().map(str::to_owned);
     vec![
         Effect::LoadConversationPage {

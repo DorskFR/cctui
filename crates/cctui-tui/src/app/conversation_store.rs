@@ -84,6 +84,7 @@ pub struct ConversationStore {
 }
 
 impl ConversationStore {
+    #[cfg(test)]
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -94,17 +95,19 @@ impl ConversationStore {
         &self.entries
     }
 
+    #[cfg(test)]
     pub fn lines(&self) -> impl Iterator<Item = &ConversationLine> {
         self.entries.iter().map(|e| &e.line)
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
@@ -116,21 +119,6 @@ impl ConversationStore {
     #[must_use]
     pub const fn epoch(&self) -> u64 {
         self.epoch
-    }
-
-    #[must_use]
-    pub const fn loaded(&self) -> bool {
-        self.loaded
-    }
-
-    #[must_use]
-    pub const fn has_more_older(&self) -> bool {
-        self.has_more_older
-    }
-
-    #[must_use]
-    pub const fn loading_older(&self) -> bool {
-        self.loading_older
     }
 
     /// Lowest `seq` held: the `before` cursor for the next older page.
@@ -150,7 +138,7 @@ impl ConversationStore {
     /// cheap, and gating the fetch on "do we hold any lines" is what let a
     /// single live event suppress the history load.
     #[must_use]
-    pub const fn latest_request(&self) -> PageRequest {
+    pub const fn latest_request() -> PageRequest {
         PageRequest::latest(PAGE_LIMIT)
     }
 
@@ -158,7 +146,7 @@ impl ConversationStore {
     /// held, or the latest page when nothing is held to anchor on.
     #[must_use]
     pub fn gap_request(&self) -> PageRequest {
-        self.newest_seq().map_or_else(|| self.latest_request(), PageRequest::after)
+        self.newest_seq().map_or_else(Self::latest_request, PageRequest::after)
     }
 
     /// Claims the older-page fetch, returning the window to ask for. `None`
@@ -224,23 +212,21 @@ impl ConversationStore {
 
     /// A live stream event. Returns false when it was a duplicate.
     pub fn push_live(&mut self, seq: Option<i64>, line: ConversationLine) -> bool {
-        match seq {
-            Some(seq) => self.insert(seq, true, line),
-            None => {
-                // No `seq` to dedupe on (an older server, or an event type the
-                // daemon does not stamp): fall back to suppressing an
-                // immediate repeat, which is the only duplicate seen in practice.
-                let repeat = self
-                    .entries
-                    .last()
-                    .is_some_and(|last| last.line.kind == line.kind && last.line.text == line.text);
-                if repeat {
-                    return false;
-                }
-                let seq = self.entries.last().map_or(0, |e| e.seq);
-                self.insert(seq, false, line)
-            }
+        if let Some(seq) = seq {
+            return self.insert(seq, true, line);
         }
+        // No `seq` to dedupe on (an older server, or an event type the daemon
+        // does not stamp): suppress an immediate repeat, the only duplicate
+        // seen in practice.
+        let repeat = self
+            .entries
+            .last()
+            .is_some_and(|last| last.line.kind == line.kind && last.line.text == line.text);
+        if repeat {
+            return false;
+        }
+        let seq = self.entries.last().map_or(0, |e| e.seq);
+        self.insert(seq, false, line)
     }
 
     fn insert(&mut self, seq: i64, sequenced: bool, line: ConversationLine) -> bool {
@@ -340,11 +326,11 @@ mod tests {
     fn a_live_event_does_not_count_as_a_loaded_conversation() {
         let mut store = ConversationStore::new();
         store.push_live(Some(5), line("live"));
-        assert!(!store.loaded(), "the history fetch must still go out");
+        assert!(!store.loaded, "the history fetch must still go out");
         assert!(!store.is_empty());
 
         store.merge_page(PageKind::Latest, rows(&[(4, "history")]), None, false);
-        assert!(store.loaded());
+        assert!(store.loaded);
         assert_eq!(texts(&store), ["history", "live"]);
     }
 
@@ -378,9 +364,9 @@ mod tests {
     #[test]
     fn a_gap_page_merges_without_disturbing_the_paging_cursor() {
         let mut store = loaded();
-        assert!(store.has_more_older());
+        assert!(store.has_more_older);
         store.merge_page(PageKind::Gap, rows(&[(13, "d"), (14, "e")]), None, false);
-        assert!(store.has_more_older(), "a gap page says nothing about older rows");
+        assert!(store.has_more_older, "a gap page says nothing about older rows");
         assert_eq!(texts(&store), ["a", "b", "c", "d", "e"]);
     }
 
@@ -398,7 +384,7 @@ mod tests {
         assert!(merge.reordered, "prepending invalidates the render cache");
         assert_eq!(texts(&store), ["older-1", "older-2", "a", "b", "c"]);
 
-        assert!(!store.has_more_older());
+        assert!(!store.has_more_older);
         assert!(store.begin_older().is_none(), "the transcript start is reached");
     }
 
@@ -407,7 +393,7 @@ mod tests {
         let mut store = loaded();
         store.begin_older().expect("a request");
         store.merge_page(PageKind::Older, rows(&[(9, "older")]), None, true);
-        assert!(store.has_more_older());
+        assert!(store.has_more_older);
         assert_eq!(store.begin_older(), Some(PageRequest::before(9, PAGE_LIMIT)));
     }
 
@@ -432,12 +418,12 @@ mod tests {
         store.page_not_modified(PageKind::Latest);
         assert_eq!(store.etag(), Some("etag-1"));
         assert_eq!(texts(&store), ["a", "b", "c"]);
-        assert!(store.loaded());
+        assert!(store.loaded);
 
         store.begin_older().expect("a request");
         store.page_not_modified(PageKind::Older);
-        assert!(!store.loading_older());
-        assert!(store.has_more_older(), "a 304 must not claim the transcript ended");
+        assert!(!store.loading_older);
+        assert!(store.has_more_older, "a 304 must not claim the transcript ended");
     }
 
     #[test]
@@ -445,7 +431,7 @@ mod tests {
         let mut store = loaded();
         store.begin_older().expect("a request");
         store.merge_page(PageKind::Older, rows(&[(9, "older")]), None, false);
-        assert!(!store.has_more_older());
+        assert!(!store.has_more_older);
 
         store.merge_page(
             PageKind::Latest,
@@ -454,7 +440,7 @@ mod tests {
             false,
         );
         assert_eq!(store.etag(), Some("etag-2"));
-        assert!(!store.has_more_older(), "a later page already proved the start was reached");
+        assert!(!store.has_more_older, "a later page already proved the start was reached");
         assert_eq!(texts(&store), ["older", "a", "b", "c", "d"]);
     }
 
@@ -465,6 +451,6 @@ mod tests {
         assert_eq!(store.oldest_seq(), None);
         assert_eq!(store.newest_seq(), None);
         assert_eq!(store.etag(), None);
-        assert!(!store.loaded());
+        assert!(!store.loaded);
     }
 }

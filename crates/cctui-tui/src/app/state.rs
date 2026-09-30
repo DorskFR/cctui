@@ -151,6 +151,7 @@ impl App {
         self.selected_session().map(|s| s.id.clone())
     }
 
+    #[cfg(test)]
     pub fn conversation(&self, session_id: &str) -> Option<&ConversationStore> {
         self.conversations.get(session_id)
     }

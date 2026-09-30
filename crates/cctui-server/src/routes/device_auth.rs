@@ -66,13 +66,11 @@ impl RequestRow {
     }
 }
 
-const SELECT_BY_DEVICE_CODE: &str =
-    "SELECT id, user_code, client_name, expires_at, last_polled_at, \
+const SELECT_BY_DEVICE_CODE: &str = "SELECT id, user_code, client_name, expires_at, last_polled_at, \
      approved_at, approved_by, denied_at, claimed_at \
      FROM device_auth_requests WHERE device_code_hash = $1";
 
-const SELECT_BY_USER_CODE: &str =
-    "SELECT id, user_code, client_name, expires_at, last_polled_at, \
+const SELECT_BY_USER_CODE: &str = "SELECT id, user_code, client_name, expires_at, last_polled_at, \
      approved_at, approved_by, denied_at, claimed_at \
      FROM device_auth_requests WHERE user_code = $1";
 
@@ -91,7 +89,7 @@ pub fn generate_user_code() -> String {
 #[must_use]
 pub fn normalize_user_code(raw: &str) -> String {
     let stripped: String =
-        raw.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect();
+        raw.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).collect();
     if stripped.len() == 8 { format!("{}-{}", &stripped[..4], &stripped[4..]) } else { stripped }
 }
 

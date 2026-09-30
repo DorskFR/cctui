@@ -76,8 +76,7 @@ impl Chord {
         }
         let mut mods = KeyModifiers::NONE;
         let mut rest = text;
-        loop {
-            let Some((head, tail)) = rest.split_once('+') else { break };
+        while let Some((head, tail)) = rest.split_once('+') {
             if head.is_empty() || tail.is_empty() {
                 return Err(format!("`{text}` is not a key"));
             }

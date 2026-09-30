@@ -231,6 +231,9 @@ fn every_variant_decodes_through_the_tui_receive_path() {
             Incoming::Undecodable(reason) => {
                 panic!("the TUI cannot decode {name}: {reason}\nwire: {wire}")
             }
+            other @ (Incoming::Connected | Incoming::Disconnected(_)) => {
+                panic!("a frame decoded as a socket lifecycle event: {other:?}")
+            }
         }
     }
 }
@@ -256,6 +259,6 @@ fn an_unknown_variant_is_surfaced_rather_than_dropped() {
     let wire = serde_json::json!({"type": "not_a_real_event", "session_id": "s-1"}).to_string();
     match decode_frame(&wire) {
         Incoming::Undecodable(reason) => assert!(!reason.is_empty()),
-        Incoming::Event(_) => panic!("an unknown tag must not decode"),
+        other => panic!("an unknown tag must surface as undecodable, got {other:?}"),
     }
 }

@@ -18,7 +18,7 @@ pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     if let Some(chip) = app.auth.chip() {
         spans.push(Span::raw("  "));
-        let style = if chip.rejected { theme::ERROR } else { theme::DIM };
+        let style = if chip.rejected { theme::error() } else { theme::dim() };
         spans.push(Span::styled(format!("@{}", chip.text), style));
     }
     if let Some(toast) = app.toasts.latest() {

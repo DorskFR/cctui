@@ -85,15 +85,17 @@ pub fn init(choice: ThemeChoice) {
 /// it, dark is the safer guess.
 pub fn resolve(choice: ThemeChoice) -> ThemeChoice {
     match choice {
-        ThemeChoice::Auto => match std::env::var("COLORFGBG").ok().and_then(background_index) {
-            Some(bg) if (7..=15).contains(&bg) => ThemeChoice::Light,
-            _ => ThemeChoice::Dark,
-        },
+        ThemeChoice::Auto => {
+            match std::env::var("COLORFGBG").ok().as_deref().and_then(background_index) {
+                Some(bg) if (7..=15).contains(&bg) => ThemeChoice::Light,
+                _ => ThemeChoice::Dark,
+            }
+        }
         pinned => pinned,
     }
 }
 
-fn background_index(value: String) -> Option<u8> {
+fn background_index(value: &str) -> Option<u8> {
     value.rsplit(';').next()?.trim().parse().ok()
 }
 

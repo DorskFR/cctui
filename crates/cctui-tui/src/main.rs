@@ -245,19 +245,19 @@ async fn run(
                 actions
             }
             maybe_event = event_rx.recv(), if !ws_closed => {
-                match maybe_event {
-                    Some(event) => {
+                maybe_event.map_or_else(
+                    || {
+                        ws_closed = true;
+                        vec![Action::Toast(Level::Error, "event stream closed".to_owned())]
+                    },
+                    |event| {
                         let mut actions = incoming_actions(event, &mut ws_ever_connected);
                         while let Ok(ev) = event_rx.try_recv() {
                             actions.extend(incoming_actions(ev, &mut ws_ever_connected));
                         }
                         actions
-                    }
-                    None => {
-                        ws_closed = true;
-                        vec![Action::Toast(Level::Error, "event stream closed".to_owned())]
-                    }
-                }
+                    },
+                )
             }
             _ = refresh_interval.tick() => vec![Action::RefreshSessions],
         };
@@ -288,7 +288,7 @@ fn apply_config(app: &mut App) {
 /// unreachable or unreadable server simply leaves the local config in force.
 async fn apply_server_settings(server: &Client, app: &mut App) {
     if let Ok(payload) = server.settings().await {
-        app.config.apply_server(&config::server::ServerPrefs::from_settings(&payload.data));
+        app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
     }
     app.show_timestamps = app.config.prefs.timestamps;
 }

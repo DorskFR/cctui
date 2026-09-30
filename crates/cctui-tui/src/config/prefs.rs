@@ -29,7 +29,7 @@ impl Default for Prefs {
 impl Prefs {
     /// The server's settings are a weaker default than the local file: a knob
     /// written in `tui.toml` wins on this machine.
-    pub fn apply_server(&mut self, server: &super::server::ServerPrefs) {
+    pub const fn apply_server(&mut self, server: super::server::ServerPrefs) {
         if let Some(v) = server.compact_rows {
             self.compact_rows = v;
         }
@@ -38,7 +38,7 @@ impl Prefs {
         }
     }
 
-    pub fn apply_file(&mut self, file: &PrefsFile) {
+    pub const fn apply_file(&mut self, file: PrefsFile) {
         if let Some(v) = file.timestamps {
             self.timestamps = v;
         }
@@ -63,8 +63,8 @@ mod tests {
             theme: None,
         };
         let mut prefs = Prefs::default();
-        prefs.apply_server(&server);
-        prefs.apply_file(&PrefsFile { notifications: Some(true), ..PrefsFile::default() });
+        prefs.apply_server(server);
+        prefs.apply_file(PrefsFile { notifications: Some(true), ..PrefsFile::default() });
         assert!(prefs.compact_rows);
         assert!(prefs.notifications);
     }
@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn an_absent_key_leaves_the_default_alone() {
         let mut prefs = Prefs::default();
-        prefs.apply_file(&PrefsFile { compact_rows: Some(true), ..PrefsFile::default() });
+        prefs.apply_file(PrefsFile { compact_rows: Some(true), ..PrefsFile::default() });
         assert!(prefs.compact_rows);
         assert!(prefs.notifications);
         assert!(!prefs.timestamps);
