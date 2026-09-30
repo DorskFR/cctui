@@ -52,7 +52,7 @@ export function youtrackChip(data: Record<string, unknown>): Omit<PluginChip, 'p
 	const lines = [issue];
 	if (summary) lines.push(summary);
 	if (state) lines.push(state);
-	return { label: issue, title: lines.join('\n'), href: str(data.url), icon: 'tag' };
+	return { label: issue, title: lines.join('\n'), href: str(data.url), icon: 'bookmark' };
 }
 
 registerPluginChipRenderer('youtrack', youtrackChip);

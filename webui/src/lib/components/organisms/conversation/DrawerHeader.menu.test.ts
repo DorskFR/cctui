@@ -84,3 +84,32 @@ describe('drawer header ⋯ menu', () => {
 		expect(header).not.toContain(':global(');
 	});
 });
+
+describe('linked-issue entries', () => {
+	it('offers Link issue… when nothing is linked and Change/Unlink when one is', () => {
+		const src = items();
+		expect(src).toContain('m.plugin_issue_menu_link()');
+		expect(src).toContain('m.plugin_issue_menu_change()');
+		expect(src).toContain('m.plugin_issue_menu_unlink()');
+		expect(src).toContain('issueLinked ?');
+	});
+
+	it('labels the entry with an issue glyph, never the labels tag', () => {
+		const src = items();
+		const entry = src.slice(src.indexOf('plugin_issue_menu_link'));
+		expect(entry).toContain("icon: 'bookmark' as const");
+		expect(src).not.toContain("icon: 'tag' as const");
+	});
+
+	it('opens the modal rather than an inline editor, and unlinks in place', () => {
+		const src = items();
+		expect(src).toContain('issueLinkOpen = true');
+		expect(src).toContain('setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, null)');
+		expect(markup()).toContain('<IssueLinkModal');
+	});
+
+	it('hands the detected id to the chip row and the modal', () => {
+		expect(markup()).toContain('{detectedIssue}');
+		expect(markup()).toContain('detected={detectedIssue}');
+	});
+});

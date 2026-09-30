@@ -1,69 +1,34 @@
 <script lang="ts">
 	// Chips for a session's `metadata.plugins` slots, one per registered
-	// renderer. `editable` adds the manual YouTrack entry the drawer header
-	// offers; the card renders read-only.
-	import { Badge, Icon, IconButton, Input } from '@dorsk/tsumikit';
+	// renderer. Purely presentational: there is no empty state, so a session
+	// with nothing linked adds nothing to its row. Setting an issue by hand
+	// lives in the drawer header's overflow menu.
+	import { Badge, Icon } from '@dorsk/tsumikit';
 	import { safeHref } from '$lib/safeHref';
 	import { m } from '$lib/paraglide/messages';
 	import { pluginChips, readPluginSlot } from '$lib/plugins/sessionSlots';
-	import { parseIssueEntry } from '$lib/plugins/issueId';
-	import { lookupYouTrackIssue } from '$lib/plugins/youtrackLookup';
-
-	const YOUTRACK = 'youtrack';
+	import { YOUTRACK_PLUGIN_ID } from '$lib/plugins/issueLink';
 
 	let {
 		metadata,
-		editable = false,
 		detected = null,
-		onset
+		suggestable = false,
+		onlink
 	}: {
 		metadata: unknown;
-		/** Show the manual set/clear affordance for the YouTrack slot. */
-		editable?: boolean;
-		/** An issue id found in the prompt / name / branch, offered when the
-		 *  slot is empty. */
+		/** An issue id found in the prompt / name / branch. */
 		detected?: string | null;
-		onset?: (pluginId: string, data: Record<string, unknown> | null) => void;
+		/** Offer `detected` as a one-click link while no issue is stored. */
+		suggestable?: boolean;
+		onlink?: (issue: string) => void;
 	} = $props();
 
 	const chips = $derived(pluginChips(metadata));
-	const youtrack = $derived(readPluginSlot(metadata, YOUTRACK));
-	const suggestion = $derived(editable && !youtrack && detected ? detected : null);
-
-	let editing = $state(false);
-	let entry = $state('');
-	let invalid = $state(false);
-
-	function open() {
-		const current = youtrack?.issue;
-		entry = typeof current === 'string' ? current : (detected ?? '');
-		invalid = false;
-		editing = true;
-	}
-
-	async function link(input: string) {
-		invalid = false;
-		const parsed = parseIssueEntry(input);
-		if (!parsed) {
-			invalid = true;
-			return;
-		}
-		editing = false;
-		const slot = await lookupYouTrackIssue(parsed.issue);
-		onset?.(YOUTRACK, { ...slot, ...(parsed.url ? { url: parsed.url } : {}) });
-	}
-
-	function apply() {
-		if (!entry.trim()) {
-			editing = false;
-			onset?.(YOUTRACK, null);
-			return;
-		}
-		void link(entry);
-	}
+	const linked = $derived(!!readPluginSlot(metadata, YOUTRACK_PLUGIN_ID));
+	const suggestion = $derived(suggestable && !linked && detected ? detected : null);
 </script>
 
-{#if chips.length || suggestion || editable}
+{#if chips.length || suggestion}
 	<span class="chips" data-journey="plugin-chips">
 		{#each chips as chip (chip.pluginId)}
 			{#if chip.href}
@@ -95,52 +60,17 @@
 			{/if}
 		{/each}
 
-		{#if editable}
-			{#if editing}
-				<span class="entry" class:invalid data-journey="plugin-chip-entry">
-					<Input
-						bind:value={entry}
-						placeholder={m.plugin_chip_issue_placeholder()}
-						aria-label={m.plugin_chip_issue_aria()}
-						aria-invalid={invalid}
-						onkeydown={(e: KeyboardEvent) => {
-							if (e.key === 'Enter') apply();
-							else if (e.key === 'Escape') editing = false;
-						}}
-					/>
-					<span data-journey="plugin-chip-apply">
-						<IconButton chip variant="default" icon="check" label={m.common_apply()} onclick={apply} />
-					</span>
-					<IconButton
-						chip
-						variant="default"
-						icon="x"
-						label={m.common_cancel()}
-						onclick={() => (editing = false)}
-					/>
-				</span>
-			{:else if suggestion}
-				<span data-journey="plugin-chip-suggest">
-					<Badge
-						as="button"
-						mono
-						title={m.plugin_chip_link_detected_title({ issue: suggestion })}
-						onclick={() => {
-							if (suggestion) void link(suggestion);
-						}}>+ {suggestion}</Badge
-					>
-				</span>
-			{:else}
-				<span data-journey="plugin-chip-edit">
-					<IconButton
-						chip
-						variant="default"
-						icon="tag"
-						label={youtrack ? m.plugin_chip_issue_edit() : m.plugin_chip_issue_set()}
-						onclick={open}
-					/>
-				</span>
-			{/if}
+		{#if suggestion}
+			<span data-journey="plugin-chip-suggest">
+				<Badge
+					as="button"
+					mono
+					title={m.plugin_chip_link_detected_title({ issue: suggestion })}
+					onclick={() => {
+						if (suggestion) onlink?.(suggestion);
+					}}>+ {suggestion}</Badge
+				>
+			</span>
 		{/if}
 	</span>
 {/if}
@@ -175,16 +105,5 @@
 		overflow: hidden;
 		white-space: nowrap;
 		text-overflow: ellipsis;
-	}
-	.entry {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-		min-width: 0;
-		max-width: 16rem;
-	}
-	.entry.invalid {
-		outline: 1px solid var(--danger);
-		border-radius: var(--radius-sm);
 	}
 </style>

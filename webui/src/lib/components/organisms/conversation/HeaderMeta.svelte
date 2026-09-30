@@ -11,7 +11,7 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
 	import PluginChips from '$lib/components/molecules/PluginChips.svelte';
-	import { detectIssueId } from '$lib/plugins/issueId';
+	import { YOUTRACK_PLUGIN_ID, resolveIssueSlot } from '$lib/plugins/issueLink';
 	import { Badge, Icon, IconButton, Popover, Select, WorkingDir } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
 	import { useCodexModels, useMergedCodexModels, useSessionActions } from '$lib/queries';
@@ -25,7 +25,8 @@
 		isCodexSession,
 		showStatusBadge,
 		onsetmodel,
-		onfork
+		onfork,
+		detectedIssue = null
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -33,22 +34,18 @@
 		showStatusBadge: boolean;
 		onsetmodel: (model: string, effort: string) => void;
 		onfork: () => void;
+		/** An issue id detected for this session, offered as a one-click link
+		 *  while nothing is stored. */
+		detectedIssue?: string | null;
 	} = $props();
 
 	const end = $derived(sessionEnd(session));
 	const branch = $derived(branchOf(session));
 
 	const actions = useSessionActions();
-	// The spawn prompt only survives on the row for drafts; a live session's
-	// detection falls back to its name and branch.
-	const spawnPrompt = $derived(
-		(session.metadata as { draft?: { prompt?: unknown } } | null)?.draft?.prompt
-	);
-	const detectedIssue = $derived(
-		detectIssueId(typeof spawnPrompt === 'string' ? spawnPrompt : null, session.name, branch)
-	);
-	function setPluginSlot(pluginId: string, data: Record<string, unknown> | null) {
-		void actions.setPluginSlot(session.id, pluginId, data);
+	async function linkIssue(issue: string) {
+		const data = await resolveIssueSlot(issue);
+		if (data) await actions.setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, data);
 	}
 
 	// In-place model/effort editor, codex only.
@@ -168,9 +165,9 @@
 	<span class="plugins">
 		<PluginChips
 			metadata={session.metadata}
-			editable={!archived}
 			detected={detectedIssue}
-			onset={setPluginSlot}
+			suggestable={!archived}
+			onlink={(issue) => void linkIssue(issue)}
 		/>
 	</span>
 	{@render modelMeta('drawer')}
