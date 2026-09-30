@@ -74,16 +74,18 @@
 					<span class="mark" aria-hidden="true">{ticks[row.probe] ? '◆' : i + 1}</span>
 					<Text size="sm" tone={ticks[row.probe] ? 'faint' : 'default'}>{row.label()}</Text>
 					{#if !ticks[row.probe]}
-						<Button
-							size="sm"
-							variant="ghost"
-							loading={busy === row.guide}
-							onclick={() => launch(row.guide)}
-							data-journey="first-run-start"
-							data-journey-key={row.guide}
-						>
-							{m.onboarding_checklist_show()}
-						</Button>
+						<span class="act">
+							<Button
+								size="sm"
+								variant="ghost"
+								loading={busy === row.guide}
+								onclick={() => launch(row.guide)}
+								data-journey="first-run-start"
+								data-journey-key={row.guide}
+							>
+								{m.onboarding_checklist_show()}
+							</Button>
+						</span>
 					{/if}
 				</div>
 			{/each}
@@ -131,7 +133,8 @@
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
-	.row :global(button) {
+	.act {
+		display: inline-flex;
 		margin-inline-start: auto;
 	}
 	.foot {
