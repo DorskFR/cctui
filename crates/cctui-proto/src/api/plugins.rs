@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// The env name a host-minted, `read`-scoped cctui token is exported under.
-/// There is deliberately no scope field: the one cctui API a plugin's skill can
-/// reach is its own backend proxy, which asks for `read`.
+///
+/// There is deliberately no scope field: the one cctui API a plugin's skill can reach is its own
+/// backend proxy, which asks for `read`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]

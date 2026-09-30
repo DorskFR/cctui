@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use dashmap::DashMap;
 
 pub use cctui_proto::api::provider_status::{
@@ -251,6 +251,8 @@ async fn poll_once(
 
 #[cfg(test)]
 mod tests {
+    use chrono::DateTime;
+
     use super::*;
 
     const NONE: &str = include_str!("fixtures/provider_status/anthropic_none.json");

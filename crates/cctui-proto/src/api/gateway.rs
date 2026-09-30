@@ -27,6 +27,7 @@ impl RateLimits {
     }
 
     /// Nothing to enforce ⇒ the proxy skips the window entirely.
+    #[must_use]
     pub const fn is_unset(&self) -> bool {
         self.rpm.is_none() && self.tpm.is_none()
     }

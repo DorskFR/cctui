@@ -14,7 +14,7 @@ use super::{Account, session_id_for_token, usage_for_soft_limit};
 use crate::soft_limit::{SoftLimits, UsageWindow};
 use crate::state::AppState;
 
-pub use cctui_proto::api::gateway::{DEFAULT_STEP_PCT, UsageNotices};
+pub use cctui_proto::api::gateway::UsageNotices;
 
 pub fn bucket(utilization: f64, step_pct: u32) -> u32 {
     let step = f64::from(step_pct.max(1));
@@ -217,8 +217,10 @@ pub async fn deliver_if_due(state: &AppState, acct: &Account, session_token: &st
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use cctui_proto::api::gateway::DEFAULT_STEP_PCT;
     use chrono::TimeZone;
+
+    use super::*;
 
     fn window(
         key: &str,

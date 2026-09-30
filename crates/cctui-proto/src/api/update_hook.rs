@@ -1,6 +1,6 @@
 //! `/api/v1/version/self-update` — update-hook run state.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;

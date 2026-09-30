@@ -1942,13 +1942,14 @@ fn urlencoding(s: &str) -> String {
 /// spams it, and many clients share one entry per account.
 pub const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
 
-impl UsageWindowView {
-    /// Rate `window` now, on the slope from `previous` when there is one and
-    /// on the window average otherwise.
-    fn now(window: crate::soft_limit::UsageWindow, previous: Option<crate::pace::Sample>) -> Self {
-        let pace = crate::pace::for_window(Utc::now(), &window, previous);
-        Self { window, pace }
-    }
+/// Rate `window` now, on the slope from `previous` when there is one and
+/// on the window average otherwise.
+fn usage_window_view(
+    window: crate::soft_limit::UsageWindow,
+    previous: Option<crate::pace::Sample>,
+) -> UsageWindowView {
+    let pace = crate::pace::for_window(Utc::now(), &window, previous);
+    UsageWindowView { window, pace }
 }
 
 /// The earlier readings a provider's windows are rated against, or none when
@@ -1974,54 +1975,52 @@ async fn previous_samples(
     }
 }
 
-impl AccountUsage {
-    /// Assemble the view; `previous` carries at most one earlier sample per
-    /// window key (see [`previous_samples`]).
-    fn build(
-        account_id: Uuid,
-        provider: String,
-        usage: Option<serde_json::Value>,
-        age_secs: u64,
-        previous: &[crate::store::usage_samples::PreviousSample],
-    ) -> Self {
-        let windows = usage
-            .as_ref()
-            .map(crate::soft_limit::normalize_usage_windows)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|w| {
-                let prev = previous
-                    .iter()
-                    .find(|p| p.window_key == w.key)
-                    .map(crate::store::usage_samples::PreviousSample::sample);
-                UsageWindowView::now(w, prev)
-            })
-            .collect();
-        let limit_reset = usage
-            .as_ref()
-            .and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
-        let limit_resets = usage
-            .as_ref()
-            .map(|u| crate::routes::limit_reset::limit_resets(&provider, u))
-            .unwrap_or_default();
-        Self {
-            account_id,
-            provider,
-            usage,
-            windows,
-            age_secs,
-            limit_reset,
-            limit_resets,
-            provider_status: None,
-        }
+/// Assemble the view; `previous` carries at most one earlier sample per
+/// window key (see [`previous_samples`]).
+fn build_account_usage(
+    account_id: Uuid,
+    provider: String,
+    usage: Option<serde_json::Value>,
+    age_secs: u64,
+    previous: &[crate::store::usage_samples::PreviousSample],
+) -> AccountUsage {
+    let windows = usage
+        .as_ref()
+        .map(crate::soft_limit::normalize_usage_windows)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| {
+            let prev = previous
+                .iter()
+                .find(|p| p.window_key == w.key)
+                .map(crate::store::usage_samples::PreviousSample::sample);
+            usage_window_view(w, prev)
+        })
+        .collect();
+    let limit_reset = usage
+        .as_ref()
+        .and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
+    let limit_resets = usage
+        .as_ref()
+        .map(|u| crate::routes::limit_reset::limit_resets(&provider, u))
+        .unwrap_or_default();
+    AccountUsage {
+        account_id,
+        provider,
+        usage,
+        windows,
+        age_secs,
+        limit_reset,
+        limit_resets,
+        provider_status: None,
     }
+}
 
-    /// Attach the upstream incident reading for this credential's family, read
-    /// from the poller's cache — no network on the request path.
-    fn with_status(mut self, state: &AppState) -> Self {
-        self.provider_status = state.provider_status.degraded_for_provider(&self.provider);
-        self
-    }
+/// Attach the upstream incident reading for this credential's family, read
+/// from the poller's cache — no network on the request path.
+fn with_provider_status(mut row: AccountUsage, state: &AppState) -> AccountUsage {
+    row.provider_status = state.provider_status.degraded_for_provider(&row.provider);
+    row
 }
 
 /// Cache a fresh usage fetch and push it to every client.
@@ -2043,7 +2042,7 @@ pub async fn store_and_broadcast_usage(
         crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
     );
     let previous = previous_samples(state, id, usage.as_ref()).await;
-    let row = AccountUsage::build(id, provider, usage, 0, &previous).with_status(state);
+    let row = with_provider_status(build_account_usage(id, provider, usage, 0, &previous), state);
     if row.provider.is_empty() {
         return row;
     }
@@ -2091,9 +2090,10 @@ pub async fn account_usage(
         let usage = hit.usage.clone();
         drop(hit);
         let previous = previous_samples(&state, id, usage.as_ref()).await;
-        return Ok(Json(
-            AccountUsage::build(id, provider, usage, age_secs, &previous).with_status(&state),
-        ));
+        return Ok(Json(with_provider_status(
+            build_account_usage(id, provider, usage, age_secs, &previous),
+            &state,
+        )));
     }
 
     // Stale or absent → fetch upstream (anthropic only; Codex returns None).
@@ -2110,9 +2110,10 @@ pub async fn account_usage(
             .map(|hit| (hit.usage.clone(), hit.fetched_at.elapsed().as_secs()));
         if let Some((usage, age_secs)) = cached {
             let previous = previous_samples(&state, id, usage.as_ref()).await;
-            return Ok(Json(
-                AccountUsage::build(id, provider, usage, age_secs, &previous).with_status(&state),
-            ));
+            return Ok(Json(with_provider_status(
+                build_account_usage(id, provider, usage, age_secs, &previous),
+                &state,
+            )));
         }
         // No prior value — surface as "no usage" so the UI just hides the chip.
         None
@@ -2162,8 +2163,10 @@ pub async fn all_accounts_usage(
                 .get(&r.id)
                 .map_or(0, |hit| hit.fetched_at.elapsed().as_secs());
             AccountUsageEntry {
-                usage: AccountUsage::build(r.id, r.provider, usage, age_secs, &previous)
-                    .with_status(&state),
+                usage: with_provider_status(
+                    build_account_usage(r.id, r.provider, usage, age_secs, &previous),
+                    &state,
+                ),
                 account: r.account_id,
                 account_name: r.account_name,
                 account_emoji: r.account_emoji,
@@ -2402,7 +2405,7 @@ mod tests {
         let usage = serde_json::json!({
             "five_hour": { "utilization": 60.0, "resets_at": resets },
         });
-        let built = AccountUsage::build(Uuid::nil(), "anthropic".into(), Some(usage), 7, &[]);
+        let built = build_account_usage(Uuid::nil(), "anthropic".into(), Some(usage), 7, &[]);
         let json = serde_json::to_value(&built).unwrap();
         let w = &json["windows"][0];
         assert_eq!(w["key"], "session");
@@ -2423,7 +2426,7 @@ mod tests {
         let usage = serde_json::json!({
             "five_hour": { "utilization": 60.0, "resets_at": resets },
         });
-        let row = AccountUsage::build(Uuid::nil(), "anthropic".into(), Some(usage), 0, &[]);
+        let row = build_account_usage(Uuid::nil(), "anthropic".into(), Some(usage), 0, &[]);
         let payload = serde_json::to_value(&row).expect("row serializes");
         let event =
             cctui_proto::ws::ServerEvent::AccountUsage { account_id: Uuid::nil(), usage: payload };

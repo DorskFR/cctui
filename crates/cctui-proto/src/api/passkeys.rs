@@ -1,4 +1,4 @@
-//! `/api/v1/auth/passkeys` — WebAuthn enrolment and login ceremonies.
+//! `/api/v1/auth/passkeys` — `WebAuthn` enrolment and login ceremonies.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use uuid::Uuid;
 pub struct PasskeyChallenge {
     /// Handle for the parked ceremony state; echoed back on finish.
     pub challenge_id: Uuid,
-    /// The raw WebAuthn options, passed to `navigator.credentials.*` verbatim
+    /// The raw `WebAuthn` options, passed to `navigator.credentials.*` verbatim
     /// after the browser-side base64url decoding. Deliberately untyped here:
     /// the shape is the W3C one and webauthn-rs owns it.
     pub options: Value,
@@ -22,7 +22,7 @@ pub struct PasskeyChallenge {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyRegisterFinish {
     pub challenge_id: Uuid,
-    /// Human label for the key ("iPhone", "YubiKey", "Bitwarden").
+    /// Human label for the key ("iPhone", "`YubiKey`", "Bitwarden").
     pub label: Option<String>,
     /// The `PublicKeyCredential` from `navigator.credentials.create()`.
     pub credential: Value,

@@ -4,8 +4,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Family labels the poller knows, with their summary endpoint and human page.
-/// `status.anthropic.com` 301s to `status.claude.com`; the client follows
-/// redirects, so either spelling works — the canonical one is used directly.
+///
+/// `status.anthropic.com` 301s to `status.claude.com`; the client follows redirects, so either
+/// spelling works — the canonical one is used directly.
 pub const SOURCES: &[(&str, &str, &str)] = &[
     ("anthropic", "https://status.claude.com/api/v2/summary.json", "https://status.claude.com"),
     ("openai", "https://status.openai.com/api/v2/summary.json", "https://status.openai.com"),

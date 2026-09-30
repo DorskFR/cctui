@@ -10,7 +10,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -198,6 +197,8 @@ fn db_err(e: &sqlx::Error) -> StatusCode {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
 
     fn prompt(name: &str, owner: Option<&str>, repo: Option<&str>) -> Prompt {
