@@ -5,14 +5,13 @@ import type { SoftLimitConfig } from "./SoftLimitConfig";
 import type { UsageNotices } from "./UsageNotices";
 
 /**
- * `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload. A partial update:
- * for a non-managed compatible endpoint the operator may edit `base_url`,
- * `auth_scheme`, and rotate the static credential (`access_token`).
- * `models` / `model_aliases` / `soft_limits` / `settings_json` are editable
- * for every provider. All optional; an absent field leaves that column unchanged.
- * `base_url`/credential are never returned, so the editor re-supplies
- * `base_url` when changing it and leaves the credential blank to keep the
- * stored one.
+ * `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload.
+ *
+ * A partial update: for a non-managed compatible endpoint the operator may edit `base_url`,
+ * `auth_scheme`, and rotate the static credential (`access_token`). `models` / `model_aliases` /
+ * `soft_limits` / `settings_json` are editable for every provider. All optional; an absent field
+ * leaves that column unchanged. `base_url`/credential are never returned, so the editor
+ * re-supplies `base_url` when changing it and leaves the credential blank to keep the stored one.
  */
 export type UpdateProvider = { base_url?: string, auth_scheme?: string, models?: Array<AccountModel>, 
 /**

@@ -3,7 +3,7 @@ import type { JsonValue } from "./serde_json/JsonValue";
 
 export type PasskeyRegisterFinish = { challenge_id: string, 
 /**
- * Human label for the key ("iPhone", "YubiKey", "Bitwarden").
+ * Human label for the key ("iPhone", "`YubiKey`", "Bitwarden").
  */
 label: string | null, 
 /**

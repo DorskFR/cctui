@@ -2,7 +2,9 @@
 import type { ModelHint } from "./ModelHint";
 
 /**
- * One entry of a model picker. `v` is the wire value; the empty string means
- * "leave the harness its own default".
+ * One entry of a model picker.
+ *
+ * `v` is the wire value; the empty string means "leave the harness its own
+ * default".
  */
 export type ModelOption = { v: string, label: string, hint?: ModelHint, disabled: boolean, };

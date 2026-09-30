@@ -5,9 +5,10 @@ import type { SoftLimitConfig } from "./SoftLimitConfig";
 import type { UsageNotices } from "./UsageNotices";
 
 /**
- * API view of one provider credential under an account. Secrets (the
- * OAuth/static tokens) are deliberately absent; `base_url`/`auth_scheme` are
- * surfaced so the accounts UI can render/edit a compatible endpoint in place.
+ * API view of one provider credential under an account.
+ *
+ * Secrets (the OAuth/static tokens) are deliberately absent; `base_url`/`auth_scheme` are surfaced
+ * so the accounts UI can render/edit a compatible endpoint in place.
  */
 export type AccountProvider = { id: string, account_id: string, 
 /**

@@ -4,10 +4,11 @@ import type { RateLimits } from "./RateLimits";
 import type { SoftLimitConfig } from "./SoftLimitConfig";
 
 /**
- * Provider-credential payload: the create/attach fields for one
- * provider row. Used standalone by `POST /accounts/{id}/providers` and
- * flattened into [`CreateAccount`] so the legacy one-shot account+credential
- * create keeps working.
+ * Provider-credential payload.
+ *
+ * the create/attach fields for one provider row. Used standalone by `POST
+ * /accounts/{id}/providers` and flattened into [`CreateAccount`] so the legacy one-shot
+ * account+credential create keeps working.
  */
 export type CreateProvider = { 
 /**

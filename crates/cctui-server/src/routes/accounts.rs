@@ -1997,9 +1997,8 @@ fn build_account_usage(
             usage_window_view(w, prev)
         })
         .collect();
-    let limit_reset = usage
-        .as_ref()
-        .and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
+    let limit_reset =
+        usage.as_ref().and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
     let limit_resets = usage
         .as_ref()
         .map(|u| crate::routes::limit_reset::limit_resets(&provider, u))

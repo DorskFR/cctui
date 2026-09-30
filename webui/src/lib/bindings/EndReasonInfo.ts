@@ -3,7 +3,8 @@ import type { EndTone } from "./EndTone";
 import type { SessionEndReason } from "./SessionEndReason";
 
 /**
- * One row of the end-reason table served to clients, so neither of them
- * hardcodes the tone rules.
+ * One row of the end-reason table served to clients.
+ *
+ * Neither client hardcodes the tone rules.
  */
 export type EndReasonInfo = { reason: SessionEndReason, tone: EndTone, muted: boolean, failed_start: boolean, };
