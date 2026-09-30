@@ -380,6 +380,53 @@ pub async fn for_session(pool: &PgPool, session_id: &str) -> Vec<ContextItem> {
     })
 }
 
+/// The context a `CctuiAgent` child inherits: the pinned set of the profile it
+/// names (by name, the way the tool takes it) plus every scope-matching
+/// memory, resolved against the child's own machine and working dir.
+///
+/// The same [`resolve_for_spawn`] the webui path uses, so a profile means the
+/// same thing from a browser and from the tool. Best-effort throughout: a
+/// child launches without context rather than not at all.
+pub async fn resolve_for_child(
+    pool: &PgPool,
+    user_id: Uuid,
+    profile_name: Option<&str>,
+    machine_id: Option<&str>,
+    working_dir: Option<&str>,
+) -> Vec<ContextItem> {
+    let items = match list_for_user(pool, user_id).await {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::warn!(error = %e, "child context lookup failed; spawning without it");
+            return Vec::new();
+        }
+    };
+    let mut picks = Vec::new();
+    if let Some(name) = profile_name.map(str::trim).filter(|n| !n.is_empty()) {
+        let pinned: Option<Vec<Uuid>> = sqlx::query_scalar(
+            "SELECT context_items FROM session_profiles WHERE user_id = $1 AND name = $2",
+        )
+        .bind(user_id)
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or_default();
+        picks.extend(
+            pinned
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|id| items.iter().find(|i| &i.id == id))
+                .map(|i| i.name.clone()),
+        );
+    }
+    let scope = SpawnScope {
+        machine_id: machine_id.map(str::to_owned),
+        working_dir: working_dir.map(str::to_owned),
+        label_ids: Vec::new(),
+    };
+    resolve_for_spawn(&items, &picks, true, &scope)
+}
+
 /// `GET /context` — every item the caller owns.
 pub async fn list_items(
     State(state): State<AppState>,
@@ -549,6 +596,44 @@ mod tests {
         let manual = resolve_for_spawn(&items, &["hand-picked".to_owned()], false, &SpawnScope::default());
         assert_eq!(names(&manual), ["hand-picked"], "auto off means only the picks");
         assert!(resolve_for_spawn(&items, &[], false, &SpawnScope::default()).is_empty());
+    }
+
+    /// Profile parity: both spawn paths funnel into `resolve_for_spawn` with
+    /// the profile's pinned names and `auto = true`, so a webui spawn and a
+    /// `CctuiAgent` child of the same profile resolve the same kit. The paths
+    /// differ only in how they look the profile up — by id from the form, by
+    /// name from the tool — and both key the machine scope on the machine's
+    /// uuid, never on the name a request happened to use.
+    #[test]
+    fn a_profile_resolves_the_same_kit_from_the_webui_and_from_the_tool() {
+        let machine = Uuid::new_v4().to_string();
+        let items = vec![
+            item("memory", "always", "user", None),
+            item("memory", "this-box", "machine", Some(&machine)),
+            item("memory", "in-repo", "path", Some("/w/repo")),
+            item("memory", "pinned", "machine", Some("somewhere-else")),
+            item("prompt", "reviewer", "user", None),
+        ];
+        // What a profile pins, named the same way on both paths.
+        let pinned = ["pinned".to_owned(), "reviewer".to_owned()];
+        let scope = SpawnScope {
+            machine_id: Some(machine.clone()),
+            working_dir: Some("/w/repo/crates".into()),
+            label_ids: Vec::new(),
+        };
+
+        let from_webui = resolve_for_spawn(&items, &pinned, true, &scope);
+        let from_tool = resolve_for_spawn(&items, &pinned, true, &scope);
+        assert_eq!(names(&from_webui), names(&from_tool));
+        assert_eq!(
+            names(&from_webui),
+            ["always", "in-repo", "pinned", "this-box", "reviewer"],
+            "the profile's off-scope pin rides along, the prompt template lands last"
+        );
+
+        // A machine-scoped item keyed on a different machine must not follow.
+        let elsewhere = SpawnScope { machine_id: Some(Uuid::new_v4().to_string()), ..scope };
+        assert!(!names(&resolve_for_spawn(&items, &[], true, &elsewhere)).contains(&"this-box"));
     }
 
     #[test]

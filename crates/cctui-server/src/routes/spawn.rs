@@ -160,7 +160,7 @@ async fn validate_spawn(
     }
     crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &req.label_ids).await;
     crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
-    let context = resolve_spawn_context(state, ctx, req, owner).await;
+    let context = resolve_spawn_context(state, ctx, req, owner, machine_uuid).await;
     crate::routes::context::remember_intent(&state.pool, &token_session_id, &context).await;
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
@@ -192,6 +192,7 @@ async fn resolve_spawn_context(
     ctx: &AuthContext,
     req: &SpawnRequest,
     owner: Uuid,
+    machine_uuid: Uuid,
 ) -> Vec<crate::routes::context::ContextItem> {
     use crate::routes::context::{SpawnScope, resolve_for_spawn};
 
@@ -206,8 +207,10 @@ async fn resolve_spawn_context(
     };
     let mut picks = asked.items;
     picks.extend(profile_context_names(state, req, uid, &items).await);
+    // The resolved uuid, not `req.machine_id`, which may be a name: a
+    // machine-scoped item must resolve the same here and on the child path.
     let scope = SpawnScope {
-        machine_id: Some(req.machine_id.clone()),
+        machine_id: Some(machine_uuid.to_string()),
         working_dir: Some(req.working_dir.clone()),
         label_ids: req.label_ids.clone(),
     };

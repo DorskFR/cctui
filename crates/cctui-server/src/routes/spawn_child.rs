@@ -478,13 +478,26 @@ pub async fn spawn_child(
     } else {
         None
     };
+    let child_cwd = req
+        .cwd
+        .clone()
+        .filter(|c| !c.trim().is_empty())
+        .or_else(|| parent.working_dir.clone());
+    // Same resolution the webui spawn runs, keyed on the child's own launch
+    // key, so a profile's context set means the same thing from the tool as
+    // from the browser.
+    let context = crate::routes::context::resolve_for_child(
+        &state.pool,
+        parent.user_id,
+        req.agent_profile.as_deref(),
+        Some(&parent.machine_uuid.to_string()),
+        child_cwd.as_deref(),
+    )
+    .await;
+    crate::routes::context::remember_intent(&state.pool, &child_key, &context).await;
     let spec = SessionSpec {
         adapter_id: AdapterId::new(&authorized.adapter),
-        working_dir: req
-            .cwd
-            .clone()
-            .filter(|c| !c.trim().is_empty())
-            .or_else(|| parent.working_dir.clone()),
+        working_dir: child_cwd,
         prompt: Some(req.prompt.clone()),
         name: req.name.clone().filter(|n| !n.trim().is_empty()),
         permission_mode: Some(authorized.permission_mode),
