@@ -23,8 +23,10 @@ pub enum ModelHint {
     NeedsVersion { version: String },
 }
 
-/// One entry of a model picker. `v` is the wire value; the empty string means
-/// "leave the harness its own default".
+/// One entry of a model picker.
+///
+/// `v` is the wire value; the empty string means "leave the harness its own
+/// default".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ModelOption {
@@ -58,9 +60,10 @@ fn default_option() -> ModelOption {
     ModelOption::plain("", "Default")
 }
 
-/// Offline fallback for codex, used only when no catalog is known. No model
-/// slug is listed on purpose: the server fetches the catalog per account, and
-/// free text covers a model no catalog has reached yet.
+/// Offline fallback for codex, used only when no catalog is known.
+///
+/// No model slug is listed on purpose: the server fetches the catalog per
+/// account, and free text covers a model no catalog has reached yet.
 #[must_use]
 pub fn codex_models() -> Vec<ModelOption> {
     vec![default_option()]
@@ -87,8 +90,9 @@ pub fn claude_efforts() -> Vec<String> {
     ["", "low", "medium", "high", "xhigh", "max"].map(String::from).to_vec()
 }
 
-/// Numeric semver compare, prerelease/build metadata ignored. Unparseable
-/// input compares equal so an odd version never disables a model.
+/// Numeric semver compare, prerelease and build metadata ignored.
+///
+/// Unparseable input compares equal, so an odd version never disables a model.
 #[must_use]
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
@@ -107,9 +111,10 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     Ordering::Equal
 }
 
-/// Options from a live catalog: hidden models dropped, superseded ones
-/// suffixed, `Default` first. An empty/absent catalog falls back to
-/// [`codex_models`].
+/// Options from a live catalog.
+///
+/// Hidden models are dropped and superseded ones suffixed, `Default` first. An
+/// empty or absent catalog falls back to [`codex_models`].
 #[must_use]
 pub fn codex_models_for(catalog: Option<&CodexModelCatalog>) -> Vec<ModelOption> {
     let Some(catalog) = catalog.filter(|c| !c.models.is_empty()) else {
@@ -142,8 +147,9 @@ pub fn codex_models_for(catalog: Option<&CodexModelCatalog>) -> Vec<ModelOption>
     options
 }
 
-/// Effort levels a model supports, `""` first. An unknown model or empty
-/// catalog falls back to the full static list.
+/// Effort levels a model supports, `""` first.
+///
+/// An unknown model or an empty catalog falls back to the full static list.
 #[must_use]
 pub fn codex_efforts_for(catalog: Option<&CodexModelCatalog>, model_id: &str) -> Vec<String> {
     let Some(catalog) = catalog.filter(|c| !c.models.is_empty()) else {
@@ -161,9 +167,11 @@ pub fn codex_efforts_for(catalog: Option<&CodexModelCatalog>, model_id: &str) ->
     std::iter::once(String::new()).chain(supported).collect()
 }
 
-/// The lists for one harness, with `model` the id already selected (its
-/// efforts are what the picker needs). An unknown harness gets the claude
-/// shape, which is also what a free-text picker needs.
+/// The lists for one harness.
+///
+/// `model` is the id already selected, so `efforts` are the ones it supports.
+/// An unknown harness gets the claude shape, which is also what a free-text
+/// picker needs.
 #[must_use]
 pub fn harness_models(
     harness: &str,

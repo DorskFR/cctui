@@ -25,8 +25,9 @@ pub enum EndTone {
 /// How much of a failed start's detail the badge carries.
 pub const BADGE_DETAIL_MAX: usize = 48;
 
-/// One row of the end-reason table served to clients, so neither of them
-/// hardcodes the tone rules.
+/// One row of the end-reason table served to clients.
+///
+/// Neither client hardcodes the tone rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct EndReasonInfo {
@@ -85,8 +86,9 @@ impl SessionEndReason {
     }
 }
 
-/// The first line of a failed start's detail, ellipsised to
-/// [`BADGE_DETAIL_MAX`]. `None` when the badge is just the label.
+/// The first line of a failed start's detail, ellipsised.
+///
+/// Capped at [`BADGE_DETAIL_MAX`]; `None` when the badge is just the label.
 #[must_use]
 pub fn end_badge_detail(reason: SessionEndReason, detail: Option<&str>) -> Option<String> {
     if !reason.failed_start() {

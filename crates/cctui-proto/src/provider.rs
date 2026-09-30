@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 
-/// An account may hold at most one provider per family; mirrors the server's
-/// generated `family` column.
+/// An account may hold at most one provider per family.
+///
+/// Mirrors the server's generated `family` column.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
