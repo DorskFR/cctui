@@ -1,8 +1,8 @@
 /// Mint a turn id from an explicit millisecond timestamp and 16 random bytes.
 ///
-/// UUIDv7 rather than v4 so the ids sort by send time, which keeps them useful
+/// `UUIDv7` rather than v4 so the ids sort by send time, which keeps them useful
 /// as a debugging trail and as a DB index key. Randomness is a parameter so the
-/// layout stays testable against the TypeScript original.
+/// layout stays testable against the `TypeScript` original.
 #[must_use]
 pub fn turn_id_from(ts_millis: u64, random: [u8; 16]) -> String {
     let mut bytes = random;

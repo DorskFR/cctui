@@ -1,12 +1,12 @@
-/// ArrowUp/ArrowDown recall over a prompt history, shared by the conversation
+/// `ArrowUp`/`ArrowDown` recall over a prompt history, shared by the conversation
 /// composer and the spawn form.
 ///
-/// Index -1 means editing the live draft; 0..n-1 browses newest-first. Recall
-/// only starts with the caret at the very start (and ends at the very end) so
-/// it never fights normal multiline cursor movement.
+/// `index` is `None` while editing the live draft; `Some(0..n-1)` browses
+/// newest-first. Recall only starts with the caret at the very start (and ends
+/// at the very end) so it never fights normal multiline cursor movement.
 #[derive(Clone, Debug)]
 pub struct HistoryNav {
-    index: i64,
+    index: Option<usize>,
     stash: String,
 }
 
@@ -25,20 +25,20 @@ impl Default for HistoryNav {
 impl HistoryNav {
     #[must_use]
     pub const fn new() -> Self {
-        Self { index: -1, stash: String::new() }
+        Self { index: None, stash: String::new() }
     }
 
     #[must_use]
     pub const fn browsing(&self) -> bool {
-        self.index != -1
+        self.index.is_some()
     }
 
     pub const fn reset(&mut self) {
-        self.index = -1;
+        self.index = None;
     }
 
     pub fn reset_all(&mut self) {
-        self.index = -1;
+        self.index = None;
         self.stash = String::new();
     }
 
@@ -46,33 +46,34 @@ impl HistoryNav {
         if list.is_empty() {
             return None;
         }
-        if self.index == -1 {
-            self.stash = value.to_string();
-        }
-        self.index = (self.index + 1).min(list.len() as i64 - 1);
-        Some(list[list.len() - 1 - self.index as usize].clone())
+        let next = match self.index {
+            None => {
+                self.stash = value.to_string();
+                0
+            }
+            Some(i) => (i + 1).min(list.len() - 1),
+        };
+        self.index = Some(next);
+        Some(list[list.len() - 1 - next].clone())
     }
 
     pub fn forward(&mut self, list: &[String]) -> Option<String> {
-        if self.index == -1 {
-            return None;
-        }
-        let next = self.index - 1;
-        if next < 0 {
-            self.index = -1;
+        let current = self.index?;
+        let Some(next) = current.checked_sub(1) else {
+            self.index = None;
             return Some(self.stash.clone());
-        }
-        self.index = next;
-        Some(list[list.len() - 1 - next as usize].clone())
+        };
+        self.index = Some(next);
+        Some(list[list.len() - 1 - next].clone())
     }
 
     /// Jump straight to an entry (menu pick), stashing the live draft first.
     pub fn recall(&mut self, list: &[String], value: &str, pick: &str) -> String {
-        if self.index == -1 {
+        if self.index.is_none() {
             self.stash = value.to_string();
         }
         if let Some(at) = list.iter().rposition(|e| e == pick) {
-            self.index = (list.len() - 1 - at) as i64;
+            self.index = Some(list.len() - 1 - at);
         }
         pick.to_string()
     }

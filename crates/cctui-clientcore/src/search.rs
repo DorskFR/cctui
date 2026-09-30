@@ -1,8 +1,10 @@
 const MAX_TERMS: usize = 8;
 
 /// Whitespace-split into terms, but a `"…"`-quoted span stays a single exact
-/// term (spaces preserved). Mirrors the server's tokenizer; terms are
-/// AND-matched server-side and highlighted client-side with the same split.
+/// term (spaces preserved).
+///
+/// Mirrors the server's tokenizer; terms are AND-matched server-side and
+/// highlighted client-side with the same split.
 #[must_use]
 pub fn tokenize_query(q: &str) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
