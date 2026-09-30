@@ -50,4 +50,3 @@ pub struct WindowCloses {
     pub closes: Vec<WindowClose>,
     pub summary: Vec<WastedSummary>,
 }
-

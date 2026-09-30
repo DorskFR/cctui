@@ -33,7 +33,8 @@ use crate::state::AppState;
 
 pub use cctui_proto::api::passkeys::{
     PasskeyAssertion, PasskeyAutoPromptRequest, PasskeyChallenge, PasskeyConfig,
-    PasskeyListResponse, PasskeyRegisterFinish, PasskeyRow, PasskeyTestResult, RelabelPasskeyRequest,
+    PasskeyListResponse, PasskeyRegisterFinish, PasskeyRow, PasskeyTestResult,
+    RelabelPasskeyRequest,
 };
 
 /// How long a browser has to answer a challenge before it is swept. Comfortably

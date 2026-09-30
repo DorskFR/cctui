@@ -2,9 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 #[cfg(feature = "ts")]
 use ts_rs::TS;
-use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -91,4 +91,3 @@ pub struct PasskeyTestResult {
 pub struct RelabelPasskeyRequest {
     pub label: String,
 }
-

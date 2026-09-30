@@ -21,4 +21,3 @@ pub struct SessionAttachment {
     /// fall back to the staged copy through `/machines/{id}/fs/file`.
     pub machine_id: Option<String>,
 }
-

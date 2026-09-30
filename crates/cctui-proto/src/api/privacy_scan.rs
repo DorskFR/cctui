@@ -56,4 +56,3 @@ pub struct PrivacyScanJob {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
 }
-

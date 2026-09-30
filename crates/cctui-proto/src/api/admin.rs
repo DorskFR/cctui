@@ -181,4 +181,3 @@ pub struct MintTokenResponse {
     pub label: Option<String>,
     pub expires_at: Option<chrono::DateTime<Utc>>,
 }
-

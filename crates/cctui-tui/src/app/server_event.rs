@@ -53,7 +53,10 @@ pub(crate) fn to_actions(event: ServerEvent) -> Vec<Action> {
             )]
         }
         ServerEvent::SoftLimitCleared { session_id } => {
-            vec![Action::Toast(Level::Info, format!("{} soft limit cleared", short_id(&session_id)))]
+            vec![Action::Toast(
+                Level::Info,
+                format!("{} soft limit cleared", short_id(&session_id)),
+            )]
         }
         ServerEvent::ToolCallBlocked { session_id, tool_name, rule } => {
             vec![Action::Toast(

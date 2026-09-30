@@ -27,10 +27,7 @@ pub(crate) fn status_spans(app: &App) -> Vec<Span<'static>> {
     }
     if !app.status.is_clean() {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("⚠ {} dropped", app.status.total()),
-            theme::ERROR,
-        ));
+        spans.push(Span::styled(format!("⚠ {} dropped", app.status.total()), theme::ERROR));
     }
     spans
 }

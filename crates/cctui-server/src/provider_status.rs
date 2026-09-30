@@ -31,7 +31,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
 pub use cctui_proto::api::provider_status::{
-    DegradedComponent, Indicator, IncidentSummary, ProviderStatus, SOURCES, family_of_provider,
+    DegradedComponent, IncidentSummary, Indicator, ProviderStatus, SOURCES, family_of_provider,
     page_url,
 };
 

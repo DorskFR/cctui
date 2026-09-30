@@ -10,4 +10,3 @@ pub struct SessionBinding {
     pub account_id: uuid::Uuid,
     pub account_name: String,
 }
-

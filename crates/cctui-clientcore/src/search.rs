@@ -51,9 +51,9 @@ fn mark_text(text: &[char], terms: &[Vec<char>]) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < text.len() {
-        let hit = needles.iter().find(|n| {
-            !n.is_empty() && i + n.len() <= hay.len() && hay[i..i + n.len()] == n[..]
-        });
+        let hit = needles
+            .iter()
+            .find(|n| !n.is_empty() && i + n.len() <= hay.len() && hay[i..i + n.len()] == n[..]);
         if let Some(n) = hit {
             let raw: String = text[i..i + n.len()].iter().collect();
             out.push_str(&format!("<mark class=\"search-hit\">{raw}</mark>"));

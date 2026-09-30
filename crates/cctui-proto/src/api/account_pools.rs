@@ -147,4 +147,3 @@ pub struct UpdatePoolRequest {
     #[cfg_attr(feature = "ts", ts(type = "string[] | null", optional))]
     pub accounts: Option<Vec<Uuid>>,
 }
-

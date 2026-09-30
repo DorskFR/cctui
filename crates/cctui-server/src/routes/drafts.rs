@@ -45,10 +45,8 @@ pub async fn list_drafts(
     .fetch_all(&state.pool)
     .await?;
 
-    let drafts = rows
-        .into_iter()
-        .map(|(key, text, updated_at)| Draft { key, text, updated_at })
-        .collect();
+    let drafts =
+        rows.into_iter().map(|(key, text, updated_at)| Draft { key, text, updated_at }).collect();
     Ok(Json(DraftList { drafts }))
 }
 
@@ -172,9 +170,8 @@ mod tests {
         .unwrap();
         assert_eq!(put, StatusCode::NO_CONTENT);
 
-        let got = get_draft(State(state.clone()), Extension(ctx(uid)), Path(key.clone()))
-            .await
-            .unwrap();
+        let got =
+            get_draft(State(state.clone()), Extension(ctx(uid)), Path(key.clone())).await.unwrap();
         assert_eq!(got.0.text, "half a sentence");
         assert_eq!(got.0.key, key);
 
@@ -221,9 +218,7 @@ mod tests {
         let listed = list_drafts(State(state.clone()), Extension(ctx(other))).await.unwrap();
         assert!(listed.0.drafts.iter().all(|d| d.key != key));
 
-        delete_draft(State(state.clone()), Extension(ctx(other)), Path(key.clone()))
-            .await
-            .unwrap();
+        delete_draft(State(state.clone()), Extension(ctx(other)), Path(key.clone())).await.unwrap();
         put_draft(
             State(state.clone()),
             Extension(ctx(other)),

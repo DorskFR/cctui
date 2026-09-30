@@ -157,8 +157,7 @@ async fn load_conversation(server: &ServerClient, session_id: &str) -> Vec<Actio
         .map(|e| agent_event_to_line(&e))
         .collect();
     let undecodable = total - lines.len();
-    let mut actions =
-        vec![Action::ConversationLoaded { session_id: session_id.to_owned(), lines }];
+    let mut actions = vec![Action::ConversationLoaded { session_id: session_id.to_owned(), lines }];
     if undecodable > 0 {
         actions.push(Action::UndecodableAgentEvents(undecodable));
     }

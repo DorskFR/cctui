@@ -114,10 +114,7 @@ fn samples() -> Vec<ServerEvent> {
             machine_id: uuid(),
             resources: MachineResources::default(),
         },
-        ServerEvent::AccountUsage {
-            account_id: uuid(),
-            usage: serde_json::json!({"tokens": 10}),
-        },
+        ServerEvent::AccountUsage { account_id: uuid(), usage: serde_json::json!({"tokens": 10}) },
         ServerEvent::DispatcherLiveness {
             dispatcher_id: uuid(),
             liveness: MachineLiveness::Offline,
@@ -159,10 +156,7 @@ fn samples() -> Vec<ServerEvent> {
             last_error: None,
         },
         ServerEvent::RoomMembers { room_id: uuid(), user_id: uuid() },
-        ServerEvent::UserActions {
-            session_id: "s-1".to_owned(),
-            actions: vec![user_action()],
-        },
+        ServerEvent::UserActions { session_id: "s-1".to_owned(), actions: vec![user_action()] },
         ServerEvent::Heartbeat {},
         ServerEvent::Resync { session_id: Some("s-1".to_owned()) },
     ]
@@ -220,11 +214,9 @@ fn every_variant_decodes_through_the_tui_receive_path() {
         let wire = serde_json::to_string(&sample)
             .unwrap_or_else(|e| panic!("{name} does not serialize: {e}"));
         match decode_frame(&wire) {
-            Incoming::Event(decoded) => assert_eq!(
-                variant_name(&decoded),
-                name,
-                "{name} decoded as a different variant",
-            ),
+            Incoming::Event(decoded) => {
+                assert_eq!(variant_name(&decoded), name, "{name} decoded as a different variant",)
+            }
             Incoming::Undecodable(reason) => {
                 panic!("the TUI cannot decode {name}: {reason}\nwire: {wire}")
             }

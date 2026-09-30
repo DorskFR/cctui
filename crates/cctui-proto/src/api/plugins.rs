@@ -187,4 +187,3 @@ pub struct PluginProxySecret {
     pub id: String,
     pub secret: String,
 }
-

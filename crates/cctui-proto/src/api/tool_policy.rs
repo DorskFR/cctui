@@ -18,4 +18,3 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub exempt_roots: Vec<String>,
 }
-

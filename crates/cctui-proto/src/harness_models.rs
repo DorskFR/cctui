@@ -137,12 +137,7 @@ pub fn codex_models_for(catalog: Option<&CodexModelCatalog>) -> Vec<ModelOption>
         } else {
             ModelHint::NeedsVersion { version: min }
         };
-        options.push(ModelOption {
-            v: model.id.clone(),
-            label,
-            hint: Some(hint),
-            disabled: gated,
-        });
+        options.push(ModelOption { v: model.id.clone(), label, hint: Some(hint), disabled: gated });
     }
     options
 }
@@ -253,10 +248,7 @@ mod tests {
         assert_eq!(options[1].hint, None);
         assert!(!options[1].disabled);
         assert!(!options[2].disabled);
-        assert_eq!(
-            options[2].hint,
-            Some(ModelHint::NeedsVersion { version: "0.153.0".into() })
-        );
+        assert_eq!(options[2].hint, Some(ModelHint::NeedsVersion { version: "0.153.0".into() }));
         assert!(options[3].disabled);
         assert_eq!(
             options[3].hint,
@@ -269,10 +261,7 @@ mod tests {
         let catalog = gated_catalog(None);
         let options = codex_models_for(Some(&catalog));
         assert!(!options[3].disabled);
-        assert_eq!(
-            options[3].hint,
-            Some(ModelHint::NeedsVersion { version: "0.999.0".into() })
-        );
+        assert_eq!(options[3].hint, Some(ModelHint::NeedsVersion { version: "0.999.0".into() }));
     }
 
     #[test]

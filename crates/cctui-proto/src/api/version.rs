@@ -53,4 +53,3 @@ pub struct ChangelogResponse {
     /// Empty when up to date or before the probe's first answer.
     pub releases: Vec<ReleaseNote>,
 }
-

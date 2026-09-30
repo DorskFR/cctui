@@ -2,10 +2,8 @@
 //! same files against its TypeScript originals, so a changed case fails on both
 //! sides until both implementations agree.
 
-use cctui_clientcore::{
-    bookmarks, format, git, history_nav::HistoryNav, labels, mention, search, session_failure,
-    uploads,
-};
+use cctui_clientcore::history_nav::HistoryNav;
+use cctui_clientcore::{bookmarks, format, git, labels, mention, search, session_failure, uploads};
 use cctui_proto::git::GitInfo;
 use serde_json::Value;
 
@@ -135,11 +133,7 @@ fn bookmarks_parity() {
     for c in cases(&fx, "sourceHref") {
         let id = opt_s(c, "session_id");
         let seq = c["seq"].as_i64();
-        assert_eq!(
-            bookmarks::source_href(id.as_deref(), seq),
-            opt_s(c, "out"),
-            "sourceHref {c}"
-        );
+        assert_eq!(bookmarks::source_href(id.as_deref(), seq), opt_s(c, "out"), "sourceHref {c}");
     }
     for c in cases(&fx, "isDeadLink") {
         let id = opt_s(c, "session_id");
@@ -187,10 +181,8 @@ fn mention_parity() {
     for c in cases(&fx, "filterMentions") {
         let sessions: Vec<mention::MentionSession> =
             serde_json::from_value(c["sessions"].clone()).unwrap();
-        let ids: Vec<String> = mention::filter_mentions(&sessions, &s(c, "query"))
-            .into_iter()
-            .map(|s| s.id)
-            .collect();
+        let ids: Vec<String> =
+            mention::filter_mentions(&sessions, &s(c, "query")).into_iter().map(|s| s.id).collect();
         assert_eq!(ids, expected_ids(c), "filterMentions {c}");
     }
     for c in cases(&fx, "mentionToken") {

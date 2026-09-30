@@ -255,7 +255,8 @@ fn resolve_permission(app: &mut App, session_id: &str, request_id: &str) {
         .front()
         .is_some_and(|p| p.session_id == session_id && p.request_id == request_id);
     app.permission_queue.retain(|p| !(p.session_id == session_id && p.request_id == request_id));
-    if was_head_matching && app.permission_queue.is_empty() && app.view() == View::PermissionDialog {
+    if was_head_matching && app.permission_queue.is_empty() && app.view() == View::PermissionDialog
+    {
         app.router.pop();
     }
 }
@@ -419,7 +420,10 @@ mod tests {
 
         reduce(&mut app, Action::LeaveConversation);
         let id = app.selected_session_id().expect("a session");
-        reduce(&mut app, Action::ConversationLoaded { session_id: id, lines: conversation_lines() });
+        reduce(
+            &mut app,
+            Action::ConversationLoaded { session_id: id, lines: conversation_lines() },
+        );
         let effects = reduce(&mut app, Action::OpenSelectedConversation);
         assert!(matches!(effects.as_slice(), [Effect::LoadConversation { fetch: false, .. }]));
     }
@@ -516,10 +520,7 @@ mod tests {
             _ => panic!("expected an auto-approve effect"),
         }
         assert!(!app.sessions[0].auto_approve);
-        reduce(
-            &mut app,
-            Action::AutoApproveSet { session_id: "s-a".to_owned(), enabled: true },
-        );
+        reduce(&mut app, Action::AutoApproveSet { session_id: "s-a".to_owned(), enabled: true });
         assert!(app.sessions[0].auto_approve);
     }
 
@@ -607,11 +608,7 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
                 line: line(""),
-                usage: Some(super::HeartbeatUsage {
-                    tokens_in: 7,
-                    tokens_out: 8,
-                    cost_usd: 9.5,
-                }),
+                usage: Some(super::HeartbeatUsage { tokens_in: 7, tokens_out: 8, cost_usd: 9.5 }),
             },
         );
         assert_eq!(app.sessions[0].token_usage.tokens_in, 7);
@@ -625,11 +622,7 @@ mod tests {
         reduce(&mut app, Action::SelectLast);
         reduce(
             &mut app,
-            Action::StreamLine {
-                session_id: "s-b".to_owned(),
-                line: line("bye"),
-                usage: None,
-            },
+            Action::StreamLine { session_id: "s-b".to_owned(), line: line("bye"), usage: None },
         );
         reduce(&mut app, Action::SessionDeregistered("s-b".to_owned()));
         assert_eq!(app.sessions.len(), 1);

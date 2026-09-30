@@ -31,4 +31,3 @@ pub struct HarnessPolicyRequest {
     /// override falls back to the instance default.
     pub policy: Option<crate::harness::HarnessUpdatePolicy>,
 }
-

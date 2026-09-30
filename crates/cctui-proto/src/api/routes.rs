@@ -1955,10 +1955,7 @@ mod tests {
         assert!(get.params().is_empty());
         let two = find(Method::Delete, "/sessions/{id}/labels/{label_id}").expect("route");
         assert_eq!(two.params(), vec!["id", "label_id"]);
-        assert_eq!(
-            two.url(&[("id", "s1"), ("label_id", "l2")]),
-            "/api/v1/sessions/s1/labels/l2"
-        );
+        assert_eq!(two.url(&[("id", "s1"), ("label_id", "l2")]), "/api/v1/sessions/s1/labels/l2");
     }
 
     #[test]

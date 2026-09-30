@@ -58,4 +58,3 @@ pub struct PoolUsageWindow {
     /// Set exactly when `projection` is `None`.
     pub projection_unavailable: Option<String>,
 }
-

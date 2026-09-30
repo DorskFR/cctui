@@ -32,4 +32,3 @@ pub struct DaemonVersion {
     pub version: &'static str,
     pub git_hash: &'static str,
 }
-

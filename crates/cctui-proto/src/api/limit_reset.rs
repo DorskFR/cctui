@@ -83,4 +83,3 @@ pub struct LimitResetResponse {
     /// The click matched a prior attempt and no new consume request was sent.
     pub reused: bool,
 }
-

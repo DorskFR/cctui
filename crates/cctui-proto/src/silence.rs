@@ -20,23 +20,44 @@ pub const STALLED_RPC_MS: i64 = 60_000;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SilenceReason {
     /// Requests outstanding with no frame for longer than [`STALLED_RPC_MS`].
-    CodexStalledRpc { count: u32, age_ms: i64 },
+    CodexStalledRpc {
+        count: u32,
+        age_ms: i64,
+    },
     /// A shared-connection drop failed every in-flight request on that socket.
-    CodexSharedDropped { count: u32, age_ms: i64 },
+    CodexSharedDropped {
+        count: u32,
+        age_ms: i64,
+    },
     /// Frames on the stdio child but none on the shared socket.
     CodexSharedNoFrames,
     CodexNoTurn,
-    CodexAuth { state: String },
-    CodexRegistryMismatch { detail: String },
+    CodexAuth {
+        state: String,
+    },
+    CodexRegistryMismatch {
+        detail: String,
+    },
     CodexNotLive,
     OpencodeSseDown,
-    OpencodeSseStalled { age_ms: i64 },
+    OpencodeSseStalled {
+        age_ms: i64,
+    },
     /// HTTP frames with no SSE frame — every turn observation rides the stream.
     OpencodeSseNoFrames,
-    OpencodeHttpErrors { count: u32, age_ms: i64, message: String },
-    OpencodeAwaitingPermission { count: u32 },
+    OpencodeHttpErrors {
+        count: u32,
+        age_ms: i64,
+        message: String,
+    },
+    OpencodeAwaitingPermission {
+        count: u32,
+    },
     OpencodeIdle,
-    OpencodeVersion { version: String, pinned: String },
+    OpencodeVersion {
+        version: String,
+        pinned: String,
+    },
     OpencodeNotLive,
 }
 
@@ -217,10 +238,10 @@ mod tests {
             rpc_tail: vec![frame(NOW - 120_000, "shared")],
             ..codex()
         };
-        assert!(codex_silence_reasons(&cx, NOW).contains(&SilenceReason::CodexStalledRpc {
-            count: 2,
-            age_ms: 120_000
-        }));
+        assert!(
+            codex_silence_reasons(&cx, NOW)
+                .contains(&SilenceReason::CodexStalledRpc { count: 2, age_ms: 120_000 })
+        );
     }
 
     #[test]
@@ -247,10 +268,10 @@ mod tests {
             )],
             ..codex()
         };
-        assert!(codex_silence_reasons(&cx, NOW).contains(&SilenceReason::CodexSharedDropped {
-            count: 1,
-            age_ms: 2_000
-        }));
+        assert!(
+            codex_silence_reasons(&cx, NOW)
+                .contains(&SilenceReason::CodexSharedDropped { count: 1, age_ms: 2_000 })
+        );
 
         let cx = CodexDiagnose {
             protocol_errors: vec![protocol_error(NOW - 2_000, "stdio", "turn/start: boom")],

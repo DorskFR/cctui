@@ -173,7 +173,10 @@ mod tests {
 
     #[test]
     fn an_active_composer_swallows_navigation_keys() {
-        assert!(matches!(map(View::Conversation, true, KeyCode::Char('j')), Some(Action::InputKey(_))));
+        assert!(matches!(
+            map(View::Conversation, true, KeyCode::Char('j')),
+            Some(Action::InputKey(_))
+        ));
         assert!(matches!(map(View::Conversation, true, KeyCode::Esc), Some(Action::CancelInput)));
         assert!(matches!(map(View::Conversation, true, KeyCode::Enter), Some(Action::SubmitInput)));
     }

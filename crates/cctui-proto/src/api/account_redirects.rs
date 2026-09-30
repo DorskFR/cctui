@@ -46,4 +46,3 @@ pub struct PutRedirectRequest {
     #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub user_id: Option<Uuid>,
 }
-

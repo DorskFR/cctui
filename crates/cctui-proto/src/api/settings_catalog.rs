@@ -145,4 +145,3 @@ impl SettingKey {
         self.tag.account_exposable()
     }
 }
-

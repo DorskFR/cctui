@@ -12,12 +12,5 @@ pub fn turn_id_from(ts_millis: u64, random: [u8; 16]) -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x70;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
 }

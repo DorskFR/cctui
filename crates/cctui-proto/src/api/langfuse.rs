@@ -16,4 +16,3 @@ pub struct LangfuseSessionUsage {
     pub cache_read: u64,
     pub trace_count: u64,
 }
-

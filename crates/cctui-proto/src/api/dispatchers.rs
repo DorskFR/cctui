@@ -14,4 +14,3 @@ pub struct RenameDispatcher {
     #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub default_pool: Option<String>,
 }
-

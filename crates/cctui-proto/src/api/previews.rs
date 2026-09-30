@@ -22,4 +22,3 @@ pub struct PreviewTicket {
     pub auth_url: String,
     pub expires_in_secs: u32,
 }
-

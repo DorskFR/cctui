@@ -120,9 +120,7 @@ impl ServerClient {
         Ok(())
     }
 
-    pub async fn connect_ws(
-        &self,
-    ) -> Result<(mpsc::Sender<TuiCommand>, mpsc::Receiver<Incoming>)> {
+    pub async fn connect_ws(&self) -> Result<(mpsc::Sender<TuiCommand>, mpsc::Receiver<Incoming>)> {
         // Authenticate the WS upgrade via the `Authorization` header rather than a
         // `?token=` query param so the token never lands in server access logs.
         // `bearer_or_cookie` on the server accepts either the header

@@ -88,10 +88,7 @@ pub struct ProviderInfo {
     )]
     pub soft_limits: Option<serde_json::Value>,
     /// Usage ticker `{ enabled, step_pct }`; NULL ⇒ off.
-    #[cfg_attr(
-        feature = "ts",
-        ts(as = "Option<crate::api::gateway::UsageNotices>")
-    )]
+    #[cfg_attr(feature = "ts", ts(as = "Option<crate::api::gateway::UsageNotices>"))]
     pub usage_notices: Option<serde_json::Value>,
     /// Whether this credential's gauge shows in the header strip.
     pub header_pin: bool,
@@ -387,10 +384,7 @@ pub struct UpdateProvider {
     /// Replacement usage ticker `{ enabled?, step_pct? }`. Provided → replaces
     /// (an empty object / `enabled: false` turns it off); absent → unchanged.
     #[serde(default)]
-    #[cfg_attr(
-        feature = "ts",
-        ts(as = "Option<crate::api::gateway::UsageNotices>", optional)
-    )]
+    #[cfg_attr(feature = "ts", ts(as = "Option<crate::api::gateway::UsageNotices>", optional))]
     pub usage_notices: Option<serde_json::Value>,
     /// Show this credential's gauge in the header strip; absent → unchanged.
     #[serde(default)]
@@ -560,4 +554,3 @@ pub struct GrantShare {
     #[cfg_attr(feature = "ts", ts(type = "string", optional))]
     pub action: Option<String>,
 }
-

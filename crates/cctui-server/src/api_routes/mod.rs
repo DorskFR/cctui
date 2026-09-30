@@ -2,9 +2,9 @@
 
 mod account_usage;
 mod accounts;
-mod catalog;
 mod admin_instance;
 mod admin_users;
+mod catalog;
 mod context;
 mod daemon;
 mod dispatch;

@@ -29,4 +29,3 @@ pub struct GrantShare {
     #[cfg_attr(feature = "ts", ts(type = "string", optional))]
     pub action: Option<String>,
 }
-

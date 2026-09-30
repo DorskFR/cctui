@@ -22,4 +22,3 @@ pub struct DailyCacheLoss {
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub busts: u64,
 }
-

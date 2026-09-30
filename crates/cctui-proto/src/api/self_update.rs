@@ -29,4 +29,3 @@ pub enum SelfUpdateResponse {
         account: Option<String>,
     },
 }
-
