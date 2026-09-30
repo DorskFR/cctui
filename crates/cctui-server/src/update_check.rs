@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
+pub use cctui_proto::api::version::ReleaseNote;
+
 const RELEASES_URL: &str = "https://api.github.com/repos/DorskFR/cctui/releases?per_page=30";
 /// How many releases newer than the running build are kept for the changelog.
 pub const MAX_NOTES: usize = 10;
@@ -39,19 +41,6 @@ pub const MANUAL_COOLDOWN: Duration = Duration::from_mins(1);
 pub struct LatestRelease {
     pub version: String,
     pub url: String,
-}
-
-/// One release published since the running build: tag, page and Markdown notes.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct ReleaseNote {
-    pub version: String,
-    pub url: String,
-    /// The release body as written on GitHub (Markdown); empty when the
-    /// release has no description.
-    pub body: String,
-    /// ISO-8601 publication time as GitHub reports it, `null` for drafts.
-    pub published_at: Option<String>,
 }
 
 #[derive(Default)]

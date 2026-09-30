@@ -6,29 +6,15 @@
 import { errMessage } from '$lib/api';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { ForkExtract } from '@bindings/ForkExtract';
-import type { CodexModelCatalog } from '@bindings/CodexModelCatalog';
+import type { HarnessModels } from '@bindings/HarnessModels';
 import type { ForkRequest } from '@bindings/ForkRequest';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
-import {
-	codexModels as CODEX_MODELS,
-	codexEfforts as CODEX_EFFORTS,
-	claudeModels as CLAUDE_MODELS,
-	claudeEfforts as CLAUDE_EFFORTS,
-	codexModelsFor,
-	codexEffortsFor,
-	withCurrentModel,
-	type ModelOption
-} from '$lib/harnessModels';
-import { useMergedCodexModels } from '$lib/queries';
+import { withCurrentModel, type ModelOption } from '$lib/harnessModels';
+import { harnessModelsFallback } from '$lib/domainTables';
+import { useHarnessModels } from '$lib/queries';
 
-export {
-	CODEX_MODELS,
-	CODEX_EFFORTS,
-	CLAUDE_MODELS,
-	CLAUDE_EFFORTS,
-	type ModelOption
-};
+export type { ModelOption };
 
 export interface ForkOpts {
 	id: () => string;
@@ -52,31 +38,34 @@ export class ForkController {
 	// Conversation-extract selector. Null → full-history fork.
 	extract = $state<ForkExtract | null>(null);
 
-	// Cross-machine codex catalog (a fork may land on any machine), fetched
-	// only while the dialog is open for a codex session; static list when empty
-	// or when built outside a component (no query context).
-	#codexCatalog: { data?: CodexModelCatalog } | null = null;
+	// A fork may land on any machine, so the server merges every catalog.
+	// Null when built outside a component (no query context).
+	#models: { data?: HarnessModels } | null = null;
 
 	constructor(opts: ForkOpts) {
 		this.#opts = opts;
 		try {
-			this.#codexCatalog = useMergedCodexModels(() => this.open && opts.isCodex());
+			this.#models = useHarnessModels(
+				() => (opts.isCodex() ? 'codex' : 'claude-code'),
+				() => '',
+				() => this.model,
+				() => this.open
+			);
 		} catch {
-			this.#codexCatalog = null;
+			this.#models = null;
 		}
+	}
+
+	#fallback() {
+		return harnessModelsFallback(this.#opts.isCodex() ? 'codex' : 'claude-code');
 	}
 
 	// The parent's model stays selectable even when no list knows it.
 	get models(): ModelOption[] {
-		const list = this.#opts.isCodex()
-			? codexModelsFor(this.#codexCatalog?.data)
-			: CLAUDE_MODELS;
-		return withCurrentModel(list, this.model);
+		return withCurrentModel(this.#models?.data?.models ?? this.#fallback().models, this.model);
 	}
 	get efforts(): string[] {
-		return this.#opts.isCodex()
-			? codexEffortsFor(this.#codexCatalog?.data, this.model)
-			: CLAUDE_EFFORTS;
+		return this.#models?.data?.efforts ?? this.#fallback().efforts;
 	}
 	// Parent's total tokens — shown in the fork notice so the user knows the
 	// opening turn re-bills this much context.

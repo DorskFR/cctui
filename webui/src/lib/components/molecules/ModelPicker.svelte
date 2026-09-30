@@ -4,7 +4,13 @@
 	// selectable as its own option, so the picker never silently drops it.
 	import type { ComponentProps } from 'svelte';
 	import { Input, Select } from '@dorsk/tsumikit';
-	import { OTHER_MODEL, customModelValue, withCurrentModel, type ModelOption } from '$lib/harnessModels';
+	import {
+		OTHER_MODEL,
+		customModelValue,
+		modelHintText,
+		withCurrentModel,
+		type ModelOption
+	} from '$lib/harnessModels';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -46,8 +52,10 @@
 </script>
 
 <Select {id} {compact} {variant} {width} chevron={compact ? false : undefined} bind:value={selected} aria-label={ariaLabel} onchange={() => pick(selected)}>
-	{#each listed as opt (opt.v)}<option value={opt.v} disabled={opt.disabled} title={opt.hint}
-			>{opt.hint ? `${opt.label} — ${opt.hint}` : opt.label}</option
+	{#each listed as opt (opt.v)}{@const hint = modelHintText(opt.hint)}<option
+			value={opt.v}
+			disabled={opt.disabled}
+			title={hint}>{hint ? `${opt.label} — ${hint}` : opt.label}</option
 		>{/each}
 	<option value={OTHER_MODEL}>{m.model_picker_other()}</option>
 </Select>

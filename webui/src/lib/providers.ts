@@ -1,48 +1,26 @@
-// Provider-id helpers shared by the accounts surfaces. Pure, no
-// Svelte state.
+// Provider-id helpers shared by the accounts surfaces. The metadata is the
+// parity table in `$lib/domainTables`; only the quota-probe registry, which is
+// the server's alone, comes off the wire.
+import type { ProviderFamily } from '@bindings/ProviderFamily';
+import { PROVIDERS, providerInfo } from '$lib/domainTables';
+import { usageProbes } from '$lib/domainMeta.svelte';
 
-/** Display name for an account provider id (anthropic → Claude, openai → Codex,
- *  plus the compatible-endpoint variants). */
-export const providerLabel = (p: string) =>
-  p === "anthropic"
-    ? "Claude"
-    : p === "openai"
-      ? "Codex"
-      : p === "anthropic-compatible"
-        ? "Anthropic-compatible"
-        : p === "openai-compatible"
-          ? "OpenAI-compatible"
-          : p === "fireworks"
-            ? "Fireworks"
-            : p;
+export type { ProviderFamily };
+export type ProviderKind = string;
 
-/** Provider family (mirrors the server's generated `family` column): an
- *  account may hold at most one provider per family. */
+/** Display name for an account provider id; an unknown id stays itself. */
+export const providerLabel = (p: string) => providerInfo(p)?.label ?? p;
+
 export const providerFamily = (p: string): ProviderFamily =>
-  p === "fireworks" ? "fireworks" : p.startsWith("openai") ? "openai" : "anthropic";
+  providerInfo(p)?.family ?? 'anthropic';
 
-export type ProviderFamily = "anthropic" | "openai" | "fireworks";
-
-/** Providers whose credential is a static key the gateway forwards (no OAuth):
- *  the `*-compatible` endpoints and Fireworks. */
 export const isStaticCredential = (p: string) =>
-  p.endsWith("-compatible") || p === "fireworks";
+  providerInfo(p)?.static_credential ?? false;
 
 /** The selectable provider kinds, in the order the pickers list them. */
-export const PROVIDER_KINDS = [
-  { value: "anthropic", label: "Claude (anthropic)" },
-  { value: "openai", label: "Codex (openai)" },
-  { value: "anthropic-compatible", label: "Anthropic-compatible endpoint" },
-  { value: "openai-compatible", label: "OpenAI-compatible endpoint" },
-  { value: "fireworks", label: "Fireworks" },
-] as const;
+export const providerKindOptions = (): { value: string; label: string }[] =>
+  PROVIDERS.map((p) => ({ value: p.id, label: p.picker_label }));
 
-export type ProviderKind = (typeof PROVIDER_KINDS)[number]["value"];
-
-/** Quota probes the server's registry serves, for the `usage_probe` picker.
- *  Mirrors `usage_probe::ids()`; the server rejects anything it does not know. */
-export const USAGE_PROBES = [
-  { value: "", label: "None (unmeasured)" },
-  { value: "openrouter", label: "OpenRouter (credits)" },
-  { value: "litellm", label: "LiteLLM (virtual-key budget)" },
-] as const;
+/** Quota probes the server's registry serves, for the `usage_probe` picker. */
+export const usageProbeOptions = (): { value: string; label: string }[] =>
+  usageProbes().map((p) => ({ value: p.id, label: p.label }));

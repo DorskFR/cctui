@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cctui-admin",
+    "crates/cctui-clientcore",
     "crates/cctui-crypto",
     "crates/cctui-daemon",
     "crates/cctui-dispatcher-apple",
@@ -19,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]
@@ -39,6 +40,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [workspace.dependencies]
+cctui-clientcore = { path = "crates/cctui-clientcore" }
 cctui-proto = { path = "crates/cctui-proto" }
 cctui-crypto = { path = "crates/cctui-crypto" }
 cctui-query = { path = "crates/cctui-query" }

@@ -4,9 +4,11 @@ mod account_usage;
 mod accounts;
 mod admin_instance;
 mod admin_users;
+mod catalog;
 mod context;
 mod daemon;
 mod dispatch;
+mod drafts;
 mod keys;
 mod labels;
 mod machines;
@@ -53,6 +55,7 @@ pub fn register(r: Routes) -> Routes {
     let r = plugins::register(r);
     let r = context::register(r);
     let r = version::register(r);
+    let r = catalog::register(r);
     let r = session_lifecycle::register(r);
     let r = dispatch::register(r);
     let r = session_bulk::register(r);
@@ -78,5 +81,60 @@ pub fn register(r: Routes) -> Routes {
     let r = admin_users::register(r);
     let r = skills::register(r);
     let r = user_actions::register(r);
+    let r = drafts::register(r);
     users::register(r)
+}
+
+#[cfg(test)]
+mod route_table {
+    use std::collections::BTreeSet;
+
+    use cctui_proto::api::routes::{self, ROUTES};
+
+    /// `(METHOD, path)` pairs the axum router is actually built from.
+    fn registered() -> BTreeSet<(String, &'static str)> {
+        crate::build_api_routes()
+            .into_parts()
+            .2
+            .into_iter()
+            .map(|d| (d.method.as_str().to_owned(), d.path))
+            .collect()
+    }
+
+    fn tabled() -> BTreeSet<(String, &'static str)> {
+        ROUTES.iter().map(|r| (r.method.as_str().to_owned(), r.path)).collect()
+    }
+
+    #[test]
+    fn every_registered_route_is_in_the_proto_table() {
+        let missing: Vec<_> = registered().difference(&tabled()).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "routes registered on the router but absent from cctui_proto::api::routes::ROUTES: \
+             {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_proto_table_route_is_registered() {
+        let extra: Vec<_> = tabled().difference(&registered()).cloned().collect();
+        assert!(
+            extra.is_empty(),
+            "routes in cctui_proto::api::routes::ROUTES that no longer exist on the router: \
+             {extra:?}"
+        );
+    }
+
+    #[test]
+    fn summaries_match_the_router() {
+        for d in crate::build_api_routes().into_parts().2 {
+            let method = routes::Method::parse(d.method.as_str()).expect("known method");
+            let route = routes::find(method, d.path).expect("route is tabled");
+            assert_eq!(
+                route.summary, d.summary,
+                "{} {}: summary drifted from the router",
+                d.method, d.path
+            );
+        }
+    }
 }

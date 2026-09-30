@@ -9,6 +9,7 @@
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { page, updated } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
+	import { serverDrafts } from '$lib/serverDrafts';
 	import { settings, sessionListWidthSize } from '$lib/settings.svelte';
 	import { locale } from '$lib/locale.svelte';
 	import { ws } from '$lib/ws.svelte';
@@ -134,6 +135,10 @@
 	// localStorage-cached / default state, so it's safe to call on every auth flip.
 	$effect(() => {
 		if (auth.isAuthed) void settings.load();
+	});
+
+	$effect(() => {
+		if (auth.isAuthed) void serverDrafts.load();
 	});
 
 	// The guided tours spotlight elements behind the login, so they mount once

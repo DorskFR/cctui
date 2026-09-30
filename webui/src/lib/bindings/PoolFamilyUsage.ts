@@ -3,9 +3,10 @@ import type { PoolUsageMember } from "./PoolUsageMember";
 import type { PoolUsageWindow } from "./PoolUsageWindow";
 
 /**
- * One provider family inside a pool: only its members are interchangeable
- * (a claude-code spawn elects among the anthropic credentials, a codex spawn
- * among the openai ones), so only they are aggregated together.
+ * One provider family inside a pool.
+ *
+ * Only its members are interchangeable (a claude-code spawn elects among the anthropic
+ * credentials, a codex spawn among the openai ones), so only they are aggregated together.
  */
 export type PoolFamilyUsage = { 
 /**

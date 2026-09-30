@@ -21,6 +21,8 @@ use crate::routes::spawn::resolve_owned_machine;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
+pub use cctui_proto::api::session_bindings::SessionBinding;
+
 pub async fn register(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -2602,17 +2604,6 @@ pub async fn switch_account(
         "switched session account (soft-limit rebind)"
     );
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// One of a session's active per-family gateway credential bindings.
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct SessionBinding {
-    #[cfg_attr(feature = "ts", ts(type = "\"anthropic\" | \"openai\" | \"fireworks\""))]
-    pub family: String,
-    pub credential_id: uuid::Uuid,
-    pub account_id: uuid::Uuid,
-    pub account_name: String,
 }
 
 /// `GET /api/v1/sessions/{id}/bindings` — the session's active per-family

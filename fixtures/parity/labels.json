@@ -1,0 +1,84 @@
+{
+  "LABEL_HUES": [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330],
+  "storedHue": [
+    {
+      "color": "",
+      "out": null
+    },
+    {
+      "color": "0",
+      "out": 0
+    },
+    {
+      "color": "210",
+      "out": 210
+    },
+    {
+      "color": "400",
+      "out": 40
+    },
+    {
+      "color": "-30",
+      "out": 330
+    },
+    {
+      "color": "abc",
+      "out": null
+    },
+    {
+      "color": "  90  ",
+      "out": 90
+    },
+    {
+      "color": "120deg",
+      "out": 120
+    },
+    {
+      "color": "+45",
+      "out": 45
+    }
+  ],
+  "labelHue": [
+    {
+      "name": "urgent",
+      "color": "",
+      "out": 121
+    },
+    {
+      "name": "urgent",
+      "color": "210",
+      "out": 210
+    },
+    {
+      "name": "urgent",
+      "color": "nope",
+      "out": 121
+    }
+  ],
+  "hueToColor": [
+    {
+      "hue": null,
+      "out": ""
+    },
+    {
+      "hue": 0,
+      "out": "0"
+    },
+    {
+      "hue": 330,
+      "out": "330"
+    }
+  ],
+  "labelTint": [
+    {
+      "name": "urgent",
+      "color": "210",
+      "out": "--mh:210;background:hsl(var(--mh) var(--mach-bg-sl));color:hsl(var(--mh) var(--mach-fg-sl));border-color:hsl(var(--mh) var(--mach-border-sl))"
+    },
+    {
+      "name": "urgent",
+      "color": "",
+      "out": "--mh:121;background:hsl(var(--mh) var(--mach-bg-sl));color:hsl(var(--mh) var(--mach-fg-sl));border-color:hsl(var(--mh) var(--mach-border-sl))"
+    }
+  ]
+}

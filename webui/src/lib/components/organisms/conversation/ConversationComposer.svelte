@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, tick } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import { insertBlock } from './insertText';
 	import { insertAtCaret, quoteMarkdown } from './format';
 	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
@@ -24,6 +24,7 @@
 	import { scheduleMenuItems } from './scheduleMenu';
 	import { parseCustom, toLocalInput } from './scheduleTimes';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
+	import { serverDrafts } from '$lib/serverDrafts';
 	import { HistoryNav } from '$lib/historyNav';
 	import { toasts } from '$lib/toast.svelte';
 	import type { ScrollController } from './scroll.svelte';
@@ -70,6 +71,17 @@
 	let input = $state(drafts.get(composerKey(session.id)));
 	$effect(() => {
 		drafts.set(composerKey(session.id), input);
+	});
+
+	// A draft written on another device lands after first paint (which seeds from
+	// the local mirror), so adopt it only while the box still holds what we seeded.
+	$effect(() => {
+		const key = composerKey(session.id);
+		const seeded = untrack(() => input);
+		void serverDrafts.ready.then(() => {
+			const roamed = drafts.get(key);
+			if (roamed && untrack(() => input) === seeded) input = roamed;
+		});
 	});
 
 	const stagedQuery = useSessionAttachments(

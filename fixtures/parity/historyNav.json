@@ -1,0 +1,179 @@
+[
+  {
+    "name": "walks back newest-first from the caret start",
+    "list": ["old", "mid", "new"],
+    "initial": "",
+    "steps": [
+      {
+        "op": "caret",
+        "at": 0
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "new"
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "mid"
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "old"
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "old"
+      }
+    ]
+  },
+  {
+    "name": "does not recall mid-text",
+    "list": ["old", "new"],
+    "initial": "typing here",
+    "steps": [
+      {
+        "op": "caret",
+        "at": 4
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": false,
+        "value": "typing here"
+      }
+    ]
+  },
+  {
+    "name": "restores the stashed draft on the way forward",
+    "list": ["old", "new"],
+    "initial": "in progress",
+    "steps": [
+      {
+        "op": "caret",
+        "at": 0
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "new"
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "old"
+      },
+      {
+        "op": "key",
+        "key": "ArrowDown",
+        "handled": true,
+        "value": "new"
+      },
+      {
+        "op": "key",
+        "key": "ArrowDown",
+        "handled": true,
+        "value": "in progress"
+      },
+      {
+        "op": "expectBrowsing",
+        "browsing": false
+      }
+    ]
+  },
+  {
+    "name": "ignores ArrowDown when not browsing",
+    "list": ["old"],
+    "initial": "draft",
+    "steps": [
+      {
+        "op": "key",
+        "key": "ArrowDown",
+        "handled": false,
+        "value": "draft"
+      }
+    ]
+  },
+  {
+    "name": "leaves an empty history alone",
+    "list": [],
+    "initial": "",
+    "steps": [
+      {
+        "op": "caret",
+        "at": 0
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": ""
+      },
+      {
+        "op": "expectBrowsing",
+        "browsing": false
+      }
+    ]
+  },
+  {
+    "name": "recall stashes the draft so ArrowDown returns to it",
+    "list": ["old", "new"],
+    "initial": "draft",
+    "steps": [
+      {
+        "op": "recall",
+        "pick": "old",
+        "value": "old"
+      },
+      {
+        "op": "expectBrowsing",
+        "browsing": true
+      },
+      {
+        "op": "key",
+        "key": "ArrowDown",
+        "handled": true,
+        "value": "new"
+      },
+      {
+        "op": "key",
+        "key": "ArrowDown",
+        "handled": true,
+        "value": "draft"
+      }
+    ]
+  },
+  {
+    "name": "reset drops the cursor without touching the value",
+    "list": ["old", "new"],
+    "initial": "draft",
+    "steps": [
+      {
+        "op": "caret",
+        "at": 0
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "new"
+      },
+      {
+        "op": "reset"
+      },
+      {
+        "op": "expectBrowsing",
+        "browsing": false
+      }
+    ]
+  }
+]

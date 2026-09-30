@@ -20,15 +20,14 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use cctui_proto::adapter::PermissionMode;
 use cctui_proto::api::{ApiError, SpawnRequest};
-use serde::Serialize;
 use tokio::sync::Mutex;
-#[cfg(feature = "ts")]
-use ts_rs::TS;
 
 use crate::auth::{AuthContext, Scope};
 use crate::routes::{instance, spawn, update_hook};
 use crate::state::AppState;
 use crate::update_check;
+
+pub use cctui_proto::api::self_update::SelfUpdateResponse;
 
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// A second click inside this window is refused: the first agent is still at
@@ -98,32 +97,6 @@ pub fn prompt(current: &str, latest: &update_check::LatestRelease) -> String {
         latest = latest.version,
         url = latest.url,
     )
-}
-
-/// Which of the two paths took the job, and what to watch as a result.
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum SelfUpdateResponse {
-    /// The machine's own update command is running. There is no session to
-    /// open: progress is the run, polled from `GET /version/self-update`.
-    Hook {
-        run_id: uuid::Uuid,
-        /// Version the machine was asked to deploy.
-        version: String,
-    },
-    /// No hook on the target machine, so an agent got the job.
-    Agent {
-        /// Spawn command id, to await on the websocket like a manual spawn.
-        command_id: uuid::Uuid,
-        /// The id the new session registers under (claude-code pre-mints it),
-        /// so the webui can jump to it; `null` for adapters that mint their own.
-        session_id: Option<uuid::Uuid>,
-        /// Version the agent was asked to deploy.
-        version: String,
-        /// Account the spawn bound (see `SpawnResponse::account`).
-        account: Option<String>,
-    },
 }
 
 fn conflict(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {

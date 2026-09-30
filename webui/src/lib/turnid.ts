@@ -8,7 +8,12 @@
 export function newTurnId(): string {
 	const bytes = new Uint8Array(16);
 	crypto.getRandomValues(bytes);
-	const ts = Date.now();
+	return turnIdFrom(Date.now(), bytes);
+}
+
+/** The layout alone, with the clock and the randomness passed in. */
+export function turnIdFrom(ts: number, random: Uint8Array | number[]): string {
+	const bytes = Uint8Array.from(random);
 	for (let i = 0; i < 6; i++) bytes[i] = Math.floor(ts / 2 ** (8 * (5 - i))) & 0xff;
 	bytes[6] = (bytes[6] & 0x0f) | 0x70;
 	bytes[8] = (bytes[8] & 0x3f) | 0x80;

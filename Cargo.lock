@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -971,8 +971,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cctui-clientcore"
+version = "0.23.0-beta.12"
+dependencies = [
+ "cctui-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cctui-crypto"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -985,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1015,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1036,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1061,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1082,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1105,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "axum",
@@ -1124,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1155,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1178,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1188,6 +1197,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sqlx",
  "tokio",
  "tokio-util",
  "toml",
@@ -1198,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "serde",
  "ts-rs",
@@ -1206,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1251,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "caps",
@@ -1267,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.23.0-beta.11"
+version = "0.23.0-beta.12"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1277,6 +1287,7 @@ dependencies = [
  "diffy",
  "dirs",
  "futures-util",
+ "insta",
  "pretty_assertions",
  "pulldown-cmark",
  "ratatui",
@@ -1288,7 +1299,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "similar",
+ "similar 3.2.0",
  "supports-color",
  "syntect",
  "tempfile",
@@ -1299,6 +1310,7 @@ dependencies = [
  "two-face",
  "unicode-width",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1445,6 +1457,17 @@ dependencies = [
  "rustversion",
  "ryu",
  "static_assertions",
+]
+
+[[package]]
+name = "console"
+version = "0.16.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e96a4956774c13c126a8b5af4daa79384f4d826534c95a02d76afb39e2ab64e3"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1869,6 +1892,12 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
@@ -2727,6 +2756,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "insta"
+version = "1.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar 2.7.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -4634,6 +4675,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "similar"

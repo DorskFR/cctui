@@ -1,8 +1,8 @@
+import type { EndTone } from '@bindings/EndTone';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
+import { endReasonInfo } from '$lib/domainTables';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { m } from '$lib/paraglide/messages';
-
-export type EndTone = 'neutral' | 'ok' | 'warn' | 'danger' | 'info';
 
 export type SessionEnd = {
 	reason: SessionEndReason;
@@ -16,34 +16,21 @@ export type SessionEnd = {
 	badge: string;
 };
 
-export const FAILED_START_REASONS: ReadonlySet<SessionEndReason> = new Set([
-	'resume_failed',
-	'spawn_failed'
-]);
+export function isFailedStart(reason: SessionEndReason): boolean {
+	return endReasonInfo(reason)?.failed_start ?? false;
+}
 
 const BADGE_DETAIL_MAX = 48;
 
 export function endBadgeText(reason: SessionEndReason, label: string, detail: string | null): string {
-	if (!detail || !FAILED_START_REASONS.has(reason)) return label;
+	if (!detail || !isFailedStart(reason)) return label;
 	const line = detail.split('\n', 1)[0].trim();
 	const short = line.length > BADGE_DETAIL_MAX ? `${line.slice(0, BADGE_DETAIL_MAX - 1)}…` : line;
 	return `${label}: ${short}`;
 }
 
 export function endReasonTone(reason: SessionEndReason): EndTone {
-	switch (reason) {
-		case 'completed':
-			return 'ok';
-		case 'crashed':
-		case 'resume_failed':
-		case 'spawn_failed':
-			return 'danger';
-		case 'daemon_lost':
-		case 'machine_offline':
-			return 'warn';
-		default:
-			return 'neutral';
-	}
+	return endReasonInfo(reason)?.tone ?? 'neutral';
 }
 
 export function endReasonLabel(reason: SessionEndReason): string {
@@ -80,7 +67,7 @@ export function sessionEnd(s: Pick<SessionListItem, 'end_reason' | 'end_detail' 
 		reason,
 		label,
 		tone: endReasonTone(reason),
-		muted: reason === 'reaped_inactive',
+		muted: endReasonInfo(reason)?.muted ?? false,
 		detail,
 		endedAt: s.ended_at ?? null,
 		badge: endBadgeText(reason, label, detail)

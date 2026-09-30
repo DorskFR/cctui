@@ -10,7 +10,7 @@
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { safeHref } from '$lib/safeHref';
-	import { isStaticCredential, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
+	import { isStaticCredential, providerKindOptions, type ProviderKind } from '$lib/providers';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
 	import { Button, Disclosure, EmojiPicker, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
@@ -310,8 +310,8 @@
 								oauthCode = '';
 							}}
 						>
-							{#each editor?.mode === 'add-provider' && editingAccount ? availableKinds(editingAccount) : PROVIDER_KINDS.map((k) => k.value) as v (v)}
-								<option value={v}>{PROVIDER_KINDS.find((k) => k.value === v)?.label ?? v}</option>
+							{#each editor?.mode === 'add-provider' && editingAccount ? availableKinds(editingAccount) : providerKindOptions().map((k) => k.value) as v (v)}
+								<option value={v}>{providerKindOptions().find((k) => k.value === v)?.label ?? v}</option>
 							{/each}
 						</Select>
 					</Field>

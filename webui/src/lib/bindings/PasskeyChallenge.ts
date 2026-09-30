@@ -7,7 +7,7 @@ export type PasskeyChallenge = {
  */
 challenge_id: string, 
 /**
- * The raw WebAuthn options, passed to `navigator.credentials.*` verbatim
+ * The raw `WebAuthn` options, passed to `navigator.credentials.*` verbatim
  * after the browser-side base64url decoding. Deliberately untyped here:
  * the shape is the W3C one and webauthn-rs owns it.
  */

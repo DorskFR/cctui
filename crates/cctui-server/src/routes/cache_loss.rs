@@ -7,12 +7,14 @@ use std::collections::{BTreeMap, HashMap};
 use axum::extract::{Query, State};
 use axum::{Extension, Json};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::auth::AuthContext;
 use crate::cache_bust::{Reason, Turn, compute, ttl_window};
 use crate::error::AppError;
 use crate::state::AppState;
+
+pub use cctui_proto::api::cache_loss::DailyCacheLoss;
 
 const MAX_DAYS: i64 = 90;
 
@@ -27,27 +29,6 @@ pub struct CacheLossParams {
 
 const fn default_days() -> i64 {
     14
-}
-
-#[derive(Debug, Default, Serialize, PartialEq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct DailyCacheLoss {
-    /// Local calendar day, `YYYY-MM-DD`.
-    pub day: String,
-    pub ttl_expired: f64,
-    pub gateway_rewrote_body: f64,
-    pub unknown: f64,
-    pub total: f64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub ttl_expired_tokens: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub gateway_rewrote_body_tokens: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub unknown_tokens: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub lost_tokens: u64,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub busts: u64,
 }
 
 /// Sum each bust's lost tokens and `lost_usd` into its local day and reason,

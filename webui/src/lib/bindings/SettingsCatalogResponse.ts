@@ -5,9 +5,10 @@ import type { SettingKey } from "./SettingKey";
 
 /**
  * The settings catalog as served to the webui account-settings editor.
- * Everything here comes from the embedded catalog — the webui
- * carries NO mirror of the key list, so it cannot drift from the server that
- * validates the writes. `managed`/`system` keys are omitted entirely.
+ *
+ * Everything here comes from the embedded catalog — the webui carries NO mirror of the key list,
+ * so it cannot drift from the server that validates the writes. `managed`/`system` keys are
+ * omitted entirely.
  */
 export type SettingsCatalogResponse = { 
 /**

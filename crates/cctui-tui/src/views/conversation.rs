@@ -46,10 +46,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}")
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(header_text, theme::HEADER_BG))),
-        header_area,
-    );
+    let mut header_spans = vec![Span::styled(header_text, theme::HEADER_BG)];
+    header_spans.extend(crate::widgets::status::status_spans(app));
+    frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
 
     // Conversation
     if let Some(lines) = app.stream_buffer.get(&session.id) {

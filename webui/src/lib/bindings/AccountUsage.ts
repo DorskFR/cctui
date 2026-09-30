@@ -5,12 +5,12 @@ import type { ProviderStatus } from "./ProviderStatus";
 import type { UsageWindowView } from "./UsageWindowView";
 
 /**
- * Usage windows surfaced per provider credential. `usage` mirrors
- * Anthropic's free OAuth usage payload (`five_hour`/`seven_day` utilization +
- * reset timestamps); `None` means the provider has no usage API (Codex) or the
- * credential has no active windows — the webui hides the indicator in that
- * case. `account_id` is the provider-row id (the legacy field name is the
- * API contract).
+ * Usage windows surfaced per provider credential.
+ *
+ * `usage` mirrors Anthropic's free OAuth usage payload (`five_hour`/`seven_day` utilization +
+ * reset timestamps); `None` means the provider has no usage API (Codex) or the credential has no
+ * active windows — the webui hides the indicator in that case. `account_id` is the provider-row id
+ * (the legacy field name is the API contract).
  */
 export type AccountUsage = { account_id: string, provider: string, 
 /**

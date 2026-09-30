@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+pub use cctui_proto::api::tool_policy::ToolPolicy;
+
 const POLICY_TTL: Duration = Duration::from_secs(30);
 const MAX_PATTERN_LEN: usize = 512;
 const MAX_ENTRIES: usize = 256;
@@ -34,66 +36,45 @@ static GITHUB_URL: LazyLock<Regex> = LazyLock::new(|| {
         .expect("static regex")
 });
 
-/// The stored, editable form of an account's policy.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct ToolPolicy {
-    /// Case-insensitive literals.
-    #[serde(default)]
-    pub terms: Vec<String>,
-    /// Case-insensitive regular expressions.
-    #[serde(default)]
-    pub patterns: Vec<String>,
-    /// GitHub owners whose `owner/repo#n` references and PR/issue URLs are
-    /// blocked.
-    #[serde(default)]
-    pub protected_owners: Vec<String>,
-    /// Sessions whose cwd is under one of these roots are not scanned.
-    #[serde(default)]
-    pub exempt_roots: Vec<String>,
+/// Trim, drop blanks and duplicates, and reject what would not compile.
+pub fn normalize_policy(policy: ToolPolicy) -> Result<ToolPolicy, String> {
+    fn clean(list: Vec<String>, what: &str) -> Result<Vec<String>, String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in list {
+            let s = s.trim().to_owned();
+            if !s.is_empty() && !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        if out.len() > MAX_ENTRIES {
+            return Err(format!("at most {MAX_ENTRIES} {what}"));
+        }
+        Ok(out)
+    }
+    let policy = ToolPolicy {
+        terms: clean(policy.terms, "terms")?,
+        patterns: clean(policy.patterns, "patterns")?,
+        protected_owners: clean(policy.protected_owners, "protected owners")?,
+        exempt_roots: clean(policy.exempt_roots, "exempt roots")?
+            .into_iter()
+            .map(|r| normalize_root(&r))
+            .filter(|r| r != "/")
+            .collect(),
+    };
+    for p in &policy.patterns {
+        if p.len() > MAX_PATTERN_LEN {
+            return Err(format!("pattern longer than {MAX_PATTERN_LEN} characters"));
+        }
+        compile_pattern(p).map_err(|e| format!("invalid pattern {p:?}: {e}"))?;
+    }
+    if let Some(r) = policy.exempt_roots.iter().find(|r| !r.starts_with('/')) {
+        return Err(format!("exempt root {r:?} must be an absolute path"));
+    }
+    Ok(policy)
 }
 
-impl ToolPolicy {
-    /// Trim, drop blanks and duplicates, and reject what would not compile.
-    pub fn normalized(self) -> Result<Self, String> {
-        fn clean(list: Vec<String>, what: &str) -> Result<Vec<String>, String> {
-            let mut out: Vec<String> = Vec::new();
-            for s in list {
-                let s = s.trim().to_owned();
-                if !s.is_empty() && !out.contains(&s) {
-                    out.push(s);
-                }
-            }
-            if out.len() > MAX_ENTRIES {
-                return Err(format!("at most {MAX_ENTRIES} {what}"));
-            }
-            Ok(out)
-        }
-        let policy = Self {
-            terms: clean(self.terms, "terms")?,
-            patterns: clean(self.patterns, "patterns")?,
-            protected_owners: clean(self.protected_owners, "protected owners")?,
-            exempt_roots: clean(self.exempt_roots, "exempt roots")?
-                .into_iter()
-                .map(|r| normalize_root(&r))
-                .filter(|r| r != "/")
-                .collect(),
-        };
-        for p in &policy.patterns {
-            if p.len() > MAX_PATTERN_LEN {
-                return Err(format!("pattern longer than {MAX_PATTERN_LEN} characters"));
-            }
-            compile_pattern(p).map_err(|e| format!("invalid pattern {p:?}: {e}"))?;
-        }
-        if let Some(r) = policy.exempt_roots.iter().find(|r| !r.starts_with('/')) {
-            return Err(format!("exempt root {r:?} must be an absolute path"));
-        }
-        Ok(policy)
-    }
-
-    pub const fn is_inert(&self) -> bool {
-        self.terms.is_empty() && self.patterns.is_empty() && self.protected_owners.is_empty()
-    }
+pub const fn is_inert(policy: &ToolPolicy) -> bool {
+    policy.terms.is_empty() && policy.patterns.is_empty() && policy.protected_owners.is_empty()
 }
 
 fn compile_pattern(p: &str) -> Result<Regex, regex::Error> {
@@ -117,7 +98,7 @@ pub struct Hit {
 impl CompiledPolicy {
     /// `None` when the policy matches nothing, so no guard is installed.
     pub fn compile(p: &ToolPolicy) -> Option<Self> {
-        if p.is_inert() {
+        if is_inert(p) {
             return None;
         }
         Some(Self {
@@ -1742,24 +1723,24 @@ mod tests {
 
     #[test]
     fn policy_normalization_rejects_bad_input() {
-        let p = ToolPolicy {
+        let p = normalize_policy(ToolPolicy {
             terms: vec![" a ".into(), "a".into(), String::new()],
             exempt_roots: vec!["/w/".into(), "/x/./y/../z".into(), "/".into()],
             ..ToolPolicy::default()
-        }
-        .normalized()
+        })
         .unwrap();
         assert_eq!(p.terms, vec!["a"]);
         assert_eq!(p.exempt_roots, vec!["/w", "/x/z"]);
         assert!(
-            ToolPolicy { patterns: vec!["(".into()], ..ToolPolicy::default() }
-                .normalized()
+            normalize_policy(ToolPolicy { patterns: vec!["(".into()], ..ToolPolicy::default() })
                 .is_err()
         );
         assert!(
-            ToolPolicy { exempt_roots: vec!["rel".into()], ..ToolPolicy::default() }
-                .normalized()
-                .is_err()
+            normalize_policy(ToolPolicy {
+                exempt_roots: vec!["rel".into()],
+                ..ToolPolicy::default()
+            })
+            .is_err()
         );
     }
 

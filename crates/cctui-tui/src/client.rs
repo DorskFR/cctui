@@ -7,6 +7,22 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
+/// A frame off the websocket. Anything that fails to deserialize arrives as
+/// [`Incoming::Undecodable`] rather than vanishing.
+pub enum Incoming {
+    Event(Box<ServerEvent>),
+    Undecodable(String),
+}
+
+/// The single place a websocket frame becomes an [`Incoming`]. Shared with the
+/// contract test so it exercises the production decode, not a copy of it.
+pub fn decode_frame(text: &str) -> Incoming {
+    match serde_json::from_str::<ServerEvent>(text) {
+        Ok(event) => Incoming::Event(Box::new(event)),
+        Err(e) => Incoming::Undecodable(e.to_string()),
+    }
+}
+
 pub struct ServerClient {
     base_url: String,
     token: String,
@@ -104,9 +120,7 @@ impl ServerClient {
         Ok(())
     }
 
-    pub async fn connect_ws(
-        &self,
-    ) -> Result<(mpsc::Sender<TuiCommand>, mpsc::Receiver<ServerEvent>)> {
+    pub async fn connect_ws(&self) -> Result<(mpsc::Sender<TuiCommand>, mpsc::Receiver<Incoming>)> {
         // Authenticate the WS upgrade via the `Authorization` header rather than a
         // `?token=` query param so the token never lands in server access logs.
         // `bearer_or_cookie` on the server accepts either the header
@@ -128,7 +142,7 @@ impl ServerClient {
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<TuiCommand>(64);
-        let (event_tx, event_rx) = mpsc::channel::<ServerEvent>(64);
+        let (event_tx, event_rx) = mpsc::channel::<Incoming>(64);
 
         // Sender task: forward TuiCommands to WS
         tokio::spawn(async move {
@@ -148,8 +162,7 @@ impl ServerClient {
                     Message::Close(_) => break,
                     _ => continue,
                 };
-                let Ok(event) = serde_json::from_str::<ServerEvent>(&text) else { continue };
-                if event_tx.send(event).await.is_err() {
+                if event_tx.send(decode_frame(&text)).await.is_err() {
                     break;
                 }
             }

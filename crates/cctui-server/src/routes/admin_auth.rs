@@ -8,9 +8,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
-use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::{
@@ -19,115 +16,14 @@ use crate::auth::{
 use crate::error::AppError;
 use crate::state::AppState;
 
+pub use cctui_proto::api::admin::{
+    ApiKeyRow, CreateUserRequest, CreateUserResponse, MachineRow, MintKeyRequest, MintKeyResponse,
+    RelabelTokenRequest, RenameMachineRequest, RotateResponse, SetAclsRequest, UpdateUserRequest,
+    UserAclsResponse, UserRow, UserTokenRow,
+};
+
 fn forbid_or(ctx: &AuthContext) -> Result<(), AppError> {
     ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))
-}
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct CreateUserRequest {
-    pub name: String,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct CreateUserResponse {
-    pub id: Uuid,
-    pub name: String,
-    pub key: String,
-}
-
-#[derive(Serialize, sqlx::FromRow)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct UserRow {
-    pub id: Uuid,
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    /// Temporary off switch — auth fails while set, nothing is
-    /// invalidated, clearing restores. Distinct from the permanent revoke.
-    pub disabled_at: Option<DateTime<Utc>>,
-    /// Per-user dispatch permission. Enforced on `POST
-    /// /sessions/dispatch`; defaults TRUE.
-    pub can_dispatch: bool,
-    /// Latest use of any of the user's keys; None until one authenticates.
-    #[sqlx(default)]
-    pub last_seen_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Serialize, sqlx::FromRow)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct MachineRow {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub name: String,
-    pub display_name: Option<String>,
-    pub first_seen_at: DateTime<Utc>,
-    pub last_seen_at: DateTime<Utc>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    /// `persistent` (a real daemon) or `ephemeral` (a dispatch/worker pod).
-    /// The New-session picker hides `ephemeral` machines.
-    pub kind: String,
-    /// Operator-set badge hue (0-359). `None` = hash of the name.
-    pub hue: Option<i16>,
-    /// Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34`.
-    /// `None` for machines enrolled before the preview column existed.
-    pub key_preview: Option<String>,
-    /// Derived online/stale/offline tier from `last_seen_at` age.
-    /// Not a DB column — `#[sqlx(skip)]` makes `query_as` ignore it (filled via
-    /// `Default`); the handler fills it in from `last_seen_at` after the fetch.
-    #[sqlx(skip)]
-    pub liveness: cctui_proto::models::MachineLiveness,
-}
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct RenameMachineRequest {
-    /// `None` clears the override so the UI falls back to `name`.
-    pub display_name: Option<String>,
-    /// Badge hue override (0-359). `None` clears it (hash fallback).
-    /// The PATCH replaces both fields, so callers send the full pair.
-    #[serde(default)]
-    pub hue: Option<i16>,
-}
-
-/// Partial update of a user. Any field left `None` is unchanged, so
-/// the same endpoint serves both rename and the dispatch-permission toggle.
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct UpdateUserRequest {
-    /// Blank/whitespace is rejected (name is `NOT NULL`); `None` leaves it.
-    pub name: Option<String>,
-    pub can_dispatch: Option<bool>,
-    /// `true` sets `disabled_at = now()`, `false` clears it.
-    pub disabled: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct RelabelTokenRequest {
-    /// `None`/blank clears the label.
-    pub label: Option<String>,
-}
-
-#[derive(Serialize, sqlx::FromRow)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct UserTokenRow {
-    pub id: Uuid,
-    pub label: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    /// Non-secret fragment for display, e.g. `cctui_u_ab12…ef34`.
-    /// `None` for tokens minted before the preview column existed.
-    pub token_preview: Option<String>,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct RotateResponse {
-    pub id: Uuid,
-    pub key: String,
 }
 
 pub async fn create_user(
@@ -648,14 +544,6 @@ fn self_or_admin(ctx: &AuthContext, target: Uuid) -> Result<(), AppError> {
     }
 }
 
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct UserAclsResponse {
-    pub user_id: Uuid,
-    /// The user's ceiling (what its keys may be granted), as scope strings.
-    pub scopes: Vec<String>,
-}
-
 /// `GET /users/{id}/acls` — the user's ceiling. Self or admin.
 pub async fn get_user_acls(
     State(state): State<AppState>,
@@ -665,14 +553,6 @@ pub async fn get_user_acls(
     self_or_admin(&ctx, user_id)?;
     let scopes = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
     Ok(Json(UserAclsResponse { user_id, scopes: scopes.iter().map(ToString::to_string).collect() }))
-}
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct SetAclsRequest {
-    /// The full desired scope set (replaces the existing rows). Strings from the
-    /// `read|dispatch|enroll|admin` set; unknown values are rejected.
-    pub scopes: Vec<String>,
 }
 
 fn parse_scopes(raw: &[String]) -> Result<Vec<Scope>, AppError> {
@@ -715,22 +595,6 @@ pub async fn set_user_acls(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Serialize, sqlx::FromRow)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct ApiKeyRow {
-    pub id: Uuid,
-    pub label: Option<String>,
-    pub key_preview: Option<String>,
-    pub kind: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub last_used_at: Option<DateTime<Utc>>,
-    /// The key's granted scopes (`key_acls`), filled by the handler.
-    #[sqlx(skip)]
-    pub scopes: Vec<String>,
-}
-
 /// `GET /users/{id}/keys` — the user's `auth_keys` with their granted scopes. Self
 /// or admin.
 pub async fn list_user_keys(
@@ -755,24 +619,6 @@ pub async fn list_user_keys(
         row.scopes = scopes.into_iter().map(|(s,)| s).collect();
     }
     Ok(Json(rows))
-}
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct MintKeyRequest {
-    pub label: Option<String>,
-    /// Scopes to grant — must be ⊆ the owner's ceiling (enforced server-side).
-    pub scopes: Vec<String>,
-    pub expires_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct MintKeyResponse {
-    pub id: Uuid,
-    /// The plaintext token — returned ONCE, never recoverable after.
-    pub key: String,
-    pub scopes: Vec<String>,
 }
 
 /// `POST /users/{id}/keys` — mint a scoped key for the user. Self or admin. The

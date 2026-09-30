@@ -6,7 +6,7 @@ import type {
 	UsageNotices
 } from '$lib/queries';
 import { isUsdKey } from '$lib/components/molecules/usage-windows';
-import { PROVIDER_KINDS, providerFamily, type ProviderKind } from '$lib/providers';
+import { providerFamily, providerKindOptions, type ProviderKind } from '$lib/providers';
 
 export type SoftEdit = {
 	cap: number | null;
@@ -100,5 +100,5 @@ export function modelList(rows: { model: string; label: string }[]): AccountMode
 /** Provider kinds an account can still add: one per family, like the server's unique index. */
 export function availableKinds(a: OAuthAccount): ProviderKind[] {
 	const taken = new Set(a.providers.map((p) => p.family));
-	return PROVIDER_KINDS.map((k) => k.value).filter((v) => !taken.has(providerFamily(v)));
+	return providerKindOptions().map((k) => k.value).filter((v) => !taken.has(providerFamily(v)));
 }

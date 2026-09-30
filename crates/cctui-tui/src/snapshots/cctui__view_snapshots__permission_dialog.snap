@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   Needs input
+▸    ● [claude-code] infra (main)  opus  0s  $1.25
+   Working
+     ● [┌ Tool Approval Required ──────────────────────────────────────────────────────────┐
+      ↳ │  Tool:  Bash                                                                     │
+   Compl│                                                                                  │
+     ○ [│Desc:  Run the workspace test suite                                               │
+        │                                                                                  │
+        │ Input Preview ───────────────────────────────────────────────────────────────────│
+        │cargo test --workspace                                                            │
+        │                                                                                  │
+        │                                                                                  │
+        │                                                                                  │
+        │                                                                                  │
+        │                                                                                  │
+        │  y Allow  n Deny                                                                 │
+        └──────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

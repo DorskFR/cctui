@@ -3,7 +3,7 @@ import type { PoolFamilyUsage } from "./PoolFamilyUsage";
 
 /**
  * A pool's quota, aggregated per provider family — what the pool zone and
- * the stats panel render. See [`crate::pool_usage`] for the arithmetic.
+ * the stats panel render. See [`crate::api::pool_usage`] for the arithmetic.
  */
 export type PoolUsageView = { pool_id: string, name: string, strategy: string, 
 /**

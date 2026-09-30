@@ -10,7 +10,7 @@
 //!
 //! `GET /machines/{machine_id}/codex-models` returns one machine's catalog
 //! (empty `models` when none is known, and the webui falls back to its static
-//! offline list). `GET /models/codex` merges every catalog for pickers with no
+//! offline list). `GET /models/codex/catalog` merges every catalog for pickers with no
 //! machine in hand (dispatch, fork): a union by model id, account catalogs
 //! first, then the newest machine report.
 //! `POST /machines/{machine_id}/codex-models/refresh` re-reads every `OpenAI`
@@ -499,6 +499,28 @@ pub async fn get_codex_models(
         state.codex_catalogs.get(&machine_uuid).map(|c| c.catalog.clone()).unwrap_or_default();
     catalog.client_version = Some(client_version);
     Ok(Json(catalog))
+}
+
+/// The catalog a picker should be driven by: the machine's own when one is
+/// named and nothing authoritative outranks it, else the cross-machine merge.
+pub fn effective_catalog(state: &AppState, machine: Option<Uuid>) -> CodexModelCatalog {
+    refresh_client_version_if_stale(state);
+    refresh_account_catalogs_if_stale(state);
+    let client_version = Some(codex_client_version(state));
+    let accounts: Vec<CachedCatalog> =
+        state.codex_account_catalogs.iter().map(|c| c.value().clone()).collect();
+    if !accounts.is_empty() {
+        return CodexModelCatalog { models: merge_catalogs(&accounts).models, client_version };
+    }
+    if let Some(machine) = machine
+        && let Some(cached) = state.codex_catalogs.get(&machine)
+        && !cached.catalog.models.is_empty()
+    {
+        return CodexModelCatalog { models: cached.catalog.models.clone(), client_version };
+    }
+    let cached: Vec<CachedCatalog> =
+        state.codex_catalogs.iter().map(|c| c.value().clone()).collect();
+    CodexModelCatalog { models: merge_catalogs(&cached).models, client_version }
 }
 
 pub async fn get_merged_codex_models(

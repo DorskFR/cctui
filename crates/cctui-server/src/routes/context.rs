@@ -10,9 +10,10 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
+
+pub use cctui_proto::api::context::{ContextItem, ContextItemSpec, UpdateContextItemRequest};
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -25,69 +26,6 @@ pub const SCOPES: &[&str] = &["user", "machine", "path", "label"];
 /// the repo the agent can already read.
 const MAX_BODY: usize = 64 * 1024;
 const MAX_ITEMS_PER_SPAWN: usize = 32;
-
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct ContextItem {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub id: Uuid,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub user_id: Uuid,
-    /// `memory` or `prompt`.
-    pub kind: String,
-    /// Slug, unique per `(user_id, kind)`; the stable reference a profile or a
-    /// spawn request names.
-    pub name: String,
-    pub title: String,
-    pub body: String,
-    /// `user` | `machine` | `path` | `label`.
-    pub scope: String,
-    /// Machine id, working-dir prefix or label id. `None` for `user` scope.
-    pub scope_ref: Option<String>,
-    pub tags: Vec<String>,
-    pub enabled: bool,
-    pub version: i32,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub created_at: DateTime<Utc>,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub updated_at: DateTime<Utc>,
-}
-
-/// The editable half of an item.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct ContextItemSpec {
-    pub kind: String,
-    pub name: String,
-    pub title: String,
-    #[serde(default)]
-    pub body: String,
-    #[serde(default = "user_scope")]
-    pub scope: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
-    pub scope_ref: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default = "yes")]
-    pub enabled: bool,
-}
-
-fn user_scope() -> String {
-    "user".to_owned()
-}
-
-const fn yes() -> bool {
-    true
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct UpdateContextItemRequest {
-    #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub spec: Option<ContextItemSpec>,
-}
 
 const COLS: &str = "id, user_id, kind, name, title, body, scope, scope_ref, tags, enabled, \
                     version, created_at, updated_at";
@@ -522,6 +460,8 @@ pub async fn resolve_items(
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
 
     fn item(kind: &str, name: &str, scope: &str, scope_ref: Option<&str>) -> ContextItem {

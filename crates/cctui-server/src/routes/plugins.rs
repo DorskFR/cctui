@@ -9,50 +9,14 @@ use axum::{Extension, Json};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-#[cfg(feature = "ts")]
-use ts_rs::TS;
 
 use crate::auth::AuthContext;
 use std::collections::BTreeMap;
 
-use crate::plugins::{
-    Plugin, PluginInstanceSetting, PluginPage, PluginSetting, enabled_ids, mime_for, plugin_config,
-    resolve_static,
-};
+use crate::plugins::{Plugin, enabled_ids, mime_for, plugin_config, resolve_static};
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct PluginInfo {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    /// Tsumikit icon name, when the manifest declares one.
-    pub icon: Option<String>,
-    /// `/plugins/<id>/<web>?v=<sha8>`, absent for skills-only plugins.
-    pub web: Option<String>,
-    /// Present when the plugin contributes a full page at `/apps/<id>`.
-    pub page: Option<PluginPage>,
-    /// Stylesheets to load with the module, as `/plugins/<id>/<path>?v=<sha8>`.
-    pub styles: Vec<String>,
-    pub skills: Vec<String>,
-    /// From the caller's settings `plugins.enabled[id]`.
-    pub enabled: bool,
-    /// Per-user settings the plugin declares.
-    pub settings: Vec<PluginSetting>,
-    /// The caller's current values, by setting key (`plugins.config[id]`).
-    pub config: BTreeMap<String, String>,
-    /// Instance-level settings the admin owns, for display only.
-    #[serde(rename = "instanceSettings")]
-    pub instance_settings: Vec<PluginInstanceSetting>,
-    /// Non-secret instance values, and only for a caller who enabled the
-    /// plugin. Secrets are never included.
-    #[serde(rename = "instanceSettingValues")]
-    pub instance_setting_values: BTreeMap<String, String>,
-    /// The plugin's backend is reachable at `/api/v1/plugins/<id>/backend/`.
-    pub backend: bool,
-}
+pub use cctui_proto::api::plugins::PluginInfo;
 
 pub fn plugin_info(
     plugin: &Plugin,

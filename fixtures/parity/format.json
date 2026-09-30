@@ -1,0 +1,308 @@
+{
+  "compact": [
+    {
+      "n": 0,
+      "out": "0"
+    },
+    {
+      "n": 999,
+      "out": "999"
+    },
+    {
+      "n": 1000,
+      "out": "1.0k"
+    },
+    {
+      "n": 9999,
+      "out": "10.0k"
+    },
+    {
+      "n": 999499,
+      "out": "999k"
+    },
+    {
+      "n": 999500,
+      "out": "1.0M"
+    },
+    {
+      "n": 999949,
+      "out": "1.0M"
+    },
+    {
+      "n": 999950,
+      "out": "1.0M"
+    },
+    {
+      "n": 1000000,
+      "out": "1.0M"
+    },
+    {
+      "n": 999949999,
+      "out": "999.9M"
+    },
+    {
+      "n": 999950000,
+      "out": "1.0B"
+    },
+    {
+      "n": 1004100000,
+      "out": "1.0B"
+    },
+    {
+      "n": 12345678901,
+      "out": "12.3B"
+    }
+  ],
+  "uptime": [
+    {
+      "secs": 0,
+      "out": "0m"
+    },
+    {
+      "secs": 59,
+      "out": "0m"
+    },
+    {
+      "secs": 60,
+      "out": "1m"
+    },
+    {
+      "secs": 720,
+      "out": "12m"
+    },
+    {
+      "secs": 3600,
+      "out": "1h 0m"
+    },
+    {
+      "secs": 15000,
+      "out": "4h 10m"
+    },
+    {
+      "secs": 90000,
+      "out": "1d 1h"
+    },
+    {
+      "secs": 180000,
+      "out": "2d 2h"
+    }
+  ],
+  "statusBadgeTone": [
+    {
+      "status": "active",
+      "out": "ok"
+    },
+    {
+      "status": "new",
+      "out": "info"
+    },
+    {
+      "status": "archived",
+      "out": "danger"
+    },
+    {
+      "status": "ended",
+      "out": "neutral"
+    },
+    {
+      "status": "",
+      "out": "neutral"
+    }
+  ],
+  "modelShort": [
+    {
+      "model": "claude-opus-4-8",
+      "out": "opus-4-8"
+    },
+    {
+      "model": "gpt-5-codex",
+      "out": "gpt-5-codex"
+    },
+    {
+      "model": "fireworks-ai/accounts/fireworks/models/kimi-k3",
+      "out": "kimi-k3"
+    },
+    {
+      "model": "accounts/fireworks/models/kimi-k3",
+      "out": "kimi-k3"
+    },
+    {
+      "model": "fireworks-ai/",
+      "out": "fireworks-ai"
+    },
+    {
+      "model": "anthropic-claude-3",
+      "out": "claude-3"
+    }
+  ],
+  "modelFamily": [
+    {
+      "model": "claude-opus-4-8",
+      "out": "opus"
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "out": "gpt"
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "out": "gpt"
+    },
+    {
+      "model": "fireworks-ai/accounts/fireworks/models/kimi-k3",
+      "out": "kimi"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "out": "sonnet"
+    }
+  ],
+  "modelAbbrev": [
+    {
+      "model": "claude-opus-4-8",
+      "out": "Op."
+    },
+    {
+      "model": "claude-sonnet-5",
+      "out": "Son."
+    },
+    {
+      "model": "claude-fable-5-1",
+      "out": "Fa."
+    },
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "out": "Ha."
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "out": "Sol."
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "out": "Te."
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "out": "Lu."
+    },
+    {
+      "model": "gpt-6-astra",
+      "out": "As."
+    },
+    {
+      "model": "gpt-5-solaris-preview",
+      "out": "GPT"
+    },
+    {
+      "model": "claude-opus-4-8-consolidated",
+      "out": "Op."
+    },
+    {
+      "model": "fireworks-ai/accounts/fireworks/models/kimi-k3",
+      "out": "Ki."
+    }
+  ],
+  "machineInitial": [
+    {
+      "label": "workstation-01",
+      "out": "W1"
+    },
+    {
+      "label": "ci-runner-02",
+      "out": "C2"
+    },
+    {
+      "label": "ci-runner-11",
+      "out": "C11"
+    },
+    {
+      "label": "dev1",
+      "out": "D1"
+    },
+    {
+      "label": "nanachi",
+      "out": "N"
+    },
+    {
+      "label": "build farm",
+      "out": "B"
+    },
+    {
+      "label": "a0000000",
+      "out": "A0"
+    },
+    {
+      "label": "",
+      "out": "?"
+    },
+    {
+      "label": "-- 7 ",
+      "out": "77"
+    }
+  ],
+  "usd": [
+    {
+      "n": 0,
+      "out": "$0.00"
+    },
+    {
+      "n": 0.0031,
+      "out": "$0.0031"
+    },
+    {
+      "n": 0.71,
+      "out": "$0.71"
+    },
+    {
+      "n": 12,
+      "out": "$12.00"
+    },
+    {
+      "n": 1234.56,
+      "out": "$1235"
+    },
+    {
+      "n": -3,
+      "out": "$0.00"
+    },
+    {
+      "n": 99.994,
+      "out": "$99.99"
+    }
+  ],
+  "hashHue": [
+    {
+      "s": "nanachi",
+      "out": 54
+    },
+    {
+      "s": "agents",
+      "out": 102
+    },
+    {
+      "s": "",
+      "out": 0
+    },
+    {
+      "s": "workstation-01",
+      "out": 315
+    },
+    {
+      "s": "Ünïcødé",
+      "out": 63
+    }
+  ],
+  "machineTint": [
+    {
+      "label": "nanachi",
+      "hue": null,
+      "out": "--mh:54;background:hsl(var(--mh) var(--mach-bg-sl));color:hsl(var(--mh) var(--mach-fg-sl));border-color:hsl(var(--mh) var(--mach-border-sl))"
+    },
+    {
+      "label": "nanachi",
+      "hue": 210,
+      "out": "--mh:210;background:hsl(var(--mh) var(--mach-bg-sl));color:hsl(var(--mh) var(--mach-fg-sl));border-color:hsl(var(--mh) var(--mach-border-sl))"
+    }
+  ]
+}

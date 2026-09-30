@@ -12,7 +12,7 @@
 	import { settings, type MacroSpec } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { modes } from '../spawn/options';
-	import { claudeModels } from '$lib/harnessModels';
+	import { harnessModelsFallback } from '$lib/domainTables';
 	import { effortsFor, macroProblems, newMacro } from '../macros.logic';
 
 	const machinesQ = useAllMachines(() => true);
@@ -150,7 +150,7 @@
 			<SettingRow label={m.settings_macros_field_model()} help={m.settings_macros_field_model_help()}>
 				{#if draft.adapter === 'claude-code'}
 					<Select style="width:100%" value={draft.model ?? ''} onchange={(e) => (draft!.model = orNull(sel(e)))}>
-						{#each claudeModels as opt (opt.v)}
+						{#each harnessModelsFallback('claude-code').models as opt (opt.v)}
 							<option value={opt.v}>{opt.label ?? opt.v}</option>
 						{/each}
 					</Select>

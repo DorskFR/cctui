@@ -15,7 +15,9 @@
 	} = $props();
 
 	const options = $derived<ModelOption[]>(
-		models.filter((mo) => mo.model).map((mo) => ({ v: mo.model, label: mo.label || mo.model }))
+		models
+			.filter((mo) => mo.model)
+			.map((mo) => ({ v: mo.model, label: mo.label || mo.model, disabled: false }))
 	);
 </script>
 

@@ -1,0 +1,322 @@
+{
+  "findTrigger": [
+    {
+      "text": "sync with #",
+      "caret": 11,
+      "out": {
+        "start": 10,
+        "query": ""
+      }
+    },
+    {
+      "text": "sync with #gree",
+      "caret": 15,
+      "out": {
+        "start": 10,
+        "query": "gree"
+      }
+    },
+    {
+      "text": "ticket #12 ",
+      "caret": 11,
+      "out": null
+    },
+    {
+      "text": "ticket #12 next",
+      "caret": 15,
+      "out": null
+    },
+    {
+      "text": "C#",
+      "caret": 2,
+      "out": null
+    },
+    {
+      "text": "a.com/x#y",
+      "caret": 9,
+      "out": null
+    },
+    {
+      "text": "#abc",
+      "caret": 0,
+      "out": null
+    },
+    {
+      "text": "#abc tail",
+      "caret": 4,
+      "out": {
+        "start": 0,
+        "query": "abc"
+      }
+    }
+  ],
+  "mentionableSessions": [
+    {
+      "sessions": [
+        {
+          "id": "w",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "b",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "r",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "d",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "a",
+          "status": "archived",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "dr",
+          "status": "draft",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "me",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        }
+      ],
+      "exclude_id": "me",
+      "out": ["w", "b", "r", "d"]
+    },
+    {
+      "sessions": [
+        {
+          "id": "w",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "b",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "r",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "d",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "a",
+          "status": "archived",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "dr",
+          "status": "draft",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        },
+        {
+          "id": "me",
+          "status": "active",
+          "name": null,
+          "working_dir": "/w",
+          "machine_name": "agents"
+        }
+      ],
+      "exclude_id": null,
+      "out": ["w", "b", "r", "d", "me"]
+    }
+  ],
+  "filterMentions": [
+    {
+      "sessions": [
+        {
+          "id": "01a0-1",
+          "status": "active",
+          "name": "Examiner le projet greenfield",
+          "working_dir": "/home/x/green",
+          "machine_name": "agents"
+        },
+        {
+          "id": "02b0-2",
+          "status": "active",
+          "name": "Fix login",
+          "working_dir": "/w",
+          "machine_name": "vps"
+        }
+      ],
+      "query": "",
+      "out": ["01a0-1", "02b0-2"]
+    },
+    {
+      "sessions": [
+        {
+          "id": "01a0-1",
+          "status": "active",
+          "name": "Examiner le projet greenfield",
+          "working_dir": "/home/x/green",
+          "machine_name": "agents"
+        },
+        {
+          "id": "02b0-2",
+          "status": "active",
+          "name": "Fix login",
+          "working_dir": "/w",
+          "machine_name": "vps"
+        }
+      ],
+      "query": "GREEN",
+      "out": ["01a0-1"]
+    },
+    {
+      "sessions": [
+        {
+          "id": "01a0-1",
+          "status": "active",
+          "name": "Examiner le projet greenfield",
+          "working_dir": "/home/x/green",
+          "machine_name": "agents"
+        },
+        {
+          "id": "02b0-2",
+          "status": "active",
+          "name": "Fix login",
+          "working_dir": "/w",
+          "machine_name": "vps"
+        }
+      ],
+      "query": "02b0",
+      "out": ["02b0-2"]
+    },
+    {
+      "sessions": [
+        {
+          "id": "01a0-1",
+          "status": "active",
+          "name": "Examiner le projet greenfield",
+          "working_dir": "/home/x/green",
+          "machine_name": "agents"
+        },
+        {
+          "id": "02b0-2",
+          "status": "active",
+          "name": "Fix login",
+          "working_dir": "/w",
+          "machine_name": "vps"
+        }
+      ],
+      "query": "vps",
+      "out": ["02b0-2"]
+    },
+    {
+      "sessions": [
+        {
+          "id": "01a0-1",
+          "status": "active",
+          "name": "Examiner le projet greenfield",
+          "working_dir": "/home/x/green",
+          "machine_name": "agents"
+        },
+        {
+          "id": "02b0-2",
+          "status": "active",
+          "name": "Fix login",
+          "working_dir": "/w",
+          "machine_name": "vps"
+        }
+      ],
+      "query": "nope",
+      "out": []
+    }
+  ],
+  "mentionToken": [
+    {
+      "id": "x",
+      "name": "Greenfield",
+      "out": "#x (Greenfield)"
+    },
+    {
+      "id": "x",
+      "name": "  ",
+      "out": "#x"
+    },
+    {
+      "id": "x",
+      "name": null,
+      "out": "#x"
+    }
+  ],
+  "applyMention": [
+    {
+      "text": "sync with #gre and go",
+      "caret": 14,
+      "id": "ID1",
+      "name": "Green",
+      "out": {
+        "text": "sync with #ID1 (Green)  and go",
+        "caret": 23
+      }
+    }
+  ],
+  "moveSelection": [
+    {
+      "index": 0,
+      "delta": 1,
+      "length": 3,
+      "out": 1
+    },
+    {
+      "index": 2,
+      "delta": 1,
+      "length": 3,
+      "out": 0
+    },
+    {
+      "index": 0,
+      "delta": -1,
+      "length": 3,
+      "out": 2
+    },
+    {
+      "index": 0,
+      "delta": 1,
+      "length": 0,
+      "out": 0
+    }
+  ]
+}

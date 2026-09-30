@@ -3,7 +3,8 @@
 	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { looseSettings } from './pages.logic';
-	import { USAGE_PROBES } from '$lib/providers';
+	import { usageProbeOptions } from '$lib/providers';
+	import { useDomainMeta } from '$lib/queries';
 
 	let {
 		endpoint = false,
@@ -36,6 +37,8 @@
 		moveFamily?: string;
 		onmove?: (targetId: string) => void;
 	} = $props();
+
+	useDomainMeta();
 
 	let raw = $state('');
 	let rawError = $state('');
@@ -103,7 +106,7 @@
 			</Field>
 			<Field label={m.accounts_field_usage_probe()}>
 				<Select bind:value={usageProbe} aria-label={m.accounts_field_usage_probe()}>
-					{#each USAGE_PROBES as p (p.value)}
+					{#each usageProbeOptions() as p (p.value)}
 						<option value={p.value}>{p.label}</option>
 					{/each}
 				</Select>
