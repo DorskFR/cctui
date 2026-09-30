@@ -62,22 +62,27 @@ export const withAliasTargets = (
 		return target ? { ...m, label: `${m.label} (${target})` } : m;
 	});
 
-// The harness/adapter a provider credential runs: anything in the
-// openai family runs Codex; everything else (anthropic / anthropic-compatible)
-// runs Claude Code. Mirrors the server's `Family::from_provider`.
+// The harness/adapter a provider credential runs: `fireworks` is its own
+// family and only OpenCode runs it; anything else in the openai family runs
+// Codex; everything else (anthropic / anthropic-compatible) runs Claude Code.
+// Mirrors the server's `Family::from_provider` + `Family::from_adapter`: a
+// fireworks key offered under Claude Code is refused at spawn with "has no
+// anthropic provider".
 export const adapterForProvider = (provider: string): Adapter =>
-	provider.includes('openai') ? 'codex' : 'claude-code';
+	provider === 'fireworks' ? 'opencode' : provider.includes('openai') ? 'codex' : 'claude-code';
 
-export type Adapter = 'claude-code' | 'codex';
-// Stable field order: the harness cards never reorder.
+export type Adapter = 'claude-code' | 'codex' | 'opencode';
+// Stable field order: the harness cards never reorder. OpenCode has no card in
+// the spawn form, so a fireworks-only account backs none of these.
 export const allAdapters: Adapter[] = ['claude-code', 'codex'];
+const knownAdapters: Adapter[] = [...allAdapters, 'opencode'];
 
 // Provider-family union of an account identity: the harnesses its
 // credentials can run, in stable order. An account holding anthropic+openai
 // providers offers both; a single-provider account offers one.
 export const accountAdapters = (a: OAuthAccount): Adapter[] => {
 	const families = new Set(a.providers.map((p) => adapterForProvider(p.provider)));
-	return allAdapters.filter((ad) => families.has(ad));
+	return knownAdapters.filter((ad) => families.has(ad));
 };
 
 // The provider credential backing a harness on this account, if any.
@@ -130,6 +135,25 @@ export const staleAccountPick = (value: string, accounts: OAuthAccount[]): boole
 	poolName(value) === undefined &&
 	!accounts.some((a) => a.name === value);
 
+/** The pools that can back this harness: a pool whose members are all known
+ *  accounts none of which has a provider in the harness's family can't run it
+ *  (a pool of fireworks keys under Claude Code: the server refuses every
+ *  member), so it isn't offered. An empty pool is left as it was. A member missing from `accounts` (shared by
+ *  someone else) is given the benefit of the doubt. */
+export const compatiblePools = <P extends Pick<AccountPoolView, 'members'>>(
+	pools: readonly P[],
+	accounts: readonly OAuthAccount[],
+	harness: string
+): P[] =>
+	pools.filter(
+		(p) =>
+			!p.members?.length ||
+			p.members.some((mb) => {
+			const a = accounts.find((acc) => acc.id === mb.account_id);
+			return !a || accountBacksAdapter(a, harness);
+		})
+	);
+
 /** One value space: '' Auto · NO_ACCOUNT · POOL_PREFIX-prefixed pool ids ·
  *  account ids. Sectioned Pools · Accounts · Other. */
 export function accountPickOptions(args: {
@@ -140,7 +164,7 @@ export function accountPickOptions(args: {
 }): SelectOption[] {
 	const other = m.spawn_account_other_group();
 	return [
-		...args.pools.map((p) => ({
+		...compatiblePools(args.pools, args.accounts, args.harness).map((p) => ({
 			value: `${POOL_PREFIX}${p.id}`,
 			label: p.name,
 			group: m.spawn_account_pool_group()

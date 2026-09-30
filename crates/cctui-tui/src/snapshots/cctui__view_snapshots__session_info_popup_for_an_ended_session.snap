@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   ┌ Session info ──────────────────────────────────────────────────────────────────────────────┐
+   │s-working                                                                                   │
+   │session:                                                                                    │
+▸  │id                                 s-working                                                │
+   │parent                             —                                                        │
+   │machine                            orion                                                    │
+   │adapter                            claude-code                                              │
+   │account                            main                                                     │
+   │model                              opus (high)                                              │
+   │permission mode                    yolo                                                     │
+   │registered                         1h ago                                                   │
+   │last heartbeat                     2s ago                                                   │
+   │last tool                          45s ago                                                  │
+   │ended                              daemon lost — machine went away                          │
+   │server:                                                                                     │
+   │status                             active                                                   │
+   │account                            main                                                     │
+   │account bound                      true                                                     │
+   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close    16/30                           │
+   └────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

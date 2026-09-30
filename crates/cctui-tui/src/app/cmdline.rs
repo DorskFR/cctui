@@ -275,8 +275,11 @@ fn commit(app: &mut App) -> Vec<Effect> {
 
 /// Moves to the next or previous hit and focuses it, so line-select's own scroll
 /// and highlight carry the viewport there.
+///
+/// Decision 7 scopes search to the current view: a diagnose panel or terminal
+/// pane over the transcript must not have `n` move a cursor nobody can see.
 fn step(app: &mut App, delta: i32) {
-    if app.find.hits.is_empty() {
+    if app.find.hits.is_empty() || app.view() != View::Conversation {
         return;
     }
     let len = app.find.hits.len();
@@ -405,6 +408,21 @@ mod tests {
         type_in(&mut app, "\"the parser\"");
         assert_eq!(app.find.terms, ["the parser"]);
         assert_eq!(app.find.hits, [0, 4], "the two lines carrying the phrase, not the words apart");
+    }
+
+    #[test]
+    fn the_hit_keys_are_inert_outside_the_conversation() {
+        let mut app = app();
+        reduce(&mut app, CmdAction::Open(Mode::Search));
+        type_in(&mut app, "parser");
+        reduce(&mut app, CmdAction::Commit);
+        let landed = app.line_cursor;
+
+        app.router.push(View::Diagnose);
+        reduce(&mut app, CmdAction::NextHit);
+        assert_eq!(app.line_cursor, landed, "a panel over the transcript swallows n");
+        reduce(&mut app, CmdAction::Open(Mode::Search));
+        assert!(app.cmdline.open.is_none(), "and it cannot open the prompt either");
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! What `y`, `Y` and the link key put on the clipboard. Pure: the transport is
-//! [`super::action::Effect::Copy`]'s job.
+//! What `y`, `Y` and the link key put on the clipboard. Pure: writing it is
+//! [`crate::clipboard`]'s job.
 
 use super::state::{ConversationLine, LineKind, ToolCategory};
 
@@ -80,33 +80,9 @@ pub fn session_link(base_url: &str, session_id: &str) -> String {
     format!("{}/sessions?session={session_id}", base_url.trim_end_matches('/'))
 }
 
-/// `ESC ] 52 ; c ; <base64> BEL`. Terminals that support it copy to the system
-/// clipboard even across ssh; the ones that do not print nothing visible, which
-/// is why a local fallback still runs.
-#[must_use]
-pub fn osc52(text: &str) -> String {
-    format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
-}
-
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        let idx = [(n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63];
-        out.push(B64[idx[0] as usize] as char);
-        out.push(B64[idx[1] as usize] as char);
-        out.push(if chunk.len() > 1 { B64[idx[2] as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[idx[3] as usize] as char } else { '=' });
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{base64, code_block, line_markdown, osc52, session_link};
+    use super::{code_block, line_markdown, session_link};
     use crate::app::state::{ConversationLine, LineKind, ToolCategory};
 
     fn line(kind: LineKind, text: &str) -> ConversationLine {
@@ -186,19 +162,5 @@ mod tests {
             session_link("https://cctui.dorsk.dev/", "s-1"),
             "https://cctui.dorsk.dev/sessions?session=s-1"
         );
-    }
-
-    #[test]
-    fn base64_pads_every_tail_length() {
-        assert_eq!(base64(b"a"), "YQ==");
-        assert_eq!(base64(b"ab"), "YWI=");
-        assert_eq!(base64(b"abc"), "YWJj");
-        assert_eq!(base64(b"hello world"), "aGVsbG8gd29ybGQ=");
-        assert_eq!(base64(b""), "");
-    }
-
-    #[test]
-    fn the_osc52_frame_wraps_the_payload() {
-        assert_eq!(osc52("abc"), "\x1b]52;c;YWJj\x07");
     }
 }

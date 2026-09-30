@@ -16,8 +16,10 @@ pub enum Context {
     /// The `F` category menu.
     FilterMenu,
     History,
+    Terminal,
     Help,
     Permission,
+    Diagnose,
     Ask,
     AskText,
     Plan,
@@ -32,8 +34,10 @@ pub const CONTEXTS: &[Context] = &[
     Context::CmdLine,
     Context::FilterMenu,
     Context::History,
+    Context::Terminal,
     Context::Help,
     Context::Permission,
+    Context::Diagnose,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -50,8 +54,10 @@ impl Context {
             Self::CmdLine => "cmdline",
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
+            Self::Terminal => "terminal",
             Self::Help => "help",
             Self::Permission => "permission",
+            Self::Diagnose => "diagnose",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -68,8 +74,10 @@ impl Context {
             Self::CmdLine => "Search and commands",
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
+            Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::Permission => "Permission card",
+            Self::Diagnose => "Diagnose / info",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -172,6 +180,10 @@ actions! {
     CmdLineCommit => "cmdline-commit", "Run it";
     CmdLineCancel => "cmdline-cancel", "Abandon it";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    TerminalOpen => "terminal-open", "Watch the live terminal";
+    TerminalClose => "terminal-close", "Close the terminal pane";
+    TerminalScrollDown => "terminal-scroll-down", "Scroll the terminal down";
+    TerminalScrollUp => "terminal-scroll-up", "Scroll the terminal up";
 
     CancelInput => "cancel-input", "Close the composer";
     SubmitInput => "submit-input", "Send the message";
@@ -186,6 +198,15 @@ actions! {
     HistoryRecall => "history-recall", "Put this prompt in the composer";
 
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    DiagnoseClose => "diagnose-close", "Close the panel";
+    DiagnoseScrollDown => "diagnose-scroll-down", "Scroll the panel down";
+    DiagnoseScrollUp => "diagnose-scroll-up", "Scroll the panel up";
+    DiagnosePageDown => "diagnose-page-down", "Page the panel down";
+    DiagnosePageUp => "diagnose-page-up", "Page the panel up";
+    DiagnoseTop => "diagnose-top", "Jump to the top of the panel";
+    DiagnoseRefresh => "diagnose-refresh", "Refresh the report";
+    DiagnoseCopyId => "diagnose-copy-id", "Copy the session id";
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
@@ -284,6 +305,13 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "f", ActionId::FilterCycle),
     spec(Context::Conversation, "F", ActionId::FilterMenu),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
+    spec(Context::Conversation, "T", ActionId::TerminalOpen),
+];
+
+const TERMINAL: &[BindingSpec] = &[
+    spec(Context::Terminal, "esc, q, T", ActionId::TerminalClose),
+    spec(Context::Terminal, "j, down", ActionId::TerminalScrollDown),
+    spec(Context::Terminal, "k, up", ActionId::TerminalScrollUp),
 ];
 
 /// `shift+enter` is unreported by most terminals, so a newline also has a
@@ -318,6 +346,21 @@ const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "down, ctrl+n", ActionId::HistorySelectNext),
     spec(Context::History, "up, ctrl+p", ActionId::HistorySelectPrev),
     spec(Context::History, "enter", ActionId::HistoryRecall),
+];
+
+/// The panel is modal, so it claims its own scrolling rather than falling
+/// through to the view underneath.
+const DIAGNOSE: &[BindingSpec] = &[
+    spec(Context::Diagnose, "esc, q", ActionId::DiagnoseClose),
+    spec(Context::Diagnose, "j, down", ActionId::DiagnoseScrollDown),
+    spec(Context::Diagnose, "k, up", ActionId::DiagnoseScrollUp),
+    spec(Context::Diagnose, "pagedown", ActionId::DiagnosePageDown),
+    spec(Context::Diagnose, "pageup", ActionId::DiagnosePageUp),
+    spec(Context::Diagnose, "g", ActionId::DiagnoseTop),
+    spec(Context::Diagnose, "r", ActionId::DiagnoseRefresh),
+    spec(Context::Diagnose, "y", ActionId::DiagnoseCopyId),
+    spec(Context::Diagnose, "D", ActionId::Diagnose),
+    spec(Context::Diagnose, "i", ActionId::Info),
 ];
 
 const HELP: &[BindingSpec] = &[
@@ -377,8 +420,10 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    TERMINAL,
     HELP,
     PERMISSION,
+    DIAGNOSE,
     ASK,
     ASK_TEXT,
     PLAN,

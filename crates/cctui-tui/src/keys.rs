@@ -5,11 +5,13 @@ use crate::app::action::{Action, CopyWhat};
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::conversation::ConversationAction;
+use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
 use crate::app::drafts::DraftAction;
 use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::state::View;
+use crate::app::terminal::TerminalAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -38,6 +40,14 @@ pub const fn context_for(
     if matches!(view, View::HistoryPicker) {
         return Context::History;
     }
+    if matches!(view, View::Diagnose) {
+        return Context::Diagnose;
+    }
+    // The pane is modal and read-only: nothing under it claims a key, and no
+    // key typed at it reaches the composer.
+    if matches!(view, View::Terminal) {
+        return Context::Terminal;
+    }
     if let Some(overlay) = overlay {
         return overlay;
     }
@@ -58,6 +68,8 @@ pub const fn context_for(
         View::Conversation => Context::Conversation,
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
+        View::Diagnose => Context::Diagnose,
+        View::Terminal => Context::Terminal,
     }
 }
 
@@ -82,12 +94,16 @@ pub fn map_input(
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
+            View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(3))),
             View::Help | View::HistoryPicker => None,
+            View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
+            View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(-3))),
             View::Help | View::HistoryPicker => None,
+            View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
         },
     }
 }
@@ -127,6 +143,10 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::InterruptSelected,
+        ActionId::TerminalOpen => Action::Terminal(TerminalAction::Toggle),
+        ActionId::TerminalClose => Action::Terminal(TerminalAction::Close),
+        ActionId::TerminalScrollDown => Action::Terminal(TerminalAction::Scroll(-1)),
+        ActionId::TerminalScrollUp => Action::Terminal(TerminalAction::Scroll(1)),
         ActionId::RetrySend => Action::Send(SendAction::Retry(chord.event())),
         ActionId::EditSend => Action::Send(SendAction::Edit(chord.event())),
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
@@ -187,6 +207,17 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PlanScrollDown => Action::Prompt(PromptAction::PlanScroll(1)),
         ActionId::PlanScrollUp => Action::Prompt(PromptAction::PlanScroll(-1)),
 
+        ActionId::Diagnose => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)),
+        ActionId::Info => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)),
+        ActionId::DiagnoseClose => Action::Diagnose(DiagnoseAction::Close),
+        ActionId::DiagnoseScrollDown => Action::Diagnose(DiagnoseAction::Scroll(1)),
+        ActionId::DiagnoseScrollUp => Action::Diagnose(DiagnoseAction::Scroll(-1)),
+        ActionId::DiagnosePageDown => Action::Diagnose(DiagnoseAction::Scroll(15)),
+        ActionId::DiagnosePageUp => Action::Diagnose(DiagnoseAction::Scroll(-15)),
+        ActionId::DiagnoseTop => Action::Diagnose(DiagnoseAction::ScrollTop),
+        ActionId::DiagnoseRefresh => Action::Diagnose(DiagnoseAction::Refresh),
+        ActionId::DiagnoseCopyId => Action::Diagnose(DiagnoseAction::CopyId),
+
         _ => return None,
     })
 }
@@ -211,8 +242,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use super::{
-        Action, AttentionAction, Decision, DraftAction, InputEvent, Keymap, PromptFocus, View,
-        map_input,
+        Action, AttentionAction, Decision, DiagnoseAction, DiagnoseMode, DraftAction, InputEvent,
+        Keymap, PromptFocus, View, map_input,
     };
     use crate::app::prompt::PromptAction;
     use crate::config::keymap::Context;
@@ -335,16 +366,57 @@ mod tests {
         }
     }
 
-    /// A global bound to an action no wave implements yet must not eat the key.
+    /// A global bound to an action no wave implements yet must not eat the key:
+    /// `switch-view` is the last one still reserved, and `1-9` has to stay inert
+    /// in the list rather than resolving to something else.
     #[test]
-    fn a_reserved_global_still_reaches_the_composer() {
-        for code in [KeyCode::Char('i'), KeyCode::Char('D')] {
-            assert!(
-                matches!(map(View::Conversation, false, code), Some(Action::ActivateInputWith(_))),
-                "{code:?} should fall through"
-            );
+    fn a_reserved_global_claims_nothing() {
+        for code in [KeyCode::Char('1'), KeyCode::Char('9')] {
+            assert!(map(View::SessionList, false, code).is_none(), "{code:?} should stay reserved");
         }
-        assert!(map(View::SessionList, false, KeyCode::Char('i')).is_none());
+    }
+
+    #[test]
+    fn the_diagnose_globals_reach_both_views() {
+        for view in [View::SessionList, View::Conversation] {
+            assert!(matches!(
+                map(view, false, KeyCode::Char('D')),
+                Some(Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)))
+            ));
+            assert!(matches!(
+                map(view, false, KeyCode::Char('i')),
+                Some(Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_open_panel_is_modal_and_owns_its_own_keys() {
+        let map_panel = |code| map(View::Diagnose, false, code);
+        assert!(matches!(
+            map_panel(KeyCode::Char('j')),
+            Some(Action::Diagnose(DiagnoseAction::Scroll(1)))
+        ));
+        assert!(matches!(
+            map_panel(KeyCode::Char('r')),
+            Some(Action::Diagnose(DiagnoseAction::Refresh))
+        ));
+        assert!(matches!(
+            map_panel(KeyCode::Char('y')),
+            Some(Action::Diagnose(DiagnoseAction::CopyId))
+        ));
+        assert!(matches!(
+            map_panel(KeyCode::Char('g')),
+            Some(Action::Diagnose(DiagnoseAction::ScrollTop))
+        ));
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            assert!(matches!(map_panel(code), Some(Action::Diagnose(DiagnoseAction::Close))));
+        }
+        assert!(
+            map_panel(KeyCode::Char('?')).is_none(),
+            "a modal panel does not fall through to the globals"
+        );
+        assert!(map_panel(KeyCode::Char('z')).is_none());
     }
 
     /// `/` and `n`/`N` are decision 7's globals, wired here rather than given a

@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("$app/environment", () => ({ browser: true }));
 
+// Every test re-imports modules after resetModules, so each one transforms its
+// graph cold; on a loaded machine that alone outlasts the default 5 s.
+vi.setConfig({ testTimeout: 30_000 });
+
 const LEGACY_KEY = "cctui_theme_pref";
 const KIT_KEY = "tsumikit-theme";
 

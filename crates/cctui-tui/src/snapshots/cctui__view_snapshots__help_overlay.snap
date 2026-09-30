@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 467
+assertion_line: 490
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         Space / En… Show or hide this category       │
-▸ │  ?           Toggle this cheat sheet            j / ↓       Next category                    │
-  │  q           Quit cctui                         k / ↑       Previous category                │
-  │  /           Search the current view          Prompt history                                 │
-  │  n           Next search hit                    Esc         Close the prompt list            │
-  │  N           Previous search hit                Ctrl+n / ↓  Next prompt                      │
-  │  Ctrl+g      Jump to the next pending approval  Ctrl+p / ↑  Previous prompt                  │
-  │Session list                                     Enter       Put this prompt in the composer  │
-  │  j / ↓       Next session                     Help                                           │
-  │  k / ↑       Previous session                   j / ↓       Scroll down                      │
-  │  g           First session                      k / ↑       Scroll up                        │
-  │  G           Last session                       PgDn        Page down                        │
-  │  Enter       Open the conversation              PgUp        Page up                          │
-  │  z / Tab     Fold or open the subagent group    ? / q / Esc Close this cheat sheet           │
-  │  S           Fold or open the section         Permission card                                │
-  │  Z           Fold or open everything            y           Allow                            │
-  │Conversation                                     n           Deny                             │
-  │  1-9         Jump to session by number          A           Allow and auto-approve           │
-  │  q / Esc     Back to the session list         Question card                                  │
-  │  j / ↓       Scroll down                        Esc         Answer later                     │
+  │Anywhere                                       Terminal pane                                  │
+▸ │  ?           Toggle this cheat sheet            T / q / Esc Close the terminal pane          │
+  │  q           Quit cctui                         j / ↓       Scroll the terminal down         │
+  │  /           Search the current view            k / ↑       Scroll the terminal up           │
+  │  n           Next search hit                  Help                                           │
+  │  N           Previous search hit                j / ↓       Scroll down                      │
+  │  D           Diagnose the selected session      k / ↑       Scroll up                        │
+  │  i           Session info                       PgDn        Page down                        │
+  │  Ctrl+g      Jump to the next pending approv…   PgUp        Page up                          │
+  │Session list                                     ? / q / Esc Close this cheat sheet           │
+  │  j / ↓       Next session                     Permission card                                │
+  │  k / ↑       Previous session                   y           Allow                            │
+  │  g           First session                      n           Deny                             │
+  │  G           Last session                       A           Allow and auto-approve           │
+  │  Enter       Open the conversation            Diagnose / info                                │
+  │  z / Tab     Fold or open the subagent group    D           Diagnose the selected session    │
+  │  S           Fold or open the section           i           Session info                     │
+  │  Z           Fold or open everything            q / Esc     Close the panel                  │
+  │Conversation                                     j / ↓       Scroll the panel down            │
+  │  1-9         Jump to session by number          k / ↑       Scroll the panel up              │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

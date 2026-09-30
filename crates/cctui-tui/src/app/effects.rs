@@ -11,6 +11,7 @@ use super::action::{Action, Effect};
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
@@ -161,6 +162,13 @@ async fn run(
             }
             Vec::new()
         }
+        Effect::WatchTerminal { session_id, watch } => {
+            if let Err(e) = ws.watch_terminal(session_id, watch).await {
+                tracing::warn!(%e, watch, "terminal watch failed");
+                return vec![Action::Toast(Level::Error, "terminal watch failed".to_owned())];
+            }
+            Vec::new()
+        }
         Effect::SendMessage { send_id, session_id, content, ask_picks, turn_id } => {
             let client_msg_id = uuid::Uuid::new_v4().to_string();
             let turn_id = turn_id.unwrap_or_else(uuid::Uuid::new_v4);
@@ -210,6 +218,19 @@ async fn run(
             }
             Vec::new()
         }
+        Effect::FetchDiagnose { session_id } => match server.diagnose(&session_id).await {
+            Ok(report) => {
+                vec![Action::Diagnose(DiagnoseAction::Loaded {
+                    session_id,
+                    report: Box::new(report),
+                })]
+            }
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, session_id, "diagnose fetch failed");
+                vec![Action::Diagnose(DiagnoseAction::Failed { session_id, error: e.to_string() })]
+            }
+        },
     }
 }
 
@@ -267,29 +288,10 @@ async fn subscribe(ws: &WsClient, session_id: String) {
     }
 }
 
-/// Writes the `OSC 52` frame first — it is the only thing that reaches the
-/// clipboard of the machine the human is sitting at when the TUI runs over ssh —
-/// then tries the local clipboard for terminals that ignore the escape.
+/// Every copy in the TUI lands here, so both routes and the toast are decided in
+/// one place.
 fn copy(text: &str, label: &'static str) -> Vec<Action> {
-    use std::io::Write;
-
-    let mut out = std::io::stdout();
-    let osc = super::clipboard::osc52(text);
-    let escaped = match out.write_all(osc.as_bytes()).and_then(|()| out.flush()) {
-        Ok(()) => true,
-        Err(e) => {
-            tracing::warn!(%e, "cannot write the OSC 52 clipboard frame");
-            false
-        }
-    };
-    let local = match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_owned())) {
-        Ok(()) => true,
-        Err(e) => {
-            tracing::debug!(%e, "no local clipboard; relying on OSC 52");
-            false
-        }
-    };
-    if escaped || local {
+    if crate::clipboard::copy_with_fallback(text) {
         vec![Action::Toast(Level::Info, format!("copied the {label}"))]
     } else {
         vec![Action::Toast(Level::Warn, format!("cannot copy the {label}"))]

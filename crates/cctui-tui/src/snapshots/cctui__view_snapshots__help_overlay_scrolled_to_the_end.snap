@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 475
+assertion_line: 498
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+y      Copy a link to this session        r           Refine the plan                  │
-▸ │  :           Run a command (:export)            j / ↓       Scroll the plan down             │
-  │  f           Cycle assistant / you / tools      k / ↑       Scroll the plan up               │
-  │  F           Choose which lines to show       Plan card — refine                             │
-  │  Ctrl+r      Search sent prompts                Enter       Accept the text                  │
-  │  Tab         Answer the waiting prompt          Esc         Discard the text                 │
-  │Composer                                       Row glyphs                                     │
-  │  Esc         Close the composer                 ●           working                          │
-  │  Enter       Send the message                   ◐           stale or asleep                  │
-  │  Ctrl+j / A… Insert a newline                   ○           idle                             │
-  │  ↑           Recall an earlier prompt           ☾           hibernated                       │
-  │  ↓           Recall a later prompt              ↳           subagent                         │
-  │  Ctrl+r      Search sent prompts                ▸ / ▾       folded / open group              │
-  │Search and commands                              !           permission waiting on you        │
-  │  Enter       Run it                             ?           question waiting on you          │
-  │  Esc         Abandon it                         P           plan waiting for approval        │
-  │Filter menu                                      ●N          unread messages                  │
-  │  F / q / Esc Choose which lines to show         ⚡           auto-approve on                  │
-  │  a           Show every category                ✕reason     how it ended                     │
-  │  r           Back to the default filter         ⚙N age      tool calls, age of the last      │
+  │  Enter       Send the message                   Enter       Accept the text                  │
+▸ │  Ctrl+j / A… Insert a newline                   Esc         Discard the text                 │
+  │  ↑           Recall an earlier prompt         Row glyphs                                     │
+  │  ↓           Recall a later prompt              ●           working                          │
+  │  Ctrl+r      Search sent prompts                ◐           stale or asleep                  │
+  │Search and commands                              ○           idle                             │
+  │  Enter       Run it                             ☾           hibernated                       │
+  │  Esc         Abandon it                         ↳           subagent                         │
+  │Filter menu                                      ▸ / ▾       folded / open group              │
+  │  F / q / Esc Choose which lines to show         !           permission waiting on you        │
+  │  a           Show every category                ?           question waiting on you          │
+  │  r           Back to the default filter         P           plan waiting for approval        │
+  │  Space / En… Show or hide this category         ●N          unread messages                  │
+  │  j / ↓       Next category                      ⚡           auto-approve on                  │
+  │  k / ↑       Previous category                  ⏸           account soft-limited             │
+  │Prompt history                                   ⚠           account traffic never seen       │
+  │  Esc         Close the prompt list              ❄           cache cold, next turn re-reads   │
+  │  Ctrl+n / ↓  Next prompt                        ✕reason     how it ended                     │
+  │  Ctrl+p / ↑  Previous prompt                    ⚙N age      tool calls, age of the last      │
+  │  Enter       Put this prompt in the composer                                                 │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

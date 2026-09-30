@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod clipboard;
 mod config;
 mod install;
 mod keys;

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
@@ -6,6 +6,7 @@ use ratatui_textarea::TextArea;
 
 use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
+use super::diagnose::DiagnosePanel;
 use super::identity::AuthState;
 use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
@@ -20,6 +21,8 @@ pub enum View {
     Conversation,
     Help,
     HistoryPicker,
+    Diagnose,
+    Terminal,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -197,6 +200,10 @@ pub struct App {
     pub asks: HashMap<String, AskCard>,
     /// Live plan-approval prompt per session, cleared on `PlanResolved`.
     pub plans: HashMap<String, PlanCard>,
+    /// The open diagnose/info overlay, `None` when it is closed.
+    pub diagnose: Option<DiagnosePanel>,
+    /// Sessions parked behind an account soft limit, from the WS frames.
+    pub soft_limited: HashSet<String>,
     pub scroll_offset: usize,
     /// First cheat-sheet row shown; clamped by the overlay when it draws.
     pub help_scroll: usize,
@@ -257,6 +264,8 @@ pub struct App {
     pub refresh: RefreshCounters,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
+    /// The watched session's emulated screen, open only while the pane is.
+    pub terminal: Option<super::terminal::TerminalPane>,
 }
 
 impl App {
@@ -296,6 +305,8 @@ impl App {
             permissions: PermissionInbox::default(),
             asks: HashMap::new(),
             plans: HashMap::new(),
+            diagnose: None,
+            soft_limited: HashSet::new(),
             scroll_offset: 0,
             help_scroll: 0,
             follow_tail: true,
@@ -329,6 +340,7 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             ui: UiState::default(),
+            terminal: None,
         }
     }
 

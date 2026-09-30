@@ -5,12 +5,14 @@ use crossterm::event::KeyEvent;
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::state::ConversationLine;
+use super::terminal::TerminalAction;
 use super::toast::Level;
 
 /// Everything that can change the app. Key handlers, the websocket and
@@ -64,6 +66,7 @@ pub enum Action {
     /// `y` / `Y` / the link key, all resolved against the focused line.
     Copy(CopyWhat),
     Prompt(PromptAction),
+    Diagnose(DiagnoseAction),
 
     StreamLine {
         session_id: String,
@@ -84,6 +87,7 @@ pub enum Action {
     Auth(AuthAction),
     Drafts(DraftAction),
     Send(SendAction),
+    Terminal(TerminalAction),
     SessionLive(SessionLiveAction),
 
     /// A pure clock advance: it moves delivery deadlines, re-evaluates the
@@ -169,6 +173,11 @@ pub enum Effect {
     Unsubscribe {
         session_id: String,
     },
+    /// Start or stop the PTY relay for one session.
+    WatchTerminal {
+        session_id: String,
+        watch: bool,
+    },
     SendMessage {
         send_id: u64,
         session_id: String,
@@ -191,6 +200,10 @@ pub enum Effect {
         session_id: String,
         request_id: String,
         behavior: &'static str,
+    },
+    /// `GET /sessions/{id}/diagnose`: everything the daemon and the server know.
+    FetchDiagnose {
+        session_id: String,
     },
     /// Persist the fold state to `tui-state.json`.
     SaveUiState(crate::config::uistate::UiState),

@@ -59,15 +59,18 @@ export interface DockInputs {
 	wide: boolean;
 	/** Viewport wide enough for a docked column on each edge. */
 	veryWide: boolean;
+	/** Tiles mode: the panes own the whole viewport, so nothing docks. */
+	tiles?: boolean;
 }
 
 /** Resolve which panel goes where. A viewport too narrow for the requested
  *  panels drops them rather than squeezing the list: below `wide` nothing
  *  docks, and two panels on opposite edges need `veryWide` (the stats panel
- *  yields first since the spawn form is the one you type into). */
-export function resolveDocks({ spawn, stats, wide, veryWide }: DockInputs): DockLayout {
+ *  yields first since the spawn form is the one you type into). Tiles drop
+ *  both, leaving the settings untouched so list/grid get them back unchanged. */
+export function resolveDocks({ spawn, stats, wide, veryWide, tiles }: DockInputs): DockLayout {
 	const none: DockLayout = { spawn: null, stats: null, stacked: false, left: null, right: null };
-	if (!wide) return none;
+	if (tiles || !wide) return none;
 	const spawnSide = spawn.enabled ? spawn.side : null;
 	let statsSide = stats.enabled ? stats.side : null;
 	if (spawnSide && statsSide && spawnSide !== statsSide && !veryWide) statsSide = null;
