@@ -1022,6 +1022,8 @@
 	"pull_no_file_changes": "This pull request has no file changes.",
 	"pull_review_diff": "Review diff",
 	"pull_review_with_agent": "Review with agent",
+	"reload_new_ui_hint": "reload",
+	"reload_new_ui_title": "A newer web UI has been deployed — reload to pick it up",
 	"release_channel_beta": "beta",
 	"release_channel_beta_title": "Beta release channel: a pre-release build",
 	"resource_gauge_aria": "{machine}: CPU {cpu}, memory {mem}, disk {disk}",

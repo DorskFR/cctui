@@ -7,12 +7,12 @@
 	import { qk } from '$lib/queries';
 	import { attachmentStore } from '$lib/attachmentStore';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
-	import { page } from '$app/state';
+	import { page, updated } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
 	import { settings, sessionListWidthSize } from '$lib/settings.svelte';
 	import { locale } from '$lib/locale.svelte';
 	import { ws } from '$lib/ws.svelte';
-	import { goto } from '$app/navigation';
+	import { goto, beforeNavigate } from '$app/navigation';
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
@@ -27,6 +27,12 @@
 	import { mountJourneys } from '$lib/journey';
 
 	let { children } = $props();
+
+	// A deploy replaced the content-hashed chunks this tab knows, so the next
+	// navigation goes through the server instead of importing a 404.
+	beforeNavigate(({ willUnload, to }) => {
+		if (updated.current && !willUnload && to?.url) location.href = to.url.href;
+	});
 
 	// A plugin's full page and the Sessions tiles mode manage their own
 	// full-height layout, so they render outside the width-capped Container and

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { updated } from '$app/state';
 	import { ws } from '$lib/ws.svelte';
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
 	import { setUploadCaps } from '$lib/uploadCaps.svelte';
@@ -168,6 +169,18 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 						</span>
 					{/if}
 				{/if}
+				{#if updated.current}
+					<button
+						type="button"
+						class="reload"
+						title={m.reload_new_ui_title()}
+						onclick={() => location.reload()}
+					>
+						<Text size="xs" tone="accent" variant="code" weight="bold"
+							>{m.reload_new_ui_hint()}</Text
+						>
+					</button>
+				{/if}
 			</span>
 		</div>
 		<div class="tabs">
@@ -326,6 +339,14 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		.vers {
 			display: flex;
 		}
+	}
+	.reload {
+		border: 0;
+		padding: 0;
+		background: none;
+		cursor: pointer;
+		font: inherit;
+		text-decoration: underline;
 	}
 	.prefs {
 		display: inline-flex;
