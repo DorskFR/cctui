@@ -407,6 +407,62 @@ describe('peer (cross-session) messages', () => {
 	});
 });
 
+describe('room messages', () => {
+	const ROOM = [
+		'<cctui-room name="wave 23" from="lane a (codex on box-b)">',
+		'The gate is green on my lane.',
+		'</cctui-room>'
+	].join('\n');
+
+	it('classifies a room post as peer and carries the room name', () => {
+		const ln = buildLines([text(`▷ User: ${ROOM}`, 1)], ctx())[0];
+		expect(ln.role).toBe('peer');
+		expect(ln.peerRoom).toBe('wave 23');
+		expect(ln.peerFrom).toBe('lane a (codex on box-b)');
+		expect(ln.text).toBe('The gate is green on my lane.');
+		expect(ln.text).not.toContain('cctui-room');
+	});
+
+	it('leaves a direct peer message without a room, so the two are distinguishable', () => {
+		const raw = '<cross-session-message from-name="lane-a">hi</cross-session-message>';
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('peer');
+		expect(ln.peerRoom).toBeUndefined();
+	});
+
+	it('folds a batch of catch-up posts into one line each', () => {
+		const two = [ROOM, ROOM.replace('The gate is green on my lane.', 'And the tag is cut.')].join(
+			'\n\n'
+		);
+		const ln = buildLines([text(`▷ User: ${two}`, 1)], ctx())[0];
+		// One turn carries the batch; the first envelope is what the line renders.
+		expect(ln.role).toBe('peer');
+		expect(ln.peerRoom).toBe('wave 23');
+	});
+
+	it('renders the join notice as a marker, not as a peer message', () => {
+		const joined = [
+			'<cctui-room-joined name="wave 23">',
+			'You have been added to the cctui room "wave 23".',
+			'</cctui-room-joined>'
+		].join('\n');
+		const ln = buildLines([text(`▷ User: ${joined}`, 1)], ctx())[0];
+		expect(ln.role).toBe('marker');
+		expect(ln.peerRoom).toBeUndefined();
+	});
+
+	it('keeps a human relaying a room wrapper as a user turn', () => {
+		const raw = `look at this: ${ROOM}`;
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('user');
+		expect(ln.peerRoom).toBeUndefined();
+	});
+
+	it('is filtered by the peer category like any other peer line', () => {
+		expect(buildLines([text(`▷ User: ${ROOM}`, 1)], ctx({ peer: false }))).toEqual([]);
+	});
+});
+
 describe('poll re-injection classification', () => {
 	const POLL = 'Check the queue depth and report anything above 100. Do not stop.';
 	const typed = (body: string, ts: number, turnId: string): AgentEvent => ({

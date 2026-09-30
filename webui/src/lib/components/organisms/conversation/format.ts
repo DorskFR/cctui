@@ -60,13 +60,29 @@ export const PEER_PREAMBLES = [
 	'Received a message from agent'
 ];
 // Line-anchored so a human quoting or relaying a wrapper stays a human turn.
-const PEER_TAG_RE = /^<(cross-session-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/m;
+// `cctui-room` is a room post: same peer role, but `name` carries the room so the
+// line can be labelled as coming from a room rather than from one peer.
+const PEER_TAG_RE = /^<(cross-session-message|agent-message|cctui-room(?!-))\b([^>]*)>([\s\S]*?)<\/\1>/m;
 const PEER_ATTR_RE = /([a-z-]+)="([^"]*)"/g;
+// The standing block a session gets when the human adds it to a room. It is
+// addressed to the agent, not from a peer, so it reads as a system marker.
+const ROOM_JOINED_RE = /^<cctui-room-joined\b[^>]*>([\s\S]*?)<\/cctui-room-joined>/m;
 
 export interface PeerMessage {
 	/** `from-name` when the sender supplied one, else the raw `from` address. */
 	from: string | null;
+	/** The room a post came through; absent for a direct peer message. */
+	room?: string;
 	body: string;
+}
+
+/** The body of a room-join notice, or null when this is not one. */
+export function parseRoomJoined(text: string): string | null {
+	const m = ROOM_JOINED_RE.exec(text);
+	if (!m) return null;
+	const before = text.slice(0, m.index);
+	if (before.split('\n').some((l) => l.trim() && !isPeerPreamble(l))) return null;
+	return m[1].trim();
 }
 
 function isPeerPreamble(line: string): boolean {
@@ -83,7 +99,8 @@ export function parsePeerMessage(text: string): PeerMessage | null {
 	for (const a of tag[2].matchAll(PEER_ATTR_RE)) attrs.set(a[1], a[2]);
 	const name = attrs.get('from-name')?.trim();
 	const addr = attrs.get('from')?.trim();
-	return { from: name || addr || null, body: tag[3].trim() };
+	const room = tag[1] === 'cctui-room' ? attrs.get('name')?.trim() : undefined;
+	return { from: name || addr || null, room: room || undefined, body: tag[3].trim() };
 }
 
 // Claude stores an attachment-carrying user turn as three separate

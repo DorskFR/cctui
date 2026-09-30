@@ -26,4 +26,8 @@ command_id?: string | null, } | { "type": "archive_manifest", machine_id: string
 /**
  * Whose drafts list this belongs to; the draft row may already be gone.
  */
-user_id?: string | null, state: ScheduledLaunchState, launch_at?: string | null, last_error?: string | null, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
+user_id?: string | null, state: ScheduledLaunchState, launch_at?: string | null, last_error?: string | null, } | { "type": "room_message", room_id: string, room_name: string, 
+/**
+ * Whose rooms list this belongs to; scopes delivery to the owner.
+ */
+user_id: string, seq: number, sender_session_id?: string | null, sender_label: string, body: string, } | { "type": "room_members", room_id: string, user_id: string, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };

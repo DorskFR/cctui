@@ -67,6 +67,11 @@ export class WsClient {
 	/** bumped whenever the session set/status changes, so lists can refetch */
 	changeTick = $state(0);
 
+	/** Bumped on any room post or membership change, so an open Room panel
+	 *  catches up instead of polling. A tick rather than the event itself: the
+	 *  panel re-reads the timeline from its own cursor either way. */
+	roomTick = $state(0);
+
 	/** Live PTY-view listeners keyed by session id; not reactive. The
 	 * bytes are never buffered — a terminal that mounts late relies on the fresh
 	 * attach's full-screen repaint, not replay. */
@@ -188,6 +193,10 @@ export class WsClient {
 				else this.markListDirty();
 				break;
 			}
+			case 'room_message':
+			case 'room_members':
+				this.roomTick += 1;
+				break;
 			case 'machine_resources': {
 				const { type: _, ...p } = msg;
 				for (const cb of this.machineResourcesCbs) cb(p);

@@ -13,6 +13,7 @@
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
+	import { goto } from '$app/navigation';
 	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import type { ConversationChrome } from './chrome';
@@ -156,6 +157,14 @@
 						: [])
 				]
 			: []),
+		{
+			// Navigates rather than taking a callback: picking the room is the
+			// Rooms page's job, and threading another optional prop through every
+			// drawer and tile caller buys nothing.
+			label: m.rooms_add_to(),
+			icon: 'plus' as const,
+			onselect: () => void goto(`/rooms?add=${encodeURIComponent(session.id)}`)
+		},
 		{
 			label: m.drawer_copy_link_label(),
 			icon: 'link' as const,
