@@ -4,11 +4,11 @@ use crate::app::App;
 use crate::app::toast::Level;
 use crate::theme;
 
-const fn level_style(level: Level) -> ratatui::style::Style {
+fn level_style(level: Level) -> ratatui::style::Style {
     match level {
-        Level::Info => theme::DIM,
-        Level::Warn => theme::COST,
-        Level::Error => theme::ERROR,
+        Level::Info => theme::dim(),
+        Level::Warn => theme::cost(),
+        Level::Error => theme::error(),
     }
 }
 
@@ -27,7 +27,7 @@ pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     }
     if !app.status.is_clean() {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(format!("⚠ {} dropped", app.status.total()), theme::ERROR));
+        spans.push(Span::styled(format!("⚠ {} dropped", app.status.total()), theme::error()));
     }
     spans
 }

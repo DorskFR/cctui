@@ -64,6 +64,9 @@ pub fn uptime_secs(s: &SessionListItem) -> i64 {
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub router: Router,
+    /// Loaded once at startup; `App::new()` is always the built-in defaults so
+    /// a test never depends on the user's own `tui.toml`.
+    pub config: crate::config::Config,
     /// Injected so views never read the build: a version bump must not churn
     /// every snapshot.
     pub version: &'static str,
@@ -111,6 +114,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             router: Router::new(View::SessionList),
+            config: crate::config::Config::default(),
             version: env!("CARGO_PKG_VERSION"),
             sessions: Vec::new(),
             selected_index: 0,

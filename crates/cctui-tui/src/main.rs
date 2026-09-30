@@ -1,5 +1,6 @@
 mod app;
 mod client;
+mod config;
 mod install;
 mod keys;
 mod selfupdate;
@@ -186,6 +187,7 @@ async fn run(
 ) -> Result<()> {
     let server = Arc::new(ServerClient::new(&base_url, &token));
     let mut app = App::new();
+    apply_config(&mut app);
 
     init_sessions(&server, &mut app).await;
     let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
@@ -208,7 +210,9 @@ async fn run(
 
             maybe_input = input_rx.recv() => {
                 maybe_input
-                    .and_then(|input| keys::map_input(app.view(), app.input_active, input))
+                    .and_then(|input| {
+                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                    })
                     .map_or_else(Vec::new, |action| vec![action])
             }
             maybe_action = action_rx.recv() => {
@@ -264,6 +268,19 @@ async fn run(
         }
     }
     Ok(())
+}
+
+/// Config problems are toasts, never a startup failure: a typo in one binding
+/// must not keep the TUI from opening.
+fn apply_config(app: &mut App) {
+    app.clock_ms = now_ms();
+    let loaded = config::load();
+    theme::init(loaded.config.theme);
+    app.config = loaded.config;
+    app.show_timestamps = app.config.prefs.timestamps;
+    for problem in loaded.problems {
+        app.toast(app::toast::Level::Warn, format!("tui.toml: {problem}"));
+    }
 }
 
 async fn init_sessions(server: &ServerClient, app: &mut App) {

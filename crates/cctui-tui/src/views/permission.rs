@@ -12,7 +12,7 @@ pub fn draw(frame: &mut Frame, req: &PendingPermission) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(theme::BORDER_FOCUSED)
+        .border_style(theme::border_focused())
         .title(" Tool Approval Required ");
 
     let inner = block.inner(area);
@@ -30,8 +30,8 @@ pub fn draw(frame: &mut Frame, req: &PendingPermission) {
     // Tool name
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  Tool:  ", theme::DIM),
-            Span::styled(req.tool_name.clone(), theme::BOLD),
+            Span::styled("  Tool:  ", theme::dim()),
+            Span::styled(req.tool_name.clone(), theme::bold()),
         ])),
         tool_area,
     );
@@ -39,7 +39,7 @@ pub fn draw(frame: &mut Frame, req: &PendingPermission) {
     // Description
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  Desc:  ", theme::DIM),
+            Span::styled("  Desc:  ", theme::dim()),
             Span::raw(req.description.clone()),
         ]))
         .wrap(Wrap { trim: true }),
@@ -49,21 +49,21 @@ pub fn draw(frame: &mut Frame, req: &PendingPermission) {
     // Input preview
     let preview_block = Block::default()
         .borders(Borders::TOP)
-        .border_style(theme::BORDER_DIM)
+        .border_style(theme::border_dim())
         .title(" Input Preview ");
     let preview_inner = preview_block.inner(preview_area);
     frame.render_widget(preview_block, preview_area);
     frame.render_widget(
-        Paragraph::new(req.input_preview.clone()).style(theme::DIM).wrap(Wrap { trim: true }),
+        Paragraph::new(req.input_preview.clone()).style(theme::dim()).wrap(Wrap { trim: true }),
         preview_inner,
     );
 
     // Hotkeys
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  y ", theme::HOTKEY),
+            Span::styled("  y ", theme::hotkey()),
             Span::raw("Allow  "),
-            Span::styled("n ", theme::HOTKEY),
+            Span::styled("n ", theme::hotkey()),
             Span::raw("Deny"),
         ])),
         hotkeys_area,

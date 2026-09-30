@@ -46,7 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}")
     };
-    let mut header_spans = vec![Span::styled(header_text, theme::HEADER_BG)];
+    let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
     header_spans.extend(crate::widgets::status::status_spans(app));
     frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
 
@@ -88,7 +88,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     } else {
         frame.render_widget(
-            Paragraph::new(Span::styled("No conversation data", theme::DIM)),
+            Paragraph::new(Span::styled("No conversation data", theme::dim())),
             content_area,
         );
     }
@@ -97,7 +97,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "─".repeat(separator_area.width as usize),
-            theme::BORDER_FOCUSED,
+            theme::border_focused(),
         ))),
         separator_area,
     );
@@ -109,9 +109,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .areas(input_area);
 
     let prompt_style = if app.input_active {
-        theme::BORDER_FOCUSED.add_modifier(Modifier::BOLD)
+        theme::border_focused().add_modifier(Modifier::BOLD)
     } else {
-        theme::BORDER_DIM
+        theme::border_dim()
     };
     frame.render_widget(Paragraph::new(Span::styled("❯", prompt_style)), prompt_area);
 
@@ -264,7 +264,7 @@ fn render_line(line: &ConversationLine, show_timestamps: bool) -> Vec<Line<'stat
         }
         LineKind::System => {
             if !line.text.is_empty() {
-                result.push(Line::from(Span::styled(line.text.clone(), theme::DIM)));
+                result.push(Line::from(Span::styled(line.text.clone(), theme::dim())));
             }
         }
         LineKind::Reply => {

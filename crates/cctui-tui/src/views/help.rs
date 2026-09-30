@@ -21,12 +21,12 @@ pub fn draw(frame: &mut Frame) {
     frame.render_widget(Clear, area);
 
     let block =
-        Block::default().borders(Borders::ALL).border_style(theme::BORDER_FOCUSED).title(" Help ");
+        Block::default().borders(Borders::ALL).border_style(theme::border_focused()).title(" Help ");
 
     let lines: Vec<Line> = BINDINGS
         .iter()
         .map(|(key, desc)| {
-            Line::from(vec![Span::styled(format!("  {key:<12}"), theme::HOTKEY), Span::raw(*desc)])
+            Line::from(vec![Span::styled(format!("  {key:<12}"), theme::hotkey()), Span::raw(*desc)])
         })
         .collect();
 

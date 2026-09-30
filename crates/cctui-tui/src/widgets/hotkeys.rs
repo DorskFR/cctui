@@ -6,16 +6,16 @@ use crate::theme;
 
 pub fn draw_session_hotkeys(frame: &mut Frame, area: ratatui::layout::Rect) {
     let line = Line::from(vec![
-        Span::styled(" j/k", theme::HOTKEY),
-        Span::styled(":nav  ", theme::HOTKEY_DESC),
-        Span::styled("Enter", theme::HOTKEY),
-        Span::styled(":open  ", theme::HOTKEY_DESC),
-        Span::styled("g/G", theme::HOTKEY),
-        Span::styled(":top/bottom  ", theme::HOTKEY_DESC),
-        Span::styled("?", theme::HOTKEY),
-        Span::styled(":help  ", theme::HOTKEY_DESC),
-        Span::styled("q", theme::HOTKEY),
-        Span::styled(":quit", theme::HOTKEY_DESC),
+        Span::styled(" j/k", theme::hotkey()),
+        Span::styled(":nav  ", theme::hotkey_desc()),
+        Span::styled("Enter", theme::hotkey()),
+        Span::styled(":open  ", theme::hotkey_desc()),
+        Span::styled("g/G", theme::hotkey()),
+        Span::styled(":top/bottom  ", theme::hotkey_desc()),
+        Span::styled("?", theme::hotkey()),
+        Span::styled(":help  ", theme::hotkey_desc()),
+        Span::styled("q", theme::hotkey()),
+        Span::styled(":quit", theme::hotkey_desc()),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
