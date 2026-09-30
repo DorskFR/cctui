@@ -190,7 +190,7 @@ pub fn usd(n: f64) -> String {
 }
 
 /// Deterministic accent hue for a label. Hashes UTF-16 code units, because the
-/// TypeScript original reads `charCodeAt`.
+/// `TypeScript` original reads `charCodeAt`.
 #[must_use]
 pub fn hash_hue(s: &str) -> u32 {
     let mut h: u32 = 0;
@@ -214,7 +214,7 @@ pub fn machine_tint(label: &str, hue: Option<u32>) -> String {
     hue_tint(hue.unwrap_or_else(|| hash_hue(label)))
 }
 
-/// Render like JavaScript's `String(n)` for the integral values these counters
+/// Render like `JavaScript`'s `String(n)` for the integral values these counters
 /// carry.
 fn trim_number(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e21 {

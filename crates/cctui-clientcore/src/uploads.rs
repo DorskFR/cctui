@@ -6,7 +6,7 @@ pub fn default_caps() -> UploadCaps {
 }
 
 #[must_use]
-pub fn over_file_cap(size: u64, caps: UploadCaps) -> bool {
+pub const fn over_file_cap(size: u64, caps: UploadCaps) -> bool {
     size > caps.max_file_bytes
 }
 
@@ -16,6 +16,6 @@ pub fn over_total_cap(sizes: &[u64], caps: UploadCaps) -> bool {
 }
 
 #[must_use]
-pub fn over_count_cap(count: usize, caps: UploadCaps) -> bool {
+pub const fn over_count_cap(count: usize, caps: UploadCaps) -> bool {
     count > caps.max_files as usize
 }

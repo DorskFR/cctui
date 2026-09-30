@@ -21,11 +21,11 @@ pub fn default_title(body: &str) -> String {
 #[must_use]
 pub fn source_href(session_id: Option<&str>, seq: Option<i64>) -> Option<String> {
     let id = session_id?;
-    let base = format!("/sessions/{}", encode_uri_component(id));
-    Some(match seq {
-        Some(s) => format!("{base}?seq={s}"),
-        None => base,
-    })
+    let mut href = format!("/sessions/{}", encode_uri_component(id));
+    if let Some(s) = seq {
+        href.push_str(&format!("?seq={s}"));
+    }
+    Some(href)
 }
 
 #[must_use]

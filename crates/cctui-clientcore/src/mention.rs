@@ -117,10 +117,10 @@ pub fn apply_mention(
 
 /// Wrap-around move of the highlighted row.
 #[must_use]
-pub fn move_selection(index: usize, delta: i32, length: usize) -> usize {
+pub const fn move_selection(index: usize, delta: i32, length: usize) -> usize {
     if length == 0 {
         return 0;
     }
-    let len = length as i64;
-    (((index as i64 + i64::from(delta)) % len + len) % len) as usize
+    let step = if delta < 0 { length - 1 } else { 1 };
+    (index + step) % length
 }

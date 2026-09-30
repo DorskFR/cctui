@@ -2,7 +2,7 @@
 //!
 //! Pure functions only: no IO, no async, no clock, no randomness. Anything
 //! ambient is a parameter, so the same case table in `fixtures/parity/` can be
-//! replayed against this crate and against the TypeScript originals.
+//! replayed against this crate and against the `TypeScript` originals.
 
 pub mod bookmarks;
 pub mod format;

@@ -1,6 +1,7 @@
-//! Replays `fixtures/parity/*.json` against this crate. The webui replays the
-//! same files against its TypeScript originals, so a changed case fails on both
-//! sides until both implementations agree.
+//! Replays `fixtures/parity/*.json` against this crate.
+//!
+//! The webui replays the same files against its `TypeScript` originals, so a
+//! changed case fails on both sides until both implementations agree.
 
 use cctui_clientcore::history_nav::HistoryNav;
 use cctui_clientcore::{bookmarks, format, git, labels, mention, search, session_failure, uploads};
