@@ -12,13 +12,14 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::authz::{Shareable, shareable_owner};
 use crate::error::AppError;
 use crate::state::AppState;
+
+pub use cctui_proto::api::shares::{GrantShare, ShareInfo};
 
 /// The single grant-lookup primitive: does `grantee` hold a LIVE `use` grant on
 /// `(resource_type, resource_id)`? Called from `Resource::authorize` (the
@@ -61,32 +62,6 @@ async fn require_owner(
         Some(uid) if ctx.is_admin() || uid == ctx.user_id => Ok(uid),
         _ => Err(AppError::new(StatusCode::NOT_FOUND, "no such resource")),
     }
-}
-
-/// API view of one live share grant. Safe to return — no secrets, just who the
-/// resource is shared with and since when.
-#[derive(Debug, serde::Serialize, sqlx::FromRow)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "ResourceShareInfo"))]
-pub struct ShareInfo {
-    pub resource_type: String,
-    pub resource_id: Uuid,
-    pub user_id: Uuid,
-    /// The grantee's login (`users.name`), joined for display.
-    pub user_name: String,
-    pub action: String,
-    pub granted_at: DateTime<Utc>,
-}
-
-/// `POST /api/v1/{resource_type}/{id}/shares` payload. `user` is the grantee,
-/// accepted as either a UUID or a login (`users.name`). `action` defaults to
-/// `use` (the only action today).
-#[derive(Debug, serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct GrantShare {
-    pub user: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string", optional))]
-    pub action: Option<String>,
 }
 
 /// `GET /api/v1/{resource_type}/{id}/shares` — who the resource is shared with

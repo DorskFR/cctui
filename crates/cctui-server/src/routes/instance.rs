@@ -18,10 +18,12 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use serde::{Deserialize, Serialize};
-#[cfg(feature = "ts")]
-use ts_rs::TS;
 use uuid::Uuid;
+
+pub use cctui_proto::api::instance::{
+    InstanceInfo, InstanceUpdateRequest, SelfUpdateTarget, SelfUpdateTargetInfo,
+    SelfUpdateTargetRequest,
+};
 
 use crate::auth::{AuthContext, Scope};
 use crate::error::AppError;
@@ -29,20 +31,6 @@ use crate::state::AppState;
 
 /// Hard cap on the label; it lives in a header slot and the tab title.
 pub const NAME_MAX_CHARS: usize = 48;
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct InstanceUpdateRequest {
-    /// New deployment name. Empty / whitespace-only clears it.
-    pub name: Option<String>,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct InstanceInfo {
-    /// The deployment label, `null` when unset (the default).
-    pub name: Option<String>,
-}
 
 /// Trim, collapse to `None` when empty, reject when over the cap.
 fn normalize(raw: Option<&str>) -> Result<Option<String>, AppError> {
@@ -95,38 +83,6 @@ pub async fn update(
     };
     res?;
     Ok(Json(InstanceInfo { name }))
-}
-
-/// Where the self-update agent runs. Stored under `instance_settings.self_update`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct SelfUpdateTarget {
-    /// Enrolled machine (uuid) the update session is spawned on.
-    pub machine_id: String,
-    /// Working directory of that session; the deployment's checkout or
-    /// operations folder, whatever the local instructions expect.
-    pub working_dir: String,
-    /// Adapter to run it under (`claude-code` / `codex`); `None` → claude-code.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub adapter_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct SelfUpdateTargetRequest {
-    /// `null` clears the stored target (the env fallback, if any, then applies).
-    pub target: Option<SelfUpdateTarget>,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct SelfUpdateTargetInfo {
-    /// The effective target: stored one first, else the env fallback, else
-    /// `null` (the button then tells the admin to configure one).
-    pub target: Option<SelfUpdateTarget>,
-    /// `"settings"` when it comes from the admin form, `"env"` from
-    /// `CCTUI_SELF_UPDATE_*`, `null` when unset.
-    pub source: Option<&'static str>,
 }
 
 /// The target stored by the admin form, `None` when unset or unreadable.

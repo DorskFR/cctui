@@ -14,9 +14,10 @@
 //!     when the pool was edited, so revoking a share or clearing
 //!     `pool_eligible` takes the account out of every election immediately.
 
-use chrono::{DateTime, Utc};
 use sqlx::PgExecutor;
 use uuid::Uuid;
+
+pub use cctui_proto::api::account_pools::{AccountPool, AccountPoolMember, SessionRebind};
 
 /// How a launch picks among the members of a pool.
 pub const STRATEGY_HEADROOM: &str = "headroom";
@@ -25,43 +26,6 @@ pub const STRATEGY_ORDERED: &str = "ordered";
 /// Whether `s` names a strategy the table accepts.
 pub fn valid_strategy(s: &str) -> bool {
     matches!(s, STRATEGY_HEADROOM | STRATEGY_ORDERED)
-}
-
-/// One pool, without its members.
-#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct AccountPool {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub id: Uuid,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub user_id: Uuid,
-    pub name: String,
-    /// `headroom` (most allocation left wins) or `ordered` (first member with
-    /// room, by `position`).
-    pub strategy: String,
-    /// Whether a live session bound to this pool may be moved between members
-    /// when its account is refused.
-    pub failover: bool,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub created_at: DateTime<Utc>,
-}
-
-/// A member as the API renders it: enough for the UI to explain why an account
-/// is or is not currently electable, without a second round trip.
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct AccountPoolMember {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub account_id: Uuid,
-    pub name: String,
-    pub position: i32,
-    /// False when the member belongs to someone else (shared with the pool's
-    /// owner). Such a member can leave the pool without warning: the owner may
-    /// revoke the share or clear `pool_eligible`.
-    pub owned: bool,
-    /// The owner's veto. A shared member with this false is kept in the row
-    /// (so the UI can say why it stopped counting) but never elected.
-    pub pool_eligible: bool,
 }
 
 const COLS: &str = "id, user_id, name, strategy, failover, created_at";
@@ -266,23 +230,6 @@ pub async fn usable_members(
     .bind(family)
     .fetch_all(exec)
     .await
-}
-
-/// One recorded mid-session account move.
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct SessionRebind {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub id: Uuid,
-    pub session_id: String,
-    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
-    pub pool_id: Option<Uuid>,
-    pub from_account: String,
-    pub to_account: String,
-    /// `pool` or `redirect` — which mechanism moved the session.
-    pub reason: String,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub created_at: DateTime<Utc>,
 }
 
 /// Append a rebind to the session's history. Best-effort by contract: the

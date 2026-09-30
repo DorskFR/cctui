@@ -18,33 +18,11 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use cctui_proto::updatehook::{UpdateHookPhase, UpdateHookReport};
-use serde::Serialize;
-#[cfg(feature = "ts")]
-use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::state::AppState;
 
-/// A hook run as the webui sees it.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct SelfUpdateRun {
-    pub id: Uuid,
-    pub machine_id: Uuid,
-    /// Version this run is deploying.
-    pub version: String,
-    /// Version that was running when the run started.
-    pub from_version: String,
-    pub phase: UpdateHookPhase,
-    /// Whether the run has finished, either way.
-    pub done: bool,
-    pub exit_code: Option<i32>,
-    pub detail: String,
-    /// Tail of the hook's output; `null` until a command has produced any.
-    pub output_tail: Option<String>,
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-}
+pub use cctui_proto::api::update_hook::{DaemonVersion, SelfUpdateRun};
 
 /// Row shape shared by the queries below.
 #[derive(Clone)]
@@ -179,13 +157,6 @@ async fn require_machine(
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
     ctx.machine_id.ok_or(StatusCode::FORBIDDEN)
-}
-
-#[derive(Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct DaemonVersion {
-    pub version: &'static str,
-    pub git_hash: &'static str,
 }
 
 /// The version this deployment is serving, for a daemon's post-update health

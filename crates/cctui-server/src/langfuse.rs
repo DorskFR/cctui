@@ -22,10 +22,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use dashmap::DashMap;
-use serde::Serialize;
 use serde_json::{Value, json};
-#[cfg(feature = "ts")]
-use ts_rs::TS;
+
+pub use cctui_proto::api::langfuse::LangfuseSessionUsage;
 
 /// Langfuse sink configuration (`[langfuse]` block / `CCTUI_LANGFUSE_*` env).
 /// Built only when host + public + secret are all present.
@@ -113,19 +112,6 @@ struct CachedSessionUsage {
 }
 
 const USAGE_TTL: Duration = Duration::from_mins(1);
-
-/// Cost + `trace_count` are exact off the traces list; token classes are
-/// best-effort — only populated when the deployment carries per-trace
-/// `usageDetails` (legacy self-hosted trace lists often don't).
-#[derive(Debug, Clone, Default, Serialize)]
-#[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct LangfuseSessionUsage {
-    pub cost_usd: f64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read: u64,
-    pub trace_count: u64,
-}
 
 impl LangfuseClient {
     pub fn new(config: LangfuseConfig, http: reqwest::Client) -> Self {

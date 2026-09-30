@@ -26,60 +26,15 @@ use crate::error::err;
 use crate::pool_usage::{self, MemberWindow, PoolUsageWindow, WindowIdentity};
 use crate::routes::gateway;
 use crate::state::AppState;
-use crate::store::account_pools::{self, AccountPool, AccountPoolMember, SessionRebind};
+use crate::store::account_pools::{self, SessionRebind};
 use crate::store::usage_samples;
 
+pub use cctui_proto::api::account_pools::{
+    AccountPoolView, CreatePoolRequest, PoolFamilyUsage, PoolUsageMember, PoolUsageView,
+    UpdatePoolRequest,
+};
+
 type ApiErr = (StatusCode, Json<serde_json::Value>);
-
-/// A pool with its membership — what the accounts screen renders.
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct AccountPoolView {
-    #[serde(flatten)]
-    pub pool: AccountPool,
-    pub members: Vec<AccountPoolMember>,
-}
-
-/// A pool's quota, aggregated per provider family — what the pool zone and
-/// the stats panel render. See [`crate::pool_usage`] for the arithmetic.
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct PoolUsageView {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub pool_id: Uuid,
-    pub name: String,
-    pub strategy: String,
-    /// Off means a projection only speaks for launches: a live session stays
-    /// on its member and hits that member's wall.
-    pub failover: bool,
-    pub families: Vec<PoolFamilyUsage>,
-}
-
-/// One provider family inside a pool: only its members are interchangeable
-/// (a claude-code spawn elects among the anthropic credentials, a codex spawn
-/// among the openai ones), so only they are aggregated together.
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct PoolFamilyUsage {
-    /// `anthropic` | `openai` | `fireworks`.
-    pub family: String,
-    pub members: Vec<PoolUsageMember>,
-    pub windows: Vec<PoolUsageWindow>,
-}
-
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct PoolUsageMember {
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    pub account_id: Uuid,
-    pub name: String,
-    pub emoji: Option<String>,
-    /// `accounts.pool_weight`.
-    pub weight: f64,
-    /// False when the credential's usage could not be read: absent from the
-    /// aggregate rather than counted as empty or as full.
-    pub usage_known: bool,
-}
 
 /// A pool member's credential in one family, with the account fields the
 /// aggregate needs.
@@ -238,42 +193,6 @@ fn window_rank(key: &str) -> (u8, String) {
         _ => 2,
     };
     (rank, key.to_owned())
-}
-
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct CreatePoolRequest {
-    pub name: String,
-    /// `headroom` (default) or `ordered`.
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub strategy: Option<String>,
-    /// Whether a live session may be moved between members. Defaults to false:
-    /// creating a pool changes how launches pick, nothing about running work.
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub failover: Option<bool>,
-    /// Members, in election order for the `ordered` strategy.
-    #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string[]", optional))]
-    pub accounts: Vec<Uuid>,
-    /// The admin token has no user identity and must name the pool's owner.
-    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
-    pub user_id: Option<Uuid>,
-}
-
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct UpdatePoolRequest {
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub name: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub strategy: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub failover: Option<bool>,
-    /// Absent leaves the membership alone; present replaces it wholesale, in
-    /// the given order.
-    #[serde(default)]
-    #[cfg_attr(feature = "ts", ts(type = "string[] | null", optional))]
-    pub accounts: Option<Vec<Uuid>>,
 }
 
 /// `GET /account-pools` — the caller's pools with their members. An admin

@@ -12,30 +12,12 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use cctui_proto::media::sniff_media_type;
-use serde::Serialize;
 
 use crate::routes::blobs::store_blob;
 use crate::state::AppState;
 use crate::uploads::RawUpload;
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct SessionAttachment {
-    pub id: uuid::Uuid,
-    pub session_id: String,
-    pub message_id: Option<String>,
-    pub name: String,
-    pub hash: String,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub size: i64,
-    pub content_type: Option<String>,
-    #[sqlx(rename = "created_at_ms")]
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub created_at: i64,
-    /// The session's machine, once it has registered: what the webui needs to
-    /// fall back to the staged copy through `/machines/{id}/fs/file`.
-    pub machine_id: Option<String>,
-}
+pub use cctui_proto::api::attachments::SessionAttachment;
 
 fn media_type_for(upload: &RawUpload) -> String {
     upload

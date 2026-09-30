@@ -10,7 +10,7 @@ workspace = true
 ts = ["dep:ts-rs", "cctui-proto/ts", "cctui-query/ts"]
 
 [dependencies]
-cctui-proto.workspace = true
+cctui-proto = { workspace = true, features = ["sqlx"] }
 cctui-crypto.workspace = true
 cctui-query.workspace = true
 serde.workspace = true
