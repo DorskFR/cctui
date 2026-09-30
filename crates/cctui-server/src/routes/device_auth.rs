@@ -66,9 +66,15 @@ impl RequestRow {
     }
 }
 
-const SELECT_ROW: &str = "SELECT id, user_code, client_name, expires_at, last_polled_at, \
-                          approved_at, approved_by, denied_at, claimed_at \
-                          FROM device_auth_requests";
+const SELECT_BY_DEVICE_CODE: &str =
+    "SELECT id, user_code, client_name, expires_at, last_polled_at, \
+     approved_at, approved_by, denied_at, claimed_at \
+     FROM device_auth_requests WHERE device_code_hash = $1";
+
+const SELECT_BY_USER_CODE: &str =
+    "SELECT id, user_code, client_name, expires_at, last_polled_at, \
+     approved_at, approved_by, denied_at, claimed_at \
+     FROM device_auth_requests WHERE user_code = $1";
 
 #[must_use]
 pub fn generate_user_code() -> String {
@@ -149,7 +155,7 @@ pub async fn poll(
     Json(req): Json<DeviceAuthPollRequest>,
 ) -> Result<Json<DeviceAuthPoll>, AppError> {
     let hash = auth::sha256_hex(&req.device_code);
-    let row = sqlx::query_as::<_, RequestRow>(&format!("{SELECT_ROW} WHERE device_code_hash = $1"))
+    let row = sqlx::query_as::<_, RequestRow>(SELECT_BY_DEVICE_CODE)
         .bind(&hash)
         .fetch_optional(&state.pool)
         .await?
@@ -275,7 +281,7 @@ pub async fn info(
     Path(user_code): Path<String>,
 ) -> Result<Json<DeviceAuthRequestInfo>, AppError> {
     let code = normalize_user_code(&user_code);
-    let row = sqlx::query_as::<_, RequestRow>(&format!("{SELECT_ROW} WHERE user_code = $1"))
+    let row = sqlx::query_as::<_, RequestRow>(SELECT_BY_USER_CODE)
         .bind(&code)
         .fetch_optional(&state.pool)
         .await?

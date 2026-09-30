@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
 
-/// Paths of the two unauthenticated endpoints. They cannot live in
-/// [`crate::api::routes::ROUTES`] — that table is for routes behind the auth
-/// layer — so the clients read them from here instead of spelling them.
+/// Path of the unauthenticated device-login start endpoint.
+///
+/// It cannot live in [`crate::api::routes::ROUTES`] — that table is for routes
+/// behind the auth layer — so the clients read it from here instead of
+/// spelling it.
 pub const START_PATH: &str = "/api/v1/auth/device/start";
 pub const POLL_PATH: &str = "/api/v1/auth/device/poll";
 
