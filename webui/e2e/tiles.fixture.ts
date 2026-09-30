@@ -33,22 +33,88 @@ export function session(i: number) {
 	};
 }
 
+const WIDE_CODE = Array.from(
+	{ length: 40 },
+	(_, i) =>
+		`  const veryLongIdentifierNumber${i} = computeSomethingRatherInvolved(argumentOne, argumentTwo, argumentThree, ${i});`
+).join('\n');
+
+const WIDE_TABLE = [
+	'| session | machine | working directory | adapter | model | status | last tool | tokens |',
+	'| --- | --- | --- | --- | --- | --- | --- | --- |',
+	...Array.from(
+		{ length: 12 },
+		(_, i) =>
+			`| session ${i} | workbench-with-a-long-hostname | /home/dorsk/Documents/some/deeply/nested/project-${i} | claude_code | claude-opus-5 | working | Edit | 1234567 |`
+	)
+].join('\n');
+
+const UNBREAKABLE =
+	'/home/dorsk/Documents/a/really/long/path/that/never/breaks/because/it/has/no/spaces/at/all/and/keeps/going/' +
+	'x'.repeat(400);
+
+/** A transcript shaped like the ones that really overflow a pane: an unbreakable
+ *  line, a code block wider than any tile, a wide table, and enough turns to
+ *  overflow vertically. */
+export function transcript(sessionId: string) {
+	const base = Date.now() - 3_600_000;
+	const events: unknown[] = [];
+	let seq = 0;
+	const at = () => base + seq * 1000;
+	events.push({ type: 'text', content: `# ${sessionId}\n\n${UNBREAKABLE}`, meta: false, ts: at(), seq: seq++ });
+	events.push({ type: 'text', content: '```ts\n' + WIDE_CODE + '\n```', meta: false, ts: at(), seq: seq++ });
+	events.push({ type: 'text', content: WIDE_TABLE, meta: false, ts: at(), seq: seq++ });
+	for (let i = 0; i < 40; i++) {
+		events.push({
+			type: 'text',
+			content: `Turn ${i}: ${'lorem ipsum dolor sit amet consectetur adipiscing elit '.repeat(8)}`,
+			meta: false,
+			ts: at(),
+			seq: seq++
+		});
+		events.push({
+			type: 'tool_call',
+			tool: 'Edit',
+			input: { file_path: UNBREAKABLE },
+			ts: at(),
+			seq: seq++
+		});
+		events.push({
+			type: 'tool_result',
+			tool: 'Edit',
+			output_summary: UNBREAKABLE,
+			error: false,
+			ts: at(),
+			seq: seq++
+		});
+	}
+	return events;
+}
+
+export interface StubOptions {
+	settings?: Record<string, unknown>;
+	/** Default is empty, so the crash spec keeps measuring layout not markdown. */
+	conversation?: (sessionId: string) => unknown[];
+	seen?: Set<string>;
+}
+
 // The whole API is stubbed: these specs exercise client-side layout, so the only
 // thing that must be real is the app bundle.
-export async function stubApi(page: Page, sessions: unknown[], seen = new Set<string>()) {
+export async function stubApi(page: Page, sessions: unknown[], opts: StubOptions = {}) {
+	const seen = opts.seen ?? new Set<string>();
 	await page.route('**/api/v1/**', async (route) => {
 		const path = new URL(route.request().url()).pathname.replace('/api/v1', '');
 		const json = (body: unknown) => route.fulfill({ json: body });
 		if (path === '/me') return json({ id: 'u1', name: 'dorsk' });
 		if (path === '/version') return json({ version: '0.23.0-beta.10' });
-		if (path === '/settings') return json({ data: {} });
+		if (path === '/settings') return json({ data: opts.settings ?? {} });
 		if (path === '/labels') return json({ labels: [] });
 		if (path.endsWith('/user-actions')) return json({ session_id: path.split('/')[2], items: [] });
 		if (path === '/sessions' || path.startsWith('/sessions/search'))
 			return json({ sessions, total: sessions.length });
 		if (/^\/sessions\/[^/]+\/conversation/.test(path)) {
 			seen.add(path);
-			return json([]);
+			return json(opts.conversation?.(path.split('/')[2]) ?? []);
 		}
 		if (/^\/sessions\/[^/]+$/.test(path)) {
 			const id = path.slice('/sessions/'.length);
@@ -89,6 +155,10 @@ export const metrics = (page: Page) =>
 			panes: document.querySelectorAll('[data-journey="session-tiles"] .tile').length,
 			docScrollH: document.documentElement.scrollHeight,
 			winH: window.innerHeight,
+			scrollH: (document.scrollingElement ?? document.documentElement).scrollHeight,
+			scrollW: (document.scrollingElement ?? document.documentElement).scrollWidth,
+			winW: window.innerWidth,
+			docks: document.querySelectorAll('aside.dock').length,
 			view: localStorage.getItem('cctui_list_view')
 		};
 	});
