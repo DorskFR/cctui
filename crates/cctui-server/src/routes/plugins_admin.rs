@@ -257,6 +257,11 @@ pub async fn set_enabled(
     let known = plugin_store::set_enabled(&state.pool, &state.plugins, &id, body.enabled)
         .await
         .map_err(|e| db_err(&e))?;
+    if known && !body.enabled {
+        crate::plugin_host_token::revoke_for_all(&state.pool, &state.auth_config, &id)
+            .await
+            .map_err(|e| db_err(&e))?;
+    }
     let plugin = known.then(|| state.plugins.all_admin().into_iter().find(|p| p.manifest.id == id));
     plugin.flatten().map_or_else(
         || Err(err(StatusCode::NOT_FOUND, "no installed plugin with that id")),
@@ -271,6 +276,9 @@ pub async fn uninstall(
 ) -> Result<StatusCode, ApiErr> {
     ctx.requires(Scope::Admin).map_err(|s| err(s, "admin only"))?;
     if plugin_store::uninstall(&state.pool, &state.plugins, &id).await.map_err(|e| db_err(&e))? {
+        crate::plugin_host_token::revoke_for_all(&state.pool, &state.auth_config, &id)
+            .await
+            .map_err(|e| db_err(&e))?;
         tracing::info!(id, "plugin uninstalled");
         Ok(StatusCode::NO_CONTENT)
     } else {

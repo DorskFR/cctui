@@ -452,7 +452,9 @@ pub async fn get_settings(
         // Upgrade in memory only — do NOT persist on read (lazy persistence; the
         // upgraded shape is written on the next PUT).
         Some((version, data)) => {
-            SettingsPayload { version: CURRENT_VERSION, data: migrate(data, version) }
+            let mut data = migrate(data, version);
+            crate::plugin_host_token::strip(&mut data);
+            SettingsPayload { version: CURRENT_VERSION, data }
         }
         None => SettingsPayload { version: CURRENT_VERSION, data: json!({}) },
     };
@@ -501,7 +503,17 @@ pub async fn put_settings(
         .and_then(|d| serde_json::to_value(secret_scrub_of(d)).ok())
         .unwrap_or(Value::Null);
 
-    let (version, data) = sqlx::query_as::<_, (i32, Value)>(
+    crate::plugin_host_token::reconcile(
+        &state.pool,
+        &state.auth_config,
+        &state.plugins,
+        ctx.user_id,
+        prev.as_ref(),
+        &mut data,
+    )
+    .await?;
+
+    let (version, mut data) = sqlx::query_as::<_, (i32, Value)>(
         "INSERT INTO user_settings (user_id, version, data, updated_at) \
          VALUES ($1, $2, $3, now()) \
          ON CONFLICT (user_id) DO UPDATE \
@@ -534,6 +546,7 @@ pub async fn put_settings(
         }
     }
 
+    crate::plugin_host_token::strip(&mut data);
     Ok(Json(SettingsPayload { version, data }))
 }
 
