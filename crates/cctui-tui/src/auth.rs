@@ -13,11 +13,11 @@ pub const DEFAULT_SERVER_URL: &str = "http://localhost:8700";
 /// stored url concatenates cleanly with an api path.
 #[must_use]
 pub fn resolve_server_url(flag: Option<&str>, stored: Option<&str>, env: Option<&str>) -> String {
-    let raw = flag
-        .or(stored)
-        .or(env)
+    let raw = [flag, stored, env]
+        .into_iter()
+        .flatten()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .find(|s| !s.is_empty())
         .unwrap_or(DEFAULT_SERVER_URL);
     raw.trim_end_matches('/').to_owned()
 }

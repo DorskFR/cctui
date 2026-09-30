@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::config::chord::Chord;
 use crate::config::keymap::{CONTEXTS, Keymap};
+use crate::keys::is_wired;
 use crate::theme;
 
 const KEYS_WIDTH: usize = 12;
@@ -50,7 +51,8 @@ fn keys_label(chords: &[Chord]) -> String {
 fn rows(keys: &Keymap) -> Vec<Row> {
     let mut rows = Vec::new();
     for context in CONTEXTS {
-        let entries = keys.entries(*context);
+        let entries: Vec<_> =
+            keys.entries(*context).into_iter().filter(|(action, _)| is_wired(*action)).collect();
         if entries.is_empty() {
             continue;
         }

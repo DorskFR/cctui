@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 36
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  34 sessions  ● 33 active
+ Sessions
+     ● [claude-code] extra11 (main)  opus  0s  $1.25
+     ● [claude-code] extra12 (main)  opus  0s  $1.25
+     ● [claude-code] extra13 (main)  opus  0s  $1.25
+     ● [claude-code] extra14 (main)  opus  0s  $1.25
+     ● [claude-code] extra15 (main)  opus  0s  $1.25
+     ● [claude-code] extra16 (main)  opus  0s  $1.25
+     ● [claude-code] extra17 (main)  opus  0s  $1.25
+     ● [claude-code] extra18 (main)  opus  0s  $1.25
+     ● [claude-code] extra19 (main)  opus  0s  $1.25
+     ● [claude-code] extra20 (main)  opus  0s  $1.25
+     ● [claude-code] extra21 (main)  opus  0s  $1.25
+     ● [claude-code] extra22 (main)  opus  0s  $1.25
+     ● [claude-code] extra23 (main)  opus  0s  $1.25
+     ● [claude-code] extra24 (main)  opus  0s  $1.25
+     ● [claude-code] extra25 (main)  opus  0s  $1.25
+     ● [claude-code] extra26 (main)  opus  0s  $1.25
+     ● [claude-code] extra27 (main)  opus  0s  $1.25
+     ● [claude-code] extra28 (main)  opus  0s  $1.25
+     ● [claude-code] extra29 (main)  opus  0s  $1.25
+   Completed
+▸    ○ [claude-code] notes (main)  opus  0s  $1.25
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

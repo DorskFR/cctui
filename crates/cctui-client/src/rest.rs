@@ -368,8 +368,13 @@ fn truncate(body: &str) -> String {
 mod tests {
     use super::*;
 
+    fn test_client(base_url: &str, token: &str) -> Client {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        Client::new(base_url, token)
+    }
+
     fn client() -> Client {
-        Client::new("http://localhost:8700/", "tok")
+        test_client("http://localhost:8700/", "tok")
     }
 
     #[test]
@@ -424,7 +429,7 @@ mod tests {
     fn ws_url_upgrades_the_scheme_and_keeps_the_api_prefix() {
         assert_eq!(client().ws_url(), "ws://localhost:8700/api/v1/ws");
         assert_eq!(
-            Client::new("https://cctui.example.com", "t").ws_url(),
+            test_client("https://cctui.example.com", "t").ws_url(),
             "wss://cctui.example.com/api/v1/ws"
         );
     }
@@ -468,7 +473,7 @@ mod tests {
 
     #[test]
     fn base_url_trailing_slash_does_not_double_up() {
-        assert_eq!(Client::new("http://h:1/", "t").base_url(), "http://h:1");
-        assert_eq!(Client::new("http://h:1", "t").base_url(), "http://h:1");
+        assert_eq!(test_client("http://h:1/", "t").base_url(), "http://h:1");
+        assert_eq!(test_client("http://h:1", "t").base_url(), "http://h:1");
     }
 }

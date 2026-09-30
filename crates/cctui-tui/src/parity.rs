@@ -162,13 +162,31 @@ fn every_handled_route_is_called_by_its_module() {
         let source = std::fs::read_to_string(src_dir().join(module))
             .unwrap_or_else(|e| panic!("cannot read {module}: {e}"));
         let template = placeholders_blanked(route.path);
+        let methods = client_methods_for(route.id);
         assert!(
-            source.contains(route.id) || source.contains(&template),
-            "route {} is marked handled by {module}, but {module} mentions neither {} nor {template}",
+            source.contains(route.id)
+                || source.contains(&template)
+                || methods.iter().any(|m| source.contains(&format!(".{m}("))),
+            "route {} is marked handled by {module}, but {module} mentions neither {}, {template} \
+             nor a cctui-client method typed on it ({methods:?})",
             entry.key(),
             route.id
         );
     }
+}
+
+/// The `cctui_client::Client` methods whose body names `route_id`.
+fn client_methods_for(route_id: &str) -> Vec<String> {
+    let rest = src_dir().join("../../cctui-client/src/rest.rs");
+    let source = std::fs::read_to_string(&rest)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", rest.display()));
+    let quoted = format!("\"{route_id}\"");
+    source
+        .split("pub async fn ")
+        .skip(1)
+        .filter(|body| body.split("\n    }").next().is_some_and(|b| b.contains(&quoted)))
+        .filter_map(|body| body.split(['(', '<']).next().map(str::to_owned))
+        .collect()
 }
 
 /// `/sessions/{id}/pins` -> `/sessions/{}/pins`, the shape a `format!` call has.

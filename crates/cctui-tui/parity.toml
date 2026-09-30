@@ -506,7 +506,7 @@ reason = "browser host metadata used to build webui links"
 id = "get_me"
 # GET /me — Get the current principal (user, scopes, machine).
 tui = "handled"
-module = "app/identity.rs"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_me_key"
@@ -530,7 +530,7 @@ reason = "the browser approves a device login; the TUI is the device being appro
 id = "get_settings"
 # GET /settings — Get your user settings.
 tui = "handled"
-module = "config/server.rs"
+module = "main.rs"
 
 [[route]]
 id = "put_settings"
@@ -1226,7 +1226,7 @@ ticket = "CCT-1234"
 id = "get_sessions_by_id_diagnose"
 # GET /sessions/{id}/diagnose — Snapshot everything the daemon knows about a session, dated.
 tui = "handled"
-module = "app/effects.rs"
+module = "main.rs"
 
 [[route]]
 id = "get_sessions_by_id_langfuse"

@@ -1,4 +1,4 @@
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::action::Action;
 use crate::app::state::View;
@@ -51,6 +51,11 @@ pub fn map_input(
             View::Help | View::PermissionDialog => None,
         },
     }
+}
+
+/// Whether an action does anything yet; the cheat sheet lists only these.
+pub fn is_wired(id: ActionId) -> bool {
+    to_action(id, Chord::new(KeyCode::Char('1'), KeyModifiers::NONE)).is_some()
 }
 
 /// Actions a later wave still owns return `None`: the key then behaves as if it
