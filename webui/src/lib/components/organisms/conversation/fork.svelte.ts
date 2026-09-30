@@ -56,11 +56,11 @@ export class ForkController {
 		}
 	}
 
-	// The parent's model stays selectable even when no list knows it.
 	#fallback() {
 		return harnessModelsFallback(this.#opts.isCodex() ? 'codex' : 'claude-code');
 	}
 
+	// The parent's model stays selectable even when no list knows it.
 	get models(): ModelOption[] {
 		return withCurrentModel(this.#models?.data?.models ?? this.#fallback().models, this.model);
 	}
