@@ -244,14 +244,13 @@ async fn pump(
             }
             _ = ticker.tick() => {
                 match watchdog.check(last_frame.elapsed()) {
-                    Health::Live => {}
                     Health::Probe if !probed => {
                         probed = true;
                         if let Err(e) = transport.send_ping().await {
                             return format!("keepalive ping failed: {e}");
                         }
                     }
-                    Health::Probe => {}
+                    Health::Live | Health::Probe => {}
                     Health::Dead => return "keepalive timeout".to_owned(),
                 }
             }
@@ -260,12 +259,12 @@ async fn pump(
 }
 
 fn replay(subscriptions: &Arc<Mutex<SubscriptionState>>) -> Vec<TuiCommand> {
-    subscriptions.lock().map(|s| s.replay()).unwrap_or_default()
+    subscriptions.lock().map_or_else(|_| Vec::new(), |s| s.replay())
 }
 
 fn resolve_ack(acks: &AckRegistry, event: &ServerEvent) {
     if let ServerEvent::MessageAck { session_id, client_msg_id, ok, error, command_id } = event {
-        acks.resolve(Ack {
+        let _ = acks.resolve(Ack {
             session_id: session_id.clone(),
             client_msg_id: client_msg_id.clone(),
             ok: *ok,
