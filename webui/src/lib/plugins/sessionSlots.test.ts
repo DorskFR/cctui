@@ -47,7 +47,7 @@ describe('renderer registry', () => {
 			label: String(d.tag),
 			title: 'demo',
 			href: null,
-			icon: 'tag'
+			icon: 'bookmark'
 		}));
 		const chips = pluginChips({ plugins: { demo: { tag: 'X' }, youtrack: { issue: 'CCT-1' } } });
 		expect(chips.map((c) => `${c.pluginId}:${c.label}`)).toEqual(['demo:X', 'youtrack:CCT-1']);
@@ -70,8 +70,12 @@ describe('youtrack renderer', () => {
 			label: 'CCT-910',
 			title: 'CCT-910',
 			href: null,
-			icon: 'tag'
+			icon: 'bookmark'
 		});
+	});
+
+	it('does not reuse the labels tag glyph, which reads as a second labels button', () => {
+		expect(youtrackChip({ issue: 'CCT-910' })?.icon).not.toBe('tag');
 	});
 
 	it('puts the summary and state in the tooltip and links the stored url', () => {

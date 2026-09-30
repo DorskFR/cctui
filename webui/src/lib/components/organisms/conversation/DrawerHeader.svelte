@@ -13,6 +13,10 @@
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
+	import IssueLinkModal from '$lib/components/molecules/IssueLinkModal.svelte';
+	import { readPluginSlot } from '$lib/plugins/sessionSlots';
+	import { YOUTRACK_PLUGIN_ID, detectSessionIssueId } from '$lib/plugins/issueLink';
+	import { useSessionActions } from '$lib/queries';
 	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import type { ConversationChrome } from './chrome';
@@ -120,6 +124,11 @@
 	}
 
 	let keepaliveOpen = $state(false);
+	let issueLinkOpen = $state(false);
+
+	const sessionActions = useSessionActions();
+	const detectedIssue = $derived(detectSessionIssueId(session));
+	const issueLinked = $derived(!!readPluginSlot(session.metadata, YOUTRACK_PLUGIN_ID));
 
 	const followupItem = $derived<MenuItem | null>(
 		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
@@ -197,6 +206,23 @@
 			pressed: !!session.keepalive,
 			onselect: () => (keepaliveOpen = true)
 		},
+		{
+			label: issueLinked ? m.plugin_issue_menu_change() : m.plugin_issue_menu_link(),
+			icon: 'bookmark' as const,
+			attrs: { title: m.plugin_issue_menu_title() },
+			onselect: () => (issueLinkOpen = true)
+		},
+		...(issueLinked
+			? [
+					{
+						label: m.plugin_issue_menu_unlink(),
+						icon: 'unlink' as const,
+						onselect: () => {
+							void sessionActions.setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, null);
+						}
+					}
+				]
+			: []),
 		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
@@ -230,7 +256,7 @@
 <svelte:window onkeydown={onWinKey} />
 
 <div class="dhead" data-journey="header">
-	<div class="dbar" bind:clientWidth={barWidth}>
+	<div class="dbar" class:compact={collapsed} bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
 		<IconButton
 			icon={chrome === 'tile' ? 'x' : 'chevron-left'}
@@ -318,7 +344,6 @@
 				variant="default"
 				tone="warn"
 				{box}
-				style="background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2))"
 				icon="archive"
 				label={m.drawer_archive()}
 				onclick={onarchive}
@@ -328,7 +353,6 @@
 				variant="default"
 				tone="danger"
 				{box}
-				style="background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated-2))"
 				icon="stop"
 				label={m.drawer_interrupt_label()}
 				title={m.drawer_interrupt_title()}
@@ -363,11 +387,15 @@
 			/>
 		</div>
 	{/if}
-	<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {onsetmodel} {onfork} />
+	<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {onsetmodel} {onfork} {detectedIssue} />
 </div>
 
 {#if keepaliveOpen}
 	<KeepaliveModal {session} onclose={() => (keepaliveOpen = false)} />
+{/if}
+
+{#if issueLinkOpen}
+	<IssueLinkModal {session} detected={detectedIssue} onclose={() => (issueLinkOpen = false)} />
 {/if}
 
 <style>
@@ -383,6 +411,18 @@
 		background: var(--bg-elevated);
 		/* TokenUsage degrades its readout against this container. */
 		container: drawer-head / inline-size;
+	}
+	/* `chip` and `box` disagree in the kit: `.btn-chip:has(> svg:only-child)`
+	   takes its width from `--box-lg`, at a higher specificity than `.btn-box`
+	   takes its width from `--btn-box`, so a chip action renders `--box-lg`
+	   wide and `--btn-box` tall — 40x36, wider than the popover triggers that
+	   size themselves from `--pop-box`. Pinning `--box-lg` to the row's own box
+	   scale makes the kit's own rule produce the square `box` asks for. */
+	.dbar {
+		--box-lg: var(--box-md);
+	}
+	.dbar.compact {
+		--box-lg: var(--box-sm);
 	}
 	.dbar {
 		min-width: 0;

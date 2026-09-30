@@ -2,14 +2,12 @@
 import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import PluginChips from './PluginChips.svelte';
-import { setYouTrackLookup } from '$lib/plugins/youtrackLookup';
 
 let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
 	if (comp) unmount(comp);
 	comp = null;
 	document.body.innerHTML = '';
-	setYouTrackLookup(null);
 });
 
 function render(props: ComponentProps<typeof PluginChips>) {
@@ -23,35 +21,10 @@ function chips(): string[] {
 	);
 }
 
-function click(journey: string) {
-	const host = document.querySelector<HTMLElement>(`[data-journey="${journey}"]`);
-	expect(host, journey).not.toBeNull();
-	(host?.querySelector('button') ?? host)?.dispatchEvent(
-		new MouseEvent('click', { bubbles: true })
-	);
-	flushSync();
-}
-
-function type(value: string) {
-	const input = document.querySelector<HTMLInputElement>(
-		'[data-journey="plugin-chip-entry"] input'
-	);
-	expect(input).not.toBeNull();
-	if (!input) return;
-	input.value = value;
-	input.dispatchEvent(new Event('input', { bubbles: true }));
-	flushSync();
-}
-
 describe('PluginChips', () => {
 	it('renders one chip per slot that has a renderer', () => {
 		render({ metadata: { plugins: { youtrack: { issue: 'CCT-910' }, mystery: { a: 1 } } } });
 		expect(chips()).toEqual(['CCT-910']);
-	});
-
-	it('renders nothing read-only when there are no slots', () => {
-		render({ metadata: { draft: {} } });
-		expect(document.querySelector('[data-journey="plugin-chips"]')).toBeNull();
 	});
 
 	it('links the chip when the slot carries a url, and hovers summary and state', () => {
@@ -72,86 +45,41 @@ describe('PluginChips', () => {
 		expect(a?.title).toBe('CCT-910\nthe slot\nOpen');
 	});
 
-	it('offers no editor unless editable', () => {
-		render({ metadata: { plugins: { youtrack: { issue: 'CCT-910' } } } });
-		expect(document.querySelector('[data-journey="plugin-chip-edit"]')).toBeNull();
+	it('renders nothing at all when no slot is set', () => {
+		render({ metadata: { draft: {} } });
+		expect(document.querySelector('[data-journey="plugin-chips"]')).toBeNull();
 	});
 
-	it('sets the issue by hand, with no lookup installed', async () => {
-		const onset = vi.fn();
-		render({ metadata: {}, editable: true, onset });
-		click('plugin-chip-edit');
-		type('cct-910');
-		click('plugin-chip-apply');
-		await vi.waitFor(() => expect(onset).toHaveBeenCalled());
-		expect(onset).toHaveBeenCalledWith('youtrack', { issue: 'CCT-910' });
+	it('has no empty-state button, even when suggestable', () => {
+		render({ metadata: {}, suggestable: true, onlink: vi.fn() });
+		expect(document.querySelector('[data-journey="plugin-chips"]')).toBeNull();
+		expect(document.querySelector('button')).toBeNull();
 	});
 
-	it('keeps a pasted url as the chip link', async () => {
-		const onset = vi.fn();
-		render({ metadata: {}, editable: true, onset });
-		click('plugin-chip-edit');
-		type('https://youtrack.example/issue/CCT-910');
-		click('plugin-chip-apply');
-		await vi.waitFor(() => expect(onset).toHaveBeenCalled());
-		expect(onset).toHaveBeenCalledWith('youtrack', {
-			issue: 'CCT-910',
-			url: 'https://youtrack.example/issue/CCT-910'
-		});
+	it('offers a detected id as a one-click link while nothing is stored', () => {
+		const onlink = vi.fn();
+		render({ metadata: {}, suggestable: true, detected: 'CCT-910', onlink });
+		const suggest = document.querySelector('[data-journey="plugin-chip-suggest"]');
+		expect(suggest?.textContent?.trim()).toBe('+ CCT-910');
+		suggest?.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		flushSync();
+		expect(onlink).toHaveBeenCalledWith('CCT-910');
 	});
 
-	it('enriches the slot through the lookup seam once a connector installs one', async () => {
-		const onset = vi.fn();
-		setYouTrackLookup(async (issue) => ({ issue, summary: 'looked up', state: 'Open' }));
-		render({ metadata: {}, editable: true, onset });
-		click('plugin-chip-edit');
-		type('CCT-910');
-		click('plugin-chip-apply');
-		await vi.waitFor(() => expect(onset).toHaveBeenCalled());
-		expect(onset).toHaveBeenCalledWith('youtrack', {
-			issue: 'CCT-910',
-			summary: 'looked up',
-			state: 'Open'
-		});
-	});
-
-	it('clears the slot when the field is emptied', () => {
-		const onset = vi.fn();
-		render({ metadata: { plugins: { youtrack: { issue: 'CCT-910' } } }, editable: true, onset });
-		click('plugin-chip-edit');
-		type('');
-		click('plugin-chip-apply');
-		expect(onset).toHaveBeenCalledWith('youtrack', null);
-	});
-
-	it('refuses input that carries no issue id and stays open', () => {
-		const onset = vi.fn();
-		render({ metadata: {}, editable: true, onset });
-		click('plugin-chip-edit');
-		type('nonsense');
-		click('plugin-chip-apply');
-		expect(onset).not.toHaveBeenCalled();
-		expect(document.querySelector('[data-journey="plugin-chip-entry"]')).not.toBeNull();
-	});
-
-	it('offers a detected id while the slot is empty, and links it in one click', async () => {
-		const onset = vi.fn();
-		render({ metadata: {}, editable: true, detected: 'CCT-910', onset });
-		expect(
-			document.querySelector('[data-journey="plugin-chip-suggest"]')?.textContent?.trim()
-		).toBe('+ CCT-910');
-		click('plugin-chip-suggest');
-		await vi.waitFor(() => expect(onset).toHaveBeenCalledWith('youtrack', { issue: 'CCT-910' }));
-	});
-
-	it('stops offering a detected id once the slot is filled', () => {
+	it('does not offer a detected id once an issue is linked', () => {
 		render({
 			metadata: { plugins: { youtrack: { issue: 'CCT-1' } } },
-			editable: true,
+			suggestable: true,
 			detected: 'CCT-910',
-			onset: vi.fn()
+			onlink: vi.fn()
 		});
 		expect(document.querySelector('[data-journey="plugin-chip-suggest"]')).toBeNull();
 		expect(chips()).toEqual(['CCT-1']);
+	});
+
+	it('does not offer a detected id when not suggestable, e.g. on the card', () => {
+		render({ metadata: {}, detected: 'CCT-910' });
+		expect(document.querySelector('[data-journey="plugin-chip-suggest"]')).toBeNull();
+		expect(document.querySelector('[data-journey="plugin-chips"]')).toBeNull();
 	});
 });
