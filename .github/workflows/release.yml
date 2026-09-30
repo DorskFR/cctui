@@ -339,7 +339,7 @@ jobs:
         if: matrix.bins
         run: chmod 0755 image-bins/*
 
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       # Loaded locally so the worker's harness floors are checked against the
       # real binaries before anything is published.
@@ -407,7 +407,7 @@ jobs:
         if: matrix.bins
         run: chmod 0755 image-bins/*
 
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to ghcr
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
