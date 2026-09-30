@@ -4,7 +4,8 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, session_list};
+use crate::app::state::uptime_secs;
+use crate::app::{App, session_list, session_status};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -61,9 +62,7 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         .iter()
         .map(|row| match *row {
             session_list::Row::Header(group) => group_header(group),
-            session_list::Row::Session { session, .. } => {
-                session_line(session, app.config.prefs.compact_rows)
-            }
+            session_list::Row::Session { session, .. } => session_line(app, session, area.width),
         })
         .collect();
 
@@ -80,11 +79,60 @@ fn group_header(group: session_list::Group) -> ListItem<'static> {
     )]))
 }
 
-/// `compact` keeps a row to its identity — status, project, branch — and drops
-/// the model, cost and activity detail.
-fn session_line(s: &SessionListItem, compact: bool) -> ListItem<'static> {
-    let icon = theme::status_icon(s.status);
-    let icon_style = theme::status_style(s.status);
+/// One competing piece of a row. `priority` orders what goes when the row is
+/// too narrow: the lowest survives the shortest.
+struct Seg {
+    text: String,
+    style: ratatui::style::Style,
+    priority: u8,
+}
+
+/// Segments at this priority are the row's identity and are never dropped.
+const KEEP: u8 = u8::MAX;
+
+impl Seg {
+    fn new(priority: u8, style: ratatui::style::Style, text: String) -> Self {
+        Self { text, style, priority }
+    }
+
+    fn width(&self) -> usize {
+        self.text.chars().count()
+    }
+}
+
+fn total_width(segs: &[Seg]) -> usize {
+    segs.iter().map(Seg::width).sum()
+}
+
+/// Drop the cheapest segments until the row fits `budget`, cheapest and
+/// right-most first so the identity at the left survives.
+fn shed(segs: &mut Vec<Seg>, budget: usize) {
+    while total_width(segs) > budget {
+        let Some(min) = segs.iter().map(|s| s.priority).filter(|p| *p != KEEP).min() else {
+            return;
+        };
+        let Some(at) = segs.iter().rposition(|s| s.priority == min) else { return };
+        segs.remove(at);
+    }
+}
+
+fn spans_of(segs: Vec<Seg>) -> Vec<Span<'static>> {
+    segs.into_iter().map(|s| Span::styled(s.text, s.style)).collect()
+}
+
+fn session_line(app: &App, s: &SessionListItem, width: u16) -> ListItem<'static> {
+    ListItem::new(Line::from(session_line_spans(app, s, width)))
+}
+
+/// `compact_rows` keeps a row to its identity — liveness, project, branch — and
+/// drops the model, cost, cadence and activity column.
+fn session_line_spans(app: &App, s: &SessionListItem, width: u16) -> Vec<Span<'static>> {
+    let now = app.clock_ms;
+    let stale = session_status::is_stale_working(s, now);
+    let liveness = session_status::row_liveness(s, stale);
+    let act = session_status::tool_activity(s, now);
+    let badges = session_status::RowBadges::of(s, app.pending_permissions(&s.id));
+    let compact = app.config.prefs.compact_rows;
 
     let project = s
         .metadata
@@ -93,52 +141,97 @@ fn session_line(s: &SessionListItem, compact: bool) -> ListItem<'static> {
         .unwrap_or_else(|| basename(&s.working_dir));
     let branch = s.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
     let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
-
-    let uptime = format_uptime(crate::app::state::uptime_secs(s));
-    let cost = format!("${:.2}", s.token_usage.cost_usd);
-
     let adapter = s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str());
 
-    // Task-tool subagents carry a parent id; indent them under the
-    // parent with a tree marker instead of the leading whitespace.
+    // Task-tool subagents carry a parent id; indent them under the parent with
+    // a tree marker instead of the leading whitespace.
     let is_subagent = s.parent_id.is_some();
-    let mut spans = vec![
-        Span::styled(if is_subagent { "    ↳ " } else { "   " }, theme::dim()),
-        Span::styled(format!("{icon} "), icon_style),
-        Span::styled(format!("[{adapter}] "), theme::dim()),
-        Span::styled(project.to_string(), if is_subagent { theme::dim() } else { theme::bold() }),
+    let mut segs = vec![
+        Seg::new(KEEP, theme::dim(), if is_subagent { "    ↳ ".into() } else { "   ".into() }),
+        Seg::new(KEEP, theme::liveness_style(liveness), format!("{} ", liveness.glyph())),
+        Seg::new(5, theme::dim(), format!("[{adapter}] ")),
+        Seg::new(
+            KEEP,
+            if is_subagent { theme::dim() } else { theme::bold() },
+            project.to_owned(),
+        ),
     ];
-
     if !branch.is_empty() {
-        spans.push(Span::styled(format!(" ({branch})"), theme::branch()));
+        segs.push(Seg::new(6, theme::branch(), format!(" ({branch})")));
     }
 
-    if compact {
-        return ListItem::new(Line::from(spans));
+    if !compact {
+        if !model.is_empty() {
+            segs.push(Seg::new(2, theme::model(), format!("  {model}")));
+        }
+        segs.push(Seg::new(3, theme::dim(), format!("  {}", format_uptime(uptime_secs(s)))));
+        segs.push(Seg::new(1, theme::cost(), format!("  ${:.2}", s.token_usage.cost_usd)));
+        if let Some(cadence) = session_status::cadence_text(&act) {
+            segs.push(Seg::new(4, theme::dim(), format!("  {cadence}")));
+        }
+        for href in &s.pr_links {
+            segs.push(Seg::new(0, theme::branch(), format!("  ⇄ {}", pr_ref(href))));
+        }
     }
 
-    if !model.is_empty() {
-        spans.push(Span::styled(format!("  {model}"), theme::model()));
+    let width = usize::from(width);
+    let badge_text = badges.text();
+    let badge_cols = if badge_text.is_empty() { 0 } else { badge_text.chars().count() + 2 };
+    shed(&mut segs, width.saturating_sub(badge_cols));
+
+    if !compact {
+        let spare = width.saturating_sub(badge_cols + total_width(&segs));
+        if spare >= MIN_ACTIVITY_COLS
+            && let Some(text) = session_status::activity_text(s, &act, stale, now)
+        {
+            let style = if stale || act.asleep { theme::stale() } else { theme::dim() };
+            let text = session_status::truncate(&text, spare - 2);
+            segs.push(Seg::new(KEEP, style, format!("  {text}")));
+        }
     }
 
-    spans.push(Span::styled(format!("  {uptime}"), theme::dim()));
-    spans.push(Span::styled(format!("  {cost}"), theme::cost()));
-
-    // Live tool cadence: grinding sessions (incl. subagent roll-ups)
-    // show a fresh age so they read as busy, not asleep.
-    if let Some(last) = s.last_tool_at {
-        let age = (chrono::Utc::now() - last).num_seconds().max(0);
-        spans.push(Span::styled(
-            format!("  ⚙{} {}", s.tool_use_count, format_uptime(age)),
-            theme::dim(),
-        ));
+    let mut spans = spans_of(segs);
+    if !badge_text.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(badge_text, badge_style(&badges)));
     }
+    clamp(spans, width)
+}
 
-    for href in &s.pr_links {
-        spans.push(Span::styled(format!("  ⇄ {}", pr_ref(href)), theme::branch()));
+/// Last defence: an identity segment alone (a very long project name) can still
+/// outgrow the row, and a wrapped row would push every later row off by one.
+fn clamp(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut left = width;
+    let mut out = Vec::with_capacity(spans.len());
+    for span in spans {
+        if left == 0 {
+            break;
+        }
+        let cols = span.content.chars().count();
+        if cols <= left {
+            left -= cols;
+            out.push(span);
+            continue;
+        }
+        let cut = session_status::truncate(&span.content, left);
+        left = 0;
+        out.push(Span::styled(cut, span.style));
     }
+    out
+}
 
-    ListItem::new(Line::from(spans))
+/// Below this there is no room for a phrase worth reading.
+const MIN_ACTIVITY_COLS: usize = 8;
+
+/// The loudest thing the cluster says wins its colour.
+fn badge_style(badges: &session_status::RowBadges) -> ratatui::style::Style {
+    if badges.pending > 0 {
+        return theme::attention();
+    }
+    if badges.unread > 0 {
+        return theme::unread();
+    }
+    if badges.end.is_some() { theme::error() } else { theme::dim() }
 }
 
 fn basename(path: &str) -> &str {
@@ -194,4 +287,127 @@ pub fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
 
     let s = serde_json::to_string(input).unwrap_or_default();
     if s.len() > 100 { format!("{}...", &s[..100]) } else { s }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KEEP, Seg, session_line_spans, shed, total_width};
+    use crate::app::App;
+    use crate::testsupport::{session, subagent};
+    use crate::theme;
+
+    fn cols(spans: &[ratatui::text::Span<'static>]) -> usize {
+        spans.iter().map(|s| s.content.chars().count()).sum()
+    }
+
+    fn text(spans: &[ratatui::text::Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn seg(priority: u8, body: &str) -> Seg {
+        Seg::new(priority, theme::dim(), body.to_owned())
+    }
+
+    fn app_with(s: cctui_proto::api::SessionListItem) -> App {
+        let mut app = App::new();
+        app.sessions = vec![s];
+        app.update_aggregates();
+        app
+    }
+
+    #[test]
+    fn shedding_drops_the_cheapest_segment_first_and_keeps_the_identity() {
+        let mut segs = vec![seg(KEEP, "name"), seg(0, " cost"), seg(4, " age")];
+        shed(&mut segs, 9);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[1].priority, 4);
+        shed(&mut segs, 4);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(total_width(&segs), 4);
+    }
+
+    #[test]
+    fn shedding_stops_rather_than_dropping_an_identity_segment() {
+        let mut segs = vec![seg(KEEP, "a very long project name")];
+        shed(&mut segs, 4);
+        assert_eq!(segs.len(), 1, "the clamp, not the shed, cuts what is left");
+    }
+
+    #[test]
+    fn a_row_never_exceeds_eighty_columns() {
+        let mut s = session("s-long", "a-project-with-a-really-long-name", "active", "working");
+        s.metadata = serde_json::json!({
+            "project_name": "a-project-with-a-really-long-name",
+            "git_branch": "feature/an-extremely-long-branch-name-that-keeps-going",
+            "model": "claude-opus-5-1m",
+        });
+        s.unread_count = 12;
+        s.auto_approve = true;
+        s.tool_use_count = 140;
+        s.last_tool_at = Some(chrono::DateTime::from_timestamp_millis(1_000).expect("stamp"));
+        s.activity_detail = Some("Running an extremely long tool description".to_owned());
+        s.pr_links = vec!["https://github.com/DorskFR/cctui/pull/1234".to_owned()];
+        s.end_reason = Some(cctui_proto::models::SessionEndReason::MachineOffline);
+        let mut app = app_with(s);
+        app.clock_ms = 600_000;
+
+        for width in [40_u16, 60, 80, 100] {
+            let spans = session_line_spans(&app, &app.sessions[0], width);
+            assert!(
+                cols(&spans) <= usize::from(width),
+                "{width} columns overflowed: {:?}",
+                text(&spans)
+            );
+        }
+    }
+
+    #[test]
+    fn the_badges_survive_a_narrow_row_even_when_everything_else_goes() {
+        let mut s = session("s-narrow", "proj", "active", "blocked");
+        s.unread_count = 4;
+        let mut app = app_with(s);
+        app.permission_queue.push_back(crate::app::PendingPermission {
+            session_id: "s-narrow".to_owned(),
+            request_id: "r".to_owned(),
+            tool_name: "Bash".to_owned(),
+            description: String::new(),
+            input_preview: String::new(),
+        });
+        let spans = session_line_spans(&app, &app.sessions[0], 30);
+        let rendered = text(&spans);
+        assert!(rendered.contains("!1 ●4"), "{rendered}");
+    }
+
+    #[test]
+    fn a_stale_working_row_says_why_it_is_dim() {
+        let mut s = session("s-stale", "proj", "active", "working");
+        let now = 120 * 60 * 1000;
+        s.last_heartbeat = Some(
+            chrono::DateTime::from_timestamp_millis(now - 42 * 60 * 1000).expect("stamp"),
+        );
+        let mut app = app_with(s);
+        app.clock_ms = now;
+        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
+        assert!(rendered.contains('◐'), "{rendered}");
+        assert!(rendered.contains("stale 42m"), "{rendered}");
+    }
+
+    #[test]
+    fn a_subagent_row_keeps_its_tree_marker() {
+        let app = app_with(subagent("s-child", "s-parent", "sub"));
+        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
+        assert!(rendered.starts_with("    ↳ "), "{rendered}");
+    }
+
+    #[test]
+    fn compact_rows_drop_the_activity_column_but_not_the_badges() {
+        let mut s = session("s-c", "proj", "active", "working");
+        s.activity_detail = Some("Reading files".to_owned());
+        s.unread_count = 2;
+        let mut app = app_with(s);
+        app.config.prefs.compact_rows = true;
+        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
+        assert!(!rendered.contains("Reading files"), "{rendered}");
+        assert!(rendered.contains("●2"), "{rendered}");
+    }
 }

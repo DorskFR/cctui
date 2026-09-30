@@ -8,6 +8,7 @@ pub mod reduce;
 pub mod router;
 pub mod server_event;
 pub mod session_list;
+pub mod session_status;
 pub mod state;
 pub mod toast;
 

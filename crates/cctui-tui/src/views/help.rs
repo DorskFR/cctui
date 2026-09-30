@@ -61,6 +61,10 @@ fn rows(keys: &Keymap) -> Vec<Row> {
             rows.push(Row::Binding { keys: keys_label(&chords), desc: action.description() });
         }
     }
+    rows.push(Row::Heading("Row glyphs"));
+    for &(glyph, desc) in crate::app::session_status::GLYPH_LEGEND {
+        rows.push(Row::Binding { keys: glyph.to_owned(), desc });
+    }
     rows
 }
 

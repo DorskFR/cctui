@@ -24,6 +24,9 @@ pub struct Palette {
     pub branch: Style,
     pub header_bg: Style,
     pub section_title: Style,
+    pub stale: Style,
+    pub attention: Style,
+    pub unread: Style,
 }
 
 const fn dark() -> Palette {
@@ -45,6 +48,9 @@ const fn dark() -> Palette {
         branch: Style::new().fg(Color::DarkGray),
         header_bg: Style::new().fg(Color::White).bg(Color::DarkGray),
         section_title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        stale: Style::new().fg(Color::Yellow),
+        attention: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        unread: Style::new().fg(Color::Magenta),
     }
 }
 
@@ -69,6 +75,9 @@ const fn light() -> Palette {
         branch: Style::new().fg(Color::DarkGray),
         header_bg: Style::new().fg(Color::Black).bg(Color::Gray),
         section_title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        stale: Style::new().fg(Color::Yellow),
+        attention: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        unread: Style::new().fg(Color::Magenta),
     }
 }
 
@@ -131,25 +140,18 @@ accessors!(
     branch,
     header_bg,
     section_title,
+    stale,
+    attention,
+    unread,
 );
 
-pub fn status_style(status: cctui_proto::models::SessionStatus) -> Style {
-    match status {
-        cctui_proto::models::SessionStatus::Active => active(),
-        cctui_proto::models::SessionStatus::New => new(),
-        cctui_proto::models::SessionStatus::Inactive
-        | cctui_proto::models::SessionStatus::Archived
-        | cctui_proto::models::SessionStatus::Draft => inactive(),
-    }
-}
-
-pub const fn status_icon(status: cctui_proto::models::SessionStatus) -> &'static str {
-    match status {
-        cctui_proto::models::SessionStatus::Active => "●",
-        cctui_proto::models::SessionStatus::New => "◎",
-        cctui_proto::models::SessionStatus::Inactive => "○",
-        cctui_proto::models::SessionStatus::Archived => "▢",
-        cctui_proto::models::SessionStatus::Draft => "◌",
+pub fn liveness_style(liveness: crate::app::session_status::RowLiveness) -> Style {
+    use crate::app::session_status::RowLiveness;
+    match liveness {
+        RowLiveness::Active => active(),
+        RowLiveness::Stale => stale(),
+        RowLiveness::Hibernated => new(),
+        RowLiveness::Dead => inactive(),
     }
 }
 

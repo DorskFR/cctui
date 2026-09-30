@@ -1,6 +1,7 @@
 use crate::app::View;
 use crate::testsupport::{
-    app_with_sessions, conversation_store, permission_request, render_screen, render_screen_sized,
+    CLOCK_MS, app_with_sessions, conversation_store, ms_ago, permission_request, render_screen,
+    render_screen_sized, session, todo,
 };
 
 #[test]
@@ -66,6 +67,70 @@ fn session_list_selection_moves() {
     app.select_next();
     app.select_next();
     insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// One row per derived state: grinding with a task list, wedged, stale,
+/// hibernated, ended badly, and one waiting on a permission.
+fn app_with_rich_statuses() -> crate::app::App {
+    const MIN: i64 = 60 * 1000;
+    let mut app = crate::app::App::new();
+    app.clock_ms = CLOCK_MS;
+
+    let mut grinding = session("s-grind", "cctui", "active", "working");
+    grinding.tool_use_count = 14;
+    grinding.last_tool_at = Some(ms_ago(8_000));
+    grinding.last_heartbeat = Some(ms_ago(8_000));
+    grinding.todos = vec![
+        todo("completed", "read the code", None),
+        todo("completed", "write the module", None),
+        todo("completed", "wire the view", None),
+        todo("in_progress", "Run the tests", Some("Running tests")),
+        todo("pending", "commit", None),
+        todo("pending", "report", None),
+        todo("pending", "rest", None),
+    ];
+    grinding.unread_count = 4;
+
+    let mut asleep = session("s-asleep", "web", "active", "working");
+    asleep.tool_use_count = 2;
+    asleep.last_tool_at = Some(ms_ago(3 * MIN));
+    asleep.last_heartbeat = Some(ms_ago(3 * MIN));
+
+    let mut stale = session("s-stale", "api", "active", "working");
+    stale.last_heartbeat = Some(ms_ago(42 * MIN));
+
+    let mut hibernated = session("s-sleep", "notes", "inactive", "done");
+    hibernated.hibernated = true;
+
+    let mut ended = session("s-dead", "infra", "inactive", "done");
+    ended.end_reason = Some(cctui_proto::models::SessionEndReason::MachineOffline);
+    ended.ended_at = Some(ms_ago(5 * MIN));
+
+    let mut waiting = session("s-perm", "deploy", "active", "blocked");
+    waiting.auto_approve = true;
+
+    app.sessions = vec![grinding, asleep, stale, hibernated, ended, waiting];
+    app.permission_queue.push_back(crate::app::PendingPermission {
+        session_id: "s-perm".to_owned(),
+        request_id: "req-1".to_owned(),
+        tool_name: "Bash".to_owned(),
+        description: "Deploy".to_owned(),
+        input_preview: "make deploy".to_owned(),
+    });
+    app.update_aggregates();
+    app
+}
+
+#[test]
+fn session_list_rich_statuses() {
+    let mut app = app_with_rich_statuses();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_rich_statuses_at_eighty_columns() {
+    let mut app = app_with_rich_statuses();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
 }
 
 #[test]

@@ -147,6 +147,12 @@ impl App {
         flat.get(self.selected_index).copied()
     }
 
+    /// Requests waiting on this session, the count lane E's list-level
+    /// indicator reads too.
+    pub fn pending_permissions(&self, session_id: &str) -> usize {
+        self.permission_queue.iter().filter(|p| p.session_id == session_id).count()
+    }
+
     pub fn selected_session_id(&self) -> Option<String> {
         self.selected_session().map(|s| s.id.clone())
     }

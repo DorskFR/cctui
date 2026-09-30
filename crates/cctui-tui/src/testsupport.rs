@@ -50,13 +50,29 @@ pub fn session(id: &str, project: &str, status: &str, bucket: &str) -> SessionLi
         "machine_id": "orion",
         "working_dir": format!("/home/dev/{project}"),
         "status": status,
-        "liveness": "active",
+        "liveness": if status == "active" { "active" } else { "dead" },
         "bucket": bucket,
         "token_usage": {"tokens_in": 12_000, "tokens_out": 3_400, "cost_usd": 1.25},
         "metadata": {"project_name": project, "git_branch": "main", "model": "opus"},
         "adapter_id": "claude-code",
     }))
     .expect("fixture session")
+}
+
+/// Pinned clock for rows that carry real timestamps: `now_ms` is a parameter
+/// everywhere, so a snapshot fixes it instead of drifting with the wall clock.
+pub const CLOCK_MS: i64 = 1_700_000_000_000;
+
+pub fn ms_ago(ms: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp_millis(CLOCK_MS - ms).expect("a valid stamp")
+}
+
+pub fn todo(status: &str, content: &str, active_form: Option<&str>) -> cctui_proto::api::TodoEntry {
+    cctui_proto::api::TodoEntry {
+        content: content.to_owned(),
+        status: status.to_owned(),
+        active_form: active_form.map(str::to_owned),
+    }
 }
 
 pub fn pinned_session(id: &str, project: &str) -> SessionListItem {
