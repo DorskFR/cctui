@@ -1,5 +1,6 @@
 use super::action::{Action, Effect, HeartbeatUsage};
-use super::state::{App, ConversationLine, PendingPermission, View};
+use super::conversation;
+use super::state::{App, PendingPermission, View};
 use super::toast::Level;
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
@@ -7,6 +8,8 @@ use super::toast::Level;
 #[allow(clippy::too_many_lines)]
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
+        Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+
         Action::Quit => {
             app.should_quit = true;
             Vec::new()
@@ -36,10 +39,6 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
 
-        Action::ToggleShowAllSessions => {
-            app.show_all_sessions = !app.show_all_sessions;
-            Vec::new()
-        }
         Action::ToggleTimestamps => {
             app.show_timestamps = !app.show_timestamps;
             Vec::new()
@@ -53,14 +52,11 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         // over, so it collapses the stack exactly as leaving a conversation does.
         Action::CloseHelp | Action::LeaveConversation => {
             app.router.reset(View::SessionList);
-            Vec::new()
+            conversation::leave(app)
         }
         Action::OpenSelectedConversation => {
             let Some(session_id) = app.selected_session_id() else { return Vec::new() };
-            let fetch = !app.stream_buffer.contains_key(&session_id);
-            app.follow_tail = true;
-            app.router.push(View::Conversation);
-            vec![Effect::LoadConversation { session_id, fetch }]
+            conversation::open(app, session_id)
         }
 
         Action::Scroll { lines, release_follow } => {
@@ -73,12 +69,12 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             if release_follow {
                 app.follow_tail = false;
             }
-            Vec::new()
+            conversation::load_older(app)
         }
         Action::ScrollToTop => {
             app.scroll_offset = 0;
             app.follow_tail = false;
-            Vec::new()
+            conversation::load_older(app)
         }
         Action::ScrollToBottom => {
             app.follow_tail = true;
@@ -164,18 +160,13 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.update_aggregates();
             Vec::new()
         }
-        Action::ConversationLoaded { session_id, lines } => {
-            if !lines.is_empty() {
-                app.stream_buffer.entry(session_id).or_insert(lines);
-            }
-            Vec::new()
-        }
+        Action::Conversation(action) => conversation::reduce(app, action),
 
-        Action::StreamLine { session_id, line, usage } => {
+        Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
                 apply_heartbeat_usage(app, &session_id, &usage);
             }
-            append_line(app, session_id, line);
+            conversation::stream(app, &session_id, seq, line);
             Vec::new()
         }
         Action::SessionStatusChanged { session_id, status } => {
@@ -196,12 +187,8 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
-            let mut effects = vec![Effect::RefreshSessions];
-            if app.view() == View::Conversation
-                && let Some(session_id) = app.selected_session_id()
-            {
-                effects.insert(0, Effect::Subscribe { session_id });
-            }
+            let mut effects = conversation::reconnect(app);
+            effects.push(Effect::RefreshSessions);
             effects
         }
         Action::Toast(level, text) => {
@@ -258,14 +245,6 @@ fn apply_heartbeat_usage(app: &mut App, session_id: &str, usage: &HeartbeatUsage
         session.token_usage.tokens_in = usage.tokens_in;
         session.token_usage.tokens_out = usage.tokens_out;
         session.token_usage.cost_usd = usage.cost_usd;
-    }
-}
-
-fn append_line(app: &mut App, session_id: String, line: ConversationLine) {
-    let buf = app.stream_buffer.entry(session_id).or_default();
-    let is_dup = buf.last().is_some_and(|last| last.kind == line.kind && last.text == line.text);
-    if !is_dup {
-        buf.push(line);
     }
 }
 
@@ -334,7 +313,10 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
 
 fn deregister_session(app: &mut App, session_id: &str) {
     app.sessions.retain(|s| s.id != session_id);
-    app.stream_buffer.remove(session_id);
+    app.conversations.remove(session_id);
+    if app.subscribed.as_deref() == Some(session_id) {
+        app.subscribed = None;
+    }
     let len = app.flattened_sessions().len();
     if len > 0 && app.selected_index >= len {
         app.selected_index = len - 1;
@@ -346,7 +328,11 @@ fn deregister_session(app: &mut App, session_id: &str) {
 mod tests {
     use super::{Action, App, Effect, Level, View, reduce};
     use crate::app::state::LineKind;
-    use crate::testsupport::{conversation_lines, permission_request, session};
+    use crate::testsupport::{permission_request, session};
+
+    fn conversation_len(app: &App, session_id: &str) -> usize {
+        app.conversation(session_id).map_or(0, crate::app::ConversationStore::len)
+    }
 
     fn app() -> App {
         let mut app = App::new();
@@ -354,7 +340,6 @@ mod tests {
             session("s-a", "alpha", "active", "working"),
             session("s-b", "beta", "active", "working"),
         ];
-        app.show_all_sessions = true;
         app.update_aggregates();
         app
     }
@@ -399,34 +384,28 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_conversation_fetches_once_then_only_subscribes() {
+    fn opening_a_conversation_loads_subscribes_and_marks_seen() {
         let mut app = app();
         let effects = reduce(&mut app, Action::OpenSelectedConversation);
         assert_eq!(app.view(), View::Conversation);
         match effects.as_slice() {
-            [Effect::LoadConversation { session_id, fetch: true }] => {
-                assert_eq!(session_id, "s-a");
-            }
-            _ => panic!("expected a fetching load effect"),
+            [
+                Effect::LoadConversationPage { session_id, .. },
+                Effect::Subscribe { .. },
+                Effect::MarkSeen { .. },
+            ] => assert_eq!(session_id, "s-a"),
+            _ => panic!("expected a load, a subscribe and a seen mark"),
         }
-
-        reduce(&mut app, Action::LeaveConversation);
-        let id = app.selected_session_id().expect("a session");
-        reduce(
-            &mut app,
-            Action::ConversationLoaded { session_id: id, lines: conversation_lines() },
-        );
-        let effects = reduce(&mut app, Action::OpenSelectedConversation);
-        assert!(matches!(effects.as_slice(), [Effect::LoadConversation { fetch: false, .. }]));
     }
 
     #[test]
-    fn leaving_a_conversation_returns_to_the_list() {
+    fn leaving_a_conversation_returns_to_the_list_and_unsubscribes() {
         let mut app = app();
         reduce(&mut app, Action::OpenSelectedConversation);
-        reduce(&mut app, Action::LeaveConversation);
+        let effects = reduce(&mut app, Action::LeaveConversation);
         assert_eq!(app.view(), View::SessionList);
         assert_eq!(app.router.depth(), 1);
+        assert!(matches!(effects.as_slice(), [Effect::Unsubscribe { .. }]));
     }
 
     #[test]
@@ -568,28 +547,30 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_identical_stream_lines_are_deduped() {
+    fn a_re_delivered_stream_line_is_deduped_by_seq() {
         let mut app = app();
         for _ in 0..3 {
             reduce(
                 &mut app,
                 Action::StreamLine {
                     session_id: "s-a".to_owned(),
+                    seq: Some(1),
                     line: line("same"),
                     usage: None,
                 },
             );
         }
-        assert_eq!(app.stream_buffer["s-a"].len(), 1);
+        assert_eq!(conversation_len(&app, "s-a"), 1);
         reduce(
             &mut app,
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
+                seq: Some(2),
                 line: line("different"),
                 usage: None,
             },
         );
-        assert_eq!(app.stream_buffer["s-a"].len(), 2);
+        assert_eq!(conversation_len(&app, "s-a"), 2);
     }
 
     #[test]
@@ -599,6 +580,7 @@ mod tests {
             &mut app,
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
+                seq: Some(1),
                 line: line(""),
                 usage: Some(super::HeartbeatUsage { tokens_in: 7, tokens_out: 8, cost_usd: 9.5 }),
             },
@@ -614,16 +596,21 @@ mod tests {
         reduce(&mut app, Action::SelectLast);
         reduce(
             &mut app,
-            Action::StreamLine { session_id: "s-b".to_owned(), line: line("bye"), usage: None },
+            Action::StreamLine {
+                session_id: "s-b".to_owned(),
+                seq: Some(1),
+                line: line("bye"),
+                usage: None,
+            },
         );
         reduce(&mut app, Action::SessionDeregistered("s-b".to_owned()));
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.selected_index, 0);
-        assert!(!app.stream_buffer.contains_key("s-b"));
+        assert!(!app.conversations.contains_key("s-b"));
     }
 
     #[test]
-    fn reconnecting_resubscribes_only_from_the_conversation() {
+    fn reconnecting_resubscribes_and_refetches_only_from_the_conversation() {
         let mut app = app();
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
@@ -633,7 +620,11 @@ mod tests {
         reduce(&mut app, Action::OpenSelectedConversation);
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
-            [Effect::Subscribe { .. }, Effect::RefreshSessions]
+            [
+                Effect::Subscribe { .. },
+                Effect::LoadConversationPage { .. },
+                Effect::RefreshSessions
+            ]
         ));
     }
 

@@ -1,6 +1,6 @@
 use crate::app::View;
 use crate::testsupport::{
-    app_with_sessions, conversation_lines, permission_request, render_screen, render_screen_sized,
+    app_with_sessions, conversation_store, permission_request, render_screen, render_screen_sized,
 };
 
 #[test]
@@ -9,18 +9,54 @@ fn session_list() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
-#[test]
-fn session_list_truncated() {
+fn app_with_many_sessions() -> crate::app::App {
     let mut app = app_with_sessions();
-    for i in 0..4 {
+    for i in 0..30 {
         app.sessions.push(crate::testsupport::session(
-            &format!("s-extra-{i}"),
-            &format!("extra{i}"),
+            &format!("s-extra-{i:02}"),
+            &format!("extra{i:02}"),
             "active",
             "working",
         ));
     }
-    app.show_all_sessions = false;
+    app.update_aggregates();
+    app
+}
+
+#[test]
+fn session_list_scrolls_when_rows_exceed_the_viewport() {
+    let mut app = app_with_many_sessions();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_selection_at_the_bottom_scrolls() {
+    let mut app = app_with_many_sessions();
+    app.select_last();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_pinned_group() {
+    let mut app = app_with_sessions();
+    app.sessions.push(crate::testsupport::pinned_session("s-pin", "starred"));
+    app.update_aggregates();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_dispatched_group() {
+    let mut app = app_with_sessions();
+    app.sessions.push(crate::testsupport::dispatched_session("s-disp", "worker", "working"));
+    app.sessions.push(crate::testsupport::dispatched_session("s-disp-blocked", "wk2", "blocked"));
+    app.update_aggregates();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_compact_rows() {
+    let mut app = app_with_sessions();
+    app.config.prefs.compact_rows = true;
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -36,7 +72,7 @@ fn session_list_selection_moves() {
 fn conversation() {
     let mut app = app_with_sessions();
     let id = app.selected_session().expect("a selected session").id.clone();
-    app.stream_buffer.insert(id, conversation_lines());
+    app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen(&mut app));
 }
@@ -52,7 +88,7 @@ fn conversation_without_data() {
 fn conversation_narrow() {
     let mut app = app_with_sessions();
     let id = app.selected_session().expect("a selected session").id.clone();
-    app.stream_buffer.insert(id, conversation_lines());
+    app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }

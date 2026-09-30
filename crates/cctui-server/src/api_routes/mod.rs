@@ -7,6 +7,7 @@ mod admin_users;
 mod catalog;
 mod context;
 mod daemon;
+mod device_auth;
 mod dispatch;
 mod drafts;
 mod keys;
@@ -77,6 +78,7 @@ pub fn register(r: Routes) -> Routes {
     let r = shares::register(r);
     let r = machines::register(r);
     let r = me::register(r);
+    let r = device_auth::register(r);
     let r = admin_instance::register(r);
     let r = admin_users::register(r);
     let r = skills::register(r);

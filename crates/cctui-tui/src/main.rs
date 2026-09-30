@@ -1,7 +1,10 @@
 mod app;
-mod client;
+mod auth;
+mod config;
 mod install;
 mod keys;
+#[cfg(test)]
+mod parity;
 mod selfupdate;
 #[cfg(test)]
 mod server_event_contract;
@@ -20,9 +23,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use app::effects::Effects;
+use app::toast::Level;
 use app::{Action, App, reduce, server_event};
-use cctui_proto::ws::TuiCommand;
-use client::{Incoming, ServerClient};
+use cctui_client::{Client, Incoming};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
 };
@@ -58,6 +61,22 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
+    /// Log in and store the credential in `~/.config/cctui/user.json`.
+    Login {
+        /// Server to log in to. Defaults to the stored one, then `CCTUI_URL`.
+        #[arg(long)]
+        server: Option<String>,
+        /// Use an existing key instead of the browser approval flow. Without a
+        /// value the key is read from stdin, keeping it out of the shell history.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        key: Option<String>,
+    },
+    /// Forget the stored credential.
+    Logout {
+        /// Also revoke the key server-side, so it cannot be used again.
+        #[arg(long)]
+        revoke: bool,
+    },
     /// Force re-download of the latest cctui release and re-apply settings.
     Update,
     /// One-call session diagnose: print everything the daemon knows
@@ -78,6 +97,8 @@ async fn main() -> Result<()> {
             let (base_url, _) = resolve_identity();
             selfupdate::force_update(&base_url).await
         }
+        Some(Command::Login { server, key }) => auth::login(server, key).await,
+        Some(Command::Logout { revoke }) => auth::logout(revoke).await,
         Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,
         None => {
             let (base_url, _) = resolve_identity();
@@ -91,8 +112,8 @@ async fn main() -> Result<()> {
 /// and render it as one dated, sourced line per fact.
 async fn run_diagnose(session_id: &str) -> Result<()> {
     let (base_url, token) = resolve_identity();
-    let server = ServerClient::new(&base_url, &token);
-    let resp = server.diagnose_session(session_id).await?;
+    let server = Client::new(&base_url, &token);
+    let resp = server.diagnose(session_id).await?;
 
     println!("session {}", resp.session_id);
     let s = &resp.server;
@@ -184,18 +205,21 @@ async fn run(
     base_url: String,
     token: String,
 ) -> Result<()> {
-    let server = Arc::new(ServerClient::new(&base_url, &token));
+    let server = Arc::new(Client::new(&base_url, &token));
     let mut app = App::new();
+    apply_config(&mut app);
+    apply_server_settings(&server, &mut app).await;
+    theme::init(app.config.theme);
 
     init_sessions(&server, &mut app).await;
-    let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
-    let (effects, mut action_rx) = Effects::start(Arc::clone(&server), cmd_tx);
+    let (ws, mut event_rx) = server.connect_ws();
+    let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
+    effects.dispatch(app::action::Effect::FetchIdentity);
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
     let mut input_rx = spawn_input_task();
-    // Backoff for WS reconnect attempts after the stream drops.
-    let mut reconnect_backoff_secs: u64 = 1;
-    let mut reconnect_timer: Option<std::pin::Pin<Box<time::Sleep>>> = None;
+    let mut ws_closed = false;
+    let mut ws_ever_connected = false;
 
     loop {
         app.clock_ms = now_ms();
@@ -208,7 +232,9 @@ async fn run(
 
             maybe_input = input_rx.recv() => {
                 maybe_input
-                    .and_then(|input| keys::map_input(app.view(), app.input_active, input))
+                    .and_then(|input| {
+                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                    })
                     .map_or_else(Vec::new, |action| vec![action])
             }
             maybe_action = action_rx.recv() => {
@@ -218,39 +244,20 @@ async fn run(
                 }
                 actions
             }
-            maybe_event = event_rx.recv() => {
-                match maybe_event {
-                    Some(event) => {
-                        let mut actions = incoming_actions(event);
+            maybe_event = event_rx.recv(), if !ws_closed => {
+                maybe_event.map_or_else(
+                    || {
+                        ws_closed = true;
+                        vec![Action::Toast(Level::Error, "event stream closed".to_owned())]
+                    },
+                    |event| {
+                        let mut actions = incoming_actions(event, &mut ws_ever_connected);
                         while let Ok(ev) = event_rx.try_recv() {
-                            actions.extend(incoming_actions(ev));
+                            actions.extend(incoming_actions(ev, &mut ws_ever_connected));
                         }
                         actions
-                    }
-                    None if reconnect_timer.is_none() => {
-                        // Stream dropped — schedule a reconnect attempt.
-                        reconnect_timer = Some(Box::pin(time::sleep(Duration::from_secs(reconnect_backoff_secs))));
-                        Vec::new()
-                    }
-                    None => {
-                        // Already waiting; yield so the timer branch can fire.
-                        tokio::task::yield_now().await;
-                        Vec::new()
-                    }
-                }
-            }
-            () = async { reconnect_timer.as_mut().unwrap().await }, if reconnect_timer.is_some() => {
-                reconnect_timer = None;
-                if let Ok((new_tx, new_rx)) = server.connect_ws().await {
-                    effects.set_commands(new_tx);
-                    event_rx = new_rx;
-                    reconnect_backoff_secs = 1;
-                    vec![Action::Reconnected]
-                } else {
-                    reconnect_backoff_secs = (reconnect_backoff_secs * 2).min(30);
-                    reconnect_timer = Some(Box::pin(time::sleep(Duration::from_secs(reconnect_backoff_secs))));
-                    Vec::new()
-                }
+                    },
+                )
             }
             _ = refresh_interval.tick() => vec![Action::RefreshSessions],
         };
@@ -266,27 +273,50 @@ async fn run(
     Ok(())
 }
 
-async fn init_sessions(server: &ServerClient, app: &mut App) {
+/// Config problems are toasts, never a startup failure: a typo in one binding
+/// must not keep the TUI from opening.
+fn apply_config(app: &mut App) {
+    app.clock_ms = now_ms();
+    let loaded = config::load();
+    app.config = loaded.config;
+    for problem in loaded.problems {
+        app.toast(Level::Warn, format!("tui.toml: {problem}"));
+    }
+}
+
+/// The server's user settings are defaults under the local file. An
+/// unreachable or unreadable server simply leaves the local config in force.
+async fn apply_server_settings(server: &Client, app: &mut App) {
+    if let Ok(payload) = server.settings().await {
+        app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
+    }
+    app.show_timestamps = app.config.prefs.timestamps;
+}
+
+async fn init_sessions(server: &Client, app: &mut App) {
     if let Ok(resp) = server.list_sessions().await {
         app.sessions = resp.sessions;
         app.update_aggregates();
     }
 }
 
-async fn connect_ws_or_dummy(
-    server: &ServerClient,
-) -> (mpsc::Sender<TuiCommand>, mpsc::Receiver<Incoming>) {
-    (server.connect_ws().await).unwrap_or_else(|_| {
-        let (tx, _) = mpsc::channel::<TuiCommand>(1);
-        let (_, rx) = mpsc::channel::<Incoming>(1);
-        (tx, rx)
-    })
-}
-
-fn incoming_actions(incoming: Incoming) -> Vec<Action> {
+/// `ever_connected` keeps the first connect silent: only a genuine reconnect
+/// refreshes state and toasts.
+fn incoming_actions(incoming: Incoming, ever_connected: &mut bool) -> Vec<Action> {
     match incoming {
         Incoming::Event(event) => server_event::to_actions(*event),
         Incoming::Undecodable(reason) => vec![Action::UndecodableWsMessage(reason)],
+        Incoming::Connected => {
+            if std::mem::replace(ever_connected, true) {
+                vec![Action::Reconnected]
+            } else {
+                Vec::new()
+            }
+        }
+        Incoming::Disconnected(reason) => {
+            tracing::warn!(%reason, "websocket dropped; reconnecting");
+            vec![Action::Toast(Level::Warn, "connection lost — reconnecting".to_owned())]
+        }
     }
 }
 

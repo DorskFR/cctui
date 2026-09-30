@@ -64,6 +64,20 @@ Nothing the TUI receives may be dropped silently. Frames that fail to decode
 become `Incoming::Undecodable`, and unreadable agent events are counted; both
 log and bump a status-line counter.
 
+### The parity manifest
+
+`crates/cctui-tui/parity.toml` has one entry per route in
+`cctui_proto::api::routes::ROUTES` and per `ServerEvent` variant, each marked
+`tui = "handled"` (naming the module), `"planned"` (naming the epic ticket that
+will handle it) or `"waived"` (with a reason). `src/parity.rs` fails
+`cargo test` when a route or variant is missing, when an entry names a route
+that no longer exists, when a handled route is not mentioned by the module it
+names, or when a handled `ws_event` disagrees with the arms in
+`app/server_event.rs`.
+
+Adding a route to the table therefore means adding an entry here, and shipping
+a handler means flipping its `planned` entry to `handled` in the same change.
+
 ### Testing
 
 Views are covered by `insta` snapshots rendered into a ratatui `TestBackend`
@@ -135,6 +149,13 @@ and never lower it to save cost.
 
 After a PR merges, **cut a release so the package is built/published**:
 
+- **Check TUI parity before tagging.** `cargo test -p cctui-tui` must be green,
+  and `git diff <last tag>.. -- crates/cctui-tui/parity.toml` must be read, not
+  skimmed: every `planned` entry whose ticket shipped in this release has to be
+  `handled` by now. The manifest test is the gate — a route or `ServerEvent`
+  variant that reached the API without an entry fails it, and so does a
+  `handled` entry with no handler behind it. Fix the manifest, don't waive to
+  get green.
 - Tag the new version on the default branch; CI builds and publishes the
   artifacts/images for that tag.
 - Pick the channel with the tag: `vX.Y.Z` is stable, `vX.Y.Z-beta.N` is a beta

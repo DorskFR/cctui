@@ -4,11 +4,11 @@ use crate::app::App;
 use crate::app::toast::Level;
 use crate::theme;
 
-const fn level_style(level: Level) -> ratatui::style::Style {
+fn level_style(level: Level) -> ratatui::style::Style {
     match level {
-        Level::Info => theme::DIM,
-        Level::Warn => theme::COST,
-        Level::Error => theme::ERROR,
+        Level::Info => theme::dim(),
+        Level::Warn => theme::cost(),
+        Level::Error => theme::error(),
     }
 }
 
@@ -16,6 +16,11 @@ const fn level_style(level: Level) -> ratatui::style::Style {
 /// count of anything the TUI had to drop. Empty when there is nothing to say.
 pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    if let Some(chip) = app.auth.chip() {
+        spans.push(Span::raw("  "));
+        let style = if chip.rejected { theme::error() } else { theme::dim() };
+        spans.push(Span::styled(format!("@{}", chip.text), style));
+    }
     if let Some(toast) = app.toasts.latest() {
         let queued = app.toasts.queued();
         let more = if queued > 1 { format!(" +{}", queued - 1) } else { String::new() };
@@ -27,7 +32,7 @@ pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     }
     if !app.status.is_clean() {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(format!("⚠ {} dropped", app.status.total()), theme::ERROR));
+        spans.push(Span::styled(format!("⚠ {} dropped", app.status.total()), theme::error()));
     }
     spans
 }

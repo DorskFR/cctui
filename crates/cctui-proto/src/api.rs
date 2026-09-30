@@ -7,6 +7,7 @@ pub mod bookmarks;
 pub mod cache_loss;
 pub mod capabilities;
 pub mod context;
+pub mod device_auth;
 pub mod dispatchers;
 pub mod gateway;
 pub mod harness_update;

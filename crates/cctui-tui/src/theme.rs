@@ -1,37 +1,145 @@
+//! One palette, chosen at startup and read through these accessors.
+
+use std::sync::OnceLock;
+
 use ratatui::style::{Color, Modifier, Style};
 
-// Status colors
-pub const ACTIVE: Style = Style::new().fg(Color::Green);
-pub const NEW: Style = Style::new().fg(Color::Cyan);
-pub const INACTIVE: Style = Style::new().fg(Color::DarkGray);
+use crate::config::ThemeChoice;
 
-// UI chrome
-pub const BORDER_FOCUSED: Style = Style::new().fg(Color::Blue);
-pub const BORDER_DIM: Style = Style::new().fg(Color::DarkGray);
-pub const SELECTED: Style = Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD);
-pub const HOTKEY: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-pub const HOTKEY_DESC: Style = Style::new().fg(Color::DarkGray);
-pub const STATUS_BAR_BG: Style = Style::new().fg(Color::White).bg(Color::DarkGray);
-pub const DIM: Style = Style::new().fg(Color::DarkGray);
-pub const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
-pub const ERROR: Style = Style::new().fg(Color::Red);
+pub struct Palette {
+    pub active: Style,
+    pub new: Style,
+    pub inactive: Style,
+    pub border_focused: Style,
+    pub border_dim: Style,
+    pub selected: Style,
+    pub hotkey: Style,
+    pub hotkey_desc: Style,
+    pub status_bar_bg: Style,
+    pub dim: Style,
+    pub bold: Style,
+    pub error: Style,
+    pub model: Style,
+    pub cost: Style,
+    pub branch: Style,
+    pub header_bg: Style,
+    pub section_title: Style,
+}
 
-// Session list details
-pub const MODEL: Style = Style::new().fg(Color::DarkGray);
-pub const COST: Style = Style::new().fg(Color::Yellow);
-pub const BRANCH: Style = Style::new().fg(Color::DarkGray);
+const fn dark() -> Palette {
+    Palette {
+        active: Style::new().fg(Color::Green),
+        new: Style::new().fg(Color::Cyan),
+        inactive: Style::new().fg(Color::DarkGray),
+        border_focused: Style::new().fg(Color::Blue),
+        border_dim: Style::new().fg(Color::DarkGray),
+        selected: Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD),
+        hotkey: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        hotkey_desc: Style::new().fg(Color::DarkGray),
+        status_bar_bg: Style::new().fg(Color::White).bg(Color::DarkGray),
+        dim: Style::new().fg(Color::DarkGray),
+        bold: Style::new().add_modifier(Modifier::BOLD),
+        error: Style::new().fg(Color::Red),
+        model: Style::new().fg(Color::DarkGray),
+        cost: Style::new().fg(Color::Yellow),
+        branch: Style::new().fg(Color::DarkGray),
+        header_bg: Style::new().fg(Color::White).bg(Color::DarkGray),
+        section_title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+    }
+}
 
-// Borderless layout
-pub const HEADER_BG: Style = Style::new().fg(Color::White).bg(Color::DarkGray);
-pub const SECTION_TITLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+/// Dimmed text has to darken, not lighten, on a light terminal, and the
+/// bright-on-dark chrome inverts with it.
+const fn light() -> Palette {
+    Palette {
+        active: Style::new().fg(Color::Green),
+        new: Style::new().fg(Color::Blue),
+        inactive: Style::new().fg(Color::Gray),
+        border_focused: Style::new().fg(Color::Blue),
+        border_dim: Style::new().fg(Color::Gray),
+        selected: Style::new().bg(Color::Gray).add_modifier(Modifier::BOLD),
+        hotkey: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        hotkey_desc: Style::new().fg(Color::DarkGray),
+        status_bar_bg: Style::new().fg(Color::Black).bg(Color::Gray),
+        dim: Style::new().fg(Color::DarkGray),
+        bold: Style::new().add_modifier(Modifier::BOLD),
+        error: Style::new().fg(Color::Red),
+        model: Style::new().fg(Color::DarkGray),
+        cost: Style::new().fg(Color::Magenta),
+        branch: Style::new().fg(Color::DarkGray),
+        header_bg: Style::new().fg(Color::Black).bg(Color::Gray),
+        section_title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+    }
+}
 
-pub const fn status_style(status: cctui_proto::models::SessionStatus) -> Style {
+static PALETTE: OnceLock<Palette> = OnceLock::new();
+
+pub fn init(choice: ThemeChoice) {
+    let _ = PALETTE.set(match resolve(choice) {
+        ThemeChoice::Light => light(),
+        _ => dark(),
+    });
+}
+
+/// `COLORFGBG` is the one background hint a terminal reliably exports; without
+/// it, dark is the safer guess.
+pub fn resolve(choice: ThemeChoice) -> ThemeChoice {
+    match choice {
+        ThemeChoice::Auto => {
+            match std::env::var("COLORFGBG").ok().as_deref().and_then(background_index) {
+                Some(bg) if (7..=15).contains(&bg) => ThemeChoice::Light,
+                _ => ThemeChoice::Dark,
+            }
+        }
+        pinned => pinned,
+    }
+}
+
+fn background_index(value: &str) -> Option<u8> {
+    value.rsplit(';').next()?.trim().parse().ok()
+}
+
+pub fn palette() -> &'static Palette {
+    PALETTE.get_or_init(dark)
+}
+
+macro_rules! accessors {
+    ($($name:ident),* $(,)?) => {
+        $(
+            pub fn $name() -> Style {
+                palette().$name
+            }
+        )*
+    };
+}
+
+accessors!(
+    active,
+    new,
+    inactive,
+    border_focused,
+    border_dim,
+    selected,
+    hotkey,
+    hotkey_desc,
+    status_bar_bg,
+    dim,
+    bold,
+    error,
+    model,
+    cost,
+    branch,
+    header_bg,
+    section_title,
+);
+
+pub fn status_style(status: cctui_proto::models::SessionStatus) -> Style {
     match status {
-        cctui_proto::models::SessionStatus::Active => ACTIVE,
-        cctui_proto::models::SessionStatus::New => NEW,
+        cctui_proto::models::SessionStatus::Active => active(),
+        cctui_proto::models::SessionStatus::New => new(),
         cctui_proto::models::SessionStatus::Inactive
         | cctui_proto::models::SessionStatus::Archived
-        | cctui_proto::models::SessionStatus::Draft => INACTIVE,
+        | cctui_proto::models::SessionStatus::Draft => inactive(),
     }
 }
 
@@ -42,5 +150,22 @@ pub const fn status_icon(status: cctui_proto::models::SessionStatus) -> &'static
         cctui_proto::models::SessionStatus::Inactive => "○",
         cctui_proto::models::SessionStatus::Archived => "▢",
         cctui_proto::models::SessionStatus::Draft => "◌",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ThemeChoice, light, resolve};
+
+    #[test]
+    fn a_pinned_choice_is_not_second_guessed() {
+        assert_eq!(resolve(ThemeChoice::Light), ThemeChoice::Light);
+        assert_eq!(resolve(ThemeChoice::Dark), ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn the_light_palette_dims_downwards() {
+        assert_eq!(light().dim, super::dark().dim);
+        assert_ne!(light().selected, super::dark().selected);
     }
 }

@@ -1,11 +1,10 @@
 use cctui_proto::api::SessionListItem;
-use cctui_proto::classifier::Bucket;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, session_list};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -27,72 +26,63 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_session_list(frame, app, list_area);
 
     // Hotkeys
-    crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area);
+    crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let total = app.sessions.len();
     let active = app.active_count;
     let mut spans = vec![
-        Span::styled(" cctui ", theme::STATUS_BAR_BG),
+        Span::styled(" cctui ", theme::status_bar_bg()),
         Span::raw(" "),
-        Span::styled(format!("v{}", app.version), theme::DIM),
+        Span::styled(format!("v{}", app.version), theme::dim()),
         Span::raw("  "),
-        Span::styled(format!("{total} sessions"), theme::DIM),
+        Span::styled(format!("{total} sessions"), theme::dim()),
         Span::raw("  "),
-        Span::styled(format!("● {active} active"), theme::ACTIVE),
+        Span::styled(format!("● {active} active"), theme::active()),
     ];
     spans.extend(crate::widgets::status::status_spans(app));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
-    let line = Line::from(vec![Span::styled(" Sessions", theme::SECTION_TITLE)]);
+    let line = Line::from(vec![Span::styled(" Sessions", theme::section_title())]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let flat = app.flattened_sessions();
-    let mut items: Vec<ListItem> = Vec::new();
-
-    // `flat` is already bucket-grouped (see App::flattened_sessions). Insert a
-    // section header each time a top-level session opens a new bucket, and
-    // remember where the selected session ends up once headers shift indices.
+    let rows = session_list::rows(&flat);
     let selected_flat = if app.selected_index < flat.len() { app.selected_index } else { 0 };
-    let mut selected_render = 0usize;
-    let mut current_bucket: Option<Bucket> = None;
-    for (i, session) in flat.iter().enumerate() {
-        // Only top-level sessions open a group; subagents stay under their parent.
-        if session.parent_id.is_none() && current_bucket != Some(session.bucket) {
-            current_bucket = Some(session.bucket);
-            items.push(bucket_header(session.bucket));
-        }
-        if i == selected_flat {
-            selected_render = items.len();
-        }
-        items.push(session_line(session));
-    }
+    let selected_row = session_list::selected_row(&rows, selected_flat);
+    let offset = session_list::viewport_offset(rows.len(), selected_row, area.height as usize);
 
-    // Show truncation hint if not showing all sessions
-    if !app.show_all_sessions && app.sessions.len() > 5 {
-        items.push(ListItem::new(Line::from(vec![Span::styled("   [a] show all", theme::DIM)])));
-    }
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| match *row {
+            session_list::Row::Header(group) => group_header(group),
+            session_list::Row::Session { session, .. } => {
+                session_line(session, app.config.prefs.compact_rows)
+            }
+        })
+        .collect();
 
-    let list = List::new(items).highlight_style(theme::SELECTED).highlight_symbol("▸ ");
+    let list = List::new(items).highlight_style(theme::selected()).highlight_symbol("▸ ");
 
-    let mut state = ListState::default();
-    state.select(Some(selected_render));
+    let mut state = ListState::default().with_offset(offset).with_selected(Some(selected_row));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn bucket_header(bucket: Bucket) -> ListItem<'static> {
+fn group_header(group: session_list::Group) -> ListItem<'static> {
     ListItem::new(Line::from(vec![Span::styled(
-        format!(" {} ", bucket.label()),
-        theme::SECTION_TITLE,
+        format!(" {} ", group.label()),
+        theme::section_title(),
     )]))
 }
 
-fn session_line(s: &SessionListItem) -> ListItem<'static> {
+/// `compact` keeps a row to its identity — status, project, branch — and drops
+/// the model, cost and activity detail.
+fn session_line(s: &SessionListItem, compact: bool) -> ListItem<'static> {
     let icon = theme::status_icon(s.status);
     let icon_style = theme::status_style(s.status);
 
@@ -113,22 +103,26 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
     // parent with a tree marker instead of the leading whitespace.
     let is_subagent = s.parent_id.is_some();
     let mut spans = vec![
-        Span::styled(if is_subagent { "    ↳ " } else { "   " }, theme::DIM),
+        Span::styled(if is_subagent { "    ↳ " } else { "   " }, theme::dim()),
         Span::styled(format!("{icon} "), icon_style),
-        Span::styled(format!("[{adapter}] "), theme::DIM),
-        Span::styled(project.to_string(), if is_subagent { theme::DIM } else { theme::BOLD }),
+        Span::styled(format!("[{adapter}] "), theme::dim()),
+        Span::styled(project.to_string(), if is_subagent { theme::dim() } else { theme::bold() }),
     ];
 
     if !branch.is_empty() {
-        spans.push(Span::styled(format!(" ({branch})"), theme::BRANCH));
+        spans.push(Span::styled(format!(" ({branch})"), theme::branch()));
+    }
+
+    if compact {
+        return ListItem::new(Line::from(spans));
     }
 
     if !model.is_empty() {
-        spans.push(Span::styled(format!("  {model}"), theme::MODEL));
+        spans.push(Span::styled(format!("  {model}"), theme::model()));
     }
 
-    spans.push(Span::styled(format!("  {uptime}"), theme::DIM));
-    spans.push(Span::styled(format!("  {cost}"), theme::COST));
+    spans.push(Span::styled(format!("  {uptime}"), theme::dim()));
+    spans.push(Span::styled(format!("  {cost}"), theme::cost()));
 
     // Live tool cadence: grinding sessions (incl. subagent roll-ups)
     // show a fresh age so they read as busy, not asleep.
@@ -136,12 +130,12 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
         let age = (chrono::Utc::now() - last).num_seconds().max(0);
         spans.push(Span::styled(
             format!("  ⚙{} {}", s.tool_use_count, format_uptime(age)),
-            theme::DIM,
+            theme::dim(),
         ));
     }
 
     for href in &s.pr_links {
-        spans.push(Span::styled(format!("  ⇄ {}", pr_ref(href)), theme::BRANCH));
+        spans.push(Span::styled(format!("  ⇄ {}", pr_ref(href)), theme::branch()));
     }
 
     ListItem::new(Line::from(spans))

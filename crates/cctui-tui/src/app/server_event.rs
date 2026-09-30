@@ -113,5 +113,5 @@ fn stream_action(session_id: String, data: &AgentEvent) -> Action {
         }),
         _ => None,
     };
-    Action::StreamLine { session_id, line: agent_event_to_line(data), usage }
+    Action::StreamLine { session_id, seq: data.seq(), line: agent_event_to_line(data), usage }
 }

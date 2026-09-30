@@ -2,6 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::action::Action;
 use crate::app::state::View;
+use crate::config::chord::Chord;
+use crate::config::keymap::{ActionId, Context, Keymap};
 
 #[derive(Debug, Clone, Copy)]
 pub enum InputEvent {
@@ -10,17 +12,34 @@ pub enum InputEvent {
     ScrollDown,
 }
 
-/// Pure: terminal input in, at most one [`Action`] out. No state is touched
-/// here, so every binding is testable without a terminal.
-pub fn map_input(view: View, input_active: bool, input: InputEvent) -> Option<Action> {
+pub const fn context_for(view: View, input_active: bool) -> Context {
+    if input_active {
+        return Context::Composer;
+    }
+    match view {
+        View::SessionList => Context::SessionList,
+        View::Conversation => Context::Conversation,
+        View::Help => Context::Help,
+        View::PermissionDialog => Context::Permission,
+    }
+}
+
+/// Pure: terminal input in, at most one [`Action`] out. Every binding resolves
+/// through the keymap, so a user override needs no code change here.
+pub fn map_input(
+    keys: &Keymap,
+    view: View,
+    input_active: bool,
+    input: InputEvent,
+) -> Option<Action> {
     match input {
-        InputEvent::Key(key) if input_active => Some(map_composer(key)),
-        InputEvent::Key(key) => match view {
-            View::SessionList => map_session_list(key.code),
-            View::Conversation => Some(map_conversation(key)),
-            View::Help => map_help(key.code),
-            View::PermissionDialog => map_permission(key.code),
-        },
+        InputEvent::Key(key) => {
+            let context = context_for(view, input_active);
+            let chord = Chord::from_event(key);
+            keys.lookup(context, chord)
+                .and_then(|id| to_action(id, chord))
+                .or_else(|| unbound(context, key))
+        }
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
@@ -34,71 +53,64 @@ pub fn map_input(view: View, input_active: bool, input: InputEvent) -> Option<Ac
     }
 }
 
-const fn map_composer(key: KeyEvent) -> Action {
-    match key.code {
-        KeyCode::Esc => Action::CancelInput,
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => Action::InputNewline,
-        KeyCode::Enter => Action::SubmitInput,
-        _ => Action::InputKey(key),
-    }
+/// Whether an action does anything yet; the cheat sheet lists only these.
+pub fn is_wired(id: ActionId) -> bool {
+    to_action(id, Chord::new(KeyCode::Char('1'), KeyModifiers::NONE)).is_some()
 }
 
-const fn map_session_list(code: KeyCode) -> Option<Action> {
-    Some(match code {
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('j') | KeyCode::Down => Action::SelectNext,
-        KeyCode::Char('k') | KeyCode::Up => Action::SelectPrev,
-        KeyCode::Char('g') => Action::SelectFirst,
-        KeyCode::Char('G') => Action::SelectLast,
-        KeyCode::Char('a') => Action::ToggleShowAllSessions,
-        KeyCode::Char('?') => Action::OpenHelp,
-        KeyCode::Enter => Action::OpenSelectedConversation,
+/// Actions a later wave still owns return `None`: the key then behaves as if it
+/// were unbound rather than being silently swallowed.
+fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
+    Some(match id {
+        ActionId::Help => Action::OpenHelp,
+        ActionId::Quit => Action::Quit,
+        ActionId::CloseHelp => Action::CloseHelp,
+
+        ActionId::SelectNext => Action::SelectNext,
+        ActionId::SelectPrev => Action::SelectPrev,
+        ActionId::SelectFirst => Action::SelectFirst,
+        ActionId::SelectLast => Action::SelectLast,
+        ActionId::SelectIndex => Action::SelectIndex(chord.digit()?),
+        ActionId::OpenConversation => Action::OpenSelectedConversation,
+
+        ActionId::LeaveConversation => Action::LeaveConversation,
+        ActionId::ScrollDown => Action::Scroll { lines: 1, release_follow: true },
+        ActionId::ScrollUp => Action::Scroll { lines: -1, release_follow: true },
+        ActionId::PageDown => Action::Scroll { lines: 15, release_follow: false },
+        ActionId::PageUp => Action::Scroll { lines: -15, release_follow: true },
+        ActionId::ScrollToTop => Action::ScrollToTop,
+        ActionId::ScrollToBottom => Action::ScrollToBottom,
+        ActionId::ToggleTimestamps => Action::ToggleTimestamps,
+        ActionId::Interrupt => Action::InterruptSelected,
+        ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
+
+        ActionId::CancelInput => Action::CancelInput,
+        ActionId::SubmitInput => Action::SubmitInput,
+        ActionId::InputNewline => Action::InputNewline,
+
+        ActionId::PermissionAllow => Action::ResolvePermission { allow: true },
+        ActionId::PermissionDeny => Action::ResolvePermission { allow: false },
+
         _ => return None,
     })
 }
 
-/// Ctrl-modified actions are matched first, then navigation; anything left over
-/// opens the composer and types itself.
-const fn map_conversation(key: KeyEvent) -> Action {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        match key.code {
-            KeyCode::Char('c') => return Action::InterruptSelected,
-            KeyCode::Char('a') => return Action::ToggleAutoApproveSelected,
-            _ => {}
-        }
+/// A key no binding claimed: the conversation opens the composer with it, the
+/// composer types it, every other view ignores it.
+const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
+    match context {
+        Context::Conversation => Some(Action::ActivateInputWith(key)),
+        Context::Composer => Some(Action::InputKey(key)),
+        _ => None,
     }
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Action::LeaveConversation,
-        KeyCode::Char('j') | KeyCode::Down => Action::Scroll { lines: 1, release_follow: true },
-        KeyCode::Char('k') | KeyCode::Up => Action::Scroll { lines: -1, release_follow: true },
-        KeyCode::PageUp => Action::Scroll { lines: -15, release_follow: true },
-        KeyCode::PageDown => Action::Scroll { lines: 15, release_follow: false },
-        KeyCode::Char('g') => Action::ScrollToTop,
-        KeyCode::Char('G') => Action::ScrollToBottom,
-        KeyCode::Char('?') => Action::OpenHelp,
-        KeyCode::Char('t') => Action::ToggleTimestamps,
-        KeyCode::Char(c @ '1'..='9') => Action::SelectIndex((c as usize) - ('1' as usize)),
-        _ => Action::ActivateInputWith(key),
-    }
-}
-
-fn map_help(code: KeyCode) -> Option<Action> {
-    matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')).then_some(Action::CloseHelp)
-}
-
-const fn map_permission(code: KeyCode) -> Option<Action> {
-    Some(match code {
-        KeyCode::Char('y') | KeyCode::Enter => Action::ResolvePermission { allow: true },
-        KeyCode::Char('n') | KeyCode::Esc => Action::ResolvePermission { allow: false },
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    use super::{Action, InputEvent, View, map_input};
+    use super::{Action, InputEvent, Keymap, View, map_input};
+    use crate::config::keymap::Context;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -109,7 +121,11 @@ mod tests {
     }
 
     fn map(view: View, input_active: bool, code: KeyCode) -> Option<Action> {
-        map_input(view, input_active, InputEvent::Key(key(code)))
+        map_input(&Keymap::default(), view, input_active, InputEvent::Key(key(code)))
+    }
+
+    fn map_event(view: View, input_active: bool, event: KeyEvent) -> Option<Action> {
+        map_input(&Keymap::default(), view, input_active, InputEvent::Key(event))
     }
 
     #[test]
@@ -151,14 +167,26 @@ mod tests {
         }
     }
 
+    /// A global bound to an action no wave implements yet must not eat the key.
+    #[test]
+    fn a_reserved_global_still_reaches_the_composer() {
+        for code in [KeyCode::Char('i'), KeyCode::Char('/'), KeyCode::Char('n')] {
+            assert!(
+                matches!(map(View::Conversation, false, code), Some(Action::ActivateInputWith(_))),
+                "{code:?} should fall through"
+            );
+        }
+        assert!(map(View::SessionList, false, KeyCode::Char('i')).is_none());
+    }
+
     #[test]
     fn ctrl_bindings_win_over_navigation() {
         assert!(matches!(
-            map_input(View::Conversation, false, InputEvent::Key(ctrl('c'))),
+            map_event(View::Conversation, false, ctrl('c')),
             Some(Action::InterruptSelected)
         ));
         assert!(matches!(
-            map_input(View::Conversation, false, InputEvent::Key(ctrl('a'))),
+            map_event(View::Conversation, false, ctrl('a')),
             Some(Action::ToggleAutoApproveSelected)
         ));
     }
@@ -187,10 +215,7 @@ mod tests {
             kind: KeyEventKind::Press,
             ..KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)
         };
-        assert!(matches!(
-            map_input(View::Conversation, true, InputEvent::Key(event)),
-            Some(Action::InputNewline)
-        ));
+        assert!(matches!(map_event(View::Conversation, true, event), Some(Action::InputNewline)));
     }
 
     #[test]
@@ -204,19 +229,21 @@ mod tests {
             Some(Action::ResolvePermission { allow: false })
         ));
         assert!(map(View::PermissionDialog, false, KeyCode::Char('j')).is_none());
+        assert!(map(View::PermissionDialog, false, KeyCode::Char('q')).is_none());
     }
 
     #[test]
     fn the_mouse_wheel_navigates_the_list_and_scrolls_the_conversation() {
+        let keys = Keymap::default();
         assert!(matches!(
-            map_input(View::SessionList, false, InputEvent::ScrollDown),
+            map_input(&keys, View::SessionList, false, InputEvent::ScrollDown),
             Some(Action::SelectNext)
         ));
         assert!(matches!(
-            map_input(View::Conversation, false, InputEvent::ScrollUp),
+            map_input(&keys, View::Conversation, false, InputEvent::ScrollUp),
             Some(Action::Scroll { lines: -3, release_follow: true })
         ));
-        assert!(map_input(View::Help, false, InputEvent::ScrollUp).is_none());
+        assert!(map_input(&keys, View::Help, false, InputEvent::ScrollUp).is_none());
     }
 
     #[test]
@@ -225,5 +252,15 @@ mod tests {
             assert!(matches!(map(View::Help, false, code), Some(Action::CloseHelp)));
         }
         assert!(map(View::Help, false, KeyCode::Char('x')).is_none());
+    }
+
+    #[test]
+    fn a_user_override_changes_the_binding_without_touching_this_module() {
+        let mut keys = Keymap::default();
+        keys.set(Context::SessionList, "ctrl+n", "select-next").expect("valid");
+        assert!(matches!(
+            map_input(&keys, View::SessionList, false, InputEvent::Key(ctrl('n'))),
+            Some(Action::SelectNext)
+        ));
     }
 }

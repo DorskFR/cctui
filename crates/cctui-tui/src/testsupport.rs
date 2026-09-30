@@ -59,6 +59,18 @@ pub fn session(id: &str, project: &str, status: &str, bucket: &str) -> SessionLi
     .expect("fixture session")
 }
 
+pub fn pinned_session(id: &str, project: &str) -> SessionListItem {
+    let mut s = session(id, project, "active", "working");
+    s.pinned = true;
+    s
+}
+
+pub fn dispatched_session(id: &str, project: &str, bucket: &str) -> SessionListItem {
+    let mut s = session(id, project, "active", bucket);
+    s.machine_kind = Some("dispatch".to_owned());
+    s
+}
+
 pub fn subagent(id: &str, parent_id: &str, project: &str) -> SessionListItem {
     let mut s = session(id, project, "active", "working");
     s.parent_id = Some(parent_id.to_owned());
@@ -73,7 +85,6 @@ pub fn app_with_sessions() -> App {
         subagent("s-child", "s-working", "cctui-sub"),
         session("s-done", "notes", "inactive", "done"),
     ];
-    app.show_all_sessions = true;
     app.update_aggregates();
     app
 }
@@ -92,6 +103,16 @@ pub fn conversation_lines() -> Vec<ConversationLine> {
         line(LineKind::System, "⟳ context reset (/clear · /compact)"),
         line(LineKind::Reply, "done"),
     ]
+}
+
+pub fn conversation_store() -> crate::app::ConversationStore {
+    let mut store = crate::app::ConversationStore::new();
+    let mut seq = 0_i64;
+    for line in conversation_lines() {
+        seq += 1;
+        store.push_live(Some(seq), line);
+    }
+    store
 }
 
 fn line(kind: LineKind, text: &str) -> ConversationLine {
