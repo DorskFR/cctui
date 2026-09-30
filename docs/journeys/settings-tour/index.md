@@ -2,64 +2,76 @@
 
 ## viewport=desktop theme=dark
 
-![appearance](desktop-dark/01-appearance.png)
+![theme](desktop-dark/01-theme.png)
 
-**Make it yours**
+**Start with the one you will look at all day**
 
-Theme, text size, language and where the navigation sits. Every one of these is remembered per account, so the app looks the same on your phone as on your desk.
+Pick a theme, or let it follow the system so it turns dark when your desktop does. Every setting on these pages saves itself the moment you change it — there is no Save button anywhere in Settings.
 
-![theme](desktop-dark/02-theme.png)
+![language](desktop-dark/02-language.png)
 
-**Pick a theme, or let it follow the system**
+**The interface language**
 
-Auto remembers one light and one dark theme and swaps between them as your system does. Pick a specific theme instead and it stays put at every hour of the day.
+Switching it re-draws the app immediately, including a guide you happen to have open — this one will follow you into French mid-sentence if you try it.
 
 ![sessions](desktop-dark/03-sessions.png)
 
 **Defaults for every run**
 
-How the list sorts and groups, and what a new session starts with, so you set it once instead of every time. The conversation options here also decide how much of a transcript you see at a glance.
+This page decides how the sessions list and the conversation behave before you touch either — sort order, density, grouping, and this one: whether a dropped connection silently resumes the run or leaves it for you to notice.
 
 ![execution](desktop-dark/04-execution.png)
 
-**How much rope an agent gets**
+**The single most consequential setting**
 
-Permission handling, auto-approval and the phrases that mean an agent has stopped early rather than finished.
+How much rope an agent gets: whether it asks before each action, or edits and runs commands on its own. Loosen it and agents finish far more without you — and can do far more damage unattended. Decide it deliberately, per machine you trust.
 
 ![privacy](desktop-dark/05-privacy.png)
 
 **Secrets never reach the transcript**
 
-Tokens and keys are detected and replaced before anything is stored, so a leaked credential does not end up sitting in your history.
+Anything matching these patterns is redacted before a transcript is stored, so a key pasted into a prompt does not end up in the history. Add the shapes only you would recognise — your own token prefixes, internal hostnames.
+
+![guides](desktop-dark/06-guides.png)
+
+**Every guide lives here**
+
+This page is the curriculum: what each guide teaches, what it is worth, and what is still locked. Replay any of them whenever you like — nothing here changes your instance. There are more pages than the four we walked; notifications, plugins, macros and the admin ones are all worth a look once you are running.
 
 ## viewport=mobile theme=dark
 
-![appearance](mobile-dark/01-appearance.png)
+![theme](mobile-dark/01-theme.png)
 
-**Make it yours**
+**Start with the one you will look at all day**
 
-Theme, text size, language and where the navigation sits. Every one of these is remembered per account, so the app looks the same on your phone as on your desk.
+Pick a theme, or let it follow the system so it turns dark when your desktop does. Every setting on these pages saves itself the moment you change it — there is no Save button anywhere in Settings.
 
-![theme](mobile-dark/02-theme.png)
+![language](mobile-dark/02-language.png)
 
-**Pick a theme, or let it follow the system**
+**The interface language**
 
-Auto remembers one light and one dark theme and swaps between them as your system does. Pick a specific theme instead and it stays put at every hour of the day.
+Switching it re-draws the app immediately, including a guide you happen to have open — this one will follow you into French mid-sentence if you try it.
 
 ![sessions](mobile-dark/03-sessions.png)
 
 **Defaults for every run**
 
-How the list sorts and groups, and what a new session starts with, so you set it once instead of every time. The conversation options here also decide how much of a transcript you see at a glance.
+This page decides how the sessions list and the conversation behave before you touch either — sort order, density, grouping, and this one: whether a dropped connection silently resumes the run or leaves it for you to notice.
 
 ![execution](mobile-dark/04-execution.png)
 
-**How much rope an agent gets**
+**The single most consequential setting**
 
-Permission handling, auto-approval and the phrases that mean an agent has stopped early rather than finished.
+How much rope an agent gets: whether it asks before each action, or edits and runs commands on its own. Loosen it and agents finish far more without you — and can do far more damage unattended. Decide it deliberately, per machine you trust.
 
 ![privacy](mobile-dark/05-privacy.png)
 
 **Secrets never reach the transcript**
 
-Tokens and keys are detected and replaced before anything is stored, so a leaked credential does not end up sitting in your history.
+Anything matching these patterns is redacted before a transcript is stored, so a key pasted into a prompt does not end up in the history. Add the shapes only you would recognise — your own token prefixes, internal hostnames.
+
+![guides](mobile-dark/06-guides.png)
+
+**Every guide lives here**
+
+This page is the curriculum: what each guide teaches, what it is worth, and what is still locked. Replay any of them whenever you like — nothing here changes your instance. There are more pages than the four we walked; notifications, plugins, macros and the admin ones are all worth a look once you are running.

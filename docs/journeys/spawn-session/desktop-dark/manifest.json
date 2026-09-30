@@ -13,32 +13,39 @@
 					"body": "Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile."
 				},
 				{
+					"index": 1,
+					"name": "where",
+					"file": "02-where.png",
+					"title": "Pick where it runs",
+					"body": "Choose the machine, then the folder. That folder is the agent’s whole world — it reads and edits what is inside it and nothing else, so point it at the project you actually mean. Set them now."
+				},
+				{
 					"index": 3,
 					"name": "filled",
-					"file": "02-filled.png",
+					"file": "03-filled.png",
 					"title": "Say what you want done",
-					"body": "Say what you want done. The profile below decides which harness and model carry it out."
+					"body": "This is the agent’s brief, and it is the whole instruction — it will not ask what you meant before it starts. Be as specific as you would be with a new colleague."
 				},
 				{
 					"index": 4,
 					"name": "profiles",
-					"file": "03-profiles.png",
+					"file": "04-profiles.png",
 					"title": "The profile decides how it thinks",
-					"body": "A profile bundles the harness, model, reasoning effort and permission mode. Pick one here rather than setting four things every time you launch."
+					"body": "A profile bundles four things: the harness, the model, how hard it reasons, and how much it may do without asking. Pick one rather than setting all four every launch — keep a cheap one for throwaway work and a careful one for the rest."
+				},
+				{
+					"index": 5,
+					"name": "saved",
+					"file": "05-saved.png",
+					"title": "Draft it rather than launch it",
+					"body": "Launch would start the agent now — it would begin reading and editing the folder you chose. Draft, beside it, saves all of this and runs nothing. Press Draft: you can launch it whenever you like."
 				},
 				{
 					"index": 6,
-					"name": "saved",
-					"file": "04-saved.png",
-					"title": "Save it as a draft",
-					"body": "The Draft button lights up once the machine and folder are set. This saves the run on your instance without starting it — nothing executes until you launch it."
-				},
-				{
-					"index": 8,
 					"name": "draft",
-					"file": "05-draft.png",
-					"title": "The draft is waiting",
-					"body": "Your draft is here, holding the machine, folder, profile and prompt until you launch it."
+					"file": "06-draft.png",
+					"title": "Where the draft went",
+					"body": "Drafts have their own group in the list, switched off until you ask for it — behind this button, with all the other groups. Your run waits there with its machine, folder, profile and prompt intact, and nothing executes until you launch it."
 				}
 			],
 			"storyboard": "storyboard.png"

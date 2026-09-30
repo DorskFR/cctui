@@ -2,21 +2,25 @@
 <h2>viewport=mobile theme=dark</h2>
 <figure>
 <img src="01-access.png" alt="access">
-<figcaption><strong>Start here: enroll a machine</strong> Access lists everyone and everything that can act on this instance. Until a machine has enrolled, this card is the only thing here that matters.</figcaption>
+<figcaption><strong>A machine is where an agent actually runs</strong> cctui itself runs nothing. A small daemon on your own computer does, and enrolling is how that computer tells this server it exists. Until one has enrolled, this card is the only thing here that matters.</figcaption>
 </figure>
 <figure>
 <img src="02-command.png" alt="command">
-<figcaption><strong>What this command does</strong> It points the daemon at this server and registers the machine under your user. Swap the token placeholder for one of your own keys — that token is what ties the machine to you.</figcaption>
+<figcaption><strong>What this command does</strong> It points the daemon at this server and registers the machine under your user. The token in it is what ties the machine to you — swap the placeholder for one of your own keys.</figcaption>
 </figure>
 <figure>
-<img src="03-enroll.png" alt="enroll">
-<figcaption><strong>Waiting for the machine to report in</strong> The guide moves on by itself the moment the machine checks in. If you would rather finish setting it up later, leave this step and come back — nothing is lost.</figcaption>
+<img src="03-copy.png" alt="copy">
+<figcaption><strong>Copy it, then run it over there</strong> Take the copy now. It has to run on the computer that will host your agents, not in this browser. Install it as a service afterwards and the machine rejoins the fleet by itself after a reboot.</figcaption>
 </figure>
 <figure>
-<img src="04-user.png" alt="user">
-<figcaption><strong>Open your own user</strong> Everything attached to an identity is here: the keys it signs in with, the machines it enrolled, its tokens and its AI accounts.</figcaption>
+<img src="04-online.png" alt="online">
+<figcaption><strong>How you will know it worked</strong> A machine that has checked in appears under your user as Online, with its last heartbeat. Online is the whole test: it means the machine can host a session right now. Nothing here waits on it — come back whenever the daemon is up.</figcaption>
 </figure>
 <figure>
-<img src="05-machines.png" alt="machines">
-<figcaption><strong>The machines that answered</strong> The machine you just enrolled is listed here with its heartbeat. Online means it can host a session right now.</figcaption>
+<img src="05-user.png" alt="user">
+<figcaption><strong>Open your own user</strong> Everything attached to an identity lives here: the keys it signs in with, the machines it enrolled, its tokens, and the AI accounts its agents spend.</figcaption>
+</figure>
+<figure>
+<img src="06-tabs.png" alt="tabs">
+<figcaption><strong>One panel per kind of credential</strong> Keys sign a person in, tokens let a machine enroll, and accounts are what the agents spend. Revoking any of them takes effect immediately — that is how you retire a lost laptop.</figcaption>
 </figure>
