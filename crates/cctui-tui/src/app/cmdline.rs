@@ -7,16 +7,17 @@ use super::action::Effect;
 use super::state::{App, View};
 use super::transcript_filter::Filter;
 
-/// One mode for now; `:` commands join it in CCT-1230.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Search,
+    Command,
 }
 
 impl Mode {
     pub const fn sigil(self) -> &'static str {
         match self {
             Self::Search => "/",
+            Self::Command => ":",
         }
     }
 }
@@ -255,18 +256,21 @@ fn set_query(app: &mut App, query: &str) {
 }
 
 fn commit(app: &mut App) -> Vec<Effect> {
-    if app.cmdline.open.take().is_none() {
-        return Vec::new();
-    }
+    let Some(mode) = app.cmdline.open.take() else { return Vec::new() };
     let input = std::mem::take(&mut app.cmdline.input);
-    set_query(app, &input);
-    if app.find.terms.is_empty() {
-        app.find.clear();
-        return Vec::new();
+    match mode {
+        Mode::Search => {
+            set_query(app, &input);
+            if app.find.terms.is_empty() {
+                app.find.clear();
+                return Vec::new();
+            }
+            // Land on the first hit so Enter is never a no-op.
+            step(app, 1);
+            Vec::new()
+        }
+        Mode::Command => super::command::run(app, &input),
     }
-    // Land on the first hit so Enter is never a no-op.
-    step(app, 1);
-    Vec::new()
 }
 
 /// Moves to the next or previous hit and focuses it, so line-select's own scroll

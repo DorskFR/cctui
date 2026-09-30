@@ -61,6 +61,8 @@ pub enum Action {
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
     CmdLine(super::cmdline::CmdAction),
+    /// `y` / `Y` / the link key, all resolved against the focused line.
+    Copy(CopyWhat),
     Prompt(PromptAction),
 
     StreamLine {
@@ -96,6 +98,17 @@ pub enum Action {
     UndecodableAgentEvents(usize),
 }
 
+/// What a copy key asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyWhat {
+    /// The focused line as a Markdown block.
+    Line,
+    /// Just the code under the cursor.
+    CodeBlock,
+    /// A link to this session in the webui.
+    SessionLink,
+}
+
 /// Token/cost figures a heartbeat carries for the session row.
 pub struct HeartbeatUsage {
     pub tokens_in: u64,
@@ -120,6 +133,20 @@ pub enum Effect {
     },
     MarkSeen {
         session_id: String,
+    },
+    /// `OSC 52` first so a copy works over ssh, then the local clipboard.
+    Copy {
+        text: String,
+        label: &'static str,
+    },
+    /// Refetches the whole transcript: the store holds rendered lines, and an
+    /// export needs the events behind them.
+    ExportConversation {
+        session_id: String,
+        meta: Box<super::export::Meta>,
+        filter: Box<super::transcript_filter::Filter>,
+        format: super::export::Format,
+        path: std::path::PathBuf,
     },
     /// `GET /drafts`: every unsent draft, pulled once at startup.
     LoadDraftIndex,

@@ -20,6 +20,9 @@ use super::toast::Level;
 
 const QUEUE: usize = 256;
 
+/// Rows per page while walking a transcript for an export.
+const EXPORT_PAGE: i64 = 500;
+
 /// How long a composer sits still before its draft is written, matching the
 /// web UI: a keystroke must not be a request.
 const DRAFT_DEBOUNCE: Duration = Duration::from_millis(700);
@@ -130,6 +133,10 @@ async fn run(
                 tracing::warn!(%e, "marking the session seen failed");
             }
             Vec::new()
+        }
+        Effect::Copy { text, label } => copy(&text, label),
+        Effect::ExportConversation { session_id, meta, filter, format, path } => {
+            export(server, &session_id, &meta, &filter, format, &path).await
         }
         Effect::LoadDraftIndex => load_draft_index(server).await,
         Effect::LoadDrafts { session_id } => load_drafts(server, session_id).await,
@@ -257,6 +264,101 @@ async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
 async fn subscribe(ws: &WsClient, session_id: String) {
     if let Err(e) = ws.subscribe(session_id).await {
         tracing::warn!(%e, "subscribe failed");
+    }
+}
+
+/// Writes the `OSC 52` frame first — it is the only thing that reaches the
+/// clipboard of the machine the human is sitting at when the TUI runs over ssh —
+/// then tries the local clipboard for terminals that ignore the escape.
+fn copy(text: &str, label: &'static str) -> Vec<Action> {
+    use std::io::Write;
+
+    let mut out = std::io::stdout();
+    let osc = super::clipboard::osc52(text);
+    let escaped = match out.write_all(osc.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(%e, "cannot write the OSC 52 clipboard frame");
+            false
+        }
+    };
+    let local = match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_owned())) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(%e, "no local clipboard; relying on OSC 52");
+            false
+        }
+    };
+    if escaped || local {
+        vec![Action::Toast(Level::Info, format!("copied the {label}"))]
+    } else {
+        vec![Action::Toast(Level::Warn, format!("cannot copy the {label}"))]
+    }
+}
+
+/// Walks the whole transcript, oldest page first: the store holds rendered
+/// lines, and an export needs the events behind them.
+async fn export(
+    server: &Client,
+    session_id: &str,
+    meta: &super::export::Meta,
+    filter: &super::transcript_filter::Filter,
+    format: super::export::Format,
+    path: &std::path::Path,
+) -> Vec<Action> {
+    let mut events: Vec<AgentEvent> = Vec::new();
+    let mut before = None;
+    loop {
+        let page = Page { before, after: None, limit: Some(EXPORT_PAGE) };
+        let fetch = match server.conversation(session_id, page, None).await {
+            Ok(fetch) => fetch,
+            Err(e) => {
+                tracing::warn!(%e, session_id, "the export could not read the transcript");
+                return vec![Action::Toast(
+                    Level::Error,
+                    "export failed: cannot read the transcript".to_owned(),
+                )];
+            }
+        };
+        let ConversationFetch::Page { rows, .. } = fetch else { break };
+        if rows.is_empty() {
+            break;
+        }
+        let oldest = rows.iter().map(|r| r.seq).min();
+        let mut page_events: Vec<AgentEvent> = rows
+            .into_iter()
+            .filter_map(|row| serde_json::from_value::<AgentEvent>(row.event).ok())
+            .collect();
+        page_events.append(&mut events);
+        events = page_events;
+        match oldest {
+            Some(seq) => before = Some(seq),
+            None => break,
+        }
+    }
+
+    let body = match format {
+        super::export::Format::Markdown => super::export::to_markdown(meta, &events, filter),
+        super::export::Format::Html => super::export::to_html(meta, &events, filter),
+    };
+    if let Some(dir) = path.parent()
+        && let Err(e) = tokio::fs::create_dir_all(dir).await
+    {
+        tracing::warn!(%e, "cannot create the export directory");
+        return vec![Action::Toast(
+            Level::Error,
+            "export failed: cannot create the directory".to_owned(),
+        )];
+    }
+    match tokio::fs::write(path, body).await {
+        Ok(()) => vec![Action::Toast(
+            Level::Info,
+            format!("exported {} events to {}", events.len(), path.display()),
+        )],
+        Err(e) => {
+            tracing::warn!(%e, path = %path.display(), "cannot write the export");
+            vec![Action::Toast(Level::Error, format!("export failed: {e}"))]
+        }
     }
 }
 

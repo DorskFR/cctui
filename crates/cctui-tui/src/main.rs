@@ -208,6 +208,7 @@ async fn run(
 ) -> Result<()> {
     let server = Arc::new(Client::new(&base_url, &token));
     let mut app = App::new();
+    app.server_url = base_url.clone();
     apply_config(&mut app);
     apply_server_settings(&server, &mut app).await;
     theme::init(app.config.theme);

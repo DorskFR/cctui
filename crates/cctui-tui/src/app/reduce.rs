@@ -181,6 +181,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::Conversation(action) => conversation::reduce(app, action),
         Action::CmdLine(action) => super::cmdline::reduce(app, action),
+        Action::Copy(what) => copy(app, what),
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
@@ -232,6 +233,35 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             app.toast(Level::Warn, format!("dropped {count} unreadable conversation events"));
             Vec::new()
         }
+    }
+}
+
+/// Resolves a copy key against the focused line. Without one there is nothing
+/// to copy, so it says so rather than copying something arbitrary.
+fn copy(app: &mut App, what: super::action::CopyWhat) -> Vec<Effect> {
+    use super::action::CopyWhat;
+
+    if what == CopyWhat::SessionLink {
+        let Some(session_id) = app.selected_session_id() else { return Vec::new() };
+        let text = super::clipboard::session_link(&app.server_url, &session_id);
+        return vec![Effect::Copy { text, label: "session link" }];
+    }
+    let Some(line) = app.focused_line() else {
+        app.toast(Level::Info, "press v to pick a line first");
+        return Vec::new();
+    };
+    match what {
+        CopyWhat::Line => {
+            vec![Effect::Copy { text: super::clipboard::line_markdown(line), label: "line" }]
+        }
+        CopyWhat::CodeBlock => {
+            let Some(text) = super::clipboard::code_block(line) else {
+                app.toast(Level::Info, "no code block on this line");
+                return Vec::new();
+            };
+            vec![Effect::Copy { text, label: "code block" }]
+        }
+        CopyWhat::SessionLink => Vec::new(),
     }
 }
 

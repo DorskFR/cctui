@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 453
+assertion_line: 467
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         k / ↑       Previous category                │
-▸ │  ?           Toggle this cheat sheet          Prompt history                                 │
-  │  q           Quit cctui                         Esc         Close the prompt list            │
-  │  /           Search the current view            Ctrl+n / ↓  Next prompt                      │
-  │  n           Next search hit                    Ctrl+p / ↑  Previous prompt                  │
-  │  N           Previous search hit                Enter       Put this prompt in the composer  │
-  │  Ctrl+g      Jump to the next pending approvalHelp                                           │
-  │Session list                                     j / ↓       Scroll down                      │
-  │  j / ↓       Next session                       k / ↑       Scroll up                        │
-  │  k / ↑       Previous session                   PgDn        Page down                        │
-  │  g           First session                      PgUp        Page up                          │
-  │  G           Last session                       ? / q / Esc Close this cheat sheet           │
-  │  Enter       Open the conversation            Permission card                                │
-  │  z / Tab     Fold or open the subagent group    y           Allow                            │
-  │  S           Fold or open the section           n           Deny                             │
-  │  Z           Fold or open everything            A           Allow and auto-approve           │
-  │Conversation                                   Question card                                  │
-  │  1-9         Jump to session by number          Esc         Answer later                     │
-  │  q / Esc     Back to the session list           j / ↓       Next option                      │
-  │  j / ↓       Scroll down                        k / ↑       Previous option                  │
+  │Anywhere                                         Space / En… Show or hide this category       │
+▸ │  ?           Toggle this cheat sheet            j / ↓       Next category                    │
+  │  q           Quit cctui                         k / ↑       Previous category                │
+  │  /           Search the current view          Prompt history                                 │
+  │  n           Next search hit                    Esc         Close the prompt list            │
+  │  N           Previous search hit                Ctrl+n / ↓  Next prompt                      │
+  │  Ctrl+g      Jump to the next pending approval  Ctrl+p / ↑  Previous prompt                  │
+  │Session list                                     Enter       Put this prompt in the composer  │
+  │  j / ↓       Next session                     Help                                           │
+  │  k / ↑       Previous session                   j / ↓       Scroll down                      │
+  │  g           First session                      k / ↑       Scroll up                        │
+  │  G           Last session                       PgDn        Page down                        │
+  │  Enter       Open the conversation              PgUp        Page up                          │
+  │  z / Tab     Fold or open the subagent group    ? / q / Esc Close this cheat sheet           │
+  │  S           Fold or open the section         Permission card                                │
+  │  Z           Fold or open everything            y           Allow                            │
+  │Conversation                                     n           Deny                             │
+  │  1-9         Jump to session by number          A           Allow and auto-approve           │
+  │  q / Esc     Back to the session list         Question card                                  │
+  │  j / ↓       Scroll down                        Esc         Answer later                     │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

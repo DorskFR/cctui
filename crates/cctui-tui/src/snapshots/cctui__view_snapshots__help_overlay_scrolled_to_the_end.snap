@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 461
+assertion_line: 475
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  f           Cycle assistant / you / tools      r           Refine the plan                  │
-▸ │  F           Choose which lines to show         j / ↓       Scroll the plan down             │
-  │  Ctrl+r      Search sent prompts                k / ↑       Scroll the plan up               │
-  │  Tab         Answer the waiting prompt        Plan card — refine                             │
-  │Composer                                         Enter       Accept the text                  │
-  │  Esc         Close the composer                 Esc         Discard the text                 │
-  │  Enter       Send the message                 Row glyphs                                     │
-  │  Ctrl+j / A… Insert a newline                   ●           working                          │
-  │  ↑           Recall an earlier prompt           ◐           stale or asleep                  │
-  │  ↓           Recall a later prompt              ○           idle                             │
-  │  Ctrl+r      Search sent prompts                ☾           hibernated                       │
-  │Search and commands                              ↳           subagent                         │
-  │  Enter       Search for it                      ▸ / ▾       folded / open group              │
-  │  Esc         Abandon it                         !           permission waiting on you        │
-  │Filter menu                                      ?           question waiting on you          │
-  │  F / q / Esc Choose which lines to show         P           plan waiting for approval        │
-  │  a           Show every category                ●N          unread messages                  │
-  │  r           Back to the default filter         ⚡           auto-approve on                  │
-  │  Space / En… Show or hide this category         ✕reason     how it ended                     │
-  │  j / ↓       Next category                      ⚙N age      tool calls, age of the last      │
+  │  Ctrl+y      Copy a link to this session        r           Refine the plan                  │
+▸ │  :           Run a command (:export)            j / ↓       Scroll the plan down             │
+  │  f           Cycle assistant / you / tools      k / ↑       Scroll the plan up               │
+  │  F           Choose which lines to show       Plan card — refine                             │
+  │  Ctrl+r      Search sent prompts                Enter       Accept the text                  │
+  │  Tab         Answer the waiting prompt          Esc         Discard the text                 │
+  │Composer                                       Row glyphs                                     │
+  │  Esc         Close the composer                 ●           working                          │
+  │  Enter       Send the message                   ◐           stale or asleep                  │
+  │  Ctrl+j / A… Insert a newline                   ○           idle                             │
+  │  ↑           Recall an earlier prompt           ☾           hibernated                       │
+  │  ↓           Recall a later prompt              ↳           subagent                         │
+  │  Ctrl+r      Search sent prompts                ▸ / ▾       folded / open group              │
+  │Search and commands                              !           permission waiting on you        │
+  │  Enter       Run it                             ?           question waiting on you          │
+  │  Esc         Abandon it                         P           plan waiting for approval        │
+  │Filter menu                                      ●N          unread messages                  │
+  │  F / q / Esc Choose which lines to show         ⚡           auto-approve on                  │
+  │  a           Show every category                ✕reason     how it ended                     │
+  │  r           Back to the default filter         ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

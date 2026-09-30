@@ -406,6 +406,20 @@ fn conversation_search_committed_shows_the_hit_count() {
 }
 
 #[test]
+fn conversation_command_prompt() {
+    use crate::app::cmdline::{CmdAction, Mode};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::Open(Mode::Command)));
+    for c in "export md".chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::CmdLine(CmdAction::Key(key)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn conversation_filter_menu() {
     use crate::app::cmdline::CmdAction;
 

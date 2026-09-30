@@ -158,7 +158,10 @@ actions! {
     RetrySend => "retry-send", "Retry the undelivered message";
     EditSend => "edit-send", "Edit the undelivered message";
     DiscardSend => "discard-send", "Drop the undelivered message";
-    CopyMessage => "copy-message", "Copy the selected message";
+    CopyMessage => "copy-message", "Copy the focused line as Markdown";
+    CopyCodeBlock => "copy-code-block", "Copy the code under the cursor";
+    CopySessionLink => "copy-session-link", "Copy a link to this session";
+    Command => "command", "Run a command (:export)";
     FilterCycle => "filter-cycle", "Cycle assistant / you / tools";
     FilterMenu => "filter-menu", "Choose which lines to show";
     FilterShowAll => "filter-show-all", "Show every category";
@@ -166,7 +169,7 @@ actions! {
     FilterMenuToggle => "filter-menu-toggle", "Show or hide this category";
     FilterMenuNext => "filter-menu-next", "Next category";
     FilterMenuPrev => "filter-menu-prev", "Previous category";
-    CmdLineCommit => "cmdline-commit", "Search for it";
+    CmdLineCommit => "cmdline-commit", "Run it";
     CmdLineCancel => "cmdline-cancel", "Abandon it";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
 
@@ -274,6 +277,10 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Conversation, "y", ActionId::CopyMessage),
+    spec(Context::Conversation, "Y", ActionId::CopyCodeBlock),
+    spec(Context::Conversation, "ctrl+y", ActionId::CopySessionLink),
+    spec(Context::Conversation, ":", ActionId::Command),
     spec(Context::Conversation, "f", ActionId::FilterCycle),
     spec(Context::Conversation, "F", ActionId::FilterMenu),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),

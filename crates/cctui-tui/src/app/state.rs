@@ -233,6 +233,8 @@ pub struct App {
     /// `filter.cache_key()` the render cache was built with: a filter change
     /// adds or removes rows, which no append-only cache can absorb.
     pub render_cache_filter: String,
+    /// Where the server is, for a copyable session link. Empty in tests.
+    pub server_url: String,
     /// Which way the next bulk toggle goes; the per-entry state is the store's.
     pub expand_all: bool,
     /// An older page landed: the next render re-anchors the viewport onto the
@@ -313,6 +315,7 @@ impl App {
             cmdline: super::cmdline::CmdLine::default(),
             find: super::cmdline::Find::default(),
             render_cache_filter: String::new(),
+            server_url: String::new(),
             expand_all: false,
             pending_prepend: false,
             toasts: Toasts::default(),
@@ -368,6 +371,15 @@ impl App {
             return Some(Context::FilterMenu);
         }
         None
+    }
+
+    /// The line the cursor is on, or `None` outside line-select.
+    #[must_use]
+    pub fn focused_line(&self) -> Option<&ConversationLine> {
+        let cursor = self.line_cursor?;
+        let session_id = self.selected_session_id()?;
+        let entry = self.conversations.get(&session_id)?.entries().get(cursor)?;
+        Some(&entry.line)
     }
 
     pub fn conversation_mut(&mut self, session_id: &str) -> &mut ConversationStore {

@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PromptFocus;
-use crate::app::action::Action;
+use crate::app::action::{Action, CopyWhat};
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::conversation::ConversationAction;
@@ -132,9 +132,13 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
 
+        ActionId::CopyMessage => Action::Copy(CopyWhat::Line),
+        ActionId::CopyCodeBlock => Action::Copy(CopyWhat::CodeBlock),
+        ActionId::CopySessionLink => Action::Copy(CopyWhat::SessionLink),
         ActionId::Search => Action::CmdLine(CmdAction::Open(CmdMode::Search)),
         ActionId::SearchNext => Action::CmdLine(CmdAction::NextHit),
         ActionId::SearchPrev => Action::CmdLine(CmdAction::PrevHit),
+        ActionId::Command => Action::CmdLine(CmdAction::Open(CmdMode::Command)),
         ActionId::CmdLineCommit => Action::CmdLine(CmdAction::Commit),
         ActionId::CmdLineCancel => Action::CmdLine(CmdAction::Cancel),
         ActionId::FilterCycle => Action::CmdLine(CmdAction::CycleFilter),

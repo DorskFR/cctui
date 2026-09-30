@@ -1,10 +1,13 @@
 pub mod action;
 pub mod attention;
+pub mod clipboard;
 pub mod cmdline;
+pub mod command;
 pub mod conversation;
 pub mod conversation_store;
 pub mod drafts;
 pub mod effects;
+pub mod export;
 pub mod identity;
 pub mod line;
 pub mod prompt;
