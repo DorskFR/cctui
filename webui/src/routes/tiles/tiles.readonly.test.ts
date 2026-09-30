@@ -25,8 +25,11 @@ describe('opening tiles never costs a turn', () => {
 	});
 
 	it('spawns only from the explicit + New button', () => {
-		expect(page).toContain('<SpawnModal');
-		expect(page.match(/SpawnModal/g) ?? []).toHaveLength(2);
+		expect(page.match(/<SpawnModal/g) ?? [], 'exactly one spawn entry point').toHaveLength(1);
+		// Only the toolbar's "+ New" and the empty state's action raise it.
+		expect(page.match(/showSpawn = true/g) ?? []).toHaveLength(2);
+		expect(page).toContain('onnew={() => (showSpawn = true)}');
+		expect(page).toContain('onAction={() => (showSpawn = true)}');
 		expect(grid).not.toContain('Spawn');
 	});
 });

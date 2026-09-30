@@ -234,7 +234,15 @@ describe('drawer toolbar sizing', () => {
 		expect(toolbarSource).toContain('aria-label={m.conversation_auto_approve_aria()}');
 		expect(toolbarSource).toContain('title={m.conversation_auto_approve_title()}');
 		expect(toolbarSource).toContain('label={m.conversation_pins_aria()}');
-		expect(css).toMatch(/\.behbar \{\n\t\tmargin-left: auto;/);
+		// Shape-independent: the hit stepper left this rule, so `margin-left` is no
+		// longer its first declaration — what matters is that the group still
+		// right-aligns.
+		const behbarRules = css
+			.split('.behbar {')
+			.slice(1)
+			.map((r) => r.slice(0, r.indexOf('}')));
+		expect(behbarRules.length).toBeGreaterThan(0);
+		expect(behbarRules.some((r) => r.includes('margin-left: auto;'))).toBe(true);
 	});
 
 	it('adds no :global override', () => {

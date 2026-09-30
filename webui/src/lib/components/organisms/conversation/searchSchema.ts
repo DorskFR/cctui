@@ -57,14 +57,14 @@ export function buildConversationSearchSchema(tools: () => string[]): Schema {
 			},
 			{
 				name: 'after',
-				label: m.conversation_search_field_after(),
+				label: m.conversation_search_field_after_date(),
 				type: 'date',
 				operators: ['eq'],
 				valuePlaceholder: 'YYYY-MM-DD'
 			},
 			{
 				name: 'before',
-				label: m.conversation_search_field_before(),
+				label: m.conversation_search_field_before_date(),
 				type: 'date',
 				operators: ['eq'],
 				valuePlaceholder: 'YYYY-MM-DD'
