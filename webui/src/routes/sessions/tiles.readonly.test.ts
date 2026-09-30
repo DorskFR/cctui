@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import tiles from './SessionTiles.svelte?raw';
 import page from './+page.svelte?raw';
 import layout from '../+layout.svelte?raw';
+import spawnDock from '$lib/spawnDock.svelte.ts?raw';
+import appCss from '$lib/styles/app.css?raw';
 
 describe('opening tiles never costs a turn', () => {
 	it('sends no message, reply or resume from the tiles view', () => {
@@ -67,6 +69,19 @@ describe('tiles view mode', () => {
 	it('gives a tile no close control and keeps maximize', () => {
 		expect(tiles).not.toContain('onclose');
 		expect(tiles).toContain('onmaximize');
+	});
+
+	it('drops the docked panels from the one place the layout is resolved', () => {
+		expect(spawnDock).toContain('tiles: sessionsView.tiles');
+		expect(page).toContain('{#if sp.dockSide}');
+		expect(page).not.toMatch(/dockSide[^\n]*tiles/);
+	});
+
+	it('takes the document off the scroll-container path while tiles are up', () => {
+		expect(layout).toContain("root.dataset.tiles = 'on'");
+		expect(layout).toMatch(/\.app\.tiles \{[^}]*height: 100dvh/);
+		expect(layout).toMatch(/\.app\.tiles \{[^}]*overflow: clip/);
+		expect(appCss).toMatch(/:root\[data-tiles="on"\][\s\S]*?overflow: clip/);
 	});
 
 	it('adds no :global override', () => {
