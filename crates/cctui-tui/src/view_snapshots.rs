@@ -133,6 +133,48 @@ fn session_list_rich_statuses_at_eighty_columns() {
     insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
 }
 
+/// A 12-agent plain group and a named workflow run under one orchestrator.
+fn app_with_subagent_tree() -> crate::app::App {
+    let mut app = crate::app::App::new();
+    app.sessions = vec![session("s-orch", "cctui", "active", "working")];
+    for i in 0..12 {
+        app.sessions.push(crate::testsupport::subagent(&format!("s-a{i:02}"), "s-orch", "lane"));
+    }
+    for (i, lane) in ["lane-a", "lane-b", "lane-c", "lane-d"].iter().enumerate() {
+        let mut child = crate::testsupport::subagent(&format!("s-w{i}"), "s-orch", lane);
+        child.metadata = serde_json::json!({
+            "project_name": lane,
+            "workflow_run_id": "run-1",
+            "workflow_name": "release-wave",
+        });
+        app.sessions.push(child);
+    }
+    app.sessions.push(crate::testsupport::pinned_session("s-pin", "starred"));
+    app.update_aggregates();
+    app
+}
+
+#[test]
+fn session_list_subagent_groups_start_folded() {
+    let mut app = app_with_subagent_tree();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_subagent_groups_expanded() {
+    let mut app = app_with_subagent_tree();
+    app.ui.toggle_group("s-orch/plain", 12);
+    app.ui.toggle_group("s-orch/wf:run-1", 4);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_sections_folded() {
+    let mut app = app_with_subagent_tree();
+    app.ui.toggle_section("working");
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 #[test]
 fn conversation() {
     let mut app = app_with_sessions();

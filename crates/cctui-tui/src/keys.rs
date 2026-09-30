@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::action::Action;
+use crate::app::session_live::SessionLiveAction;
 use crate::app::state::View;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
@@ -72,6 +73,9 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SelectLast => Action::SelectLast,
         ActionId::SelectIndex => Action::SelectIndex(chord.digit()?),
         ActionId::OpenConversation => Action::OpenSelectedConversation,
+        ActionId::ToggleFold => Action::SessionLive(SessionLiveAction::ToggleFold),
+        ActionId::ToggleFoldSection => Action::SessionLive(SessionLiveAction::ToggleFoldSection),
+        ActionId::ToggleFoldAll => Action::SessionLive(SessionLiveAction::ToggleFoldAll),
 
         ActionId::LeaveConversation => Action::LeaveConversation,
         ActionId::ScrollDown => Action::Scroll { lines: 1, release_follow: true },
@@ -140,7 +144,33 @@ mod tests {
             Some(Action::OpenSelectedConversation)
         ));
         assert!(matches!(map(View::SessionList, false, KeyCode::Char('q')), Some(Action::Quit)));
-        assert!(map(View::SessionList, false, KeyCode::Char('z')).is_none());
+        assert!(map(View::SessionList, false, KeyCode::Char('w')).is_none());
+    }
+
+    #[test]
+    fn the_session_list_folds_groups_sections_and_everything() {
+        use crate::app::session_live::SessionLiveAction;
+        for code in [KeyCode::Char('z'), KeyCode::Tab] {
+            assert!(
+                matches!(
+                    map(View::SessionList, false, code),
+                    Some(Action::SessionLive(SessionLiveAction::ToggleFold))
+                ),
+                "{code:?} should fold"
+            );
+        }
+        assert!(matches!(
+            map(View::SessionList, false, KeyCode::Char('Z')),
+            Some(Action::SessionLive(SessionLiveAction::ToggleFoldAll))
+        ));
+        assert!(matches!(
+            map(View::SessionList, false, KeyCode::Char('S')),
+            Some(Action::SessionLive(SessionLiveAction::ToggleFoldSection))
+        ));
+        assert!(
+            map(View::Conversation, false, KeyCode::Tab).is_some(),
+            "tab outside the list is not a fold key"
+        );
     }
 
     #[test]

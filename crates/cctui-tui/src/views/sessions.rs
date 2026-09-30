@@ -59,17 +59,24 @@ fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
 }
 
 fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let flat = app.flattened_sessions();
-    let rows = session_list::rows(&flat);
-    let selected_flat = if app.selected_index < flat.len() { app.selected_index } else { 0 };
+    let rows = app.list_rows();
+    let visible = session_list::sessions_of(&rows);
+    let selected_flat = if app.selected_index < visible.len() { app.selected_index } else { 0 };
     let selected_row = session_list::selected_row(&rows, selected_flat);
     let offset = session_list::viewport_offset(rows.len(), selected_row, area.height as usize);
 
     let items: Vec<ListItem> = rows
         .iter()
-        .map(|row| match *row {
-            session_list::Row::Header(group) => group_header(group),
-            session_list::Row::Session { session, .. } => session_line(app, session, area.width),
+        .map(|row| match row {
+            session_list::Row::Header { group, total, open } => {
+                group_header(*group, *total, *open)
+            }
+            session_list::Row::SubHeader { label, total, running, open, depth, .. } => {
+                sub_header(label, *total, *running, *open, *depth)
+            }
+            session_list::Row::Session { session, depth, .. } => {
+                session_line(app, session, *depth, area.width)
+            }
         })
         .collect();
 
@@ -79,11 +86,42 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn group_header(group: session_list::Group) -> ListItem<'static> {
-    ListItem::new(Line::from(vec![Span::styled(
-        format!(" {} ", group.label()),
-        theme::section_title(),
-    )]))
+/// Folded and open arrows; the leftmost two columns belong to the selection
+/// marker, so these sit inside the row.
+const FOLDED: &str = "▸";
+const OPEN: &str = "▾";
+
+fn arrow(open: bool) -> &'static str {
+    if open { OPEN } else { FOLDED }
+}
+
+fn group_header(group: session_list::Group, total: usize, open: bool) -> ListItem<'static> {
+    ListItem::new(Line::from(vec![
+        Span::styled(format!(" {} {} ", arrow(open), group.label()), theme::section_title()),
+        Span::styled(format!("({total})"), theme::dim()),
+    ]))
+}
+
+/// `▸ subagents (2)` / `▾ wf: release-wave (4/9 running)`.
+fn sub_header(
+    label: &str,
+    total: usize,
+    running: usize,
+    open: bool,
+    depth: usize,
+) -> ListItem<'static> {
+    let count =
+        if running > 0 { format!("({running}/{total} running)") } else { format!("({total})") };
+    ListItem::new(Line::from(vec![
+        Span::raw(indent(depth)),
+        Span::styled(format!("{} {label} ", arrow(open)), theme::branch()),
+        Span::styled(count, theme::dim()),
+    ]))
+}
+
+/// Three columns for a top-level row, then two per nesting level.
+fn indent(depth: usize) -> String {
+    " ".repeat(3 + depth.saturating_sub(1) * 2)
 }
 
 /// One competing piece of a row. `priority` orders what goes when the row is
@@ -127,13 +165,18 @@ fn spans_of(segs: Vec<Seg>) -> Vec<Span<'static>> {
     segs.into_iter().map(|s| Span::styled(s.text, s.style)).collect()
 }
 
-fn session_line(app: &App, s: &SessionListItem, width: u16) -> ListItem<'static> {
-    ListItem::new(Line::from(session_line_spans(app, s, width)))
+fn session_line(app: &App, s: &SessionListItem, depth: usize, width: u16) -> ListItem<'static> {
+    ListItem::new(Line::from(session_line_spans(app, s, depth, width)))
 }
 
 /// `compact_rows` keeps a row to its identity — liveness, project, branch — and
 /// drops the model, cost, cadence and activity column.
-fn session_line_spans(app: &App, s: &SessionListItem, width: u16) -> Vec<Span<'static>> {
+fn session_line_spans(
+    app: &App,
+    s: &SessionListItem,
+    depth: usize,
+    width: u16,
+) -> Vec<Span<'static>> {
     let now = app.clock_ms;
     let stale = session_status::is_stale_working(s, now);
     let liveness = session_status::row_liveness(s, stale);
@@ -150,11 +193,10 @@ fn session_line_spans(app: &App, s: &SessionListItem, width: u16) -> Vec<Span<'s
     let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
     let adapter = s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str());
 
-    // Task-tool subagents carry a parent id; indent them under the parent with
-    // a tree marker instead of the leading whitespace.
-    let is_subagent = s.parent_id.is_some();
+    let is_subagent = depth > 0;
+    let lead = if is_subagent { format!("{}↳ ", indent(depth + 1)) } else { indent(depth) };
     let mut segs = vec![
-        Seg::new(KEEP, theme::dim(), if is_subagent { "    ↳ ".into() } else { "   ".into() }),
+        Seg::new(KEEP, theme::dim(), lead),
         Seg::new(KEEP, theme::liveness_style(liveness), format!("{} ", liveness.glyph())),
         Seg::new(5, theme::dim(), format!("[{adapter}] ")),
         Seg::new(
@@ -371,7 +413,7 @@ mod tests {
         app.clock_ms = 600_000;
 
         for width in [40_u16, 60, 80, 100] {
-            let spans = session_line_spans(&app, &app.sessions[0], width);
+            let spans = session_line_spans(&app, &app.sessions[0], 0, width);
             assert!(
                 cols(&spans) <= usize::from(width),
                 "{width} columns overflowed: {:?}",
@@ -392,7 +434,7 @@ mod tests {
             description: String::new(),
             input_preview: String::new(),
         });
-        let spans = session_line_spans(&app, &app.sessions[0], 30);
+        let spans = session_line_spans(&app, &app.sessions[0], 0, 30);
         let rendered = text(&spans);
         assert!(rendered.contains("!1 ●4"), "{rendered}");
     }
@@ -406,27 +448,30 @@ mod tests {
         );
         let mut app = app_with(s);
         app.clock_ms = now;
-        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
+        let rendered = text(&session_line_spans(&app, &app.sessions[0], 0, 100));
         assert!(rendered.contains('◐'), "{rendered}");
         assert!(rendered.contains("stale 42m"), "{rendered}");
     }
 
     #[test]
-    fn a_subagent_row_keeps_its_tree_marker() {
+    fn a_nested_row_is_indented_one_step_per_level() {
         let app = app_with(subagent("s-child", "s-parent", "sub"));
-        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
-        assert!(rendered.starts_with("    ↳ "), "{rendered}");
+        let one = text(&session_line_spans(&app, &app.sessions[0], 1, 100));
+        let two = text(&session_line_spans(&app, &app.sessions[0], 2, 100));
+        assert!(one.starts_with("     ↳ "), "{one}");
+        assert!(two.starts_with("       ↳ "), "{two}");
+        assert!(!text(&session_line_spans(&app, &app.sessions[0], 0, 100)).contains('↳'));
     }
 
     #[test]
     fn only_a_machine_that_is_not_online_marks_its_rows() {
         use cctui_proto::models::MachineLiveness;
         let mut app = app_with(session("s-off", "proj", "active", "working"));
-        assert!(!text(&session_line_spans(&app, &app.sessions[0], 100)).contains('✗'));
+        assert!(!text(&session_line_spans(&app, &app.sessions[0], 0, 100)).contains('✗'));
         app.machine_liveness.insert("orion".to_owned(), MachineLiveness::Online);
-        assert!(!text(&session_line_spans(&app, &app.sessions[0], 100)).contains('▪'));
+        assert!(!text(&session_line_spans(&app, &app.sessions[0], 0, 100)).contains('▪'));
         app.machine_liveness.insert("orion".to_owned(), MachineLiveness::Offline);
-        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
+        let rendered = text(&session_line_spans(&app, &app.sessions[0], 0, 100));
         assert!(rendered.contains('✗'), "{rendered}");
     }
 
@@ -437,7 +482,7 @@ mod tests {
         s.unread_count = 2;
         let mut app = app_with(s);
         app.config.prefs.compact_rows = true;
-        let rendered = text(&session_line_spans(&app, &app.sessions[0], 100));
+        let rendered = text(&session_line_spans(&app, &app.sessions[0], 0, 100));
         assert!(!rendered.contains("Reading files"), "{rendered}");
         assert!(rendered.contains("●2"), "{rendered}");
     }

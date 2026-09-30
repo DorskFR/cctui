@@ -32,6 +32,12 @@ pub enum SessionLiveAction {
     },
     /// Whether the socket is delivering; a dead socket shortens the poll.
     WsHealth(bool),
+    /// Fold the selected row's subagent groups, or the group it sits in.
+    ToggleFold,
+    /// Fold the section the selected row belongs to.
+    ToggleFoldSection,
+    /// Fold everything, or — when nothing is open — unfold everything.
+    ToggleFoldAll,
 }
 
 /// Requests made, sent and collapsed by the debounce. Surfaced in the status
@@ -61,7 +67,46 @@ pub fn reduce_session_live(app: &mut App, action: SessionLiveAction) -> Vec<Effe
             app.ws_healthy = healthy;
             Vec::new()
         }
+        SessionLiveAction::ToggleFold => toggle_fold(app),
+        SessionLiveAction::ToggleFoldSection => toggle_section(app),
+        SessionLiveAction::ToggleFoldAll => toggle_fold_all(app),
     }
+}
+
+fn toggle_fold(app: &mut App) -> Vec<Effect> {
+    let Some(id) = app.selected_session_id() else { return Vec::new() };
+    let scope = super::session_list::fold_scope(&app.list_rows(), &id);
+    if scope.is_empty() {
+        return Vec::new();
+    }
+    for (group_id, total) in &scope {
+        app.ui.toggle_group(group_id, *total);
+    }
+    settle(app)
+}
+
+fn toggle_section(app: &mut App) -> Vec<Effect> {
+    let Some(key) = app.selected_session().map(|s| super::session_list::group_of(s).key()) else {
+        return Vec::new();
+    };
+    app.ui.toggle_section(key);
+    settle(app)
+}
+
+fn toggle_fold_all(app: &mut App) -> Vec<Effect> {
+    let probe = crate::config::uistate::UiState::probe();
+    let (groups, sections) =
+        super::session_list::fold_targets(&super::session_list::rows(&app.sessions, &probe));
+    app.ui.fold_all(&groups, &sections);
+    settle(app)
+}
+
+/// Folding shrinks the visible list, so the selection has to come back inside it
+/// before anything reads it again.
+fn settle(app: &mut App) -> Vec<Effect> {
+    let len = app.flattened_sessions().len();
+    app.selected_index = if len == 0 { 0 } else { app.selected_index.min(len - 1) };
+    vec![Effect::SaveUiState(app.ui.clone())]
 }
 
 const fn poll_period_ms(app: &App) -> i64 {
@@ -225,6 +270,73 @@ mod tests {
         live(&mut app, SessionLiveAction::WsHealth(false));
         app.clock_ms += POLL_DEGRADED_MS;
         assert!(refreshed(&live(&mut app, SessionLiveAction::Tick)));
+    }
+
+    fn with_subagents() -> App {
+        let mut app = App::new();
+        app.sessions = vec![crate::testsupport::session("s-p", "cctui", "active", "working")];
+        for i in 0..12 {
+            app.sessions.push(crate::testsupport::subagent(&format!("s-c{i:02}"), "s-p", "lane"));
+        }
+        app.sessions.push(crate::testsupport::pinned_session("s-pin", "p"));
+        app.update_aggregates();
+        app
+    }
+
+    fn visible(app: &App) -> Vec<String> {
+        app.flattened_sessions().iter().map(|s| s.id.clone()).collect()
+    }
+
+    #[test]
+    fn folding_a_parent_hides_its_subagents_and_persists_the_choice() {
+        let mut app = with_subagents();
+        assert_eq!(visible(&app), ["s-pin", "s-p"], "a big group starts folded");
+
+        app.selected_index = 1;
+        let effects = live(&mut app, SessionLiveAction::ToggleFold);
+        assert!(matches!(effects.as_slice(), [Effect::SaveUiState(_)]));
+        assert_eq!(visible(&app).len(), 14);
+
+        live(&mut app, SessionLiveAction::ToggleFold);
+        assert_eq!(visible(&app), ["s-pin", "s-p"]);
+    }
+
+    #[test]
+    fn folding_from_a_child_folds_the_group_it_sits_in() {
+        let mut app = with_subagents();
+        app.selected_index = 1;
+        live(&mut app, SessionLiveAction::ToggleFold);
+        app.selected_index = 7;
+        live(&mut app, SessionLiveAction::ToggleFold);
+        assert_eq!(visible(&app), ["s-pin", "s-p"]);
+        assert_eq!(app.selected_index, 1, "the selection comes back inside the list");
+    }
+
+    #[test]
+    fn folding_a_section_keeps_the_other_sections() {
+        let mut app = with_subagents();
+        app.selected_index = 0;
+        live(&mut app, SessionLiveAction::ToggleFoldSection);
+        assert_eq!(visible(&app), ["s-p"]);
+        assert_eq!(app.selected_index, 0);
+        live(&mut app, SessionLiveAction::ToggleFoldSection);
+        assert_eq!(visible(&app), ["s-pin", "s-p"]);
+    }
+
+    #[test]
+    fn fold_all_closes_everything_then_opens_everything() {
+        let mut app = with_subagents();
+        live(&mut app, SessionLiveAction::ToggleFoldAll);
+        assert!(visible(&app).is_empty(), "every section is folded");
+        live(&mut app, SessionLiveAction::ToggleFoldAll);
+        assert_eq!(visible(&app).len(), 14, "and every group opens with them");
+    }
+
+    #[test]
+    fn folding_with_nothing_selected_changes_nothing() {
+        let mut app = App::new();
+        assert!(live(&mut app, SessionLiveAction::ToggleFold).is_empty());
+        assert!(live(&mut app, SessionLiveAction::ToggleFoldSection).is_empty());
     }
 
     #[test]

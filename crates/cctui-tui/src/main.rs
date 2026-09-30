@@ -285,6 +285,7 @@ fn apply_config(app: &mut App) {
     app.clock_ms = now_ms();
     let loaded = config::load();
     app.config = loaded.config;
+    app.ui = config::uistate::load();
     for problem in loaded.problems {
         app.toast(Level::Warn, format!("tui.toml: {problem}"));
     }

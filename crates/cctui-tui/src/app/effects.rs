@@ -113,6 +113,10 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
                 }
             }
         }
+        Effect::SaveUiState(state) => {
+            crate::config::uistate::save(&state);
+            Vec::new()
+        }
         Effect::RespondPermission { session_id, request_id, behavior } => {
             if let Err(e) = ws.respond_permission(session_id, request_id, behavior.to_owned()).await
             {

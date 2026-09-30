@@ -132,4 +132,6 @@ pub enum Effect {
         request_id: String,
         behavior: &'static str,
     },
+    /// Persist the fold state to `tui-state.json`.
+    SaveUiState(crate::config::uistate::UiState),
 }

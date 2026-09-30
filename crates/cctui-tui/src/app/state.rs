@@ -8,6 +8,7 @@ use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
 use super::router::Router;
 use super::session_live::RefreshCounters;
+pub use crate::config::uistate::UiState;
 pub use super::session_list::uptime_secs;
 use super::toast::{Level, StatusCounters, Toasts};
 
@@ -96,6 +97,8 @@ pub struct App {
     pub ws_healthy: bool,
     pub last_refresh_ms: i64,
     pub refresh: RefreshCounters,
+    /// Fold state, loaded at startup and written back on every toggle.
+    pub ui: UiState,
 }
 
 impl App {
@@ -142,6 +145,7 @@ impl App {
             ws_healthy: false,
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
+            ui: UiState::default(),
         }
     }
 
@@ -177,8 +181,12 @@ impl App {
         self.conversations.entry(session_id.to_owned()).or_default()
     }
 
+    pub fn list_rows(&self) -> Vec<super::session_list::Row<'_>> {
+        super::session_list::rows(&self.sessions, &self.ui)
+    }
+
     pub fn flattened_sessions(&self) -> Vec<&SessionListItem> {
-        super::session_list::flatten(&self.sessions)
+        super::session_list::sessions_of(&self.list_rows())
     }
 
     pub fn select_next(&mut self) {

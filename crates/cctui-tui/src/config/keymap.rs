@@ -103,6 +103,9 @@ actions! {
     SelectIndex => "select-index", "Jump to session by number";
     OpenConversation => "open-conversation", "Open the conversation";
     ToggleCompactRows => "toggle-compact-rows", "Compact session rows";
+    ToggleFold => "toggle-fold", "Fold or open the subagent group";
+    ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
+    ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
     TogglePin => "toggle-pin", "Pin the selected session";
     NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive the selected session";
@@ -172,6 +175,9 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "g", ActionId::SelectFirst),
     spec(Context::SessionList, "G", ActionId::SelectLast),
     spec(Context::SessionList, "enter", ActionId::OpenConversation),
+    spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
+    spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
+    spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
 ];
 
 const CONVERSATION: &[BindingSpec] = &[

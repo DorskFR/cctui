@@ -4,6 +4,7 @@ pub mod chord;
 pub mod keymap;
 pub mod prefs;
 pub mod server;
+pub mod uistate;
 
 use std::path::{Path, PathBuf};
 
