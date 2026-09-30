@@ -11,6 +11,7 @@ const SID = 's1';
 const ACCOUNT = '7d1c0a52-3f0e-4c47-9d8c-2b1e5f6a9c01';
 const MACHINE = '0b6f2c1e-8a4d-4e2b-9f3a-5c7d1e2f3a4b';
 const USER = '3f9a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8';
+const ROOM = '5c2e7a13-9b04-4f6d-8e21-7a0b3c4d5e6f';
 
 const fixtures = {
 	stream: {
@@ -110,6 +111,7 @@ const fixtures = {
 		state: 'scheduled',
 		launch_at: '2026-10-02T07:30:00Z'
 	},
+	room_members: { type: 'room_members', room_id: ROOM, user_id: USER },
 	user_actions: {
 		type: 'user_actions',
 		session_id: SID,
