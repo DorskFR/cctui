@@ -2,10 +2,13 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import {
     Button,
+    Callout,
+    EmptyState,
     FilterSearchBar,
     Icon,
     IconButton,
     SegmentedControl,
+    Skeleton,
     Text,
   } from "@dorsk/tsumikit";
   import { api } from "../api/client";
@@ -26,7 +29,7 @@
   import { router } from "../router/router.svelte";
   import { tabs } from "../stores/tabs.svelte";
   import Avatar from "./Avatar.svelte";
-  import PrStateIcon, { stateColor } from "./PrStateIcon.svelte";
+  import PrStateIcon, { stateToneColor } from "./PrStateIcon.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
   let query = $state("");
@@ -127,13 +130,15 @@
   </div>
 
   {#if active.isLoading}
-    <div class="msg">Loading warm cache…</div>
+    <div class="state" aria-busy="true"><Skeleton lines={5} height="1.4em" /></div>
   {:else if active.isError}
-    <div class="msg err">{(active.error as Error).message}</div>
+    <div class="state"><Callout tone="danger">{(active.error as Error).message}</Callout></div>
   {:else if filtered.length === 0}
-    <div class="msg">
-      {isSnoozedView ? "No snoozed pull requests." : "No pull requests match this filter."}
-    </div>
+    <EmptyState
+      size="compact"
+      icon="pull-request"
+      title={isSnoozedView ? "No snoozed pull requests." : "No pull requests match this filter."}
+    />
   {:else}
     <div class="groups">
       {#each groups as group (group.repo)}
@@ -145,7 +150,7 @@
             {#each group.entries as e (`${e.owner}/${e.repo}#${e.pull.number}`)}
               <li
                 class:approved={isApproved(e.pull)}
-                style:--marker={stateColor(prStateOf(e.pull))}
+                style:--marker={stateToneColor(prStateOf(e.pull))}
               >
                 <Button
                   variant="ghost"
@@ -283,11 +288,7 @@
   .del {
     color: var(--gh-danger);
   }
-  .msg {
+  .state {
     padding: var(--gh-space-4);
-    color: var(--gh-fg-muted);
-  }
-  .err {
-    color: var(--gh-danger);
   }
 </style>

@@ -10,15 +10,24 @@ vi.mock('$lib/queries', () => ({
 	usePlugins: () => query,
 	useAdminPlugins: (enabled: () => boolean) => adminGate(enabled),
 	useAdminPluginCatalog: (enabled: () => boolean) => adminGate(enabled),
+	usePluginInstanceSettings: () => ({ data: undefined, isPending: true, isError: false }),
 	endpoints: {
+		savePluginInstanceSettings: vi.fn(async () => ({})),
+		rotatePluginProxySecret: vi.fn(async () => ({ id: 'x', secret: 's' })),
 		installPluginFromUrl: vi.fn(async () => ({})),
 		installPluginUpload: vi.fn(async () => ({})),
 		installPluginFromCatalog: vi.fn(async () => ({})),
 		setPluginInstanceEnabled: vi.fn(async () => ({})),
 		uninstallPlugin: vi.fn(async () => undefined)
 	},
-	qk: { plugins: ['plugins'], adminPlugins: ['admin', 'plugins'], adminPluginCatalog: ['admin', 'plugins', 'catalog'] }
+	qk: {
+		plugins: ['plugins'],
+		adminPlugins: ['admin', 'plugins'],
+		adminPluginCatalog: ['admin', 'plugins', 'catalog'],
+		adminPluginSettings: (id: string) => ['admin', 'plugins', id, 'settings']
+	}
 }));
+vi.mock('$lib/clipboard', () => ({ copyText: vi.fn(async () => undefined) }));
 vi.mock('@tanstack/svelte-query', () => ({
 	useQueryClient: () => ({ invalidateQueries: vi.fn(async () => undefined) })
 }));
@@ -48,10 +57,15 @@ const plugin = (over: Partial<PluginInfo> = {}): PluginInfo => ({
 	version: '0.3.0',
 	icon: 'eye',
 	web: '/plugins/yubisashi/web/index.js?v=1',
+	page: null,
+	styles: [],
 	skills: ['yubisashi'],
 	enabled: false,
 	settings: [],
 	config: {},
+	instanceSettings: [],
+	instanceSettingValues: {},
+	backend: false,
 	...over
 });
 

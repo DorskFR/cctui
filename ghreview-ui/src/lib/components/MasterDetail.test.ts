@@ -71,9 +71,8 @@ describe("MasterDetail", () => {
     expect(separator?.getAttribute("aria-valuemin")).toBe("220");
     expect(separator?.getAttribute("aria-valuemax")).toBe("720");
     expect(layout.querySelector(".detail .detail-bar .tabbar")).not.toBeNull();
-    expect(layout.querySelector(".detail .detail-body")?.textContent).toContain(
-      "Select a pull request",
-    );
+    const placeholder = layout.querySelector('.detail .detail-body [data-tsu="EmptyState"]');
+    expect(placeholder?.textContent).toContain("Select a pull request");
   });
 
   it("restores and persists collapsed state and expanded width", async () => {

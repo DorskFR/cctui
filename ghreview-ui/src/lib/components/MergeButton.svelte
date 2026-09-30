@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Badge, Button, Popover, Select } from "@dorsk/tsumikit";
+  import { Badge, Button, Callout, EmptyState, Popover, Select } from "@dorsk/tsumikit";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import type { GithubPull, MergeMethod } from "../api/types";
@@ -82,7 +82,7 @@
       {#snippet trigger()}Merge{/snippet}
       <div class="panel">
         {#if pull.draft}
-          <p class="muted">This pull request is a draft and cannot be merged.</p>
+          <EmptyState size="inline" title="This pull request is a draft and cannot be merged." />
         {:else}
           <div class="state">
             <Badge tone={mergeability.tone} size="sm">{mergeability.text}</Badge>
@@ -97,7 +97,7 @@
           </label>
 
           {#if error}
-            <div class="err">{error}</div>
+            <Callout tone="danger">{error}</Callout>
           {/if}
 
           {#if confirming}
@@ -170,15 +170,6 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--gh-space-2);
-  }
-  .muted {
-    color: var(--gh-fg-muted);
-    font-size: var(--fs-xs);
-    margin: 0;
-  }
-  .err {
-    color: var(--gh-danger);
-    font-size: var(--fs-xs);
   }
 
   @media (max-width: 700px) {

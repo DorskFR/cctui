@@ -15,6 +15,8 @@ type AdminPlugin = {
 	version: string;
 	source: 'installed' | 'directory';
 	enabled: boolean;
+	instance_settings?: { key: string; label: string; type: string; secret: boolean }[];
+	backend?: boolean;
 };
 
 const userInfo = (p: AdminPlugin) => ({
@@ -24,10 +26,15 @@ const userInfo = (p: AdminPlugin) => ({
 	version: p.version,
 	icon: 'eye',
 	web: null,
+	page: null,
+	styles: [],
 	skills: [],
 	enabled: false,
 	settings: [{ key: 'host', label: 'Bind address', env: 'DEMO_HOST', type: 'string' }],
-	config: {}
+	config: {},
+	instanceSettings: [],
+	instanceSettingValues: {},
+	backend: false
 });
 
 const catalogPosts: { catalog: string }[] = [];

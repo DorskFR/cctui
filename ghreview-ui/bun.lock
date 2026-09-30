@@ -5,7 +5,7 @@
     "": {
       "name": "cctui-ghreview-ui",
       "dependencies": {
-        "@dorsk/tsumikit": "^0.38.1",
+        "@dorsk/tsumikit": "^0.64.0",
         "@tanstack/svelte-query": "^6.1.38",
         "highlight.js": "^11.11.1",
         "marked": "^18.0.7",
@@ -15,7 +15,7 @@
         "@sveltejs/vite-plugin-svelte": "^7.2.0",
         "@tsconfig/svelte": "^5.0.8",
         "happy-dom": "^20.11.1",
-        "svelte": "^5.56.8",
+        "svelte": "^5.25.0",
         "svelte-check": "^4.7.4",
         "typescript": "^5.9.3",
         "vite": "^8.2.0",
@@ -42,7 +42,7 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.7", "", { "os": "win32", "cpu": "x64" }, "sha512-V+0wu/nrj2S+MhP4EQ0uHNolP0IALEsz45pg0WoKkHfDeh0+ItHwP/p7bX5RPoMOl9NkpHYWdYPhIcy2mACHvQ=="],
 
-    "@dorsk/tsumikit": ["@dorsk/tsumikit@0.38.1", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-6MElXuHqPGOIV09xIagh9lG0v8MMTmyiyjnP1KAxyQpzqi2bxbeDLqqBYdUiwnakQhwhVb6m1ERvzsd4SE3L9Q=="],
+    "@dorsk/tsumikit": ["@dorsk/tsumikit@0.64.0", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-Y3ufwqfVQA4xU/j/niRHpyEo5bShK8ZhB9nc4LOJvAQEL+WJW7f8JcFuC9kbVWtAV9zUljmk+Ze0c3HNCgOqrg=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

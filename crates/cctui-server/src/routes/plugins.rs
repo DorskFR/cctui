@@ -15,7 +15,10 @@ use ts_rs::TS;
 use crate::auth::AuthContext;
 use std::collections::BTreeMap;
 
-use crate::plugins::{Plugin, PluginSetting, enabled_ids, mime_for, plugin_config, resolve_static};
+use crate::plugins::{
+    Plugin, PluginInstanceSetting, PluginPage, PluginSetting, enabled_ids, mime_for, plugin_config,
+    resolve_static,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,6 +32,10 @@ pub struct PluginInfo {
     pub icon: Option<String>,
     /// `/plugins/<id>/<web>?v=<sha8>`, absent for skills-only plugins.
     pub web: Option<String>,
+    /// Present when the plugin contributes a full page at `/apps/<id>`.
+    pub page: Option<PluginPage>,
+    /// Stylesheets to load with the module, as `/plugins/<id>/<path>?v=<sha8>`.
+    pub styles: Vec<String>,
     pub skills: Vec<String>,
     /// From the caller's settings `plugins.enabled[id]`.
     pub enabled: bool,
@@ -36,9 +43,23 @@ pub struct PluginInfo {
     pub settings: Vec<PluginSetting>,
     /// The caller's current values, by setting key (`plugins.config[id]`).
     pub config: BTreeMap<String, String>,
+    /// Instance-level settings the admin owns, for display only.
+    #[serde(rename = "instanceSettings")]
+    pub instance_settings: Vec<PluginInstanceSetting>,
+    /// Non-secret instance values, and only for a caller who enabled the
+    /// plugin. Secrets are never included.
+    #[serde(rename = "instanceSettingValues")]
+    pub instance_setting_values: BTreeMap<String, String>,
+    /// The plugin's backend is reachable at `/api/v1/plugins/<id>/backend/`.
+    pub backend: bool,
 }
 
-pub fn plugin_info(plugin: &Plugin, enabled: bool, settings: Option<&Value>) -> PluginInfo {
+pub fn plugin_info(
+    plugin: &Plugin,
+    enabled: bool,
+    settings: Option<&Value>,
+    instance_values: BTreeMap<String, String>,
+) -> PluginInfo {
     let m = &plugin.manifest;
     PluginInfo {
         id: m.id.clone(),
@@ -50,16 +71,51 @@ pub fn plugin_info(plugin: &Plugin, enabled: bool, settings: Option<&Value>) -> 
             let v = plugin.web_hash.as_deref().unwrap_or("0");
             format!("/plugins/{}/{web}?v={v}", m.id)
         }),
+        page: m.page.clone(),
+        styles: m
+            .styles
+            .iter()
+            .map(|style| {
+                let v = plugin.web_hash.as_deref().unwrap_or("0");
+                format!("/plugins/{}/{style}?v={v}", m.id)
+            })
+            .collect(),
         skills: m.skills.clone(),
         enabled,
         settings: m.settings.clone(),
         config: plugin_config(m, settings),
+        instance_settings: m.instance_settings.clone(),
+        instance_setting_values: if enabled {
+            instance_values
+                .into_iter()
+                .filter(|(key, _)| m.instance_settings.iter().any(|d| &d.key == key && !d.secret))
+                .collect()
+        } else {
+            BTreeMap::new()
+        },
+        backend: m.backend.is_some(),
     }
 }
 
-pub fn list_for(plugins: &[Plugin], settings: Option<&Value>) -> Vec<PluginInfo> {
+/// `instance_values` holds the non-secret instance values per plugin id; a
+/// plugin the caller has not enabled gets none of them.
+pub fn list_for(
+    plugins: &[Plugin],
+    settings: Option<&Value>,
+    instance_values: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Vec<PluginInfo> {
     let enabled = enabled_ids(settings);
-    plugins.iter().map(|p| plugin_info(p, enabled.contains(&p.manifest.id), settings)).collect()
+    plugins
+        .iter()
+        .map(|p| {
+            plugin_info(
+                p,
+                enabled.contains(&p.manifest.id),
+                settings,
+                instance_values.get(&p.manifest.id).cloned().unwrap_or_default(),
+            )
+        })
+        .collect()
 }
 
 pub async fn list(
@@ -77,7 +133,21 @@ pub async fn list(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
     crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
-    Ok(Json(list_for(&state.plugins.all(), settings.as_ref())))
+    let plugins = state.plugins.all();
+    let mut instance_values = BTreeMap::new();
+    for plugin in &plugins {
+        if plugin.manifest.instance_settings.is_empty() {
+            continue;
+        }
+        let values = crate::plugin_settings::public_values(&state.pool, &plugin.manifest)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        instance_values.insert(plugin.manifest.id.clone(), values);
+    }
+    Ok(Json(list_for(&plugins, settings.as_ref(), &instance_values)))
 }
 
 #[derive(Debug, Serialize)]
@@ -144,7 +214,11 @@ mod tests {
             "aa",
             r#","icon":"eye","settings":[{"key":"host","label":"Host","env":"AA_HOST","type":"string"}]"#,
         );
-        write_plugin(root.path(), "bb", "");
+        write_plugin(
+            root.path(),
+            "bb",
+            r#","instanceSettings":[{"key":"upstream","label":"U","type":"url"},{"key":"token","label":"T","type":"string","secret":true}],"backend":{"upstreamSetting":"upstream"}"#,
+        );
         let plugins = vec![
             load_plugin(&root.path().join("aa")).unwrap(),
             load_plugin(&root.path().join("bb")).unwrap(),
@@ -153,7 +227,14 @@ mod tests {
             "enabled": { "aa": true, "bb": false },
             "config": { "aa": { "host": "h1", "junk": "x" } }
         } });
-        let infos = list_for(&plugins, Some(&settings));
+        let instance_values = std::collections::BTreeMap::from([(
+            "bb".to_owned(),
+            std::collections::BTreeMap::from([
+                ("upstream".to_owned(), "https://up.example".to_owned()),
+                ("token".to_owned(), "leak".to_owned()),
+            ]),
+        )]);
+        let infos = list_for(&plugins, Some(&settings), &instance_values);
         assert_eq!(infos.len(), 2);
         assert!(infos[0].enabled);
         assert_eq!(infos[0].settings.len(), 1);
@@ -168,7 +249,56 @@ mod tests {
         assert!(web.starts_with("/plugins/aa/web/index.js?v="), "{web}");
         assert_eq!(web.len(), "/plugins/aa/web/index.js?v=".len() + 8);
         assert!(!infos[1].enabled);
-        assert!(list_for(&plugins, None).iter().all(|i| !i.enabled));
+        assert!(list_for(&plugins, None, &instance_values).iter().all(|i| !i.enabled));
+
+        assert!(!infos[0].backend);
+        assert!(infos[1].backend);
+        assert_eq!(infos[1].instance_settings.len(), 2);
+        assert!(
+            infos[1].instance_setting_values.is_empty(),
+            "bb is not enabled for this caller, so it gets no instance values"
+        );
+
+        let enabled_bb = json!({ "plugins": { "enabled": { "bb": true } } });
+        let infos = list_for(&plugins, Some(&enabled_bb), &instance_values);
+        assert_eq!(
+            infos[1].instance_setting_values.get("upstream").map(String::as_str),
+            Some("https://up.example")
+        );
+        assert!(
+            !infos[1].instance_setting_values.contains_key("token"),
+            "a secret instance value never reaches a user"
+        );
+        let json = serde_json::to_value(&infos[1]).unwrap();
+        assert!(json["page"].is_null());
+        assert_eq!(json["styles"].as_array().map(Vec::len), Some(0));
+        assert_eq!(json["instanceSettings"][0]["key"], "upstream");
+        assert_eq!(json["instanceSettingValues"]["upstream"], "https://up.example");
+    }
+
+    #[test]
+    fn a_page_and_its_styles_are_passed_through_cache_busted() {
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(
+            root.path(),
+            "cc",
+            r#","page":{"title":"Review","icon":"eye"},"styles":["web/style.css"]"#,
+        );
+        let plugins = vec![load_plugin(&root.path().join("cc")).unwrap()];
+        let infos = list_for(&plugins, None, &std::collections::BTreeMap::new());
+        let info = &infos[0];
+        let page = info.page.as_ref().expect("page passed through");
+        assert_eq!(page.title, "Review");
+        assert_eq!(page.icon.as_deref(), Some("eye"));
+        assert_eq!(info.styles.len(), 1);
+        let style = &info.styles[0];
+        assert!(style.starts_with("/plugins/cc/web/style.css?v="), "{style}");
+        let web = info.web.as_deref().unwrap();
+        assert_eq!(
+            style.rsplit("?v=").next(),
+            web.rsplit("?v=").next(),
+            "styles reuse the web bundle's cache-buster"
+        );
     }
 
     #[tokio::test]

@@ -139,7 +139,7 @@ function userOrSystem(
 		ts,
 		html: prose ? ctx.renderMarkdown(prose) : '',
 		text: prose,
-		uploads: uploads.names.length ? uploads : undefined,
+		uploads: uploads.names.length || uploads.unnamedImages ? uploads : undefined,
 		scheduledAt: scheduledAt ? Date.parse(scheduledAt) : undefined
 	};
 }
@@ -354,10 +354,13 @@ function attachAnnotation(out: Line[], content: string): void {
 export const PASTE_NAME_RE = /^paste-\d+\.txt$/;
 const STAGED_PATH_RE = /^- \/tmp\/cctui-uploads\/([^/\s]+)\/(\S.*?)\s*$/;
 const BRACKET_TOKEN_RE = /\[([^[\]\n]+\.[A-Za-z0-9]{1,8})\]/g;
+const IMAGE_NUMBER_RE = /\[Image #\d+\]/g;
 
 export interface UserUploadRefs {
 	sessionId: string | null;
 	names: string[];
+	/** Images Claude's copy of the turn counts with `[Image #N]` but names nowhere. */
+	unnamedImages?: number;
 }
 
 export function isPasteName(name: string): boolean {
@@ -395,6 +398,8 @@ export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
 	const run = IMAGE_TOKEN_RUN_RE.exec(text);
 	if (run) {
 		for (const m of run[0].matchAll(BRACKET_TOKEN_RE)) push(m[1]);
+		const unnamedImages = names.length ? 0 : (run[0].match(IMAGE_NUMBER_RE)?.length ?? 0);
+		if (unnamedImages) return { sessionId, names, unnamedImages };
 	}
 	return { sessionId, names };
 }

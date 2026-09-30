@@ -9,10 +9,15 @@ const info = (id: string, icon: string | null = null): PluginInfo => ({
 	version: '1',
 	icon,
 	web: `/plugins/${id}/web/index.js`,
+	page: null,
+	styles: [],
 	skills: [],
 	enabled: true,
 	settings: [],
-	config: {}
+	config: {},
+	instanceSettings: [],
+	instanceSettingValues: {},
+	backend: false
 });
 const pane = (() => {}) as unknown as CctuiPluginModule['sessionPane'];
 const src = (id: string, module: Partial<CctuiPluginModule>, icon: string | null = null) => ({

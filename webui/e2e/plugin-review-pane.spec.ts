@@ -42,10 +42,15 @@ const pluginInfo = (enabled: boolean) => [
 		version: '0.0.1',
 		icon: 'eye',
 		web: WEB_URL,
+		page: null,
+		styles: [],
 		skills: [],
 		enabled,
 		settings: [{ key: 'host', label: 'Bind address', env: 'DEMO_HOST', type: 'string' }],
-		config: {}
+		config: {},
+		instanceSettings: [],
+		instanceSettingValues: {},
+		backend: false
 	}
 ];
 

@@ -1,7 +1,9 @@
 /** Vite config for a cctui plugin's `web/` bundle: one ES module that leaves
- *  Svelte and Tsumikit to the host (`/plugin-runtime/*`) so the pane shares the
- *  page's runtime, context and reactivity. Component CSS is injected at mount
- *  (the host CSP allows inline styles). */
+ *  Svelte and Tsumikit to the host (`/plugin-runtime/*`) so the surfaces share
+ *  the page's runtime, context and reactivity. Component CSS is injected at
+ *  mount (the host CSP allows inline styles); global CSS goes through the
+ *  manifest's `styles[]`, which the host links once. Dynamic imports stay
+ *  separate chunks under `web/`, loaded relative to `index.js`. */
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import type { UserConfig } from 'vite';
 import { PLUGIN_RUNTIME_PATHS } from './types';
@@ -13,6 +15,8 @@ export interface PluginBuildOptions {
 	outDir?: string;
 	/** Use the host's `/plugin-runtime` under a different prefix (tests). */
 	runtimeBase?: string;
+	/** Where code-split chunks land inside `outDir`. */
+	chunkDir?: string;
 }
 
 export function pluginRuntimePaths(runtimeBase = ''): Record<string, string> {
@@ -33,7 +37,11 @@ export function cctuiPluginConfig(opts: PluginBuildOptions): UserConfig {
 			lib: { entry: opts.entry, formats: ['es'], fileName: () => 'index.js' },
 			rollupOptions: {
 				external: (id) => id in paths,
-				output: { paths }
+				output: {
+					paths,
+					chunkFileNames: `${opts.chunkDir ?? 'chunks'}/[name]-[hash].js`,
+					assetFileNames: `${opts.chunkDir ?? 'chunks'}/[name]-[hash][extname]`
+				}
 			}
 		}
 	};

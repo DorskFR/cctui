@@ -103,10 +103,10 @@ describe("Inbox", () => {
     mountInbox();
     await settleUntil(() => document.querySelector(".list li svg") !== null);
 
-    expect(document.querySelector(".list li svg")?.getAttribute("aria-label")).toBe("open");
-    expect(document.querySelector(".list li svg")?.getAttribute("fill")).toBe(
-      "var(--gh-fg-muted)",
-    );
+    const icon = document.querySelector(".list li svg") as SVGElement;
+    expect(icon.getAttribute("aria-label")).toBe("open");
+    expect(icon.getAttribute("data-tsu")).toBe("Icon");
+    expect(icon.getAttribute("style")).toContain("color: var(--gh-fg-muted)");
 
     client.setQueryData(keys.pull("o", "r", 7), envelope("closed", true));
     await settleUntil(
@@ -138,5 +138,41 @@ describe("Inbox", () => {
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
       "https://ghreview.example/v1/notifications?account=other&all=true",
     );
+  });
+
+  it("renders the empty inbox as an EmptyState, not ad-hoc muted text", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ items: [], next_cursor: null }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+
+    mountInbox();
+    await settleUntil(() => document.querySelector('[data-tsu="EmptyState"]') !== null);
+
+    const empty = document.querySelector('[data-tsu="EmptyState"]');
+    expect(empty?.textContent).toContain("Inbox zero.");
+    expect(document.querySelector(".msg")).toBeNull();
+    expect(document.querySelector(".list")).toBeNull();
+  });
+
+  it("renders a load failure as a danger Callout", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("nope", { status: 500 })),
+    );
+
+    mountInbox();
+    await settleUntil(() => document.querySelector('[data-tsu="Callout"]') !== null);
+
+    const callout = document.querySelector('[data-tsu="Callout"]') as HTMLElement;
+    expect(callout.getAttribute("role")).toBe("alert");
+    expect(callout.className).toContain("callout-danger");
+    expect(document.querySelector(".err")).toBeNull();
   });
 });

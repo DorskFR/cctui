@@ -1,0 +1,46 @@
+{
+  "description": "Shared test vectors for the cctui plugin backend proxy identity signature. canonical = method + \"\\n\" + path + \"\\n\" + ts + \"\\n\" + userId; signature = lowercase hex HMAC-SHA256(secret, canonical). The cctui-server signer test and the ghreview proxy-verifier test both read this file, so the two implementations cannot drift apart.",
+  "algorithm": "HMAC-SHA256, lowercase hex",
+  "vectors": [
+    {
+      "name": "get-with-query-stripped",
+      "secret": "plugin-proxy-test-secret",
+      "method": "GET",
+      "path": "/v1/pulls",
+      "ts": 1700000000,
+      "userId": "9f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "canonical": "GET\n/v1/pulls\n1700000000\n9f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "signature": "a444a3df1bcb91495cb6f0112c889aaf619fc6a74d533544fdbe631f9bc1ccfe"
+    },
+    {
+      "name": "post-unsafe-method",
+      "secret": "plugin-proxy-test-secret",
+      "method": "POST",
+      "path": "/v1/reviews/42/comments",
+      "ts": 1700000001,
+      "userId": "9f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "canonical": "POST\n/v1/reviews/42/comments\n1700000001\n9f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "signature": "5be69b08fbf776c0a1dcd4b1420f6cbdb651d04f952a354d4000a72dbf65a841"
+    },
+    {
+      "name": "sse-root-path",
+      "secret": "plugin-proxy-test-secret",
+      "method": "GET",
+      "path": "/v1/events",
+      "ts": 1700000002,
+      "userId": "00000000-0000-0000-0000-000000000001",
+      "canonical": "GET\n/v1/events\n1700000002\n00000000-0000-0000-0000-000000000001",
+      "signature": "1410bc9952ec8b23ae756a42c4c98a8ac84218449e20933b5c32009fcd69cc7d"
+    },
+    {
+      "name": "bare-root",
+      "secret": "another-secret",
+      "method": "DELETE",
+      "path": "/",
+      "ts": 1700000003,
+      "userId": "user-a",
+      "canonical": "DELETE\n/\n1700000003\nuser-a",
+      "signature": "2b4c0a6464ac403a6110d66fd2d34cf65ddd1fa7cee7a131001ed7df547ea61f"
+    }
+  ]
+}

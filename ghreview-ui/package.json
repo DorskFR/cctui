@@ -8,6 +8,7 @@
     "preinstall": "case \"$npm_config_user_agent\" in bun*) exit 0 ;; esac; [ \"$INIT_CWD\" = \"$PWD\" ] || exit 0; echo '' >&2; echo 'ghreview-ui is a bun project (bun.lock, no package-lock.json).' >&2; echo 'Run: bun install' >&2; echo '' >&2; exit 1",
     "dev": "vite",
     "build": "vite build",
+    "build:plugin": "bun scripts/build-plugin.ts",
     "preview": "vite preview --host",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "biome check .",
@@ -19,14 +20,14 @@
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@tsconfig/svelte": "^5.0.8",
     "happy-dom": "^20.11.1",
-    "svelte": "^5.56.8",
+    "svelte": "^5.25.0",
     "svelte-check": "^4.7.4",
     "typescript": "^5.9.3",
     "vite": "^8.2.0",
     "vitest": "^5.0.0"
   },
   "dependencies": {
-    "@dorsk/tsumikit": "^0.38.1",
+    "@dorsk/tsumikit": "^0.64.0",
     "@tanstack/svelte-query": "^6.1.38",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.7"

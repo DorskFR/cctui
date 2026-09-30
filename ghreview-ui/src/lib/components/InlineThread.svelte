@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, IconButton } from "@dorsk/tsumikit";
+  import { Button, Callout, IconButton, Prose } from "@dorsk/tsumikit";
   import { api, ApiError } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import type { ReactionContent } from "../api/types";
@@ -105,9 +105,11 @@
           </span>
         {/if}
       </div>
-      <div class="body markdown">{@html renderMarkdown(c.body ?? "", { baseUrl: markdownBaseUrl })}</div>
+      <div class="body">
+        <Prose html={renderMarkdown(c.body ?? "", { baseUrl: markdownBaseUrl })} compact />
+      </div>
       {#if deleteError && confirmingDelete === c.id}
-        <div class="err">{deleteError}</div>
+        <Callout tone="danger">{deleteError}</Callout>
       {/if}
       {#if canReact}
         <ReactionBar
@@ -215,11 +217,6 @@
     font-size: var(--fs-xs);
     white-space: pre-wrap;
     word-break: break-word;
-  }
-  .err {
-    font-size: var(--fs-xs);
-    color: var(--danger, #f85149);
-    margin-top: 2px;
   }
   .reply {
     align-self: flex-start;

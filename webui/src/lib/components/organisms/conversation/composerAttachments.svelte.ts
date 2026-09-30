@@ -8,6 +8,7 @@ import {
 	fileCapError,
 	makeClipboardFiles,
 	nextPasteIndex,
+	prefixImageTokens,
 	removeFileByName,
 	rewriteFileTokens
 } from '$lib/attachments';
@@ -125,7 +126,7 @@ export class ComposerAttachments {
 		this.uploading = true;
 		try {
 			const { paths } = await stageFiles(this.files);
-			const prose = rewriteFileTokens(text, this.files, paths);
+			const prose = prefixImageTokens(rewriteFileTokens(text, this.files, paths), this.files, paths);
 			const list = paths.map((p) => `- ${p}`).join('\n');
 			const header = paths.length === 1 ? 'Attached file:' : `Attached files (${paths.length}):`;
 			this.files = [];

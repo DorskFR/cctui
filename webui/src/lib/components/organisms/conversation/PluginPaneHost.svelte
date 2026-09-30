@@ -9,8 +9,9 @@
 	import { resizeHandle, Text } from '@dorsk/tsumikit';
 	import { clampDockWidth, DOCK_MIN_PX, maxDockWidth, storedDockWidth } from '$lib/dock';
 	import { composerFor } from '$lib/plugins/composerBridge.svelte';
+	import { hostContext, hostUser } from '$lib/plugins/hostContext';
+	import { useMe } from '$lib/queries';
 	import {
-		CCTUI_PLUGIN_API,
 		HOST_CONTEXT_KEY,
 		type CctuiPluginModule,
 		type HostContext,
@@ -39,7 +40,13 @@
 	const widthKey = $derived(`cctui_plugin_pane_width:${plugin.id}`);
 	const composer = $derived(composerFor(session.id));
 	const Pane = $derived(module.sessionPane);
-	setContext<HostContext>(HOST_CONTEXT_KEY, { cctuiApi: CCTUI_PLUGIN_API, origin: browser ? location.origin : '' });
+	const me = useMe();
+	setContext<HostContext>(HOST_CONTEXT_KEY, {
+		...hostContext({ pluginId: plugin.id }),
+		get user() {
+			return hostUser(me.data);
+		}
+	});
 
 	let width = $derived((browser && storedDockWidth(localStorage.getItem(widthKey))) || DEFAULT_PX);
 	function setWidth(px: number | undefined) {

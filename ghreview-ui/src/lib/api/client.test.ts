@@ -147,3 +147,72 @@ describe("cursor pagination", () => {
     ]);
   });
 });
+
+describe("api client behind the cctui plugin proxy", () => {
+  it("routes every request through the transport and never sends a bearer token", async () => {
+    const proxy = vi.fn(
+      async (_path: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const directFetch = vi.fn();
+    vi.stubGlobal("fetch", directFetch);
+    localStorage.setItem("ghreview:token", "a-stale-standalone-token");
+    configureRuntime({
+      transport: { fetch: proxy, eventsUrl: () => "/api/v1/plugins/ghreview/backend/v1/events" },
+    });
+
+    await api.status();
+
+    expect(directFetch).not.toHaveBeenCalled();
+    const [path, init] = proxy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe("/v1/status");
+    const headers = new Headers(init.headers);
+    expect(headers.get("Accept")).toBe("application/json");
+    expect(headers.get("Authorization")).toBeNull();
+    localStorage.removeItem("ghreview:token");
+  });
+
+  it("passes the method and body of a mutation through unchanged", async () => {
+    const proxy = vi.fn(
+      async (_path: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ id: "acct-1", login: "DorskFR" }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    configureRuntime({
+      transport: { fetch: proxy, eventsUrl: () => "/api/v1/plugins/ghreview/backend/v1/events" },
+    });
+
+    await api.addAccount({ token: "github_pat_x", login: "DorskFR" });
+
+    const [path, init] = proxy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe("/v1/accounts");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ token: "github_pat_x", login: "DorskFR" });
+    expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+  });
+
+  it("surfaces a proxy failure as an ApiError", async () => {
+    const proxy = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { code: "upstream_unset", message: "no backend" } }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    configureRuntime({
+      transport: { fetch: proxy, eventsUrl: () => "/events" },
+    });
+
+    await expect(api.status()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 503,
+      code: "upstream_unset",
+      message: "no backend",
+    });
+  });
+});

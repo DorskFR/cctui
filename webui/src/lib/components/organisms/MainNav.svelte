@@ -3,11 +3,12 @@
 	// bottom it is the fixed phone bar; in the header it is the same items laid
 	// out the same way. Which one shows is the nav position setting.
 	import { page } from '$app/state';
-	import { Badge } from '@dorsk/tsumikit';
+	import { Badge, Icon } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import { useSessions } from '$lib/queries';
+	import { usePlugins, useSessions } from '$lib/queries';
+	import { pageNavItems } from '$lib/plugins/pageRoute';
 	import { settings } from '$lib/settings.svelte';
-	import { isNavActive, navItems } from '$lib/navItems';
+	import { isNavActive, navItems, navKey } from '$lib/navItems';
 	import { hasGithubConnector } from '$lib/ghreviewConnectors.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -20,7 +21,13 @@
 		(sessions.data?.sessions ?? []).filter((s) => s.parent_id === null && (s.unread_count ?? 0) > 0)
 			.length
 	);
-	const items = $derived(navItems({ hasGithubConnector: hasGithubConnector() }));
+	const plugins = usePlugins();
+	const items = $derived(
+		navItems({
+			hasGithubConnector: hasGithubConnector(),
+			pages: pageNavItems(plugins.data ?? [], settings.pluginsEnabled)
+		})
+	);
 </script>
 
 <nav
@@ -33,10 +40,15 @@
 	<div class="nav-inner">
 		{#each items as it (it.href)}
 			{@const active = isNavActive(it.href, page.url.pathname)}
-			<NavLink href={it.href} aria-current={active ? 'page' : undefined}>
+			<NavLink
+				href={it.href}
+				aria-current={active ? 'page' : undefined}
+				data-journey="nav"
+				data-journey-key={navKey(it.href)}
+			>
 				<span class="cell" class:active>
 					<span class="ico"
-						>{it.icon}{#if it.href === '/sessions' && unread > 0}<span class="unread"
+						>{#if it.iconName}<Icon name={it.iconName} size={20} />{:else}{it.icon}{/if}{#if it.href === '/sessions' && unread > 0}<span class="unread"
 								><Badge
 									size="xs"
 									numeric

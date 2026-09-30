@@ -15,6 +15,7 @@ export const queryClient = new QueryClient({
 
 export const keys = {
   status: () => ["status"] as const,
+  accounts: () => ["accounts"] as const,
   repos: (account?: string) => ["repos", account ?? "*"] as const,
   githubRepos: (account: string) => ["github-repos", account] as const,
   subscriptionsAll: () => ["subscriptions"] as const,

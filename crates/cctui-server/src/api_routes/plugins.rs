@@ -20,6 +20,22 @@ pub(super) fn register(r: Routes) -> Routes {
         Authenticated,
     )
     .add(
+        &[GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE],
+        "/plugins/{id}/backend/{*path}",
+        "Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.",
+        // Explicit methods, not `any`: `any` sets only the MethodRouter's
+        // fallback, and `route_layer` — which attaches the authz policy — panics
+        // unless a named method slot is filled.
+        get(crate::plugin_proxy::backend)
+            .post(crate::plugin_proxy::backend)
+            .put(crate::plugin_proxy::backend)
+            .patch(crate::plugin_proxy::backend)
+            .delete(crate::plugin_proxy::backend)
+            .layer(DefaultBodyLimit::disable()),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
         &[Method::POST],
         "/plugins/rescan",
         "Re-read the plugins directory (admin).",
@@ -50,6 +66,22 @@ pub(super) fn register(r: Routes) -> Routes {
         "/admin/plugins/{id}",
         "Enable or disable an installed plugin instance-wide, or uninstall it (admin).",
         patch(routes::plugins_admin::set_enabled).delete(routes::plugins_admin::uninstall),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[GET, Method::PUT],
+        "/admin/plugins/{id}/settings",
+        "Read or write a plugin's instance-level settings; secret values are never returned, only whether each is set (admin).",
+        get(routes::plugins_admin::get_settings).put(routes::plugins_admin::put_settings),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::POST],
+        "/admin/plugins/{id}/proxy-secret",
+        "Rotate the plugin's backend-proxy signing secret and return the new value once (admin).",
+        post(routes::plugins_admin::rotate_proxy_secret),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )

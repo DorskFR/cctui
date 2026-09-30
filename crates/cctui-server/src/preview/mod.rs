@@ -9,6 +9,7 @@ pub mod csrf;
 mod e2e;
 pub mod forward;
 pub mod handler;
+pub use handler::app_cookies;
 pub mod routes;
 pub mod store;
 pub mod ticket;

@@ -1,5 +1,5 @@
 import { createApp } from "./app.ts";
-import { createCctuiResolver, createStaticResolver, parseStaticTokens } from "./auth/resolver.ts";
+import { createStaticResolver, parseStaticTokens } from "./auth/resolver.ts";
 import { loadConfig } from "./config.ts";
 import { createSealer } from "./crypto/seal.ts";
 import { createGhAccount } from "./db/accounts.ts";
@@ -78,12 +78,15 @@ if (config.authMode === "none") {
 } else if (config.authMode === "static") {
   deps.auth = createStaticResolver(parseStaticTokens(config.authTokens));
   authLabel = "static";
-} else if (deps.db) {
-  deps.auth = createCctuiResolver(deps.db, config.cctuiSchema);
-  authLabel = "cctui";
+} else if (config.proxySecret) {
+  deps.proxyAuth = {
+    secret: config.proxySecret,
+    maxSkewSeconds: config.proxyMaxSkewSeconds,
+  };
+  authLabel = `proxy (±${config.proxyMaxSkewSeconds}s clock skew)`;
 } else {
   authLabel =
-    "deny-all (cctui mode needs DATABASE_URL; set GHREVIEW_AUTH_MODE=static to serve authenticated)";
+    "deny-all (proxy mode needs GHREVIEW_PROXY_SECRET; set GHREVIEW_AUTH_MODE=static to serve authenticated)";
 }
 console.log(`ghreview: auth mode ${authLabel}`);
 

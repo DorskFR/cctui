@@ -1,6 +1,14 @@
 const TOKEN_KEY = "ghreview:token";
 const ACCOUNT_KEY = "ghreview:account";
 
+// How requests reach the backend. Standalone talks to it directly with a bearer
+// token; as a cctui plugin every call is proxied and authenticated by cookie, so
+// the plugin supplies its own transport instead of a URL and a token.
+export interface GhreviewTransport {
+  fetch(path: string, init?: RequestInit): Promise<Response>;
+  eventsUrl(): string;
+}
+
 // Runtime config injected by an embedder (cctui-ui); when set it wins over
 // the standalone localStorage / VITE_* sources. null = standalone default.
 export interface GhreviewRuntimeConfig {
@@ -8,6 +16,7 @@ export interface GhreviewRuntimeConfig {
   token?: string | null;
   account?: string | null;
   basePath?: string;
+  transport?: GhreviewTransport;
 }
 
 let runtime: GhreviewRuntimeConfig | null = null;
@@ -25,6 +34,10 @@ export function configureRuntime(config: GhreviewRuntimeConfig | null): void {
 
 export function isEmbedded(): boolean {
   return runtime !== null;
+}
+
+export function transport(): GhreviewTransport | null {
+  return runtime?.transport ?? null;
 }
 
 export function baseUrl(): string {

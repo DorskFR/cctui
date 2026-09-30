@@ -1,0 +1,49 @@
+{
+	"name": "@dorsk/cctui-plugin-sdk",
+	"version": "0.1.0",
+	"description": "Types and a Vite config helper for building a cctui runtime plugin",
+	"license": "MIT",
+	"author": "DorskFR",
+	"homepage": "https://github.com/DorskFR/cctui/blob/main/webui/plugin-sdk/README.md",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/DorskFR/cctui.git",
+		"directory": "webui/plugin-sdk"
+	},
+	"bugs": "https://github.com/DorskFR/cctui/issues",
+	"keywords": [
+		"cctui",
+		"plugin",
+		"svelte",
+		"vite"
+	],
+	"type": "module",
+	"sideEffects": false,
+	"files": [
+		"*.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"exports": {
+		".": "./index.ts",
+		"./types": "./types.ts",
+		"./vite": "./vite.ts",
+		"./peer": "./peer.ts",
+		"./package.json": "./package.json"
+	},
+	"peerDependencies": {
+		"@dorsk/tsumikit": ">=0.63.1 <1.0.0",
+		"@sveltejs/vite-plugin-svelte": "^6.0.0",
+		"svelte": "^5.25.0",
+		"vite": "^7.0.0"
+	},
+	"peerDependenciesMeta": {
+		"@dorsk/tsumikit": {
+			"optional": true
+		}
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	}
+}

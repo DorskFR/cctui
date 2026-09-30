@@ -1,3 +1,4 @@
+import type { IconName } from '@dorsk/tsumikit';
 import { ghreviewUrl } from '$lib/config';
 import { m } from '$lib/paraglide/messages';
 
@@ -5,10 +6,14 @@ export interface NavItemSpec {
 	href: string;
 	label: string;
 	icon: string;
+	/** Set instead of `icon` by plugin entries, whose manifest names a kit icon. */
+	iconName?: IconName;
 }
 
 export interface NavGates {
 	hasGithubConnector?: boolean;
+	/** Enabled page plugins, appended before Settings. */
+	pages?: { href: string; label: string; iconName: IconName }[];
 }
 
 export function navItems(gates: NavGates = {}): NavItemSpec[] {
@@ -22,8 +27,15 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 		...(ghreviewUrl() !== null && gates.hasGithubConnector === true
 			? [{ href: '/github', label: m.nav_github(), icon: '◐' }]
 			: []),
+		...(gates.pages ?? []).map((p) => ({ href: p.href, label: p.label, icon: '', iconName: p.iconName })),
 		{ href: '/settings', label: m.nav_settings(), icon: '⚙' }
 	];
+}
+
+/** Guide anchor key for a nav item. A target path splits on `/`, so the href
+ *  itself cannot be the key. */
+export function navKey(href: string): string {
+	return href === '/' ? 'overview' : href.replace(/^\//, '').replace(/\//g, '-');
 }
 
 export function isNavActive(href: string, pathname: string): boolean {

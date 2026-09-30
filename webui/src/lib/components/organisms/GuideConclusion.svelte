@@ -5,16 +5,18 @@
 	let {
 		title,
 		xp,
+		next,
 		ondone
 	}: {
 		title: string;
 		xp: number;
+		next?: string;
 		ondone: () => void;
 	} = $props();
 </script>
 
 {#snippet body()}
-	<div class="beat">
+	<div class="beat" data-guide-conclusion>
 		<Stack gap="md" align="center">
 			<div class="seal" aria-hidden="true">◆</div>
 			<Heading level={2} size="lg">{m.guide_done_title()}</Heading>
@@ -22,6 +24,11 @@
 			<div class="award">
 				<Badge tone="ok" size="md" border>{m.guide_done_xp({ xp })}</Badge>
 			</div>
+			{#if next}
+				<div class="award" data-guide-next>
+					<Text size="sm" tone="faint">{m.guide_done_next({ title: next })}</Text>
+				</div>
+			{/if}
 		</Stack>
 	</div>
 {/snippet}

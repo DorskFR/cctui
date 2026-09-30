@@ -31,6 +31,8 @@ mod outbound;
 mod pace;
 mod plugin_archive;
 mod plugin_catalog;
+mod plugin_proxy;
+mod plugin_settings;
 mod plugin_store;
 mod plugins;
 mod policy;
@@ -799,6 +801,9 @@ mod tests {
             "GET /admin/plugins/catalog Bearer Scope(Admin)",
             "DELETE /admin/plugins/{id} Bearer Scope(Admin)",
             "PATCH /admin/plugins/{id} Bearer Scope(Admin)",
+            "POST /admin/plugins/{id}/proxy-secret Bearer Scope(Admin)",
+            "GET /admin/plugins/{id}/settings Bearer Scope(Admin)",
+            "PUT /admin/plugins/{id}/settings Bearer Scope(Admin)",
             "GET /admin/users Bearer Scope(Admin)",
             "POST /admin/users Bearer Scope(Admin)",
             "DELETE /admin/users/{id} Bearer Scope(Admin)",
@@ -851,6 +856,11 @@ mod tests {
             "GET /permissions/pending Bearer Authenticated",
             "GET /plugins Bearer Authenticated",
             "POST /plugins/rescan Bearer Scope(Admin)",
+            "DELETE /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "GET /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "PATCH /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "POST /plugins/{id}/backend/{*path} Bearer Authenticated",
+            "PUT /plugins/{id}/backend/{*path} Bearer Authenticated",
             "GET /profiles Bearer Human",
             "POST /profiles Bearer Human",
             "PUT /profiles/order Bearer Human",

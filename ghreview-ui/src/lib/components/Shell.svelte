@@ -9,6 +9,7 @@
   import { EMBED_KEY, type EmbedContext } from "../embed/context";
   import { router } from "../router/router.svelte";
   import { currentTheme, setTheme, type Theme, THEME_LABELS, THEMES } from "../theme/theme";
+  import GithubAccounts from "./GithubAccounts.svelte";
   import Inbox from "./Inbox.svelte";
   import MasterDetail from "./MasterDetail.svelte";
   import Subscriptions from "./Subscriptions.svelte";
@@ -26,15 +27,18 @@
     { value: "prs", label: "Pull requests" },
     { value: "inbox", label: "Inbox" },
     { value: "subscriptions", label: "Subscriptions" },
+    { value: "accounts", label: "Accounts" },
   ];
   function viewOf(name: string): string {
     if (name === "inbox") return "inbox";
     if (name === "subscriptions") return "subscriptions";
+    if (name === "accounts") return "accounts";
     return "prs";
   }
   function pathOf(view: string): string {
     if (view === "inbox") return "/inbox";
     if (view === "subscriptions") return "/subscriptions";
+    if (view === "accounts") return "/accounts";
     return "/";
   }
   let view = $state(viewOf(router.current.name));
@@ -86,6 +90,8 @@
     <main class="content"><Inbox /></main>
   {:else if route.name === "subscriptions"}
     <main class="content"><Subscriptions /></main>
+  {:else if route.name === "accounts"}
+    <main class="content"><GithubAccounts /></main>
   {:else}
     <MasterDetail />
   {/if}

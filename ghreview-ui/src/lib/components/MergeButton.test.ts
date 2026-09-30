@@ -51,7 +51,9 @@ describe("MergeButton", () => {
 
     expect(document.querySelector(".merge-button.full-width")).not.toBeNull();
     const trigger = document.querySelector('.merge-button [data-tsu="Popover"]');
-    expect(trigger?.textContent).toBe("Merge");
+    expect(trigger?.textContent?.trim()).toBe("Merge");
+    expect(trigger?.getAttribute("aria-label")).toBe("Merge pull request");
+    expect(trigger?.querySelector(".pop-count")).toBeNull();
     expect(trigger?.classList.contains("trigger-sm")).toBe(true);
     expect(trigger?.classList.contains("trigger-primary")).toBe(true);
     expect(trigger?.classList.contains("trigger-tone-success")).toBe(true);
@@ -115,7 +117,7 @@ describe("MergeButton", () => {
     (document.querySelector('[data-action="confirm-merge"]') as HTMLButtonElement).click();
     await tick();
     await tick();
-    expect(document.querySelector(".err")?.textContent).toContain("not mergeable");
+    expect(document.querySelector('[data-tsu="Callout"]')?.textContent).toContain("not mergeable");
     expect(document.querySelector(".confirm")).not.toBeNull();
     expect(onmerged).not.toHaveBeenCalled();
   });
@@ -138,7 +140,7 @@ describe("MergeButton", () => {
     await tick();
     await tick();
 
-    expect(document.querySelector(".err")?.textContent).toContain("required checks are pending");
+    expect(document.querySelector('[data-tsu="Callout"]')?.textContent).toContain("required checks are pending");
     expect(document.querySelector(".confirm")).not.toBeNull();
     expect(onmerged).not.toHaveBeenCalled();
   });

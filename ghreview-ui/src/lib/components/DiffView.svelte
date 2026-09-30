@@ -5,7 +5,7 @@
   import { highlightLineCached, langForPath } from "../diff/highlight";
   import { computeWindow } from "../diff/virtual";
   import { fontPxFor, readFsScale, rowHeightFor } from "../diff/fs-scale";
-  import { Checkbox } from "@dorsk/tsumikit";
+  import { Badge, Checkbox, IconButton } from "@dorsk/tsumikit";
 
   import { type LineAddress, type ReviewController, rowToAddress } from "../review/anchors";
   import InlineCommentComposer from "./InlineCommentComposer.svelte";
@@ -179,15 +179,20 @@
                 <span class="marker">{l?.row.kind === "del" ? "−" : ""}</span>
                 <span class="code code-hl">{@html l ? hl(l.row.content, l.row.fileIndex) : ""}</span>
                 {#if review && l && l.row.kind !== "context"}
-                  <button
-                    type="button"
-                    class="add-comment"
-                    aria-label="Comment on this line"
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      openComposer(l.rowIndex);
-                    }}
-                  >+</button>
+                  <span class="add-comment">
+                    <IconButton
+                      icon="plus"
+                      label="Comment on this line"
+                      variant="primary"
+                      box="xs"
+                      glyphSize={12}
+                      hitArea="compact"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        openComposer(l.rowIndex);
+                      }}
+                    />
+                  </span>
                 {/if}
               </div>
               <div
@@ -201,15 +206,20 @@
                 <span class="marker">{r?.row.kind === "add" ? "+" : ""}</span>
                 <span class="code code-hl">{@html r ? hl(r.row.content, r.row.fileIndex) : ""}</span>
                 {#if review && r && r.row.kind !== "context"}
-                  <button
-                    type="button"
-                    class="add-comment"
-                    aria-label="Comment on this line"
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      openComposer(r.rowIndex);
-                    }}
-                  >+</button>
+                  <span class="add-comment">
+                    <IconButton
+                      icon="plus"
+                      label="Comment on this line"
+                      variant="primary"
+                      box="xs"
+                      glyphSize={12}
+                      hitArea="compact"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        openComposer(r.rowIndex);
+                      }}
+                    />
+                  </span>
                 {/if}
               </div>
             {/if}
@@ -249,15 +259,20 @@
               <span class="marker">{row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""}</span>
               <span class="code code-hl">{@html hl(row.content, row.fileIndex)}</span>
               {#if review}
-                <button
-                  type="button"
-                  class="add-comment"
-                  aria-label="Comment on this line"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    openComposer(idx);
-                  }}
-                >+</button>
+                <span class="add-comment">
+                  <IconButton
+                    icon="plus"
+                    label="Comment on this line"
+                    variant="primary"
+                    box="xs"
+                    glyphSize={12}
+                    hitArea="compact"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      openComposer(idx);
+                    }}
+                  />
+                </span>
               {/if}
             {/if}
           </div>
@@ -283,15 +298,23 @@
               />
             </div>
           {:else}
-            <button
-              type="button"
-              class="thread-badge"
-              style:top="{displayRow(anchor.rowIndex) * ROW_H}px"
-              onclick={() => {
-                openAnchor = anchor.rowIndex;
-                pendingAddr = null;
-              }}
-            >{anchor.drafts.length + anchor.published.length}</button>
+            {@const count = anchor.drafts.length + anchor.published.length}
+            <span class="thread-badge" style:top="{displayRow(anchor.rowIndex) * ROW_H}px">
+              <Badge
+                as="button"
+                size="xs"
+                tone="accent"
+                active
+                numeric
+                aria-label="Open {count} comment{count === 1 ? '' : 's'} on this line"
+                onclick={() => {
+                  openAnchor = anchor.rowIndex;
+                  pendingAddr = null;
+                }}
+              >
+                {count}
+              </Badge>
+            </span>
           {/if}
         {/each}
 
@@ -386,18 +409,10 @@
     opacity: 1;
   }
   .add-comment {
+    --box-xs: 16px;
     position: absolute;
     left: 96px;
-    width: 16px;
-    height: 16px;
-    line-height: 14px;
-    padding: 0;
-    font-size: 13px;
-    color: white;
-    background: var(--gh-accent);
-    border: none;
-    border-radius: var(--gh-radius-sm);
-    cursor: pointer;
+    display: inline-flex;
     opacity: 0;
   }
   .row:hover .add-comment {
@@ -419,16 +434,7 @@
   .thread-badge {
     position: absolute;
     left: 84px;
-    height: 16px;
-    min-width: 18px;
-    padding: 0 4px;
-    font-size: 10px;
-    line-height: 14px;
-    color: white;
-    background: var(--gh-accent);
-    border: none;
-    border-radius: 999px;
-    cursor: pointer;
+    display: inline-flex;
     pointer-events: auto;
   }
   .gutter {

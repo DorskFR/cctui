@@ -6,22 +6,28 @@
 
 **Every account you can run on**
 
-Accounts are the provider credentials your agents run on. This board is empty until you add one, and nothing can be launched before it has one.
+An account is one provider credential — the thing an agent bills its tokens to. This board is the whole list, and until it holds one, nothing can be launched.
 
-![pool](02-pool.png)
+![anatomy](02-anatomy.png)
+
+**What each card tells you**
+
+A card carries its name and emoji, who owns it, which providers and models it can reach, and how much of its budget is already spent. The grip on its left edge is how it joins a pool.
+
+![pools](03-pools.png)
 
 **A pool is a set of interchangeable accounts**
 
-Launches aimed at the pool elect a member by headroom, so a spent weekly budget on one account does not stop the work.
+Aim a session at a pool instead of one account and it elects whichever member has the most budget left, so a weekly limit reached on one account does not stop your work. Drag a card by its grip onto a pool to add it, or use the card’s own menu — the same change without a mouse, which is how it is done on a phone.
 
-![handle](03-handle.png)
+![add](04-add.png)
 
-**Drag an account into a pool**
+**Add your first account**
 
-The grip on a card lifts it; dropping it on a pool adds it to the membership.
+Open the dialog. You will name the credential, pick its provider and paste the key — nothing leaves this instance, and the key is encrypted before it is stored.
 
-![menu](04-menu.png)
+![closed](05-closed.png)
 
-**Or add it from the card menu**
+**Close it for now**
 
-The same membership change without a mouse drag, which is also how it is done on a phone.
+Nothing is saved until you submit, so dismissing it changes nothing. Come back with a real key and the board will have its first card — then a session has something to run on.

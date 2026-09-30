@@ -21,6 +21,8 @@ describe("PrDescription", () => {
       },
     });
 
+    expect(document.querySelector('.prdesc .body [data-tsu="Prose"]')).not.toBeNull();
+    expect(document.querySelector(".prdesc .body.markdown")).toBeNull();
     expect(document.querySelector(".prdesc h2")?.textContent).toBe("Details");
     expect(document.querySelectorAll(".prdesc li")).toHaveLength(2);
     expect(document.querySelector<HTMLAnchorElement>(".prdesc a")?.href).toBe(

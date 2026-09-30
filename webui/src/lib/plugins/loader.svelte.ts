@@ -1,4 +1,6 @@
+import { browser } from '$app/environment';
 import { loadPluginModule } from './discovery';
+import { ensurePluginStyles } from './styles';
 import type { CctuiPluginModule, PluginInfo } from './types';
 
 export type LoadedPlugin =
@@ -19,6 +21,7 @@ export class PluginLoader {
 		const hit = this.entries[key];
 		if (hit) return hit;
 		this.entries[key] = { info, status: 'loading' };
+		if (browser) ensurePluginStyles(info);
 		this.load(key).then(
 			(module) => {
 				this.entries[key] = { info, status: 'ready', module };

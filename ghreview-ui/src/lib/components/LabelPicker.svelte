@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { Badge, Icon, Input, OptionButton, Popover } from "@dorsk/tsumikit";
+  import {
+    Badge,
+    Callout,
+    EmptyState,
+    Icon,
+    Input,
+    OptionButton,
+    Popover,
+    Text,
+  } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
@@ -98,11 +107,11 @@
           spellcheck="false"
         />
         {#if repoLabels.isLoading}
-          <p class="muted">Loading labels…</p>
+          <EmptyState size="inline" loading title="Loading labels…" />
         {:else if repoLabels.isError}
-          <p class="err">{(repoLabels.error as Error).message}</p>
+          <Callout tone="danger">{(repoLabels.error as Error).message}</Callout>
         {:else if filtered.length === 0}
-          <p class="muted">No labels.</p>
+          <EmptyState size="inline" title="No labels." />
         {:else}
           <ul>
             {#each filtered as label (label.name)}
@@ -118,7 +127,7 @@
                   </span>
                   <span class="dot" style:background={`#${label.color}`}></span>
                   <span class="name">{label.name}</span>
-                  {#if pending === label.name}<span class="muted">…</span>{/if}
+                  {#if pending === label.name}<Text size="xs" tone="muted">…</Text>{/if}
                 </OptionButton>
               </li>
             {/each}
@@ -168,15 +177,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .muted {
-    color: var(--gh-fg-muted);
-    font-size: var(--fs-xs);
-    margin: 0;
-  }
-  .err {
-    color: var(--gh-danger);
-    font-size: var(--fs-xs);
-    margin: 0;
   }
 </style>

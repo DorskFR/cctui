@@ -107,6 +107,8 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
   "cctuiApi": 1,
   "icon": "eye",
   "web": "web/index.js",
+  "page": { "title": "Review", "icon": "eye" },
+  "styles": ["web/app.css"],
   "skills": ["yubisashi"],
   "settings": [
     { "key": "host", "label": "Bind address", "env": "YUBI_HOST", "type": "string" }
@@ -118,22 +120,281 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
 - `cctuiApi` must be `1`; other majors are refused.
 - `web` and every `skills` entry are relative paths inside the folder;
   `skills/<name>/SKILL.md` must exist.
+- `page` (optional): a full-page surface at `/apps/<id>`, `{ "title": "Review",
+  "icon": "eye" }`. `title` must be non-empty; `icon` is an optional Tsumikit
+  icon name for the nav entry. A `page` **requires `web`** — the module is what
+  exports the page component — and a manifest with one but not the other is
+  refused at install. The module must export `page`.
+- `styles` (optional): stylesheets the host loads globally alongside the `web`
+  bundle, as plugin-folder-relative paths (`["web/app.css"]`). Each is validated
+  exactly like `web`: relative, inside the plugin folder (no `..`, no absolute
+  path, no hidden segment) and it must exist. They are served by the same
+  `GET /plugins/{id}/{path}` static route as everything else. The host links each one once per
+  document, with the bundle's `?v=`, before it imports the module. Component CSS
+  needs none of this — it is injected at mount.
 - `settings` (optional): each entry declares a per-user string value. `env`
   must match `^[A-Z][A-Z0-9_]{0,63}$` and may not be a reserved name
   (`PATH`, `HOME`, `SHELL`, `USER`, `NODE_OPTIONS`, `LD_*`, `DYLD_*`,
   `ANTHROPIC_*`, `CLAUDE_*`, `CCTUI_*`, `OPENAI_*`, `FIREWORKS_*`, `*_PROXY`,
   and the daemon's own contract vars).
+- `instanceSettings` (optional): see below.
+- `backend` (optional): see [Plugin backends](#plugin-backends).
+
+## Instance settings (admin-owned)
+
+`settings` is per user. `instanceSettings` is per *instance*: one value for the
+whole deployment, writable only by an admin.
+
+```json
+"instanceSettings": [
+  { "key": "upstream", "label": "Backend URL", "type": "url" },
+  { "key": "webhookSecret", "label": "Webhook secret", "type": "string", "secret": true }
+]
+```
+
+- `key` matches `[a-zA-Z][a-zA-Z0-9_-]{0,39}`, is unique, and at most 32 entries.
+- `type` is `"string"` or `"url"`. A `url` value must parse as an absolute
+  `http`/`https` URL with a host.
+- `secret: true` values are sealed with the server's vault key
+  (`CCTUI_VAULT_KEY`, the same ChaCha20-Poly1305 vault as API keys and OAuth
+  tokens) and are **never returned by any endpoint** — not to users, not to the
+  admin who wrote them. The admin API reports only whether each is set.
+- Values are at most 2048 characters.
+
+They live in the `plugin_settings` table (migration 155), keyed by plugin id
+rather than on the `plugins` row, so a read-only `CCTUI_PLUGINS_DIR` plugin —
+which has no `plugins` row — can still be configured. Uninstalling a plugin
+deletes its row, secret and all.
+
+### Admin endpoints
+
+`GET /api/v1/admin/plugins/{id}/settings` → `PluginInstanceSettings`:
+
+```json
+{
+  "id": "ghreview",
+  "instance_settings": [ { "key": "upstream", "label": "Backend URL", "type": "url", "secret": false } ],
+  "values": { "upstream": "https://ghreview.dorsk.dev" },
+  "secrets_set": { "webhookSecret": true },
+  "backend_upstream_setting": "upstream",
+  "proxy_secret_set": true
+}
+```
+
+`values` carries non-secret values only; every declared secret appears in
+`secrets_set` as a boolean.
+
+`PUT /api/v1/admin/plugins/{id}/settings` with `{"values": { "<key>": "<value>" }}`
+returns the same shape. It is a **patch**: keys present are written, a key set to
+`""` is cleared, omitted keys keep their value. An undeclared key, a bad `url`,
+or an over-long value is a `400`. An unknown plugin id is a `404`.
+
+### What users see
+
+`GET /api/v1/plugins` adds, per plugin:
+
+- `instanceSettings` — the declarations, for display.
+- `instanceSettingValues` — non-secret values, and only to a caller who has the
+  plugin enabled. Secrets are filtered out twice: once when the values are read
+  and again when the response is built.
+- `backend` — `true` when the plugin declares one.
+
+It also passes the page surface through:
+
+- `page` — the manifest's `{ title, icon }` verbatim, or `null`.
+- `styles` — each manifest entry resolved to `/plugins/<id>/<path>?v=<sha8>`,
+  reusing the `web` bundle's content hash so a plugin upgrade busts the CSS cache
+  with the module. Empty when the manifest declares none.
+
+## Plugin backends
+
+A plugin may ship its own HTTP service, deployed separately from cctui. The
+browser never talks to it directly and never holds a token for it: every call
+goes through cctui, which authenticates the user as usual and then asserts that
+identity to the backend with a signature.
+
+```json
+"instanceSettings": [ { "key": "upstream", "label": "Backend URL", "type": "url" } ],
+"backend": { "upstreamSetting": "upstream" }
+```
+
+`upstreamSetting` must name a declared instance setting of type `url` that is
+**not** secret — the admin has to be able to see and edit it. A manifest that
+breaks either rule is refused at install.
+
+### The route
+
+```
+GET|POST|PUT|PATCH|DELETE /api/v1/plugins/{id}/backend/{*path}
+```
+
+Those five methods, not a literal `ANY`. The authorization policy is attached with
+axum's `route_layer`, which only applies to named method slots — an `any` route
+fills the `MethodRouter` fallback instead, so the policy would be silently absent
+(in fact axum panics rather than allow it). Any other verb answers `405`. `HEAD`
+is served by the `GET` handler, and CORS preflight `OPTIONS` is answered by the
+global CORS layer ahead of the router.
+
+- Authenticates with the normal cctui **cookie or bearer** (`read` scope). No
+  new credential exists, so nothing is minted into the browser.
+- `404` when the plugin is unknown, instance-disabled, or declares no `backend` —
+  the three are deliberately indistinguishable. `403` when the caller has not
+  enabled the plugin for themselves.
+- `503` when no admin has set the upstream, or the plugin has no proxy secret.
+- `502` when the upstream does not answer.
+- Request and response bodies are **streamed**, never buffered, and the client
+  used for upstreams has **no response timeout**, so a `text/event-stream`
+  response stays open as long as the backend keeps it open. The request body
+  limit is lifted on this route only.
+- **No redirects.** The upstream client's redirect policy is `none`: a `3xx` is
+  relayed to the caller verbatim rather than followed, so a compromised backend
+  cannot walk the proxy to an address the admin never configured.
+- The upstream is validated as an absolute `http`/`https` URL with a host, but
+  it is **not** put through the SSRF guard — cluster-internal hosts like
+  `http://ghreview.cctui.svc.cluster.local:8790` are exactly the point, and only
+  an admin can set it.
+- **CSRF.** The route sits under the same `/api/v1` gate as everything else, so
+  an unsafe method (`POST`/`PUT`/`PATCH`/`DELETE`) carried by the `cctui_auth`
+  cookie needs an allowed `Origin` (else `Referer`). Bearer calls are unaffected.
+
+### What the backend receives
+
+Stripped before forwarding: `Authorization`, the `cctui_auth` and
+`cctui_preview` cookies (other cookies are kept, per cookie, not per header),
+`Host`, every hop-by-hop header, and **every inbound `X-Cctui-*` header**, so a
+caller cannot supply its own identity.
+
+Injected:
+
+| Header | Value |
+| --- | --- |
+| `X-Cctui-User-Id` | the authenticated user's UUID |
+| `X-Cctui-User-Name` | `users.name` |
+| `X-Cctui-Plugin` | the plugin id |
+| `X-Cctui-Ts` | Unix seconds when the proxy signed |
+| `X-Cctui-Sig` | lowercase hex `HMAC-SHA256(secret, canonical)` |
+
+The canonical string is, byte for byte:
+
+```
+<METHOD> LF <PATH> LF <TS> LF <USER_ID>
+```
+
+i.e. `format!("{method}\n{path}\n{ts}\n{user_id}")`. Exactly:
+
+- `METHOD` is the HTTP method upper-case, as received (`GET`, `POST`, …).
+- `PATH` is the `{*path}` suffix with **exactly one leading slash and no query
+  string or fragment** — `v1/pulls?state=open` signs as `/v1/pulls`. The query
+  is still forwarded, it is simply not signed.
+- `TS` is the Unix timestamp in seconds, decimal, no padding.
+- `USER_ID` is the UUID in lower-case hyphenated form.
+- There is no trailing newline.
+
+A backend verifies by recomputing this with its own copy of the secret, in
+constant time, and rejecting a `TS` outside its clock-skew window (ghreview
+allows ±300 s). Fixed vectors both sides' tests read live in
+[`plugin-proxy-signature-vectors.json`](./plugin-proxy-signature-vectors.json) —
+change the signer and that test fails on both sides.
+
+### The proxy secret
+
+One secret per plugin, sealed in `plugin_settings.proxy_secret` with the server's
+vault key. It is minted when a plugin declaring a `backend` is installed, and the
+install response carries it **once** as `proxy_secret` (only when freshly
+minted). `POST /api/v1/admin/plugins/{id}/proxy-secret` rotates it and returns
+the new value once. No other endpoint ever returns it; `proxy_secret_set` only
+says whether one exists. Rotating it breaks the backend until its
+`GHREVIEW_PROXY_SECRET` (or equivalent) is updated — rotate both together.
+
+### SSE and replicas
+
+The proxy is a **stateless per-pod forward**. It holds no shared state: the pod
+that receives the browser's request opens its own connection to the upstream and
+streams bytes through it. There is no cross-pod hop as previews have, and none is
+needed — any replica can serve any plugin backend request, and an SSE stream
+simply lives for as long as that one pod↔upstream connection does. A rolling
+restart drops open streams, and the client is expected to reconnect
+(`EventSource` does so by itself). If the *upstream* runs several replicas, it is
+responsible for its own fan-out; cctui does not broadcast between them.
+
+### Admin UI
+
+Settings › Plugins, **Manage** block: a row that declares `instanceSettings` or a
+`backend` gets a **Configure** button, and the form is only fetched while it is
+open. Non-secret fields show their stored value; a secret field is write-only —
+always blank, typed values are sent, and a badge says "set" or "not set" with a
+**Clear** action that writes `""`. Only keys the admin actually typed are sent, so
+leaving a secret blank keeps it.
+
+A plugin with a backend also shows the proxy secret's state and a **Rotate**
+button. The secret itself is displayed exactly once, in the response that mints
+it — on rotation, and on an install that created one (`AdminPluginInfo.proxy_secret`).
+Copy it then or rotate again.
+
+### Host context (`HostContext`)
+
+The host sets a Svelte context under `HOST_CONTEXT_KEY` above every mounted
+surface — pane and page alike. v1.1 (contract major 1, minor 1):
+
+```ts
+interface HostContext {
+	cctuiApi: number;                 // 1
+	cctuiApiMinor?: number;           // 1
+	origin: string;                   // the webui origin
+	user?: { id: string; name: string; isAdmin: boolean };
+	apiFetch?(path: string, init?: RequestInit): Promise<Response>;
+	pluginFetch?(path: string, init?: RequestInit): Promise<Response>;
+	navigate?(path: string): void;
+	openSpawn?(req: { prompt: string; working_dir?: string; machine_id?: string }): void;
+	toast?(message: string, tone?: 'ok' | 'info' | 'error'): void;
+}
+```
+
+Every member past `origin` is optional in the type, because an older host does
+not have it: a plugin checks before calling (`ctx.toast?.(…)`). `user` is filled
+in once `GET /me` answers. `apiFetch` prefixes `/api/v1`; `pluginFetch` prefixes
+`/api/v1/plugins/<id>/backend` for the plugin's own id, so the upstream URL and
+its shared secret stay on the server. `openSpawn` opens the host's New session
+form pre-filled, wherever the user is — the plugin never launches a session
+itself, the user submits the form.
+
+### Security model
+
+**A plugin is admin-trusted code that runs with the user's session.** There is no
+sandbox, and there is no attempt at one:
+
+- The bundle is an ES module the SPA `import()`s into the page. It shares the
+  document, the Svelte runtime, the DOM and the same-origin cookie with cctui.
+  Nothing stops it reading or calling anything the page can.
+- `apiFetch` is therefore a convenience, not a boundary: the plugin could call
+  `fetch('/api/v1/...')` itself and the cookie would ride along either way. It
+  acts with the authority of whoever is looking at it — no more (the server still
+  enforces that user's scopes) and no less.
+- The gates are social, not technical: **an admin** installs the archive and turns
+  it on for the instance, and **each user** switches it on for themselves. Install
+  a plugin you would let commit to this repo, from a pinned catalog entry whose
+  sha256 is checked, and nothing else.
+- `pluginFetch` exists so a plugin's backend needs no browser-held token: the
+  server signs the caller's identity upstream. That protects the *upstream
+  secret*, not the browser — a plugin can still call its own backend as the user.
+- Secrets in `instanceSettings` are write-only and never returned by the API, so
+  a plugin's frontend cannot read them even though its backend can be reached
+  through the proxy.
 
 ## Endpoints
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
-| `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `enabled`, `settings` declarations and the caller's `config` values |
+| `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `page`, `styles` (resolved the same way), `enabled`, `settings` declarations and the caller's `config` values |
+| `GET`/`POST`/`PUT`/`PATCH`/`DELETE` `/api/v1/plugins/{id}/backend/{*path}` | bearer or cookie, read | proxy to the plugin's backend with signed identity headers; streams, incl. SSE |
 | `POST /api/v1/plugins/rescan` | admin | re-read the plugins directory |
 | `GET /api/v1/admin/plugins` | admin | `AdminPluginInfo[]`: every plugin, installed or from the directory, with its instance toggle |
 | `GET /api/v1/admin/plugins/catalog` | admin | `CatalogPluginInfo[]`: the published catalog, annotated with `installed_version` and `update_available` |
 | `POST /api/v1/admin/plugins` | admin | install or upgrade from `{catalog}`, `{url}` or a multipart `file` |
 | `PATCH /api/v1/admin/plugins/{id}` | admin | `{enabled}`, the instance-wide toggle |
+| `GET /api/v1/admin/plugins/{id}/settings` | admin | `PluginInstanceSettings`: declarations, non-secret values, which secrets are set |
+| `PUT /api/v1/admin/plugins/{id}/settings` | admin | patch `{values}`; `""` clears a key |
+| `POST /api/v1/admin/plugins/{id}/proxy-secret` | admin | rotate the backend-proxy secret, returned once |
 | `DELETE /api/v1/admin/plugins/{id}` | admin | uninstall (directory plugins cannot be removed) |
 | `GET /plugins/{id}/{path}` | none | static files from the plugin: traversal-safe, typed by extension, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache` + `ETag` |
 

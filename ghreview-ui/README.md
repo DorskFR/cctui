@@ -11,6 +11,70 @@ webui's tooling (Svelte 5 runes, `@tanstack/svelte-query`, biome, vitest) and ow
 its own minimal CSS with design tokens (every color is a CSS custom property in
 `src/tokens.css`; **CCT-607** formalized four themes and syntax palettes).
 
+## Three ways this app runs
+
+| mode | entry | backend reached by |
+|---|---|---|
+| standalone (dev) | `src/main.ts` → `App.svelte` | direct `fetch` + `Authorization: Bearer` |
+| embedded (legacy) | `src/Review.svelte` | injected `baseUrl` + bearer |
+| **cctui plugin** | `src/plugin.ts` → `ReviewPage.svelte` | `HostContext.pluginFetch` through the signed proxy |
+
+All three share `Shell.svelte`; only the transport and the router differ.
+
+## Plugin mode
+
+`src/plugin.ts` default-exports `{ cctuiApi: 1, page: ReviewPage }`. The host mounts
+`ReviewPage` with `PageProps { basePath, path, navigate }` and sets `HostContext`
+under `HOST_CONTEXT_KEY` in Svelte context (see `src/lib/plugin/host.ts`).
+
+- **Transport** — `ReviewPage` installs a `GhreviewTransport` (see
+  `src/lib/api/config.ts`) whose `fetch` is `HostContext.pluginFetch`, so every
+  `/v1/...` call goes to `/api/v1/plugins/ghreview/backend/v1/...` with cookie auth.
+  **No bearer token exists in plugin mode**, and a stale standalone token in
+  `localStorage` cannot leak into a request: the `Authorization` header is only set
+  on the transport-less branch. SSE is an `EventSource` on the same proxy path.
+- **Routing** — the host owns the URL. `ReviewPage` calls `router.adopt({ navigate })`
+  and `router.setPath(path)`, so the router stops reading `window.location` and
+  pushing history; navigations go back out through `PageProps.navigate`.
+- **Backend gate** — the page probes `/v1/health` through the proxy on mount. Until
+  an admin finishes the setup below, and whenever the backend is down, the page
+  shows one "not configured or not reachable" state with the observed status and a
+  Retry, instead of a wall of failing queries.
+
+### Configuring an installed plugin
+
+The plugin declares exactly one instance setting, `backendUrl`. The proxy signing
+secret is **not** a setting: the server mints it on install (any manifest with a
+`backend` block gets one), seals it, and returns it **once**.
+
+1. Install the plugin. The install response carries `proxy_secret` once —
+   `POST /api/v1/admin/plugins/ghreview/proxy-secret` rotates it and returns the new
+   value, also once.
+2. Set `GHREVIEW_PROXY_SECRET` on the ghreview deployment to that value.
+3. Set the upstream:
+   `PUT /api/v1/admin/plugins/ghreview/settings` with
+   `{"values":{"backendUrl":"https://…"}}`, or the form in Settings › Plugins.
+- **GitHub accounts** — PAT add/remove lives in the app now
+  (`src/lib/components/GithubAccounts.svelte`, route `/accounts`), not in webui.
+
+### Packaging
+
+```sh
+bun run build:plugin      # → dist/plugin/{plugin.json,web/} and dist/ghreview-<ver>.tgz
+```
+
+`scripts/build-plugin.ts` runs `vite.plugin.config.ts` (Svelte and Tsumikit stay
+external, resolved from the host's `/plugin-runtime/*`), writes `plugin.json`
+(`id: ghreview`, `page`, `backend.upstreamSetting: "backendUrl"`,
+`instanceSettings`, `styles`, `skills` when `skills/gh-review/SKILL.md` exists) and
+tars the folder. `backend.upstreamSetting` must name a declared, non-secret `url`
+setting or the server refuses the manifest at install. It fails if the bundle or the stylesheet is missing, or if the
+archive exceeds the server's 5 MB limit.
+
+Component CSS is injected at mount, but the plain stylesheet imports (tokens,
+embed, markdown, syntax) cannot be — they build to one `web/index.css` that the
+manifest declares in `styles[]` for the host to link.
+
 ## Standalone vs embedded
 
 The same code runs two ways, selected by whether an embedder injects a runtime
@@ -39,22 +103,32 @@ bun install
 GHREVIEW_URL=http://localhost:8790 bun run dev   # vite dev server on :5290
 ```
 
+Run the backend in its loopback-only anonymous mode for this
+(`GHREVIEW_AUTH_MODE=none GHREVIEW_UNSAFE_ALLOW_ANONYMOUS=true`): see _Auth_ below
+for why standalone SSE has no other option.
+
 The dev server proxies `/v1` (including `/v1/events` SSE) to `GHREVIEW_URL`
 (default `http://localhost:8790`), so the app is same-origin in dev. For a hosted
 build, set `VITE_GHREVIEW_URL` to the backend origin at build time instead.
 
 ### Auth
 
-Auth reuses cctui bearer tokens (see `ghreview/README.md`); the token is sent as
-`Authorization: Bearer …` on every `/v1` call and as `?access_token=` on the SSE
-stream.
+Three cases, in descending order of how much you should rely on them:
 
-- **Standalone** — the `AuthGate` prompts for a token on first load and stores it
-  in `localStorage` (`ghreview:token`) with an optional default account
+- **Plugin** — no token anywhere. The proxy authenticates the cctui session cookie
+  and signs `X-Cctui-*` identity headers the backend verifies. `EventSource` hits
+  the proxy path directly and the cookie rides along because it is same-origin.
+- **Embedded (legacy)** — cctui-ui injects a bearer minted for the signed-in user,
+  sent as `Authorization: Bearer …` on every `/v1` call.
+- **Standalone** — the `AuthGate` prompts for a token and stores it in
+  `localStorage` (`ghreview:token`) with an optional default account
   (`ghreview:account`); `VITE_GHREVIEW_TOKEN` / `VITE_GHREVIEW_ACCOUNT` seed these
-  for local dev.
-- **Embedded** — cctui-ui injects a bearer minted for the signed-in user (CCT-603
-  resolves it against the shared DB), so there is no second login.
+  for local dev. **SSE cannot be authenticated in this mode.** `EventSource` cannot
+  set a request header and the backend no longer reads a token from the query
+  string (a credential in a URL lands in every access log), so `/v1/events` only
+  works against a backend in `GHREVIEW_AUTH_MODE=none`, which refuses to boot
+  without `GHREVIEW_UNSAFE_ALLOW_ANONYMOUS=true` and binds to `127.0.0.1` only.
+  Plain `/v1` fetches still authenticate normally with the bearer header.
 
 ## Commands
 

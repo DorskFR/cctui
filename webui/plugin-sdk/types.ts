@@ -5,6 +5,8 @@ import type { IconName } from '@dorsk/tsumikit';
 import type { Component } from 'svelte';
 
 export const CCTUI_PLUGIN_API = 1;
+/** Additive members only; the host accepts any minor, a plugin feature-checks. */
+export const CCTUI_PLUGIN_API_MINOR = 1;
 
 /** The session a plugin pane is opened next to. */
 export interface PluginSession {
@@ -35,6 +37,15 @@ export interface PaneProps {
 	onclose: () => void;
 }
 
+/** Props the host mounts a `page` with. The plugin routes on `path` (always
+ *  starting with `/`) and calls `navigate` instead of touching `history`, so the
+ *  host keeps the SvelteKit URL — `${basePath}${path}` — in sync. */
+export interface PageProps {
+	basePath: string;
+	path: string;
+	navigate(path: string): void;
+}
+
 /** A conversation message handed to `messageActions`. */
 export interface PluginMessage {
 	role: string;
@@ -55,16 +66,60 @@ export interface MessageAction {
 /** Svelte context the host sets above every mounted pane. */
 export const HOST_CONTEXT_KEY = 'cctui:host';
 
+/** The signed-in user, as the host knows them. */
+export interface HostUser {
+	id: string;
+	name: string;
+	isAdmin: boolean;
+}
+
+export type HostToastTone = 'ok' | 'info' | 'error';
+
+/** What a plugin asks the host to open its New session form pre-filled with. */
+export interface HostSpawnRequest {
+	prompt: string;
+	working_dir?: string;
+	machine_id?: string;
+}
+
+/** Everything past `{ cctuiApi, origin }` arrived in a later minor, so a plugin
+ *  checks for a member before calling it. */
 export interface HostContext {
 	cctuiApi: number;
+	cctuiApiMinor?: number;
 	/** The webui origin, what a skill needs as `--parent-origin`. */
 	origin: string;
+	user?: HostUser;
+	/** `fetch` against the host API (`path` is relative to `/api/v1`), with the
+	 *  user's own session: a plugin can do exactly what the user can, no more. */
+	apiFetch?(path: string, init?: RequestInit): Promise<Response>;
+	/** `fetch` against the plugin's own backend through the host proxy
+	 *  (`/api/v1/plugins/<id>/backend/<path>`), which signs the user's identity
+	 *  upstream. The upstream URL and its secret never reach the browser. */
+	pluginFetch?(path: string, init?: RequestInit): Promise<Response>;
+	/** Navigate the host SPA to an app path (`/sessions/...`). */
+	navigate?(path: string): void;
+	/** Open the host's New session form pre-filled. The user still submits it. */
+	openSpawn?(req: HostSpawnRequest): void;
+	toast?(message: string, tone?: HostToastTone): void;
 }
 
 export interface CctuiPluginModule {
 	cctuiApi: typeof CCTUI_PLUGIN_API;
 	sessionPane?: Component<PaneProps>;
+	page?: Component<PageProps>;
 	messageActions?: (msg: PluginMessage) => MessageAction[];
+}
+
+/** A plugin's `plugin.json`, as far as the browser half cares. */
+export interface PluginManifestWeb {
+	id: string;
+	cctuiApi: number;
+	web?: string;
+	page?: { title: string; icon?: string };
+	/** Global stylesheets, relative to the plugin folder (`web/app.css`). The
+	 *  host links each one once per document, before the module is imported. */
+	styles?: string[];
 }
 
 /** Shared modules a plugin must not bundle, keyed by import specifier; the
@@ -80,6 +135,7 @@ export const PLUGIN_RUNTIME_PATHS: Record<string, string> = {
 /** What `/plugin-runtime/manifest.json` reports about the host. */
 export interface PluginRuntimeManifest {
 	cctuiApi: number;
+	cctuiApiMinor?: number;
 	svelte: string;
 	tsumikit: string;
 }

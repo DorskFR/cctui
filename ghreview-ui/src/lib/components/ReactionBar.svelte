@@ -74,7 +74,7 @@
       size="sm"
       active={mine.has(content)}
       class={mine.has(content) ? "pill mine" : "pill"}
-      {disabled}
+      aria-disabled={disabled || undefined}
       aria-pressed={mine.has(content)}
       title={content}
       onclick={() => toggle(content)}

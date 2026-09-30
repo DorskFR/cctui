@@ -4,13 +4,23 @@ export type {
 	CctuiPluginModule,
 	ComposerBridge,
 	MessageAction,
+	PageProps as PluginPageProps,
 	PaneProps as PluginPaneProps,
 	PluginMessage,
 	PluginSession
 } from '../../../plugin-sdk/types';
-export { CCTUI_PLUGIN_API, HOST_CONTEXT_KEY, type HostContext } from '../../../plugin-sdk/types';
+export {
+	CCTUI_PLUGIN_API,
+	CCTUI_PLUGIN_API_MINOR,
+	HOST_CONTEXT_KEY,
+	type HostContext,
+	type HostSpawnRequest,
+	type HostToastTone,
+	type HostUser
+} from '../../../plugin-sdk/types';
 
 export type { PluginInfo } from '$lib/bindings/PluginInfo';
+export type { PluginPage } from '$lib/bindings/PluginPage';
 export type { PluginSetting as PluginSettingDecl } from '$lib/bindings/PluginSetting';
 
 /** One toolbar toggle per enabled pane plugin. */

@@ -62,6 +62,28 @@ export function pickAttachment(
   return same.reduce((best, a) => (a.created_at < best.created_at ? a : best));
 }
 
+const UNNAMED_IMAGE_WINDOW_MS = 10 * 60_000;
+
+/** The uploads behind a turn that lost its image names: the `count` newest
+ *  images recorded shortly before the message, oldest first. */
+export function pickUnnamedImages(
+  all: SessionAttachment[],
+  count: number,
+  messageTs: number,
+): SessionAttachment[] {
+  if (count <= 0) return [];
+  return all
+    .filter(
+      (a) =>
+        (a.content_type ?? "").startsWith("image/") &&
+        a.created_at <= messageTs + ATTACHMENT_CLOCK_SLACK_MS &&
+        a.created_at >= messageTs - UNNAMED_IMAGE_WINDOW_MS,
+    )
+    .sort((a, b) => b.created_at - a.created_at)
+    .slice(0, count)
+    .reverse();
+}
+
 export function attachmentBlobUrl(sessionId: string, hash: string): string {
   return `/api/v1/sessions/${encodeURIComponent(sessionId)}/blobs/${encodeURIComponent(hash)}`;
 }

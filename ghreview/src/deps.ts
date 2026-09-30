@@ -18,11 +18,17 @@ export interface AppDeps {
   forceSync?: (account: string) => Promise<"ok" | "busy" | "unknown">;
   accountFor?: (account: string) => Account | undefined;
   auth?: AuthResolver;
+  proxyAuth?: ProxyAuthConfig;
   authDisabled?: boolean;
   sealer?: { seal: (plaintext: string) => string };
   validatePat?: PatValidator;
   octokitForPat?: (token: string) => OctokitRequest;
   limits?: AccountLimits;
+}
+
+export interface ProxyAuthConfig {
+  secret: string;
+  maxSkewSeconds?: number;
 }
 
 export interface AccountLimits {

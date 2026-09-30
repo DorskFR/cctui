@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Callout, EmptyState } from "@dorsk/tsumikit";
   import { untrack } from "svelte";
   import { createMutation, createQuery } from "@tanstack/svelte-query";
   import { api } from "../api/client";
@@ -282,11 +283,11 @@
 <div class="prview">
   {#if !pull}
     {#if query.isLoading}
-      <div class="msg">Loading pull request…</div>
+      <EmptyState loading title="Loading pull request…" />
     {:else if query.isError}
-      <div class="msg err">{(query.error as Error).message}</div>
+      <div class="state"><Callout tone="danger">{(query.error as Error).message}</Callout></div>
     {:else}
-      <div class="msg">Not synced yet.</div>
+      <EmptyState icon="pull-request" title="Not synced yet." />
     {/if}
   {:else}
     <PrDiffHeader
@@ -340,7 +341,7 @@
           onToggleViewed={toggleViewed}
         >
           {#if files.length === 0}
-            <div class="msg">No file patches in the synced payload.</div>
+            <EmptyState size="compact" icon="file" title="No file patches in the synced payload." />
           {:else}
             <DiffView
               model={displayModel}
@@ -374,11 +375,7 @@
     display: flex;
     flex-direction: column;
   }
-  .msg {
+  .state {
     padding: var(--gh-space-4);
-    color: var(--gh-fg-muted);
-  }
-  .err {
-    color: var(--gh-danger);
   }
 </style>

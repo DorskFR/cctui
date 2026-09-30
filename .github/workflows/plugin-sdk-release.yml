@@ -1,0 +1,83 @@
+name: plugin-sdk release
+
+# Its own tag series (`plugin-sdk-vX.Y.Z`), so publishing the SDK is independent
+# of a cctui release. The FIRST publish is manual: npm refuses to configure
+# trusted publishing for a package that does not exist yet.
+on:
+  push:
+    tags:
+      - "plugin-sdk-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. plugin-sdk-v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish @dorsk/cctui-plugin-sdk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted publishing: npm mints the credential from this OIDC token, so
+      # there is no NPM_TOKEN secret.
+      id-token: write
+    defaults:
+      run:
+        working-directory: webui/plugin-sdk
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Resolve name and version
+        id: pkg
+        run: |
+          echo "name=$(node -p 'require("./package.json").name')" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches package.json
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          expected="plugin-sdk-v${VERSION}"
+          if [ "$TAG" != "$expected" ]; then
+            echo "tag ${TAG} does not match package.json version ${VERSION} (expected ${expected})" >&2
+            exit 1
+          fi
+
+      - name: Is this version already published?
+        id: state
+        env:
+          NAME: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bundle the licence with the package
+        if: steps.state.outputs.published == 'false'
+        run: cp ../../LICENSE ./LICENSE
+
+      - name: Publish
+        if: steps.state.outputs.published == 'false'
+        run: npm publish --provenance --access public
+
+      - name: Already published
+        if: steps.state.outputs.published == 'true'
+        env:
+          NAME: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: echo "${NAME}@${VERSION} is already on the registry; nothing to do."

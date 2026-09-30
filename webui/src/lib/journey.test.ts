@@ -131,7 +131,14 @@ describe('guideParams', () => {
 	const qc = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 	it('leaves absent names out so the guide that needs them is refused', async () => {
-		expect(await guideParams(qc())).toEqual({ 'var.label': '', 'var.prompt': '', 'fixture.me': 'root' });
+		expect(await guideParams(qc())).toEqual({
+			'var.label': '',
+			'var.prompt': '',
+			'var.query': '',
+			'var.facet': '',
+			'var.blank': '',
+			'fixture.me': 'root'
+		});
 	});
 
 	it('names the first account, pool and live session', async () => {

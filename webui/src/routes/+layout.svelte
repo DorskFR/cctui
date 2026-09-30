@@ -16,6 +16,8 @@
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
+	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
+	import { pluginSpawn } from '$lib/plugins/spawnRequest.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
@@ -26,11 +28,12 @@
 
 	let { children } = $props();
 
-	// The embedded review center manages its own full-height layout, so
-	// it renders outside the width-capped Container and without content padding.
-	const isReview = $derived(page.url.pathname.startsWith('/github'));
-	// Tiles is a grid of full-height conversations: same deal, no width cap and
-	// no content padding of its own.
+	// The review center, a plugin's full page and the tiles grid manage their own
+	// full-height layout, so they render outside the width-capped Container and
+	// without content padding.
+	const isReview = $derived(
+		page.url.pathname.startsWith('/github') || page.url.pathname.startsWith('/apps/')
+	);
 	const isTiles = $derived(page.url.pathname.startsWith('/tiles'));
 	const fullBleed = $derived(isReview || isTiles);
 
@@ -172,6 +175,13 @@
 				</main>
 				<MainNav />
 			</div>
+			{#if pluginSpawn.prefill}
+				<SpawnModal
+					prefill={pluginSpawn.prefill}
+					onclose={() => pluginSpawn.close()}
+					onspawned={() => void queryClient.invalidateQueries({ queryKey: qk.sessionsAll })}
+				/>
+			{/if}
 		{:else if !auth.checking}
 			<Login />
 		{/if}

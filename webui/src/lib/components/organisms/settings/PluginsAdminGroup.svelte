@@ -1,11 +1,13 @@
 <script lang="ts">
-	import { Badge, Button, EmptyState, FileButton, Input, Switch, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Callout, EmptyState, FileButton, Input, Switch, Text } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
+	import PluginInstanceSettingsForm from '$lib/components/molecules/PluginInstanceSettingsForm.svelte';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import { endpoints, qk, useAdminPluginCatalog, useAdminPlugins } from '$lib/queries';
 	import type { AdminPluginInfo } from '@bindings/AdminPluginInfo';
 	import type { CatalogPluginInfo } from '@bindings/CatalogPluginInfo';
+	import { copyText } from '$lib/clipboard';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -19,11 +21,17 @@
 
 	let url = $state('');
 	let busy = $state(false);
+	// Which row's settings form is open; the form only fetches while it is.
+	let configuring = $state<string | null>(null);
+	// An install that minted a proxy secret is the only response carrying it.
+	let minted = $state<{ id: string; secret: string } | null>(null);
 
 	async function run(work: () => Promise<unknown>, done: string) {
 		busy = true;
 		try {
-			await work();
+			const result = await work();
+			const secret = (result as AdminPluginInfo | undefined)?.proxy_secret;
+			if (typeof secret === 'string' && secret) minted = { id: (result as { id: string }).id, secret };
 			await refresh();
 			toasts.ok(done);
 		} catch (e) {
@@ -50,8 +58,9 @@
 		const target = url.trim();
 		if (!target) return;
 		void run(async () => {
-			await endpoints.installPluginFromUrl(target);
+			const installed = await endpoints.installPluginFromUrl(target);
 			url = '';
+			return installed;
 		}, m.settings_plugins_admin_installed());
 	}
 
@@ -76,6 +85,22 @@
 
 <div id="instance-plugins" data-journey="plugins-admin">
 	<SettingGroup title={m.settings_plugins_group_manage()}>
+		{#if minted}
+			<Callout tone="warn" data-journey="plugin-admin-proxy-secret">
+				<Text size="sm">{m.settings_plugins_instance_proxy_minted({ name: minted.id })}</Text>
+				<Text size="sm" variant="code" data-journey="plugin-admin-proxy-secret-value">{minted.secret}</Text>
+				<div class="add">
+					<Button
+						size="sm"
+						variant="ghost"
+						onclick={() => void copyText(minted?.secret ?? '', m.settings_plugins_instance_proxy_copied())}
+					>
+						{m.common_copy()}
+					</Button>
+					<Button size="sm" variant="ghost" onclick={() => (minted = null)}>{m.common_close()}</Button>
+				</div>
+			</Callout>
+		{/if}
 		<SettingRow label={m.settings_plugins_admin_label()} help={m.settings_plugins_admin_help()} server admin wide selfLabelled>
 			<div class="plugins">
 				{#if plugins.isError}
@@ -95,6 +120,18 @@
 								<Badge size="sm" tone={plugin.source === 'installed' ? 'info' : 'neutral'}>
 									{plugin.source === 'installed' ? m.settings_plugins_admin_source_installed() : m.settings_plugins_admin_source_directory()}
 								</Badge>
+								{#if plugin.instance_settings.length > 0 || plugin.backend}
+									<Button
+										size="sm"
+										variant="ghost"
+										data-journey="plugin-admin-configure"
+										data-plugin={plugin.id}
+										aria-expanded={configuring === plugin.id}
+										onclick={() => (configuring = configuring === plugin.id ? null : plugin.id)}
+									>
+										{m.settings_plugins_instance_configure()}
+									</Button>
+								{/if}
 								{#if plugin.source === 'installed'}
 									<Switch
 										bind:checked={() => plugin.enabled, (v) => toggle(plugin, v)}
@@ -116,6 +153,11 @@
 									</Button>
 								{:else}
 									<Text size="xs" tone="faint">{m.settings_plugins_admin_always_on()}</Text>
+								{/if}
+								{#if configuring === plugin.id}
+									<div class="settings">
+										<PluginInstanceSettingsForm pluginId={plugin.id} />
+									</div>
 								{/if}
 							</li>
 						{/each}
@@ -225,6 +267,10 @@
 		align-items: center;
 		gap: var(--sp-2);
 		flex-wrap: wrap;
+	}
+	.settings {
+		flex-basis: 100%;
+		min-width: 0;
 	}
 	.who {
 		display: flex;

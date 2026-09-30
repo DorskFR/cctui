@@ -2,11 +2,14 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import {
     Button,
+    Callout,
     Checkbox,
     Cluster,
+    EmptyState,
     OptionButton,
     SegmentedControl,
     Select,
+    Skeleton,
   } from "@dorsk/tsumikit";
   import { api, type NotificationFilter } from "../api/client";
   import { getAccount, onConfigChange } from "../api/config";
@@ -236,11 +239,11 @@
   {/if}
 
   {#if query.isLoading}
-    <div class="msg">Loading…</div>
+    <div class="state" aria-busy="true"><Skeleton lines={5} height="1.4em" /></div>
   {:else if query.isError}
-    <div class="msg err">{(query.error as Error).message}</div>
+    <div class="state"><Callout tone="danger">{(query.error as Error).message}</Callout></div>
   {:else if visible.length === 0}
-    <div class="msg">Inbox zero.</div>
+    <EmptyState icon="bell" title="Inbox zero." description="Nothing is waiting for you." />
   {:else}
     <div class="selectall">
       <Checkbox
@@ -282,9 +285,9 @@
             <PrStateIcon state={icon.state} muted={icon.muted} size={16} />
           {/if}
           {#if isPull(n) && !selectMode}
-            <button type="button" class="body open" onclick={() => openPull(n)}>
-              {@render rowBody(n)}
-            </button>
+            <Button variant="ghost" grow onclick={() => openPull(n)}>
+              <span class="body">{@render rowBody(n)}</span>
+            </Button>
           {:else}
             <div class="body">{@render rowBody(n)}</div>
           {/if}
@@ -349,20 +352,10 @@
     flex: 1;
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: 4px;
     min-width: 0;
-  }
-  button.body {
-    background: none;
-    border: none;
-    padding: 0;
-    color: var(--gh-fg);
-    align-items: flex-start;
     text-align: left;
-    cursor: pointer;
-  }
-  button.body:hover .subject {
-    text-decoration: underline;
   }
   .subject {
     overflow: hidden;
@@ -386,11 +379,7 @@
     display: flex;
     gap: 4px;
   }
-  .msg {
+  .state {
     padding: var(--gh-space-4);
-    color: var(--gh-fg-muted);
-  }
-  .err {
-    color: var(--gh-danger);
   }
 </style>

@@ -87,23 +87,31 @@ The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
 | `GHREVIEW_WEBHOOK_SECRET` | — | Shared secret for `X-Hub-Signature-256` on `POST /v1/webhook`. |
 | `PORT` | `8790` | HTTP port. |
 | `GHREVIEW_SEAL_KEY` | — | 32-byte AES key (hex/base64/raw) that seals PATs at rest. Unset ⇒ accounts + poller disabled (store + auth only). Vault delivers it in prod. |
-| `GHREVIEW_AUTH_MODE` | `cctui` | `cctui` verifies bearer tokens against the shared cctui DB; `static` uses `GHREVIEW_AUTH_TOKENS`. |
+| `GHREVIEW_AUTH_MODE` | `proxy` | `proxy` trusts the signed `X-Cctui-*` identity headers cctui's plugin proxy injects; `static` uses `GHREVIEW_AUTH_TOKENS`. |
+| `GHREVIEW_PROXY_SECRET` | — | The plugin's proxy secret, from cctui's Settings → Plugins. Required by `proxy` mode; without it every `/v1` route denies. |
+| `GHREVIEW_PROXY_MAX_SKEW_SECONDS` | `300` | Accepted clock skew on `X-Cctui-Ts`. |
 | `GHREVIEW_AUTH_TOKENS` | — | Static-mode `token:userId,token2:userId2` map (dev / standalone). |
-| `GHREVIEW_CCTUI_SCHEMA` | `public` | Schema holding cctui's `auth_keys`/`users` for `cctui` auth mode. |
 | `GHREVIEW_SYNC_VIEWED_GITHUB` | `false` | When `true`, each PR content change also pulls github.com's per-file viewed state in via GraphQL. Off by default to bound GraphQL spend. |
 | `GITHUB_ACCOUNT` + `GITHUB_TOKEN` | — | Optional single-account bootstrap: seeds one `gh_accounts` row (owner `env`) when a seal key is set. Managing accounts via `/v1/accounts` is the multi-account path. |
 
 ## Multi-account, auth & isolation
 
-gh-review is a second backend beside the cctui Rust server. **AuthN reuses cctui's
-bearer tokens**: cctui hashes tokens with `sha256(token)` and resolves them in
-`auth_keys JOIN users`, and gh-review shares that Postgres, so the primary
-(`GHREVIEW_AUTH_MODE=cctui`) resolver verifies a token with one query and no
-network hop — the review UI mounted in cctui-ui needs no second login.
+gh-review is a plugin backend behind cctui's authenticated plugin proxy. The
+browser never holds a credential for it and it never reads cctui's database: in
+the default `GHREVIEW_AUTH_MODE=proxy`, every `/v1` request must arrive from
+`/api/v1/plugins/ghreview/backend/*` (GET/POST/PUT/PATCH/DELETE) carrying `X-Cctui-User-Id`,
+`X-Cctui-User-Name`, `X-Cctui-Plugin`, `X-Cctui-Ts` and `X-Cctui-Sig`, where the
+signature is `HMAC-SHA256(GHREVIEW_PROXY_SECRET, method + "\n" + path + "\n" +
+ts + "\n" + userId)` — `path` with one leading slash and no query. It is
+verified in constant time and its timestamp must be within
+`GHREVIEW_PROXY_MAX_SKEW_SECONDS`. The canonical string is specified in cctui's
+`docs/plugins.md`, and `docs/plugin-proxy-signature-vectors.json` holds vectors
+both implementations' tests read, so the Rust signer and this verifier cannot
+drift. The user id comes from the header; nothing else identifies the caller.
+
 A deliberately thin `static` mode (`GHREVIEW_AUTH_TOKENS`) keeps the service
-standalone-capable and testable without a cctui DB. Auth is enforced on every
-`/v1` route except `/v1/health`, `/v1/status`, `/v1/webhook` (HMAC-signed) and the
-OpenAPI doc.
+standalone-capable and testable without cctui. Auth is enforced on every `/v1`
+route except `/v1/health`, `/v1/webhook` (HMAC-signed) and the OpenAPI doc.
 
 **Accounts.** `gh_accounts(id, user_id, login UNIQUE, encrypted_pat, poll/budget
 overrides)` maps a user to N GitHub accounts. `login` is globally unique, so the
