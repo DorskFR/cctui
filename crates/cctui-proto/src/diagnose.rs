@@ -425,6 +425,29 @@ pub struct SessionDiagnoseResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_error: Option<String>,
     pub server: ServerDiagnose,
+    /// Why the session looks silent, derived server-side from `daemon` so both
+    /// clients answer the question identically. Empty when there is no
+    /// adapter section to reason about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub silence: Vec<crate::silence::SilenceReason>,
+}
+
+impl SessionDiagnoseResponse {
+    /// Fills [`Self::silence`] from the daemon report.
+    #[must_use]
+    pub fn with_silence(mut self) -> Self {
+        self.silence = self.daemon.as_ref().map_or_else(Vec::new, |d| {
+            let mut out = Vec::new();
+            if let Some(cx) = &d.codex {
+                out.extend(crate::silence::codex_silence_reasons(cx, d.generated_at_ms));
+            }
+            if let Some(oc) = &d.opencode {
+                out.extend(crate::silence::opencode_silence_reasons(oc, d.generated_at_ms));
+            }
+            out
+        });
+        self
+    }
 }
 
 #[cfg(test)]
@@ -622,6 +645,7 @@ mod tests {
             daemon: Some(sample_report()),
             daemon_error: None,
             server: server.clone(),
+            silence: vec![],
         };
         let json = serde_json::to_string(&with).unwrap();
         let back: SessionDiagnoseResponse = serde_json::from_str(&json).unwrap();
@@ -632,6 +656,7 @@ mod tests {
             daemon: None,
             daemon_error: Some("no daemon connected".into()),
             server,
+            silence: vec![],
         };
         let json = serde_json::to_string(&without).unwrap();
         assert!(!json.contains(r#""daemon":"#), "None daemon must be skipped: {json}");

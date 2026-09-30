@@ -40,6 +40,8 @@ pub struct ProbeRequest {
 pub trait UsageProbe: Send + Sync {
     /// Registry id, as stored in `account_providers.usage_probe`.
     fn id(&self) -> &'static str;
+    /// How the picker names the probe.
+    fn label(&self) -> &'static str;
     /// The call to make. `base_url` is the credential's configured endpoint.
     fn request(&self, base_url: Option<&str>, token: &str) -> ProbeRequest;
     /// The upstream body → canonical windows. An unexpected shape yields an
@@ -65,6 +67,20 @@ pub fn probe(id: &str) -> Option<&'static dyn UsageProbe> {
 #[must_use]
 pub fn ids() -> Vec<&'static str> {
     PROBES.iter().map(|p| p.id()).collect()
+}
+
+/// The `usage_probe` picker's entries, `""` (unmeasured) first.
+#[must_use]
+pub fn picker_entries() -> Vec<cctui_proto::provider::UsageProbeInfo> {
+    std::iter::once(cctui_proto::provider::UsageProbeInfo {
+        id: String::new(),
+        label: "None (unmeasured)".to_owned(),
+    })
+    .chain(PROBES.iter().map(|p| cctui_proto::provider::UsageProbeInfo {
+        id: p.id().to_owned(),
+        label: p.label().to_owned(),
+    }))
+    .collect()
 }
 
 /// Run a probe and return its canonical windows.
@@ -162,6 +178,10 @@ impl UsageProbe for OpenRouterProbe {
         "openrouter"
     }
 
+    fn label(&self) -> &'static str {
+        "OpenRouter (credits)"
+    }
+
     fn request(&self, base_url: Option<&str>, token: &str) -> ProbeRequest {
         ProbeRequest {
             url: format!("{}/key", openrouter_api_base(base_url)),
@@ -209,6 +229,10 @@ pub struct LiteLlmProbe;
 impl UsageProbe for LiteLlmProbe {
     fn id(&self) -> &'static str {
         "litellm"
+    }
+
+    fn label(&self) -> &'static str {
+        "LiteLLM (virtual-key budget)"
     }
 
     fn request(&self, base_url: Option<&str>, token: &str) -> ProbeRequest {

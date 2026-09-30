@@ -551,6 +551,9 @@ pub enum PermissionMode {
 }
 
 impl PermissionMode {
+    /// Every mode, in the order the pickers list them (least permissive first).
+    pub const ALL: [Self; 4] = [Self::Ask, Self::Auto, Self::Yolo, Self::Whip];
+
     /// ask < auto < yolo = whip.
     #[must_use]
     pub const fn rank(self) -> u8 {

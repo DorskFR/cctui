@@ -14,11 +14,10 @@
 	import PluginChips from '$lib/components/molecules/PluginChips.svelte';
 	import { YOUTRACK_PLUGIN_ID, resolveIssueSlot } from '$lib/plugins/issueLink';
 	import { Badge, Icon, IconButton, Popover, Select, Text, WorkingDir } from '@dorsk/tsumikit';
-	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
+	import { DEFAULT_MODELS } from '$lib/harnessModels';
 	import {
 		useCapabilities,
-		useCodexModels,
-		useMergedCodexModels,
+		useHarnessModels,
 		useSessionActions,
 		useSessionLangfuse
 	} from '$lib/queries';
@@ -84,15 +83,16 @@
 	let pendingModel = $state('');
 	let pendingEffort = $state('');
 
-	// Codex catalog, fetched only while the editor is open: the session
-	// machine's own report, else the cross-machine merge, else the static list.
-	const machineCodexCatalog = useCodexModels(() =>
-		isCodexSession && modelEditing ? session.machine_id : ''
+	// Fetched only while the editor is open; the server narrows the catalog to
+	// the session's machine and the effort list to the pending model.
+	const codexModels = useHarnessModels(
+		() => 'codex',
+		() => session.machine_id,
+		() => pendingModel,
+		() => isCodexSession && modelEditing
 	);
-	const mergedCodexCatalog = useMergedCodexModels(() => isCodexSession && modelEditing);
-	const codexCatalog = $derived(preferCatalog(machineCodexCatalog.data, mergedCodexCatalog.data));
-	const codexModelOptions = $derived(codexModelsFor(codexCatalog));
-	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog, pendingModel));
+	const codexModelOptions = $derived(codexModels.data?.models ?? DEFAULT_MODELS);
+	const codexEffortOptions = $derived(codexModels.data?.efforts ?? ['']);
 
 	function openModelEditor() {
 		pendingModel = session.model ?? '';

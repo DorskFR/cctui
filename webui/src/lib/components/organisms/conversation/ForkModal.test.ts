@@ -7,7 +7,7 @@ import { OTHER_MODEL } from '$lib/harnessModels';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-async function renderHost(model: string, models = [{ v: 'opus', label: 'Opus' }]) {
+async function renderHost(model: string, models = [{ v: 'opus', label: 'Opus', disabled: false }]) {
 	const seen: string[] = [];
 	comp = mount(Host, {
 		target: document.body,
@@ -35,7 +35,7 @@ function render(over: Partial<Record<string, unknown>> = {}) {
 			archived: false,
 			isCodexSession: false,
 			parentTokens: 12_000,
-			models: [{ v: 'opus', label: 'Opus' }],
+			models: [{ v: 'opus', label: 'Opus', disabled: false }],
 			efforts: ['', 'high'],
 			forking: false,
 			model: 'opus',

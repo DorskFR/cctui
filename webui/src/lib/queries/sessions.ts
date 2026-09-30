@@ -263,3 +263,20 @@ export const useSessionBindings = (sessionId: () => string, enabled: () => boole
     queryFn: () => endpoints.sessionBindings(sessionId()),
     enabled: enabled(),
   }));
+
+/** Model + effort options for a harness picker. The server derives them, so
+ *  both clients offer the same set; `machineId`/`model` narrow the codex
+ *  catalog and the effort list. */
+export const useHarnessModels = (
+  harness: () => string,
+  machineId: () => string = () => "",
+  model: () => string = () => "",
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(() => ({
+    queryKey: qk.harnessModels(harness(), machineId(), model()),
+    queryFn: () => endpoints.harnessModels(harness(), machineId(), model()),
+    enabled: enabled() && !!harness(),
+    staleTime: 60_000,
+    retry: false,
+  }));

@@ -73,6 +73,8 @@ import type { InstanceUpdateRequest } from "@bindings/InstanceUpdateRequest";
 import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
+import type { HarnessModels } from "@bindings/HarnessModels";
+import type { DomainMeta } from "@bindings/DomainMeta";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { RescrubRequest } from "@bindings/RescrubRequest";
@@ -391,7 +393,15 @@ export const endpoints = {
     api.get<CodexModelCatalog>(`/machines/${machineId}/codex-models`),
   /** Codex catalog merged across every machine (newest report wins) for
    *  pickers with no machine in hand (dispatch, fork). */
-  codexModelsMerged: () => api.get<CodexModelCatalog>("/models/codex"),
+  codexModelsMerged: () => api.get<CodexModelCatalog>("/models/codex/catalog"),
+  /** Model + effort options for a harness picker, derived server-side. */
+  harnessModels: (harness: string, machineId?: string, model?: string) =>
+    api.get<HarnessModels>(`/models/${harness}`, {
+      ...(machineId ? { machine_id: machineId } : {}),
+      ...(model ? { model } : {}),
+    }),
+  /** Provider metadata, quota probes, end-reason tones, permission modes. */
+  domainMeta: () => api.get<DomainMeta>("/meta/domain"),
   /** Ask the machine's daemon to re-run codex `model/list`; the fresh
    *  catalog lands asynchronously. */
   refreshCodexModels: (machineId: string) =>

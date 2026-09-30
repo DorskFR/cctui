@@ -4,6 +4,7 @@ import type { PermissionMode } from '@bindings/PermissionMode';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { AccountProvider, OAuthAccount } from '$lib/queries';
 import type { SelectOption } from '@dorsk/tsumikit';
+import type { ModelOption } from '$lib/harnessModels';
 import { m } from '$lib/paraglide/messages';
 
 export const modes: { v: PermissionMode; label: string; hint: string }[] = [
@@ -45,16 +46,7 @@ export const modes: { v: PermissionMode; label: string; hint: string }[] = [
 	}
 ];
 
-export {
-	codexModels,
-	codexEfforts,
-	codexModelsFor,
-	codexEffortsFor,
-	claudeModels,
-	claudeEfforts,
-	declaredModelOptions,
-	withDeclaredModels
-} from '$lib/harnessModels';
+export { declaredModelOptions, withDeclaredModels } from '$lib/harnessModels';
 
 // Annotate native-family options with the per-account alias target
 // so the picker reads e.g. "Opus (claude-opus-4-8[1m])" instead of a bare
@@ -62,12 +54,12 @@ export {
 // that the alias is in effect) for the selected account. A no-op when the
 // account has no matching alias for that family.
 export const withAliasTargets = (
-	models: { v: string; label: string }[],
+	models: ModelOption[],
 	aliases: Record<string, string> | null | undefined
-): { v: string; label: string }[] =>
+): ModelOption[] =>
 	models.map((m) => {
 		const target = m.v ? aliases?.[m.v]?.trim() : undefined;
-		return target ? { v: m.v, label: `${m.label} (${target})` } : m;
+		return target ? { ...m, label: `${m.label} (${target})` } : m;
 	});
 
 // The harness/adapter a provider credential runs: anything in the

@@ -93,14 +93,14 @@ describe('accountBacksAdapter', () => {
 describe('withAliasTargets', () => {
 	it('annotates aliased families and leaves the rest untouched', () => {
 		const models = [
-			{ v: '', label: 'Default' },
-			{ v: 'opus', label: 'Opus' },
-			{ v: 'sonnet', label: 'Sonnet' }
+			{ v: '', label: 'Default', disabled: false },
+			{ v: 'opus', label: 'Opus', disabled: false },
+			{ v: 'sonnet', label: 'Sonnet', disabled: false }
 		];
 		expect(withAliasTargets(models, { opus: 'claude-opus-4-8[1m]' })).toEqual([
-			{ v: '', label: 'Default' },
-			{ v: 'opus', label: 'Opus (claude-opus-4-8[1m])' },
-			{ v: 'sonnet', label: 'Sonnet' }
+			{ v: '', label: 'Default', disabled: false },
+			{ v: 'opus', label: 'Opus (claude-opus-4-8[1m])', disabled: false },
+			{ v: 'sonnet', label: 'Sonnet', disabled: false }
 		]);
 		expect(withAliasTargets(models, null)).toEqual(models);
 	});

@@ -29,6 +29,7 @@
 			toasts.ok(m.codex_models_refresh_sent());
 			setTimeout(() => {
 				qc?.invalidateQueries({ queryKey: qk.codexModels });
+				qc?.invalidateQueries({ queryKey: qk.harnessModelsAll });
 				busy = false;
 			}, 4000);
 		} catch (e) {
