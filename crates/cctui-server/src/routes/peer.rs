@@ -435,6 +435,7 @@ mod tests {
             adapter_id: Some("claude-code".into()),
             name: name.map(str::to_owned),
             status: Some("active".into()),
+            room_id: None,
         }
     }
 
