@@ -1,5 +1,4 @@
 mod app;
-mod client;
 mod install;
 mod keys;
 mod selfupdate;
@@ -20,9 +19,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use app::effects::Effects;
+use app::toast::Level;
 use app::{Action, App, reduce, server_event};
-use cctui_proto::ws::TuiCommand;
-use client::{Incoming, ServerClient};
+use cctui_client::{Client, Incoming};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
 };
@@ -91,8 +90,8 @@ async fn main() -> Result<()> {
 /// and render it as one dated, sourced line per fact.
 async fn run_diagnose(session_id: &str) -> Result<()> {
     let (base_url, token) = resolve_identity();
-    let server = ServerClient::new(&base_url, &token);
-    let resp = server.diagnose_session(session_id).await?;
+    let server = Client::new(&base_url, &token);
+    let resp = server.diagnose(session_id).await?;
 
     println!("session {}", resp.session_id);
     let s = &resp.server;
@@ -184,18 +183,17 @@ async fn run(
     base_url: String,
     token: String,
 ) -> Result<()> {
-    let server = Arc::new(ServerClient::new(&base_url, &token));
+    let server = Arc::new(Client::new(&base_url, &token));
     let mut app = App::new();
 
     init_sessions(&server, &mut app).await;
-    let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
-    let (effects, mut action_rx) = Effects::start(Arc::clone(&server), cmd_tx);
+    let (ws, mut event_rx) = server.connect_ws();
+    let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
     let mut input_rx = spawn_input_task();
-    // Backoff for WS reconnect attempts after the stream drops.
-    let mut reconnect_backoff_secs: u64 = 1;
-    let mut reconnect_timer: Option<std::pin::Pin<Box<time::Sleep>>> = None;
+    let mut ws_closed = false;
+    let mut ws_ever_connected = false;
 
     loop {
         app.clock_ms = now_ms();
@@ -218,38 +216,19 @@ async fn run(
                 }
                 actions
             }
-            maybe_event = event_rx.recv() => {
+            maybe_event = event_rx.recv(), if !ws_closed => {
                 match maybe_event {
                     Some(event) => {
-                        let mut actions = incoming_actions(event);
+                        let mut actions = incoming_actions(event, &mut ws_ever_connected);
                         while let Ok(ev) = event_rx.try_recv() {
-                            actions.extend(incoming_actions(ev));
+                            actions.extend(incoming_actions(ev, &mut ws_ever_connected));
                         }
                         actions
                     }
-                    None if reconnect_timer.is_none() => {
-                        // Stream dropped — schedule a reconnect attempt.
-                        reconnect_timer = Some(Box::pin(time::sleep(Duration::from_secs(reconnect_backoff_secs))));
-                        Vec::new()
-                    }
                     None => {
-                        // Already waiting; yield so the timer branch can fire.
-                        tokio::task::yield_now().await;
-                        Vec::new()
+                        ws_closed = true;
+                        vec![Action::Toast(Level::Error, "event stream closed".to_owned())]
                     }
-                }
-            }
-            () = async { reconnect_timer.as_mut().unwrap().await }, if reconnect_timer.is_some() => {
-                reconnect_timer = None;
-                if let Ok((new_tx, new_rx)) = server.connect_ws().await {
-                    effects.set_commands(new_tx);
-                    event_rx = new_rx;
-                    reconnect_backoff_secs = 1;
-                    vec![Action::Reconnected]
-                } else {
-                    reconnect_backoff_secs = (reconnect_backoff_secs * 2).min(30);
-                    reconnect_timer = Some(Box::pin(time::sleep(Duration::from_secs(reconnect_backoff_secs))));
-                    Vec::new()
                 }
             }
             _ = refresh_interval.tick() => vec![Action::RefreshSessions],
@@ -266,27 +245,30 @@ async fn run(
     Ok(())
 }
 
-async fn init_sessions(server: &ServerClient, app: &mut App) {
+async fn init_sessions(server: &Client, app: &mut App) {
     if let Ok(resp) = server.list_sessions().await {
         app.sessions = resp.sessions;
         app.update_aggregates();
     }
 }
 
-async fn connect_ws_or_dummy(
-    server: &ServerClient,
-) -> (mpsc::Sender<TuiCommand>, mpsc::Receiver<Incoming>) {
-    (server.connect_ws().await).unwrap_or_else(|_| {
-        let (tx, _) = mpsc::channel::<TuiCommand>(1);
-        let (_, rx) = mpsc::channel::<Incoming>(1);
-        (tx, rx)
-    })
-}
-
-fn incoming_actions(incoming: Incoming) -> Vec<Action> {
+/// `ever_connected` keeps the first connect silent: only a genuine reconnect
+/// refreshes state and toasts.
+fn incoming_actions(incoming: Incoming, ever_connected: &mut bool) -> Vec<Action> {
     match incoming {
         Incoming::Event(event) => server_event::to_actions(*event),
         Incoming::Undecodable(reason) => vec![Action::UndecodableWsMessage(reason)],
+        Incoming::Connected => {
+            if std::mem::replace(ever_connected, true) {
+                vec![Action::Reconnected]
+            } else {
+                Vec::new()
+            }
+        }
+        Incoming::Disconnected(reason) => {
+            tracing::warn!(%reason, "websocket dropped; reconnecting");
+            vec![Action::Toast(Level::Warn, "connection lost — reconnecting".to_owned())]
+        }
     }
 }
 

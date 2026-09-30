@@ -249,8 +249,8 @@ impl Client {
         body: &B,
     ) -> Result<R, ClientError> {
         let route = Self::route(route_id)?;
-        let body =
-            serde_json::to_value(body).map_err(|source| ClientError::Decode { route: route.id, source })?;
+        let body = serde_json::to_value(body)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
         self.json(route, params, &[], Some(&body)).await
     }
 
@@ -275,8 +275,7 @@ impl Client {
         etag: Option<&str>,
     ) -> Result<ConversationFetch, ClientError> {
         let route = Self::route("get_sessions_by_id_conversation")?;
-        let resp =
-            self.send(route, &[("id", session_id)], &page.query(), None, etag).await?;
+        let resp = self.send(route, &[("id", session_id)], &page.query(), None, etag).await?;
         if resp.status() == StatusCode::NOT_MODIFIED {
             return Ok(ConversationFetch::NotModified);
         }
@@ -291,10 +290,7 @@ impl Client {
         self.unit(Self::route("post_sessions_by_id_interrupt")?, &[("id", session_id)], None).await
     }
 
-    pub async fn diagnose(
-        &self,
-        session_id: &str,
-    ) -> Result<SessionDiagnoseResponse, ClientError> {
+    pub async fn diagnose(&self, session_id: &str) -> Result<SessionDiagnoseResponse, ClientError> {
         self.json(Self::route("get_sessions_by_id_diagnose")?, &[("id", session_id)], &[], None)
             .await
     }
@@ -347,8 +343,7 @@ async fn decode_body<R: DeserializeOwned>(
     route: &'static str,
     resp: reqwest::Response,
 ) -> Result<R, ClientError> {
-    let bytes =
-        resp.bytes().await.map_err(|source| ClientError::Transport { route, source })?;
+    let bytes = resp.bytes().await.map_err(|source| ClientError::Transport { route, source })?;
     let slice: &[u8] = if bytes.is_empty() { b"null" } else { &bytes };
     serde_json::from_slice(slice).map_err(|source| ClientError::Decode { route, source })
 }
@@ -387,7 +382,10 @@ mod tests {
             c.url_for(Client::route("post_sessions_by_id_seen").unwrap(), &[("id", "s1")]),
             "http://localhost:8700/api/v1/sessions/s1/seen"
         );
-        assert_eq!(c.url_for(Client::route("get_me").unwrap(), &[]), "http://localhost:8700/api/v1/me");
+        assert_eq!(
+            c.url_for(Client::route("get_me").unwrap(), &[]),
+            "http://localhost:8700/api/v1/me"
+        );
     }
 
     #[test]

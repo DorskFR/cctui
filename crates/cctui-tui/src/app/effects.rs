@@ -1,12 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use cctui_proto::ws::{AgentEvent, TuiCommand};
+use cctui_client::{Client, ConversationFetch, Page, WsClient};
+use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
 use super::line::agent_event_to_line;
 use super::toast::Level;
-use crate::client::ServerClient;
 
 const QUEUE: usize = 256;
 
@@ -14,24 +14,18 @@ const QUEUE: usize = 256;
 /// key-handling path never blocks on HTTP or the websocket.
 pub struct Effects {
     tx: mpsc::Sender<Effect>,
-    commands: Arc<Mutex<mpsc::Sender<TuiCommand>>>,
 }
 
 impl Effects {
     /// Effects are executed one at a time: two messages typed in quick
     /// succession must reach the server in the order they were sent.
-    pub fn start(
-        server: Arc<ServerClient>,
-        commands: mpsc::Sender<TuiCommand>,
-    ) -> (Self, mpsc::Receiver<Action>) {
+    pub fn start(server: Arc<Client>, ws: Arc<WsClient>) -> (Self, mpsc::Receiver<Action>) {
         let (tx, mut rx) = mpsc::channel::<Effect>(QUEUE);
         let (action_tx, action_rx) = mpsc::channel::<Action>(QUEUE);
-        let commands = Arc::new(Mutex::new(commands));
-        let worker_commands = Arc::clone(&commands);
 
         tokio::spawn(async move {
             while let Some(effect) = rx.recv().await {
-                for action in run(&server, &worker_commands, effect).await {
+                for action in run(&server, &ws, effect).await {
                     if action_tx.send(action).await.is_err() {
                         return;
                     }
@@ -39,15 +33,7 @@ impl Effects {
             }
         });
 
-        (Self { tx, commands }, action_rx)
-    }
-
-    /// Reconnects hand over a fresh command sender; effects already queued pick
-    /// up the new one.
-    pub fn set_commands(&self, commands: mpsc::Sender<TuiCommand>) {
-        if let Ok(mut slot) = self.commands.lock() {
-            *slot = commands;
-        }
+        (Self { tx }, action_rx)
     }
 
     pub fn dispatch(&self, effect: Effect) {
@@ -63,23 +49,7 @@ impl Effects {
     }
 }
 
-fn command_sender(
-    commands: &Arc<Mutex<mpsc::Sender<TuiCommand>>>,
-) -> Option<mpsc::Sender<TuiCommand>> {
-    commands.lock().ok().map(|slot| slot.clone())
-}
-
-async fn send_command(commands: &Arc<Mutex<mpsc::Sender<TuiCommand>>>, command: TuiCommand) {
-    if let Some(tx) = command_sender(commands) {
-        let _ = tx.send(command).await;
-    }
-}
-
-async fn run(
-    server: &ServerClient,
-    commands: &Arc<Mutex<mpsc::Sender<TuiCommand>>>,
-    effect: Effect,
-) -> Vec<Action> {
+async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
     match effect {
         Effect::RefreshSessions => match server.list_sessions().await {
             Ok(resp) => vec![Action::SessionsLoaded(resp.sessions)],
@@ -93,28 +63,21 @@ async fn run(
             if fetch {
                 actions.extend(load_conversation(server, &session_id).await);
             }
-            send_command(commands, TuiCommand::Subscribe { session_id }).await;
+            subscribe(ws, session_id).await;
             actions
         }
         Effect::Subscribe { session_id } => {
-            send_command(commands, TuiCommand::Subscribe { session_id }).await;
+            subscribe(ws, session_id).await;
             Vec::new()
         }
         Effect::SendMessage { session_id, content } => {
-            send_command(
-                commands,
-                TuiCommand::Message {
-                    session_id,
-                    content,
-                    client_msg_id: None,
-                    ask_picks: None,
-                    turn_id: None,
-                },
-            )
-            .await;
+            if let Err(e) = ws.send_message(session_id, content, None, None).await {
+                tracing::warn!(%e, "message send failed");
+                return vec![Action::Toast(Level::Error, "message send failed".to_owned())];
+            }
             Vec::new()
         }
-        Effect::Interrupt { session_id } => match server.interrupt_session(&session_id).await {
+        Effect::Interrupt { session_id } => match server.interrupt(&session_id).await {
             Ok(()) => Vec::new(),
             Err(e) => {
                 tracing::warn!(%e, "interrupt failed");
@@ -131,29 +94,35 @@ async fn run(
             }
         }
         Effect::RespondPermission { session_id, request_id, behavior } => {
-            send_command(
-                commands,
-                TuiCommand::PermissionResponse {
-                    session_id,
-                    request_id,
-                    behavior: behavior.to_owned(),
-                },
-            )
-            .await;
+            if let Err(e) =
+                ws.respond_permission(session_id, request_id, behavior.to_owned()).await
+            {
+                tracing::warn!(%e, "permission response failed");
+            }
             Vec::new()
         }
     }
 }
 
-async fn load_conversation(server: &ServerClient, session_id: &str) -> Vec<Action> {
-    let Ok(events) = server.get_conversation(session_id).await else {
-        tracing::warn!(session_id, "conversation fetch failed");
-        return Vec::new();
+async fn subscribe(ws: &WsClient, session_id: String) {
+    if let Err(e) = ws.subscribe(session_id).await {
+        tracing::warn!(%e, "subscribe failed");
+    }
+}
+
+async fn load_conversation(server: &Client, session_id: &str) -> Vec<Action> {
+    let fetched = match server.conversation(session_id, Page::default(), None).await {
+        Ok(fetched) => fetched,
+        Err(e) => {
+            tracing::warn!(%e, session_id, "conversation fetch failed");
+            return Vec::new();
+        }
     };
-    let total = events.len();
-    let lines: Vec<_> = events
+    let ConversationFetch::Page { rows, .. } = fetched else { return Vec::new() };
+    let total = rows.len();
+    let lines: Vec<_> = rows
         .iter()
-        .filter_map(|v| serde_json::from_value::<AgentEvent>(v.clone()).ok())
+        .filter_map(|row| serde_json::from_value::<AgentEvent>(row.event.clone()).ok())
         .map(|e| agent_event_to_line(&e))
         .collect();
     let undecodable = total - lines.len();
