@@ -196,9 +196,7 @@ const COMPOSER: &[BindingSpec] = &[
     spec(Context::Composer, "shift+enter", ActionId::InputNewline),
 ];
 
-const HELP: &[BindingSpec] = &[
-    spec(Context::Help, "esc, q, ?", ActionId::CloseHelp),
-];
+const HELP: &[BindingSpec] = &[spec(Context::Help, "esc, q, ?", ActionId::CloseHelp)];
 
 const PERMISSION: &[BindingSpec] = &[
     spec(Context::Permission, "y, enter", ActionId::PermissionAllow),

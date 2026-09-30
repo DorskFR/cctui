@@ -14,7 +14,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         // Help always renders over the session list, whatever it was opened from.
         View::Help => {
             sessions::draw(frame, app);
-            help::draw(frame);
+            help::draw(frame, &app.config.keys);
         }
         View::PermissionDialog => {
             match app.router.below() {

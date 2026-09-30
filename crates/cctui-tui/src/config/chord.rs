@@ -33,6 +33,43 @@ impl Chord {
         }
     }
 
+    /// How a chord is shown to the user, as opposed to how it is written in
+    /// `tui.toml` ([`Display`](std::fmt::Display)).
+    pub fn label(self) -> String {
+        let mut out = String::new();
+        if self.mods.contains(KeyModifiers::CONTROL) {
+            out.push_str("Ctrl+");
+        }
+        if self.mods.contains(KeyModifiers::ALT) {
+            out.push_str("Alt+");
+        }
+        if self.mods.contains(KeyModifiers::SHIFT) {
+            out.push_str("Shift+");
+        }
+        out.push_str(match self.code {
+            KeyCode::Char(' ') => "Space",
+            KeyCode::Char(c) => return out + &c.to_string(),
+            KeyCode::F(n) => return out + &format!("F{n}"),
+            KeyCode::Enter => "Enter",
+            KeyCode::Esc => "Esc",
+            KeyCode::Tab => "Tab",
+            KeyCode::BackTab => "Shift+Tab",
+            KeyCode::Backspace => "Bksp",
+            KeyCode::Delete => "Del",
+            KeyCode::Insert => "Ins",
+            KeyCode::Up => "↑",
+            KeyCode::Down => "↓",
+            KeyCode::Left => "←",
+            KeyCode::Right => "→",
+            KeyCode::Home => "Home",
+            KeyCode::End => "End",
+            KeyCode::PageUp => "PgUp",
+            KeyCode::PageDown => "PgDn",
+            _ => return out + &self.to_string(),
+        });
+        out
+    }
+
     pub fn parse(text: &str) -> Result<Self, String> {
         if let Some(c) = single_char(text) {
             return Ok(Self::new(KeyCode::Char(c), KeyModifiers::NONE));

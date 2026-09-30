@@ -27,7 +27,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_session_list(frame, app, list_area);
 
     // Hotkeys
-    crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area);
+    crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
