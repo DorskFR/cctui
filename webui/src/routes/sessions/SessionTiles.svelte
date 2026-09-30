@@ -2,7 +2,7 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { Button, EmptyState, Popover, Text } from '@dorsk/tsumikit';
 	import ConversationPane from '$lib/components/organisms/ConversationPane.svelte';
-	import { paneCapacity, tileLayout } from '$lib/tiles';
+	import { fittingPaneCount, tileLayout } from '$lib/tiles';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -27,7 +27,7 @@
 	);
 	// 0 until the area has been measured, so no pane mounts — and no history is
 	// fetched — for a tile of unknown size.
-	const capacity = $derived(paneCapacity({ width, height }));
+	const capacity = $derived(fittingPaneCount(shown.length, { width, height }));
 	const panes = $derived(shown.slice(0, capacity));
 	const overflow = $derived(shown.slice(capacity));
 	const layout = $derived(tileLayout(panes.length, { width, height }));
@@ -35,7 +35,13 @@
 
 {#if overflow.length}
 	<div class="more">
-		<Popover label={m.tiles_more({ count: overflow.length })} variant="default" size="sm">
+		<Popover
+			label={m.tiles_more({ count: overflow.length })}
+			variant="default"
+			tone="accent"
+			size="sm"
+			pill
+		>
 			{#snippet trigger()}{m.tiles_more({ count: overflow.length })}{/snippet}
 			<div class="more-list">
 				<Text size="xs" tone="muted">{m.tiles_more_help()}</Text>

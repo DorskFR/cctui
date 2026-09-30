@@ -54,7 +54,7 @@ describe('tiles view mode', () => {
 		expect(tiles).toContain('bind:clientWidth={width}');
 		expect(tiles).toContain('bind:clientHeight={height}');
 		expect(tiles).toContain('tileLayout(panes.length, { width, height })');
-		expect(tiles).toContain('paneCapacity({ width, height })');
+		expect(tiles).toContain('fittingPaneCount(shown.length, { width, height })');
 	});
 
 	it('draws one hairline between neighbours and no radius', () => {

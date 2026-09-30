@@ -79,8 +79,7 @@ export function gridCost(n: number, cols: number, rows: number, viewport: Viewpo
  */
 export function tileGrid(n: number, viewport: Viewport = FALLBACK): TileGrid {
 	if (n <= 0) return { cols: 1, rows: 0 };
-	const vp =
-		viewport.width > 0 && viewport.height > 0 ? viewport : FALLBACK;
+	const vp = viewport.width > 0 && viewport.height > 0 ? viewport : FALLBACK;
 	let best: TileGrid = { cols: n, rows: 1 };
 	let bestCost = Infinity;
 	for (let cols = 1; cols <= n; cols++) {
@@ -111,27 +110,57 @@ export function tileLayout(n: number, viewport: Viewport = FALLBACK): TileLayout
 	return { cols, rows, tracks, placements };
 }
 
+export const PANE_AREA = 950 * 460;
+export const MAX_PANES = 10;
+
+/**
+ * How many panes the measured area is worth. Dividing by an area rather than by
+ * a min width and a min height keeps the answer tied to how much screen a pane
+ * actually gets: a 1080p window is worth 4, a 4K one at 150% is worth 8, an
+ * ultrawide 10. Above the ceiling the grid stops growing — N live conversation
+ * panes each cost a history fetch and a socket subscription, so an unbounded
+ * count is what wedges the tab. Returns 0 for an unmeasured area so nothing
+ * mounts before a size is known.
+ */
+export function paneCapacity(viewport: Viewport): number {
+	if (!(viewport.width > 0 && viewport.height > 0)) return 0;
+	const worth = Math.round((viewport.width * viewport.height) / PANE_AREA);
+	return Math.min(Math.max(worth, 1), MAX_PANES);
+}
+
+/**
+ * A pane's fixed chrome, measured in the browser at tile widths (header 122 +
+ * filter row 33 + activity line 27 + composer 61, plus gaps) on a session
+ * carrying labels, an activity line and todos. Re-measure with the `tiles`
+ * Playwright project if the pane grows another row.
+ */
+export const MIN_PANE_CHROME = 254;
+/** Transcript that must be left over, or the pane is all chrome and no content. */
+export const MIN_TRANSCRIPT_HEIGHT = 200;
+export const MIN_PANE_HEIGHT = MIN_PANE_CHROME + MIN_TRANSCRIPT_HEIGHT;
+
+/**
+ * How many of `n` panes to actually mount: what the area is worth, then dropped
+ * one at a time while the grid the aspect-ratio choice lands on would leave a
+ * pane too short to show any transcript. Never goes below one pane.
+ */
+export function fittingPaneCount(n: number, viewport: Viewport): number {
+	const cap = paneCapacity(viewport);
+	if (cap === 0 || n <= 0) return 0;
+	let k = Math.min(n, cap);
+	while (k > 1) {
+		const { rows } = tileGrid(k, viewport);
+		if (viewport.height / rows >= MIN_PANE_HEIGHT) break;
+		k--;
+	}
+	return k;
+}
+
 /**
  * Reorder `next` to keep every id that was already placed where it was: a
  * session changing state must not move its tile. New ids land at the index the
  * sort gives them, gone ids leave a hole that closes.
  */
-export const MIN_PANE_WIDTH = 360;
-export const MIN_PANE_HEIGHT = 220;
-
-/**
- * How many panes the area can hold before each one stops being readable. Above
- * this the grid stops growing: N live conversation panes each cost a history
- * fetch and a socket subscription, so an unbounded count is what wedges the tab.
- * Returns 0 for an unmeasured area so nothing mounts before a size is known.
- */
-export function paneCapacity(viewport: Viewport): number {
-	if (!(viewport.width > 0 && viewport.height > 0)) return 0;
-	const cols = Math.floor(viewport.width / MIN_PANE_WIDTH);
-	const rows = Math.floor(viewport.height / MIN_PANE_HEIGHT);
-	return Math.max(1, cols * rows);
-}
-
 export function stableTileOrder(prev: string[], next: string[]): string[] {
 	const wanted = new Set(next);
 	const out = prev.filter((id) => wanted.has(id));

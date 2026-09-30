@@ -51,7 +51,7 @@ export default defineConfig({
 		},
 		{
 			name: 'tiles',
-			testMatch: 'tiles-crash.spec.ts',
+			testMatch: /tiles-.*\.spec\.ts/,
 			use: { baseURL: headerUrl }
 		},
 		{

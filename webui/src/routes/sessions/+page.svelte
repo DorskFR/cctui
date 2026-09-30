@@ -237,6 +237,7 @@
 	bind:labelFilter={sp.labelFilter}
 	bind:view={sp.viewMode}
 	tiles={!sp.mobile}
+	sticky={!sp.tiles}
 	colorBy={sp.colorBy}
 	groupBy={sp.groupBy}
 	onColorBy={sp.setColorBy}

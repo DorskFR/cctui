@@ -26,6 +26,7 @@
 		labelFilter = $bindable(),
 		view = $bindable(),
 		tiles = true,
+		sticky = true,
 		colorBy,
 		groupBy,
 		onColorBy,
@@ -46,6 +47,9 @@
 		view: ViewMode;
 		/** Whether the tiles option is offered (not below the mobile breakpoint). */
 		tiles?: boolean;
+		/** Off where the page does not scroll: a stuck bar would then paint over
+		 *  whatever follows it instead of staying reachable. */
+		sticky?: boolean;
 		colorBy: Dimension;
 		groupBy: Dimension;
 		onColorBy: (v: Dimension) => void;
@@ -131,7 +135,7 @@
 	{/if}
 {/snippet}
 
-<div class="bar row" bind:this={barEl}>
+<div class="bar row" class:sticky bind:this={barEl}>
 	<span class="title-wrap">
 		<Heading level={1} size="xl">{m.sessions_title()}</Heading>
 	</span>
@@ -194,12 +198,14 @@
 </div>
 
 <style>
-	.bar {
-		/* Sticky under the fixed app header so the controls stay reachable on long
-		   lists without scrolling back up. */
+	/* Sticky under the fixed app header so the controls stay reachable on long
+	   lists without scrolling back up. */
+	.bar.sticky {
 		position: sticky;
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
+	}
+	.bar {
 		margin-bottom: var(--sp-4);
 		/* Pad the bottom only: top padding would drop the title below the header
 		   baseline every other page aligns to. */
