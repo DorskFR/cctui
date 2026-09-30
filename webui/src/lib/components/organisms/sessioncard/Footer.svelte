@@ -3,6 +3,7 @@
 	import { safeHref } from '$lib/safeHref';
 	import { Badge, Cluster, Icon, Stack, WorkingDir } from '@dorsk/tsumikit';
 	import PrIcon from '$lib/components/atoms/PrIcon.svelte';
+	import PluginChips from '$lib/components/molecules/PluginChips.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Readout from './Readout.svelte';
 	import type { SessionActions, SessionView } from './view';
@@ -91,6 +92,7 @@
 				{/if}
 			</span>
 		{/if}
+		<PluginChips metadata={s.metadata} />
 	</Cluster>
 	<Cluster wrap={false} gap="var(--sp-2)" align="center" style="min-width:0">
 		<Readout {view} spread />
