@@ -10,7 +10,8 @@ import type { HarnessModels } from '@bindings/HarnessModels';
 import type { ForkRequest } from '@bindings/ForkRequest';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
-import { DEFAULT_MODELS, withCurrentModel, type ModelOption } from '$lib/harnessModels';
+import { withCurrentModel, type ModelOption } from '$lib/harnessModels';
+import { harnessModelsFallback } from '$lib/domainTables';
 import { useHarnessModels } from '$lib/queries';
 
 export type { ModelOption };
@@ -56,11 +57,15 @@ export class ForkController {
 	}
 
 	// The parent's model stays selectable even when no list knows it.
+	#fallback() {
+		return harnessModelsFallback(this.#opts.isCodex() ? 'codex' : 'claude-code');
+	}
+
 	get models(): ModelOption[] {
-		return withCurrentModel(this.#models?.data?.models ?? DEFAULT_MODELS, this.model);
+		return withCurrentModel(this.#models?.data?.models ?? this.#fallback().models, this.model);
 	}
 	get efforts(): string[] {
-		return this.#models?.data?.efforts ?? [''];
+		return this.#models?.data?.efforts ?? this.#fallback().efforts;
 	}
 	// Parent's total tokens — shown in the fork notice so the user knows the
 	// opening turn re-bills this much context.

@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { updated } from '$app/state';
 	import { ws } from '$lib/ws.svelte';
-	import { useDomainMeta, useMe, useVersion, useSessions, qk } from '$lib/queries';
+	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
 	import { setUploadCaps } from '$lib/uploadCaps.svelte';
 	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
@@ -31,7 +31,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 
 	const version = useVersion();
 	const me = useMe();
-	useDomainMeta();
 	let updateOpen = $state(false);
 	const instanceName = $derived(version.data?.instance_name ?? null);
 	$effect(() => notify.setInstanceName(instanceName));

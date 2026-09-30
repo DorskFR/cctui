@@ -14,7 +14,7 @@
 	import PluginChips from '$lib/components/molecules/PluginChips.svelte';
 	import { YOUTRACK_PLUGIN_ID, resolveIssueSlot } from '$lib/plugins/issueLink';
 	import { Badge, Icon, IconButton, Popover, Select, Text, WorkingDir } from '@dorsk/tsumikit';
-	import { DEFAULT_MODELS } from '$lib/harnessModels';
+	import { harnessModelsFallback } from '$lib/domainTables';
 	import {
 		useCapabilities,
 		useHarnessModels,
@@ -91,8 +91,12 @@
 		() => pendingModel,
 		() => isCodexSession && modelEditing
 	);
-	const codexModelOptions = $derived(codexModels.data?.models ?? DEFAULT_MODELS);
-	const codexEffortOptions = $derived(codexModels.data?.efforts ?? ['']);
+	const codexModelOptions = $derived(
+		codexModels.data?.models ?? harnessModelsFallback('codex').models
+	);
+	const codexEffortOptions = $derived(
+		codexModels.data?.efforts ?? harnessModelsFallback('codex').efforts
+	);
 
 	function openModelEditor() {
 		pendingModel = session.model ?? '';

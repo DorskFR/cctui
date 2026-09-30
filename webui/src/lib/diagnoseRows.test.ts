@@ -5,6 +5,7 @@ import type { SessionDiagnose } from '@bindings/SessionDiagnose';
 import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 import type { OpenCodeDiagnose } from '@bindings/OpenCodeDiagnose';
+import type { SilenceReason } from '@bindings/SilenceReason';
 import { endReasonLabel } from './sessionEnd';
 import {
 	diagnoseBlocks,
@@ -85,6 +86,7 @@ function report(over: Partial<SessionDiagnoseResponse> = {}): SessionDiagnoseRes
 		session_id: 's1',
 		daemon: daemon(),
 		daemon_error: null,
+		silence: [],
 		server: {
 			status: 'active',
 			adapter_id: 'claude_code',
@@ -219,8 +221,14 @@ describe('diagnoseRows: opencode', () => {
 		} as OpenCodeDiagnose;
 	}
 
-	const rowsFor = (over: Partial<OpenCodeDiagnose> = {}) =>
-		diagnoseRows(session({ adapter_id: 'opencode' }), report({ daemon: daemon({ opencode: oc(over) }) }), NOW);
+	// `silence` is the server's verdict, so the cases state it rather than
+	// re-deriving it here.
+	const rowsFor = (over: Partial<OpenCodeDiagnose> = {}, silence: SilenceReason[] = []) =>
+		diagnoseRows(
+			session({ adapter_id: 'opencode' }),
+			report({ daemon: daemon({ opencode: oc(over) }), silence }),
+			NOW
+		);
 
 	it('shows the serve pid and its url, and stays green while healthy', () => {
 		const p = block(rowsFor(), 'process');
@@ -231,19 +239,22 @@ describe('diagnoseRows: opencode', () => {
 	});
 
 	it('turns the transport red when the event stream is down', () => {
-		const t = block(rowsFor({ sse_connected: false }), 'transport');
+		const t = block(rowsFor({ sse_connected: false }, [{ kind: 'opencode_sse_down' }]), 'transport');
 		expect(t.status).toBe('error');
 		expect(t.short).toContain('event stream is not connected');
 	});
 
 	it('names the event path as the blind spot when only HTTP frames exist', () => {
 		const t = block(
-			rowsFor({
-				last_sse_event_ms: null,
-				rpc_tail: [
-					{ ts_ms: NOW - 1_000, direction: 'out', label: 'POST /session', json: '{}', transport: 'http' }
-				]
-			}),
+			rowsFor(
+				{
+					last_sse_event_ms: null,
+					rpc_tail: [
+						{ ts_ms: NOW - 1_000, direction: 'out', label: 'POST /session', json: '{}', transport: 'http' }
+					]
+				},
+				[{ kind: 'opencode_sse_no_frames' }]
+			),
 			'transport'
 		);
 		expect(`${t.short}\n${t.rows[0].detail ?? ''}`).toContain('GET /event');

@@ -6,7 +6,7 @@
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileAdjust from './ProfileAdjust.svelte';
 	import KitFields from './KitFields.svelte';
-	import { useHarnessModels } from '$lib/queries';
+	import { harnessModelsFallback } from '$lib/domainTables';
 	import {
 		EMPTY_SPEC,
 		moveProfile,
@@ -140,11 +140,10 @@
 		defaultEffort: m.spawn_effort_default(),
 		defaultMode: m.spawn_mode_default_label()
 	});
-	const claudeModels = useHarnessModels(() => 'claude-code');
 	const modelLabel = (harness: string, alias: string) =>
 		harness === 'codex'
 			? alias
-			: (claudeModels.data?.models.find((x) => x.v === alias)?.label ?? alias);
+			: (harnessModelsFallback('claude-code').models.find((x) => x.v === alias)?.label ?? alias);
 
 	function usageText(id: string): string {
 		const u = profileUsage(usageRaw, id);
