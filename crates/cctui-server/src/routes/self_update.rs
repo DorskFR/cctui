@@ -196,6 +196,8 @@ pub async fn launch(
         env_keys: Vec::new(),
         attachment_names: Vec::new(),
         label_ids: Vec::new(),
+        context: None,
+        profile_id: None,
         spawn_capability: None,
         relation: None,
         parent_session_id: None,
