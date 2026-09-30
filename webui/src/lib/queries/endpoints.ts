@@ -42,6 +42,8 @@ import type { MachineResourcesRow } from "@bindings/MachineResourcesRow";
 import type { UserTokenRow } from "@bindings/UserTokenRow";
 import type { UserAclsResponse } from "@bindings/UserAclsResponse";
 import type { ApiKeyRow } from "@bindings/ApiKeyRow";
+import type { DeviceAuthDecision } from "@bindings/DeviceAuthDecision";
+import type { DeviceAuthRequestInfo } from "@bindings/DeviceAuthRequestInfo";
 import type { PasskeyAssertion } from "@bindings/PasskeyAssertion";
 import type { PasskeyAutoPromptRequest } from "@bindings/PasskeyAutoPromptRequest";
 import type { PasskeyChallenge } from "@bindings/PasskeyChallenge";
@@ -175,6 +177,14 @@ export const endpoints = {
   capabilities: () => api.get<CapabilitiesResponse>(path("get_capabilities")),
   /** Who the stored bearer token resolves to. */
   me: () => api.get<MeResponse>(path("get_me")),
+  /** What a device login identified by its short code is asking for. */
+  deviceAuthInfo: (userCode: string) =>
+    api.get<DeviceAuthRequestInfo>(path("get_auth_device_by_user_code", { user_code: userCode })),
+  /** Approve or deny a device login; approving grants it the caller's scopes. */
+  deviceAuthDecide: (userCode: string, approve: boolean) =>
+    api.post<void>(path("post_auth_device_by_user_code_decision", { user_code: userCode }), {
+      approve,
+    } satisfies DeviceAuthDecision),
   /** Passkeys enrolled on the caller's account. */
   passkeys: () => api.get<PasskeyListResponse>("/passkeys"),
   /** Begin enrolling a passkey; the options go to `navigator.credentials.create()`. */

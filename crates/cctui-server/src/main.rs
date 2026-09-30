@@ -355,6 +355,11 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/auth/passkey/config", get(routes::passkeys::config))
         .route("/api/v1/auth/passkey/login/start", post(routes::passkeys::login_start))
         .route("/api/v1/auth/passkey/login/finish", post(routes::passkeys::login_finish))
+        // Device-authorization login. Unauthenticated because the device has no
+        // credential yet; a request is worthless until an authenticated user
+        // approves it through `/auth/device/{user_code}/decision`.
+        .route("/api/v1/auth/device/start", post(routes::device_auth::start))
+        .route("/api/v1/auth/device/poll", post(routes::device_auth::poll))
         // Daemon-facing endpoints. `auth` and `ws` carry their own auth
         // (machine-key Bearer) so they live outside the user-token-only
         // `api_router` group.

@@ -12,6 +12,7 @@ pub mod codex_models;
 pub mod context;
 pub mod credentials;
 pub mod daemon;
+pub mod device_auth;
 pub mod diagnose;
 pub mod dispatch;
 pub mod dispatcher;

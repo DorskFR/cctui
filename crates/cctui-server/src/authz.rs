@@ -624,6 +624,27 @@ mod tests {
         }
     }
 
+    /// The device-login approval pair decides who a minted key belongs to, so
+    /// it must never join the device-facing `start`/`poll` pair outside the
+    /// auth layer.
+    #[test]
+    fn device_login_approval_requires_a_principal() {
+        let descs = descriptors();
+        let approval: Vec<_> =
+            descs.iter().filter(|d| d.path.starts_with("/auth/device/")).collect();
+        assert_eq!(approval.len(), 2, "expected the info + decision routes");
+        for d in approval {
+            assert_eq!(d.authn, Authn::Bearer, "{} must authenticate", d.path);
+            assert!(
+                matches!(d.authz, Authz::Authenticated),
+                "{} must require a principal, found {:?}",
+                d.path,
+                d.authz
+            );
+            assert!(d.path.contains("{user_code}"), "{} must name the code", d.path);
+        }
+    }
+
     #[test]
     fn resource_id_param_appears_in_path() {
         // A `Resource` id param must exist in the route's path.

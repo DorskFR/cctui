@@ -1,6 +1,10 @@
 //! `cctui login` / `cctui logout`.
 
 use anyhow::{Context, Result, bail};
+use cctui_proto::api::device_auth::{
+    self, DeviceAuthPoll, DeviceAuthPollRequest, DeviceAuthStart, DeviceAuthStartRequest,
+    DeviceAuthStatus,
+};
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::identity::{self, UserIdentity};
 
@@ -59,8 +63,88 @@ pub fn persist(server_url: &str, key: &str, me: &MeResponse) -> Result<()> {
     Ok(())
 }
 
+/// `cctui login`: the device-authorization flow, unless `--key` asked for the
+/// paste-a-key fallback.
 pub async fn login(server: Option<String>, key: Option<String>) -> Result<()> {
-    login_with_key(server, key.filter(|k| !k.is_empty())).await
+    match key {
+        Some(key) => login_with_key(server, Some(key).filter(|k| !k.is_empty())).await,
+        None => device_login(server).await,
+    }
+}
+
+/// `cctui login`: print a short code, wait for a browser user to approve it,
+/// then validate and store the key the server mints.
+pub async fn device_login(server: Option<String>) -> Result<()> {
+    let server_url = resolve_server_url(
+        server.as_deref(),
+        stored_server_url().as_deref(),
+        std::env::var("CCTUI_URL").ok().as_deref(),
+    );
+    let http = reqwest::Client::new();
+    let client_name = format!("cctui on {}", cctui_proto::util::hostname());
+    let start: DeviceAuthStart = http
+        .post(format!("{server_url}{}", device_auth::START_PATH))
+        .json(&DeviceAuthStartRequest { client_name: Some(client_name) })
+        .send()
+        .await
+        .with_context(|| format!("POST {server_url}{}", device_auth::START_PATH))?
+        .error_for_status()
+        .context("device login could not be started")?
+        .json()
+        .await
+        .context("deserialize device login")?;
+
+    println!("open {}", start.verification_uri_complete);
+    println!("and confirm the code: {}", start.user_code);
+    println!("waiting for approval…");
+
+    let interval = std::time::Duration::from_secs(u64::from(start.interval_secs.max(1)));
+    let ttl = std::time::Duration::from_secs(u64::from(start.expires_in_secs));
+    let deadline = std::time::Instant::now() + ttl;
+    let token = loop {
+        tokio::time::sleep(interval).await;
+        if std::time::Instant::now() >= deadline {
+            bail!("the code expired before it was approved; run `cctui login` again");
+        }
+        if let Some(token) = poll_once(&http, &server_url, &start.device_code).await? {
+            break token;
+        }
+    };
+
+    let me = validate(&server_url, &token).await?;
+    persist(&server_url, &token, &me)
+}
+
+/// One poll. `Ok(None)` means "still pending, keep waiting"; a refused code
+/// ends the flow.
+async fn poll_once(
+    http: &reqwest::Client,
+    server_url: &str,
+    device_code: &str,
+) -> Result<Option<String>> {
+    let resp = http
+        .post(format!("{server_url}{}", device_auth::POLL_PATH))
+        .json(&DeviceAuthPollRequest { device_code: device_code.to_owned() })
+        .send()
+        .await
+        .context("poll device login")?;
+    // The server rate-limits polling; a client that hits it simply waits again.
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Ok(None);
+    }
+    let poll: DeviceAuthPoll =
+        resp.error_for_status().context("device login poll failed")?.json().await?;
+    match poll.status {
+        DeviceAuthStatus::Pending => Ok(None),
+        DeviceAuthStatus::Approved => poll
+            .token
+            .ok_or_else(|| anyhow::anyhow!("the server approved the login but minted no key"))
+            .map(Some),
+        DeviceAuthStatus::Denied => bail!("the login was denied"),
+        DeviceAuthStatus::Expired => {
+            bail!("the code expired before it was approved; run `cctui login` again")
+        }
+    }
 }
 
 /// `cctui login --key`: take the key from the flag or from stdin.
