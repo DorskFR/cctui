@@ -100,8 +100,6 @@ fn conversation_plan_card_refining() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
-/// The sheet only fits two columns, and wave 3 filled both: the glyph legend is
-/// the tail of it, so this case is where the legend is actually reviewable.
 #[test]
 fn help_overlay_tall_enough_for_the_glyph_legend() {
     let mut app = app_with_sessions();
