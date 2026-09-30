@@ -90,8 +90,8 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             }
             Vec::new()
         }
-        Effect::SendMessage { session_id, content } => {
-            if let Err(e) = ws.send_message(session_id, content, None, None).await {
+        Effect::SendMessage { session_id, content, ask_picks } => {
+            if let Err(e) = ws.send_message(session_id, content, ask_picks, None).await {
                 tracing::warn!(%e, "message send failed");
                 return vec![Action::Toast(Level::Error, "message send failed".to_owned())];
             }

@@ -31,20 +31,34 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let max_input = (main_area.height as usize / 2).max(1);
     let input_height = input_lines.clamp(1, 12_usize.min(max_input)) as u16;
 
-    let [header_area, content_area, separator_area, input_area] = Layout::vertical([
+    let card = super::prompt::card_lines(
+        app,
+        &session.id,
+        main_area.width as usize,
+        (main_area.height as usize / 2).max(1),
+    );
+    let card_height = u16::try_from(card.len()).unwrap_or(u16::MAX);
+
+    let [header_area, content_area, card_area, separator_area, input_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(card_height),
         Constraint::Length(1),
         Constraint::Length(input_height),
     ])
     .areas(main_area);
 
+    if card_height > 0 {
+        frame.render_widget(Paragraph::new(card), card_area);
+    }
+
     // Header
     let auto = if session.auto_approve { " ── ✓ auto-approve" } else { "" };
+    let waiting = app.prompt_marker(&session.id).map_or_else(String::new, |m| format!(" ── {m}"));
     let header_text = if branch.is_empty() {
-        format!(" {project} on {machine} ── {model} ── {cost}{auto}")
+        format!(" {project} on {machine} ── {model} ── {cost}{auto}{waiting}")
     } else {
-        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}")
+        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}{waiting}")
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
     header_spans.extend(crate::widgets::status::status_spans(app));
