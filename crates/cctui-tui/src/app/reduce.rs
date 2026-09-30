@@ -620,7 +620,11 @@ mod tests {
         reduce(&mut app, Action::OpenSelectedConversation);
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
-            [Effect::Subscribe { .. }, Effect::LoadConversationPage { .. }, Effect::RefreshSessions]
+            [
+                Effect::Subscribe { .. },
+                Effect::LoadConversationPage { .. },
+                Effect::RefreshSessions
+            ]
         ));
     }
 

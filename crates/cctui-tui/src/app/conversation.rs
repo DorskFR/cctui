@@ -188,7 +188,9 @@ mod tests {
         let mut app = app();
         open(&mut app, "s-a".to_owned());
         let effects = reduce(&mut app, Action::LeaveConversation);
-        assert!(matches!(effects.as_slice(), [Effect::Unsubscribe { session_id }] if session_id == "s-a"));
+        assert!(
+            matches!(effects.as_slice(), [Effect::Unsubscribe { session_id }] if session_id == "s-a")
+        );
         assert!(app.subscribed.is_none());
         assert!(reduce(&mut app, Action::LeaveConversation).is_empty());
     }

@@ -331,7 +331,10 @@ mod tests {
     #[test]
     fn a_context_binding_wins_over_the_global_one() {
         let map = Keymap::default();
-        assert_eq!(map.lookup(Context::Conversation, chord("q")), Some(ActionId::LeaveConversation));
+        assert_eq!(
+            map.lookup(Context::Conversation, chord("q")),
+            Some(ActionId::LeaveConversation)
+        );
         assert_eq!(map.lookup(Context::SessionList, chord("q")), Some(ActionId::Quit));
         assert_eq!(map.lookup(Context::Conversation, chord("1")), Some(ActionId::SelectIndex));
         assert_eq!(map.lookup(Context::SessionList, chord("1")), Some(ActionId::SwitchView));

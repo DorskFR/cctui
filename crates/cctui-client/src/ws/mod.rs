@@ -314,13 +314,11 @@ mod tests {
     impl Connector for FakeConnector {
         async fn connect(&self) -> Result<Box<dyn Transport>, ClientError> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            let next = self.sockets.lock().ok().and_then(|mut s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s.remove(0))
-                }
-            });
+            let next = self
+                .sockets
+                .lock()
+                .ok()
+                .and_then(|mut s| if s.is_empty() { None } else { Some(s.remove(0)) });
             match next {
                 Some((inbound, outbound)) => Ok(Box::new(FakeTransport { inbound, outbound })),
                 None => Err(ClientError::Websocket("no more scripted sockets".to_owned())),

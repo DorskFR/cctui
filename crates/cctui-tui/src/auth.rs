@@ -110,9 +110,8 @@ async fn poll_once(
     server_url: &str,
     device_code: &str,
 ) -> Result<Option<String>> {
-    let Some(poll) = device_auth::poll(http, server_url, device_code)
-        .await
-        .context("poll device login")?
+    let Some(poll) =
+        device_auth::poll(http, server_url, device_code).await.context("poll device login")?
     else {
         return Ok(None);
     };

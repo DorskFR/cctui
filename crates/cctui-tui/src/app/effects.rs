@@ -114,8 +114,7 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             }
         }
         Effect::RespondPermission { session_id, request_id, behavior } => {
-            if let Err(e) =
-                ws.respond_permission(session_id, request_id, behavior.to_owned()).await
+            if let Err(e) = ws.respond_permission(session_id, request_id, behavior.to_owned()).await
             {
                 tracing::warn!(%e, "permission response failed");
             }

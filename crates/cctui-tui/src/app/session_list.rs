@@ -146,7 +146,9 @@ pub const fn viewport_offset(total: usize, selected: usize, height: usize) -> us
 mod tests {
     use cctui_proto::classifier::Bucket;
 
-    use super::{Group, Row, flatten, group_of, is_dispatched, rows, selected_row, viewport_offset};
+    use super::{
+        Group, Row, flatten, group_of, is_dispatched, rows, selected_row, viewport_offset,
+    };
     use crate::testsupport::{dispatched_session, pinned_session, session, subagent};
 
     fn ids<'a>(flat: &[&'a cctui_proto::api::SessionListItem]) -> Vec<&'a str> {

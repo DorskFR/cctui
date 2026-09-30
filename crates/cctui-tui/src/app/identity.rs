@@ -82,9 +82,7 @@ impl AuthState {
         match self {
             Self::Unknown => None,
             Self::Identified(id) => Some(AuthChip { text: id.label(), rejected: false }),
-            Self::Rejected => {
-                Some(AuthChip { text: REJECTED_MESSAGE.to_owned(), rejected: true })
-            }
+            Self::Rejected => Some(AuthChip { text: REJECTED_MESSAGE.to_owned(), rejected: true }),
         }
     }
 }

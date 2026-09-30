@@ -152,8 +152,9 @@ pub fn parse(text: &str) -> Loaded {
 
 #[cfg(test)]
 mod tests {
+    use super::chord::Chord;
     use super::keymap::{ActionId, Context};
-    use super::{Config, ThemeChoice, chord::Chord, parse};
+    use super::{Config, ThemeChoice, parse};
 
     fn chord(text: &str) -> Chord {
         Chord::parse(text).expect("parses")

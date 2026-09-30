@@ -89,7 +89,8 @@ impl Chord {
             }
             rest = tail;
         }
-        let code = parse_code(rest).ok_or_else(|| format!("`{rest}` is not a key (in `{text}`)"))?;
+        let code =
+            parse_code(rest).ok_or_else(|| format!("`{rest}` is not a key (in `{text}`)"))?;
         if matches!(code, KeyCode::Char(_)) {
             mods.remove(KeyModifiers::SHIFT);
         }

@@ -86,11 +86,7 @@ pub fn generate_user_code() -> String {
 pub fn normalize_user_code(raw: &str) -> String {
     let stripped: String =
         raw.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect();
-    if stripped.len() == 8 {
-        format!("{}-{}", &stripped[..4], &stripped[4..])
-    } else {
-        stripped
-    }
+    if stripped.len() == 8 { format!("{}-{}", &stripped[..4], &stripped[4..]) } else { stripped }
 }
 
 /// `POST /api/v1/auth/device/start` — unauthenticated.
@@ -317,11 +313,10 @@ pub async fn decide(
 
 /// Dead rows are only noise; drop them well after they stopped being useful.
 async fn reap_expired(pool: &PgPool) {
-    let _ = sqlx::query(
-        "DELETE FROM device_auth_requests WHERE expires_at < now() - interval '1 day'",
-    )
-    .execute(pool)
-    .await;
+    let _ =
+        sqlx::query("DELETE FROM device_auth_requests WHERE expires_at < now() - interval '1 day'")
+            .execute(pool)
+            .await;
 }
 
 #[cfg(test)]

@@ -294,8 +294,12 @@ mod tests {
     #[test]
     fn a_page_is_ordered_by_seq_however_it_arrives() {
         let mut store = ConversationStore::new();
-        let merge =
-            store.merge_page(PageKind::Latest, rows(&[(12, "c"), (10, "a"), (11, "b")]), None, false);
+        let merge = store.merge_page(
+            PageKind::Latest,
+            rows(&[(12, "c"), (10, "a"), (11, "b")]),
+            None,
+            false,
+        );
         assert_eq!(merge.inserted, 3);
         assert_eq!(texts(&store), ["a", "b", "c"]);
         assert_eq!(store.oldest_seq(), Some(10));
