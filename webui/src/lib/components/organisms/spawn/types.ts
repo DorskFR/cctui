@@ -64,7 +64,8 @@ export interface Form {
 	labels: string[];
 	// Context item names to attach, and whether scope-matching memory notes are
 	// added on top. The server resolves both, so a `CctuiAgent` child of the
-	// same profile gets the identical set.
+	// same profile gets the identical set. Auto stays off until the panel can
+	// show what a scope would pull in.
 	context_items: string[];
 	context_auto: boolean;
 }

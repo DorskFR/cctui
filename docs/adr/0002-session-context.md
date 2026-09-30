@@ -125,12 +125,19 @@ context_items(
 `SpawnRequest` gains:
 
 ```
-context: { items: [name], auto: bool }   // default { [], auto: true }
+context: { items: [name], auto: bool }   // default { [], auto: false }
 ```
 
 The server resolves the effective set = explicit picks ∪ (auto ? scope-matching
 enabled items : ∅), and **persists it keyed by the spawn's launch key**, the
 same key `spawn_capabilities` and the label/follow-up intents already use.
+
+**`auto` ships OFF.** Scope resolution is built, tested and reachable
+(`GET /context/resolve`), but nothing is attached to a session unless someone
+named it. Injecting text into every session on a machine because a directory
+matched is not a default to turn on before the spawn panel can show what a
+scope would pull in and before the feature has run in anger. The switch is one
+boolean; the ordering is deliberate.
 
 This is the load-bearing choice. Because resolution is server-side and keyed by
 the launch key:
@@ -212,14 +219,17 @@ thing from the webui, from `CctuiAgent` and from dispatch, because the server
 resolves them. No new per-harness code: the preamble and the staging seam each
 gain one caller.
 
-**Bad.** `context_items` overlaps conceptually with `prompts` until the review
-flow moves, so there are two prompt stores for a while. The staged file costs
+**Bad.** Until the spawn panel grows its picker, attaching a memory means
+typing its name, so the scope machinery is dormant in practice. `context_items`
+overlaps conceptually with `prompts` until the review flow moves, so there are
+two prompt stores for a while. The staged file costs
 the agent a read it would not need if the text were in a system prompt. Scope
 resolution is a union, so a user with many broad-scoped memories can quietly
 inflate every session's context — the editor must show what a given cwd would
 resolve to.
 
-**Risky.** Memory bodies are user-authored text that reaches every session on a
-machine; they ride the gateway-env pull, which is already the channel for
+**Risky.** Memory bodies are user-authored text that reaches any session they
+are attached to — and, once `auto` is switched on, every session whose scope
+matches; they ride the gateway-env pull, which is already the channel for
 credentials, so the existing user/machine ownership check governs them. Items
 are never logged.

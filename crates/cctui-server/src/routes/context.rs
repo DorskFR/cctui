@@ -381,12 +381,12 @@ pub async fn for_session(pool: &PgPool, session_id: &str) -> Vec<ContextItem> {
 }
 
 /// The context a `CctuiAgent` child inherits: the pinned set of the profile it
-/// names (by name, the way the tool takes it) plus every scope-matching
-/// memory, resolved against the child's own machine and working dir.
+/// names, by name, the way the tool takes it.
 ///
 /// The same [`resolve_for_spawn`] the webui path uses, so a profile means the
-/// same thing from a browser and from the tool. Best-effort throughout: a
-/// child launches without context rather than not at all.
+/// same thing from a browser and from the tool. The scope is still resolved
+/// so the two paths agree once auto-attach is switched on. Best-effort
+/// throughout: a child launches without context rather than not at all.
 pub async fn resolve_for_child(
     pool: &PgPool,
     user_id: Uuid,
@@ -424,7 +424,9 @@ pub async fn resolve_for_child(
         working_dir: working_dir.map(str::to_owned),
         label_ids: Vec::new(),
     };
-    resolve_for_spawn(&items, &picks, true, &scope)
+    // Auto off, like every other spawn path: a child inherits what its
+    // profile pins, never what its cwd happens to match.
+    resolve_for_spawn(&items, &picks, false, &scope)
 }
 
 /// `GET /context` — every item the caller owns.
@@ -599,11 +601,11 @@ mod tests {
     }
 
     /// Profile parity: both spawn paths funnel into `resolve_for_spawn` with
-    /// the profile's pinned names and `auto = true`, so a webui spawn and a
-    /// `CctuiAgent` child of the same profile resolve the same kit. The paths
-    /// differ only in how they look the profile up — by id from the form, by
-    /// name from the tool — and both key the machine scope on the machine's
-    /// uuid, never on the name a request happened to use.
+    /// the profile's pinned names, so a webui spawn and a `CctuiAgent` child
+    /// of the same profile resolve the same kit. They differ only in how they
+    /// look the profile up — by id from the form, by name from the tool — and
+    /// both key the machine scope on the machine's uuid, never on the name a
+    /// request happened to use.
     #[test]
     fn a_profile_resolves_the_same_kit_from_the_webui_and_from_the_tool() {
         let machine = Uuid::new_v4().to_string();
@@ -622,18 +624,56 @@ mod tests {
             label_ids: Vec::new(),
         };
 
-        let from_webui = resolve_for_spawn(&items, &pinned, true, &scope);
-        let from_tool = resolve_for_spawn(&items, &pinned, true, &scope);
+        // Both paths run with auto off today: the pinned set, nothing else.
+        let from_webui = resolve_for_spawn(&items, &pinned, false, &scope);
+        let from_tool = resolve_for_spawn(&items, &pinned, false, &scope);
         assert_eq!(names(&from_webui), names(&from_tool));
         assert_eq!(
             names(&from_webui),
+            ["pinned", "reviewer"],
+            "a scope match the profile did not pin must not ride along"
+        );
+
+        // And they still agree once auto-attach is switched on.
+        assert_eq!(
+            names(&resolve_for_spawn(&items, &pinned, true, &scope)),
             ["always", "in-repo", "pinned", "this-box", "reviewer"],
-            "the profile's off-scope pin rides along, the prompt template lands last"
         );
 
         // A machine-scoped item keyed on a different machine must not follow.
         let elsewhere = SpawnScope { machine_id: Some(Uuid::new_v4().to_string()), ..scope };
         assert!(!names(&resolve_for_spawn(&items, &[], true, &elsewhere)).contains(&"this-box"));
+    }
+
+    /// The shipped default: a spawn that says nothing about context gets
+    /// none. Auto-attach stays off until the spawn panel can show what a
+    /// scope would pull in.
+    #[test]
+    fn a_spawn_that_asks_for_nothing_attaches_nothing() {
+        let asked = cctui_proto::api::SpawnContext::default();
+        assert!(!asked.auto, "auto-attach is opt-in");
+        assert!(asked.items.is_empty());
+
+        let items = vec![
+            item("memory", "always", "user", None),
+            item("memory", "in-repo", "path", Some("/w/repo")),
+        ];
+        let scope = SpawnScope {
+            machine_id: Some("m-1".into()),
+            working_dir: Some("/w/repo".into()),
+            label_ids: Vec::new(),
+        };
+        assert!(
+            resolve_for_spawn(&items, &asked.items, asked.auto, &scope).is_empty(),
+            "a matching scope is not consent"
+        );
+        // A body that omits `auto` decodes to the same opt-in default.
+        let decoded: cctui_proto::api::SpawnContext =
+            serde_json::from_str(r#"{"items":["always"]}"#).expect("decodes");
+        assert!(!decoded.auto);
+        assert_eq!(names(&resolve_for_spawn(&items, &decoded.items, decoded.auto, &scope)), [
+            "always"
+        ]);
     }
 
     #[test]

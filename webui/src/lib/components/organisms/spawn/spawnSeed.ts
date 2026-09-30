@@ -36,7 +36,7 @@ export const blank: Form = {
 	context_pack_token: '',
 	labels: [],
 	context_items: [],
-	context_auto: true
+	context_auto: false
 };
 
 export interface Seed {

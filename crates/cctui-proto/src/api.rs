@@ -199,27 +199,19 @@ pub struct SessionContextItem {
     pub version: i32,
 }
 
-/// What a spawn asks for by way of reusable context. `auto` adds every
-/// scope-matching memory on top of the explicit picks.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// What a spawn asks for by way of reusable context.
+///
+/// `auto` adds every scope-matching memory on top of the explicit picks. It
+/// defaults to OFF: until the spawn panel can show what a scope would pull
+/// in, a session gets context only when someone named it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnContext {
     /// Item names, any kind.
     #[serde(default)]
     pub items: Vec<String>,
-    #[serde(default = "crate::api::auto_context_default")]
+    #[serde(default)]
     pub auto: bool,
-}
-
-impl Default for SpawnContext {
-    fn default() -> Self {
-        Self { items: Vec::new(), auto: true }
-    }
-}
-
-#[must_use]
-pub const fn auto_context_default() -> bool {
-    true
 }
 
 /// One enabled plugin's skill bundle, as served under
