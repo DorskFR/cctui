@@ -63,6 +63,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
 
         Action::OpenHelp => {
+            app.help_scroll = 0;
             app.router.push(View::Help);
             Vec::new()
         }
@@ -88,6 +89,10 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
 
         // Line-wise keys move the focused line instead of the viewport while
         // line-select is on; paging keys keep scrolling either way.
+        Action::Scroll { lines, .. } if app.view() == View::Help => {
+            app.help_scroll = app.help_scroll.saturating_add_signed(lines as isize);
+            Vec::new()
+        }
         Action::Scroll { lines, .. }
             if conversation::line_select_active(app) && lines.abs() == 1 =>
         {
@@ -400,6 +405,20 @@ mod tests {
         assert_eq!(app.view(), View::SessionList);
         assert_eq!(app.router.depth(), 1);
         assert!(matches!(effects.as_slice(), [Effect::Unsubscribe { .. }]));
+    }
+
+    #[test]
+    fn help_scrolls_and_reopens_at_the_top() {
+        let mut app = app();
+        reduce(&mut app, Action::OpenHelp);
+        reduce(&mut app, Action::Scroll { lines: 15, release_follow: false });
+        assert_eq!(app.help_scroll, 15);
+        reduce(&mut app, Action::Scroll { lines: -20, release_follow: true });
+        assert_eq!(app.help_scroll, 0);
+        reduce(&mut app, Action::Scroll { lines: 3, release_follow: false });
+        reduce(&mut app, Action::CloseHelp);
+        reduce(&mut app, Action::OpenHelp);
+        assert_eq!(app.help_scroll, 0);
     }
 
     #[test]

@@ -74,23 +74,23 @@ fn rows(keys: &Keymap) -> Vec<Row> {
     rows
 }
 
+/// Clip to `width` display columns, then pad to it: a label never pushes the
+/// next column along, and a two-cell glyph like ⚡ does not leave it ragged.
+fn fit(text: &str, width: usize) -> String {
+    let clipped = crate::app::session_status::truncate(text, width);
+    let pad = width.saturating_sub(UnicodeWidthStr::width(clipped.as_str()));
+    format!("{clipped}{}", " ".repeat(pad))
+}
+
 fn spans(row: &Row, width: usize) -> Vec<Span<'static>> {
     match row {
-        Row::Heading(title) => {
-            vec![Span::styled(format!("{title:<width$}"), theme::section_title())]
-        }
+        Row::Heading(title) => vec![Span::styled(fit(title, width), theme::section_title())],
         Row::Binding { keys, desc } => {
             let desc_width = width.saturating_sub(KEYS_WIDTH + 2);
-            // Pad by display columns: a glyph like ⚡ is one char but two cells,
-            // and char-padding leaves the description column ragged. A label
-            // wider than the column is clipped rather than allowed to push the
-            // next column along and corrupt its rows.
-            let keys = crate::app::session_status::truncate(keys, KEYS_WIDTH - 1);
-            let pad = KEYS_WIDTH.saturating_sub(UnicodeWidthStr::width(keys.as_str()));
             vec![
                 Span::raw("  "),
-                Span::styled(format!("{keys}{}", " ".repeat(pad)), theme::hotkey()),
-                Span::raw(format!("{desc:<desc_width$}")),
+                Span::styled(fit(keys, KEYS_WIDTH - 1) + " ", theme::hotkey()),
+                Span::raw(fit(desc, desc_width)),
             ]
         }
     }
@@ -98,23 +98,25 @@ fn spans(row: &Row, width: usize) -> Vec<Span<'static>> {
 
 /// The cheat sheet is the keymap: a rebound or unbound key shows up here with
 /// no second list to keep in step.
-pub fn draw(frame: &mut Frame, keys: &Keymap) {
+pub fn draw(frame: &mut Frame, keys: &Keymap, scroll: &mut usize) {
     let area = frame.area().inner(Margin { horizontal: 2, vertical: 1 });
     frame.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::border_focused())
-        .title(" Keys ");
-    let inner = block.inner(area);
     let rows = rows(keys);
-
-    let height = (inner.height as usize).max(1);
+    let height = (area.height.saturating_sub(2) as usize).max(1);
     let columns = usize::from(rows.len() > height) + 1;
     let per_column = rows.len().div_ceil(columns);
+    let max_scroll = per_column.saturating_sub(height);
+    *scroll = (*scroll).min(max_scroll);
+
+    let title =
+        if max_scroll == 0 { " Keys ".to_owned() } else { " Keys · j/k to scroll ".to_owned() };
+    let block =
+        Block::default().borders(Borders::ALL).border_style(theme::border_focused()).title(title);
+    let inner = block.inner(area);
     let column_width = (inner.width as usize) / columns;
 
-    let lines: Vec<Line> = (0..per_column.min(height))
+    let lines: Vec<Line> = (*scroll..per_column.min(*scroll + height))
         .map(|i| {
             let mut out = spans(&rows[i], column_width);
             if let Some(right) = rows.get(i + per_column) {

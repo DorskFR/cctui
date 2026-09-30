@@ -398,6 +398,14 @@ fn help_overlay() {
 }
 
 #[test]
+fn help_overlay_scrolled_to_the_end() {
+    let mut app = app_with_sessions();
+    app.router.push(View::Help);
+    app.help_scroll = usize::MAX;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn conversation_permission_card() {
     let mut app = app_in_conversation();
     with_permission(&mut app, permission_request());

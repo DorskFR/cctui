@@ -198,6 +198,8 @@ pub struct App {
     /// Live plan-approval prompt per session, cleared on `PlanResolved`.
     pub plans: HashMap<String, PlanCard>,
     pub scroll_offset: usize,
+    /// First cheat-sheet row shown; clamped by the overlay when it draws.
+    pub help_scroll: usize,
     pub follow_tail: bool,
     pub active_count: usize,
     pub show_timestamps: bool,
@@ -282,6 +284,7 @@ impl App {
             asks: HashMap::new(),
             plans: HashMap::new(),
             scroll_offset: 0,
+            help_scroll: 0,
             follow_tail: true,
             active_count: 0,
             show_timestamps: false,

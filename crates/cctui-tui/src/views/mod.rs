@@ -17,7 +17,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         // Help always renders over the session list, whatever it was opened from.
         View::Help => {
             sessions::draw(frame, app);
-            help::draw(frame, &app.config.keys);
+            help::draw(frame, &app.config.keys, &mut app.help_scroll);
         }
         View::HistoryPicker => {
             match app.router.below() {

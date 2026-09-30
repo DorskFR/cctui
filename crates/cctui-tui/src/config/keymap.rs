@@ -276,7 +276,13 @@ const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "enter", ActionId::HistoryRecall),
 ];
 
-const HELP: &[BindingSpec] = &[spec(Context::Help, "esc, q, ?", ActionId::CloseHelp)];
+const HELP: &[BindingSpec] = &[
+    spec(Context::Help, "esc, q, ?", ActionId::CloseHelp),
+    spec(Context::Help, "j, down", ActionId::ScrollDown),
+    spec(Context::Help, "k, up", ActionId::ScrollUp),
+    spec(Context::Help, "pagedown", ActionId::PageDown),
+    spec(Context::Help, "pageup", ActionId::PageUp),
+];
 
 /// The card is inline, not modal: only the answer keys live here and
 /// everything else falls through to the conversation underneath.
