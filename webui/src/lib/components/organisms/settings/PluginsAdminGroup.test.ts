@@ -64,7 +64,8 @@ const installed: AdminPluginInfo = {
 	source: 'installed',
 	enabled: false,
 	instance_settings: [],
-	backend: false
+	backend: false,
+	proxy_secret: null
 };
 const fromDir: AdminPluginInfo = { ...installed, id: 'local', name: 'Local', source: 'directory', enabled: true };
 
