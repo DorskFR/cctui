@@ -3,6 +3,7 @@
 pub mod chord;
 pub mod keymap;
 pub mod prefs;
+pub mod server;
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +36,24 @@ pub struct Config {
     pub theme: ThemeChoice,
     pub keys: Keymap,
     pub prefs: Prefs,
+    /// Kept so the server's settings can be layered underneath the file's own
+    /// entries when they arrive, after the file has already been read.
+    file: prefs::PrefsFile,
+    theme_pinned: bool,
+}
+
+impl Config {
+    pub fn apply_server(&mut self, server: &server::ServerPrefs) {
+        if let Some(theme) = server.theme
+            && !self.theme_pinned
+        {
+            self.theme = theme;
+        }
+        let mut prefs = Prefs::default();
+        prefs.apply_server(server);
+        prefs.apply_file(&self.file);
+        self.prefs = prefs;
+    }
 }
 
 /// A config load never fails: every problem is collected and surfaced in the
@@ -106,12 +125,16 @@ pub fn parse(text: &str) -> Loaded {
 
     if let Some(theme) = file.theme {
         match ThemeChoice::parse(&theme) {
-            Some(choice) => config.theme = choice,
+            Some(choice) => {
+                config.theme = choice;
+                config.theme_pinned = true;
+            }
             None => problems
                 .push(format!("theme `{theme}` is not one of light, dark, auto — using auto")),
         }
     }
-    config.prefs.apply_file(&file.preferences);
+    config.file = file.preferences;
+    config.prefs.apply_file(&config.file);
 
     for (context_name, table) in &file.keys {
         let Some(context) = Context::parse(context_name) else {

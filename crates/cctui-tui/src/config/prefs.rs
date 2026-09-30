@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrefsFile {
     pub timestamps: Option<bool>,
@@ -27,6 +27,17 @@ impl Default for Prefs {
 }
 
 impl Prefs {
+    /// The server's settings are a weaker default than the local file: a knob
+    /// written in `tui.toml` wins on this machine.
+    pub fn apply_server(&mut self, server: &super::server::ServerPrefs) {
+        if let Some(v) = server.compact_rows {
+            self.compact_rows = v;
+        }
+        if let Some(v) = server.notifications {
+            self.notifications = v;
+        }
+    }
+
     pub fn apply_file(&mut self, file: &PrefsFile) {
         if let Some(v) = file.timestamps {
             self.timestamps = v;
@@ -43,6 +54,20 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::{Prefs, PrefsFile};
+
+    #[test]
+    fn the_local_file_wins_over_the_server() {
+        let server = super::super::server::ServerPrefs {
+            compact_rows: Some(true),
+            notifications: Some(false),
+            theme: None,
+        };
+        let mut prefs = Prefs::default();
+        prefs.apply_server(&server);
+        prefs.apply_file(&PrefsFile { notifications: Some(true), ..PrefsFile::default() });
+        assert!(prefs.compact_rows);
+        assert!(prefs.notifications);
+    }
 
     #[test]
     fn an_absent_key_leaves_the_default_alone() {

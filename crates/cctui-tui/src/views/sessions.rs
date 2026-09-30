@@ -70,7 +70,7 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         if i == selected_flat {
             selected_render = items.len();
         }
-        items.push(session_line(session));
+        items.push(session_line(session, app.config.prefs.compact_rows));
     }
 
     // Show truncation hint if not showing all sessions
@@ -92,7 +92,9 @@ fn bucket_header(bucket: Bucket) -> ListItem<'static> {
     )]))
 }
 
-fn session_line(s: &SessionListItem) -> ListItem<'static> {
+/// `compact` keeps a row to its identity — status, project, branch — and drops
+/// the model, cost and activity detail.
+fn session_line(s: &SessionListItem, compact: bool) -> ListItem<'static> {
     let icon = theme::status_icon(s.status);
     let icon_style = theme::status_style(s.status);
 
@@ -121,6 +123,10 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
 
     if !branch.is_empty() {
         spans.push(Span::styled(format!(" ({branch})"), theme::branch()));
+    }
+
+    if compact {
+        return ListItem::new(Line::from(spans));
     }
 
     if !model.is_empty() {

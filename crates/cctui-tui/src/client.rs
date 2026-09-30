@@ -52,6 +52,23 @@ impl ServerClient {
         Ok(resp)
     }
 
+    pub async fn get_settings(&self) -> Result<cctui_proto::api::settings::SettingsPayload> {
+        let url = format!("{}/api/v1/settings", self.base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("GET /api/v1/settings")?
+            .error_for_status()
+            .context("settings response status")?
+            .json::<cctui_proto::api::settings::SettingsPayload>()
+            .await
+            .context("deserialize settings")?;
+        Ok(resp)
+    }
+
     pub async fn get_conversation(&self, session_id: &str) -> Result<Vec<Value>> {
         let url = format!("{}/api/v1/sessions/{}/conversation", self.base_url, session_id);
         let resp = self

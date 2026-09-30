@@ -188,6 +188,8 @@ async fn run(
     let server = Arc::new(ServerClient::new(&base_url, &token));
     let mut app = App::new();
     apply_config(&mut app);
+    apply_server_settings(&server, &mut app).await;
+    theme::init(app.config.theme);
 
     init_sessions(&server, &mut app).await;
     let (cmd_tx, mut event_rx) = connect_ws_or_dummy(&server).await;
@@ -275,12 +277,19 @@ async fn run(
 fn apply_config(app: &mut App) {
     app.clock_ms = now_ms();
     let loaded = config::load();
-    theme::init(loaded.config.theme);
     app.config = loaded.config;
-    app.show_timestamps = app.config.prefs.timestamps;
     for problem in loaded.problems {
         app.toast(app::toast::Level::Warn, format!("tui.toml: {problem}"));
     }
+}
+
+/// The server's user settings are defaults under the local file. An
+/// unreachable or unreadable server simply leaves the local config in force.
+async fn apply_server_settings(server: &ServerClient, app: &mut App) {
+    if let Ok(payload) = server.get_settings().await {
+        app.config.apply_server(&config::server::ServerPrefs::from_settings(&payload.data));
+    }
+    app.show_timestamps = app.config.prefs.timestamps;
 }
 
 async fn init_sessions(server: &ServerClient, app: &mut App) {
