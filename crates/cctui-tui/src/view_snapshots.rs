@@ -25,6 +25,13 @@ fn session_list_truncated() {
 }
 
 #[test]
+fn session_list_compact_rows() {
+    let mut app = app_with_sessions();
+    app.config.prefs.compact_rows = true;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn session_list_selection_moves() {
     let mut app = app_with_sessions();
     app.select_next();

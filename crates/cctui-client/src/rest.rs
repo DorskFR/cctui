@@ -1,5 +1,6 @@
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
+use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{AutoApproveRequest, SessionListItem, SessionListResponse};
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use reqwest::StatusCode;
@@ -304,6 +305,11 @@ impl Client {
         let body = serde_json::to_value(AutoApproveRequest { enabled })
             .map_err(|source| ClientError::Decode { route: route.id, source })?;
         self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    /// The caller's settings blob. The TUI reads it and never writes it back.
+    pub async fn settings(&self) -> Result<SettingsPayload, ClientError> {
+        self.json(Self::route("get_settings")?, &[], &[], None).await
     }
 
     pub async fn mark_seen(&self, session_id: &str) -> Result<(), ClientError> {

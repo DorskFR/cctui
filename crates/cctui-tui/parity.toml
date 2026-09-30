@@ -529,8 +529,8 @@ reason = "the browser approves a device login; the TUI is the device being appro
 [[route]]
 id = "get_settings"
 # GET /settings — Get your user settings.
-tui = "planned"
-ticket = "CCT-1277"
+tui = "handled"
+module = "config/server.rs"
 
 [[route]]
 id = "put_settings"

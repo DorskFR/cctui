@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod config;
 mod install;
 mod keys;
 #[cfg(test)]
@@ -206,6 +207,9 @@ async fn run(
 ) -> Result<()> {
     let server = Arc::new(Client::new(&base_url, &token));
     let mut app = App::new();
+    apply_config(&mut app);
+    apply_server_settings(&server, &mut app).await;
+    theme::init(app.config.theme);
 
     init_sessions(&server, &mut app).await;
     let (ws, mut event_rx) = server.connect_ws();
@@ -228,7 +232,9 @@ async fn run(
 
             maybe_input = input_rx.recv() => {
                 maybe_input
-                    .and_then(|input| keys::map_input(app.view(), app.input_active, input))
+                    .and_then(|input| {
+                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                    })
                     .map_or_else(Vec::new, |action| vec![action])
             }
             maybe_action = action_rx.recv() => {
@@ -265,6 +271,26 @@ async fn run(
         }
     }
     Ok(())
+}
+
+/// Config problems are toasts, never a startup failure: a typo in one binding
+/// must not keep the TUI from opening.
+fn apply_config(app: &mut App) {
+    app.clock_ms = now_ms();
+    let loaded = config::load();
+    app.config = loaded.config;
+    for problem in loaded.problems {
+        app.toast(Level::Warn, format!("tui.toml: {problem}"));
+    }
+}
+
+/// The server's user settings are defaults under the local file. An
+/// unreachable or unreadable server simply leaves the local config in force.
+async fn apply_server_settings(server: &Client, app: &mut App) {
+    if let Ok(payload) = server.settings().await {
+        app.config.apply_server(&config::server::ServerPrefs::from_settings(&payload.data));
+    }
+    app.show_timestamps = app.config.prefs.timestamps;
 }
 
 async fn init_sessions(server: &Client, app: &mut App) {
