@@ -254,6 +254,254 @@ pub async fn reconcile(
 }
 
 #[cfg(test)]
+mod db_tests {
+    use super::{label, reconcile, revoke_for_all, sealed, unsealed};
+    use crate::auth::AuthConfig;
+    use crate::plugins::{PluginRegistry, test_support::write_plugin};
+    use serde_json::{Value, json};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    /// Sealing needs a key. CI exports `CCTUI_VAULT_KEY` for the suite; this
+    /// makes the test self-sufficient without it. `install_vault_key` is
+    /// set-once and ignores a second call, so parallel tests cannot conflict —
+    /// whichever lands first wins and every sealer in the process agrees.
+    fn install_test_vault_key() {
+        crate::crypto::install_vault_key(vec![0x5a; 32]);
+    }
+
+    async fn connect(test_name: &str) -> Option<PgPool> {
+        let url = crate::routes::gateway::test_db_url(test_name)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap(),
+        )
+    }
+
+    /// A throwaway user with a `{read, admin}` ceiling. A random id per call is
+    /// what keeps concurrent tests on the shared database from colliding.
+    async fn seed_user(pool: &PgPool) -> Uuid {
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'host-token test', $2)")
+            .bind(user_id)
+            .bind(user_id.to_string())
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO user_acls (user_id, scope) SELECT $1, unnest($2::text[]) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(vec!["read".to_owned(), "admin".to_owned()])
+        .execute(pool)
+        .await
+        .unwrap();
+        user_id
+    }
+
+    async fn forget_user(pool: &PgPool, user_id: Uuid) {
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(pool).await.unwrap();
+    }
+
+    async fn persist(pool: &PgPool, user_id: Uuid, data: &Value) {
+        sqlx::query(
+            "INSERT INTO user_settings (user_id, version, data) VALUES ($1, 1, $2) \
+             ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data",
+        )
+        .bind(user_id)
+        .bind(data)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn stored_data(pool: &PgPool, user_id: Uuid) -> Option<Value> {
+        sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn token_rows(pool: &PgPool, user_id: Uuid, plugin_id: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT token_hash FROM user_tokens WHERE user_id = $1 AND label = $2 \
+             AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(label(plugin_id))
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn key_scopes(pool: &PgPool, hash: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT a.scope FROM key_acls a JOIN auth_keys k ON k.id = a.key_id \
+             WHERE k.key_hash = $1 ORDER BY a.scope",
+        )
+        .bind(hash)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn auth_key_count(pool: &PgPool, hash: &str) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM auth_keys WHERE key_hash = $1")
+            .bind(hash)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// A registry holding one instance-enabled plugin that asks for a host
+    /// token, plus one that does not.
+    fn registry(id: &str) -> (tempfile::TempDir, PluginRegistry) {
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(root.path(), id, r#","hostToken":{"env":"HOST_TOKEN"}"#);
+        write_plugin(root.path(), "quiet", "");
+        let registry = PluginRegistry::from_dir(root.path().to_path_buf());
+        (root, registry)
+    }
+
+    fn enabled(id: &str, on: bool) -> Value {
+        json!({ "plugins": { "enabled": { id: on, "quiet": true } } })
+    }
+
+    #[tokio::test]
+    async fn enabling_mints_exactly_one_token_and_a_re_enable_is_idempotent() {
+        const ID: &str = "host-token-mint";
+        install_test_vault_key();
+        let Some(pool) = connect("plugin_host_token_mint").await else { return };
+        let (_root, reg) = registry(ID);
+        let auth = AuthConfig::new(vec![], pool.clone());
+        let user_id = seed_user(&pool).await;
+
+        let mut data = enabled(ID, true);
+        reconcile(&pool, &auth, &reg, user_id, None, &mut data).await.unwrap();
+
+        let hashes = token_rows(&pool, user_id, ID).await;
+        assert_eq!(hashes.len(), 1, "one enable mints exactly one token");
+        assert_eq!(auth_key_count(&pool, &hashes[0]).await, 1, "and one auth_keys row");
+        assert_eq!(
+            key_scopes(&pool, &hashes[0]).await,
+            vec!["read".to_owned()],
+            "the grant is `read` only, even though this user's ceiling includes admin"
+        );
+
+        let first = sealed(Some(&data), ID).expect("the sealed token lands in the blob");
+        let plaintext = unsealed(Some(&data), ID).expect("and unseals");
+        assert!(plaintext.starts_with("cctui_u_"), "{plaintext}");
+        assert_ne!(first, plaintext, "the token is sealed at rest, not stored verbatim");
+        assert_eq!(
+            crate::auth::sha256_hex(&plaintext),
+            hashes[0],
+            "the sealed copy is the token whose hash the DB holds"
+        );
+        assert!(
+            data["plugins"]["enabled"]["quiet"].as_bool().unwrap(),
+            "a plugin that asks for no token is untouched"
+        );
+
+        persist(&pool, user_id, &data).await;
+        let prev = stored_data(&pool, user_id).await;
+        let mut again = enabled(ID, true);
+        reconcile(&pool, &auth, &reg, user_id, prev.as_ref(), &mut again).await.unwrap();
+
+        assert_eq!(token_rows(&pool, user_id, ID).await, hashes, "a re-enable mints nothing new");
+        assert_eq!(
+            sealed(Some(&again), ID).as_deref(),
+            Some(first.as_str()),
+            "and carries the same sealed token across the write"
+        );
+
+        forget_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn a_client_cannot_write_the_block_and_disabling_destroys_the_token() {
+        const ID: &str = "host-token-disable";
+        install_test_vault_key();
+        let Some(pool) = connect("plugin_host_token_disable").await else { return };
+        let (_root, reg) = registry(ID);
+        let auth = AuthConfig::new(vec![], pool.clone());
+        let user_id = seed_user(&pool).await;
+
+        let mut forged = enabled(ID, true);
+        forged["plugins"][super::BLOCK] = json!({ ID: "v1:forged-by-the-client" });
+        reconcile(&pool, &auth, &reg, user_id, None, &mut forged).await.unwrap();
+        let hashes = token_rows(&pool, user_id, ID).await;
+        assert_eq!(hashes.len(), 1);
+        assert_ne!(
+            sealed(Some(&forged), ID).as_deref(),
+            Some("v1:forged-by-the-client"),
+            "a value the client sent for the server-owned block is discarded"
+        );
+
+        persist(&pool, user_id, &forged).await;
+        let prev = stored_data(&pool, user_id).await;
+        let mut off = enabled(ID, false);
+        reconcile(&pool, &auth, &reg, user_id, prev.as_ref(), &mut off).await.unwrap();
+
+        assert!(token_rows(&pool, user_id, ID).await.is_empty(), "disabling deletes the row");
+        assert_eq!(auth_key_count(&pool, &hashes[0]).await, 0, "and its auth_keys row");
+        assert!(sealed(Some(&off), ID).is_none(), "and the sealed copy does not survive");
+
+        forget_user(&pool, user_id).await;
+    }
+
+    /// `revoke_for_all` is the one path behind both the instance toggle going
+    /// off and an uninstall, so it is what both admin routes are tested through.
+    #[tokio::test]
+    async fn an_instance_disable_or_uninstall_revokes_for_every_user() {
+        const ID: &str = "host-token-uninstall";
+        install_test_vault_key();
+        let Some(pool) = connect("plugin_host_token_uninstall").await else { return };
+        let (_root, reg) = registry(ID);
+        let auth = AuthConfig::new(vec![], pool.clone());
+
+        let mut users = Vec::new();
+        for _ in 0..2 {
+            let user_id = seed_user(&pool).await;
+            let mut data = enabled(ID, true);
+            reconcile(&pool, &auth, &reg, user_id, None, &mut data).await.unwrap();
+            persist(&pool, user_id, &data).await;
+            let hashes = token_rows(&pool, user_id, ID).await;
+            assert_eq!(hashes.len(), 1);
+            users.push((user_id, hashes[0].clone()));
+        }
+        assert_ne!(users[0].1, users[1].1, "each user holds a distinct credential");
+
+        let revoked = revoke_for_all(&pool, &auth, ID).await.unwrap();
+        assert_eq!(revoked, 2, "both users lose their token");
+
+        for (user_id, hash) in &users {
+            assert!(token_rows(&pool, *user_id, ID).await.is_empty());
+            assert_eq!(auth_key_count(&pool, hash).await, 0);
+            let data = stored_data(&pool, *user_id).await;
+            assert!(
+                sealed(data.as_ref(), ID).is_none(),
+                "the sealed copy is stripped out of every user's settings row"
+            );
+            assert!(
+                data.as_ref().unwrap()["plugins"]["enabled"]["quiet"].as_bool().unwrap(),
+                "the rest of the settings blob is left alone"
+            );
+        }
+
+        assert_eq!(
+            revoke_for_all(&pool, &auth, ID).await.unwrap(),
+            0,
+            "a second uninstall has nothing left to revoke"
+        );
+
+        for (user_id, _) in &users {
+            forget_user(&pool, *user_id).await;
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{BLOCK, Plan, label, plan, sealed, strip, wanted, write};
     use crate::plugins::{PluginRegistry, test_support::write_plugin};
