@@ -62,6 +62,11 @@ export interface Form {
 	// New Session opens via LAST_SPAWN_LABELS so the next spawn defaults to the
 	// last-used set. Resolved against the live label list for display.
 	labels: string[];
+	// Context item names to attach, and whether scope-matching memory notes are
+	// added on top. The server resolves both, so a `CctuiAgent` child of the
+	// same profile gets the identical set.
+	context_items: string[];
+	context_auto: boolean;
 }
 
 /** What opens the form pre-seeded: a session's config, or a draft to edit

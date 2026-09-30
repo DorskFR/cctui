@@ -34,7 +34,9 @@ export const blank: Form = {
 	context_pack_ref: '',
 	context_pack_subdir: '',
 	context_pack_token: '',
-	labels: []
+	labels: [],
+	context_items: [],
+	context_auto: true
 };
 
 export interface Seed {

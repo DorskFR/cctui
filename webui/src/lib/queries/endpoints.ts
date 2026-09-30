@@ -19,6 +19,9 @@ import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
 import type { ConversationSearchResponse } from "@bindings/ConversationSearchResponse";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
+import type { ContextItem } from "@bindings/ContextItem";
+import type { ContextItemSpec } from "@bindings/ContextItemSpec";
+import type { UpdateContextItemRequest } from "@bindings/UpdateContextItemRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
 import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
@@ -248,6 +251,25 @@ export const endpoints = {
    * readable (admin). */
   rotatePluginProxySecret: (id: string) =>
     api.post<PluginProxySecret>(`/admin/plugins/${encodeURIComponent(id)}/proxy-secret`, {}),
+  /** The caller's reusable context items (memory notes, prompt templates). */
+  contextItems: () => api.get<ContextItem[]>("/context"),
+  createContextItem: (body: ContextItemSpec) =>
+    api.post<ContextItem>("/context", body),
+  updateContextItem: (id: string, body: UpdateContextItemRequest) =>
+    api.patch<ContextItem>(`/context/${id}`, body),
+  deleteContextItem: (id: string) => api.del<void>(`/context/${id}`),
+  /** What a spawn into these coordinates would attach on its own. */
+  resolveContext: (q: {
+    machine_id?: string;
+    working_dir?: string;
+    labels?: string;
+  }) =>
+    api.get<ContextItem[]>(
+      `/context/resolve?${new URLSearchParams(
+        Object.entries(q).filter(([, v]) => !!v) as [string, string][],
+      ).toString()}`,
+    ),
+
   /** The caller's spawn profiles, oldest first. */
   profiles: () => api.get<SessionProfile[]>("/profiles"),
   createProfile: (body: CreateProfileRequest) =>

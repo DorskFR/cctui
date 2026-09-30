@@ -97,6 +97,7 @@ export const SETTINGS_PAGES = [
 	'appearance',
 	'sessions',
 	'macros',
+	'context',
 	'plugins',
 	'execution',
 	'privacy',
@@ -144,6 +145,8 @@ const HASH_ALIASES: Record<string, SettingsPage> = {
 	notify: 'notifications',
 	resources: 'monitoring',
 	passkeys: 'security',
+	memory: 'context',
+	skills: 'plugins',
 	onboarding: 'guides',
 	tour: 'guides'
 };
