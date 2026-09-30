@@ -1,4 +1,5 @@
 mod app;
+mod auth;
 mod install;
 mod keys;
 #[cfg(test)]
@@ -59,6 +60,22 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
+    /// Log in and store the credential in `~/.config/cctui/user.json`.
+    Login {
+        /// Server to log in to. Defaults to the stored one, then `CCTUI_URL`.
+        #[arg(long)]
+        server: Option<String>,
+        /// Use an existing key instead of the browser approval flow. Without a
+        /// value the key is read from stdin, keeping it out of the shell history.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        key: Option<String>,
+    },
+    /// Forget the stored credential.
+    Logout {
+        /// Also revoke the key server-side, so it cannot be used again.
+        #[arg(long)]
+        revoke: bool,
+    },
     /// Force re-download of the latest cctui release and re-apply settings.
     Update,
     /// One-call session diagnose: print everything the daemon knows
@@ -79,6 +96,8 @@ async fn main() -> Result<()> {
             let (base_url, _) = resolve_identity();
             selfupdate::force_update(&base_url).await
         }
+        Some(Command::Login { server, key }) => auth::login(server, key).await,
+        Some(Command::Logout { revoke }) => auth::logout(revoke).await,
         Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,
         None => {
             let (base_url, _) = resolve_identity();
@@ -191,6 +210,7 @@ async fn run(
     init_sessions(&server, &mut app).await;
     let (ws, mut event_rx) = server.connect_ws();
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
+    effects.dispatch(app::action::Effect::FetchIdentity);
     let mut refresh_interval = time::interval(Duration::from_secs(5));
     refresh_interval.tick().await;
     let mut input_rx = spawn_input_task();

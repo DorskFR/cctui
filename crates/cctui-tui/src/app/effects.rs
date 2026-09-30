@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use super::action::{Action, Effect};
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::identity::AuthAction;
 use super::line::agent_event_to_line;
 use super::state::ConversationLine;
 use super::toast::Level;
@@ -56,9 +57,18 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
     match effect {
         Effect::RefreshSessions => match server.list_sessions().await {
             Ok(resp) => vec![Action::SessionsLoaded(resp.sessions)],
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
             Err(e) => {
                 tracing::warn!(%e, "session refresh failed");
                 vec![Action::Toast(Level::Warn, "session refresh failed".to_owned())]
+            }
+        },
+        Effect::FetchIdentity => match server.me().await {
+            Ok(me) => vec![Action::Auth(AuthAction::Identified(Box::new(me)))],
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, "identity fetch failed");
+                Vec::new()
             }
         },
         Effect::LoadConversationPage { session_id, kind, page, etag } => {

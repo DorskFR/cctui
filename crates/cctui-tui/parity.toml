@@ -505,8 +505,26 @@ reason = "browser host metadata used to build webui links"
 [[route]]
 id = "get_me"
 # GET /me — Get the current principal (user, scopes, machine).
-tui = "planned"
-ticket = "CCT-1269"
+tui = "handled"
+module = "app/identity.rs"
+
+[[route]]
+id = "delete_me_key"
+# DELETE /me/key — Revoke the credential this request authenticated with.
+tui = "handled"
+module = "auth.rs"
+
+[[route]]
+id = "get_auth_device_by_user_code"
+# GET /auth/device/{user_code} — What a pending device login is asking for.
+tui = "waived"
+reason = "the browser approves a device login; the TUI is the device being approved"
+
+[[route]]
+id = "post_auth_device_by_user_code_decision"
+# POST /auth/device/{user_code}/decision — Approve or deny a device login, granting it your scopes.
+tui = "waived"
+reason = "the browser approves a device login; the TUI is the device being approved"
 
 [[route]]
 id = "get_settings"
@@ -938,7 +956,7 @@ ticket = "CCT-1262"
 id = "post_sessions_by_id_interrupt"
 # POST /sessions/{id}/interrupt — Interrupt a session's current turn.
 tui = "handled"
-module = "client.rs"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_resume"
@@ -992,7 +1010,7 @@ ticket = "CCT-1232"
 id = "get_sessions"
 # GET /sessions — List your sessions (admin: all).
 tui = "handled"
-module = "client.rs"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_stats"
@@ -1112,7 +1130,7 @@ ticket = "CCT-1264"
 id = "post_sessions_by_id_auto_approve"
 # POST /sessions/{id}/auto-approve — Toggle auto-approval of tool-use for a session.
 tui = "handled"
-module = "client.rs"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_archive"
@@ -1172,7 +1190,7 @@ ticket = "CCT-1245"
 id = "get_sessions_by_id_conversation"
 # GET /sessions/{id}/conversation — Fetch a session's normalized conversation transcript.
 tui = "handled"
-module = "client.rs"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_by_id_search"
@@ -1208,7 +1226,7 @@ ticket = "CCT-1234"
 id = "get_sessions_by_id_diagnose"
 # GET /sessions/{id}/diagnose — Snapshot everything the daemon knows about a session, dated.
 tui = "handled"
-module = "client.rs"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_by_id_langfuse"

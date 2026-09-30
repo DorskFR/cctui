@@ -5,6 +5,7 @@ use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
 use super::conversation_store::ConversationStore;
+use super::identity::AuthState;
 use super::router::Router;
 use super::toast::{Level, StatusCounters, Toasts};
 
@@ -98,6 +99,7 @@ pub struct App {
     pub pending_prepend: bool,
     pub toasts: Toasts,
     pub status: StatusCounters,
+    pub auth: AuthState,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -141,6 +143,7 @@ impl App {
             pending_prepend: false,
             toasts: Toasts::default(),
             status: StatusCounters::default(),
+            auth: AuthState::Unknown,
             clock_ms: 0,
         }
     }

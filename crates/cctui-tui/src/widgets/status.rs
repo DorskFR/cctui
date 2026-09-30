@@ -16,6 +16,11 @@ const fn level_style(level: Level) -> ratatui::style::Style {
 /// count of anything the TUI had to drop. Empty when there is nothing to say.
 pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    if let Some(chip) = app.auth.chip() {
+        spans.push(Span::raw("  "));
+        let style = if chip.rejected { theme::ERROR } else { theme::DIM };
+        spans.push(Span::styled(format!("@{}", chip.text), style));
+    }
     if let Some(toast) = app.toasts.latest() {
         let queued = app.toasts.queued();
         let more = if queued > 1 { format!(" +{}", queued - 1) } else { String::new() };

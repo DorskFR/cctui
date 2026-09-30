@@ -309,6 +309,11 @@ impl Client {
     pub async fn mark_seen(&self, session_id: &str) -> Result<(), ClientError> {
         self.unit(Self::route("post_sessions_by_id_seen")?, &[("id", session_id)], None).await
     }
+
+    /// Revoke the key this client authenticates with (`cctui logout --revoke`).
+    pub async fn revoke_current_key(&self) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_me_key")?, &[], None).await
+    }
 }
 
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
@@ -399,6 +404,7 @@ mod tests {
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
             "get_me",
+            "delete_me_key",
         ] {
             assert!(Client::route(id).is_ok(), "missing route id {id}");
         }

@@ -5,6 +5,7 @@
 //! contains no path literals, so a renamed server route is a compile-or-test
 //! failure rather than a 404 at runtime.
 
+pub mod device_auth;
 pub mod error;
 pub mod rest;
 pub mod ws;

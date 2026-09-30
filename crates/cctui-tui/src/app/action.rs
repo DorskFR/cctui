@@ -4,6 +4,7 @@ use crossterm::event::KeyEvent;
 
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::identity::AuthAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -76,6 +77,8 @@ pub enum Action {
     SessionRegistered(Box<cctui_proto::models::Session>),
     SessionDeregistered(String),
 
+    Auth(AuthAction),
+
     Reconnected,
     Toast(Level, String),
     /// A websocket frame the TUI could not deserialize.
@@ -95,6 +98,8 @@ pub struct HeartbeatUsage {
 /// key-handling path; the effects runner owns them.
 pub enum Effect {
     RefreshSessions,
+    /// `GET /me`: resolve the identity behind the configured key.
+    FetchIdentity,
     LoadConversationPage {
         session_id: String,
         kind: PageKind,
