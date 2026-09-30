@@ -275,9 +275,9 @@ fn parse_percent(v: &serde_json::Value) -> Option<f64> {
 /// Normalize any of the three supported usage payloads into a provider-agnostic collection of
 /// windows.
 ///
-/// 1. New Anthropic `{"limits":[{kind,percent,resets_at,scope?}, …]}`. 2. Legacy Anthropic fixed
-/// fields (`five_hour`/`seven_day`/`seven_day_opus`/…). 3. `OpenAI`'s canonical `{five_hour,
-/// seven_day}` shape (same as legacy).
+/// 1. New Anthropic `{"limits":[{kind,percent,resets_at,scope?}, …]}`.
+/// 2. Legacy Anthropic fixed fields (`five_hour`/`seven_day`/`seven_day_opus`/…).
+/// 3. `OpenAI`'s canonical `{five_hour, seven_day}` shape (same as legacy).
 ///
 /// Missing/malformed entries omit only themselves — one unknown limit never
 /// collapses the valid ones.
