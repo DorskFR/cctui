@@ -2020,7 +2020,7 @@
   "rooms_joined_marker": "Added to a room",
   "rooms_name_label": "Room name",
   "rooms_name_placeholder": "wave 23",
-  "rooms_badge_title": "In {count} room(s)",
+  "rooms_badge_title": "In room {room}",
   "rooms_members_count": "{count} member(s)",
   "rooms_none": "No rooms yet. Select several sessions to make one.",
   "rooms_archive": "Archive room",

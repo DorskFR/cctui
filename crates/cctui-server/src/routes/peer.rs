@@ -158,8 +158,7 @@ impl Delivery {
 /// every agent-to-agent message, direct or broadcast.
 ///
 /// `bus::dispatch` resolves the target's own machine and routes across replicas,
-/// so this inherits whatever the bus transport becomes (CCT-568's NATS core would
-/// swap underneath with no change here). A session mid-turn is not special-cased:
+/// so this is transport-agnostic. A session mid-turn is not special-cased:
 /// it receives the turn exactly as it would a message the human sent while it was
 /// working.
 pub async fn deliver(

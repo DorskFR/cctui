@@ -2020,7 +2020,7 @@
   "rooms_joined_marker": "Ajouté à une salle",
   "rooms_name_label": "Nom de la salle",
   "rooms_name_placeholder": "vague 23",
-  "rooms_badge_title": "Dans {count} salle(s)",
+  "rooms_badge_title": "Dans la salle {room}",
   "rooms_members_count": "{count} membre(s)",
   "rooms_none": "Aucune salle. Sélectionnez plusieurs sessions pour en créer une.",
   "rooms_archive": "Archiver la salle",

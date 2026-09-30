@@ -13,9 +13,7 @@
 //! the caller gets one result per member.
 //!
 //! This is deliberate. The bus already solves cross-machine and cross-replica
-//! routing, and CCT-568 would swap its transport for a NATS core underneath;
-//! riding that seam means the broadcast inherits the upgrade for free, whereas a
-//! delivery ledger of our own would be a second, worse copy of it.
+//! routing; a delivery ledger of our own would be a second, worse copy of it.
 //!
 //! A member that is mid-turn is NOT special-cased: it receives the turn exactly as
 //! it would a message the human sent while it was working. A member that is
