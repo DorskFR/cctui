@@ -388,6 +388,7 @@ sandbox, and there is no attempt at one:
 | `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `page`, `styles` (resolved the same way), `enabled`, `settings` declarations and the caller's `config` values |
 | `GET`/`POST`/`PUT`/`PATCH`/`DELETE` `/api/v1/plugins/{id}/backend/{*path}` | bearer or cookie, read | proxy to the plugin's backend with signed identity headers; streams, incl. SSE |
 | `POST /api/v1/plugins/rescan` | admin | re-read the plugins directory |
+| `PATCH /api/v1/sessions/{id}/plugins/{plugin_id}` | bearer, session write | set (`{"data": …}`) or clear (`{"data": null}`) a [per-session data slot](#per-session-data-slots) |
 | `GET /api/v1/admin/plugins` | admin | `AdminPluginInfo[]`: every plugin, installed or from the directory, with its instance toggle |
 | `GET /api/v1/admin/plugins/catalog` | admin | `CatalogPluginInfo[]`: the published catalog, annotated with `installed_version` and `update_available` |
 | `POST /api/v1/admin/plugins` | admin | install or upgrade from `{catalog}`, `{url}` or a multipart `file` |
@@ -413,6 +414,36 @@ Everything user-facing lives in the user's settings blob:
 
 `PUT /settings` keeps only installed plugin ids, only declared keys, and
 string values of at most 512 characters.
+
+## Per-session data slots
+
+A plugin can hang free-form JSON off one session under
+`sessions.metadata.plugins.<plugin_id>` — the YouTrack issue the session is
+working on, later a Slack thread or a PR. It rides the session row, so it
+reaches every reader of that session with no extra fetch.
+
+```
+PATCH /api/v1/sessions/{id}/plugins/{plugin_id}   {"data": { … }}   # write
+PATCH /api/v1/sessions/{id}/plugins/{plugin_id}   {"data": null}    # clear
+```
+
+Owner or admin (`Resource(Session, Write)`), at most 4 KiB of serialized JSON
+per slot (`413` beyond that). The response is the whole slot map.
+
+The writable ids are a built-in registry — `youtrack`, `slack`, `github` — plus
+every installed plugin id; anything else is a `404`. The registry is the floor
+rather than the `plugins` table alone because first-party connectors have no
+plugin bundle, and because uninstalling a bundle must not make a slot the UI
+still renders unwritable.
+
+In the webui, `PluginChips` renders every slot through a per-plugin renderer
+registry (`src/lib/plugins/sessionSlots.ts`); a slot with no registered renderer
+draws nothing. The YouTrack renderer shows the issue id, hovers its summary and
+state, and links `url` when the slot carries one. The drawer header also lets a
+user set or clear the issue by hand, offering any `[A-Z]+-\d+` found in the
+spawn prompt, the session name or the git branch. Summary and state come from
+`lookupYouTrackIssue`, which resolves to the bare id until the YouTrack
+connector installs a lookup through `setYouTrackLookup`.
 
 ## Skills and env in agent sessions
 
