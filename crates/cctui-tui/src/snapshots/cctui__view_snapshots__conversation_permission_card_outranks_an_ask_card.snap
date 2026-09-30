@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25 ── ?  ⚠ 1 approval pending — Ctrl+g to jump
+- two                                                                                              ▕
+⏱ 12.4k in / 1.1k out                                                                              ▕
+⏱ 38s                                                                                              ▕
+                                                                                                   ▕
+◆ lane-b                                                                                           ▕
+the parser lane is rebased                                                                         ▕
+· keep-alive tick                                                                                  ▐
+⟳ context reset (/clear)                                                                           ▐
+                                                                                                   ▐
+◁ Reply done                                                                                       ▐
+┌ ⚠ Permission · Bash ─────────────────────────────────────────────────────────────────────────────┐
+│ $ cargo test --workspace                                                                         │
+└ y allow   n deny   A allow + auto-approve ───────────────────────────────────────────────────────┘
+┌ Question 1/2 ─ Which database? ──────────────────────────────────────────────────────────────────┐
+│ Storage                                                                                          │
+│   [ ] 1 Postgres  (the default)                                                                  │
+│   [ ] 2 SQLite                                                                                   │
+│   [ ] o Other:                                                                                   │
+│ ↑↓/1-9 pick  space toggle  o other  Tab next  Esc later                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ waiting for input
+❯  Type a message...

@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25 ── ?
+● Assistant                                                                                        ▕
+Looking at the views first.                                                                        ▕
+                                                                                                   ▕
+- one                                                                                              ▕
+- two                                                                                              ▕
+⏱ 12.4k in / 1.1k out                                                                              ▕
+⏱ 38s                                                                                              ▕
+                                                                                                   ▐
+◆ lane-b                                                                                           ▐
+the parser lane is rebased                                                                         ▐
+· keep-alive tick                                                                                  ▐
+⟳ context reset (/clear)                                                                           ▐
+                                                                                                   ▐
+◁ Reply done                                                                                       ▐
+┌ Question 2/2 ─ Which features? ──────────────────────────────────────────────────────────────────┐
+│ ▸ [ ] 1 auth                                                                                     │
+│   [x] 2 billing                                                                                  │
+│   [ ] o Other:                                                                                   │
+│ ↑↓/1-9 pick  space toggle  o other  Tab next  Enter send  Esc later                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ waiting for input
+❯  Type a message...

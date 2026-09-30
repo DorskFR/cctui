@@ -3,6 +3,8 @@ use cctui_proto::ws::{AgentEvent, ServerEvent};
 use super::action::{Action, HeartbeatUsage};
 use super::attention::AttentionAction;
 use super::line::agent_event_to_line;
+use super::prompt::PromptAction;
+use super::send::SendAction;
 use super::state::PendingPermission;
 use super::toast::Level;
 
@@ -70,12 +72,31 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
 
         ServerEvent::ArchiveManifest { .. } => waived("the TUI has no archive browser"),
         ServerEvent::ArchiveUploaded { .. } => waived("the TUI has no archive browser"),
-        ServerEvent::CommandResult { .. } => waived("no delivery-state UI in the TUI yet"),
-        ServerEvent::MessageAck { .. } => waived("no delivery-state UI in the TUI yet"),
-        ServerEvent::AskQuestion { .. } => waived("the TUI cannot answer asks yet"),
-        ServerEvent::AskResolved { .. } => waived("the TUI cannot answer asks yet"),
-        ServerEvent::PlanRequest { .. } => waived("the TUI has no plan-approval dialog yet"),
-        ServerEvent::PlanResolved { .. } => waived("the TUI has no plan-approval dialog yet"),
+        ServerEvent::CommandResult { command_id, ok, error, .. } => {
+            uuid::Uuid::parse_str(&command_id).ok().map_or_else(Vec::new, |command_id| {
+                vec![Action::Send(SendAction::DeliveryResult { command_id, ok, error })]
+            })
+        }
+        ServerEvent::MessageAck { client_msg_id, ok, error, command_id, .. } => {
+            vec![Action::Send(SendAction::Acked { client_msg_id, ok, error, command_id })]
+        }
+        ServerEvent::AskQuestion { session_id, question, questions, preamble } => {
+            vec![Action::Prompt(PromptAction::AskRequested {
+                session_id,
+                question,
+                questions,
+                preamble,
+            })]
+        }
+        ServerEvent::AskResolved { session_id } => {
+            vec![Action::Prompt(PromptAction::AskResolved { session_id })]
+        }
+        ServerEvent::PlanRequest { session_id, plan, preamble } => {
+            vec![Action::Prompt(PromptAction::PlanRequested { session_id, plan, preamble })]
+        }
+        ServerEvent::PlanResolved { session_id } => {
+            vec![Action::Prompt(PromptAction::PlanResolved { session_id })]
+        }
         ServerEvent::MachineLiveness { .. } => waived("the TUI shows no machine list"),
         ServerEvent::MachineResources { .. } => waived("the TUI shows no machine list"),
         ServerEvent::DispatcherLiveness { .. } => waived("the TUI shows no dispatcher list"),
@@ -110,5 +131,34 @@ fn stream_action(session_id: String, data: &AgentEvent) -> Action {
         }),
         _ => None,
     };
-    Action::StreamLine { session_id, seq: data.seq(), line: agent_event_to_line(data), usage }
+    let line = agent_event_to_line(data).map(Box::new);
+    Action::StreamLine { session_id, seq: data.seq(), line, usage }
+}
+
+#[cfg(test)]
+mod tests {
+    use cctui_proto::ws::{AgentEvent, ServerEvent};
+
+    use super::{Action, to_actions};
+
+    #[test]
+    fn a_heartbeat_moves_the_usage_without_adding_a_line() {
+        let event = ServerEvent::Stream {
+            session_id: "s-a".to_owned(),
+            data: AgentEvent::Heartbeat {
+                tokens_in: 5,
+                tokens_out: 6,
+                cost_usd: 0.2,
+                ts: 1,
+                seq: Some(3),
+            },
+        };
+        match to_actions(event).as_slice() {
+            [Action::StreamLine { line, usage, .. }] => {
+                assert!(line.is_none(), "a heartbeat has nothing to render");
+                assert!(usage.is_some());
+            }
+            _ => panic!("expected one stream action"),
+        }
+    }
 }

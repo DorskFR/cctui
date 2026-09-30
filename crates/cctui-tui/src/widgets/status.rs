@@ -9,10 +9,10 @@ use crate::theme;
 /// A request waiting in another session is only noticeable from here, so the
 /// chip carries the jump key as well as the count.
 fn pending_chip(app: &App) -> Option<String> {
-    let count = app.permissions.len();
-    if count == 0 {
+    if app.permissions.is_empty() {
         return None;
     }
+    let count = app.permissions.len();
     let plural = if count == 1 { "" } else { "s" };
     let key = app
         .config

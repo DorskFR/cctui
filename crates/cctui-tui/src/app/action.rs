@@ -5,7 +5,10 @@ use crossterm::event::KeyEvent;
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::drafts::DraftAction;
 use super::identity::AuthAction;
+use super::prompt::PromptAction;
+use super::send::SendAction;
 use super::state::ConversationLine;
 use super::toast::Level;
 
@@ -56,11 +59,15 @@ pub enum Action {
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
+    Prompt(PromptAction),
 
     StreamLine {
         session_id: String,
         seq: Option<i64>,
-        line: ConversationLine,
+        /// `None` for an event with nothing to render; the `usage` beside it may
+        /// still move the session row. Boxed: a line is far the largest payload
+        /// in this enum.
+        line: Option<Box<ConversationLine>>,
         usage: Option<HeartbeatUsage>,
     },
     SessionStatusChanged {
@@ -71,6 +78,11 @@ pub enum Action {
     SessionDeregistered(String),
 
     Auth(AuthAction),
+    Drafts(DraftAction),
+    Send(SendAction),
+
+    /// A pure clock advance: the only thing that moves a delivery deadline.
+    Tick,
 
     Reconnected,
     Toast(Level, String),
@@ -105,6 +117,21 @@ pub enum Effect {
     MarkSeen {
         session_id: String,
     },
+    /// `GET /drafts`: every unsent draft, pulled once at startup.
+    LoadDraftIndex,
+    /// Re-read one session's draft and prompt history.
+    LoadDrafts {
+        session_id: String,
+    },
+    /// Save a draft, debounced per key. Empty text deletes it.
+    SaveDraft {
+        key: String,
+        text: String,
+    },
+    /// Drop a draft now, cancelling any debounced save of it.
+    DiscardDraft {
+        key: String,
+    },
     Subscribe {
         session_id: String,
     },
@@ -112,8 +139,15 @@ pub enum Effect {
         session_id: String,
     },
     SendMessage {
+        send_id: u64,
         session_id: String,
         content: String,
+        /// 0-based option picks per question when the message answers a prompt.
+        /// Replayed on every retry, so the daemon can still drive the real
+        /// form after a frame the server never received.
+        ask_picks: Option<Vec<Vec<usize>>>,
+        /// Minted on the first attempt and replayed on every retry.
+        turn_id: Option<uuid::Uuid>,
     },
     Interrupt {
         session_id: String,

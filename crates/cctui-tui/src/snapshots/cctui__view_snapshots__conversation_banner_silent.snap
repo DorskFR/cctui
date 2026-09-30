@@ -2,7 +2,7 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
- infra (main) on orion ── opus ── $1.25
+ cctui (main) on orion ── opus ── $1.25
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
 └ 984 lines                                                                                        ▕
@@ -24,5 +24,5 @@ the parser lane is rebased                                                      
                                                                                                    ▐
 ◁ Reply done                                                                                       ▐
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- ◆ waiting for input
+ ⚠ silent for 8m0s
 ❯  Type a message...

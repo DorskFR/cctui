@@ -2,16 +2,13 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
- infra (main) on orion ── opus ── $1.25
-∴ thinking (2 lines)  (2 more · o)                                                                 ▕
- Read  crates/cctui-tui/src/main.rs  read                                                          ▕
-└ 984 lines                                                                                        ▕
+ infra (main) on orion ── opus ── $1.25  ⚠ 1 approval pending — Ctrl+g to jump
  Bash  cargo test  write                                                                           ▕
-└ ✗ exit 101 · 3 failed  (2 more · o)                                                              ▐
-                                                                                                   ▐
-● Assistant                                                                                        ▐
-Looking at the views first.                                                                        ▐
-                                                                                                   ▐
+└ ✗ exit 101 · 3 failed  (2 more · o)                                                              ▕
+                                                                                                   ▕
+● Assistant                                                                                        ▕
+Looking at the views first.                                                                        ▕
+                                                                                                   ▕
 - one                                                                                              ▐
 - two                                                                                              ▐
 ⏱ 12.4k in / 1.1k out                                                                              ▐
@@ -23,6 +20,9 @@ the parser lane is rebased                                                      
 ⟳ context reset (/clear)                                                                           ▐
                                                                                                    ▐
 ◁ Reply done                                                                                       ▐
+┌ ⚠ Permission · Bash ─────────────────────────────────────────────────────────────────────────────┐
+│ $ cargo test --workspace                                                                         │
+└ y allow   n deny   A allow + auto-approve ───────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  ◆ waiting for input
 ❯  Type a message...

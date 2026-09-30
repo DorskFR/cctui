@@ -9,6 +9,4 @@ workspace = true
 [dependencies]
 cctui-proto.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true

@@ -92,7 +92,7 @@ impl PermissionInbox {
 
     /// The card a keystroke answers: the session's oldest request.
     pub fn head(&self, session_id: &str) -> Option<&PendingPermission> {
-        self.for_session(session_id).next()
+        self.items.iter().find(|p| p.session_id == session_id)
     }
 
     /// The hook a session row reads to mark itself as waiting on you.
@@ -100,11 +100,11 @@ impl PermissionInbox {
         self.items.iter().any(|p| p.session_id == session_id)
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.items.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
@@ -196,16 +196,16 @@ fn end_session(
     detail: Option<String>,
 ) -> Vec<Effect> {
     app.permissions.drop_session(session_id);
+    let badge = EndBadge::new(reason, detail.as_deref());
     let ended_at = chrono::DateTime::from_timestamp_millis(app.clock_ms);
     if let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id) {
         session.status = SessionStatus::Inactive;
         session.end_reason = Some(reason);
-        session.end_detail = detail.clone();
+        session.end_detail = detail;
         session.ended_at = ended_at;
     }
     app.update_aggregates();
 
-    let badge = EndBadge::new(reason, detail.as_deref());
     if badge.muted {
         return Vec::new();
     }

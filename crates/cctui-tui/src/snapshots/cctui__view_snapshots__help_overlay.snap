@@ -1,29 +1,28 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 100
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys ────────────────────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         PgUp        Page up                          │
-▸ │  ?           Toggle this cheat sheet            g           Jump to the top                  │
-  │  q           Quit cctui                         G           Jump to the bottom               │
-  │Session list                                     t           Show timestamps                  │
-  │  j / ↓       Next session                       Ctrl+c      Interrupt the turn               │
-  │  k / ↑       Previous session                   Ctrl+a      Toggle auto-approve              │
-  │  g           First session                    Composer                                       │
-  │  G           Last session                       Esc         Close the composer               │
-  │  Enter       Open the conversation              Enter       Send the message                 │
-  │Conversation                                     Shift+Enter Insert a newline                 │
-  │  1-9         Jump to session by number        Help                                           │
-  │  q / Esc     Back to the session list           ? / q / Esc Close this cheat sheet           │
-  │  j / ↓       Scroll down                      Permission dialog                              │
-  │  k / ↑       Scroll up                          y / Enter   Allow                            │
-  │  PgDn        Page down                          n / Esc     Deny                             │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
+  │Anywhere                                         Ctrl+r      Search sent prompts              │
+▸ │  ?           Toggle this cheat sheet          Prompt history                                 │
+  │  q           Quit cctui                         Esc         Close the prompt list            │
+  │  Ctrl+g      Jump to the next pending approval  Ctrl+n / ↓  Next prompt                      │
+  │Session list                                     Ctrl+p / ↑  Previous prompt                  │
+  │  j / ↓       Next session                       Enter       Put this prompt in the composer  │
+  │  k / ↑       Previous session                 Help                                           │
+  │  g           First session                      ? / q / Esc Close this cheat sheet           │
+  │  G           Last session                     Permission card                                │
+  │  Enter       Open the conversation              y           Allow                            │
+  │Conversation                                     n           Deny                             │
+  │  1-9         Jump to session by number          A           Allow and auto-approve           │
+  │  q / Esc     Back to the session list         Question card                                  │
+  │  j / ↓       Scroll down                        Esc         Answer later                     │
+  │  k / ↑       Scroll up                          j / ↓       Next option                      │
+  │  PgDn        Page down                          k / ↑       Previous option                  │
+  │  PgUp        Page up                            1-9         Pick an option by number         │
+  │  g           Jump to the top                    Space       Toggle the focused option        │
+  │  G           Jump to the bottom                 Tab         Next question                    │
+  │  t           Show timestamps                    Shift+Tab / Shift+Shift+Tab / Shift+TabPrevio│
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

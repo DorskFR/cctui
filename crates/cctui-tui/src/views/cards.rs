@@ -1,8 +1,9 @@
-//! In-session cards: the boxes that stack at the tail of a session's
-//! transcript when the agent is blocked on a decision.
+//! In-session cards: the boxes shown above the composer when the agent is
+//! blocked on a decision.
 //!
-//! [`card_lines`] is the one place cards are collected, so a new kind of
-//! prompt (`AskUserQuestion`, plan approval) becomes one more call here.
+//! [`card_lines`] is the one place cards are collected and the one slot the
+//! layout reserves for them, so a new kind of prompt becomes one more call
+//! here rather than another reserved row.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -15,19 +16,32 @@ use crate::theme;
 const FRAME: usize = 4;
 const MIN_INNER: usize = 20;
 
-/// Every card the session is currently showing, oldest first, ready to be
-/// appended to the rendered transcript.
-pub fn card_lines(app: &App, session_id: &str, width: u16) -> Vec<Line<'static>> {
+/// Every card the session is showing, clipped to `max_height`.
+///
+/// Permission requests come first: they block the turn and are answered in one
+/// keystroke, which is also why they take the keyboard first
+/// (`App::prompt_focus`). The ask/plan card takes whatever height is left.
+pub fn card_lines(
+    app: &App,
+    session_id: &str,
+    width: usize,
+    max_height: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for req in app.permissions.for_session(session_id) {
-        lines.push(Line::from(""));
+        if lines.len() >= max_height {
+            break;
+        }
         lines.extend(permission_card(req, width));
     }
+    lines.truncate(max_height);
+    let left = max_height - lines.len();
+    lines.extend(super::prompt::card_lines(app, session_id, width, left));
     lines
 }
 
-pub fn permission_card(req: &PendingPermission, width: u16) -> Vec<Line<'static>> {
-    let inner = (width as usize).saturating_sub(FRAME).max(MIN_INNER);
+pub fn permission_card(req: &PendingPermission, width: usize) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(FRAME).max(MIN_INNER);
     let mut lines = vec![top(&format!("⚠ Permission · {}", req.tool_name), inner)];
 
     let body = preview_lines(&req.tool_name, &req.input_preview, inner);
@@ -108,26 +122,32 @@ fn prefix(mut line: Line<'static>, marker: &'static str) -> Line<'static> {
     line
 }
 
+const ANSWERS: [(&str, &str); 3] = [("y", "allow"), ("n", "deny"), ("A", "allow + auto-approve")];
+
 fn top(title: &str, inner: usize) -> Line<'static> {
     let title = clip(title, inner);
-    let fill = inner.saturating_sub(display_width(&title)) + 1;
+    let fill = inner.saturating_sub(display_width(&title));
     Line::from(vec![
         Span::styled("┌ ", theme::border_focused()),
         Span::styled(title, theme::bold()),
-        Span::styled(format!("{}┐", "─".repeat(fill)), theme::border_focused()),
+        Span::styled(format!(" {}┐", "─".repeat(fill)), theme::border_focused()),
     ])
 }
 
 fn bottom(inner: usize) -> Line<'static> {
     let mut spans = vec![Span::styled("└ ", theme::border_focused())];
     let mut used = 0;
-    for (key, label) in [("y", "allow"), ("n", "deny"), ("A", "allow + auto-approve")] {
+    for (index, (key, label)) in ANSWERS.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("   "));
+            used += 3;
+        }
         spans.push(Span::styled(format!("{key} "), theme::hotkey()));
-        spans.push(Span::styled(format!("{label}   "), theme::hotkey_desc()));
-        used += key.len() + 1 + label.len() + 3;
+        spans.push(Span::styled((*label).to_owned(), theme::hotkey_desc()));
+        used += key.len() + 1 + label.len();
     }
-    let fill = inner.saturating_sub(used) + 1;
-    spans.push(Span::styled(format!("{}┘", "─".repeat(fill)), theme::border_focused()));
+    let fill = inner.saturating_sub(used);
+    spans.push(Span::styled(format!(" {}┘", "─".repeat(fill)), theme::border_focused()));
     Line::from(spans)
 }
 
@@ -227,6 +247,19 @@ mod tests {
         }
     }
 
+    /// The layout reserves exactly what this returns, so the stack must never
+    /// exceed the budget however many requests are queued.
+    #[test]
+    fn the_stack_never_outgrows_its_budget() {
+        let mut app = App::new();
+        for i in 0..8 {
+            let mut req = request("Bash", r#"{"command":"ls"}"#);
+            req.request_id = format!("r{i}");
+            app.permissions.push(req);
+        }
+        assert_eq!(card_lines(&app, "s-a", 60, 10).len(), 10);
+    }
+
     #[test]
     fn cards_stack_only_for_their_own_session() {
         let mut app = App::new();
@@ -234,7 +267,7 @@ mod tests {
         other.session_id = "s-b".to_owned();
         app.permissions.push(request("Bash", r#"{"command":"ls"}"#));
         app.permissions.push(other);
-        assert!(!card_lines(&app, "s-a", 60).is_empty());
-        assert_eq!(card_lines(&app, "s-c", 60).len(), 0);
+        assert!(!card_lines(&app, "s-a", 60, 40).is_empty());
+        assert_eq!(card_lines(&app, "s-c", 60, 40).len(), 0);
     }
 }
