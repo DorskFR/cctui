@@ -483,6 +483,7 @@ pub async fn put_settings(
     clamp_session_emoji_prefix(&mut data);
     clamp_auto_resume(&mut data);
     clamp_macros(&mut data);
+    crate::routes::spawn_memory::clamp(&mut data);
     clamp_plugins(&mut data, |id| {
         state.plugins.get(id).map(|p| p.manifest.settings.iter().map(|s| s.key.clone()).collect())
     });
