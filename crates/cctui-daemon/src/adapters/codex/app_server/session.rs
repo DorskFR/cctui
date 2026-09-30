@@ -328,7 +328,7 @@ impl CodexSession {
     fn staging_id(&self) -> Option<&str> {
         self.staging_key
             .as_deref()
-            .or_else(|| self.spawn_key.as_deref())
+            .or(self.spawn_key.as_deref())
             .or_else(|| self.roster_self())
     }
 

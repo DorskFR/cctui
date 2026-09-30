@@ -240,7 +240,7 @@ mod tests {
 
     /// Harness parity is structural: all three harnesses launch the SAME relay
     /// argv, so whatever `mcp::tool_schemas` advertises — the peer tools
-    /// included — is offered identically under claude_code, codex and opencode.
+    /// included — is offered identically under `claude_code`, codex and opencode.
     /// A per-harness allowlist appearing here would break that and must fail.
     #[test]
     fn every_harness_registers_the_same_relay_and_therefore_the_same_tools() {
@@ -248,7 +248,7 @@ mod tests {
         let codex = mcp.codex_config_overrides();
         let codex_args = codex
             .iter()
-            .find(|(k, _)| k.ends_with(".args"))
+            .find(|(k, _)| k.split('.').next_back() == Some("args"))
             .map(|(_, v)| v.clone())
             .expect("codex args override");
         let opencode: Vec<String> = mcp.opencode_config()[SERVER_NAME]["command"]
