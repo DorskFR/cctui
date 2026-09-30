@@ -39,10 +39,6 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
 
-        Action::ToggleShowAllSessions => {
-            app.show_all_sessions = !app.show_all_sessions;
-            Vec::new()
-        }
         Action::ToggleTimestamps => {
             app.show_timestamps = !app.show_timestamps;
             Vec::new()
@@ -344,7 +340,6 @@ mod tests {
             session("s-a", "alpha", "active", "working"),
             session("s-b", "beta", "active", "working"),
         ];
-        app.show_all_sessions = true;
         app.update_aggregates();
         app
     }

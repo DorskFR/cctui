@@ -104,7 +104,6 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.sessions = vec![session("s-a", "alpha", "active", "working")];
-        app.show_all_sessions = true;
         app.update_aggregates();
         app
     }

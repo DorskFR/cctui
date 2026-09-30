@@ -101,7 +101,6 @@ actions! {
     SelectFirst => "select-first", "First session";
     SelectLast => "select-last", "Last session";
     SelectIndex => "select-index", "Jump to session by number";
-    ToggleShowAll => "toggle-show-all", "Show every session";
     OpenConversation => "open-conversation", "Open the conversation";
     ToggleCompactRows => "toggle-compact-rows", "Compact session rows";
     TogglePin => "toggle-pin", "Pin the selected session";
@@ -172,7 +171,6 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "k, up", ActionId::SelectPrev),
     spec(Context::SessionList, "g", ActionId::SelectFirst),
     spec(Context::SessionList, "G", ActionId::SelectLast),
-    spec(Context::SessionList, "a", ActionId::ToggleShowAll),
     spec(Context::SessionList, "enter", ActionId::OpenConversation),
 ];
 

@@ -66,7 +66,6 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SelectFirst => Action::SelectFirst,
         ActionId::SelectLast => Action::SelectLast,
         ActionId::SelectIndex => Action::SelectIndex(chord.digit()?),
-        ActionId::ToggleShowAll => Action::ToggleShowAllSessions,
         ActionId::OpenConversation => Action::OpenSelectedConversation,
 
         ActionId::LeaveConversation => Action::LeaveConversation,

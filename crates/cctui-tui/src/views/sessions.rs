@@ -1,11 +1,10 @@
 use cctui_proto::api::SessionListItem;
-use cctui_proto::classifier::Bucket;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, session_list};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -53,41 +52,30 @@ fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
 
 fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let flat = app.flattened_sessions();
-    let mut items: Vec<ListItem> = Vec::new();
-
-    // `flat` is already bucket-grouped (see App::flattened_sessions). Insert a
-    // section header each time a top-level session opens a new bucket, and
-    // remember where the selected session ends up once headers shift indices.
+    let rows = session_list::rows(&flat);
     let selected_flat = if app.selected_index < flat.len() { app.selected_index } else { 0 };
-    let mut selected_render = 0usize;
-    let mut current_bucket: Option<Bucket> = None;
-    for (i, session) in flat.iter().enumerate() {
-        // Only top-level sessions open a group; subagents stay under their parent.
-        if session.parent_id.is_none() && current_bucket != Some(session.bucket) {
-            current_bucket = Some(session.bucket);
-            items.push(bucket_header(session.bucket));
-        }
-        if i == selected_flat {
-            selected_render = items.len();
-        }
-        items.push(session_line(session, app.config.prefs.compact_rows));
-    }
+    let selected_row = session_list::selected_row(&rows, selected_flat);
+    let offset = session_list::viewport_offset(rows.len(), selected_row, area.height as usize);
 
-    // Show truncation hint if not showing all sessions
-    if !app.show_all_sessions && app.sessions.len() > 5 {
-        items.push(ListItem::new(Line::from(vec![Span::styled("   [a] show all", theme::dim())])));
-    }
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| match *row {
+            session_list::Row::Header(group) => group_header(group),
+            session_list::Row::Session { session, .. } => {
+                session_line(session, app.config.prefs.compact_rows)
+            }
+        })
+        .collect();
 
     let list = List::new(items).highlight_style(theme::selected()).highlight_symbol("▸ ");
 
-    let mut state = ListState::default();
-    state.select(Some(selected_render));
+    let mut state = ListState::default().with_offset(offset).with_selected(Some(selected_row));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn bucket_header(bucket: Bucket) -> ListItem<'static> {
+fn group_header(group: session_list::Group) -> ListItem<'static> {
     ListItem::new(Line::from(vec![Span::styled(
-        format!(" {} ", bucket.label()),
+        format!(" {} ", group.label()),
         theme::section_title(),
     )]))
 }

@@ -7,6 +7,7 @@ use ratatui_textarea::TextArea;
 use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
 use super::router::Router;
+pub use super::session_list::uptime_secs;
 use super::toast::{Level, StatusCounters, Toasts};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,23 +47,6 @@ pub enum LineKind {
     Reply,
 }
 
-/// Display ordering for the classifier buckets in the session list:
-/// sessions that want the user's eyes float to the top.
-pub const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
-    use cctui_proto::classifier::Bucket;
-    match bucket {
-        Bucket::Blocked => 0,
-        Bucket::Review => 1,
-        Bucket::Working => 2,
-        Bucket::Done => 3,
-    }
-}
-
-/// Uptime derived from `registered_at`; 0 when unset.
-pub fn uptime_secs(s: &SessionListItem) -> i64 {
-    s.registered_at.map_or(0, |r| (chrono::Utc::now() - r).num_seconds())
-}
-
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub router: Router,
@@ -85,7 +69,6 @@ pub struct App {
     pub follow_tail: bool,
     pub active_count: usize,
     pub show_timestamps: bool,
-    pub show_all_sessions: bool,
     /// Last known content area height (set during render, used for scroll math).
     pub viewport_height: usize,
     /// Total display lines in current conversation (set during render).
@@ -137,7 +120,6 @@ impl App {
             follow_tail: true,
             active_count: 0,
             show_timestamps: false,
-            show_all_sessions: false,
             viewport_height: 0,
             total_display_lines: 0,
             render_cache: Vec::new(),
@@ -177,39 +159,8 @@ impl App {
         self.conversations.entry(session_id.to_owned()).or_default()
     }
 
-    /// Session list ordered for display, with Task-tool subagents
-    /// placed immediately after their parent. Top-level sessions (those with
-    /// no in-list parent) are ordered by uptime; each parent's children
-    /// follow it, also uptime-ordered.
     pub fn flattened_sessions(&self) -> Vec<&SessionListItem> {
-        use std::collections::{HashMap, HashSet};
-        let ids: HashSet<&str> = self.sessions.iter().map(|s| s.id.as_str()).collect();
-        let mut kids: HashMap<&str, Vec<&SessionListItem>> = HashMap::new();
-        for s in &self.sessions {
-            if let Some(p) = s.parent_id.as_deref().filter(|p| ids.contains(p)) {
-                kids.entry(p).or_default().push(s);
-            }
-        }
-        let mut tops: Vec<&SessionListItem> = self
-            .sessions
-            .iter()
-            .filter(|s| s.parent_id.as_deref().is_none_or(|p| !ids.contains(p)))
-            .collect();
-        // Group by classifier bucket (Needs input → Ready for review →
-        // Working → Completed); within a bucket, oldest first.
-        tops.sort_by_key(|s| (bucket_rank(s.bucket), uptime_secs(s)));
-        let mut out: Vec<&SessionListItem> = Vec::new();
-        for t in tops {
-            out.push(t);
-            if let Some(cs) = kids.get_mut(t.id.as_str()) {
-                cs.sort_by_key(|s| uptime_secs(s));
-                out.extend(cs.iter().copied());
-            }
-        }
-        if !self.show_all_sessions {
-            out.truncate(5);
-        }
-        out
+        super::session_list::flatten(&self.sessions)
     }
 
     pub fn select_next(&mut self) {
