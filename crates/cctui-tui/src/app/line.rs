@@ -1,6 +1,6 @@
 use cctui_proto::ws::AgentEvent;
 
-use super::state::{ConversationLine, LineKind};
+use super::state::{ConversationLine, LineKind, LineStatus};
 
 fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
@@ -110,13 +110,26 @@ fn clean_user_message(text: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
+/// A queue record: the enqueued prompt is the human's own message waiting its
+/// turn, and only a withdrawal is worth a line of its own.
+fn queue_op_line(content: &str, operation: Option<&str>, ts: i64) -> ConversationLine {
+    let body = content.trim();
+    match operation.unwrap_or("queued") {
+        "queued" => ConversationLine::new(LineKind::User, body, ts).with_status(LineStatus::Queued),
+        "removed" | "cleared" => {
+            ConversationLine::new(LineKind::System, body, ts).with_status(LineStatus::Removed)
+        }
+        _ => ConversationLine::new(LineKind::System, String::new(), ts),
+    }
+}
+
 pub fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
     match event {
-        AgentEvent::Text { content, meta, ts, kind: text_kind, .. } => {
-            let marker = matches!(
-                text_kind.as_deref(),
-                Some("system_marker" | "turn_annotation" | "queue_op")
-            );
+        AgentEvent::Text { content, meta, ts, kind: text_kind, operation, .. } => {
+            if text_kind.as_deref() == Some("queue_op") {
+                return queue_op_line(content, operation.as_deref(), *ts);
+            }
+            let marker = matches!(text_kind.as_deref(), Some("system_marker" | "turn_annotation"));
             let (kind, text) = if marker {
                 (LineKind::System, content.clone())
             } else if content.starts_with("▷ User:") {
@@ -135,56 +148,36 @@ pub fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             } else {
                 (LineKind::Assistant, content.clone())
             };
-            ConversationLine { timestamp: *ts, kind, text, tool_input: None }
+            ConversationLine::new(kind, text, *ts)
         }
         AgentEvent::ToolCall { tool, input, ts, .. } => {
             let detail = crate::views::sessions::format_tool_input(tool, input);
             // Keep raw input for Edit/Write so we can generate diffs during render
             let keep_input = matches!(tool.as_str(), "Edit" | "Write");
             ConversationLine {
-                timestamp: *ts,
-                kind: LineKind::ToolCall,
-                text: format!("[{tool}] {detail}"),
                 tool_input: if keep_input { Some(input.clone()) } else { None },
+                ..ConversationLine::new(LineKind::ToolCall, format!("[{tool}] {detail}"), *ts)
             }
         }
-        AgentEvent::ToolResult { output_summary, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::ToolResult,
-            text: format!("  → {output_summary}"),
-            tool_input: None,
-        },
-        AgentEvent::Heartbeat { ts, .. } | AgentEvent::TurnEnd { ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: String::new(),
-            tool_input: None,
-        },
+        AgentEvent::ToolResult { output_summary, ts, .. } => {
+            ConversationLine::new(LineKind::ToolResult, format!("  → {output_summary}"), *ts)
+        }
+        AgentEvent::Heartbeat { ts, .. } | AgentEvent::TurnEnd { ts, .. } => {
+            ConversationLine::new(LineKind::System, String::new(), *ts)
+        }
         // /clear boundary within one session.
-        AgentEvent::ContextReset { ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: "⟳ context reset (/clear · /compact)".to_owned(),
-            tool_input: None,
-        },
+        AgentEvent::ContextReset { ts, .. } => {
+            ConversationLine::new(LineKind::System, "⟳ context reset (/clear · /compact)", *ts)
+        }
         // /compact summary (no rotation; carries the summary text).
-        AgentEvent::CompactSummary { content, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: format!("⟳ context compacted\n{content}"),
-            tool_input: None,
-        },
-        AgentEvent::TurnSummary { detail, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: format!("· {detail}"),
-            tool_input: None,
-        },
-        AgentEvent::Reply { content, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::Reply,
-            text: content.clone(),
-            tool_input: None,
-        },
+        AgentEvent::CompactSummary { content, ts, .. } => {
+            ConversationLine::new(LineKind::System, format!("⟳ context compacted\n{content}"), *ts)
+        }
+        AgentEvent::TurnSummary { detail, ts, .. } => {
+            ConversationLine::new(LineKind::System, format!("· {detail}"), *ts)
+        }
+        AgentEvent::Reply { content, ts, .. } => {
+            ConversationLine::new(LineKind::Reply, content.clone(), *ts)
+        }
     }
 }
