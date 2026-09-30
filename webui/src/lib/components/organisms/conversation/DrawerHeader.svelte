@@ -13,12 +13,13 @@
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
+	import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import IssueLinkModal from '$lib/components/molecules/IssueLinkModal.svelte';
 	import { readPluginSlot } from '$lib/plugins/sessionSlots';
 	import { YOUTRACK_PLUGIN_ID, detectSessionIssueId } from '$lib/plugins/issueLink';
 	import { useSessionActions } from '$lib/queries';
-	import { Icon, IconButton, Input, Menu, Popover, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
+	import { Button, Icon, IconButton, Input, Menu, Modal, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -125,6 +126,7 @@
 
 	let keepaliveOpen = $state(false);
 	let issueLinkOpen = $state(false);
+	let roomOpen = $state(false);
 
 	const sessionActions = useSessionActions();
 	const detectedIssue = $derived(detectSessionIssueId(session));
@@ -214,6 +216,16 @@
 					}
 				]
 			: []),
+		...(onsetroom
+			? [
+					{
+						label: m.rooms_menu_action(),
+						icon: 'grid' as const,
+						attrs: { title: session.room_name ?? m.rooms_menu_label() },
+						onselect: () => (roomOpen = true)
+					}
+				]
+			: []),
 		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
@@ -285,22 +297,7 @@
 						onDelete={onDeleteLabel}
 					/>
 				{/if}
-				<Popover
-					label={m.rooms_menu_label()}
-					placement="bottom-start"
-					variant="ghost"
-					box="xs"
-					hitArea="compact"
-				>
-					{#snippet trigger()}<span class="roomtrigger" title={session.room_name ?? m.rooms_menu_label()}
-							>◎{session.room_name ? ` ${session.room_name}` : ''}</span
-						>{/snippet}
-					<RoomMenu
-						current={session.room_id ?? null}
-						onpick={(pick) => onsetroom?.(session.id, pick)}
-						onclear={session.room_id ? () => onclearroom?.(session.id) : undefined}
-					/>
-				</Popover>
+				<RoomBadge name={session.room_name} />
 			{/if}
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
@@ -400,6 +397,29 @@
 
 {#if issueLinkOpen}
 	<IssueLinkModal {session} detected={detectedIssue} onclose={() => (issueLinkOpen = false)} />
+{/if}
+
+{#if roomOpen}
+	<Modal title={m.rooms_menu_label()} onclose={() => (roomOpen = false)}>
+		{#snippet body()}
+			<RoomMenu
+				current={session.room_id ?? null}
+				onpick={(pick) => {
+					onsetroom?.(session.id, pick);
+					roomOpen = false;
+				}}
+				onclear={session.room_id
+					? () => {
+							onclearroom?.(session.id);
+							roomOpen = false;
+						}
+					: undefined}
+			/>
+		{/snippet}
+		{#snippet footer()}
+			<Button size="sm" variant="ghost" onclick={() => (roomOpen = false)}>{m.common_close()}</Button>
+		{/snippet}
+	</Modal>
 {/if}
 
 <style>

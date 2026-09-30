@@ -2017,6 +2017,7 @@
   "rooms_delete": "Supprimer la salle",
   "rooms_line_from_room": "dans {room}",
   "rooms_menu_label": "Salle",
+  "rooms_menu_action": "Salle…",
   "rooms_menu_hint": "Les sessions d'une salle peuvent s'écrire et lire leurs historiques.",
   "rooms_clear": "Aucune salle",
   "rooms_rename": "Renommer la salle",

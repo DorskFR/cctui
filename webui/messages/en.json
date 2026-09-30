@@ -2017,6 +2017,7 @@
   "rooms_delete": "Delete room",
   "rooms_line_from_room": "in {room}",
   "rooms_menu_label": "Room",
+  "rooms_menu_action": "Room…",
   "rooms_menu_hint": "Sessions in a room can message each other and read each other's history.",
   "rooms_clear": "No room",
   "rooms_rename": "Rename room",
