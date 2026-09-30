@@ -147,6 +147,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "asn1-rs"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -956,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -972,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-client"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "async-trait",
  "cctui-proto",
@@ -990,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-clientcore"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "cctui-proto",
  "serde",
@@ -999,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -1012,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1042,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1063,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1088,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1109,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1132,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "axum",
@@ -1151,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1182,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1205,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1226,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "serde",
  "ts-rs",
@@ -1234,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1279,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "caps",
@@ -1295,7 +1301,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.23.0-beta.13"
+version = "0.23.0-beta.17"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1329,10 +1335,12 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "toml",
  "tracing",
+ "tui-term",
  "two-face",
  "unicode-width",
  "url",
  "uuid",
+ "vt100",
 ]
 
 [[package]]
@@ -5608,6 +5616,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tui-term"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a338ded85dbe7f9ea2298321d126244f54e531e2b2006b97abdab8e47d6f3c88"
+dependencies = [
+ "ratatui-core",
+ "ratatui-widgets",
+ "vt100",
+]
+
+[[package]]
 name = "tungstenite"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5821,6 +5840,27 @@ name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
+
+[[package]]
+name = "vt100"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054ff75fb8fa83e609e685106df4faeffdf3a735d3c74ebce97ec557d5d36fd9"
+dependencies = [
+ "itoa",
+ "unicode-width",
+ "vte",
+]
+
+[[package]]
+name = "vte"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+dependencies = [
+ "arrayvec",
+ "memchr",
+]
 
 [[package]]
 name = "vtparse"

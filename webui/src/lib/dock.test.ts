@@ -19,6 +19,24 @@ describe('resolveDocks', () => {
 		expect(r).toEqual({ spawn: null, stats: null, stacked: false, left: null, right: null });
 	});
 
+	it('docks nothing in tiles mode, however wide the window and whatever is stored', () => {
+		const inputs = {
+			spawn: { ...on('left'), width: 420 },
+			stats: { ...on('right'), width: 300 },
+			wide: true,
+			veryWide: true
+		};
+		expect(resolveDocks({ ...inputs, tiles: true })).toEqual({
+			spawn: null,
+			stats: null,
+			stacked: false,
+			left: null,
+			right: null
+		});
+		expect(resolveDocks({ ...inputs, tiles: false })).toEqual(resolveDocks(inputs));
+		expect(resolveDocks(inputs).spawn).toBe('left');
+	});
+
 	it('reserves each edge for the panel pinned to it', () => {
 		const r = resolveDocks({ spawn: on('right'), stats: on('left'), wide: true, veryWide: true });
 		expect(r.spawn).toBe('right');

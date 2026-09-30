@@ -10,6 +10,7 @@ use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::state::View;
+use crate::app::terminal::TerminalAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -33,6 +34,11 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
     if matches!(view, View::Diagnose) {
         return Context::Diagnose;
     }
+    // The pane is modal and read-only: nothing under it claims a key, and no
+    // key typed at it reaches the composer.
+    if matches!(view, View::Terminal) {
+        return Context::Terminal;
+    }
     if input_active {
         return Context::Composer;
     }
@@ -51,6 +57,7 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
         View::Diagnose => Context::Diagnose,
+        View::Terminal => Context::Terminal,
     }
 }
 
@@ -74,12 +81,14 @@ pub fn map_input(
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
+            View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(3))),
             View::Help | View::HistoryPicker => None,
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
+            View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(-3))),
             View::Help | View::HistoryPicker => None,
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
         },
@@ -121,6 +130,10 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::InterruptSelected,
+        ActionId::TerminalOpen => Action::Terminal(TerminalAction::Toggle),
+        ActionId::TerminalClose => Action::Terminal(TerminalAction::Close),
+        ActionId::TerminalScrollDown => Action::Terminal(TerminalAction::Scroll(-1)),
+        ActionId::TerminalScrollUp => Action::Terminal(TerminalAction::Scroll(1)),
         ActionId::RetrySend => Action::Send(SendAction::Retry(chord.event())),
         ActionId::EditSend => Action::Send(SendAction::Edit(chord.event())),
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),

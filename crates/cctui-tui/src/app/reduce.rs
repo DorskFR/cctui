@@ -1,8 +1,8 @@
 use super::action::{Action, Effect, HeartbeatUsage};
 use super::conversation::{self, ConversationAction};
-use super::send;
 use super::state::{App, View};
 use super::toast::Level;
+use super::{send, terminal};
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
@@ -16,6 +16,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::Attention(attention) => super::attention::reduce_attention(app, attention),
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
         Action::Send(action) => send::reduce_send(app, action),
@@ -70,8 +71,10 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         // Help dismisses to the session list, never to the view it was opened
         // over, so it collapses the stack exactly as leaving a conversation does.
         Action::CloseHelp => {
+            let mut effects = terminal::close(app);
             app.router.reset(View::SessionList);
-            conversation::leave(app)
+            effects.extend(conversation::leave(app));
+            effects
         }
         // Line-select is a mode inside the conversation: the same key leaves it
         // first and only closes the conversation on a second press.
@@ -79,8 +82,10 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             if conversation::line_select_active(app) {
                 return conversation::reduce(app, ConversationAction::ToggleLineCursor);
             }
+            let mut effects = terminal::close(app);
             app.router.reset(View::SessionList);
-            conversation::leave(app)
+            effects.extend(conversation::leave(app));
+            effects
         }
         Action::OpenSelectedConversation => {
             let Some(session_id) = app.selected_session_id() else { return Vec::new() };
@@ -210,6 +215,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
 
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
+            terminal::reconnect(app);
             let mut effects = conversation::reconnect(app);
             effects.extend(send::redispatch_parked(app));
             effects.extend(super::session_live::refresh(app));

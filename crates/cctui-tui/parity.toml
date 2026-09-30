@@ -1530,8 +1530,8 @@ module = "app/server_event.rs"
 
 [[ws_event]]
 name = "pty_chunk"
-tui = "planned"
-ticket = "CCT-1229"
+tui = "handled"
+module = "app/server_event.rs"
 
 [[ws_event]]
 name = "scheduled_launch"

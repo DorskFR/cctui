@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         n           Deny                             │
-▸ │  ?           Toggle this cheat sheet            A           Allow and auto-approve           │
-  │  q           Quit cctui                       Diagnose / info                                │
-  │  D           Diagnose the selected session      D           Diagnose the selected session    │
-  │  i           Session info                       i           Session info                     │
-  │  Ctrl+g      Jump to the next pending approval  q / Esc     Close the panel                  │
-  │Session list                                     j / ↓       Scroll the panel down            │
-  │  j / ↓       Next session                       k / ↑       Scroll the panel up              │
-  │  k / ↑       Previous session                   PgDn        Page the panel down              │
-  │  g           First session                      PgUp        Page the panel up                │
-  │  G           Last session                       g           Jump to the top of the panel     │
-  │  Enter       Open the conversation              r           Refresh the report               │
-  │  z / Tab     Fold or open the subagent group    y           Copy the session id              │
-  │  S           Fold or open the section         Question card                                  │
-  │  Z           Fold or open everything            Esc         Answer later                     │
-  │Conversation                                     j / ↓       Next option                      │
-  │  1-9         Jump to session by number          k / ↑       Previous option                  │
-  │  q / Esc     Back to the session list           1-9         Pick an option by number         │
-  │  j / ↓       Scroll down                        Space       Toggle the focused option        │
-  │  k / ↑       Scroll up                          Tab         Next question                    │
+  │Anywhere                                         ? / q / Esc Close this cheat sheet           │
+▸ │  ?           Toggle this cheat sheet          Permission card                                │
+  │  q           Quit cctui                         y           Allow                            │
+  │  D           Diagnose the selected session      n           Deny                             │
+  │  i           Session info                       A           Allow and auto-approve           │
+  │  Ctrl+g      Jump to the next pending approv… Diagnose / info                                │
+  │Session list                                     D           Diagnose the selected session    │
+  │  j / ↓       Next session                       i           Session info                     │
+  │  k / ↑       Previous session                   q / Esc     Close the panel                  │
+  │  g           First session                      j / ↓       Scroll the panel down            │
+  │  G           Last session                       k / ↑       Scroll the panel up              │
+  │  Enter       Open the conversation              PgDn        Page the panel down              │
+  │  z / Tab     Fold or open the subagent group    PgUp        Page the panel up                │
+  │  S           Fold or open the section           g           Jump to the top of the panel     │
+  │  Z           Fold or open everything            r           Refresh the report               │
+  │Conversation                                     y           Copy the session id              │
+  │  1-9         Jump to session by number        Question card                                  │
+  │  q / Esc     Back to the session list           Esc         Answer later                     │
+  │  j / ↓       Scroll down                        j / ↓       Next option                      │
+  │  k / ↑       Scroll up                          k / ↑       Previous option                  │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

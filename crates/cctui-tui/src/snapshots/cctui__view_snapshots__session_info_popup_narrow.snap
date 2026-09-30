@@ -7,7 +7,7 @@ expression: "render_screen_sized(&mut app, 60, 20)"
    ┌ Session info ──────────────────────────────────────┐
    │s-working                                           │
    │session:                                            │
-▸  │id                         s-working                │s
+▸  │id                         s-working                │
    │parent                     —                        │
    │machine                    orion                    │5
    │adapter                    claude-code              │

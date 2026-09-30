@@ -4,47 +4,47 @@ expression: "render_screen_sized(&mut app, 100, 46)"
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         n           Deny                             │
-▸ │  ?           Toggle this cheat sheet            A           Allow and auto-approve           │
-  │  q           Quit cctui                       Diagnose / info                                │
-  │  D           Diagnose the selected session      D           Diagnose the selected session    │
-  │  i           Session info                       i           Session info                     │
-  │  Ctrl+g      Jump to the next pending approval  q / Esc     Close the panel                  │
-  │Session list                                     j / ↓       Scroll the panel down            │
-  │  j / ↓       Next session                       k / ↑       Scroll the panel up              │
-  │  k / ↑       Previous session                   PgDn        Page the panel down              │
-  │  g           First session                      PgUp        Page the panel up                │
-  │  G           Last session                       g           Jump to the top of the panel     │
-  │  Enter       Open the conversation              r           Refresh the report               │
-  │  z / Tab     Fold or open the subagent group    y           Copy the session id              │
-  │  S           Fold or open the section         Question card                                  │
-  │  Z           Fold or open everything            Esc         Answer later                     │
-  │Conversation                                     j / ↓       Next option                      │
-  │  1-9         Jump to session by number          k / ↑       Previous option                  │
-  │  q / Esc     Back to the session list           1-9         Pick an option by number         │
-  │  j / ↓       Scroll down                        Space       Toggle the focused option        │
-  │  k / ↑       Scroll up                          Tab         Next question                    │
-  │  PgDn        Page down                          Shift+Tab   Previous question                │
-  │  PgUp        Page up                            o           Write a free-text answer         │
-  │  g           Jump to the top                    Enter       Send the answer                  │
-  │  G           Jump to the bottom               Question card — free text                      │
-  │  t           Show timestamps                    Enter       Accept the text                  │
-  │  Ctrl+c      Interrupt the turn                 Esc         Discard the text                 │
-  │  Ctrl+a      Toggle auto-approve              Plan card                                      │
-  │  v           Select transcript lines            Esc         Answer later                     │
-  │  o           Expand the focused line            1           Approve, auto-accept edits       │
-  │  z           Expand every thinking and result…  2           Approve, manually approve edits  │
-  │  R           Retry the undelivered message      3           Keep planning                    │
-  │  e           Edit the undelivered message       r           Refine the plan                  │
-  │  x           Drop the undelivered message       j / ↓       Scroll the plan down             │
-  │  Ctrl+r      Search sent prompts                k / ↑       Scroll the plan up               │
-  │  Tab         Answer the waiting prompt        Plan card — refine                             │
-  │Composer                                         Enter       Accept the text                  │
-  │  Esc         Close the composer                 Esc         Discard the text                 │
-  │  Enter       Send the message                 Row glyphs                                     │
-  │  Ctrl+j / A… Insert a newline                   ●           working                          │
-  │  ↑           Recall an earlier prompt           ◐           stale or asleep                  │
-  │  ↓           Recall a later prompt              ○           idle                             │
-  │  Ctrl+r      Search sent prompts                ☾           hibernated                       │
+  │Anywhere                                         ? / q / Esc Close this cheat sheet           │
+▸ │  ?           Toggle this cheat sheet          Permission card                                │
+  │  q           Quit cctui                         y           Allow                            │
+  │  D           Diagnose the selected session      n           Deny                             │
+  │  i           Session info                       A           Allow and auto-approve           │
+  │  Ctrl+g      Jump to the next pending approv… Diagnose / info                                │
+  │Session list                                     D           Diagnose the selected session    │
+  │  j / ↓       Next session                       i           Session info                     │
+  │  k / ↑       Previous session                   q / Esc     Close the panel                  │
+  │  g           First session                      j / ↓       Scroll the panel down            │
+  │  G           Last session                       k / ↑       Scroll the panel up              │
+  │  Enter       Open the conversation              PgDn        Page the panel down              │
+  │  z / Tab     Fold or open the subagent group    PgUp        Page the panel up                │
+  │  S           Fold or open the section           g           Jump to the top of the panel     │
+  │  Z           Fold or open everything            r           Refresh the report               │
+  │Conversation                                     y           Copy the session id              │
+  │  1-9         Jump to session by number        Question card                                  │
+  │  q / Esc     Back to the session list           Esc         Answer later                     │
+  │  j / ↓       Scroll down                        j / ↓       Next option                      │
+  │  k / ↑       Scroll up                          k / ↑       Previous option                  │
+  │  PgDn        Page down                          1-9         Pick an option by number         │
+  │  PgUp        Page up                            Space       Toggle the focused option        │
+  │  g           Jump to the top                    Tab         Next question                    │
+  │  G           Jump to the bottom                 Shift+Tab   Previous question                │
+  │  t           Show timestamps                    o           Write a free-text answer         │
+  │  Ctrl+c      Interrupt the turn                 Enter       Send the answer                  │
+  │  Ctrl+a      Toggle auto-approve              Question card — free text                      │
+  │  v           Select transcript lines            Enter       Accept the text                  │
+  │  o           Expand the focused line            Esc         Discard the text                 │
+  │  z           Expand every thinking and resul… Plan card                                      │
+  │  R           Retry the undelivered message      Esc         Answer later                     │
+  │  e           Edit the undelivered message       1           Approve, auto-accept edits       │
+  │  x           Drop the undelivered message       2           Approve, manually approve edits  │
+  │  T           Watch the live terminal            3           Keep planning                    │
+  │  Ctrl+r      Search sent prompts                r           Refine the plan                  │
+  │  Tab         Answer the waiting prompt          j / ↓       Scroll the plan down             │
+  │Composer                                         k / ↑       Scroll the plan up               │
+  │  Esc         Close the composer               Plan card — refine                             │
+  │  Enter       Send the message                   Enter       Accept the text                  │
+  │  Ctrl+j / A… Insert a newline                   Esc         Discard the text                 │
+  │  ↑           Recall an earlier prompt         Row glyphs                                     │
+  │  ↓           Recall a later prompt              ●           working                          │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
