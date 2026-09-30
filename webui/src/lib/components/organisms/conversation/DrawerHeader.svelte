@@ -256,7 +256,7 @@
 <svelte:window onkeydown={onWinKey} />
 
 <div class="dhead" data-journey="header">
-	<div class="dbar" bind:clientWidth={barWidth}>
+	<div class="dbar" class:compact={collapsed} bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
 		<IconButton
 			icon={chrome === 'tile' ? 'x' : 'chevron-left'}
@@ -344,7 +344,6 @@
 				variant="default"
 				tone="warn"
 				{box}
-				style="background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2))"
 				icon="archive"
 				label={m.drawer_archive()}
 				onclick={onarchive}
@@ -354,7 +353,6 @@
 				variant="default"
 				tone="danger"
 				{box}
-				style="background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated-2))"
 				icon="stop"
 				label={m.drawer_interrupt_label()}
 				title={m.drawer_interrupt_title()}
@@ -413,6 +411,18 @@
 		background: var(--bg-elevated);
 		/* TokenUsage degrades its readout against this container. */
 		container: drawer-head / inline-size;
+	}
+	/* `chip` and `box` disagree in the kit: `.btn-chip:has(> svg:only-child)`
+	   takes its width from `--box-lg`, at a higher specificity than `.btn-box`
+	   takes its width from `--btn-box`, so a chip action renders `--box-lg`
+	   wide and `--btn-box` tall — 40x36, wider than the popover triggers that
+	   size themselves from `--pop-box`. Pinning `--box-lg` to the row's own box
+	   scale makes the kit's own rule produce the square `box` asks for. */
+	.dbar {
+		--box-lg: var(--box-md);
+	}
+	.dbar.compact {
+		--box-lg: var(--box-sm);
 	}
 	.dbar {
 		min-width: 0;

@@ -22,6 +22,25 @@ for (const viewport of [WIDE, NARROW]) {
 		expect([...new Set(controls.map((c) => Math.round(c.y)))]).toHaveLength(1);
 	});
 
+	// `chip` and `box` disagreed in the kit: a chip action took its width from
+	// `--box-lg` and its height from `--btn-box`, so archive/stop/rename/search
+	// rendered 40x36 next to 36x36 popover triggers. Height and y alone did not
+	// catch it.
+	test(`${w}px: every trailing header control is square and the same width`, async ({
+		page
+	}) => {
+		await openDrawer(page, viewport);
+
+		const controls = await rects(trailing(page));
+		expect(controls.length).toBeGreaterThan(2);
+		for (const c of controls) console.log('control', c.label, JSON.stringify(c));
+
+		expect([...new Set(controls.map((c) => Math.round(c.width)))]).toHaveLength(1);
+		for (const c of controls) {
+			expect(Math.round(c.width), `${c.label} is square`).toBe(Math.round(c.height));
+		}
+	});
+
 	test(`${w}px: the header action row never overflows the drawer`, async ({ page }) => {
 		await openDrawer(page, viewport);
 
