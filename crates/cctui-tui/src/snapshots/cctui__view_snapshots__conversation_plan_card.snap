@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25 ── P
+                                                                                                   ▕
+- one                                                                                              ▕
+- two                                                                                              ▕
+⏱ 12.4k in / 1.1k out                                                                              ▕
+⏱ 38s                                                                                              ▕
+                                                                                                   ▕
+◆ lane-b                                                                                           ▕
+the parser lane is rebased                                                                         ▐
+· keep-alive tick                                                                                  ▐
+⟳ context reset (/clear)                                                                           ▐
+                                                                                                   ▐
+◁ Reply done                                                                                       ▐
+┌ Plan ready for review ───────────────────────────────────────────────────────────────────────────┐
+│ # Plan                                                                                           │
+│                                                                                                  │
+│ - rework the reducer                                                                             │
+│ - add the card                                                                                   │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1 Yes, and auto-accept edits  2 Yes, and manually approve edits  3 No, keep planning  r Refine…  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ waiting for input
+❯  Type a message...

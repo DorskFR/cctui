@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 282
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  18 sessions  ● 18 active
+ Sessions
+   ▾ Pinned (1)
+▸    ● [claude-code] starred (main)  opus  0s  $1.25
+   ▾ Working (1)
+     ● [claude-code] cctui (main)  opus  0s  $1.25
+     ▾ subagents (12/12 running)
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+       ↳ ● [claude-code] lane (main)  opus  0s  $1.25
+     ▾ wf: release-wave (4/4 running)
+       ↳ ● [claude-code] lane-a  0s  $1.25
+       ↳ ● [claude-code] lane-b  0s  $1.25
+       ↳ ● [claude-code] lane-c  0s  $1.25
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

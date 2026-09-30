@@ -1,6 +1,6 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 36
+assertion_line: 150
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  34 sessions  ● 33 active
@@ -24,6 +24,6 @@ expression: render_screen(&mut app)
      ● [claude-code] extra27 (main)  opus  0s  $1.25
      ● [claude-code] extra28 (main)  opus  0s  $1.25
      ● [claude-code] extra29 (main)  opus  0s  $1.25
-   Completed
+   ▾ Completed (1)
 ▸    ○ [claude-code] notes (main)  opus  0s  $1.25
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

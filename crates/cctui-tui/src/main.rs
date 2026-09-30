@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use app::effects::Effects;
-use app::toast::Level;
 use app::session_live::{SessionLiveAction, TICK_MS};
+use app::toast::Level;
 use app::{Action, App, reduce, server_event};
 use cctui_client::{Client, Incoming};
 use crossterm::event::{
@@ -216,9 +216,12 @@ async fn run(
     let (ws, mut event_rx) = server.connect_ws();
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
     effects.dispatch(app::action::Effect::FetchIdentity);
-    // One tick drives both jobs: it re-evaluates the clock-derived row signals
-    // every time, and asks for a poll only when one is actually due.
-    let mut tick = time::interval(Duration::from_millis(TICK_MS.unsigned_abs()));
+    effects.dispatch(app::action::Effect::FetchPendingPermissions);
+    effects.dispatch(app::action::Effect::LoadDraftIndex);
+    // The one clock in the app. Delivery deadlines are the reducer's and the
+    // reducer only moves when it is called, so this has to be far tighter than
+    // the session-list poll, which the reducer gates on its own elapsed period.
+    let mut tick = time::interval(Duration::from_millis(TICK_MS));
     tick.tick().await;
     let mut input_rx = spawn_input_task();
     let mut ws_closed = false;
@@ -236,7 +239,13 @@ async fn run(
             maybe_input = input_rx.recv() => {
                 maybe_input
                     .and_then(|input| {
-                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                        keys::map_input(
+                            &app.config.keys,
+                            app.view(),
+                            app.input_active,
+                            app.prompt_focus(),
+                            input,
+                        )
                     })
                     .map_or_else(Vec::new, |action| vec![action])
             }
@@ -265,7 +274,7 @@ async fn run(
                     },
                 )
             }
-            _ = tick.tick() => vec![Action::SessionLive(SessionLiveAction::Tick)],
+            _ = tick.tick() => vec![Action::Tick],
         };
 
         for action in actions {

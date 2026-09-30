@@ -4,11 +4,13 @@ use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
+use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
 use super::identity::AuthState;
+use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
-use super::session_live::RefreshCounters;
 pub use super::session_list::uptime_secs;
+use super::session_live::RefreshCounters;
 use super::toast::{Level, StatusCounters, Toasts};
 pub use crate::config::uistate::UiState;
 
@@ -17,7 +19,7 @@ pub enum View {
     SessionList,
     Conversation,
     Help,
-    PermissionDialog,
+    HistoryPicker,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -30,21 +32,144 @@ pub struct PendingPermission {
     pub input_preview: String,
 }
 
-/// Conversation line with metadata for rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCategory {
+    Read,
+    Write,
+    Mcp,
+    /// Executed by the provider rather than the harness.
+    Server,
+    Other,
+}
+
+impl ToolCategory {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Mcp => "mcp",
+            Self::Server => "server",
+            Self::Other => "tool",
+        }
+    }
+
+    /// `server_tool_use` wins over the name-based bucket.
+    #[must_use]
+    pub fn of(tool: &str, event_kind: Option<&str>) -> Self {
+        if matches!(event_kind, Some("server_tool_use" | "server_tool_result")) {
+            return Self::Server;
+        }
+        match tool {
+            "Read" | "Glob" | "Grep" | "WebFetch" | "WebSearch" | "LSP" => Self::Read,
+            "Write" | "Edit" | "Bash" | "NotebookEdit" => Self::Write,
+            name if name.starts_with("mcp__") => Self::Mcp,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnFooter {
+    pub duration_ms: Option<u64>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    /// The server classified the turn as wanting the operator.
+    pub needs_action: bool,
+}
+
+impl TurnFooter {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.duration_ms.is_none() && self.tokens_in.is_none() && self.tokens_out.is_none()
+    }
+}
+
+/// One rendered transcript line.
+///
+/// Build with [`ConversationLine::new`] so adding a field never touches a call
+/// site.
+#[derive(Debug, Clone, Default)]
 pub struct ConversationLine {
     pub timestamp: i64,
     pub kind: LineKind,
     pub text: String,
     /// Raw tool input JSON (kept for Edit/Write to generate diffs).
     pub tool_input: Option<serde_json::Value>,
+    /// Tool name on [`LineKind::Tool`] and [`LineKind::Result`].
+    pub tool: Option<String>,
+    pub message_id: Option<String>,
+    pub turn_id: Option<uuid::Uuid>,
+    /// Sender of a peer message: a display name when one was supplied.
+    pub peer_from: Option<String>,
+    /// Room a peer message came through; absent for a direct one.
+    pub peer_room: Option<String>,
+    /// Duration and token figures on [`LineKind::Summary`].
+    pub footer: Option<TurnFooter>,
+    /// Delivery or queue state; `None` is a settled line.
+    pub status: Option<LineStatus>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+/// What a line is still waiting for: delivery of the user's own send, or the
+/// agent taking a queued prompt off its queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineStatus {
+    Sending,
+    Retrying {
+        attempt: u32,
+        max: u32,
+    },
+    Delivered,
+    Failed(String),
+    /// Waiting behind the running turn on the agent's own queue.
+    Queued,
+    /// Withdrawn from that queue before the agent ran it.
+    Removed,
+}
+
+impl ConversationLine {
+    #[must_use]
+    pub fn new(kind: LineKind, text: impl Into<String>, timestamp: i64) -> Self {
+        Self { timestamp, kind, text: text.into(), ..Self::default() }
+    }
+
+    #[must_use]
+    pub fn with_status(mut self, status: LineStatus) -> Self {
+        self.status = Some(status);
+        self
+    }
+
+    /// Whether the line hides body text behind a collapse toggle.
+    #[must_use]
+    pub const fn collapsible(&self) -> bool {
+        matches!(self.kind, LineKind::Thinking { .. } | LineKind::Result { .. } | LineKind::Compact)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LineKind {
     User,
+    #[default]
     Assistant,
-    ToolCall,
-    ToolResult,
+    /// Extended thinking; `redacted` content has no body to show.
+    Thinking {
+        redacted: bool,
+    },
+    Tool {
+        category: ToolCategory,
+    },
+    Result {
+        error: bool,
+    },
+    /// A message relayed from another session or a room.
+    Peer,
+    /// One line of harness bookkeeping.
+    Marker,
+    /// A `/clear` boundary.
+    Reset,
+    /// A `/compact` summary.
+    Compact,
+    /// The per-turn footer.
+    Summary,
     System,
     Reply,
 }
@@ -65,8 +190,13 @@ pub struct App {
     pub message_input: TextArea<'static>,
     pub input_active: bool,
     pub should_quit: bool,
-    /// Queue of pending permission requests; first is shown as dialog.
-    pub permission_queue: std::collections::VecDeque<PendingPermission>,
+    /// Pending permission requests for every session, rendered as a card in
+    /// the session they belong to.
+    pub permissions: PermissionInbox,
+    /// Live `AskUserQuestion` per session, cleared on `AskResolved`.
+    pub asks: HashMap<String, AskCard>,
+    /// Live plan-approval prompt per session, cleared on `PlanResolved`.
+    pub plans: HashMap<String, PlanCard>,
     pub scroll_offset: usize,
     pub follow_tail: bool,
     pub active_count: usize,
@@ -82,12 +212,25 @@ pub struct App {
     pub render_cache_session: String,
     pub render_cache_entries: usize,
     pub render_cache_epoch: u64,
+    /// `show_timestamps` the cache was built with: the prefix is baked into
+    /// every cached row, so toggling it has to rebuild.
+    pub render_cache_timestamps: bool,
+    /// First display row of each cached entry; the line cursor maps an entry
+    /// onto its rows through this.
+    pub render_cache_starts: Vec<usize>,
+    /// Focused entry in line-select mode; `None` means normal scrolling.
+    pub line_cursor: Option<usize>,
+    /// Which way the next bulk toggle goes; the per-entry state is the store's.
+    pub expand_all: bool,
     /// An older page landed: the next render re-anchors the viewport onto the
     /// lines the user was reading instead of letting them slide down.
     pub pending_prepend: bool,
     pub toasts: Toasts,
     pub status: StatusCounters,
     pub auth: AuthState,
+    pub drafts: super::drafts::DraftState,
+    /// Sends that have left the composer but are not confirmed delivered.
+    pub outbox: super::send::Outbox,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -113,6 +256,16 @@ impl App {
         self.message_input = Self::new_input_textarea();
     }
 
+    /// Replace the composer's content, leaving the caret after the last
+    /// character so typing continues where the text ends.
+    pub fn set_input_text(&mut self, text: &str) {
+        let mut textarea = Self::new_input_textarea();
+        if !text.is_empty() {
+            let _ = textarea.insert_str(text);
+        }
+        self.message_input = textarea;
+    }
+
     pub fn new() -> Self {
         Self {
             router: Router::new(View::SessionList),
@@ -125,7 +278,9 @@ impl App {
             message_input: Self::new_input_textarea(),
             input_active: false,
             should_quit: false,
-            permission_queue: std::collections::VecDeque::new(),
+            permissions: PermissionInbox::default(),
+            asks: HashMap::new(),
+            plans: HashMap::new(),
             scroll_offset: 0,
             follow_tail: true,
             active_count: 0,
@@ -136,10 +291,16 @@ impl App {
             render_cache_session: String::new(),
             render_cache_entries: 0,
             render_cache_epoch: 0,
+            render_cache_timestamps: false,
+            render_cache_starts: Vec::new(),
+            line_cursor: None,
+            expand_all: false,
             pending_prepend: false,
             toasts: Toasts::default(),
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
+            drafts: super::drafts::DraftState::default(),
+            outbox: super::send::Outbox::default(),
             clock_ms: 0,
             machine_liveness: HashMap::new(),
             ws_healthy: false,
@@ -162,14 +323,13 @@ impl App {
         flat.get(self.selected_index).copied()
     }
 
-    /// Requests waiting on this session, the count lane E's list-level
-    /// indicator reads too.
-    pub fn pending_permissions(&self, session_id: &str) -> usize {
-        self.permission_queue.iter().filter(|p| p.session_id == session_id).count()
-    }
-
     pub fn selected_session_id(&self) -> Option<String> {
         self.selected_session().map(|s| s.id.clone())
+    }
+
+    /// An ended session takes no more input: the composer is closed for it.
+    pub fn selected_session_ended(&self) -> bool {
+        self.selected_session().is_some_and(|s| s.end_reason.is_some())
     }
 
     #[cfg(test)]

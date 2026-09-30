@@ -240,7 +240,9 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
 
     let mut tops: Vec<&SessionListItem> = sessions
         .iter()
-        .filter(|s| is_fork(s) || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p)))
+        .filter(|s| {
+            is_fork(s) || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id)
+        })
         .collect();
     tops.sort_by_key(|s| (group_of(s).rank(), uptime_secs(s)));
     for group in kids.values_mut() {
@@ -252,13 +254,8 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
         *totals.entry(group_of(top).key()).or_default() += 1;
     }
 
-    let mut walk = Walk {
-        kids,
-        ui,
-        out: Vec::with_capacity(tops.len() + 8),
-        seen: HashSet::new(),
-        index: 0,
-    };
+    let mut walk =
+        Walk { kids, ui, out: Vec::with_capacity(tops.len() + 8), seen: HashSet::new(), index: 0 };
     let mut current: Option<Group> = None;
     for top in tops {
         let group = group_of(top);
@@ -365,8 +362,8 @@ mod tests {
     use cctui_proto::classifier::Bucket;
 
     use super::{
-        Group, Row, UiState, fold_scope, fold_targets, group_of, is_dispatched, rows, running_count,
-        selected_row, sessions_of, sub_groups, viewport_offset,
+        Group, Row, UiState, fold_scope, fold_targets, group_of, is_dispatched, rows,
+        running_count, selected_row, sessions_of, sub_groups, viewport_offset,
     };
     use crate::testsupport::{dispatched_session, pinned_session, session, subagent};
 
@@ -612,7 +609,7 @@ mod tests {
     fn a_self_parented_row_does_not_loop() {
         let mut s = session("s-loop", "p", "active", "working");
         s.parent_id = Some("s-loop".to_owned());
-        let list = rows(&std::slice::from_ref(&s), &UiState::default());
+        let list = rows(std::slice::from_ref(&s), &UiState::default());
         assert_eq!(ids(&sessions_of(&list)), ["s-loop"]);
     }
 
@@ -630,10 +627,8 @@ mod tests {
 
     #[test]
     fn fold_scope_is_a_parents_own_groups_and_a_childs_containing_group() {
-        let sessions = vec![
-            session("s-p", "cctui", "active", "working"),
-            subagent("s-c", "s-p", "child"),
-        ];
+        let sessions =
+            vec![session("s-p", "cctui", "active", "working"), subagent("s-c", "s-p", "child")];
         let list = rows(&sessions, &UiState::default());
         assert_eq!(fold_scope(&list, "s-p"), [("s-p/plain".to_owned(), 1)]);
         assert_eq!(fold_scope(&list, "s-c"), [("s-p/plain".to_owned(), 1)]);
@@ -670,7 +665,7 @@ mod tests {
 
     #[test]
     fn a_group_with_no_plain_children_has_no_plain_header() {
-        let kids = vec![workflow_child("s-a", "s-p", "run-1", None)];
+        let kids = [workflow_child("s-a", "s-p", "run-1", None)];
         let refs: Vec<&cctui_proto::api::SessionListItem> = kids.iter().collect();
         let groups = sub_groups(&refs);
         assert_eq!(groups.len(), 1);

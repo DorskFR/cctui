@@ -1,18 +1,28 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cctui_client::{Client, ConversationFetch, Page, WsClient};
+use cctui_proto::drafts::{composer_draft_key, session_history_key};
 use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
+use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
-use super::state::ConversationLine;
+use super::send::SendAction;
+use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
 const QUEUE: usize = 256;
+
+/// How long a composer sits still before its draft is written, matching the
+/// web UI: a keystroke must not be a request.
+const DRAFT_DEBOUNCE: Duration = Duration::from_millis(700);
 
 /// Handle onto the effects worker. [`Effects::dispatch`] never awaits, so the
 /// key-handling path never blocks on HTTP or the websocket.
@@ -28,8 +38,9 @@ impl Effects {
         let (action_tx, action_rx) = mpsc::channel::<Action>(QUEUE);
 
         tokio::spawn(async move {
+            let mut drafts = DraftSaver::new(Arc::clone(&server));
             while let Some(effect) = rx.recv().await {
-                for action in run(&server, &ws, effect).await {
+                for action in run(&server, &ws, &mut drafts, effect).await {
                     if action_tx.send(action).await.is_err() {
                         return;
                     }
@@ -53,7 +64,46 @@ impl Effects {
     }
 }
 
-async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
+/// Per-key debounce for draft writes: a pending save is replaced, not queued,
+/// and the request is off the effect queue so typing never waits on it.
+struct DraftSaver {
+    server: Arc<Client>,
+    pending: HashMap<String, tokio::task::JoinHandle<()>>,
+}
+
+impl DraftSaver {
+    fn new(server: Arc<Client>) -> Self {
+        Self { server, pending: HashMap::new() }
+    }
+
+    fn save(&mut self, key: String, text: String) {
+        self.pending.retain(|_, handle| !handle.is_finished());
+        self.cancel(&key);
+        let server = Arc::clone(&self.server);
+        let target = key.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            if let Err(e) = server.put_draft(&target, &text).await {
+                tracing::warn!(%e, "draft save failed");
+            }
+        });
+        self.pending.insert(key, handle);
+    }
+
+    fn cancel(&mut self, key: &str) {
+        if let Some(handle) = self.pending.remove(key) {
+            handle.abort();
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run(
+    server: &Client,
+    ws: &WsClient,
+    drafts: &mut DraftSaver,
+    effect: Effect,
+) -> Vec<Action> {
     match effect {
         Effect::RefreshSessions => match server.list_sessions().await {
             Ok(resp) => vec![Action::SessionsLoaded(resp.sessions)],
@@ -71,12 +121,26 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
                 Vec::new()
             }
         },
+        Effect::FetchPendingPermissions => fetch_pending_permissions(server).await,
         Effect::LoadConversationPage { session_id, kind, page, etag } => {
             load_conversation_page(server, &session_id, kind, page, etag.as_deref()).await
         }
         Effect::MarkSeen { session_id } => {
             if let Err(e) = server.mark_seen(&session_id).await {
                 tracing::warn!(%e, "marking the session seen failed");
+            }
+            Vec::new()
+        }
+        Effect::LoadDraftIndex => load_draft_index(server).await,
+        Effect::LoadDrafts { session_id } => load_drafts(server, session_id).await,
+        Effect::SaveDraft { key, text } => {
+            drafts.save(key, text);
+            Vec::new()
+        }
+        Effect::DiscardDraft { key } => {
+            drafts.cancel(&key);
+            if let Err(e) = server.delete_draft(&key).await {
+                tracing::warn!(%e, "draft discard failed");
             }
             Vec::new()
         }
@@ -90,12 +154,27 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             }
             Vec::new()
         }
-        Effect::SendMessage { session_id, content } => {
-            if let Err(e) = ws.send_message(session_id, content, None, None).await {
-                tracing::warn!(%e, "message send failed");
-                return vec![Action::Toast(Level::Error, "message send failed".to_owned())];
+        Effect::SendMessage { send_id, session_id, content, ask_picks, turn_id } => {
+            let client_msg_id = uuid::Uuid::new_v4().to_string();
+            let turn_id = turn_id.unwrap_or_else(uuid::Uuid::new_v4);
+            match ws
+                .send_message_as(
+                    session_id,
+                    content,
+                    client_msg_id.clone(),
+                    ask_picks,
+                    Some(turn_id),
+                )
+                .await
+            {
+                Ok(()) => {
+                    vec![Action::Send(SendAction::Dispatched { send_id, client_msg_id, turn_id })]
+                }
+                Err(e) => vec![Action::Send(SendAction::DispatchFailed {
+                    send_id,
+                    reason: e.to_string(),
+                })],
             }
-            Vec::new()
         }
         Effect::Interrupt { session_id } => match server.interrupt(&session_id).await {
             Ok(()) => Vec::new(),
@@ -122,6 +201,54 @@ async fn run(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
             {
                 tracing::warn!(%e, "permission response failed");
             }
+            Vec::new()
+        }
+    }
+}
+
+async fn load_draft_index(server: &Client) -> Vec<Action> {
+    match server.list_drafts().await {
+        Ok(list) => vec![Action::Drafts(DraftAction::IndexLoaded(Box::new(list)))],
+        Err(e) => {
+            tracing::warn!(%e, "draft index fetch failed");
+            Vec::new()
+        }
+    }
+}
+
+/// A draft the web UI has since edited must win over the startup index, so the
+/// session's two keys are read again as its conversation opens.
+async fn load_drafts(server: &Client, session_id: String) -> Vec<Action> {
+    let text = server.get_draft(&composer_draft_key(&session_id)).await;
+    let history = server.get_draft(&session_history_key(&session_id)).await;
+    if let Err(e) = &text {
+        tracing::warn!(%e, session_id, "draft fetch failed");
+    }
+    vec![Action::Drafts(DraftAction::Loaded {
+        session_id,
+        text: text.unwrap_or_default(),
+        history: history.unwrap_or_default(),
+    })]
+}
+
+async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
+    match server.pending_permissions().await {
+        Ok(items) => {
+            let items = items
+                .into_iter()
+                .map(|p| PendingPermission {
+                    session_id: p.session_id,
+                    request_id: p.request_id,
+                    tool_name: p.tool_name,
+                    description: p.description,
+                    input_preview: p.input_preview,
+                })
+                .collect();
+            vec![Action::Attention(AttentionAction::PendingPermissionsLoaded(items))]
+        }
+        Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+        Err(e) => {
+            tracing::warn!(%e, "pending permission fetch failed");
             Vec::new()
         }
     }
@@ -160,15 +287,16 @@ async fn load_conversation_page(
     };
 
     let total = rows.len();
-    let decoded: Vec<(i64, ConversationLine)> = rows
-        .into_iter()
-        .filter_map(|row| {
-            serde_json::from_value::<AgentEvent>(row.event)
-                .ok()
-                .map(|event| (row.seq, agent_event_to_line(&event)))
-        })
-        .collect();
-    let undecodable = total - decoded.len();
+    let mut undecodable = 0;
+    let mut decoded: Vec<(i64, ConversationLine)> = Vec::with_capacity(total);
+    for row in rows {
+        let seq = row.seq;
+        match serde_json::from_value::<AgentEvent>(row.event) {
+            // An event with nothing to render is not a decoding failure.
+            Ok(event) => decoded.extend(agent_event_to_line(&event).map(|line| (seq, line))),
+            Err(_) => undecodable += 1,
+        }
+    }
 
     let mut actions = vec![Action::Conversation(ConversationAction::Loaded {
         session_id: session_id.to_owned(),

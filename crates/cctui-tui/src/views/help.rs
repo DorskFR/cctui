@@ -3,6 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::Margin;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::chord::Chord;
 use crate::config::keymap::{CONTEXTS, Keymap};
@@ -38,14 +39,19 @@ fn keys_label(chords: &[Chord]) -> String {
             groups.push(vec![*chord]);
         }
     }
-    groups
-        .iter()
-        .map(|group| match group.len() {
+    let mut labels: Vec<String> = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let label = match group.len() {
             n if n > 2 => format!("{}-{}", group[0].label(), group[n - 1].label()),
             _ => group.iter().map(|c| c.label()).collect::<Vec<_>>().join(" / "),
-        })
-        .collect::<Vec<_>>()
-        .join(" / ")
+        };
+        // Distinct chords can share a label (Tab and BackTab with a stray
+        // modifier); the sheet must not print it twice.
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels.join(" / ")
 }
 
 fn rows(keys: &Keymap) -> Vec<Row> {
@@ -75,9 +81,15 @@ fn spans(row: &Row, width: usize) -> Vec<Span<'static>> {
         }
         Row::Binding { keys, desc } => {
             let desc_width = width.saturating_sub(KEYS_WIDTH + 2);
+            // Pad by display columns: a glyph like ⚡ is one char but two cells,
+            // and char-padding leaves the description column ragged. A label
+            // wider than the column is clipped rather than allowed to push the
+            // next column along and corrupt its rows.
+            let keys = crate::app::session_status::truncate(keys, KEYS_WIDTH - 1);
+            let pad = KEYS_WIDTH.saturating_sub(UnicodeWidthStr::width(keys.as_str()));
             vec![
                 Span::raw("  "),
-                Span::styled(format!("{keys:<KEYS_WIDTH$}"), theme::hotkey()),
+                Span::styled(format!("{keys}{}", " ".repeat(pad)), theme::hotkey()),
                 Span::raw(format!("{desc:<desc_width$}")),
             ]
         }
@@ -126,6 +138,16 @@ mod tests {
         let chords = Chord::parse_list("1-9").expect("parses");
         assert_eq!(keys_label(&chords), "1-9");
         assert_eq!(keys_label(&Chord::parse_list("j, down").expect("parses")), "j / ↓");
+    }
+
+    #[test]
+    fn a_label_two_chords_share_is_printed_once() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let plain = Chord::new(KeyCode::BackTab, KeyModifiers::NONE);
+        let shifted = Chord::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(plain.label(), "Shift+Tab");
+        assert_eq!(shifted.label(), "Shift+Tab", "BackTab already carries the shift");
+        assert_eq!(keys_label(&[plain, shifted]), "Shift+Tab");
     }
 
     #[test]

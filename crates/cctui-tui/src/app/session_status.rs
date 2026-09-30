@@ -19,15 +19,15 @@ fn in_working_group(s: &SessionListItem) -> bool {
     group_of(s) == Group::Bucket(Bucket::Working)
 }
 
-fn age_ms(at: Option<chrono::DateTime<chrono::Utc>>, now_ms: i64) -> Option<i64> {
-    at.map(|t| (now_ms - t.timestamp_millis()).max(0))
+fn age_ms(at: chrono::DateTime<chrono::Utc>, now_ms: i64) -> i64 {
+    (now_ms - at.timestamp_millis()).max(0)
 }
 
 /// A Working-bucket session whose last heartbeat aged past the threshold.
 #[must_use]
 pub fn is_stale_working(s: &SessionListItem, now_ms: i64) -> bool {
     in_working_group(s)
-        && age_ms(s.last_heartbeat, now_ms).is_some_and(|a| a > STALE_WORKING_AFTER_MS)
+        && s.last_heartbeat.is_some_and(|h| age_ms(h, now_ms) > STALE_WORKING_AFTER_MS)
 }
 
 /// What the leading dot says, in the webui's precedence.
@@ -83,7 +83,7 @@ pub struct ToolActivity {
 #[must_use]
 pub fn tool_activity(s: &SessionListItem, now_ms: i64) -> ToolActivity {
     let working = in_working_group(s) && s.status != SessionStatus::Archived;
-    let age_ms = age_ms(s.last_tool_at, now_ms);
+    let age_ms = s.last_tool_at.map(|t| age_ms(t, now_ms));
     let detail = s.activity_detail.clone().filter(|d| !d.trim().is_empty());
     let asleep = working && age_ms.is_some_and(|a| a > TOOL_ASLEEP_AFTER_MS);
     let todo_total = s.todos.len();
@@ -124,63 +124,74 @@ pub fn format_ago(ms: i64) -> String {
     if mins < 60 { format!("{mins}m") } else { format!("{}h", mins / 60) }
 }
 
-/// `✕<reason>` for an ended session, or `None`: a plain completion is the
-/// row's resting state, not a badge.
+/// `✕<label>` for an ended session, or `None`: a plain completion is the row's
+/// resting state, not a badge. The wording comes from the shared end-reason
+/// table, so the row, the banner and the toast all say the same thing.
 #[must_use]
 pub fn end_badge(s: &SessionListItem) -> Option<String> {
     let reason = s.end_reason?;
     if reason == SessionEndReason::Completed {
         return None;
     }
-    Some(format!("✕{}", reason.as_str()))
+    Some(format!("✕{}", crate::app::attention::end_reason_label(reason)))
 }
 
-/// The trailing badge cluster, in triage order.
+/// Everything the right-hand side of a row can say, in triage order. The one
+/// place a row-level indicator goes: a new signal is a field here, never a span
+/// appended after the width budget is settled.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowBadges {
-    pub pending: usize,
+    /// `?` an unanswered question, `P` a plan waiting for approval.
+    pub prompt: Option<&'static str>,
+    /// A permission card is up and nobody has answered it.
+    pub pending: bool,
     pub unread: u32,
     pub auto_approve: bool,
-    pub hibernated: bool,
     pub end: Option<String>,
 }
 
 impl RowBadges {
     #[must_use]
-    pub fn of(s: &SessionListItem, pending: usize) -> Self {
+    pub fn of(s: &SessionListItem, pending: bool, prompt: Option<&'static str>) -> Self {
         Self {
+            prompt,
             pending,
             unread: s.unread_count,
             auto_approve: s.auto_approve,
-            hibernated: s.hibernated,
             end: end_badge(s),
         }
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.pending == 0
+    pub const fn is_empty(&self) -> bool {
+        self.prompt.is_none()
+            && !self.pending
             && self.unread == 0
             && !self.auto_approve
-            && !self.hibernated
             && self.end.is_none()
     }
 
-    /// One space-joined string; the row renders it as a single dim-to-loud tail.
+    /// Whether the cluster is asking for the user, as opposed to just reporting.
+    #[must_use]
+    pub const fn wants_you(&self) -> bool {
+        self.pending || self.prompt.is_some()
+    }
+
+    /// One space-joined string; the row renders it as a single tail.
     #[must_use]
     pub fn text(&self) -> String {
-        let mut parts: Vec<String> = Vec::with_capacity(5);
-        if self.pending > 0 {
-            parts.push(format!("!{}", self.pending));
+        let mut parts: Vec<String> = Vec::with_capacity(6);
+        if self.pending {
+            parts.push("!".to_owned());
+        }
+        if let Some(prompt) = self.prompt {
+            parts.push(prompt.to_owned());
         }
         if self.unread > 0 {
             parts.push(format!("●{}", self.unread));
         }
         if self.auto_approve {
             parts.push("⚡".to_owned());
-        }
-        if self.hibernated {
-            parts.push("☾".to_owned());
         }
         if let Some(end) = &self.end {
             parts.push(end.clone());
@@ -201,7 +212,8 @@ pub fn activity_text(
         return Some("hibernated".to_owned());
     }
     if stale {
-        let age = age_ms(s.last_heartbeat, now_ms).map_or_else(|| "?".to_owned(), format_ago);
+        let age =
+            s.last_heartbeat.map_or_else(|| "?".to_owned(), |h| format_ago(age_ms(h, now_ms)));
         return Some(format!("stale {age}"));
     }
     if act.asleep {
@@ -243,16 +255,18 @@ pub const GLYPH_LEGEND: &[(&str, &str)] = &[
     ("☾", "hibernated"),
     ("↳", "subagent"),
     ("▸ / ▾", "folded / open group"),
-    ("!N", "permissions waiting on you"),
+    ("!", "permission waiting on you"),
+    ("?", "question waiting on you"),
+    ("P", "plan waiting for approval"),
     ("●N", "unread messages"),
     ("⚡", "auto-approve on"),
-    ("✕reason", "ended"),
-    ("⚙N age", "tool calls, and since the last one"),
+    ("✕reason", "how it ended"),
+    ("⚙N age", "tool calls, age of the last"),
 ];
 
 #[cfg(test)]
 mod tests {
-        use super::{
+    use super::{
         RowBadges, RowLiveness, STALE_WORKING_AFTER_MS, TOOL_ASLEEP_AFTER_MS, activity_text,
         cadence_text, end_badge, format_ago, is_stale_working, row_liveness, tool_activity,
         truncate,
@@ -411,22 +425,32 @@ mod tests {
         s.end_reason = Some(cctui_proto::models::SessionEndReason::Completed);
         assert_eq!(end_badge(&s), None);
         s.end_reason = Some(cctui_proto::models::SessionEndReason::DaemonLost);
-        assert_eq!(end_badge(&s).as_deref(), Some("✕daemon_lost"));
+        assert_eq!(end_badge(&s).as_deref(), Some("✕daemon lost"));
     }
 
     #[test]
     fn badges_render_in_triage_order_and_vanish_when_there_is_nothing_to_say() {
         let mut s = session("s", "p", "active", "working");
-        assert!(RowBadges::of(&s, 0).is_empty());
-        assert_eq!(RowBadges::of(&s, 0).text(), "");
+        assert!(RowBadges::of(&s, false, None).is_empty());
+        assert_eq!(RowBadges::of(&s, false, None).text(), "");
+        assert!(!RowBadges::of(&s, false, None).wants_you());
 
         s.unread_count = 4;
         s.auto_approve = true;
         s.hibernated = true;
         s.end_reason = Some(cctui_proto::models::SessionEndReason::Crashed);
-        let badges = RowBadges::of(&s, 1);
+        let badges = RowBadges::of(&s, true, Some("?"));
         assert!(!badges.is_empty());
-        assert_eq!(badges.text(), "!1 ●4 ⚡ ☾ ✕crashed");
+        assert!(badges.wants_you());
+        assert_eq!(
+            badges.text(),
+            "! ? ●4 ⚡ ✕crashed",
+            "hibernation is the leading glyph and the activity word, not a third badge"
+        );
+
+        let quiet = RowBadges::of(&s, false, None);
+        assert!(!quiet.wants_you(), "unread and auto-approve are reports, not requests");
+        assert_eq!(quiet.text(), "●4 ⚡ ✕crashed");
     }
 
     #[test]

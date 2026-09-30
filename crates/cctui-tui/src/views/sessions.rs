@@ -73,15 +73,23 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
                 sub_header(label, *total, *running, *open, *depth)
             }
             session_list::Row::Session { session, depth, .. } => {
-                session_line(app, session, *depth, area.width)
+                session_line(app, session, *depth, content_width(area.width))
             }
         })
         .collect();
 
-    let list = List::new(items).highlight_style(theme::selected()).highlight_symbol("▸ ");
+    let list = List::new(items).highlight_style(theme::selected()).highlight_symbol(CURSOR);
 
     let mut state = ListState::default().with_offset(offset).with_selected(Some(selected_row));
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// The `List` widget reserves this on every row, selected or not, so a row's own
+/// budget is the area minus its width.
+const CURSOR: &str = "▸ ";
+
+fn content_width(area_width: u16) -> u16 {
+    area_width.saturating_sub(u16::try_from(CURSOR.chars().count()).unwrap_or(u16::MAX))
 }
 
 /// Folded and open arrows; the leftmost two columns belong to the selection
@@ -134,7 +142,7 @@ struct Seg {
 const KEEP: u8 = u8::MAX;
 
 impl Seg {
-    fn new(priority: u8, style: ratatui::style::Style, text: String) -> Self {
+    const fn new(priority: u8, style: ratatui::style::Style, text: String) -> Self {
         Self { text, style, priority }
     }
 
@@ -179,7 +187,8 @@ fn session_line_spans(
     let stale = session_status::is_stale_working(s, now);
     let liveness = session_status::row_liveness(s, stale);
     let act = session_status::tool_activity(s, now);
-    let badges = session_status::RowBadges::of(s, app.pending_permissions(&s.id));
+    let badges =
+        session_status::RowBadges::of(s, app.permissions.has(&s.id), app.prompt_marker(&s.id));
     let compact = app.config.prefs.compact_rows;
 
     let project = s
@@ -197,11 +206,7 @@ fn session_line_spans(
         Seg::new(KEEP, theme::dim(), lead),
         Seg::new(KEEP, theme::liveness_style(liveness), format!("{} ", liveness.glyph())),
         Seg::new(5, theme::dim(), format!("[{adapter}] ")),
-        Seg::new(
-            KEEP,
-            if is_subagent { theme::dim() } else { theme::bold() },
-            project.to_owned(),
-        ),
+        Seg::new(KEEP, if is_subagent { theme::dim() } else { theme::bold() }, project.to_owned()),
     ];
     if !branch.is_empty() {
         segs.push(Seg::new(6, theme::branch(), format!(" ({branch})")));
@@ -211,12 +216,12 @@ fn session_line_spans(
     if let Some(tier) = session_live::machine_dot(app, &s.machine_id)
         && tier != cctui_proto::models::MachineLiveness::Online
     {
-        let style = if tier == cctui_proto::models::MachineLiveness::Stale {
+        let tint = if tier == cctui_proto::models::MachineLiveness::Stale {
             theme::stale()
         } else {
             theme::error()
         };
-        segs.push(Seg::new(7, style, format!(" {}", session_live::machine_glyph(tier))));
+        segs.push(Seg::new(7, tint, format!(" {}", session_live::machine_glyph(tier))));
     }
 
     if !compact {
@@ -235,7 +240,7 @@ fn session_line_spans(
 
     let width = usize::from(width);
     let badge_text = badges.text();
-    let badge_cols = if badge_text.is_empty() { 0 } else { badge_text.chars().count() + 2 };
+    let badge_cols = if badges.is_empty() { 0 } else { badge_text.chars().count() + 2 };
     shed(&mut segs, width.saturating_sub(badge_cols));
 
     if !compact {
@@ -243,14 +248,14 @@ fn session_line_spans(
         if spare >= MIN_ACTIVITY_COLS
             && let Some(text) = session_status::activity_text(s, &act, stale, now)
         {
-            let style = if stale || act.asleep { theme::stale() } else { theme::dim() };
+            let tint = if stale || act.asleep { theme::stale() } else { theme::dim() };
             let text = session_status::truncate(&text, spare - 2);
-            segs.push(Seg::new(KEEP, style, format!("  {text}")));
+            segs.push(Seg::new(KEEP, tint, format!("  {text}")));
         }
     }
 
     let mut spans = spans_of(segs);
-    if !badge_text.is_empty() {
+    if !badges.is_empty() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(badge_text, badge_style(&badges)));
     }
@@ -284,7 +289,7 @@ const MIN_ACTIVITY_COLS: usize = 8;
 
 /// The loudest thing the cluster says wins its colour.
 fn badge_style(badges: &session_status::RowBadges) -> ratatui::style::Style {
-    if badges.pending > 0 {
+    if badges.wants_you() {
         return theme::attention();
     }
     if badges.unread > 0 {
@@ -393,6 +398,12 @@ mod tests {
     }
 
     #[test]
+    fn the_cursor_gutter_comes_out_of_the_row_budget() {
+        assert_eq!(super::content_width(80), 78);
+        assert_eq!(super::content_width(1), 0);
+    }
+
+    #[test]
     fn a_row_never_exceeds_eighty_columns() {
         let mut s = session("s-long", "a-project-with-a-really-long-name", "active", "working");
         s.metadata = serde_json::json!({
@@ -425,7 +436,7 @@ mod tests {
         let mut s = session("s-narrow", "proj", "active", "blocked");
         s.unread_count = 4;
         let mut app = app_with(s);
-        app.permission_queue.push_back(crate::app::PendingPermission {
+        app.permissions.push(crate::app::PendingPermission {
             session_id: "s-narrow".to_owned(),
             request_id: "r".to_owned(),
             tool_name: "Bash".to_owned(),
@@ -434,16 +445,15 @@ mod tests {
         });
         let spans = session_line_spans(&app, &app.sessions[0], 0, 30);
         let rendered = text(&spans);
-        assert!(rendered.contains("!1 ●4"), "{rendered}");
+        assert!(rendered.contains("! ●4"), "{rendered}");
     }
 
     #[test]
     fn a_stale_working_row_says_why_it_is_dim() {
         let mut s = session("s-stale", "proj", "active", "working");
         let now = 120 * 60 * 1000;
-        s.last_heartbeat = Some(
-            chrono::DateTime::from_timestamp_millis(now - 42 * 60 * 1000).expect("stamp"),
-        );
+        s.last_heartbeat =
+            Some(chrono::DateTime::from_timestamp_millis(now - 42 * 60 * 1000).expect("stamp"));
         let mut app = app_with(s);
         app.clock_ms = now;
         let rendered = text(&session_line_spans(&app, &app.sessions[0], 0, 100));

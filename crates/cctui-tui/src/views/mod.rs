@@ -1,6 +1,9 @@
+pub mod banner;
+pub mod cards;
 pub mod conversation;
 pub mod help;
-pub mod permission;
+pub mod history;
+pub mod prompt;
 pub mod sessions;
 
 use ratatui::Frame;
@@ -16,13 +19,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys);
         }
-        View::PermissionDialog => {
+        View::HistoryPicker => {
             match app.router.below() {
                 Some(View::Conversation) => conversation::draw(frame, app),
                 _ => sessions::draw(frame, app),
             }
-            if let Some(req) = app.permission_queue.front() {
-                permission::draw(frame, req);
+            if let Some(picker) = app.drafts.picker.as_ref() {
+                history::draw(frame, picker);
             }
         }
     }

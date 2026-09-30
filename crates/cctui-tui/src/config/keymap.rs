@@ -11,8 +11,13 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    History,
     Help,
     Permission,
+    Ask,
+    AskText,
+    Plan,
+    PlanText,
 }
 
 pub const CONTEXTS: &[Context] = &[
@@ -20,8 +25,13 @@ pub const CONTEXTS: &[Context] = &[
     Context::SessionList,
     Context::Conversation,
     Context::Composer,
+    Context::History,
     Context::Help,
     Context::Permission,
+    Context::Ask,
+    Context::AskText,
+    Context::Plan,
+    Context::PlanText,
 ];
 
 impl Context {
@@ -31,8 +41,13 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::History => "history",
             Self::Help => "help",
             Self::Permission => "permission",
+            Self::Ask => "ask",
+            Self::AskText => "ask-text",
+            Self::Plan => "plan",
+            Self::PlanText => "plan-text",
         }
     }
 
@@ -42,8 +57,13 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::History => "Prompt history",
             Self::Help => "Help",
-            Self::Permission => "Permission dialog",
+            Self::Permission => "Permission card",
+            Self::Ask => "Question card",
+            Self::AskText => "Question card — free text",
+            Self::Plan => "Plan card",
+            Self::PlanText => "Plan card — refine",
         }
     }
 
@@ -122,17 +142,52 @@ actions! {
     ToggleTimestamps => "toggle-timestamps", "Show timestamps";
     Interrupt => "interrupt", "Interrupt the turn";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
+    LineCursor => "line-cursor", "Select transcript lines";
+    ToggleExpand => "toggle-expand", "Expand the focused line";
+    ToggleExpandAll => "toggle-expand-all", "Expand every thinking and result block";
+    RetrySend => "retry-send", "Retry the undelivered message";
+    EditSend => "edit-send", "Edit the undelivered message";
+    DiscardSend => "discard-send", "Drop the undelivered message";
     CopyMessage => "copy-message", "Copy the selected message";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
 
     CancelInput => "cancel-input", "Close the composer";
     SubmitInput => "submit-input", "Send the message";
     InputNewline => "input-newline", "Insert a newline";
+    HistoryPrev => "history-prev", "Recall an earlier prompt";
+    HistoryNext => "history-next", "Recall a later prompt";
+    HistoryOpen => "history-open", "Search sent prompts";
+
+    HistoryClose => "history-close", "Close the prompt list";
+    HistorySelectNext => "history-select-next", "Next prompt";
+    HistorySelectPrev => "history-select-prev", "Previous prompt";
+    HistoryRecall => "history-recall", "Put this prompt in the composer";
 
     CloseHelp => "close-help", "Close this cheat sheet";
 
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
+    PermissionAllowAlways => "permission-allow-always", "Allow and auto-approve";
+    JumpToPending => "jump-to-pending", "Jump to the next pending approval";
+
+    FocusPrompt => "focus-prompt", "Answer the waiting prompt";
+    PromptDefer => "prompt-defer", "Answer later";
+    AskNextOption => "ask-next-option", "Next option";
+    AskPrevOption => "ask-prev-option", "Previous option";
+    AskPickIndex => "ask-pick-index", "Pick an option by number";
+    AskToggleOption => "ask-toggle-option", "Toggle the focused option";
+    AskNextQuestion => "ask-next-question", "Next question";
+    AskPrevQuestion => "ask-prev-question", "Previous question";
+    AskEditOther => "ask-edit-other", "Write a free-text answer";
+    AskSubmit => "ask-submit", "Send the answer";
+    PromptTextCommit => "prompt-text-commit", "Accept the text";
+    PromptTextCancel => "prompt-text-cancel", "Discard the text";
+    PlanApproveAuto => "plan-approve-auto", "Approve, auto-accept edits";
+    PlanApproveManual => "plan-approve-manual", "Approve, manually approve edits";
+    PlanKeepPlanning => "plan-keep-planning", "Keep planning";
+    PlanRefine => "plan-refine", "Refine the plan";
+    PlanScrollDown => "plan-scroll-down", "Scroll the plan down";
+    PlanScrollUp => "plan-scroll-up", "Scroll the plan up";
 }
 
 impl ActionId {
@@ -167,6 +222,7 @@ const GLOBAL: &[BindingSpec] = &[
     spec(Context::Global, "N", ActionId::SearchPrev),
     spec(Context::Global, "D", ActionId::Diagnose),
     spec(Context::Global, "i", ActionId::Info),
+    spec(Context::Global, "ctrl+g", ActionId::JumpToPending),
 ];
 
 const SESSION_LIST: &[BindingSpec] = &[
@@ -189,27 +245,93 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "g", ActionId::ScrollToTop),
     spec(Context::Conversation, "G", ActionId::ScrollToBottom),
     spec(Context::Conversation, "t", ActionId::ToggleTimestamps),
+    spec(Context::Conversation, "v", ActionId::LineCursor),
+    spec(Context::Conversation, "o", ActionId::ToggleExpand),
+    spec(Context::Conversation, "z", ActionId::ToggleExpandAll),
     spec(Context::Conversation, "1-9", ActionId::SelectIndex),
+    spec(Context::Conversation, "R", ActionId::RetrySend),
+    spec(Context::Conversation, "e", ActionId::EditSend),
+    spec(Context::Conversation, "x", ActionId::DiscardSend),
     spec(Context::Conversation, "ctrl+c", ActionId::Interrupt),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
+    spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Conversation, "tab", ActionId::FocusPrompt),
 ];
 
+/// `shift+enter` is unreported by most terminals, so a newline also has a
+/// modifier pair that always arrives.
 const COMPOSER: &[BindingSpec] = &[
     spec(Context::Composer, "esc", ActionId::CancelInput),
     spec(Context::Composer, "enter", ActionId::SubmitInput),
-    spec(Context::Composer, "shift+enter", ActionId::InputNewline),
+    spec(Context::Composer, "shift+enter, alt+enter, ctrl+j", ActionId::InputNewline),
+    spec(Context::Composer, "up", ActionId::HistoryPrev),
+    spec(Context::Composer, "down", ActionId::HistoryNext),
+    spec(Context::Composer, "ctrl+r", ActionId::HistoryOpen),
+];
+
+const HISTORY: &[BindingSpec] = &[
+    spec(Context::History, "esc", ActionId::HistoryClose),
+    spec(Context::History, "down, ctrl+n", ActionId::HistorySelectNext),
+    spec(Context::History, "up, ctrl+p", ActionId::HistorySelectPrev),
+    spec(Context::History, "enter", ActionId::HistoryRecall),
 ];
 
 const HELP: &[BindingSpec] = &[spec(Context::Help, "esc, q, ?", ActionId::CloseHelp)];
 
+/// The card is inline, not modal: only the answer keys live here and
+/// everything else falls through to the conversation underneath.
 const PERMISSION: &[BindingSpec] = &[
-    spec(Context::Permission, "y, enter", ActionId::PermissionAllow),
-    spec(Context::Permission, "n, esc", ActionId::PermissionDeny),
+    spec(Context::Permission, "y", ActionId::PermissionAllow),
+    spec(Context::Permission, "n", ActionId::PermissionDeny),
+    spec(Context::Permission, "A", ActionId::PermissionAllowAlways),
+];
+
+const ASK: &[BindingSpec] = &[
+    spec(Context::Ask, "j, down", ActionId::AskNextOption),
+    spec(Context::Ask, "k, up", ActionId::AskPrevOption),
+    spec(Context::Ask, "1-9", ActionId::AskPickIndex),
+    spec(Context::Ask, "space", ActionId::AskToggleOption),
+    spec(Context::Ask, "tab", ActionId::AskNextQuestion),
+    spec(Context::Ask, "backtab, shift+backtab, shift+tab", ActionId::AskPrevQuestion),
+    spec(Context::Ask, "o", ActionId::AskEditOther),
+    spec(Context::Ask, "enter", ActionId::AskSubmit),
+    spec(Context::Ask, "esc", ActionId::PromptDefer),
+];
+
+const ASK_TEXT: &[BindingSpec] = &[
+    spec(Context::AskText, "enter", ActionId::PromptTextCommit),
+    spec(Context::AskText, "esc", ActionId::PromptTextCancel),
+];
+
+const PLAN: &[BindingSpec] = &[
+    spec(Context::Plan, "1", ActionId::PlanApproveAuto),
+    spec(Context::Plan, "2", ActionId::PlanApproveManual),
+    spec(Context::Plan, "3", ActionId::PlanKeepPlanning),
+    spec(Context::Plan, "r", ActionId::PlanRefine),
+    spec(Context::Plan, "j, down", ActionId::PlanScrollDown),
+    spec(Context::Plan, "k, up", ActionId::PlanScrollUp),
+    spec(Context::Plan, "esc", ActionId::PromptDefer),
+];
+
+const PLAN_TEXT: &[BindingSpec] = &[
+    spec(Context::PlanText, "enter", ActionId::PromptTextCommit),
+    spec(Context::PlanText, "esc", ActionId::PromptTextCancel),
 ];
 
 /// Where a feature registers its default bindings: add one slice here.
-pub const DEFAULT_BINDINGS: &[&[BindingSpec]] =
-    &[GLOBAL, SESSION_LIST, CONVERSATION, COMPOSER, HELP, PERMISSION];
+pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
+    GLOBAL,
+    SESSION_LIST,
+    CONVERSATION,
+    COMPOSER,
+    HISTORY,
+    HELP,
+    PERMISSION,
+    ASK,
+    ASK_TEXT,
+    PLAN,
+    PLAN_TEXT,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {
@@ -279,15 +401,21 @@ impl Keymap {
         Ok(())
     }
 
-    /// The context's own binding, else the global one. The composer swallows
-    /// typed characters and the permission dialog is modal, so neither of them
-    /// falls through.
+    /// The context's own binding, then its fallbacks. A permission card sits
+    /// inside a conversation, so it inherits both; the composer swallows typed
+    /// characters and inherits nothing.
     pub fn lookup(&self, context: Context, chord: Chord) -> Option<ActionId> {
-        self.bindings.get(&(context, chord)).copied().or_else(|| {
-            matches!(context, Context::SessionList | Context::Conversation | Context::Help)
-                .then(|| self.bindings.get(&(Context::Global, chord)).copied())
-                .flatten()
-        })
+        std::iter::once(context)
+            .chain(Self::fallbacks(context).iter().copied())
+            .find_map(|c| self.bindings.get(&(c, chord)).copied())
+    }
+
+    const fn fallbacks(context: Context) -> &'static [Context] {
+        match context {
+            Context::Permission => &[Context::Conversation, Context::Global],
+            Context::SessionList | Context::Conversation | Context::Help => &[Context::Global],
+            _ => &[],
+        }
     }
 
     /// Plain characters first, then named keys: a `HashMap` has no order of its
@@ -344,6 +472,21 @@ mod tests {
         assert_eq!(map.lookup(Context::SessionList, chord("q")), Some(ActionId::Quit));
         assert_eq!(map.lookup(Context::Conversation, chord("1")), Some(ActionId::SelectIndex));
         assert_eq!(map.lookup(Context::SessionList, chord("1")), Some(ActionId::SwitchView));
+    }
+
+    #[test]
+    fn a_permission_card_answers_first_and_inherits_the_conversation() {
+        let map = Keymap::default();
+        assert_eq!(map.lookup(Context::Permission, chord("y")), Some(ActionId::PermissionAllow));
+        assert_eq!(map.lookup(Context::Permission, chord("n")), Some(ActionId::PermissionDeny));
+        assert_eq!(
+            map.lookup(Context::Permission, chord("A")),
+            Some(ActionId::PermissionAllowAlways)
+        );
+        assert_eq!(map.lookup(Context::Permission, chord("j")), Some(ActionId::ScrollDown));
+        let leave = Some(ActionId::LeaveConversation);
+        assert_eq!(map.lookup(Context::Permission, chord("esc")), leave);
+        assert_eq!(map.lookup(Context::Permission, chord("?")), Some(ActionId::Help));
     }
 
     #[test]

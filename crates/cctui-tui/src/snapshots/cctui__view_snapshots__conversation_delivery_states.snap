@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25
+
+
+❯ You  ⧗ queued
+deploy the thing
+
+⧗ removed from queue: roll back the release
+
+
+❯ You  … sending
+tail the logs
+
+
+
+❯ You  ✗ failed: no daemon connected — R retry  e edit  x drop
+restart the worker
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ waiting for input
+❯  Type a message...

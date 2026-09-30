@@ -1,15 +1,32 @@
 use super::action::{Action, Effect, HeartbeatUsage};
-use super::conversation;
-use super::state::{App, PendingPermission, View};
+use super::conversation::{self, ConversationAction};
+use super::send;
+use super::state::{App, View};
 use super::toast::Level;
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
-#[allow(clippy::too_many_lines)]
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
+    let mut effects = reduce_action(app, action);
+    effects.extend(super::drafts::sync_composer(app));
+    effects
+}
+
+#[allow(clippy::too_many_lines)]
+fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Attention(attention) => super::attention::reduce_attention(app, attention),
+        Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
+        Action::Send(action) => send::reduce_send(app, action),
         Action::SessionLive(action) => super::session_live::reduce_session_live(app, action),
+        // One clock for the whole app: delivery deadlines move, and the session
+        // list polls only when its own period has elapsed.
+        Action::Tick => {
+            let mut effects = send::tick(app);
+            effects.extend(super::session_live::poll_if_due(app));
+            effects
+        }
 
         Action::Quit => {
             app.should_quit = true;
@@ -51,7 +68,16 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         }
         // Help dismisses to the session list, never to the view it was opened
         // over, so it collapses the stack exactly as leaving a conversation does.
-        Action::CloseHelp | Action::LeaveConversation => {
+        Action::CloseHelp => {
+            app.router.reset(View::SessionList);
+            conversation::leave(app)
+        }
+        // Line-select is a mode inside the conversation: the same key leaves it
+        // first and only closes the conversation on a second press.
+        Action::LeaveConversation => {
+            if conversation::line_select_active(app) {
+                return conversation::reduce(app, ConversationAction::ToggleLineCursor);
+            }
             app.router.reset(View::SessionList);
             conversation::leave(app)
         }
@@ -60,6 +86,13 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             conversation::open(app, session_id)
         }
 
+        // Line-wise keys move the focused line instead of the viewport while
+        // line-select is on; paging keys keep scrolling either way.
+        Action::Scroll { lines, .. }
+            if conversation::line_select_active(app) && lines.abs() == 1 =>
+        {
+            conversation::reduce(app, ConversationAction::MoveCursor { delta: lines })
+        }
         Action::Scroll { lines, release_follow } => {
             snap_scroll_if_following(app);
             app.scroll_offset = if lines < 0 {
@@ -83,9 +116,13 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         }
 
         Action::ActivateInputWith(key) => {
+            if app.selected_session_ended() {
+                app.toast(Level::Info, "this session has ended");
+                return Vec::new();
+            }
             app.input_active = true;
             app.message_input.input(key);
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::CancelInput => {
             app.input_active = false;
@@ -93,11 +130,11 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::InputKey(key) => {
             app.message_input.input(key);
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::InputNewline => {
             app.message_input.insert_newline();
-            Vec::new()
+            super::drafts::on_input(app)
         }
         Action::SubmitInput => {
             let content = app.message_input.lines().join("\n");
@@ -106,9 +143,12 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.input_active = false;
             match target {
                 Some(session_id) if !content.trim().is_empty() => {
-                    vec![Effect::SendMessage { session_id, content }]
+                    send::submit(app, session_id, content, None)
                 }
-                _ => Vec::new(),
+                // Nothing to send, but the emptied composer is still a draft
+                // change the store has to hear about.
+                Some(session_id) => super::drafts::on_send(app, &session_id, &content),
+                None => Vec::new(),
             }
         }
 
@@ -128,33 +168,6 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
 
-        Action::ResolvePermission { allow } => {
-            let behavior = if allow { "allow" } else { "deny" };
-            let effects = app
-                .permission_queue
-                .pop_front()
-                .map(|req| {
-                    vec![Effect::RespondPermission {
-                        session_id: req.session_id,
-                        request_id: req.request_id,
-                        behavior,
-                    }]
-                })
-                .unwrap_or_default();
-            if app.permission_queue.is_empty() {
-                app.router.pop();
-            }
-            effects
-        }
-        Action::PermissionRequested(req) => {
-            enqueue_permission_request(app, req);
-            Vec::new()
-        }
-        Action::PermissionResolved { session_id, request_id } => {
-            resolve_permission(app, &session_id, &request_id);
-            Vec::new()
-        }
-
         Action::RefreshSessions => super::session_live::refresh(app),
         Action::SessionsLoaded(sessions) => {
             app.sessions = sessions;
@@ -162,12 +175,15 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
                 apply_heartbeat_usage(app, &session_id, &usage);
             }
-            conversation::stream(app, &session_id, seq, line);
+            if let Some(line) = line {
+                conversation::stream(app, &session_id, seq, *line);
+            }
             Vec::new()
         }
         Action::SessionStatusChanged { session_id, status } => {
@@ -189,7 +205,9 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
             let mut effects = conversation::reconnect(app);
+            effects.extend(send::redispatch_parked(app));
             effects.extend(super::session_live::refresh(app));
+            effects.push(Effect::FetchPendingPermissions);
             effects
         }
         Action::Toast(level, text) => {
@@ -216,28 +234,6 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 const fn snap_scroll_if_following(app: &mut App) {
     if app.follow_tail {
         app.scroll_offset = app.total_display_lines.saturating_sub(app.viewport_height);
-    }
-}
-
-fn enqueue_permission_request(app: &mut App, req: PendingPermission) {
-    let was_empty = app.permission_queue.is_empty();
-    app.permission_queue.push_back(req);
-    if was_empty {
-        app.router.push(View::PermissionDialog);
-    }
-}
-
-/// Drop any queued entry that matches; if it's the head and the dialog is
-/// currently showing, restore the pre-dialog view.
-fn resolve_permission(app: &mut App, session_id: &str, request_id: &str) {
-    let was_head_matching = app
-        .permission_queue
-        .front()
-        .is_some_and(|p| p.session_id == session_id && p.request_id == request_id);
-    app.permission_queue.retain(|p| !(p.session_id == session_id && p.request_id == request_id));
-    if was_head_matching && app.permission_queue.is_empty() && app.view() == View::PermissionDialog
-    {
-        app.router.pop();
     }
 }
 
@@ -315,6 +311,8 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
 fn deregister_session(app: &mut App, session_id: &str) {
     app.sessions.retain(|s| s.id != session_id);
     app.conversations.remove(session_id);
+    app.permissions.drop_session(session_id);
+    app.drafts.forget(session_id);
     if app.subscribed.as_deref() == Some(session_id) {
         app.subscribed = None;
     }
@@ -329,7 +327,7 @@ fn deregister_session(app: &mut App, session_id: &str) {
 mod tests {
     use super::{Action, App, Effect, Level, View, reduce};
     use crate::app::state::LineKind;
-    use crate::testsupport::{permission_request, session};
+    use crate::testsupport::session;
 
     fn conversation_len(app: &App, session_id: &str) -> usize {
         app.conversation(session_id).map_or(0, crate::app::ConversationStore::len)
@@ -345,13 +343,8 @@ mod tests {
         app
     }
 
-    fn line(text: &str) -> crate::app::state::ConversationLine {
-        crate::app::state::ConversationLine {
-            timestamp: 0,
-            kind: LineKind::Assistant,
-            text: text.to_owned(),
-            tool_input: None,
-        }
+    fn line(text: &str) -> Box<crate::app::state::ConversationLine> {
+        Box::new(crate::app::state::ConversationLine::new(LineKind::Assistant, text, 0))
     }
 
     #[test]
@@ -462,12 +455,16 @@ mod tests {
         app.input_active = true;
         app.message_input.insert_str("hello there");
         let effects = reduce(&mut app, Action::SubmitInput);
-        match effects.as_slice() {
-            [Effect::SendMessage { session_id, content }] => {
+        let sent = effects
+            .iter()
+            .find(|e| matches!(e, Effect::SendMessage { .. }))
+            .expect("expected a send effect");
+        match sent {
+            Effect::SendMessage { session_id, content, ask_picks: None, .. } => {
                 assert_eq!(session_id, "s-a");
                 assert_eq!(content, "hello there");
             }
-            _ => panic!("expected a send effect"),
+            _ => unreachable!("filtered above"),
         }
         assert!(!app.input_active);
         assert_eq!(app.message_input.lines().join("\n"), "");
@@ -497,54 +494,16 @@ mod tests {
     }
 
     #[test]
-    fn a_permission_request_opens_the_dialog_over_the_current_view() {
+    fn an_ended_session_refuses_the_composer() {
         let mut app = app();
-        reduce(&mut app, Action::OpenSelectedConversation);
-        reduce(&mut app, Action::PermissionRequested(permission_request()));
-        assert_eq!(app.view(), View::PermissionDialog);
-        assert_eq!(app.router.below(), Some(View::Conversation));
-
-        let effects = reduce(&mut app, Action::ResolvePermission { allow: true });
-        match effects.as_slice() {
-            [Effect::RespondPermission { request_id, behavior, .. }] => {
-                assert_eq!(request_id, "req-1");
-                assert_eq!(*behavior, "allow");
-            }
-            _ => panic!("expected a permission response effect"),
-        }
-        assert_eq!(app.view(), View::Conversation);
-    }
-
-    #[test]
-    fn a_queued_permission_keeps_the_dialog_open() {
-        let mut app = app();
-        reduce(&mut app, Action::PermissionRequested(permission_request()));
-        let mut second = permission_request();
-        second.request_id = "req-2".to_owned();
-        reduce(&mut app, Action::PermissionRequested(second));
-        assert_eq!(app.router.depth(), 2);
-
-        reduce(&mut app, Action::ResolvePermission { allow: false });
-        assert_eq!(app.view(), View::PermissionDialog);
-        assert_eq!(app.permission_queue.len(), 1);
-
-        reduce(&mut app, Action::ResolvePermission { allow: false });
-        assert_eq!(app.view(), View::SessionList);
-    }
-
-    #[test]
-    fn a_permission_resolved_elsewhere_closes_the_dialog() {
-        let mut app = app();
-        reduce(&mut app, Action::PermissionRequested(permission_request()));
-        reduce(
-            &mut app,
-            Action::PermissionResolved {
-                session_id: "s-working".to_owned(),
-                request_id: "req-1".to_owned(),
-            },
+        app.sessions[0].end_reason = Some(cctui_proto::models::SessionEndReason::Completed);
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
         );
-        assert!(app.permission_queue.is_empty());
-        assert_eq!(app.view(), View::SessionList);
+        assert!(reduce(&mut app, Action::ActivateInputWith(key)).is_empty());
+        assert!(!app.input_active);
+        assert!(app.toasts.latest().is_some());
     }
 
     #[test]
@@ -556,7 +515,7 @@ mod tests {
                 Action::StreamLine {
                     session_id: "s-a".to_owned(),
                     seq: Some(1),
-                    line: line("same"),
+                    line: Some(line("same")),
                     usage: None,
                 },
             );
@@ -567,7 +526,7 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
                 seq: Some(2),
-                line: line("different"),
+                line: Some(line("different")),
                 usage: None,
             },
         );
@@ -582,10 +541,11 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-a".to_owned(),
                 seq: Some(1),
-                line: line(""),
+                line: None,
                 usage: Some(super::HeartbeatUsage { tokens_in: 7, tokens_out: 8, cost_usd: 9.5 }),
             },
         );
+        assert_eq!(conversation_len(&app, "s-a"), 0, "a heartbeat adds no row");
         assert_eq!(app.sessions[0].token_usage.tokens_in, 7);
         assert_eq!(app.sessions[0].token_usage.tokens_out, 8);
         assert!((app.sessions[0].token_usage.cost_usd - 9.5).abs() < f64::EPSILON);
@@ -600,7 +560,7 @@ mod tests {
             Action::StreamLine {
                 session_id: "s-b".to_owned(),
                 seq: Some(1),
-                line: line("bye"),
+                line: Some(line("bye")),
                 usage: None,
             },
         );
@@ -610,12 +570,15 @@ mod tests {
         assert!(!app.conversations.contains_key("s-b"));
     }
 
+    /// A reconnect always resyncs the whole-state pieces — the session list and
+    /// the server's pending permissions — and the transcript gap only when a
+    /// conversation is open.
     #[test]
     fn reconnecting_resubscribes_and_refetches_only_from_the_conversation() {
         let mut app = app();
         assert!(matches!(
             reduce(&mut app, Action::Reconnected).as_slice(),
-            [Effect::RefreshSessions]
+            [Effect::RefreshSessions, Effect::FetchPendingPermissions]
         ));
 
         reduce(&mut app, Action::OpenSelectedConversation);
@@ -625,7 +588,8 @@ mod tests {
             [
                 Effect::Subscribe { .. },
                 Effect::LoadConversationPage { .. },
-                Effect::RefreshSessions
+                Effect::RefreshSessions,
+                Effect::FetchPendingPermissions
             ]
         ));
     }

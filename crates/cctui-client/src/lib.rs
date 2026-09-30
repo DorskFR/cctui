@@ -13,7 +13,7 @@ pub mod ws;
 use std::sync::Arc;
 
 pub use error::ClientError;
-pub use rest::{Client, ConversationFetch, ConversationRow, Page};
+pub use rest::{Client, ConversationFetch, ConversationRow, Page, PendingPermissionItem};
 pub use ws::state::{Ack, AckHandle, AckRegistry, Health, SubscriptionState, Watchdog, backoff};
 pub use ws::transport::{Connector, Frame, HttpConnector, StreamTransport, Transport};
 pub use ws::{ACK_TIMEOUT, Incoming, WsClient, decode_frame};

@@ -1,21 +1,21 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 53
+assertion_line: 167
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  6 sessions  ● 5 active
  Sessions
-   Needs input
+   ▾ Needs input (2)
 ▸    ● [claude-code] infra (main)  opus  0s  $1.25
      ● [claude-code] wk2 (main)  opus  0s  $1.25
-   Working
+   ▾ Working (1)
      ● [claude-code] cctui (main)  opus  0s  $1.25
-      ↳ ● [claude-code] cctui-sub (main)  opus  0s  $1.25
-   Completed
+     ▾ subagents (1/1 running)
+       ↳ ● [claude-code] cctui-sub (main)  opus  0s  $1.25
+   ▾ Completed (1)
      ○ [claude-code] notes (main)  opus  0s  $1.25
-   Dispatched
+   ▾ Dispatched (1)
      ● [claude-code] worker (main)  opus  0s  $1.25
-
 
 
 
