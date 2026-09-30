@@ -203,6 +203,8 @@ export interface Line {
 	// `file-history-snapshot|delta` provenance for this tool call.
 	fileHistory?: string[];
 	peerFrom?: string;
+	/** Room a peer line arrived through; absent for a direct peer message. */
+	peerRoom?: string;
 	// Uploads this turn carried, parsed from the raw text before the harness's
 	// attachment encodings were stripped out of the displayed prose.
 	uploads?: UserUploadRefs;

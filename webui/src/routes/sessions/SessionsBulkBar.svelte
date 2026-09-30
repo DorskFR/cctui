@@ -1,13 +1,17 @@
 <script lang="ts">
-	import { Button, Text } from '@dorsk/tsumikit';
+	import { Button, Popover, Text } from '@dorsk/tsumikit';
 	import { goto } from '$app/navigation';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
 	import { tilesHref } from '$lib/tilesLink';
 	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
+	import { setSessionRoom, setSessionRoomByName } from '$lib/rooms';
+	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	let { sp }: { sp: SessionsPage } = $props();
+	let making = $state(false);
 
 	// The grid is capped, so a selection over it opens the first `maxTiles` and
 	// says so rather than silently dropping the rest.
@@ -17,6 +21,26 @@
 		if (picked.length > max) toasts.info(m.tiles_over_cap({ max }));
 		sp.list.exitSelect();
 		void goto(tilesHref(picked.slice(0, max)));
+	}
+
+	// One call per session: the room is a field on each, and `setSessionRoomByName`
+	// creates-or-reuses so the whole selection lands in one room either way.
+	async function moveToRoom(pick: { id: string } | { name: string }) {
+		const picked = [...sp.list.selected];
+		if (picked.length === 0) return;
+		making = true;
+		try {
+			for (const id of picked) {
+				if ('id' in pick) await setSessionRoom(id, pick.id);
+				else await setSessionRoomByName(id, pick.name);
+			}
+			sp.list.exitSelect();
+			sp.refreshTick++;
+		} catch (e) {
+			toasts.error(errMessage(e));
+		} finally {
+			making = false;
+		}
 	}
 </script>
 
@@ -31,6 +55,12 @@
 	>
 		{m.tiles_open_count({ count: sp.list.selected.size || '' })}
 	</Button>
+	<Popover label={m.rooms_move_count({ count: sp.list.selected.size || '' })} placement="bottom-end">
+		{#snippet trigger()}
+			<span>{m.rooms_move_count({ count: sp.list.selected.size || '' })}</span>
+		{/snippet}
+		<RoomMenu busy={making} onpick={moveToRoom} />
+	</Popover>
 	<Button
 		variant="danger"
 		loading={sp.archiving}

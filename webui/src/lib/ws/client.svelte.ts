@@ -188,6 +188,11 @@ export class WsClient {
 				else this.markListDirty();
 				break;
 			}
+			// A session moved in or out of a room: the list carries the room as a
+			// field, so regrouping is just a refetch.
+			case 'room_members':
+				this.markListDirty();
+				break;
 			case 'machine_resources': {
 				const { type: _, ...p } = msg;
 				for (const cb of this.machineResourcesCbs) cb(p);

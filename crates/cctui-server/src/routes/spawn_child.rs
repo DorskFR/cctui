@@ -552,23 +552,24 @@ pub async fn message_child(
     if child.is_empty() {
         return Err(deny(StatusCode::BAD_REQUEST, "session_id is required"));
     }
-    let adapter_id = resolve_child_adapter(&state.pool, caller, &parent, child).await?;
-    let frame = DaemonFrameDown::Command {
-        adapter_id,
-        command: Box::new(AdapterCommand::SendMessage {
-            local_id: child.to_owned(),
-            text: req.prompt.clone(),
-        }),
-    };
-    state.bus.command_daemon_for_session(parent.machine_uuid, child, frame).await.map_err(
-        |err| deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}")),
-    )?;
+    resolve_child_adapter(&state.pool, caller, &parent, child).await?;
+    crate::bus::dispatch(
+        &state,
+        child,
+        AdapterCommand::SendMessage { local_id: child.to_owned(), text: req.prompt.clone() },
+    )
+    .await
+    .map_err(|err| {
+        deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
+    })?;
     tracing::info!(parent = %session_id, %child, "CctuiAgent follow-up relayed");
     Ok(Json(serde_json::json!({})))
 }
 
 /// The follow-up target's adapter, only if `child` really is `parent`'s child
-/// on `parent`'s machine and owned by `caller`. Everything else refuses.
+/// owned by `caller`. The child's machine is NOT required to be the parent's:
+/// delivery goes through [`crate::bus::dispatch`], which resolves the child's
+/// own machine and routes across replicas.
 async fn resolve_child_adapter(
     pool: &sqlx::PgPool,
     caller: Uuid,
@@ -588,8 +589,8 @@ async fn resolve_child_adapter(
     if child_parent.as_deref() != Some(parent.session_id.as_str()) {
         return Err(deny(StatusCode::FORBIDDEN, "session is not a child of this session"));
     }
-    if child_machine != Some(parent.machine_uuid) {
-        return Err(deny(StatusCode::CONFLICT, "child session is not on this machine"));
+    if child_machine.is_none() {
+        return Err(deny(StatusCode::CONFLICT, "child session has no machine"));
     }
     adapter_id
         .filter(|a| !a.is_empty())
@@ -746,11 +747,11 @@ mod tests {
         ));
     }
 
-    /// DB-gated: the follow-up target must be the caller's own child on the
-    /// same machine — anything else refuses, or any session could inject
-    /// prompts into any other.
+    /// DB-gated: the follow-up target must be the caller's own child — anything
+    /// else refuses, or any session could inject prompts into any other. Its
+    /// machine is free: cross-machine delivery is the bus's job.
     #[tokio::test]
-    async fn message_child_only_reaches_own_children_on_the_same_machine() {
+    async fn message_child_only_reaches_own_children() {
         let Some(url) =
             crate::routes::gateway::test_db_url("message_child_only_reaches_own_children")
         else {
@@ -825,9 +826,9 @@ mod tests {
             "a non-child of the caller must refuse"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, uid, &parent, &elsewhere_id).await.unwrap_err().status(),
-            StatusCode::CONFLICT,
-            "a child on another machine must refuse"
+            resolve_child_adapter(&pool, uid, &parent, &elsewhere_id).await.unwrap(),
+            "claude-code",
+            "a child on another machine is reachable: the bus routes to ITS machine"
         );
         assert_eq!(
             resolve_child_adapter(&pool, stranger, &parent, &child_id).await.unwrap_err().status(),

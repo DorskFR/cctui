@@ -16,7 +16,11 @@ export type SessionListItem = { id: string, parent_id: string | null, machine_id
 /**
  * 0–359. `None` = derived from the machine name.
  */
-machine_hue?: number | null, machine_kind?: string | null, last_message_text?: string | null, last_message_at?: string | null, registered_at?: string | null, name?: string | null, model?: string | null, effort?: string | null, permission_mode?: string | null, auto_approve: boolean, match_snippet?: string | null, match_seq?: number | null, last_activity_at?: string | null, cache_cold: boolean, estimated_burst_tokens?: number | null, hibernated: boolean, pinned: boolean, labels: Array<Label>, last_heartbeat?: string | null, account_name?: string | null, 
+machine_hue?: number | null, machine_kind?: string | null, last_message_text?: string | null, last_message_at?: string | null, registered_at?: string | null, name?: string | null, model?: string | null, effort?: string | null, permission_mode?: string | null, auto_approve: boolean, match_snippet?: string | null, match_seq?: number | null, last_activity_at?: string | null, cache_cold: boolean, estimated_burst_tokens?: number | null, hibernated: boolean, pinned: boolean, labels: Array<Label>, 
+/**
+ * The room this session is in, for grouping and the card badge.
+ */
+room_id?: string | null, room_name?: string | null, last_heartbeat?: string | null, account_name?: string | null, 
 /**
  * Capped at 99; populated by the live list only.
  */

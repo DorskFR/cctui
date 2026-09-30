@@ -16,6 +16,7 @@ mod previews;
 mod profiles;
 mod prompts;
 mod provider_status;
+mod rooms;
 mod session_bulk;
 mod session_control;
 mod session_lifecycle;
@@ -66,6 +67,7 @@ pub fn register(r: Routes) -> Routes {
     let r = accounts::register(r);
     let r = profiles::register(r);
     let r = account_usage::register(r);
+    let r = rooms::register(r);
     let r = shares::register(r);
     let r = machines::register(r);
     let r = me::register(r);

@@ -24,10 +24,42 @@ use serde_json::{Value, json};
 
 pub const TOOL_NAME: &str = "CctuiAgent";
 pub const USAGE_TOOL_NAME: &str = "CctuiUsage";
+pub const PEERS_TOOL_NAME: &str = "CctuiPeers";
+pub const SEND_TOOL_NAME: &str = "CctuiSend";
+pub const HISTORY_TOOL_NAME: &str = "CctuiHistory";
+pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
 
 /// A limits lookup is one cached server read; it must never hold a turn open
-/// the way a followed child does.
+/// the way a followed child does. The peer tools are the same shape: one
+/// server round-trip, no child to wait for.
 const USAGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Socket `kind` of every tool that is a single server round-trip.
+const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
+    (USAGE_TOOL_NAME, "usage"),
+    (PEERS_TOOL_NAME, "peers"),
+    (SEND_TOOL_NAME, "send_peer"),
+    (HISTORY_TOOL_NAME, "peer_history"),
+    (ROOM_TOOL_NAME, "room"),
+];
+
+/// The socket `kind` a tool call becomes. `spawn_agent` is the only kind that
+/// follows a child; every other takes [`USAGE_TIMEOUT`].
+#[must_use]
+pub fn tool_kind(name: &str) -> Option<&'static str> {
+    if name == TOOL_NAME {
+        return Some("spawn_agent");
+    }
+    ROUND_TRIP_KINDS.iter().find(|(tool, _)| *tool == name).map(|(_, kind)| *kind)
+}
+
+/// The tool a socket `kind` came from, for naming it in an error.
+fn tool_of_kind(kind: &str) -> &'static str {
+    ROUND_TRIP_KINDS
+        .iter()
+        .find(|(_, k)| *k == kind)
+        .map_or(TOOL_NAME, |(tool, _)| *tool)
+}
 
 /// MCP protocol revision this server implements.
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -146,6 +178,168 @@ pub fn usage_tool_schema() -> Value {
     })
 }
 
+/// `CctuiPeers`: no arguments — the roster is whatever THIS session may address,
+/// and the session id is already baked into the relay's argv.
+#[must_use]
+pub fn peers_tool_schema() -> Value {
+    json!({
+        "name": PEERS_TOOL_NAME,
+        "description": "List the cctui sessions this session is allowed to talk to: its parent, \
+    its children, its siblings, and any session explicitly shared with it — across machines and \
+    across harnesses (claude_code, codex, opencode). Each entry gives session_id, name, adapter, \
+    machine, state (live / ended / archived) and the relation. Use it before CctuiSend or \
+    CctuiHistory: an id not on this list is refused.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false,
+        },
+    })
+}
+
+/// `CctuiSend`: one message into a peer's turn queue.
+#[must_use]
+pub fn send_tool_schema() -> Value {
+    json!({
+        "name": SEND_TOOL_NAME,
+        "description": "Send a message to another cctui session, on any machine and under any \
+    harness. It arrives as a turn in that session, labelled as coming from this one, and appears \
+    in both transcripts as a peer message. This is not a request/response call: the peer is a \
+    session with its own work, not a subagent — it answers when and if it chooses, by calling \
+    CctuiSend back at you. Only sessions CctuiPeers lists may be addressed; an ended or archived \
+    peer cannot receive anything (read it with CctuiHistory instead). Rate-limited to 10 messages \
+    a minute, and capped in size — send a pointer (a path, a session id), not a payload.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The peer to send to, as reported by CctuiPeers.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "What to say. Write it for another agent: state what you need \
+    and what you already know, not a greeting.",
+                },
+            },
+            "required": ["session_id", "message"],
+            "additionalProperties": false,
+        },
+    })
+}
+
+/// `CctuiHistory`: a bounded page of a peer's transcript. Reads Postgres, so it
+/// answers for an archived session and for one whose machine is long gone.
+#[must_use]
+pub fn history_tool_schema() -> Value {
+    json!({
+        "name": HISTORY_TOOL_NAME,
+        "description": "Read the conversation of another cctui session — what it was asked and \
+    what it did. Works for a live session, an ended one, and an archived one whose machine no \
+    longer exists: cctui keeps the transcript. Same addressing rules as CctuiSend (see \
+    CctuiPeers). Returns compact markdown by default, newest events first-priority within a size \
+    budget; page backwards with `before` using the oldest seq the previous call reported. The \
+    human running the target session sees that you consulted it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The peer whose history to read, as reported by CctuiPeers.",
+                },
+                "before": {
+                    "type": "integer",
+                    "description": "Return events older than this seq — the `oldest seq` of the \
+    previous page. This is how you page back through a long conversation.",
+                },
+                "after": {
+                    "type": "integer",
+                    "description": "Return events newer than this seq, oldest-first: a delta \
+    catch-up on a session you already read.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Events to read (default 200, max 1000). The reply is also \
+    bounded by a byte budget, so a big transcript comes back truncated with a cursor.",
+                },
+                "roles": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Keep only these roles, e.g. [\"user\", \"assistant\"] for the \
+    conversation without tool noise. Known roles: user, assistant, peer, thinking, tool, result, \
+    mcp, error, summary, compact, system. Omit for everything.",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "json"],
+                    "description": "`markdown` (default) is what you want to read; `json` returns \
+    the raw normalized events.",
+                },
+            },
+            "required": ["session_id"],
+            "additionalProperties": false,
+        },
+    })
+}
+
+/// `CctuiRoom`: post to, read, or inspect a room this session belongs to.
+#[must_use]
+pub fn room_tool_schema() -> Value {
+    json!({
+        "name": ROOM_TOOL_NAME,
+        "description": "Broadcast to your cctui ROOM: the named group of sessions a human put \
+    you in. You cannot join or leave one yourself. `post` delivers your message to every other \
+    LIVE session in the room as a turn, and reports per-session whether it landed — a session \
+    that is archived, ended or whose machine is offline is skipped and named, not queued, so \
+    re-post later if it matters. IMPORTANT: only an explicit post reaches the room — your ordinary \
+    replies stay in your own conversation, so working normally never echoes you into the room. \
+    Messages you receive wrapped in <cctui-room> came from another session in the room, not from \
+    the human who runs you. `peek` reads the room's past messages, `members` lists who is in it. \
+    Being in a room also lets you use CctuiPeers, CctuiSend and CctuiHistory on its sessions. Omit \
+    room_id: you are in at most one room. A post counts against the same rate limit as CctuiSend \
+    and is size-capped — post a pointer, not a payload.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["post", "peek", "members"],
+                    "description": "`post` to say something to the room, `peek` to read the \
+    timeline, `members` to see who is in it.",
+                },
+                "room_id": {
+                    "type": "string",
+                    "description": "Rarely needed: a session is in at most one room, which is \
+    used when this is omitted.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "What to post. Required for `post`, ignored otherwise. Write \
+    it for the other agents and the human reading along.",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": false,
+        },
+    })
+}
+
+/// Every tool this relay advertises, in a stable order. One list, one relay:
+/// registering it for codex or opencode (`adapters::agent_mcp`) offers exactly
+/// the same surface as claude_code's `--mcp-config`.
+#[must_use]
+pub fn tool_schemas() -> Vec<Value> {
+    vec![
+        tool_schema(),
+        usage_tool_schema(),
+        peers_tool_schema(),
+        send_tool_schema(),
+        history_tool_schema(),
+        room_tool_schema(),
+    ]
+}
+
 /// Clamp a caller-supplied timeout into the supported range.
 #[must_use]
 pub fn resolve_timeout(requested: Option<u64>) -> Duration {
@@ -232,14 +426,12 @@ fn handle_request(session_id: &str, sock: &Path, req: &Value, outbox: &Outbox) -
                 }),
             ))
         }
-        "tools/list" => Some(reply(id, &json!({ "tools": [tool_schema(), usage_tool_schema()] }))),
+        "tools/list" => Some(reply(id, &json!({ "tools": tool_schemas() }))),
         "tools/call" => {
             let params = req.get("params");
             let name = params.and_then(|p| p.get("name")).and_then(Value::as_str).unwrap_or("");
-            let kind = match name {
-                TOOL_NAME => "spawn_agent",
-                USAGE_TOOL_NAME => "usage",
-                other => return Some(tool_result(id, &format!("unknown tool {other:?}"), true)),
+            let Some(kind) = tool_kind(name) else {
+                return Some(tool_result(id, &format!("unknown tool {name:?}"), true));
             };
             let args =
                 params.and_then(|p| p.get("arguments")).cloned().unwrap_or_else(|| json!({}));
@@ -271,11 +463,11 @@ fn call_daemon(
     token: Option<&Value>,
     outbox: &Outbox,
 ) -> (String, bool) {
-    let tool = if kind == "usage" { USAGE_TOOL_NAME } else { TOOL_NAME };
-    let timeout = if kind == "usage" {
-        USAGE_TIMEOUT
-    } else {
+    let tool = tool_of_kind(kind);
+    let timeout = if kind == "spawn_agent" {
         resolve_timeout(args.get("timeout_secs").and_then(Value::as_u64))
+    } else {
+        USAGE_TIMEOUT
     };
     let request = json!({
         "kind": kind,
@@ -438,12 +630,167 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_the_agent_and_usage_tools() {
+    fn tools_list_returns_the_agent_usage_and_peer_tools() {
         let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
         let resp = handle("s1", Path::new("/tmp/x.sock"), &req).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec![TOOL_NAME, USAGE_TOOL_NAME]);
+        assert_eq!(
+            names,
+            vec![
+                TOOL_NAME,
+                USAGE_TOOL_NAME,
+                PEERS_TOOL_NAME,
+                SEND_TOOL_NAME,
+                HISTORY_TOOL_NAME,
+                ROOM_TOOL_NAME,
+            ]
+        );
+    }
+
+    /// A room tool that let a model pick its own action strings would fail
+    /// server-side; the enum is what keeps the three actions honest.
+    #[test]
+    fn the_room_tool_enumerates_its_actions_and_states_the_loop_guard() {
+        let schema = room_tool_schema();
+        assert_eq!(schema["inputSchema"]["required"], json!(["action"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["action"]["enum"], json!(["post", "peek", "members"]));
+        for key in ["action", "room_id", "message"] {
+            assert!(props.contains_key(key), "{key} missing from the schema");
+        }
+        let desc = schema["description"].as_str().unwrap();
+        assert!(
+            desc.contains("only an explicit post reaches the room"),
+            "the loop guard must be in the tool description too: {desc}"
+        );
+        assert!(desc.contains("<cctui-room>"), "{desc}");
+        assert!(desc.contains("at most one room"), "{desc}");
+        assert!(
+            desc.contains("skipped and named, not queued"),
+            "a broadcast is best effort; the model must not assume delivery: {desc}"
+        );
+        assert_eq!(tool_kind(ROOM_TOOL_NAME), Some("room"));
+    }
+
+    /// Every advertised tool must map onto a socket kind, or a model would call
+    /// something the daemon answers "unsupported request kind" to.
+    #[test]
+    fn every_advertised_tool_has_a_socket_kind_and_a_closed_schema() {
+        for schema in tool_schemas() {
+            let name = schema["name"].as_str().unwrap();
+            let kind = tool_kind(name).unwrap_or_else(|| panic!("{name} has no socket kind"));
+            assert!(!kind.is_empty());
+            assert_eq!(schema["inputSchema"]["additionalProperties"], json!(false), "{name}");
+            assert!(schema["inputSchema"]["required"].is_array(), "{name}");
+            assert!(
+                schema["description"].as_str().is_some_and(|d| d.len() > 60),
+                "{name} needs a description a model can act on"
+            );
+        }
+        assert!(tool_kind("NoSuchTool").is_none());
+    }
+
+    #[test]
+    fn the_peer_tool_kinds_are_the_ones_the_daemon_parses() {
+        assert_eq!(tool_kind(TOOL_NAME), Some("spawn_agent"));
+        assert_eq!(tool_kind(USAGE_TOOL_NAME), Some("usage"));
+        assert_eq!(tool_kind(PEERS_TOOL_NAME), Some("peers"));
+        assert_eq!(tool_kind(SEND_TOOL_NAME), Some("send_peer"));
+        assert_eq!(tool_kind(HISTORY_TOOL_NAME), Some("peer_history"));
+    }
+
+    #[test]
+    fn the_roster_tool_takes_no_arguments_at_all() {
+        let schema = peers_tool_schema();
+        assert_eq!(schema["inputSchema"]["required"], json!([]));
+        assert!(schema["inputSchema"]["properties"].as_object().unwrap().is_empty());
+        let desc = schema["description"].as_str().unwrap();
+        for word in ["parent", "children", "siblings", "shared", "archived"] {
+            assert!(desc.contains(word), "{word} missing: {desc}");
+        }
+    }
+
+    /// The send tool must say it is not request/response: a model that treats a
+    /// peer like a subagent blocks waiting for an answer that never comes.
+    #[test]
+    fn the_send_tool_requires_a_target_and_a_message_and_warns_it_is_one_way() {
+        let schema = send_tool_schema();
+        assert_eq!(schema["inputSchema"]["required"], json!(["session_id", "message"]));
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("not a request/response"), "{desc}");
+        assert!(desc.contains("CctuiPeers"), "{desc}");
+        assert!(desc.contains("archived"), "{desc}");
+    }
+
+    #[test]
+    fn the_history_tool_documents_its_cursors_roles_and_formats() {
+        let schema = history_tool_schema();
+        assert_eq!(schema["inputSchema"]["required"], json!(["session_id"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        for key in ["session_id", "before", "after", "limit", "roles", "format"] {
+            assert!(props.contains_key(key), "{key} missing from the schema");
+        }
+        assert_eq!(props["roles"]["type"], "array");
+        assert_eq!(props["format"]["enum"], json!(["markdown", "json"]));
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("archived"), "{desc}");
+        assert!(desc.contains("no longer exists"), "{desc}");
+    }
+
+    #[test]
+    fn a_peer_call_reaches_the_daemon_under_its_own_kind() {
+        for (tool, kind, args) in [
+            (PEERS_TOOL_NAME, "peers", json!({})),
+            (SEND_TOOL_NAME, "send_peer", json!({ "session_id": "t", "message": "hi" })),
+            (HISTORY_TOOL_NAME, "peer_history", json!({ "session_id": "t", "limit": 10 })),
+            (ROOM_TOOL_NAME, "room", json!({ "action": "post", "message": "hi" })),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let sock_path = dir.path().join("agent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+            let expect_kind = kind.to_owned();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+                let req: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(req["kind"], json!(expect_kind));
+                assert_eq!(req["session_id"], json!("s1"));
+                assert_eq!(
+                    req["timeout_secs"],
+                    json!(USAGE_TIMEOUT.as_secs()),
+                    "a peer call is a round-trip, not a child follow",
+                );
+                writeln!(stream, "{}", json!({ "ok": true, "result": "fine" })).unwrap();
+            });
+            let (text, is_error) =
+                call_daemon("s1", &sock_path, kind, &args, None, &Outbox::new());
+            server.join().unwrap();
+            assert!(!is_error, "{tool}: {text}");
+            assert_eq!(text, "fine");
+        }
+    }
+
+    #[test]
+    fn a_dead_socket_names_the_peer_tool_that_failed() {
+        for (tool, kind) in [
+            (PEERS_TOOL_NAME, "peers"),
+            (SEND_TOOL_NAME, "send_peer"),
+            (HISTORY_TOOL_NAME, "peer_history"),
+            (ROOM_TOOL_NAME, "room"),
+        ] {
+            let (text, is_error) = call_daemon(
+                "s1",
+                Path::new("/nonexistent/cctui-agent.sock"),
+                kind,
+                &json!({}),
+                None,
+                &Outbox::new(),
+            );
+            assert!(is_error);
+            assert!(text.starts_with(tool), "{text}");
+        }
     }
 
     #[test]

@@ -145,6 +145,8 @@ pub struct DbSession {
     resolved_machine_name: Option<String>,
     resolved_machine_hue: Option<i16>,
     resolved_machine_kind: Option<String>,
+    room_id: Option<uuid::Uuid>,
+    room_name: Option<String>,
 }
 
 pub fn derive_status(registered_at: DateTime<Utc>, last_heartbeat: DateTime<Utc>) -> SessionStatus {
@@ -355,11 +357,15 @@ async fn fetch_listed_rows(
     let cols = "s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
                 s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
                 COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind";
+                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind, \
+                s.room_id, rm.name AS room_name";
+    // Archived rooms are joined too: archiving a room archives its sessions, and
+    // they keep their room so the archived view still groups by it.
     let non_archived_query = format!(
         "SELECT {cols} \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
+         LEFT JOIN rooms rm ON rm.id = s.room_id \
          WHERE {} \
          AND ($1::uuid IS NULL OR m.user_id = $1) \
          ORDER BY s.registered_at DESC",
@@ -374,6 +380,7 @@ async fn fetch_listed_rows(
             "SELECT {cols} \
              FROM sessions s \
              LEFT JOIN machines m ON m.id = s.machine_uuid \
+             LEFT JOIN rooms rm ON rm.id = s.room_id \
              WHERE s.status = 'archived' \
              AND ($1::uuid IS NULL OR m.user_id = $1) \
              ORDER BY s.registered_at DESC LIMIT 25",
@@ -433,6 +440,8 @@ fn skeleton_list_item(
         hibernated: false,
         pinned: false,
         labels: Vec::new(),
+        room_id: None,
+        room_name: None,
         last_heartbeat: Some(last_heartbeat),
         account_name: None,
         unread_count: 0,
@@ -497,6 +506,8 @@ fn db_list_item(row: DbSession) -> SessionListItem {
     item.machine_name = row.resolved_machine_name;
     item.machine_hue = row.resolved_machine_hue;
     item.machine_kind = row.resolved_machine_kind;
+    item.room_id = row.room_id.map(|id| id.to_string());
+    item.room_name = row.room_name;
     item
 }
 
@@ -1064,9 +1075,11 @@ pub struct SearchParams {
 const SEARCH_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
             s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
             COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-            m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
+            m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind, \
+            s.room_id, rm.name AS room_name \
      FROM sessions s \
-     LEFT JOIN machines m ON m.id = s.machine_uuid";
+     LEFT JOIN machines m ON m.id = s.machine_uuid \
+     LEFT JOIN rooms rm ON rm.id = s.room_id";
 
 const SEARCH_DEFAULT_LIMIT: i64 = 100;
 const SEARCH_MAX_LIMIT: i64 = 500;
@@ -1585,6 +1598,8 @@ pub async fn get_session(
                 hibernated: false,
                 pinned: false,
                 labels: Vec::new(),
+                room_id: None,
+                room_name: None,
                 last_heartbeat: Some(handle.session.last_heartbeat),
                 account_name: None,
                 unread_count: 0,
@@ -1652,6 +1667,8 @@ pub async fn get_session(
         hibernated: false,
         pinned: false,
         labels: Vec::new(),
+        room_id: row.room_id.map(|id| id.to_string()),
+        room_name: row.room_name,
         last_heartbeat: Some(row.last_heartbeat),
         account_name: None,
         unread_count: 0,
@@ -1745,7 +1762,7 @@ type ConversationRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<uu
 
 /// `(id, client payload, created_at, turn_id)`: a stored row the client can
 /// render, in the query's own order (newest-first for `Desc`).
-type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
+pub(crate) type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
 
 /// Reads rows until `limit` of them survive [`crate::normalize::for_client`],
 /// or the table is exhausted in the paging direction. Some stored rows carry
@@ -1758,7 +1775,7 @@ type RenderableRow = (i64, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>)
 /// the causal `seq` and a strict total order, so a late-flushed
 /// `AskUserQuestion` card+preamble keep their insert position even when their
 /// `created_at` ties or lands after the user's answer.
-async fn fetch_renderable_rows(
+pub(crate) async fn renderable_rows(
     pool: &sqlx::PgPool,
     session_id: &str,
     adapter_id: &str,
@@ -1903,7 +1920,7 @@ pub async fn get_conversation(
         crate::store::sessions::adapter_id(&state.pool, &session_id).await?;
 
     let adapter_id = adapter.as_deref().unwrap_or("claude-code");
-    let mut rows = fetch_renderable_rows(&state.pool, &session_id, adapter_id, &params).await?;
+    let mut rows = renderable_rows(&state.pool, &session_id, adapter_id, &params).await?;
     if params.order == ConversationOrder::Desc {
         rows.reverse();
     }
@@ -3369,7 +3386,7 @@ mod tests {
             let pool = pool.clone();
             let sid = sid.clone();
             async move {
-                super::fetch_renderable_rows(&pool, &sid, "claude-code", &params).await.unwrap()
+                super::renderable_rows(&pool, &sid, "claude-code", &params).await.unwrap()
             }
         };
 
@@ -3385,7 +3402,7 @@ mod tests {
         let head = page(2, None, super::ConversationOrder::Asc).await;
         assert_eq!(contents(&head), ["one", "two"]);
 
-        let all = super::fetch_renderable_rows(
+        let all = super::renderable_rows(
             &pool,
             &sid,
             "claude-code",

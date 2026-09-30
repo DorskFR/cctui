@@ -143,6 +143,25 @@ pub struct SpawnChildRequest {
     pub name: Option<String>,
 }
 
+/// Body for `POST /api/v1/daemon/sessions/{id}/message-peer`: `session_id` is
+/// the TARGET, the caller being the path segment.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PeerMessageRequest {
+    pub session_id: String,
+    pub message: String,
+}
+
+/// Body for `POST /api/v1/daemon/sessions/{id}/room`: the `CctuiRoom` call.
+/// `room_id` absent means "my only room"; `message` is required only for `post`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RoomToolRequest {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// Body for `POST /api/v1/daemon/sessions/{id}/message-child`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageChildRequest {
@@ -302,6 +321,11 @@ pub struct SessionListItem {
     pub pinned: bool,
     #[serde(default)]
     pub labels: Vec<Label>,
+    /// The room this session is in, for grouping and the card badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

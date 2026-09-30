@@ -726,6 +726,8 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         hibernated: false,
         pinned: false,
         labels: Vec::new(),
+        room_id: None,
+        room_name: None,
         last_heartbeat: None,
         pr_links: Vec::new(),
         end_reason: None,

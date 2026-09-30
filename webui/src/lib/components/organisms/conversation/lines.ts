@@ -10,6 +10,7 @@ import {
 	IMAGE_TOKEN_RUN_RE,
 	isSyntheticImageNotice,
 	parsePeerMessage,
+	parseRoomJoined,
 	parsePlan,
 	parseTodos,
 	stampTurns,
@@ -112,8 +113,15 @@ function userOrSystem(
 			ts,
 			html: ctx.renderMarkdown(peer.body),
 			text: peer.body,
-			peerFrom: peer.from ?? undefined
+			peerFrom: peer.from ?? undefined,
+			peerRoom: peer.room
 		};
+	}
+	const joined = parseRoomJoined(content);
+	if (joined) {
+		if (!ctx.visible('marker')) return null;
+		const label = m.rooms_joined_marker();
+		return { role: 'marker', ts, text: label, markerTexts: [label] };
 	}
 	if (looksKeepaliveTick(content)) {
 		if (!ctx.visible('marker')) return null;

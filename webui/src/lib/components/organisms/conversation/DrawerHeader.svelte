@@ -12,12 +12,13 @@
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
+	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import IssueLinkModal from '$lib/components/molecules/IssueLinkModal.svelte';
 	import { readPluginSlot } from '$lib/plugins/sessionSlots';
 	import { YOUTRACK_PLUGIN_ID, detectSessionIssueId } from '$lib/plugins/issueLink';
 	import { useSessionActions } from '$lib/queries';
-	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
+	import { Icon, IconButton, Input, Menu, Popover, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import type { ConversationChrome } from './chrome';
 	import { m } from '$lib/paraglide/messages';
@@ -58,7 +59,10 @@
 		onAttachLabel,
 		onDetachLabel,
 		onUpdateLabel,
-		onDeleteLabel
+		onDeleteLabel,
+		// Room = a field on the session: pick one (by id or by name) or clear it.
+		onsetroom,
+		onclearroom
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -101,6 +105,8 @@
 		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
+		onsetroom?: (sessionId: string, pick: { id: string } | { name: string }) => void;
+		onclearroom?: (sessionId: string) => void;
 	} = $props();
 
 	// Label picker is interactive only when an attach handler is wired in.
@@ -297,6 +303,22 @@
 						onDelete={onDeleteLabel}
 					/>
 				{/if}
+				<Popover
+					label={m.rooms_menu_label()}
+					placement="bottom-start"
+					variant="ghost"
+					box="xs"
+					hitArea="compact"
+				>
+					{#snippet trigger()}<span class="roomtrigger" title={session.room_name ?? m.rooms_menu_label()}
+							>◎{session.room_name ? ` ${session.room_name}` : ''}</span
+						>{/snippet}
+					<RoomMenu
+						current={session.room_id ?? null}
+						onpick={(pick) => onsetroom?.(session.id, pick)}
+						onclear={session.room_id ? () => onclearroom?.(session.id) : undefined}
+					/>
+				</Popover>
 			{/if}
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
