@@ -1,6 +1,7 @@
 import { createQuery } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+import { setDomainMeta } from "$lib/domainMeta.svelte";
 
 export const useMe = () =>
   createQuery(() => ({
@@ -49,4 +50,18 @@ export const useSelfUpdateRun = (enabled: () => boolean) =>
     queryFn: endpoints.selfUpdateStatus,
     enabled: enabled(),
     refetchInterval: (query) => (query.state.data?.done ? false : 3_000),
+  }));
+
+/** The static domain tables (providers, probes, end tones, permission modes).
+ *  Constant per server version, so cache it for the whole session; the result
+ *  also feeds the synchronous lookups in `$lib/domainMeta`. */
+export const useDomainMeta = () =>
+  createQuery(() => ({
+    queryKey: qk.domainMeta,
+    queryFn: async () => {
+      const meta = await endpoints.domainMeta();
+      setDomainMeta(meta);
+      return meta;
+    },
+    staleTime: Infinity,
   }));

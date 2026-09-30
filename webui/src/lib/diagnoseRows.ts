@@ -3,7 +3,7 @@ import type { SessionDiagnoseResponse } from '@bindings/SessionDiagnoseResponse'
 import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 import type { OpenCodeDiagnose } from '@bindings/OpenCodeDiagnose';
 import { sessionEnd } from '$lib/sessionEnd';
-import { fmtAge, openCodeSilenceReasons, silenceReasons } from '$lib/diagnoseSilence';
+import { fmtAge, silenceMessages } from '$lib/diagnoseSilence';
 import { m } from '$lib/paraglide/messages';
 
 export type DiagnoseStatus = 'ok' | 'warn' | 'error';
@@ -167,7 +167,7 @@ function transportRows(session: SessionListItem | null, report: SessionDiagnoseR
 	if (!daemon) return rows;
 	const oc = daemon.opencode ?? null;
 	if (oc) {
-		const reasons = openCodeSilenceReasons(oc, daemon.generated_at_ms);
+		const reasons = silenceMessages(report?.silence ?? [], 'opencode');
 		rows.push({
 			block: 'transport',
 			label: m.diagnose_opencode_silence(),
@@ -183,7 +183,7 @@ function transportRows(session: SessionListItem | null, report: SessionDiagnoseR
 		return rows;
 	}
 	if (cx) {
-		const reasons = silenceReasons(cx, daemon.generated_at_ms);
+		const reasons = silenceMessages(report?.silence ?? [], 'codex');
 		rows.push({
 			block: 'transport',
 			label: m.diagnose_codex_silence(),

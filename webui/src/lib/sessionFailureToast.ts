@@ -1,5 +1,5 @@
 import type { SessionEndedEvent } from '$lib/ws.svelte';
-import { FAILED_START_REASONS, endReasonLabel } from '$lib/sessionEnd';
+import { endReasonLabel, isFailedStart } from '$lib/sessionEnd';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
 
@@ -11,7 +11,7 @@ export function sessionHref(sessionId: string): string {
 
 /** Error toast for a session that failed to start or crashed; other ends are silent. */
 export function sessionFailureToast(ev: SessionEndedEvent, navigate: (href: string) => void): boolean {
-	if (ev.reason !== 'crashed' && !FAILED_START_REASONS.has(ev.reason)) return false;
+	if (ev.reason !== 'crashed' && !isFailedStart(ev.reason)) return false;
 	const raw = ev.detail?.trim() || m.spawn_error_unknown();
 	const detail = raw.length > TOAST_DETAIL_MAX ? `${raw.slice(0, TOAST_DETAIL_MAX - 1)}…` : raw;
 	toasts.error(m.sessions_end_failed_toast({ label: endReasonLabel(ev.reason), detail }), undefined, {
