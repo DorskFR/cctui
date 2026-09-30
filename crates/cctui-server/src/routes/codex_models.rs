@@ -10,7 +10,7 @@
 //!
 //! `GET /machines/{machine_id}/codex-models` returns one machine's catalog
 //! (empty `models` when none is known, and the webui falls back to its static
-//! offline list). `GET /models/codex` merges every catalog for pickers with no
+//! offline list). `GET /models/codex/catalog` merges every catalog for pickers with no
 //! machine in hand (dispatch, fork): a union by model id, account catalogs
 //! first, then the newest machine report.
 //! `POST /machines/{machine_id}/codex-models/refresh` re-reads every `OpenAI`
