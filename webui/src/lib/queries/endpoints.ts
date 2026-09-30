@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { path } from "@bindings/routes";
 import type { PluginInfo } from "../plugins/types";
 import type { AdminPluginInfo } from "@bindings/AdminPluginInfo";
 import type { PluginEnableRequest } from "@bindings/PluginEnableRequest";
@@ -113,7 +114,7 @@ import type {
 
 /** Raw typed fetchers — also usable outside of components. */
 export const endpoints = {
-  version: () => api.get<VersionInfo>("/version"),
+  version: () => api.get<VersionInfo>(path("get_version")),
   /** Probe upstream for a newer release now rather than waiting out the
    *  server's 6h background interval; answers the same shape as `/version`. */
   refreshVersion: () => api.post<VersionInfo>("/version/refresh"),
@@ -169,9 +170,9 @@ export const endpoints = {
     } satisfies HarnessPolicyRequest),
   /** Which optional integrations this server has, and whether each is live.
    *  Drives capability-gated UI: the lazy `/github` route + nav. */
-  capabilities: () => api.get<CapabilitiesResponse>("/capabilities"),
+  capabilities: () => api.get<CapabilitiesResponse>(path("get_capabilities")),
   /** Who the stored bearer token resolves to. */
-  me: () => api.get<MeResponse>("/me"),
+  me: () => api.get<MeResponse>(path("get_me")),
   /** Passkeys enrolled on the caller's account. */
   passkeys: () => api.get<PasskeyListResponse>("/passkeys"),
   /** Begin enrolling a passkey; the options go to `navigator.credentials.create()`. */
@@ -204,16 +205,17 @@ export const endpoints = {
   labels: () => api.get<LabelListResponse>("/labels"),
   /** Saved messages, newest first. `q` filters over title/body/note. */
   bookmarks: (q?: string, limit?: number, before?: string) =>
-    api.get<Bookmark[]>("/bookmarks", {
+    api.get<Bookmark[]>(path("get_bookmarks"), {
       q: q && q.trim() !== "" ? q : undefined,
       limit,
       before,
     }),
   createBookmark: (body: CreateBookmark) =>
-    api.post<Bookmark>("/bookmarks", body),
+    api.post<Bookmark>(path("post_bookmarks"), body),
   updateBookmark: (id: string, body: UpdateBookmark) =>
-    api.patch<Bookmark>(`/bookmarks/${id}`, body),
-  deleteBookmark: (id: string) => api.del<void>(`/bookmarks/${id}`),
+    api.patch<Bookmark>(path("patch_bookmarks_by_id", { id }), body),
+  deleteBookmark: (id: string) =>
+    api.del<void>(path("delete_bookmarks_by_id", { id })),
   /** Runtime plugins found in the server's plugins dir, with the caller's
    * enabled flag. */
   plugins: () => api.get<PluginInfo[]>("/plugins"),
@@ -273,14 +275,15 @@ export const endpoints = {
     ),
 
   /** The caller's spawn profiles, oldest first. */
-  profiles: () => api.get<SessionProfile[]>("/profiles"),
+  profiles: () => api.get<SessionProfile[]>(path("get_profiles")),
   createProfile: (body: CreateProfileRequest) =>
-    api.post<SessionProfile>("/profiles", body),
+    api.post<SessionProfile>(path("post_profiles"), body),
   updateProfile: (id: string, body: UpdateProfileRequest) =>
-    api.patch<SessionProfile>(`/profiles/${id}`, body),
-  deleteProfile: (id: string) => api.del<void>(`/profiles/${id}`),
+    api.patch<SessionProfile>(path("patch_profiles_by_id", { id }), body),
+  deleteProfile: (id: string) =>
+    api.del<void>(path("delete_profiles_by_id", { id })),
   reorderProfiles: (body: ReorderProfilesRequest) =>
-    api.put<SessionProfile[]>("/profiles/order", body),
+    api.put<SessionProfile[]>(path("put_profiles_order"), body),
   /** Token totals across rolling windows for the Overview. `tzOffset` is
    * `Date.getTimezoneOffset()` — only used to anchor "today" to local midnight. */
   tokenStats: (tzOffset: number) =>
