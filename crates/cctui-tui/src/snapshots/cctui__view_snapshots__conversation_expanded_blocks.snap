@@ -1,15 +1,17 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 306
 expression: render_screen(&mut app)
 ---
  infra (main) on orion ── opus ── $1.25
+ Read  crates/cctui-tui/src/main.rs  read                                                          ▕
 └ 984 lines                                                                                        ▕
  Bash  cargo test  write                                                                           ▕
 └ ✗ exit 101 · 3 failed                                                                            ▕
       parser::wraps                                                                                ▕
       parser::nests                                                                                ▕
-                                                                                                   ▕
-● Assistant                                                                                        ▕
+                                                                                                   ▐
+● Assistant                                                                                        ▐
 Looking at the views first.                                                                        ▐
                                                                                                    ▐
 - one                                                                                              ▐
@@ -19,7 +21,6 @@ Looking at the views first.                                                     
                                                                                                    ▐
 ◆ lane-b                                                                                           ▐
 the parser lane is rebased                                                                         ▐
-· keep-alive tick                                                                                  ▐
 ⟳ context reset (/clear)                                                                           ▐
                                                                                                    ▐
 ◁ Reply done                                                                                       ▐

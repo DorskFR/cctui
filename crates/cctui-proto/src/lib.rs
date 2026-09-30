@@ -20,6 +20,7 @@ pub mod identity;
 pub mod ids;
 pub mod media;
 pub mod models;
+pub mod paths;
 pub mod provider;
 pub mod release_sig;
 pub mod resources;

@@ -1,0 +1,24 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: "render_screen_sized(&mut app, 60, 20)"
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   ┌ Session info ──────────────────────────────────────┐
+   │s-working                                           │
+   │session:                                            │
+▸  │id                         s-working                │45s
+   │parent                     —                        │
+   │machine                    orion                    │5
+   │adapter                    claude-code              │
+   │account                    main                     │
+   │model                      opus (high)              │
+   │permission mode            yolo                     │
+   │registered                 1h ago                   │
+   │last heartbeat             2s ago                   │
+   │last tool                  45s ago                  │
+   │server:                                             │
+   │ j/k r y D/i Esc   12/29                            │
+   └────────────────────────────────────────────────────┘
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

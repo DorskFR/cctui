@@ -240,6 +240,7 @@ pub fn on_input(app: &mut App) -> Vec<Effect> {
     let Some(session_id) = app.drafts.composer_session.clone() else { return Vec::new() };
     let text = app.message_input.lines().join("\n");
     app.drafts.set_text(session_id.clone(), text.clone());
+    super::mentions::refresh(app);
     vec![Effect::SaveDraft { key: composer_draft_key(&session_id), text }]
 }
 
@@ -266,7 +267,7 @@ pub fn on_send(app: &mut App, session_id: &str, content: &str) -> Vec<Effect> {
 }
 
 /// The caret as a character offset, which is what the shared recall rule reads.
-fn caret_offset(app: &App) -> usize {
+pub fn caret_offset(app: &App) -> usize {
     let cursor = app.message_input.cursor();
     let lines = app.message_input.lines();
     let before: usize = lines.iter().take(cursor.0).map(|line| line.chars().count() + 1).sum();
@@ -276,6 +277,11 @@ fn caret_offset(app: &App) -> usize {
 /// An arrow key in the composer: recall when the caret is at the very edge of
 /// the text, plain cursor movement otherwise.
 fn walk(app: &mut App, key: &str) -> Vec<Effect> {
+    // An open completion owns the arrows: the history walk would replace the
+    // half-typed mention the popup is answering.
+    if super::mentions::walk(app, if key == "ArrowUp" { -1 } else { 1 }) {
+        return Vec::new();
+    }
     let Some(session_id) = app.drafts.composer_session.clone() else { return Vec::new() };
     let entries = app.drafts.history_for(&session_id).to_vec();
     let value = app.message_input.lines().join("\n");

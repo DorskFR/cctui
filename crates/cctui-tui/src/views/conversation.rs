@@ -68,16 +68,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     let card_height = u16::try_from(cards.len()).unwrap_or(u16::MAX);
 
-    let [header_area, content_area, card_area, separator_area, banner_area, input_area] =
+    let chip_height = super::attach::height(app, &session.id);
+
+    let [header_area, content_area, card_area, separator_area, banner_area, chip_area, input_area] =
         Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(card_height),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(chip_height),
             Constraint::Length(input_height),
         ])
         .areas(main_area);
+
+    if chip_height > 0 {
+        super::attach::draw_chips(frame, app, &session.id, chip_area);
+    }
+    let popup_anchor = if chip_height > 0 { chip_area } else { input_area };
 
     if card_height > 0 {
         frame.render_widget(Paragraph::new(cards), card_area);
@@ -90,16 +98,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Header
     let auto = if session.auto_approve { " ── ✓ auto-approve" } else { "" };
     let waiting = app.prompt_marker(&session.id).map_or_else(String::new, |m| format!(" ── {m}"));
+    let pins = match app.pins.count(&session.id) {
+        0 => String::new(),
+        n => format!(" ── ⚑ {n}"),
+    };
     let mode = crate::app::controls::permission_badge(&session)
         .map_or_else(String::new, |m| format!(" ── {m}"));
     let effort = session.effort.as_deref().filter(|e| !e.is_empty()).unwrap_or_default();
     let dials = if effort.is_empty() { model.to_owned() } else { format!("{model}·{effort}") };
     let header_text = if branch.is_empty() {
-        format!(" {project} on {machine} ── {dials} ── {cost}{mode}{auto}{waiting}")
+        format!(" {project} on {machine} ── {dials} ── {cost}{mode}{auto}{pins}{waiting}")
     } else {
-        format!(" {project} ({branch}) on {machine} ── {dials} ── {cost}{mode}{auto}{waiting}")
+        format!(
+            " {project} ({branch}) on {machine} ── {dials} ── {cost}{mode}{auto}{pins}{waiting}"
+        )
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
+    if let Some(filter) = app.filter.summary() {
+        header_spans.push(Span::styled(format!(" ── ⛛ {filter}"), theme::dim()));
+    }
+    if let Some(hits) = app.find.position() {
+        header_spans.push(Span::styled(format!(" ── /{} {hits}", app.find.query), theme::dim()));
+    }
     header_spans.extend(crate::widgets::status::status_spans(app));
     frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
 
@@ -116,6 +136,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if app.render_cache_session != session.id
             || app.render_cache_epoch != epoch
             || app.render_cache_timestamps != app.show_timestamps
+            || app.render_cache_pins != app.pins.epoch
+            || app.render_cache_filter != app.filter.cache_key()
             || app.render_cache_entries > entries.len()
         {
             app.render_cache.clear();
@@ -123,14 +145,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.render_cache_session.clone_from(&session.id);
             app.render_cache_epoch = epoch;
             app.render_cache_timestamps = app.show_timestamps;
+            app.render_cache_pins = app.pins.epoch;
+            app.render_cache_filter = app.filter.cache_key();
             app.render_cache_entries = 0;
         }
         if app.render_cache_entries < entries.len() {
-            for entry in &entries[app.render_cache_entries..] {
+            let pinned: Vec<bool> = entries[app.render_cache_entries..]
+                .iter()
+                .map(|entry| entry.sequenced && app.pins.pinned(&session.id, entry.seq))
+                .collect();
+            for (entry, pinned) in entries[app.render_cache_entries..].iter().zip(pinned) {
+                // A filtered-out entry still takes a slot, so every other
+                // index — the line cursor's included — keeps pointing at its
+                // own line; it simply contributes no rows.
                 app.render_cache_starts.push(app.render_cache.len());
+                if !app.filter.visible(&entry.line) {
+                    continue;
+                }
                 let opts =
                     RenderOpts { show_timestamps: app.show_timestamps, expanded: entry.expanded };
-                app.render_cache.extend(render_line(&entry.line, opts));
+                let rows = render_line(&entry.line, opts);
+                app.render_cache.extend(if pinned { with_pin_marker(rows) } else { rows });
             }
             app.render_cache_entries = entries.len();
         }
@@ -185,6 +220,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
             }
         }
+        if app.find.is_active() {
+            for line in &mut display_lines {
+                mark_hits(line, &app.find.terms);
+            }
+        }
 
         frame.render_widget(Paragraph::new(display_lines).wrap(Wrap { trim: false }), content_area);
 
@@ -199,7 +239,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 
-    // Separator
+    // Separator, or the `/` `:` prompt while one is open.
+    if let Some(mode) = app.cmdline.mode() {
+        let prompt = format!("{}{}", mode.sigil(), app.cmdline.input);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(prompt, theme::bold()),
+                Span::styled("▏", theme::border_focused()),
+            ])),
+            separator_area,
+        );
+        draw_input_row(frame, app, input_area, popup_anchor, &session);
+        super::filters::draw(frame, app);
+        return;
+    }
     let marker = if app.drafts.has_draft(&session.id) { " draft " } else { "" };
     let rule = (separator_area.width as usize).saturating_sub(marker.chars().count());
     let mut separator_spans = vec![Span::styled("─".repeat(rule), theme::border_focused())];
@@ -209,7 +262,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(Line::from(separator_spans)), separator_area);
 
     super::banner::draw(frame, banner_area, app, &session);
+    draw_input_row(frame, app, input_area, popup_anchor, &session);
+    super::filters::draw(frame, app);
+}
 
+/// The composer, or the "nothing more can be sent" notice for an ended session.
+/// `popup_anchor` is the row the `#` popup sits above: the chip row when the
+/// composer has attachments, else the composer itself. The chips are state the
+/// user needs while typing a mention, so the popup must not cover them.
+fn draw_input_row(
+    frame: &mut Frame,
+    app: &App,
+    input_area: Rect,
+    popup_anchor: Rect,
+    session: &cctui_proto::api::SessionListItem,
+) {
     if session.end_reason.is_some() {
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -242,6 +309,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         textarea_widget.set_cursor_line_style(Style::default());
     }
     frame.render_widget(&textarea_widget, textarea_area);
+
+    if let Some(popup) = app.mentions.popup.as_ref() {
+        crate::views::mentions::draw(frame, popup, popup_anchor);
+    }
 }
 
 // -- Styles: muted/subdued palette --
@@ -451,6 +522,15 @@ fn render_peer(line: &ConversationLine, ts: String) -> Vec<Line<'static>> {
     out
 }
 
+/// Mark a pinned entry on its first row that carries text, so the blank
+/// separators a turn starts with stay blank.
+fn with_pin_marker(mut rows: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    if let Some(row) = rows.iter_mut().find(|row| !row.spans.is_empty()) {
+        row.spans.insert(0, Span::styled("⚑ ", theme::hotkey()));
+    }
+    rows
+}
+
 /// Everything on screen for a line, so the render cache holds exactly that.
 #[allow(clippy::too_many_lines)]
 fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> {
@@ -558,6 +638,38 @@ fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> 
 }
 
 const CURSOR_BG: Color = Color::Rgb(38, 42, 52);
+const HIT_STYLE: Style = Style::new().fg(Color::Rgb(20, 20, 24)).bg(Color::Rgb(210, 180, 90));
+
+/// Repaints the search terms inside a row, splitting spans at the match
+/// boundaries `cctui_clientcore` reports so the TUI and the webui agree on what
+/// counts as a hit.
+fn mark_hits(line: &mut Line<'static>, terms: &[String]) {
+    if terms.is_empty() {
+        return;
+    }
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+    for span in line.spans.drain(..) {
+        let content = span.content.to_string();
+        let hits = cctui_clientcore::search::match_ranges(&content, terms);
+        if hits.is_empty() {
+            out.push(span);
+            continue;
+        }
+        let chars: Vec<char> = content.chars().collect();
+        let mut at = 0;
+        for (start, end) in hits {
+            if start > at {
+                out.push(Span::styled(chars[at..start].iter().collect::<String>(), span.style));
+            }
+            out.push(Span::styled(chars[start..end].iter().collect::<String>(), HIT_STYLE));
+            at = end;
+        }
+        if at < chars.len() {
+            out.push(Span::styled(chars[at..].iter().collect::<String>(), span.style));
+        }
+    }
+    line.spans = out;
+}
 
 /// Tints a row without discarding the per-span colours the cache baked in.
 fn highlight(line: &mut Line<'static>) {
@@ -584,7 +696,8 @@ fn focused_rows(
     }
     let start = starts[cursor];
     let end = starts.get(cursor + 1).copied().unwrap_or(total);
-    Some((start, end.max(start + 1)))
+    // A filtered-out entry renders no rows, so there is nothing to focus.
+    (end > start).then_some((start, end))
 }
 
 /// The delivery or queue badge a user line carries, if any.
@@ -825,5 +938,87 @@ mod tests {
     fn an_empty_system_line_renders_nothing() {
         let line = ConversationLine::new(LineKind::System, String::new(), 0);
         assert!(rows(&line, false).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+
+    use super::{HIT_STYLE, mark_hits};
+
+    fn row(parts: &[&str]) -> Line<'static> {
+        Line::from(parts.iter().map(|p| Span::raw((*p).to_string())).collect::<Vec<_>>())
+    }
+
+    fn painted(line: &Line<'static>) -> Vec<(String, bool)> {
+        line.spans.iter().map(|s| (s.content.to_string(), s.style == HIT_STYLE)).collect()
+    }
+
+    #[test]
+    fn a_term_is_repainted_and_the_rest_of_the_span_is_left_alone() {
+        let mut line = row(&["the parser is done"]);
+        mark_hits(&mut line, &["parser".to_owned()]);
+        assert_eq!(
+            painted(&line),
+            [
+                ("the ".to_owned(), false),
+                ("parser".to_owned(), true),
+                (" is done".to_owned(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hit_at_either_edge_does_not_produce_an_empty_span() {
+        let mut line = row(&["parser"]);
+        mark_hits(&mut line, &["parser".to_owned()]);
+        assert_eq!(painted(&line), [("parser".to_owned(), true)]);
+
+        let mut trailing = row(&["a parser"]);
+        mark_hits(&mut trailing, &["parser".to_owned()]);
+        assert_eq!(painted(&trailing), [("a ".to_owned(), false), ("parser".to_owned(), true)]);
+    }
+
+    #[test]
+    fn every_span_of_a_row_is_searched_and_its_own_style_survives() {
+        let styled = Style::new().add_modifier(ratatui::style::Modifier::BOLD);
+        let mut line = Line::from(vec![
+            Span::styled("parse ".to_string(), styled),
+            Span::raw("and parse again".to_string()),
+        ]);
+        mark_hits(&mut line, &["parse".to_owned()]);
+        let hits = line.spans.iter().filter(|s| s.style == HIT_STYLE).count();
+        assert_eq!(hits, 2, "both spans are marked");
+        assert!(
+            line.spans.iter().any(|s| s.style == styled && s.content == " "),
+            "the unmatched tail keeps the span's own style"
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_hit_and_an_empty_query_are_both_left_untouched() {
+        let before = row(&["nothing here"]);
+        let mut line = before.clone();
+        mark_hits(&mut line, &["parser".to_owned()]);
+        assert_eq!(painted(&line), painted(&before));
+
+        let mut empty_query = before.clone();
+        mark_hits(&mut empty_query, &[]);
+        assert_eq!(painted(&empty_query), painted(&before));
+    }
+
+    #[test]
+    fn marking_is_case_insensitive_but_keeps_the_original_casing() {
+        let mut line = row(&["Parser and parser"]);
+        mark_hits(&mut line, &["PARSER".to_owned()]);
+        let marked: Vec<String> = line
+            .spans
+            .iter()
+            .filter(|s| s.style == HIT_STYLE)
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(marked, ["Parser", "parser"]);
     }
 }

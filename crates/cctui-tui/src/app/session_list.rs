@@ -80,8 +80,17 @@ pub fn group_of(s: &SessionListItem) -> Group {
 
 /// Uptime derived from `registered_at`; 0 when unset.
 #[must_use]
+/// Only an ordering key: every row is measured against the same instant, so
+/// the order it produces does not depend on which instant that is. Anything
+/// *rendered* must use [`uptime_secs_at`] instead, or the row text drifts with
+/// the wall clock and takes every snapshot of it along.
 pub fn uptime_secs(s: &SessionListItem) -> i64 {
-    s.registered_at.map_or(0, |r| (chrono::Utc::now() - r).num_seconds())
+    uptime_secs_at(s, chrono::Utc::now().timestamp_millis())
+}
+
+#[must_use]
+pub fn uptime_secs_at(s: &SessionListItem, now_ms: i64) -> i64 {
+    s.registered_at.map_or(0, |r| (now_ms - r.timestamp_millis()) / 1_000)
 }
 
 fn meta_str<'a>(s: &'a SessionListItem, key: &str) -> Option<&'a str> {
@@ -363,9 +372,23 @@ mod tests {
 
     use super::{
         Group, Row, UiState, fold_scope, fold_targets, group_of, is_dispatched, rows,
-        running_count, selected_row, sessions_of, sub_groups, viewport_offset,
+        running_count, selected_row, sessions_of, sub_groups, uptime_secs_at, viewport_offset,
     };
     use crate::testsupport::{dispatched_session, pinned_session, session, subagent};
+
+    /// The rendered uptime is a function of the app clock and nothing else: a
+    /// row that reads the wall clock rots every snapshot it appears in.
+    #[test]
+    fn the_rendered_uptime_only_moves_with_the_app_clock() {
+        let mut s = session("s-a", "alpha", "active", "working");
+        s.registered_at = chrono::DateTime::from_timestamp_millis(1_000_000);
+        assert_eq!(uptime_secs_at(&s, 1_000_000), 0);
+        assert_eq!(uptime_secs_at(&s, 1_000_000 + 3_600_000), 3_600);
+        assert_eq!(uptime_secs_at(&s, 1_000_000), 0, "the same clock gives the same answer");
+
+        s.registered_at = None;
+        assert_eq!(uptime_secs_at(&s, i64::MAX), 0, "an unregistered row has no uptime");
+    }
 
     fn flat<'a>(
         sessions: &'a [cctui_proto::api::SessionListItem],

@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+r      Search sent prompts                r           Refine the plan                  │
-▸ │  Tab         Answer the waiting prompt          j / ↓       Scroll the plan down             │
-  │Composer                                         k / ↑       Scroll the plan up               │
-  │  Esc         Close the composer               Plan card — refine                             │
-  │  Enter       Send the message                   Enter       Accept the text                  │
-  │  Ctrl+j / A… Insert a newline                   Esc         Discard the text                 │
-  │  ↑           Recall an earlier prompt         Row glyphs                                     │
-  │  ↓           Recall a later prompt              ●           working                          │
-  │  Ctrl+r      Search sent prompts                ◐           stale or asleep                  │
-  │Prompt history                                   ○           idle                             │
-  │  Esc         Close the prompt list              ☾           hibernated                       │
-  │  Ctrl+n / ↓  Next prompt                        ↳           subagent                         │
-  │  Ctrl+p / ↑  Previous prompt                    ▸ / ▾       folded / open group              │
-  │  Enter       Put this prompt in the composer    !           permission waiting on you        │
-  │Help                                             ?           question waiting on you          │
-  │  j / ↓       Scroll down                        P           plan waiting for approval        │
-  │  k / ↑       Scroll up                          ●N          unread messages                  │
-  │  PgDn        Page down                          ⚡           auto-approve on                  │
-  │  PgUp        Page up                            ✕reason     how it ended                     │
-  │  ? / q / Esc Close this cheat sheet             ⚙N age      tool calls, age of the last      │
+  │  Tab         Complete the path                Plan card — refine                             │
+▸ │Filter menu                                      Enter       Accept the text                  │
+  │  F / q / Esc Choose which lines to show         Esc         Discard the text                 │
+  │  a           Show every category              Row glyphs                                     │
+  │  r           Back to the default filter         ●           working                          │
+  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
+  │  j / ↓       Next category                      ○           idle                             │
+  │  k / ↑       Previous category                  ☾           hibernated                       │
+  │Prompt history                                   ↳           subagent                         │
+  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
+  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
+  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
+  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
+  │File viewer                                      ●N          unread messages                  │
+  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
+  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
+  │  PgDn        Page down                          ⚠           account traffic never seen       │
+  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
+  │  g           Jump to the top                    ✕reason     how it ended                     │
+  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

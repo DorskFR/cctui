@@ -187,6 +187,13 @@ fn confirm(app: &mut App, what: Confirm) -> Vec<Effect> {
     Vec::new()
 }
 
+/// Fork now, no confirmation: typing `:fork` and pressing Enter is already
+/// deliberate, where a single `Ctrl-f` is not.
+pub fn fork_now(app: &mut App) -> Vec<Effect> {
+    let Some(session_id) = app.selected_session_id() else { return Vec::new() };
+    fire(app, Confirm::Fork, session_id)
+}
+
 fn fire(app: &mut App, what: Confirm, session_id: String) -> Vec<Effect> {
     match what {
         Confirm::Interrupt => {

@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ terminal · s-blocke  remote 120x40 · view 100x22 · 1 chunks · 20 cols clipped
+╭─ claude ─────────────╮
+│ > run the tests      │
+╰──────────────────────╯
+Running 42 tests
+  ✓ every one of them
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Esc close · j/k scroll back · read-only

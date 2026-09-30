@@ -3,23 +3,23 @@ source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
  cctui (main) on orion ── gpt-5.6-sol·high ── $1.25 ── auto
+                                                                                                   ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
-└ 984 lines                                                                                        ▕
- Bash  car┌ Model · codex ───────────────────────────────────────────────────────────────┐         ▕
-└ ✗ exit 1│┌ Model ──────────────────────────────────────┐┌ Effort ─────────────────────┐│         ▐
-          ││  Default                                    ││  default                    ││         ▐
-● Assistan││  Sol (gpt-5.6-sol)                          ││  low                        ││         ▐
-Looking at││▸ Terra (gpt-6-terra)  needs 0.160 · at 0.158││  medium                     ││         ▐
-          ││                                             ││  high                       ││         ▐
+└ 984 line┌ Model · codex ───────────────────────────────────────────────────────────────┐         ▕
+ Bash  car│┌ Model ──────────────────────────────────────┐┌ Effort ─────────────────────┐│         ▐
+└ ✗ exit 1││  Default                                    ││  default                    ││         ▐
+          ││  Sol (gpt-5.6-sol)                          ││  low                        ││         ▐
+● Assistan││▸ Terra (gpt-6-terra)  needs 0.160 · at 0.158││  medium                     ││         ▐
+Looking at││                                             ││  high                       ││         ▐
+          ││                                             ││                             ││         ▐
 - one     ││                                             ││                             ││         ▐
 - two     ││                                             ││                             ││         ▐
 ⏱ 12.4k in││                                             ││                             ││         ▐
 ⏱ 38s     ││                                             ││                             ││         ▐
           ││                                             ││                             ││         ▐
 ◆ lane-b  ││                                             ││                             ││         ▐
-the parser││                                             ││                             ││         ▐
-· keep-ali│└─────────────────────────────────────────────┘└─────────────────────────────┘│         ▐
+the parser│└─────────────────────────────────────────────┘└─────────────────────────────┘│         ▐
 ⟳ context │  ↑↓ pick  ←→/Tab column  Enter unavailable  Esc cancel                       │         ▐
           └──────────────────────────────────────────────────────────────────────────────┘         ▐
 ◁ Reply done                                                                                       ▐

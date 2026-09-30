@@ -1,8 +1,8 @@
 use super::action::{Action, Effect, HeartbeatUsage};
 use super::conversation::{self, ConversationAction};
-use super::send;
 use super::state::{App, View};
 use super::toast::Level;
+use super::{send, terminal};
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
@@ -16,8 +16,26 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Attach(action) => super::attach::reduce_attach(app, action),
+        Action::Terminal(action) => terminal::reduce_terminal(app, action),
+        Action::PendingChord(chord) => {
+            app.pending_chord = Some(chord);
+            Vec::new()
+        }
+        Action::PasteText(text) => {
+            app.input_active = true;
+            app.message_input.insert_str(&text);
+            super::drafts::on_input(app)
+        }
         Action::Attention(attention) => super::attention::reduce_attention(app, attention),
+        Action::FileView(action) => super::fileview::reduce_fileview(app, action),
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
+        Action::Pins(pins) => super::pins::reduce_pins(app, pins),
+        Action::Macros(action) => super::macros::reduce_macros(app, action),
+        Action::AcceptMention(key) => super::mentions::accept(app).unwrap_or_else(|| {
+            app.message_input.input(key);
+            super::drafts::on_input(app)
+        }),
         Action::Send(action) => send::reduce_send(app, action),
         Action::SessionLive(action) => super::session_live::reduce_session_live(app, action),
         // One clock for the whole app: delivery deadlines move, and the session
@@ -70,8 +88,10 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         // Help dismisses to the session list, never to the view it was opened
         // over, so it collapses the stack exactly as leaving a conversation does.
         Action::CloseHelp => {
+            let mut effects = terminal::close(app);
             app.router.reset(View::SessionList);
-            conversation::leave(app)
+            effects.extend(conversation::leave(app));
+            effects
         }
         // Line-select is a mode inside the conversation: the same key leaves it
         // first and only closes the conversation on a second press.
@@ -79,8 +99,10 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             if conversation::line_select_active(app) {
                 return conversation::reduce(app, ConversationAction::ToggleLineCursor);
             }
+            let mut effects = terminal::close(app);
             app.router.reset(View::SessionList);
-            conversation::leave(app)
+            effects.extend(conversation::leave(app));
+            effects
         }
         Action::OpenSelectedConversation => {
             let Some(session_id) = app.selected_session_id() else { return Vec::new() };
@@ -97,6 +119,17 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             if conversation::line_select_active(app) && lines.abs() == 1 =>
         {
             conversation::reduce(app, ConversationAction::MoveCursor { delta: lines })
+        }
+        // The pager borrows the conversation's scroll keys, so the same actions
+        // have to land on whichever is on top.
+        Action::Scroll { lines, .. } if app.view() == View::FileViewer => {
+            super::fileview::reduce_fileview(app, super::fileview::FileViewAction::Scroll(lines))
+        }
+        Action::ScrollToTop if app.view() == View::FileViewer => {
+            if let Some(view) = app.file_view.as_mut() {
+                view.scroll = 0;
+            }
+            Vec::new()
         }
         Action::Scroll { lines, release_follow } => {
             snap_scroll_if_following(app);
@@ -129,8 +162,12 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             app.message_input.input(key);
             super::drafts::on_input(app)
         }
+        // The first escape dismisses an open completion, the next one the
+        // composer itself.
         Action::CancelInput => {
-            app.input_active = false;
+            if !super::mentions::close(app) {
+                app.input_active = false;
+            }
             Vec::new()
         }
         Action::InputKey(key) => {
@@ -141,14 +178,25 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             app.message_input.insert_newline();
             super::drafts::on_input(app)
         }
+        // Enter takes an open completion instead of sending: the message is
+        // not finished if the user is still naming a session.
         Action::SubmitInput => {
+            if let Some(effects) = super::mentions::accept(app) {
+                return effects;
+            }
             let content = app.message_input.lines().join("\n");
             let target = app.selected_session_id();
             app.reset_input();
             app.input_active = false;
             match target {
+                // Staged files have to reach the working dir before the prompt
+                // that references them does, so the upload goes first and its
+                // reply carries the send.
                 Some(session_id) if !content.trim().is_empty() => {
-                    send::submit(app, session_id, content, None)
+                    super::attach::upload_effect(app, &session_id, &content).map_or_else(
+                        || send::submit(app, session_id.clone(), content.clone(), None),
+                        |effect| vec![effect],
+                    )
                 }
                 // Nothing to send, but the emptied composer is still a draft
                 // change the store has to hear about.
@@ -178,7 +226,10 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             super::controls::take_pending_jump(app)
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::CmdLine(action) => super::cmdline::reduce(app, action),
+        Action::Copy(what) => copy(app, what),
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
+        Action::Diagnose(action) => super::diagnose::reduce_diagnose(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
@@ -209,6 +260,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
 
         Action::Reconnected => {
             app.toast(Level::Info, "reconnected");
+            terminal::reconnect(app);
             let mut effects = conversation::reconnect(app);
             effects.extend(send::redispatch_parked(app));
             effects.extend(super::session_live::refresh(app));
@@ -231,6 +283,35 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             app.toast(Level::Warn, format!("dropped {count} unreadable conversation events"));
             Vec::new()
         }
+    }
+}
+
+/// Resolves a copy key against the focused line. Without one there is nothing
+/// to copy, so it says so rather than copying something arbitrary.
+fn copy(app: &mut App, what: super::action::CopyWhat) -> Vec<Effect> {
+    use super::action::CopyWhat;
+
+    if what == CopyWhat::SessionLink {
+        let Some(session_id) = app.selected_session_id() else { return Vec::new() };
+        let text = super::copy::session_link(&app.server_url, &session_id);
+        return vec![Effect::Copy { text, label: "session link" }];
+    }
+    let Some(line) = app.focused_line() else {
+        app.toast(Level::Info, "press v to pick a line first");
+        return Vec::new();
+    };
+    match what {
+        CopyWhat::Line => {
+            vec![Effect::Copy { text: super::copy::line_markdown(line), label: "line" }]
+        }
+        CopyWhat::CodeBlock => {
+            let Some(text) = super::copy::code_block(line) else {
+                app.toast(Level::Info, "no code block on this line");
+                return Vec::new();
+            };
+            vec![Effect::Copy { text, label: "code block" }]
+        }
+        CopyWhat::SessionLink => Vec::new(),
     }
 }
 
@@ -391,9 +472,10 @@ mod tests {
             [
                 Effect::LoadConversationPage { session_id, .. },
                 Effect::Subscribe { .. },
+                Effect::LoadPins { .. },
                 Effect::MarkSeen { .. },
             ] => assert_eq!(session_id, "s-a"),
-            _ => panic!("expected a load, a subscribe and a seen mark"),
+            _ => panic!("expected a load, a subscribe, a pin read and a seen mark"),
         }
     }
 

@@ -4,7 +4,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use crate::app::state::uptime_secs;
+use crate::app::state::uptime_secs_at;
 use crate::app::{App, session_list, session_live, session_status};
 use crate::theme;
 
@@ -187,8 +187,12 @@ fn session_line_spans(
     let stale = session_status::is_stale_working(s, now);
     let liveness = session_status::row_liveness(s, stale);
     let act = session_status::tool_activity(s, now);
-    let badges =
-        session_status::RowBadges::of(s, app.permissions.has(&s.id), app.prompt_marker(&s.id));
+    let badges = session_status::RowBadges::of(
+        s,
+        app.permissions.has(&s.id),
+        app.prompt_marker(&s.id),
+        app.soft_limited.contains(&s.id),
+    );
     let compact = app.config.prefs.compact_rows;
 
     let project = s
@@ -228,7 +232,11 @@ fn session_line_spans(
         if !model.is_empty() {
             segs.push(Seg::new(2, theme::model(), format!("  {model}")));
         }
-        segs.push(Seg::new(3, theme::dim(), format!("  {}", format_uptime(uptime_secs(s)))));
+        segs.push(Seg::new(
+            3,
+            theme::dim(),
+            format!("  {}", format_uptime(uptime_secs_at(s, now))),
+        ));
         segs.push(Seg::new(1, theme::cost(), format!("  ${:.2}", s.token_usage.cost_usd)));
         if let Some(cadence) = session_status::cadence_text(&act) {
             segs.push(Seg::new(4, theme::dim(), format!("  {cadence}")));

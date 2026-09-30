@@ -1,18 +1,19 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 517
 expression: "render_screen_sized(&mut app, 60, 20)"
 ---
  infra (main) on orion ── opus ── $1.25  ⚠ 1 approval pendin
+● Assistant                                                ▕
 Looking at the views first.                                ▕
                                                            ▕
 - one                                                      ▕
 - two                                                      ▕
 ⏱ 12.4k in / 1.1k out                                      ▕
-⏱ 38s                                                      ▕
-                                                           ▕
+⏱ 38s                                                      ▐
+                                                           ▐
 ◆ lane-b                                                   ▐
 the parser lane is rebased                                 ▐
-· keep-alive tick                                          ▐
 ⟳ context reset (/clear)                                   ▐
                                                            ▐
 ◁ Reply done                                               ▐

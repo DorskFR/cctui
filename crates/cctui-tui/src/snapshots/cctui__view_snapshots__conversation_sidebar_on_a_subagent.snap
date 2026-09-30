@@ -3,12 +3,13 @@ source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
  cctui-sub (main) on orion ── opus ── $1.25                       │ Todo
-∴ thinking (2 lines)  (2 more · o)                               ▕│ no todo list yet
- Read  crates/cctui-tui/src/main.rs  read                        ▕│
-└ 984 lines                                                      ▕│ Subagents
- Bash  cargo test  write                                         ▕│ no subagents
-└ ✗ exit 101 · 3 failed  (2 more · o)                            ▐│
-                                                                 ▐│ u up to cctui
+                                                                 ▕│ no todo list yet
+∴ thinking (2 lines)  (2 more · o)                               ▕│
+ Read  crates/cctui-tui/src/main.rs  read                        ▕│ Subagents
+└ 984 lines                                                      ▕│ no subagents
+ Bash  cargo test  write                                         ▐│
+└ ✗ exit 101 · 3 failed  (2 more · o)                            ▐│ u up to cctui
+                                                                 ▐│
 ● Assistant                                                      ▐│
 Looking at the views first.                                      ▐│
                                                                  ▐│
@@ -19,7 +20,6 @@ Looking at the views first.                                      ▐│
                                                                  ▐│
 ◆ lane-b                                                         ▐│
 the parser lane is rebased                                       ▐│
-· keep-alive tick                                                ▐│
 ⟳ context reset (/clear)                                         ▐│
                                                                  ▐│
 ◁ Reply done                                                     ▐│

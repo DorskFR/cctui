@@ -3,12 +3,13 @@ source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
  cctui (main) on orion ── opus ── $1.25                           │ Todo 1/3
-∴ thinking (2 lines)  (2 more · o)                               ▕│ [x] Read the brief
- Read  crates/cctui-tui/src/main.rs  read                        ▕│ [~] Wiring the panel
-└ 984 lines                                                      ▕│ [ ] Write the tests
- Bash  cargo test  write                                         ▕│
-└ ✗ exit 101 · 3 failed  (2 more · o)                            ▐│ Subagents 1/1 live
-                                                                 ▐│ ▸ cctui-sub  Working
+                                                                 ▕│ [x] Read the brief
+∴ thinking (2 lines)  (2 more · o)                               ▕│ [~] Wiring the panel
+ Read  crates/cctui-tui/src/main.rs  read                        ▕│ [ ] Write the tests
+└ 984 lines                                                      ▕│
+ Bash  cargo test  write                                         ▐│ Subagents 1/1 live
+└ ✗ exit 101 · 3 failed  (2 more · o)                            ▐│ ▸ cctui-sub  Working
+                                                                 ▐│
 ● Assistant                                                      ▐│
 Looking at the views first.                                      ▐│
                                                                  ▐│
@@ -19,7 +20,6 @@ Looking at the views first.                                      ▐│
                                                                  ▐│
 ◆ lane-b                                                         ▐│
 the parser lane is rebased                                       ▐│
-· keep-alive tick                                                ▐│
 ⟳ context reset (/clear)                                         ▐│
                                                                  ▐│
 ◁ Reply done                                                     ▐│

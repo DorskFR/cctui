@@ -10,10 +10,14 @@ use crate::app::App;
 use crate::app::sidebar::{Panel, panel, todo_mark, todo_text};
 use crate::theme;
 
-/// Whether the sidebar gets a column: it is opt-in, and a narrow terminal
-/// keeps the transcript instead.
-pub const fn visible(app: &App, area_width: u16) -> bool {
-    app.ui.sidebar_open && area_width >= crate::app::sidebar::MIN_TERMINAL_WIDTH
+/// Whether the sidebar gets a column: it is opt-in, a narrow terminal keeps
+/// the transcript instead, and any overlay drawn over the conversation —
+/// diagnose, the pagers, the pickers — gets the full width to itself rather
+/// than leaving a panel showing past its margins.
+pub fn visible(app: &App, area_width: u16) -> bool {
+    app.ui.sidebar_open
+        && area_width >= crate::app::sidebar::MIN_TERMINAL_WIDTH
+        && matches!(app.view(), crate::app::View::Conversation | crate::app::View::Sidebar)
 }
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, session: &SessionListItem, focused: bool) {
@@ -177,10 +181,25 @@ mod tests {
     #[test]
     fn a_narrow_terminal_keeps_the_transcript_instead() {
         let mut app = app_with_children();
+        app.router.push(crate::app::View::Conversation);
         app.ui.sidebar_open = true;
         assert!(visible(&app, MIN_TERMINAL_WIDTH));
         assert!(!visible(&app, MIN_TERMINAL_WIDTH - 1));
         app.ui.sidebar_open = false;
+        assert!(!visible(&app, 200));
+    }
+
+    /// An overlay over the conversation gets the width to itself, so no panel
+    /// shows past its margins.
+    #[test]
+    fn an_overlay_takes_the_column_back() {
+        let mut app = app_with_children();
+        app.router.push(crate::app::View::Conversation);
+        app.ui.sidebar_open = true;
+        assert!(visible(&app, 200));
+        app.router.push(crate::app::View::Sidebar);
+        assert!(visible(&app, 200), "its own focus keeps it");
+        app.router.push(crate::app::View::Diagnose);
         assert!(!visible(&app, 200));
     }
 }

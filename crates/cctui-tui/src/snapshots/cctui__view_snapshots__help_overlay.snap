@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                       Model picker                                   │
-▸ │  ?           Toggle this cheat sheet            q / Esc     Close the picker                 │
-  │  q           Quit cctui                         j / ↓       Next entry                       │
-  │  Ctrl+g      Jump to the next pending approval  k / ↑       Previous entry                   │
-  │Session list                                     h / ←       Focus the model list             │
-  │  j / ↓       Next session                       l / → / Tab Focus the effort list            │
-  │  k / ↑       Previous session                   Enter       Apply model and effort           │
-  │  g           First session                    Sidebar                                        │
-  │  G           Last session                       j / ↓       Next subagent                    │
-  │  Enter       Open the conversation              k / ↑       Previous subagent                │
-  │  z / Tab     Fold or open the subagent group    Enter       Open the subagent                │
-  │  S           Fold or open the section           > / Esc     Close the sidebar                │
-  │  Z           Fold or open everything            u           Go to the parent session         │
-  │Conversation                                   Permission card                                │
-  │  1-9         Jump to session by number          y           Allow                            │
-  │  Ctrl+f      Fork the session                   n           Deny                             │
-  │  q / Esc     Back to the session list           A           Allow and auto-approve           │
-  │  j / ↓       Scroll down                      Question card                                  │
-  │  k / ↑       Scroll up                          Esc         Answer later                     │
-  │  PgDn        Page down                          j / ↓       Next option                      │
+  │Anywhere                                         o           Open in the desktop viewer       │
+▸ │  ?           Toggle this cheat sheet          Pinned messages                                │
+  │  q           Quit cctui                         Esc         Close the pinned messages        │
+  │  /           Search the current view            Ctrl+n / ↓  Next pin                         │
+  │  n           Next search hit                    Ctrl+p / ↑  Previous pin                     │
+  │  N           Previous search hit                Enter       Jump to the pinned message       │
+  │  D           Diagnose the selected session      d / m       Unpin this message               │
+  │  i           Session info                     Macros                                         │
+  │  Ctrl+g      Jump to the next pending approv…   Esc         Close the macro list             │
+  │Session list                                     Ctrl+n / ↓  Next macro                       │
+  │  j / ↓       Next session                       Ctrl+p / ↑  Previous macro                   │
+  │  k / ↑       Previous session                   Enter       Put this prompt in the composer  │
+  │  g           First session                    Terminal pane                                  │
+  │  G           Last session                       T / q / Esc Close the terminal pane          │
+  │  Enter       Open the conversation              j / ↓       Scroll the terminal down         │
+  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll the terminal up           │
+  │  S           Fold or open the section         Help                                           │
+  │  Z           Fold or open everything            j / ↓       Scroll down                      │
+  │Conversation                                     k / ↑       Scroll up                        │
+  │  1-9         Jump to session by number          PgDn        Page down                        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

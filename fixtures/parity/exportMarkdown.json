@@ -1,0 +1,66 @@
+{
+  "_comment": "Golden for conversationToMarkdown (webui src/lib/export.ts) and export::to_markdown (cctui-tui). Every category is visible, so both sides render every block. Tool inputs keep their keys in alphabetical order: serde_json sorts object keys and JSON.stringify preserves insertion order, so only an already-sorted input is byte-identical on both sides. Note the single newline between the meta line and the first block: conversationToMarkdown joins its header with one separator there, and byte-identical means matching that.",
+  "session": {
+    "id": "s-golden",
+    "name": "cctui",
+    "machine_name": "orion",
+    "model": "opus",
+    "effort": null,
+    "working_dir": "/home/dev/cctui"
+  },
+  "events": [
+    { "type": "text", "content": "▷ User: refactor the parser", "meta": false, "ts": 1 },
+    { "type": "text", "content": "weighing two options", "kind": "thinking", "ts": 2 },
+    {
+      "type": "tool_call",
+      "tool": "Bash",
+      "input": { "command": "cargo test", "description": "run the suite" },
+      "ts": 3
+    },
+    {
+      "type": "tool_result",
+      "tool": "Bash",
+      "output_summary": "exit 101 · 3 failed",
+      "error": true,
+      "ts": 4
+    },
+    {
+      "type": "tool_call",
+      "tool": "Edit",
+      "input": {
+        "file_path": "src/parser.rs",
+        "new_string": "fn parse() -> Ast {}",
+        "old_string": "fn parse() {}"
+      },
+      "ts": 5
+    },
+    {
+      "type": "tool_call",
+      "tool": "Grep",
+      "input": { "pattern": "fn parse" },
+      "ts": 6
+    },
+    { "type": "text", "content": "the parser is fixed", "ts": 7 },
+    { "type": "text", "content": "session hibernated", "kind": "system_marker", "ts": 8 },
+    {
+      "type": "text",
+      "content": "▷ User: Another Claude session sent a message:\n<cross-session-message from=\"a-1\" from-name=\"lane-b\">rebase please</cross-session-message>",
+      "meta": false,
+      "ts": 9
+    },
+    {
+      "type": "text",
+      "content": "▷ User: <system-reminder>stay on task</system-reminder>",
+      "meta": false,
+      "ts": 10
+    },
+    { "type": "text", "content": "▷ User: # Autonomous loop\ncheck the queue", "meta": false, "ts": 11 },
+    { "type": "context_reset", "ts": 12 },
+    { "type": "compact_summary", "content": "we fixed the parser", "ts": 13 },
+    { "type": "turn_summary", "detail": "waiting on you", "needs_action": true, "ts": 14 },
+    { "type": "heartbeat", "tokens_in": 10, "tokens_out": 2, "cost_usd": 0.1, "ts": 15 },
+    { "type": "turn_end", "ts": 16 },
+    { "type": "text", "content": "   ", "ts": 17 }
+  ],
+  "expected": "# cctui\n\nsession: `s-golden` · machine: orion · model: opus · cwd: `/home/dev/cctui`\n**User:**\n\nrefactor the parser\n\n**Thinking:**\n\nweighing two options\n\n**Tool · Bash**\n\n```sh\n# run the suite\ncargo test\n```\n\n**Result · Bash**\n\n```\nexit 101 · 3 failed\n```\n\n**Tool · Edit**\n\n```diff\nsrc/parser.rs\n- fn parse() {}\n+ fn parse() -> Ast {}\n```\n\n**Tool · Grep**\n\n```json\n{\n  \"pattern\": \"fn parse\"\n}\n```\n\n**Assistant:**\n\nthe parser is fixed\n\n_session hibernated_\n\n**Peer · lane-b:**\n\nrebase please\n\n**System:**\n\n<system-reminder>stay on task</system-reminder>\n\n**Poll:**\n\n# Autonomous loop\ncheck the queue\n\n---\n\n_⟳ context reset · /clear or /compact_\n\n---\n\n**Compacted context:**\n\nwe fixed the parser\n\n_Needs action: waiting on you_\n"
+}

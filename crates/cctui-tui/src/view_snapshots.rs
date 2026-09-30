@@ -1,14 +1,20 @@
 use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::attach::AttachAction;
+use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
+use crate::app::diagnose::DiagnoseAction;
 use crate::app::drafts::DraftAction;
+use crate::app::fileview::FileViewAction;
+use crate::app::macros::MacroAction;
+use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
-    CLOCK_MS, app_with_sessions, ask_card, conversation_store, edit_permission_request,
-    ended_session, ms_ago, permission_request, picker_models, plan_card, render_screen,
-    render_screen_sized, session, todo,
+    CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnosable_session,
+    diagnose_response, edit_permission_request, ended_session, ms_ago, permission_request,
+    picker_models, plan_card, render_screen, render_screen_sized, session, todo,
 };
 
 /// `selected_index` walks the grouped list, so the session on screen is not
@@ -102,13 +108,14 @@ fn conversation_plan_card_refining() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
-/// The sheet only fits two columns, and wave 3 filled both: the glyph legend is
-/// the tail of it, so this case is where the legend is actually reviewable.
 #[test]
 fn help_overlay_tall_enough_for_the_glyph_legend() {
     let mut app = app_with_sessions();
     app.router.push(View::Help);
-    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 46));
+    // Tall enough for the legend's last entry: the sheet is two columns, the
+    // legend is the tail of the right one, and this case is where it is
+    // reviewable in full.
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 96));
 }
 
 #[test]
@@ -291,6 +298,30 @@ fn session_list_sections_folded() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+/// A pane whose feed came in as one relayed chunk, with the frame and the
+/// cursor line a real agent TUI paints.
+#[test]
+fn terminal_pane() {
+    use base64::Engine as _;
+
+    let mut app = app_in_conversation();
+    crate::app::reduce(
+        &mut app,
+        crate::app::Action::Terminal(crate::app::terminal::TerminalAction::Toggle),
+    );
+    let screen = concat!(
+        "\u{1b}[2J\u{1b}[H",
+        "╭─ claude ─────────────╮\r\n",
+        "│ > run the tests      │\r\n",
+        "╰──────────────────────╯\r\n",
+        "\u{1b}[1mRunning 42 tests\u{1b}[0m\r\n",
+        "  ✓ every one of them",
+    );
+    let pane = app.terminal.as_mut().expect("an open pane");
+    assert!(pane.feed(&base64::engine::general_purpose::STANDARD.encode(screen)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 #[test]
 fn conversation() {
     let mut app = app_in_conversation();
@@ -329,6 +360,50 @@ fn history_picker() {
     let list = DraftList { drafts: vec![history] };
     reduce(&mut app, Action::Drafts(DraftAction::IndexLoaded(Box::new(list))));
     reduce(&mut app, Action::Drafts(DraftAction::OpenPicker));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn pins_list() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    reduce(&mut app, Action::Pins(PinAction::Loaded { session_id: id, seqs: vec![1, 3, 99] }));
+    reduce(&mut app, Action::Pins(PinAction::OpenList));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_with_a_pinned_line() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    reduce(&mut app, Action::Pins(PinAction::Loaded { session_id: id, seqs: vec![1, 2] }));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn macros_picker() {
+    let mut app = app_in_conversation();
+    app.macros = crate::app::macros::from_settings(&serde_json::json!({
+        "macros": {
+            "enabled": true,
+            "items": [
+                { "id": "m1", "title": "Triage", "prompt": "triage the inbox and file what matters" },
+                { "id": "m2", "title": "Release", "prompt": "cut a release", "adapter": "codex" },
+            ]
+        }
+    }));
+    reduce(&mut app, Action::Macros(MacroAction::Open));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn composer_session_mention_popup() {
+    let mut app = app_in_conversation();
+    app.input_active = true;
+    for c in "ping #".chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::InputKey(key));
+    }
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -376,6 +451,76 @@ fn conversation_with_timestamps() {
     app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
     app.show_timestamps = true;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn search_for(app: &mut crate::app::App, query: &str) {
+    use crate::app::cmdline::{CmdAction, Mode};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    reduce(app, Action::CmdLine(CmdAction::Open(Mode::Search)));
+    for c in query.chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(app, Action::CmdLine(CmdAction::Key(key)));
+    }
+}
+
+#[test]
+fn conversation_search_prompt_highlights_as_it_is_typed() {
+    let mut app = app_in_conversation();
+    search_for(&mut app, "parser");
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_search_committed_shows_the_hit_count() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    search_for(&mut app, "parser");
+    reduce(&mut app, Action::CmdLine(CmdAction::Commit));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_command_prompt() {
+    use crate::app::cmdline::{CmdAction, Mode};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::Open(Mode::Command)));
+    for c in "export md".chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::CmdLine(CmdAction::Key(key)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_filter_menu() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::ToggleFilterMenu));
+    reduce(&mut app, Action::CmdLine(CmdAction::FilterMenuNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_quick_filter_narrows_to_the_assistant() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::CycleFilter));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_show_all_reveals_the_hidden_categories() {
+    use crate::app::cmdline::CmdAction;
+
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::FilterShowAll));
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -504,6 +649,267 @@ fn conversation_permission_card_outranks_an_ask_card() {
     let id = selected(&app);
     app.asks.insert(id, ask_card());
     with_permission(&mut app, permission_request());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The panel over the session list, with the report already in hand.
+fn app_with_panel(mode: crate::app::diagnose::DiagnoseMode) -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    *session_mut(&mut app, "s-working") = diagnosable_session();
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Diagnose(DiagnoseAction::Open(mode)));
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Loaded {
+            session_id: "s-working".to_owned(),
+            report: Box::new(diagnose_response()),
+        }),
+    );
+    app
+}
+
+#[test]
+fn diagnose_panel() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_scrolled() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    reduce(&mut app, Action::Diagnose(DiagnoseAction::Scroll(6)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_still_fetching() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    focus(&mut app, "s-working");
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Open(crate::app::diagnose::DiagnoseMode::Facts)),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_with_an_unreachable_daemon() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    let mut report = diagnose_response();
+    report.daemon = None;
+    report.daemon_error = Some("machine orion is offline".to_owned());
+    report.server.account_bound = false;
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Loaded {
+            session_id: "s-working".to_owned(),
+            report: Box::new(report),
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn diagnose_panel_lists_the_silence_reasons() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Facts);
+    let mut report = diagnose_response();
+    if let Some(daemon) = report.daemon.as_mut() {
+        daemon.adapter = "codex".to_owned();
+        daemon.codex = Some(codex_section());
+    }
+    report.silence = vec![
+        cctui_proto::silence::SilenceReason::CodexStalledRpc { count: 2, age_ms: 120_000 },
+        cctui_proto::silence::SilenceReason::CodexNoTurn,
+    ];
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Loaded {
+            session_id: "s-working".to_owned(),
+            report: Box::new(report),
+        }),
+    );
+    reduce(&mut app, Action::Diagnose(DiagnoseAction::Scroll(9)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn codex_section() -> cctui_proto::diagnose::CodexDiagnose {
+    cctui_proto::diagnose::CodexDiagnose {
+        codex_version: Some("0.153.4".to_owned()),
+        min_version: "0.153.4".to_owned(),
+        version_supported: Some(true),
+        transport: "stdio".to_owned(),
+        app_server_pid: Some(4242),
+        live: true,
+        registered: true,
+        thread_id: Some("019e6628".to_owned()),
+        active_turn_id: Some("turn-1".to_owned()),
+        turn_status: "working".to_owned(),
+        pending_rpc_count: 2,
+        pending_rpc_methods: vec!["turn/start".to_owned()],
+        protocol_errors: vec![],
+        stderr_tail: vec![],
+        rpc_tail: vec![],
+        rollout_path: None,
+        rollout_size_bytes: None,
+        auth_state: Some("gateway env present".to_owned()),
+        registry_live_mismatch: None,
+    }
+}
+
+#[test]
+fn session_info_popup() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Info);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_info_popup_for_an_ended_session() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Info);
+    let row = session_mut(&mut app, "s-working");
+    row.end_reason = Some(cctui_proto::models::SessionEndReason::DaemonLost);
+    row.end_detail = Some("machine went away".to_owned());
+    row.account_traffic_observed = false;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_info_popup_narrow() {
+    let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Info);
+    insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+#[test]
+fn session_list_secondary_badges() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    session_mut(&mut app, "s-working").cache_cold = true;
+    let blocked = session_mut(&mut app, "s-blocked");
+    blocked.account_name = Some("main".to_owned());
+    blocked.account_traffic_observed = false;
+    app.soft_limited.insert("s-done".to_owned());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+// --- Attachments and the linked-file viewer ---
+
+/// A session with a pasted text file and an image staged, as `Ctrl-O` and a
+/// large paste leave it.
+fn app_with_attachments() -> crate::app::App {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let _ = reduce(
+        &mut app,
+        Action::Attach(AttachAction::Read {
+            session_id: id.clone(),
+            name: "paste-1.txt".to_owned(),
+            bytes: vec![b'x'; 12 * 1024],
+            content_type: "text/plain".to_owned(),
+            dimensions: None,
+        }),
+    );
+    let _ = reduce(
+        &mut app,
+        Action::Attach(AttachAction::Read {
+            session_id: id,
+            name: "shot.png".to_owned(),
+            bytes: vec![0; 340 * 1024],
+            content_type: "image/png".to_owned(),
+            dimensions: Some((1280, 720)),
+        }),
+    );
+    app
+}
+
+#[test]
+fn conversation_attachment_chips() {
+    let mut app = app_with_attachments();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_attachment_chip_focused() {
+    let mut app = app_with_attachments();
+    let _ = reduce(&mut app, Action::Attach(AttachAction::FocusChips));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_attachment_chips_ascii() {
+    let mut app = app_with_attachments();
+    app.config.prefs.ascii_glyphs = true;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_attachment_cap_error() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let _ = reduce(
+        &mut app,
+        Action::Attach(AttachAction::Read {
+            session_id: id,
+            name: "huge.bin".to_owned(),
+            bytes: vec![0; 6 * 1024 * 1024],
+            content_type: "application/octet-stream".to_owned(),
+            dimensions: None,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn attach_command_line() {
+    let mut app = app_in_conversation();
+    reduce(&mut app, Action::CmdLine(CmdAction::OpenPrefilled(CmdMode::Command, "attach ")));
+    app.cmdline.input = "attach /home/dev/cctui/README".to_owned();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn app_viewing(name: &str, content_type: &str, body: &[u8]) -> crate::app::App {
+    let mut app = app_in_conversation();
+    let _ = reduce(
+        &mut app,
+        Action::FileView(FileViewAction::Opened {
+            name: name.to_owned(),
+            path: format!("/home/dev/{name}"),
+            content_type: content_type.to_owned(),
+            bytes: body.to_vec(),
+        }),
+    );
+    app
+}
+
+#[test]
+fn file_viewer_highlights_source() {
+    let source = "fn main() {\n    let x = 1;\n    println!(\"{x}\");\n}\n";
+    let mut app = app_viewing("main.rs", "text/plain", source.as_bytes());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn file_viewer_renders_markdown() {
+    let doc = "# Title\n\nSome **bold** text and a list:\n\n- one\n- two\n";
+    let mut app = app_viewing("NOTES.md", "text/markdown", doc.as_bytes());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn file_viewer_scrolled() {
+    use std::fmt::Write as _;
+    let mut source = String::new();
+    for i in 1..=40 {
+        let _ = writeln!(source, "let line_{i} = {i};");
+    }
+    let mut app = app_viewing("long.rs", "text/plain", source.as_bytes());
+    let _ = reduce(&mut app, Action::FileView(FileViewAction::Scroll(20)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn file_viewer_image_placeholder() {
+    let mut app = app_viewing("shot.png", "image/png", &[0; 4096]);
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

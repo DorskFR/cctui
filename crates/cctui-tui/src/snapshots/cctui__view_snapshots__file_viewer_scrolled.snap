@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 631
+expression: render_screen(&mut app)
+---
+┌ long.rs — Esc closes, o opens in the desktop viewer ─────────────────────────────────────────────┐
+│ 19 let line_19 = 19;                                                                             │
+│ 20 let line_20 = 20;                                                                             │
+│ 21 let line_21 = 21;                                                                             │
+│ 22 let line_22 = 22;                                                                             │
+│ 23 let line_23 = 23;                                                                             │
+│ 24 let line_24 = 24;                                                                             │
+│ 25 let line_25 = 25;                                                                             │
+│ 26 let line_26 = 26;                                                                             │
+│ 27 let line_27 = 27;                                                                             │
+│ 28 let line_28 = 28;                                                                             │
+│ 29 let line_29 = 29;                                                                             │
+│ 30 let line_30 = 30;                                                                             │
+│ 31 let line_31 = 31;                                                                             │
+│ 32 let line_32 = 32;                                                                             │
+│ 33 let line_33 = 33;                                                                             │
+│ 34 let line_34 = 34;                                                                             │
+│ 35 let line_35 = 35;                                                                             │
+│ 36 let line_36 = 36;                                                                             │
+│ 37 let line_37 = 37;                                                                             │
+│ 38 let line_38 = 38;                                                                             │
+│ 39 let line_39 = 39;                                                                             │
+│ 40 let line_40 = 40;                                                                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘

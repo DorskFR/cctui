@@ -47,25 +47,51 @@ fn ordered_terms(terms: &[String]) -> Vec<Vec<char>> {
     kept
 }
 
-fn mark_text(text: &[char], terms: &[Vec<char>]) -> String {
+/// Non-overlapping `[start, end)` char ranges, left to right.
+fn ranges(text: &[char], terms: &[Vec<char>]) -> Vec<(usize, usize)> {
     let hay = lower(text);
     let needles: Vec<Vec<char>> = terms.iter().map(|t| lower(t)).collect();
-    let mut out = String::new();
+    let mut hits = Vec::new();
     let mut i = 0;
     while i < text.len() {
         let hit = needles
             .iter()
             .find(|n| !n.is_empty() && i + n.len() <= hay.len() && hay[i..i + n.len()] == n[..]);
         if let Some(n) = hit {
-            out.push_str("<mark class=\"search-hit\">");
-            out.extend(text[i..i + n.len()].iter());
-            out.push_str("</mark>");
+            hits.push((i, i + n.len()));
             i += n.len();
         } else {
-            out.push(text[i]);
             i += 1;
         }
     }
+    hits
+}
+
+/// Char ranges of every term occurrence in `text`.
+///
+/// For a caller that styles a match itself instead of wrapping it in markup —
+/// the TUI's transcript highlight. Shares [`highlight_terms`]'s matcher, so the
+/// two can never disagree about what a hit is.
+#[must_use]
+pub fn match_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
+    let needles = ordered_terms(terms);
+    if needles.is_empty() {
+        return Vec::new();
+    }
+    ranges(&text.chars().collect::<Vec<char>>(), &needles)
+}
+
+fn mark_text(text: &[char], terms: &[Vec<char>]) -> String {
+    let mut out = String::new();
+    let mut at = 0;
+    for (start, end) in ranges(text, terms) {
+        out.extend(&text[at..start]);
+        out.push_str("<mark class=\"search-hit\">");
+        out.extend(&text[start..end]);
+        out.push_str("</mark>");
+        at = end;
+    }
+    out.extend(&text[at..]);
     out
 }
 
@@ -99,4 +125,53 @@ pub fn highlight_terms(html: &str, terms: &[String]) -> String {
         out.push_str(&mark_text(&chars[start..i], &needles));
     }
     out
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::{highlight_terms, match_ranges, tokenize_query};
+
+    fn terms(q: &str) -> Vec<String> {
+        tokenize_query(q)
+    }
+
+    #[test]
+    fn ranges_cover_every_occurrence_case_insensitively() {
+        assert_eq!(match_ranges("Parser parses", &terms("parse")), [(0, 5), (7, 12)]);
+        assert_eq!(match_ranges("nothing here", &terms("zzz")), []);
+        assert_eq!(match_ranges("anything", &terms("")), []);
+    }
+
+    #[test]
+    fn a_longer_term_wins_over_one_that_prefixes_it() {
+        assert_eq!(match_ranges("parser", &terms("parse parser")), [(0, 6)]);
+    }
+
+    #[test]
+    fn ranges_index_chars_not_bytes() {
+        let hits = match_ranges("héllo wörld", &terms("wörld"));
+        assert_eq!(hits, [(6, 11)]);
+        let chars: Vec<char> = "héllo wörld".chars().collect();
+        let (start, end) = hits[0];
+        assert_eq!(chars[start..end].iter().collect::<String>(), "wörld");
+    }
+
+    /// The TUI styles these ranges itself while the webui wraps them in `<mark>`;
+    /// one matcher means the two can never disagree about what a hit is.
+    #[test]
+    fn the_ranges_are_exactly_what_the_html_marks() {
+        let text = "Parser parses the parse tree";
+        let query = terms("parse \"parses\"");
+        let marked = highlight_terms(text, &query);
+        let from_html = marked.matches("<mark class=\"search-hit\">").count();
+        assert_eq!(from_html, match_ranges(text, &query).len());
+
+        let chars: Vec<char> = text.chars().collect();
+        let spliced: String = match_ranges(text, &query)
+            .iter()
+            .map(|(s, e)| chars[*s..*e].iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert_eq!(spliced, "Parse|parses|parse");
+    }
 }

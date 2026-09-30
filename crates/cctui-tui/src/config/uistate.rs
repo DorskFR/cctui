@@ -20,6 +20,10 @@ pub struct UiState {
     pub folded_sections: BTreeSet<String>,
     /// Whether the conversation's todo/subagent sidebar is showing.
     pub sidebar_open: bool,
+    /// The transcript quick filter (`f`) by name; empty means the default.
+    pub transcript_quick: String,
+    /// Categories the `F` menu is holding back.
+    pub transcript_hidden: BTreeSet<String>,
     /// A probe state that reports everything open, so a caller can enumerate the
     /// groups a fully-unfolded list would show. Never persisted.
     #[serde(skip)]

@@ -3,11 +3,12 @@ source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
  cctui (main) on orion ── gpt-5.6-sol·high ── $1.25 ── auto
+                                                                                                   ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
-└ 984 lines                                                                                        ▕
- Bash  car┌ Model · codex ───────────────────────────────────────────────────────────────┐         ▕
-└ ✗ exit 1│  reading the model list…                                                     │         ▐
+└ 984 line┌ Model · codex ───────────────────────────────────────────────────────────────┐         ▕
+ Bash  car│  reading the model list…                                                     │         ▐
+└ ✗ exit 1│                                                                              │         ▐
           │                                                                              │         ▐
 ● Assistan│                                                                              │         ▐
 Looking at│                                                                              │         ▐
@@ -19,7 +20,6 @@ Looking at│                                                                   
           │                                                                              │         ▐
 ◆ lane-b  │                                                                              │         ▐
 the parser│                                                                              │         ▐
-· keep-ali│                                                                              │         ▐
 ⟳ context │  Esc cancel                                                                  │         ▐
           └──────────────────────────────────────────────────────────────────────────────┘         ▐
 ◁ Reply done                                                                                       ▐
