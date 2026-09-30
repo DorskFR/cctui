@@ -9,36 +9,43 @@
 					"index": 0,
 					"name": "access",
 					"file": "desktop-dark/01-access.png",
-					"title": "Start here: enroll a machine",
-					"body": "Access lists everyone and everything that can act on this instance. Until a machine has enrolled, this card is the only thing here that matters."
+					"title": "A machine is where an agent actually runs",
+					"body": "cctui itself runs nothing. A small daemon on your own computer does, and enrolling is how that computer tells this server it exists. Until one has enrolled, this card is the only thing here that matters."
 				},
 				{
 					"index": 1,
 					"name": "command",
 					"file": "desktop-dark/02-command.png",
 					"title": "What this command does",
-					"body": "It points the daemon at this server and registers the machine under your user. Swap the token placeholder for one of your own keys — that token is what ties the machine to you."
+					"body": "It points the daemon at this server and registers the machine under your user. The token in it is what ties the machine to you — swap the placeholder for one of your own keys."
+				},
+				{
+					"index": 2,
+					"name": "copy",
+					"file": "desktop-dark/03-copy.png",
+					"title": "Copy it, then run it over there",
+					"body": "Take the copy now. It has to run on the computer that will host your agents, not in this browser. Install it as a service afterwards and the machine rejoins the fleet by itself after a reboot."
 				},
 				{
 					"index": 3,
-					"name": "enroll",
-					"file": "desktop-dark/03-enroll.png",
-					"title": "Waiting for the machine to report in",
-					"body": "The guide moves on by itself the moment the machine checks in. If you would rather finish setting it up later, leave this step and come back — nothing is lost."
+					"name": "online",
+					"file": "desktop-dark/04-online.png",
+					"title": "How you will know it worked",
+					"body": "A machine that has checked in appears under your user as Online, with its last heartbeat. Online is the whole test: it means the machine can host a session right now. Nothing here waits on it — come back whenever the daemon is up."
 				},
 				{
 					"index": 4,
 					"name": "user",
-					"file": "desktop-dark/04-user.png",
+					"file": "desktop-dark/05-user.png",
 					"title": "Open your own user",
-					"body": "Everything attached to an identity is here: the keys it signs in with, the machines it enrolled, its tokens and its AI accounts."
+					"body": "Everything attached to an identity lives here: the keys it signs in with, the machines it enrolled, its tokens, and the AI accounts its agents spend."
 				},
 				{
-					"index": 6,
-					"name": "machines",
-					"file": "desktop-dark/05-machines.png",
-					"title": "The machines that answered",
-					"body": "The machine you just enrolled is listed here with its heartbeat. Online means it can host a session right now."
+					"index": 5,
+					"name": "tabs",
+					"file": "desktop-dark/06-tabs.png",
+					"title": "One panel per kind of credential",
+					"body": "Keys sign a person in, tokens let a machine enroll, and accounts are what the agents spend. Revoking any of them takes effect immediately — that is how you retire a lost laptop."
 				}
 			],
 			"storyboard": "desktop-dark/storyboard.png"
@@ -49,36 +56,43 @@
 					"index": 0,
 					"name": "access",
 					"file": "mobile-dark/01-access.png",
-					"title": "Start here: enroll a machine",
-					"body": "Access lists everyone and everything that can act on this instance. Until a machine has enrolled, this card is the only thing here that matters."
+					"title": "A machine is where an agent actually runs",
+					"body": "cctui itself runs nothing. A small daemon on your own computer does, and enrolling is how that computer tells this server it exists. Until one has enrolled, this card is the only thing here that matters."
 				},
 				{
 					"index": 1,
 					"name": "command",
 					"file": "mobile-dark/02-command.png",
 					"title": "What this command does",
-					"body": "It points the daemon at this server and registers the machine under your user. Swap the token placeholder for one of your own keys — that token is what ties the machine to you."
+					"body": "It points the daemon at this server and registers the machine under your user. The token in it is what ties the machine to you — swap the placeholder for one of your own keys."
+				},
+				{
+					"index": 2,
+					"name": "copy",
+					"file": "mobile-dark/03-copy.png",
+					"title": "Copy it, then run it over there",
+					"body": "Take the copy now. It has to run on the computer that will host your agents, not in this browser. Install it as a service afterwards and the machine rejoins the fleet by itself after a reboot."
 				},
 				{
 					"index": 3,
-					"name": "enroll",
-					"file": "mobile-dark/03-enroll.png",
-					"title": "Waiting for the machine to report in",
-					"body": "The guide moves on by itself the moment the machine checks in. If you would rather finish setting it up later, leave this step and come back — nothing is lost."
+					"name": "online",
+					"file": "mobile-dark/04-online.png",
+					"title": "How you will know it worked",
+					"body": "A machine that has checked in appears under your user as Online, with its last heartbeat. Online is the whole test: it means the machine can host a session right now. Nothing here waits on it — come back whenever the daemon is up."
 				},
 				{
 					"index": 4,
 					"name": "user",
-					"file": "mobile-dark/04-user.png",
+					"file": "mobile-dark/05-user.png",
 					"title": "Open your own user",
-					"body": "Everything attached to an identity is here: the keys it signs in with, the machines it enrolled, its tokens and its AI accounts."
+					"body": "Everything attached to an identity lives here: the keys it signs in with, the machines it enrolled, its tokens, and the AI accounts its agents spend."
 				},
 				{
-					"index": 6,
-					"name": "machines",
-					"file": "mobile-dark/05-machines.png",
-					"title": "The machines that answered",
-					"body": "The machine you just enrolled is listed here with its heartbeat. Online means it can host a session right now."
+					"index": 5,
+					"name": "tabs",
+					"file": "mobile-dark/06-tabs.png",
+					"title": "One panel per kind of credential",
+					"body": "Keys sign a person in, tokens let a machine enroll, and accounts are what the agents spend. Revoking any of them takes effect immediately — that is how you retire a lost laptop."
 				}
 			],
 			"storyboard": "mobile-dark/storyboard.png"

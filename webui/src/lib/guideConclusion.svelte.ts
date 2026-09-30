@@ -4,6 +4,8 @@ import GuideConclusion from './components/organisms/GuideConclusion.svelte';
 export interface Conclusion {
 	title: string;
 	xp: number;
+	/** Title of the guide to take next, when the curriculum has one left. */
+	next?: string;
 }
 
 /** Own presenter rather than the runtime's: the engine has already hidden its
@@ -21,7 +23,7 @@ export function showConclusion(conclusion: Conclusion): Promise<void> {
 		};
 		card = mount(GuideConclusion, {
 			target: document.body,
-			props: { title: conclusion.title, xp: conclusion.xp, ondone: close }
+			props: { title: conclusion.title, xp: conclusion.xp, next: conclusion.next, ondone: close }
 		}) as Record<string, unknown>;
 	});
 }

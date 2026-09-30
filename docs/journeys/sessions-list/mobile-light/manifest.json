@@ -6,37 +6,46 @@
 		"mobile-light": {
 			"captures": [
 				{
-					"index": 1,
+					"index": 0,
 					"name": "list",
-					"file": "01-list.png"
+					"file": "01-list.png",
+					"title": "Grouped by what it needs from you",
+					"body": "This is the one screen you will keep open. Agents are not listed by age but by what they are waiting for: anything blocked on an answer from you rises to the top, so a fleet of thirty still reads in one glance."
+				},
+				{
+					"index": 1,
+					"name": "anatomy",
+					"file": "02-anatomy.png",
+					"title": "What one row tells you",
+					"body": "Each row carries the session’s title, the machine it runs on, the folder it works in, how long since it last did anything, and what it has spent. That is enough to decide whether it needs you without opening it."
 				},
 				{
 					"index": 2,
-					"name": "search",
-					"file": "02-search.png",
-					"title": "Narrow the list as you type",
-					"body": "Plain words match titles and prompts. Add a field — machine, label, status — to cut straight to a slice of the fleet instead of scrolling it."
-				},
-				{
-					"index": 4,
 					"name": "sections",
 					"file": "03-sections.png",
-					"title": "Keep the ones that matter in reach",
-					"body": "Starred sessions get their own group above everything else — the fastest way to pin the two or three runs you actually care about today."
+					"title": "Turn whole groups off",
+					"body": "Behind this button every group is an independent switch — live, blocked, in review, done, archived, and a starred group of your own. Switching off the ones you are not working in is what keeps the list short as the fleet grows."
 				},
 				{
-					"index": 6,
+					"index": 3,
 					"name": "options",
 					"file": "04-options.png",
 					"title": "Group by whatever you are debugging",
-					"body": "Group by machine when you suspect one box, by project when you are context-switching. Colour-by tints the cards on a second dimension, so you can read both at once."
+					"body": "This holds the view settings. Group by machine when you suspect one box, by project when you are context-switching; colour-by tints the rows on a second dimension so you can read both at once. None of it touches the sessions themselves."
 				},
 				{
-					"index": 9,
-					"name": "group",
-					"file": "05-group.png",
-					"title": "Collapse or clear a whole group",
-					"body": "The eye folds a group away without losing it. Beside it, archive retires every session in that group in one move — how a finished batch leaves the list for good."
+					"index": 6,
+					"name": "search",
+					"file": "05-search.png",
+					"title": "And you can always just type",
+					"body": "Type anything here and the list narrows as you go. There is a whole query language behind this box — conditions on machine, label and status — and a later guide is devoted to it."
+				},
+				{
+					"index": 7,
+					"name": "cleared",
+					"file": "06-cleared.png",
+					"title": "Empty it to get everyone back",
+					"body": "Clear the box and the whole fleet returns, grouped as before. Nothing you did here changed a single session — this screen is a lens, never a lever."
 				}
 			],
 			"storyboard": "storyboard.png"

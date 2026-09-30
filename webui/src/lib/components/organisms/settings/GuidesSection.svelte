@@ -33,18 +33,7 @@
 		const bump = () => runtimeTick++;
 		const observer = new MutationObserver(bump);
 		observer.observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] });
-		let poll: ReturnType<typeof setInterval> | undefined;
-		if (typeof window.__journey?.translate !== 'function') {
-			poll = setInterval(() => {
-				if (typeof window.__journey?.translate !== 'function') return;
-				clearInterval(poll);
-				bump();
-			}, 200);
-		}
-		return () => {
-			observer.disconnect();
-			clearInterval(poll);
-		};
+		return () => observer.disconnect();
 	});
 
 	const entries = $derived.by(() => {
@@ -91,7 +80,7 @@
 	async function launch(guide: GuideView) {
 		busy = guide.id;
 		try {
-			const say = startFailureMessage(await replayGuide(guide.id, guideOptions(guide)));
+			const say = startFailureMessage(await replayGuide(guide.id, guideOptions(guide, curriculum)));
 			if (say) toasts.info(say);
 		} catch {
 			toasts.error(m.journey_unavailable());

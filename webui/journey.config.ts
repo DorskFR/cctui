@@ -32,7 +32,10 @@ export default defineConfig({
 	// screenshots keep their captions.
 	vars: {
 		label: 'Add pagination to the orders endpoint',
-		prompt: 'Add cursor pagination to GET /orders. Keep the response shape and cover it with a test.'
+		prompt: 'Add cursor pagination to GET /orders. Keep the response shape and cover it with a test.',
+		query: 'pagination',
+		facet: 'label:backend',
+		blank: ''
 	},
 	out: '../docs/journeys',
 	storageState: 'journeys/.auth/state.json',

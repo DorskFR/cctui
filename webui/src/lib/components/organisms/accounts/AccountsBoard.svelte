@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FirstRunChecklist from '$lib/components/molecules/FirstRunChecklist.svelte';
 	import type { Snippet } from 'svelte';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import { errMessage } from '$lib/api';
@@ -82,6 +83,7 @@
 		<EmptyState loading size="inline" />
 	{:else if accounts.length === 0 && !drafting}
 		<EmptyState size="inline" title={m.accounts_empty()} />
+		<FirstRunChecklist />
 	{:else}
 		{#if drafting}
 			<NewPoolZone {accounts} {busy} oncreate={createPool} ondiscard={() => (drafting = false)} />

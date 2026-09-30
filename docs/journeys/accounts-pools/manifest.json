@@ -10,28 +10,35 @@
 					"name": "board",
 					"file": "desktop-dark/01-board.png",
 					"title": "Every account you can run on",
-					"body": "Accounts are the provider credentials your agents run on. This board is empty until you add one, and nothing can be launched before it has one."
+					"body": "An account is one provider credential — the thing an agent bills its tokens to. This board is the whole list, and until it holds one, nothing can be launched."
+				},
+				{
+					"index": 1,
+					"name": "anatomy",
+					"file": "desktop-dark/02-anatomy.png",
+					"title": "What each card tells you",
+					"body": "A card carries its name and emoji, who owns it, which providers and models it can reach, and how much of its budget is already spent. The grip on its left edge is how it joins a pool."
 				},
 				{
 					"index": 2,
-					"name": "pool",
-					"file": "desktop-dark/02-pool.png",
+					"name": "pools",
+					"file": "desktop-dark/03-pools.png",
 					"title": "A pool is a set of interchangeable accounts",
-					"body": "Launches aimed at the pool elect a member by headroom, so a spent weekly budget on one account does not stop the work."
+					"body": "Aim a session at a pool instead of one account and it elects whichever member has the most budget left, so a weekly limit reached on one account does not stop your work. Drag a card by its grip onto a pool to add it, or use the card’s own menu — the same change without a mouse, which is how it is done on a phone."
 				},
 				{
 					"index": 3,
-					"name": "handle",
-					"file": "desktop-dark/03-handle.png",
-					"title": "Drag an account into a pool",
-					"body": "The grip on a card lifts it; dropping it on a pool adds it to the membership."
+					"name": "add",
+					"file": "desktop-dark/04-add.png",
+					"title": "Add your first account",
+					"body": "Open the dialog. You will name the credential, pick its provider and paste the key — nothing leaves this instance, and the key is encrypted before it is stored."
 				},
 				{
 					"index": 4,
-					"name": "menu",
-					"file": "desktop-dark/04-menu.png",
-					"title": "Or add it from the card menu",
-					"body": "The same membership change without a mouse drag, which is also how it is done on a phone."
+					"name": "closed",
+					"file": "desktop-dark/05-closed.png",
+					"title": "Close it for now",
+					"body": "Nothing is saved until you submit, so dismissing it changes nothing. Come back with a real key and the board will have its first card — then a session has something to run on."
 				}
 			],
 			"storyboard": "desktop-dark/storyboard.png"
@@ -43,28 +50,35 @@
 					"name": "board",
 					"file": "mobile-dark/01-board.png",
 					"title": "Every account you can run on",
-					"body": "Accounts are the provider credentials your agents run on. This board is empty until you add one, and nothing can be launched before it has one."
+					"body": "An account is one provider credential — the thing an agent bills its tokens to. This board is the whole list, and until it holds one, nothing can be launched."
+				},
+				{
+					"index": 1,
+					"name": "anatomy",
+					"file": "mobile-dark/02-anatomy.png",
+					"title": "What each card tells you",
+					"body": "A card carries its name and emoji, who owns it, which providers and models it can reach, and how much of its budget is already spent. The grip on its left edge is how it joins a pool."
 				},
 				{
 					"index": 2,
-					"name": "pool",
-					"file": "mobile-dark/02-pool.png",
+					"name": "pools",
+					"file": "mobile-dark/03-pools.png",
 					"title": "A pool is a set of interchangeable accounts",
-					"body": "Launches aimed at the pool elect a member by headroom, so a spent weekly budget on one account does not stop the work."
+					"body": "Aim a session at a pool instead of one account and it elects whichever member has the most budget left, so a weekly limit reached on one account does not stop your work. Drag a card by its grip onto a pool to add it, or use the card’s own menu — the same change without a mouse, which is how it is done on a phone."
 				},
 				{
 					"index": 3,
-					"name": "handle",
-					"file": "mobile-dark/03-handle.png",
-					"title": "Drag an account into a pool",
-					"body": "The grip on a card lifts it; dropping it on a pool adds it to the membership."
+					"name": "add",
+					"file": "mobile-dark/04-add.png",
+					"title": "Add your first account",
+					"body": "Open the dialog. You will name the credential, pick its provider and paste the key — nothing leaves this instance, and the key is encrypted before it is stored."
 				},
 				{
 					"index": 4,
-					"name": "menu",
-					"file": "mobile-dark/04-menu.png",
-					"title": "Or add it from the card menu",
-					"body": "The same membership change without a mouse drag, which is also how it is done on a phone."
+					"name": "closed",
+					"file": "mobile-dark/05-closed.png",
+					"title": "Close it for now",
+					"body": "Nothing is saved until you submit, so dismissing it changes nothing. Come back with a real key and the board will have its first card — then a session has something to run on."
 				}
 			],
 			"storyboard": "mobile-dark/storyboard.png"

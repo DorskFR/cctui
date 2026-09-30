@@ -6,28 +6,46 @@
 
 **Start here: is the fleet healthy?**
 
-One control room for every Claude Code session you run. These tiles answer the first question before you touch anything — what is live, what is stuck, which machines are up.
+One control room for every coding agent you run. These tiles answer the first question before you touch anything — what is live, what is stuck, which machines are up.
 
-![sessions](02-sessions.png)
+![attention](02-attention.png)
+
+**The only number that needs you**
+
+An agent waiting on an answer stops making progress until you reply. That is why this count sits on the landing page rather than inside a list you have to go looking for.
+
+![nav](03-nav.png)
+
+**The nav is the whole app**
+
+Six destinations, and you will live in the second one. Open Sessions.
+
+![sessions](04-sessions.png)
 
 **Sessions — where the work happens**
 
 Every run you have started, grouped by what it needs from you. The ones blocked on an answer rise to the top, so a long fleet still reads in one glance.
 
-![accounts](03-accounts.png)
+![start](05-start.png)
 
-**Accounts — where the quota comes from**
+**Starting one**
 
-Provider accounts are grouped into pools, and a session draws from a pool rather than a fixed account, so one hitting a rate limit steps aside instead of stalling the queue.
+This turns a prompt into a running agent: pick the machine, the folder and the account, and it works in the background whether or not you keep the tab open.
 
-![access](04-access.png)
+![accounts](06-accounts.png)
+
+**Accounts — the credentials work runs on**
+
+Provider accounts can be grouped into pools, and a session can draw from a pool rather than one fixed account, so one hitting a rate limit steps aside instead of stalling the queue.
+
+![access](07-access.png)
 
 **Access — what may run work**
 
 Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open.
 
-![guides](05-guides.png)
+![guides](08-guides.png)
 
 **Now walk it for real**
 
-That is every screen. The remaining guides run inside the app, pointing at the real controls in order — connect an account, enrol a machine, start a session, follow it. They all live on this page.
+That is every screen. The rest of the guides run inside the app and point at the real controls in order — read the fleet, connect an account, enrol a machine, start a session, follow it. Start with this one.

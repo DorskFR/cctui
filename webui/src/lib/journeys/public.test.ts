@@ -40,7 +40,7 @@ const captures = (ir: ReturnType<typeof compile>) =>
 	ir.steps.flatMap((s) => (s.capture ? [s.capture.name] : []));
 // Must mirror the keys guideParams() fills.
 const HOST_PARAMS = ['fixture.me', 'account', 'pool', 'fixture.session'];
-const FILL_PARAMS = ['var.label', 'var.prompt'];
+const FILL_PARAMS = ['var.label', 'var.prompt', 'var.query', 'var.facet', 'var.blank'];
 const PROBES = Object.keys(createProbes(new QueryClient()));
 
 /** The expectation keys whose value addresses the DOM; `url`, `probe` and
@@ -83,7 +83,14 @@ describe('public journey set', () => {
 			'usage-overview',
 			'settings-tour'
 		]);
-		expect(pub('search-sessions').steps.map((s) => s.id)).toEqual(['box', 'facets', 'combine']);
+		expect(pub('search-sessions').steps.map((s) => s.id)).toEqual([
+			'box',
+			'whole',
+			'free-text',
+			'facet',
+			'combine',
+			'clear'
+		]);
 	});
 
 	it('has a public tour behind every guide it registers', () => {
@@ -153,7 +160,7 @@ describe('public journey set', () => {
 			const source = readFileSync(`src/${file}`, 'utf8');
 			// A hook reaches the DOM either as a markup attribute or, when a kit
 			// component renders the element, through its `attrs` object.
-			for (const re of [/data-journey="([^"]+)"/g, /'data-journey':\s*'([^']+)'/g]) {
+			for (const re of [/\bjourney="([^"]+)"/g, /'data-journey':\s*'([^']+)'/g]) {
 				for (const m of source.matchAll(re)) anchors.add(m[1]);
 			}
 		}
@@ -192,10 +199,60 @@ describe('public journey set', () => {
 		}
 	});
 
-	it('gates the enroll probe wait on a long timeout', () => {
-		const enroll = pub('enroll-machine').steps.find((s) => s.id === 'enroll')!;
-		expect(enroll.timeout).toBe(600000);
-		expect(enroll.expect).toContainEqual({ probe: 'machines.online' });
+	it('fills a real field, not the wrapper its anchor sits on', () => {
+		// A typing human's input event bubbles, so a wrapper works in guide mode and
+		// fails in the book, which fills the resolved element itself. These are the
+		// anchors that sit on a field rather than around one.
+		const FIELDS = ['label', 'prompt', 'message'];
+		for (const id of PUBLIC_JOURNEYS) {
+			for (const step of pub(id).steps) {
+				if (step.do.kind !== 'fill') continue;
+				const where = `${id}/${step.id}`;
+				if (typeof step.target === 'object') {
+					expect(step.target, where).toMatchObject({ within: expect.any(String) });
+					continue;
+				}
+				const leaf = String(step.target).split('/').at(-1)!.split('[')[0];
+				expect(FIELDS, `${where} fills "${leaf}", which is not a known field anchor`).toContain(leaf);
+			}
+		}
+	});
+
+	it('never parks a guide on state the user has not created yet', () => {
+		// A probe expectation in guide mode polls until `step.timeout`, and a guide
+		// that waits for a machine to enrol is a guide that never ends.
+		for (const id of PUBLIC_JOURNEYS) {
+			for (const step of pub(id).steps) {
+				expect(step.timeout ?? 0, `${id}/${step.id}`).toBeLessThanOrEqual(30000);
+				for (const e of step.expect ?? []) {
+					expect('probe' in e, `${id}/${step.id} waits on a probe`).toBe(false);
+				}
+			}
+		}
+	});
+
+	it('marks no public step optional, which guide mode cannot honour', () => {
+		// `optional` is only consulted when resolving a target times out, and the
+		// human actor resolves without a timeout — so it skips nothing and the
+		// step hangs instead.
+		for (const id of PUBLIC_JOURNEYS) {
+			for (const step of pub(id).steps) {
+				expect(step.optional, `${id}/${step.id}`).toBeUndefined();
+			}
+		}
+	});
+
+	it('keeps every step of the spawn dialog interactive while it is open', () => {
+		// The dialog is modal, so everything outside it — including the guide card's
+		// own Next button — is not hit-testable. A passive step there is a dead end.
+		const steps = pub('spawn-session').steps;
+		const open = steps.findIndex((s) => s.id === 'open');
+		const close = steps.findIndex((s) => s.id === 'save');
+		expect(open).toBeGreaterThanOrEqual(0);
+		expect(close).toBeGreaterThan(open);
+		for (const step of steps.slice(open, close + 1)) {
+			expect(step.do.kind, `spawn-session/${step.id}`).not.toBe('none');
+		}
 	});
 
 	it('keeps the follow-session public tour free of mutations', () => {
@@ -206,11 +263,15 @@ describe('public journey set', () => {
 			'open',
 			'header',
 			'meta',
+			'details',
+			'activity',
 			'actions',
 			'kinds',
 			'line-actions',
 			'filters',
 			'filter-menu',
+			'tools-only',
+			'tools-restore',
 			'reply'
 		]);
 	});
@@ -224,33 +285,27 @@ describe('public journey set', () => {
 	it('keeps sessions-list on its own surface and off the theme picker', () => {
 		expect(pub('sessions-list').steps.map((s) => s.id)).toEqual([
 			'list',
-			'search',
+			'anatomy',
 			'sections',
-			'starred',
 			'options',
-			'grouping',
 			'view',
-			'group-sort',
-			'group-actions'
+			'density-mobile',
+			'search',
+			'clear'
 		]);
 		for (const step of pub('sessions-list').steps) {
 			expect(JSON.stringify(step.target ?? ''), step.id).not.toMatch(/data-tsu|theme/i);
 		}
 	});
 
-	it('lets the group steps skip on an instance that has no groups yet', () => {
-		for (const id of ['group-sort', 'group-actions']) {
-			const step = pub('sessions-list').steps.find((s) => s.id === id)!;
-			expect(step.optional, id).toBe(true);
-			for (const e of step.expect ?? []) {
-				expect(e, id).toMatchObject({ visible: { nth: 0 } });
-			}
-		}
+	it('gives the density switch a twin for the width that does not have it', () => {
+		const ids = pub('sessions-list').steps;
+		expect(ids.find((s) => s.id === 'view')!.when).toEqual({ viewport: 'desktop' });
+		expect(ids.find((s) => s.id === 'density-mobile')!.when).toEqual({ viewport: 'mobile' });
 	});
 
 	it('indexes every anchor whose component repeats, in both lane specs', () => {
 		const indexed: Record<string, string[]> = {
-			'sessions-list': ['view', 'group-sort', 'group-actions'],
 			'follow-session': ['open', 'kinds', 'line-actions']
 		};
 		for (const [id, stepIds] of Object.entries(indexed)) {
@@ -270,25 +325,16 @@ describe('public journey set', () => {
 	});
 
 	it('adds an account only after the book has captured the board', () => {
-		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual(['board', 'card', 'pools', 'add']);
-		const ids = book('accounts-pools').steps.map((s) => s.id);
-		expect(ids).toEqual(['board', 'card', 'pool', 'handle', 'menu', 'pools', 'add']);
-		expect(ids.indexOf('add')).toBeGreaterThan(ids.lastIndexOf('menu'));
+		const ids = pub('accounts-pools').steps.map((s) => s.id);
+		expect(ids).toEqual(['board', 'anatomy', 'pools', 'add', 'close']);
+		// The dialog must be shut again, or the run ends with it covering the board.
+		expect(ids.indexOf('close')).toBeGreaterThan(ids.indexOf('add'));
+		expect(ids.at(-1)).toBe('close');
 	});
 
 	it('walks spawn-session through the machine and folder before the fills', () => {
 		const ids = pub('spawn-session').steps.map((s) => s.id);
-		expect(ids).toEqual([
-			'open',
-			'where',
-			'name',
-			'prompt',
-			'profiles',
-			'profile-new',
-			'save',
-			'sections',
-			'show-drafts'
-		]);
+		expect(ids).toEqual(['open', 'where', 'name', 'prompt', 'profiles', 'save', 'drafts']);
 		const open = pub('spawn-session').steps[0];
 		expect(open.expect).not.toContainEqual({ enabled: 'draft' });
 		// The draft button only enables once machine+folder are set, so no step
@@ -303,7 +349,10 @@ describe('book fidelity', () => {
 	it('keeps every screenshot capture the docs are built from', () => {
 		expect(captures(book('welcome'))).toEqual([
 			'overview',
+			'attention',
+			'nav',
 			'sessions',
+			'start',
 			'accounts',
 			'access',
 			'guides'
@@ -311,13 +360,21 @@ describe('book fidelity', () => {
 		expect(captures(book('enroll-machine'))).toEqual([
 			'access',
 			'command',
-			'enroll',
+			'copy',
+			'online',
 			'user',
-			'machines'
+			'tabs'
 		]);
-		expect(captures(book('accounts-pools'))).toEqual(['board', 'pool', 'handle', 'menu']);
+		expect(captures(book('accounts-pools'))).toEqual([
+			'board',
+			'anatomy',
+			'pools',
+			'add',
+			'closed'
+		]);
 		expect(captures(book('spawn-session'))).toEqual([
 			'dialog',
+			'where',
 			'filled',
 			'profiles',
 			'saved',
@@ -326,41 +383,55 @@ describe('book fidelity', () => {
 		expect(captures(book('follow-session'))).toEqual([
 			'drawer',
 			'header',
+			'details',
+			'activity',
 			'timeline',
 			'line',
 			'tools',
+			'restored',
 			'reply'
 		]);
 		expect(captures(book('sessions-list'))).toEqual([
 			'list',
-			'search',
+			'anatomy',
 			'sections',
 			'options',
-			'group'
+			'view',
+			'search',
+			'cleared'
 		]);
-		expect(captures(book('search-sessions'))).toEqual(['box', 'before', 'text', 'facet']);
+		expect(captures(book('search-sessions'))).toEqual([
+			'box',
+			'before',
+			'text',
+			'facet',
+			'combined',
+			'cleared'
+		]);
 		expect(captures(book('usage-overview'))).toEqual(['tiles', 'periods', 'windows', 'analytics']);
 		expect(captures(book('settings-tour'))).toEqual([
-			'appearance',
 			'theme',
+			'language',
 			'sessions',
 			'execution',
-			'privacy'
+			'privacy',
+			'guides'
 		]);
 	});
 
-	it('keeps the fixture assertions in the book compile', () => {
-		const list = book('sessions-list').steps.find((s) => s.id === 'list-fixture')!;
-		expect(list.qaOnly).toBe(true);
-		expect(list.expect).toContainEqual({ count: ['session', { min: 4 }] });
-		const machines = book('enroll-machine').steps.find((s) => s.id === 'machines')!;
-		expect(machines.target).toEqual({ role: 'tab', name: 'Machines 2' });
-		expect(book('search-sessions').steps).toHaveLength(6);
+	it('shoots the guides screen, which the book had never photographed', () => {
+		const guides = book('settings-tour').steps.find((s) => s.id === 'guides')!;
+		expect(guides.route).toBe('/settings/guides');
+		expect(guides.capture?.name).toBe('guides');
+		expect(JSON.stringify(guides.target)).toContain('guide');
 	});
-	/** Guide mode runs `humanActor`. The engine offers a Next affordance only when
-	 *  `step.guide === 'next'`; otherwise the step advances by the user performing
-	 *  `step.do`. A step with neither awaits a promise nothing resolves, so the
-	 *  tour dead-ends on it and Esc is the only way out. */
+
+	it('ships no qaOnly step, so the book and the guide teach the same thing', () => {
+		for (const id of PUBLIC_JOURNEYS) {
+			expect(book(id).steps.map((s) => s.id), id).toEqual(pub(id).steps.map((s) => s.id));
+		}
+	});
+
 	it('leaves no step a user cannot advance past', () => {
 		const stuck = PUBLIC_JOURNEYS.flatMap((id) =>
 			pub(id)

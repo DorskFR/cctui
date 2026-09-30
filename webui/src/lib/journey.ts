@@ -113,12 +113,14 @@ export const PUBLIC_JOURNEYS: readonly string[] = [
  *  what a guide is allowed to start is the curriculum's call, not a probe's. */
 export const READINESS: Record<string, string> = {
 	'spawn-session': 'machines.online',
-	'follow-session': 'sessions.live'
+	'follow-session': 'sessions.live',
+	'search-sessions': 'sessions'
 };
 
 const READINESS_HINTS: Record<string, () => string> = {
 	'machines.online': () => m.journey_not_ready_machines_online(),
-	'sessions.live': () => m.journey_not_ready_sessions_live()
+	'sessions.live': () => m.journey_not_ready_sessions_live(),
+	sessions: () => m.journey_not_ready_sessions()
 };
 
 export function readinessHint(id: string): string | undefined {
@@ -171,7 +173,13 @@ export type GuideParams = Record<string, string>;
 /** The real-instance names the specs address through `{param}` keys. A name
  *  that does not exist stays absent, and the guide that needs it is refused. */
 export async function guideParams(qc: QueryClient): Promise<GuideParams> {
-	const out: GuideParams = { 'var.label': '', 'var.prompt': '' };
+	const out: GuideParams = {
+		'var.label': '',
+		'var.prompt': '',
+		'var.query': '',
+		'var.facet': '',
+		'var.blank': ''
+	};
 	const me = await qc.fetchQuery({ queryKey: qk.me, queryFn: endpoints.me, staleTime: 5 * 60_000 });
 	if (me.user_name) out['fixture.me'] = me.user_name;
 	const [accounts, pools, sessions] = await Promise.all([
@@ -208,7 +216,7 @@ export interface StartGuideOptions {
 	 *  list refuses the guide; the caller has already said so on the page. */
 	blockedBy?: readonly string[];
 	/** Closing card copy. Omitted, the tour ends where its last step left off. */
-	conclusion?: { title: string; xp: number };
+	conclusion?: { title: string; xp: number; next?: string };
 	/** Where to hand the user back on any ending, including Esc. */
 	returnTo?: string;
 }
@@ -344,6 +352,7 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			await api.register(publicJourneys);
 		}
 		watchLocale(api);
+		watchViewport(api);
 	})();
 	return mounted;
 }
@@ -395,7 +404,7 @@ async function returnTo(opts: StartGuideOptions): Promise<void> {
 
 /** A deck closes on its own last card, so a conclusion would stack a second
  *  one on top of it; it still hands the user back to the guides. */
-async function concludeGuide(ir: IR, conclusion: { title: string; xp: number }): Promise<void> {
+async function concludeGuide(ir: IR, conclusion: { title: string; xp: number; next?: string }): Promise<void> {
 	if (!isDeck(ir)) await showConclusion(conclusion);
 	if (location.pathname !== GUIDES_ROUTE) await goto(GUIDES_ROUTE);
 }
@@ -435,13 +444,28 @@ function watchLocale(api: JourneyApi): void {
 	new MutationObserver(() => {
 		if (root.lang === lang) return;
 		lang = root.lang;
-		const current = api.current();
-		if (!current) return;
-		void api.start(current.id, {
-			mode: 'guide',
-			from: current.index,
-			params: lastParams,
-			variant: viewportVariant()
-		});
+		redrawCurrent(api);
 	}).observe(root, { attributeFilter: ['lang'] });
+}
+
+/** `shouldSkip` reads the variant the run was started with, so a window that
+ *  crosses the mobile breakpoint mid-guide would keep offering the steps of the
+ *  width it no longer has. Re-drawing at the same step re-resolves it. */
+function watchViewport(api: JourneyApi): void {
+	if (typeof window.matchMedia !== 'function') return;
+	const query = window.matchMedia(MOBILE_QUERY);
+	const onChange = () => redrawCurrent(api);
+	if (typeof query.addEventListener === 'function') query.addEventListener('change', onChange);
+	else query.addListener(onChange);
+}
+
+function redrawCurrent(api: JourneyApi): void {
+	const current = api.current();
+	if (!current) return;
+	void api.start(current.id, {
+		mode: 'guide',
+		from: current.index,
+		params: lastParams,
+		variant: viewportVariant()
+	});
 }

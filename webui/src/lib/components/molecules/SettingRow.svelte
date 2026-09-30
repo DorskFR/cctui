@@ -19,7 +19,9 @@
 		disabled = false,
 		selfLabelled = false,
 		children,
-		helpSlot
+		helpSlot,
+		journey,
+		journeyKey
 	}: {
 		label: string;
 		help?: string;
@@ -33,6 +35,9 @@
 		children?: Snippet;
 		/** Rich help (links, kbd) — used instead of `help` when given. */
 		helpSlot?: Snippet;
+		/** Guide anchor name, so a tour can point at this row. */
+		journey?: string;
+		journeyKey?: string;
 	} = $props();
 
 	const uid = $props.id();
@@ -47,7 +52,14 @@
 	</span>
 {/snippet}
 
-<div class="row" class:wide class:disabled data-setting-row>
+<div
+	class="row"
+	class:wide
+	class:disabled
+	data-setting-row
+	data-journey={journey}
+	data-journey-key={journeyKey}
+>
 	<div class="lbl">
 		{#if selfLabelled}
 			<Text weight="semibold" as="div">{@render lblLine()}</Text>

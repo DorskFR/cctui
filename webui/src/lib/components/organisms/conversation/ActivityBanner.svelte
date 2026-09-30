@@ -28,7 +28,14 @@
 </script>
 
 {#if !archived}
-	<div class="activity" class:idle={!active} role="status" aria-live="polite">
+	<div
+		class="activity"
+		class:idle={!active}
+		role="status"
+		aria-live="polite"
+		data-journey="activity"
+		data-journey-key={active ? 'live' : 'idle'}
+	>
 		<div class="row">
 			<span class="dot" class:spin={active} aria-hidden="true"></span>
 			<span class="status" title={active ? status : undefined}>
