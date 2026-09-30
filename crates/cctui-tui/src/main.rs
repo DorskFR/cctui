@@ -2,8 +2,12 @@ mod app;
 mod client;
 mod install;
 mod selfupdate;
+#[cfg(test)]
+mod testsupport;
 mod theme;
 mod ui;
+#[cfg(test)]
+mod view_snapshots;
 mod views;
 mod widgets;
 

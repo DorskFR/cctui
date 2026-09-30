@@ -41,5 +41,6 @@ semver.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+insta = "1"
 pretty_assertions = "1.4.1"
 tempfile.workspace = true
