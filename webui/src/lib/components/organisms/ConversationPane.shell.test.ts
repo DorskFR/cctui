@@ -38,15 +38,15 @@ describe('ConversationPane chrome', () => {
 		expect(pane).toContain("contained={chrome === 'tile'}");
 	});
 
-	it('swaps the back chevron for a close × and adds maximize only in a tile', () => {
-		expect(header).toContain("icon={chrome === 'tile' ? 'x' : 'chevron-left'}");
+	it('drops the back control and adds maximize when the shell asks for them', () => {
+		expect(header).toContain('{#if onclose}');
 		expect(header).toContain('{#if onmaximize}');
-		expect(header).toContain("chrome = 'drawer'");
 	});
 
-	it('offers "open in tiles" from the drawer only', () => {
-		expect(pane).toContain("onopenintiles={chrome === 'drawer'");
-		expect(header).toContain('m.tiles_open_here()');
+	it('has no "open in tiles" entry: tiles are a Sessions view mode', () => {
+		expect(pane).not.toContain('onopenintiles');
+		expect(header).not.toContain('tiles_open_here');
+		expect(pane).not.toContain('tilesHref');
 	});
 
 	it('holds the session open for the notifier while it is mounted', () => {

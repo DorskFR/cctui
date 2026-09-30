@@ -188,3 +188,40 @@ describe('SessionsListController — multi-select', () => {
 		expect(ctl.anchorId).toBeNull();
 	});
 });
+
+describe('SessionsListController — tile rows', () => {
+	it('is one flat sorted run, not the bucket groups', () => {
+		const { ctl, setItems, setSort } = make();
+		setSort('name');
+		setItems([
+			session({ id: 'b', name: 'beta', bucket: 'done' }),
+			session({ id: 'a', name: 'alpha', bucket: 'working' }),
+			session({ id: 'c', name: 'gamma', pinned: true })
+		]);
+		expect(ctl.tileRows.map((s) => s.id)).toEqual(['c', 'b', 'a']);
+	});
+
+	it('never includes an archived or draft session', () => {
+		const { ctl, setItems } = make();
+		setItems([
+			session({ id: 'live' }),
+			session({ id: 'gone', status: 'archived' }),
+			session({ id: 'draft', status: 'draft' })
+		]);
+		expect(ctl.tileRows.map((s) => s.id)).toEqual(['live']);
+	});
+
+	it('drops dispatched rows while their section is off', () => {
+		const { ctl, setItems, setSections } = make();
+		setSections(new Set<Section>(['starred', 'live']));
+		setItems([session({ id: 'live' }), session({ id: 'disp', machine_kind: 'dispatch' })]);
+		expect(ctl.tileRows.map((s) => s.id)).toEqual(['live']);
+	});
+
+	it('brings dispatched rows back once their section is on', () => {
+		const { ctl, setItems, setSections } = make();
+		setSections(new Set<Section>(['starred', 'live', 'dispatched']));
+		setItems([session({ id: 'live' }), session({ id: 'disp', machine_kind: 'dispatch' })]);
+		expect(ctl.tileRows.map((s) => s.id).sort()).toEqual(['disp', 'live']);
+	});
+});

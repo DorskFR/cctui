@@ -30,9 +30,9 @@ describe('drawer back control', () => {
 		expect(backButton()).not.toContain("'back'");
 	});
 
-	it('becomes a close × in a tile, where there is nothing to go back to', () => {
-		expect(backButton()).toContain("chrome === 'tile' ? 'x' : 'chevron-left'");
-		expect(backButton()).toContain('m.tiles_close_tile()');
+	it('is rendered only when the shell has something to go back to', () => {
+		expect(header).toContain('{#if onclose}');
+		expect(header).not.toContain("chrome === 'tile' ? 'x' : 'chevron-left'");
 	});
 
 	it('stays a quiet affordance — no chip box, no oversized glyph', () => {

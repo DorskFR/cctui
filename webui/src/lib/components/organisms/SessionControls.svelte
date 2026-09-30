@@ -11,6 +11,7 @@
 	import MacrosMenu from './MacrosMenu.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
+	import type { ViewMode } from '../../../routes/sessions/sessionsPage.svelte';
 
 	// The sessions list toolbar: title + search + section/label filters +
 	// view picker + multi-select toggle + New. A uniform, self-contained block —
@@ -23,7 +24,8 @@
 		sections = $bindable(),
 		labels,
 		labelFilter = $bindable(),
-		cardView = $bindable(),
+		view = $bindable(),
+		tiles = true,
 		colorBy,
 		groupBy,
 		onColorBy,
@@ -41,7 +43,9 @@
 		sections: Set<Section>;
 		labels: Label[];
 		labelFilter: Set<string>;
-		cardView: boolean;
+		view: ViewMode;
+		/** Whether the tiles option is offered (not below the mobile breakpoint). */
+		tiles?: boolean;
 		colorBy: Dimension;
 		groupBy: Dimension;
 		onColorBy: (v: Dimension) => void;
@@ -100,7 +104,7 @@
 {/snippet}
 {#snippet foldControls(menu: boolean)}
 	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
-	<ViewPicker {menu} bind:cardView />
+	<ViewPicker {menu} {tiles} bind:view />
 	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
 	     flex bar mid-type and makes the search field jump. -->
 	{#if selecting}

@@ -80,6 +80,12 @@ export class SessionsListController {
 			(s) => bucketInSection(groupOf(s), this.#in.sections()) && this.#keep(s)
 		)
 	);
+	// Tiles are one flat, sorted run of the live rows the list would show:
+	// buckets change as a session works, and a tile must not move when it does.
+	tileRows = $derived.by(() =>
+		this.#sort(this.#liveTopFiltered.filter((s) => s.status !== 'archived'))
+	);
+
 	groupedSections = $derived.by(() =>
 		bucketed(this.#in.groupBy())
 			? []

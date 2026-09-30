@@ -1,111 +1,103 @@
 import { describe, expect, it } from 'vitest';
-import {
-	clampMaxTiles,
-	clampSplitDirection,
-	rowCounts,
-	tileLayout,
-	TILES_MAX,
-	TILES_MIN
-} from './tiles';
+import { rowCounts, stableTileOrder, tileGrid, tileLayout } from './tiles';
 
-/** Every tile's covered sub-track range, per row, so a layout can be checked
- *  for holes and overlaps rather than by eyeballing numbers. */
-function coverage(n: number, split: 'vertical' | 'horizontal' = 'vertical') {
-	const { tracks, rows, placements } = tileLayout(n, split);
-	const perRow = new Map<number, number[]>();
-	for (const p of placements) {
-		const row = perRow.get(p.row) ?? new Array(tracks).fill(0);
-		for (let t = p.start; t < p.start + p.span; t++) row[t - 1]++;
-		perRow.set(p.row, row);
-	}
-	return { tracks, rows, perRow, placements };
-}
+const MONITOR = { width: 1920, height: 1080 };
+const ULTRAWIDE = { width: 3840, height: 1080 };
+const PORTRAIT = { width: 1080, height: 1920 };
 
-describe('tileLayout', () => {
-	it('fills every row completely, with no overlap, for 1…9 tiles', () => {
-		for (const split of ['vertical', 'horizontal'] as const) {
-			for (let n = 1; n <= 9; n++) {
-				const { tracks, rows, perRow, placements } = coverage(n, split);
-				expect(placements, `n=${n}`).toHaveLength(n);
-				expect(perRow.size, `n=${n} rows`).toBe(rows);
-				for (const [row, cells] of perRow) {
-					expect(cells, `n=${n} ${split} row ${row}`).toEqual(new Array(tracks).fill(1));
-				}
+describe('tileGrid', () => {
+	it('gives one pane the whole window', () => {
+		expect(tileGrid(1, MONITOR)).toEqual({ cols: 1, rows: 1 });
+	});
+
+	it('puts two panes side by side on a landscape monitor', () => {
+		expect(tileGrid(2, MONITOR)).toEqual({ cols: 2, rows: 1 });
+	});
+
+	it('stacks two panes on a portrait viewport', () => {
+		expect(tileGrid(2, PORTRAIT)).toEqual({ cols: 1, rows: 2 });
+	});
+
+	it('quadrants four panes', () => {
+		expect(tileGrid(4, MONITOR)).toEqual({ cols: 2, rows: 2 });
+	});
+
+	it('keeps three panes in a 2x2 so none turns into a slit', () => {
+		expect(tileGrid(3, MONITOR)).toEqual({ cols: 2, rows: 2 });
+	});
+
+	it('spreads 16 panes 8 wide by 2 on a 32:9 viewport', () => {
+		expect(tileGrid(16, ULTRAWIDE)).toEqual({ cols: 8, rows: 2 });
+	});
+
+	it('squares the same 16 panes to 4x4 on 16:9', () => {
+		expect(tileGrid(16, MONITOR)).toEqual({ cols: 4, rows: 4 });
+	});
+
+	it('never leaves a whole trailing column empty', () => {
+		for (let n = 1; n <= 24; n++) {
+			for (const vp of [MONITOR, ULTRAWIDE, PORTRAIT]) {
+				const { cols, rows } = tileGrid(n, vp);
+				expect(cols * rows, `${n} in ${vp.width}x${vp.height}`).toBeGreaterThanOrEqual(n);
+				expect((cols - 1) * rows).toBeLessThan(n);
 			}
 		}
 	});
 
-	it('gives one tile the whole area', () => {
-		expect(tileLayout(1)).toEqual({
-			tracks: 1,
-			rows: 1,
-			placements: [{ start: 1, span: 1, row: 1 }]
-		});
+	it('falls back to a sane grid before the viewport is measured', () => {
+		expect(tileGrid(4, { width: 0, height: 0 })).toEqual({ cols: 2, rows: 2 });
 	});
 
-	it('splits two side by side, or stacked on the horizontal preference', () => {
-		const v = tileLayout(2, 'vertical');
-		expect([v.tracks, v.rows]).toEqual([2, 1]);
-		expect(v.placements.map((p) => p.row)).toEqual([1, 1]);
-
-		const h = tileLayout(2, 'horizontal');
-		expect([h.tracks, h.rows]).toEqual([1, 2]);
-		expect(h.placements.map((p) => p.row)).toEqual([1, 2]);
-	});
-
-	it('widens the short last row instead of leaving a hole (n=3 is a T)', () => {
-		const { tracks, rows, placements } = tileLayout(3);
-		expect(rows).toBe(2);
-		expect(placements[0].row).toBe(1);
-		expect(placements[1].row).toBe(1);
-		expect(placements[2]).toEqual({ start: 1, span: tracks, row: 2 });
-		expect(placements[0].span).toBe(tracks / 2);
-	});
-
-	it('lays four out as a 2x2', () => {
-		const { tracks, rows, placements } = tileLayout(4);
-		expect([tracks, rows]).toEqual([2, 2]);
-		expect(placements.map((p) => [p.start, p.row])).toEqual([
-			[1, 1],
-			[2, 1],
-			[1, 2],
-			[2, 2]
-		]);
-	});
-
-	it('puts 5..9 on three columns, the partial last row widened', () => {
-		for (let n = 5; n <= 9; n++) {
-			expect(rowCounts(n, 3), `n=${n}`).toEqual(rowCounts(n, Math.ceil(Math.sqrt(n))));
-			const { tracks, placements } = tileLayout(n);
-			const lastRow = placements.filter((p) => p.row === Math.max(...placements.map((q) => q.row)));
-			expect(lastRow[0].span, `n=${n}`).toBe(tracks / lastRow.length);
-		}
-		const five = tileLayout(5);
-		expect(five.rows).toBe(2);
-		expect(five.placements.filter((p) => p.row === 1)).toHaveLength(3);
-		expect(five.placements.filter((p) => p.row === 2)).toHaveLength(2);
-	});
-
-	it('renders nothing for an empty workspace', () => {
-		expect(tileLayout(0).placements).toEqual([]);
-		expect(tileLayout(0).rows).toBe(0);
+	it('has no shape for zero panes', () => {
+		expect(tileGrid(0, MONITOR)).toEqual({ cols: 1, rows: 0 });
 	});
 });
 
-describe('tiles clamps', () => {
-	it('keeps maxTiles inside 2..9 and defaults to 4', () => {
-		expect(clampMaxTiles(undefined)).toBe(4);
-		expect(clampMaxTiles('nine')).toBe(4);
-		expect(clampMaxTiles(0)).toBe(TILES_MIN);
-		expect(clampMaxTiles(99)).toBe(TILES_MAX);
-		expect(clampMaxTiles(6)).toBe(6);
-		expect(clampMaxTiles(6.4)).toBe(6);
+describe('tileLayout', () => {
+	it('widens a short last row instead of leaving a hole', () => {
+		const l = tileLayout(3, MONITOR);
+		expect(l.tracks).toBe(2);
+		expect(l.placements).toEqual([
+			{ start: 1, span: 1, row: 1 },
+			{ start: 2, span: 1, row: 1 },
+			{ start: 1, span: 2, row: 2 }
+		]);
 	});
 
-	it('only accepts the two split directions', () => {
-		expect(clampSplitDirection('horizontal')).toBe('horizontal');
-		expect(clampSplitDirection('vertical')).toBe('vertical');
-		expect(clampSplitDirection('sideways')).toBe('vertical');
-		expect(clampSplitDirection(undefined)).toBe('vertical');
+	it('places every pane exactly once inside the grid', () => {
+		const l = tileLayout(16, ULTRAWIDE);
+		expect(l).toMatchObject({ cols: 8, rows: 2, tracks: 8 });
+		expect(l.placements).toHaveLength(16);
+		expect(l.placements.every((p) => p.start + p.span - 1 <= l.tracks)).toBe(true);
+	});
+
+	it('is empty with nothing to show', () => {
+		expect(tileLayout(0, MONITOR).placements).toEqual([]);
+	});
+});
+
+describe('rowCounts', () => {
+	it('fills rows then the remainder', () => {
+		expect(rowCounts(5, 3)).toEqual([3, 2]);
+		expect(rowCounts(4, 2)).toEqual([2, 2]);
+	});
+});
+
+describe('stableTileOrder', () => {
+	it('keeps placed tiles put when the sort reshuffles them', () => {
+		expect(stableTileOrder(['a', 'b', 'c'], ['c', 'b', 'a'])).toEqual(['a', 'b', 'c']);
+	});
+
+	it('closes the hole a removed session leaves', () => {
+		expect(stableTileOrder(['a', 'b', 'c'], ['a', 'c'])).toEqual(['a', 'c']);
+	});
+
+	it('lands a new session at the index the sort gives it', () => {
+		expect(stableTileOrder(['a', 'c'], ['a', 'b', 'c'])).toEqual(['a', 'b', 'c']);
+		expect(stableTileOrder(['a', 'b'], ['n', 'a', 'b'])).toEqual(['n', 'a', 'b']);
+	});
+
+	it('seeds straight from the sort when nothing is placed', () => {
+		expect(stableTileOrder([], ['a', 'b'])).toEqual(['a', 'b']);
 	});
 });

@@ -43,9 +43,7 @@
 	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
-	import { goto } from '$app/navigation';
 	import { notify } from '$lib/notify.svelte';
-	import { tilesHref } from '$lib/tilesLink';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
 
@@ -62,7 +60,8 @@
 		onmaximize
 	}: {
 		session: SessionListItem;
-		onclose: () => void;
+		/** Omitted in a tile, which has nothing to close back to. */
+		onclose?: () => void;
 		highlight?: string[];
 		/** Causal seq of the matched message when opened from a search hit
 		 *  (`SessionListItem.match_seq`). `null` opens tail-anchored as usual. */
@@ -261,7 +260,7 @@
 		events: () => events,
 		view: () => view,
 		actions,
-		onclose: () => onclose()
+		onclose: () => onclose?.()
 	});
 
 	const fork = new ForkController({
@@ -274,7 +273,7 @@
 		// otherwise close and let the list refetch surface it.
 		onForked: (sid) => {
 			if (sid && onNavigate) onNavigate(sid);
-			else onclose();
+			else onclose?.();
 		}
 	});
 
@@ -358,7 +357,6 @@
 				{isCodexSession}
 				livenessClass={livenessClass(session)}
 				{showStatusBadge}
-				{chrome}
 				{maximized}
 				{onmaximize}
 				{onclose}
@@ -368,12 +366,6 @@
 				oncopymarkdown={sa.copyMarkdown}
 				onexport={sa.export}
 				onsearch={() => search.openBar()}
-				onopenintiles={chrome === 'drawer'
-					? () => {
-							onclose();
-							void goto(tilesHref([id]));
-						}
-					: undefined}
 				onescape={search.escape}
 				onfork={fork.openDialog}
 				onfollowup={onFollowup ? () => followup() : undefined}

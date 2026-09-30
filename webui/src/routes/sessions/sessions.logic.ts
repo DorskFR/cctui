@@ -43,10 +43,16 @@ export const isSection = (v: string): v is Section =>
 // row survives when the filter is off, or when it has unread messages.
 export const matchesUnreadFilter = (s: SessionListItem, sections: Set<Section>): boolean =>
 	!sections.has('unread') || (s.unread_count ?? 0) > 0;
-export const parseSections = (raw: string | null): Set<Section> => {
+export const DEFAULT_SECTIONS: Section[] = ['starred', 'live', 'dispatched'];
+// Tiles put every match on screen at once, so the dispatched swarm starts off.
+export const DEFAULT_TILE_SECTIONS: Section[] = ['starred', 'live'];
+export const parseSections = (
+	raw: string | null,
+	fallback: Section[] = DEFAULT_SECTIONS
+): Set<Section> => {
 	const set = new Set<Section>((raw ?? '').split(',').filter(isSection));
 	// Never strand the user on an empty list (would render nothing).
-	return set.size ? set : new Set<Section>(['starred', 'live', 'dispatched']);
+	return set.size ? set : new Set<Section>(fallback);
 };
 
 // ── Per-section collapse ────────────────────────────────

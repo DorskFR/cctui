@@ -19,7 +19,6 @@
 	import { useSessionActions } from '$lib/queries';
 	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
-	import type { ConversationChrome } from './chrome';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -28,7 +27,6 @@
 		isCodexSession,
 		livenessClass,
 		showStatusBadge,
-		chrome = 'drawer',
 		maximized = false,
 		onmaximize,
 		onclose,
@@ -38,7 +36,6 @@
 		oncopymarkdown,
 		onexport,
 		onsearch,
-		onopenintiles,
 		onescape,
 		onfork,
 		onfollowup,
@@ -65,12 +62,11 @@
 		isCodexSession: boolean;
 		livenessClass: string;
 		showStatusBadge: boolean;
-		/** In a tile the back chevron becomes a close ×; the maximize toggle
-		 *  appears only when the shell supplies `onmaximize`. */
-		chrome?: ConversationChrome;
+		/** The maximize toggle appears only when the shell supplies `onmaximize`. */
 		maximized?: boolean;
 		onmaximize?: () => void;
-		onclose: () => void;
+		/** Omitted in a tile, which has nothing to close back to. */
+		onclose?: () => void;
 		onrename: (name: string) => void;
 		onsetmodel: (model: string, effort: string) => void;
 		oncopylink: () => void;
@@ -78,8 +74,6 @@
 		onexport: () => void;
 		/** Open the find-in-conversation bar; omitted → no entry and no ⌘F. */
 		onsearch?: () => void;
-		/** Move this session into the tiles grid; omitted → no entry. */
-		onopenintiles?: () => void;
 		/** First refusal on Escape: true when it was consumed (the find bar
 		 *  clears or closes) and the drawer must stay open. */
 		onescape?: () => boolean;
@@ -191,15 +185,6 @@
 			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
 			onselect: onforkselect ?? onfork
 		},
-		...(onopenintiles
-			? [
-					{
-						label: m.tiles_open_here(),
-						icon: 'grid' as const,
-						onselect: onopenintiles
-					}
-				]
-			: []),
 		{
 			label: m.drawer_keepalive_label(),
 			icon: 'recycle' as const,
@@ -249,7 +234,7 @@
 			e.preventDefault();
 			return;
 		}
-		onclose();
+		onclose?.();
 	}
 </script>
 
@@ -258,12 +243,9 @@
 <div class="dhead" data-journey="header">
 	<div class="dbar" class:compact={collapsed} bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
-		<IconButton
-			icon={chrome === 'tile' ? 'x' : 'chevron-left'}
-			label={chrome === 'tile' ? m.tiles_close_tile() : m.drawer_back()}
-			{box}
-			onclick={onclose}
-		/>
+		{#if onclose}
+			<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
+		{/if}
 		<SessionGlyphs
 			{session}
 			{livenessClass}

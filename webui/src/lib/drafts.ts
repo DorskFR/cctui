@@ -196,12 +196,14 @@ export function nextSessionName(last: string): string {
 }
 export const VIEW_OPTS = 'cctui_view_opts';
 export const LIST_DENSITY = 'cctui_list_density';
-// Main session list layout: 'list' (rows, default) or 'card' (responsive
-// grid of detailed cards).
+// Main session list layout: 'list' (rows, default), 'card' (responsive grid of
+// detailed cards) or 'tiles' (live conversation panes filling the window).
 export const LIST_VIEW = 'cctui_list_view';
 // Which session section is in view: 'starred' | 'live' | 'dispatched'
 // | 'archived'.
 export const LIST_SECTION = 'cctui_list_section';
+// The same, for tiles mode, which owns its own defaults.
+export const LIST_TILE_SECTION = 'cctui_list_tile_section';
 // Section headers hidden by their eye toggle, comma-joined section keys.
 export const LIST_HIDDEN = 'cctui_list_hidden';
 // Selected label-filter ids, comma-joined. Empty = show all.

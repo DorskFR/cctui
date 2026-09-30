@@ -23,16 +23,16 @@
 	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container, Toaster } from '@dorsk/tsumikit';
 	import { dockLayout } from '$lib/spawnDock.svelte';
+	import { fullBleed } from '$lib/fullBleed.svelte';
 	import { mountJourneys } from '$lib/journey';
 
 	let { children } = $props();
 
-	// A plugin's full page and the tiles grid manage their own full-height
-	// layout, so they render outside the width-capped Container and without
-	// content padding.
+	// A plugin's full page and the Sessions tiles mode manage their own
+	// full-height layout, so they render outside the width-capped Container and
+	// without content padding.
 	const isApp = $derived(page.url.pathname.startsWith('/apps/'));
-	const isTiles = $derived(page.url.pathname.startsWith('/tiles'));
-	const fullBleed = $derived(isApp || isTiles);
+	const bleed = $derived(isApp || fullBleed.on);
 
 	// Every route renders in the --content-wide column; only the session list's
 	// width is user-settable (Settings › Session list), and the cap only bites
@@ -151,13 +151,13 @@
 				<main
 					class="content"
 					class:app={isApp}
-					class:tiles={isTiles}
+					class:tiles={fullBleed.on}
 					class:dock-left={!!docks?.left}
 					class:dock-right={!!docks?.right}
 					style:--dock-left-w={docks?.left ?? undefined}
 					style:--dock-right-w={docks?.right ?? undefined}
 				>
-					{#if fullBleed}
+					{#if bleed}
 						{@render children?.()}
 					{:else}
 						<Container size={contentSize}>
