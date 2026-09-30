@@ -5,6 +5,7 @@ import {
 	accountBacksAdapter,
 	accountPickOptions,
 	adapterForProvider,
+	compatiblePools,
 	effectiveAdapterFor,
 	NO_ACCOUNT,
 	poolName,
@@ -28,6 +29,13 @@ describe('adapterForProvider', () => {
 		expect(adapterForProvider('anthropic')).toBe('claude-code');
 		expect(adapterForProvider('anthropic-compatible')).toBe('claude-code');
 	});
+
+	// Mirrors the server's Family: fireworks is its own family, run by OpenCode
+	// only. Mapped to claude-code, a fireworks-only account was offered under
+	// Claude Code and the spawn failed with "has no anthropic provider".
+	it('maps fireworks to opencode, never to claude-code', () => {
+		expect(adapterForProvider('fireworks')).toBe('opencode');
+	});
 });
 
 describe('accountAdapters', () => {
@@ -40,6 +48,36 @@ describe('accountAdapters', () => {
 		expect(accountAdapters(account('anthropic'))).toEqual(['claude-code']);
 		expect(accountAdapters(account('openai-compatible'))).toEqual(['codex']);
 		expect(accountAdapters(account())).toEqual([]);
+	});
+
+	it('gives a fireworks account the opencode harness only', () => {
+		expect(accountAdapters(account('fireworks'))).toEqual(['opencode']);
+		expect(accountAdapters(account('anthropic', 'fireworks'))).toEqual(['claude-code', 'opencode']);
+		expect(accountBacksAdapter(account('fireworks'), 'claude-code')).toBe(false);
+		expect(accountBacksAdapter(account('fireworks'), 'codex')).toBe(false);
+		expect(accountBacksAdapter(account('fireworks'), 'opencode')).toBe(true);
+	});
+});
+
+describe('compatiblePools', () => {
+	const acct = (id: string, ...providers: string[]): OAuthAccount =>
+		({ id, name: id, providers: providers.map(provider) }) as unknown as OAuthAccount;
+	const pool = (id: string, ...members: string[]) => ({
+		id,
+		members: members.map((account_id) => ({ account_id }))
+	});
+	const accounts = [acct('claude', 'anthropic'), acct('spark', 'fireworks'), acct('gpt', 'openai')];
+
+	it('drops a pool whose known members all lack the harness family', () => {
+		const pools = [pool('spark-only', 'spark'), pool('mixed', 'spark', 'claude'), pool('gpt', 'gpt')] as never[];
+		const ids = (h: string) => compatiblePools(pools, accounts, h).map((p: { id: string }) => p.id);
+		expect(ids('claude-code')).toEqual(['mixed']);
+		expect(ids('codex')).toEqual(['gpt']);
+	});
+
+	it('keeps a pool with a member it cannot see, and an empty pool', () => {
+		const pools = [pool('shared', 'spark', 'someone-else'), pool('empty')] as never[];
+		expect(compatiblePools(pools, accounts, 'claude-code')).toHaveLength(2);
 	});
 });
 
@@ -182,6 +220,23 @@ describe('accountPickOptions', () => {
 			usedPct: (id) => (id === 'alpha' ? 100 : null),
 			...over
 		});
+
+	it('offers only the accounts and pools that can back the harness', () => {
+		const opts = build({
+			accounts: [acct('claude'), acct('spark', ['fireworks']), acct('gpt', ['openai'])],
+			pools: [
+				{ id: 'p1', name: 'work', members: [{ account_id: 'claude' }] },
+				{ id: 'p2', name: 'spark', members: [{ account_id: 'spark' }] }
+			] as never
+		});
+		expect(opts.map((o) => o.value)).toEqual([`${POOL_PREFIX}p1`, 'claude', '', NO_ACCOUNT]);
+		const codex = build({
+			accounts: [acct('claude'), acct('spark', ['fireworks']), acct('gpt', ['openai'])],
+			pools: [],
+			harness: 'codex'
+		});
+		expect(codex.map((o) => o.value)).toEqual(['gpt', '', NO_ACCOUNT]);
+	});
 
 	it('sections pools, then accounts, then the sentinels', () => {
 		expect(build().map((o) => o.group)).toEqual([
