@@ -99,7 +99,7 @@
 						/>
 						<Badge
 							size="sm"
-							tone={secretState(d.key) ? 'success' : 'neutral'}
+							tone={secretState(d.key) ? 'ok' : 'neutral'}
 							data-journey="plugin-instance-secret-state"
 							data-key={d.key}
 						>
@@ -149,7 +149,7 @@
 		{#if upstreamKey !== null}
 			<div class="proxy" data-journey="plugin-instance-proxy">
 				<Text size="sm" weight="medium">{m.settings_plugins_instance_proxy_label()}</Text>
-				<Badge size="sm" tone={settings.data?.proxy_secret_set ? 'success' : 'neutral'} data-journey="plugin-instance-proxy-state">
+				<Badge size="sm" tone={settings.data?.proxy_secret_set ? 'ok' : 'neutral'} data-journey="plugin-instance-proxy-state">
 					{settings.data?.proxy_secret_set
 						? m.settings_plugins_instance_secret_set()
 						: m.settings_plugins_instance_secret_unset()}

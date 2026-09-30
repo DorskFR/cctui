@@ -30,7 +30,7 @@
 		busy = true;
 		try {
 			const result = await work();
-			const secret = (result as { proxy_secret?: string } | undefined)?.proxy_secret;
+			const secret = (result as AdminPluginInfo | undefined)?.proxy_secret;
 			if (typeof secret === 'string' && secret) minted = { id: (result as { id: string }).id, secret };
 			await refresh();
 			toasts.ok(done);
