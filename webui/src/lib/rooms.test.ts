@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { canCreate, matchByName, pickable, type Room, type RoomMember } from './rooms';
+import {
+	archivableMembers,
+	canCreate,
+	matchByName,
+	pickable,
+	type Room,
+	type RoomMember
+} from './rooms';
 
-function member(id: string): RoomMember {
+function member(id: string, state: RoomMember['state'] = 'live'): RoomMember {
 	return {
 		session_id: id,
 		name: `lane ${id}`,
 		adapter: 'claude-code',
 		machine: 'box-a',
-		state: 'live',
+		state,
 		last_delivered_seq: 0
 	};
 }
@@ -49,5 +56,24 @@ describe('canCreate', () => {
 		expect(canCreate(rooms, 'WAVE 23')).toBe(false);
 		expect(canCreate(rooms, '  ')).toBe(false);
 		expect(canCreate([], 'first')).toBe(true);
+	});
+});
+
+describe('archivableMembers', () => {
+	const room = (members: RoomMember[]): Room => ({
+		id: 'r-1',
+		name: 'wave 23',
+		archived: false,
+		members
+	});
+
+	it('counts what archiving the room would actually archive', () => {
+		const r = room([member('a'), member('b', 'ended'), member('c', 'archived')]);
+		expect(archivableMembers(r).map((mem) => mem.session_id)).toEqual(['a', 'b']);
+	});
+
+	it('is empty for a room whose sessions are all archived already', () => {
+		expect(archivableMembers(room([member('a', 'archived')]))).toEqual([]);
+		expect(archivableMembers(room([]))).toEqual([]);
 	});
 });

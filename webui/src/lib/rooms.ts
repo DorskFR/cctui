@@ -24,8 +24,14 @@ export const listRooms = () => api.get<{ rooms: Room[] }>('/rooms').then((r) => 
 
 export const renameRoom = (id: string, name: string) => api.patch<Room>(`/rooms/${id}`, { name });
 
+/** The PATCH reply when archiving: the room, plus what the cascade did. */
+export interface RoomArchiveResult extends Room {
+	archived_sessions: number;
+	skipped_pinned: number;
+}
+
 export const setRoomArchived = (id: string, archived: boolean) =>
-	api.patch<Room>(`/rooms/${id}`, { archived });
+	api.patch<RoomArchiveResult>(`/rooms/${id}`, { archived });
 
 export const deleteRoom = (id: string) => api.del<void>(`/rooms/${id}`);
 
@@ -57,6 +63,15 @@ export const unsharePeer = (sessionId: string, peerSessionId: string) =>
 	api.del<void>(`/sessions/${sessionId}/peer-shares/${peerSessionId}`);
 
 // --- pure helpers ---
+
+/**
+ * Sessions archiving this room would archive: everything in it that is not
+ * already archived. An `ended` session still has a row to flag and a token to
+ * revoke, so it counts; a pinned one is skipped server-side, which the reported
+ * `skipped_pinned` surfaces after the fact rather than guessing here.
+ */
+export const archivableMembers = (room: Room): RoomMember[] =>
+	room.members.filter((mem) => mem.state !== 'archived');
 
 /** Live rooms, newest first, for the picker. */
 export const pickable = (all: Room[]): Room[] => all.filter((r) => !r.archived);

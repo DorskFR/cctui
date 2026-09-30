@@ -2083,5 +2083,8 @@
   "rooms_share_peer_find": "Find a session…",
   "rooms_share_peer_no_match": "No session matches.",
   "rooms_share_peer_hint": "A shared pair can message each other and read each other's history, without being in the same room.",
-  "rooms_unshare_peer": "Stop sharing"
+  "rooms_unshare_peer": "Stop sharing",
+  "rooms_archive_confirm": "Archive “{room}” and the {count} session(s) in it? They stop running; unarchive them individually afterwards.",
+  "rooms_archive_confirm_empty": "Archive “{room}”? Nothing in it is still running.",
+  "rooms_archive_skipped_pinned": "{count} pinned session(s) were left running."
 }

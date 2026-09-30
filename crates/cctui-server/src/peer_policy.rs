@@ -226,8 +226,7 @@ SELECT s.id, s.session_name, s.adapter_id, m.name, s.status, \
  WHERE s.id = me.parent_id \
     OR s.parent_id = me.id \
     OR (me.parent_id IS NOT NULL AND s.parent_id = me.parent_id) \
-    OR (me.room_id IS NOT NULL AND s.room_id = me.room_id \
-        AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = me.room_id AND r.archived_at IS NULL)) \
+    OR (me.room_id IS NOT NULL AND s.room_id = me.room_id) \
     OR EXISTS (SELECT 1 FROM session_peer_shares p WHERE p.revoked_at IS NULL \
                  AND ((p.session_id = me.id AND p.peer_session_id = s.id) \
                    OR (p.session_id = s.id AND p.peer_session_id = me.id))) \
@@ -242,12 +241,17 @@ SELECT 1 FROM session_peer_shares \
      OR (session_id = $2 AND peer_session_id = $1)) \
  LIMIT 1";
 
-/// `$1` is the calling session id, `$2` the target's. A room that has been
-/// archived stops authorising the sessions in it.
+/// `$1` is the calling session id, `$2` the target's.
+///
+/// The room's own `archived_at` is deliberately NOT a condition. Archiving a room
+/// archives its sessions, so the archived state lives on the sessions, where the
+/// rest of the policy already reads it: an archived peer stays readable with
+/// `CctuiHistory` and refuses a `CctuiSend` (409) exactly like any other archived
+/// session, and unarchiving one session restores its reach without having to
+/// unarchive the room too.
 pub const SAME_ROOM_SQL: &str = "\
 SELECT 1 FROM sessions a \
   JOIN sessions b ON b.room_id = a.room_id \
-  JOIN rooms r ON r.id = a.room_id AND r.archived_at IS NULL \
  WHERE a.id = $1 AND b.id = $2 AND a.room_id IS NOT NULL \
  LIMIT 1";
 
@@ -507,8 +511,9 @@ mod tests {
             "a room is a field on sessions, not a membership table"
         );
         assert!(
-            SAME_ROOM_SQL.contains("archived_at IS NULL"),
-            "an archived room must stop authorising its sessions"
+            !SAME_ROOM_SQL.contains("archived_at"),
+            "the archived state lives on the sessions, not the room: archiving a room \
+             archives them, and the rest of the policy already reads a session's state"
         );
     }
 }

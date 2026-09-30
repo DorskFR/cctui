@@ -359,15 +359,13 @@ async fn fetch_listed_rows(
                 COALESCE(m.display_name, m.name) AS resolved_machine_name, \
                 m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind, \
                 s.room_id, rm.name AS room_name";
-    // The rooms join drops archived rooms, so `room_name` is NULL for a session
-    // whose room is archived: it stops grouping and loses its badge at the same
-    // moment it stops being able to address its peers. `room_id` is left set, so
-    // unarchiving restores the grouping and the permission together.
+    // Archived rooms are joined too: archiving a room archives its sessions, and
+    // they keep their room so the archived view still groups by it.
     let non_archived_query = format!(
         "SELECT {cols} \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
-         LEFT JOIN rooms rm ON rm.id = s.room_id AND rm.archived_at IS NULL \
+         LEFT JOIN rooms rm ON rm.id = s.room_id \
          WHERE {} \
          AND ($1::uuid IS NULL OR m.user_id = $1) \
          ORDER BY s.registered_at DESC",
@@ -382,7 +380,7 @@ async fn fetch_listed_rows(
             "SELECT {cols} \
              FROM sessions s \
              LEFT JOIN machines m ON m.id = s.machine_uuid \
-             LEFT JOIN rooms rm ON rm.id = s.room_id AND rm.archived_at IS NULL \
+             LEFT JOIN rooms rm ON rm.id = s.room_id \
              WHERE s.status = 'archived' \
              AND ($1::uuid IS NULL OR m.user_id = $1) \
              ORDER BY s.registered_at DESC LIMIT 25",
@@ -1081,7 +1079,7 @@ const SEARCH_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.working_d
             s.room_id, rm.name AS room_name \
      FROM sessions s \
      LEFT JOIN machines m ON m.id = s.machine_uuid \
-     LEFT JOIN rooms rm ON rm.id = s.room_id AND rm.archived_at IS NULL";
+     LEFT JOIN rooms rm ON rm.id = s.room_id";
 
 const SEARCH_DEFAULT_LIMIT: i64 = 100;
 const SEARCH_MAX_LIMIT: i64 = 500;

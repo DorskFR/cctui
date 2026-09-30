@@ -62,7 +62,81 @@ pub struct UpdateRoomRequest {
     pub archived: Option<bool>,
 }
 
+/// Session ids in `room`, live ones first, for the archive cascade.
+///
+/// Read before the room is flagged, because the flag is not what selects them —
+/// `room_id` is, and it deliberately survives the archive so the list keeps
+/// grouping archived sessions under their room.
+async fn sessions_in_room(
+    pool: &sqlx::PgPool,
+    room_id: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM sessions WHERE room_id = $1 AND status <> 'archived' \
+         ORDER BY registered_at",
+    )
+    .bind(room_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// What archiving a room did, per session.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct CascadeCounts {
+    pub archived: usize,
+    /// Pinned sessions are never swept along, exactly as in a batch archive: a
+    /// star means "do not lose this", and a room-wide gesture is precisely where
+    /// one would slip through.
+    pub skipped_pinned: usize,
+}
+
+/// Archive every session in `room`, through the same [`archive_one`] the manual
+/// and batch archives use — so the daemon `Remove` is dispatched, descendants go
+/// with their parent, classifier signals are cleared and gateway tokens are
+/// revoked, without any of that being reimplemented here.
+///
+/// [`archive_one`]: crate::routes::sessions::archive_one
+async fn archive_room_sessions(state: &AppState, room_id: Uuid) -> CascadeCounts {
+    let ids = match sessions_in_room(&state.pool, room_id).await {
+        Ok(ids) => ids,
+        Err(err) => {
+            tracing::error!(room = %room_id, %err, "room archive: session lookup failed");
+            return CascadeCounts::default();
+        }
+    };
+    let mut counts = CascadeCounts::default();
+    for id in &ids {
+        match crate::routes::sessions::archive_one(
+            state,
+            id,
+            false,
+            cctui_proto::adapter::RemoveInitiator::User,
+        )
+        .await
+        {
+            Ok(crate::routes::sessions::ArchiveOutcome::Archived) => counts.archived += 1,
+            Ok(crate::routes::sessions::ArchiveOutcome::SkippedPinned) => {
+                counts.skipped_pinned += 1;
+            }
+            Err(err) => tracing::error!(session = %id, %err, "room archive: session db error"),
+        }
+    }
+    tracing::info!(
+        room = %room_id,
+        archived = counts.archived,
+        skipped_pinned = counts.skipped_pinned,
+        requested = ids.len(),
+        "room archived with its sessions",
+    );
+    counts
+}
+
 /// `PATCH /api/v1/rooms/{id}` — rename, archive or unarchive.
+///
+/// Archiving a room archives every session in it. Unarchiving does NOT bring them
+/// back: an archive is per-session state, sessions are unarchived individually as
+/// they always were, and a blanket revive would resurrect jobs the human archived
+/// on purpose before the room ever existed.
 pub async fn update_room(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -80,6 +154,7 @@ pub async fn update_room(
             .execute(&state.pool)
             .await?;
     }
+    let mut counts = CascadeCounts::default();
     if let Some(archived) = req.archived {
         let at = archived.then(chrono::Utc::now);
         sqlx::query("UPDATE rooms SET archived_at = $2 WHERE id = $1")
@@ -87,11 +162,18 @@ pub async fn update_room(
             .bind(at)
             .execute(&state.pool)
             .await?;
+        if archived {
+            counts = archive_room_sessions(&state, id).await;
+        }
     }
     state
         .bus
         .publish_server(cctui_proto::ws::ServerEvent::RoomMembers { room_id: id, user_id: ctx.user_id });
-    Ok(Json(json!(owned(&state, id, ctx.user_id).await?)))
+    let room = owned(&state, id, ctx.user_id).await?;
+    let mut out = json!(room);
+    out["archived_sessions"] = json!(counts.archived);
+    out["skipped_pinned"] = json!(counts.skipped_pinned);
+    Ok(Json(out))
 }
 
 /// `DELETE /api/v1/rooms/{id}` — drops the timeline with it (cascade).
@@ -565,9 +647,11 @@ mod tests {
         assert!(archived.archived);
         assert_eq!(rooms::check_sender(&archived, Some(&a)), Err(PostRefusal::Archived));
         assert_eq!(
-            crate::peer_policy::authorize(&pool, &a, &b, uid).await.unwrap_err(),
-            crate::peer_policy::Refusal::Unrelated,
-            "an archived room stops authorising its members",
+            crate::peer_policy::authorize(&pool, &a, &b, uid).await.unwrap().0,
+            crate::peer_policy::Relation::Room,
+            "an archived room still RELATES its sessions: archiving a room archives them, \
+             so the archived state is read off the sessions, and unarchiving one restores \
+             its reach without having to unarchive the room",
         );
 
         // A session is in at most one room: moving it to a second one takes it
@@ -612,6 +696,153 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(still_there, 1, "ON DELETE SET NULL, not CASCADE");
+
+        sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// DB-gated: the archive cascade picks exactly the room's own unarchived
+    /// sessions — not another room's, not a roomless one, not one already
+    /// archived — and `room_id` survives so the grouping does.
+    ///
+    /// Covers [`sessions_in_room`], the selection the cascade loops over.
+    /// `archive_room_sessions` itself is not called: `archive_one` needs an
+    /// `AppState` (registry, bus, pending commands) that the DB-gated tests in
+    /// this crate do not build.
+    #[tokio::test]
+    async fn archiving_a_room_selects_exactly_its_own_live_sessions() {
+        let Some(url) = crate::routes::gateway::test_db_url("rooms_archive_cascade") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'room-arch', $2)")
+            .bind(uid)
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        let mine: Uuid = sqlx::query_scalar(
+            "INSERT INTO rooms (user_id, name) VALUES ($1, 'mine') RETURNING id",
+        )
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let theirs: Uuid = sqlx::query_scalar(
+            "INSERT INTO rooms (user_id, name) VALUES ($1, 'theirs') RETURNING id",
+        )
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // In `mine`: two live, one ended (still has a row to flag), one already
+        // archived. Plus one in the other room and one with no room at all.
+        let live_a = Uuid::new_v4().to_string();
+        let live_b = Uuid::new_v4().to_string();
+        let ended = Uuid::new_v4().to_string();
+        let already = Uuid::new_v4().to_string();
+        let other_room = Uuid::new_v4().to_string();
+        let roomless = Uuid::new_v4().to_string();
+        for (id, room, status) in [
+            (&live_a, Some(mine), "active"),
+            (&live_b, Some(mine), "inactive"),
+            (&ended, Some(mine), "ended"),
+            (&already, Some(mine), "archived"),
+            (&other_room, Some(theirs), "active"),
+            (&roomless, None, "active"),
+        ] {
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, \
+                 adapter_id, status, room_id) \
+                 VALUES ($1, $2, '/w', $3, $4, 'claude-code', $5, $6)",
+            )
+            .bind(id)
+            .bind(machine.to_string())
+            .bind(uid)
+            .bind(machine)
+            .bind(status)
+            .bind(room)
+            .execute(&pool)
+            .await
+            .expect("seed session");
+        }
+
+        let mut picked = sessions_in_room(&pool, mine).await.expect("selection");
+        picked.sort();
+        let mut want = vec![live_a.clone(), live_b.clone(), ended.clone()];
+        want.sort();
+        assert_eq!(picked, want, "only this room's not-yet-archived sessions");
+        assert!(!picked.contains(&already), "an already-archived session is not re-archived");
+        assert!(!picked.contains(&other_room), "another room's sessions are untouched");
+        assert!(!picked.contains(&roomless), "a roomless session is untouched");
+        assert_eq!(
+            sessions_in_room(&pool, theirs).await.unwrap(),
+            vec![other_room.clone()],
+            "the other room selects its own",
+        );
+
+        // The grouping survives: archiving flags the status and leaves room_id.
+        sqlx::query("UPDATE rooms SET archived_at = now() WHERE id = $1")
+            .bind(mine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE room_id = $1")
+            .bind(mine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let room = rooms::load(&pool, mine, uid).await.unwrap().expect("room");
+        assert!(room.archived);
+        assert_eq!(room.members.len(), 4, "every session keeps its room after the archive");
+        assert!(room.members.iter().all(|mem| mem.state == "archived"));
+        assert!(
+            sessions_in_room(&pool, mine).await.unwrap().is_empty(),
+            "re-archiving the room is a no-op"
+        );
+        assert_eq!(
+            rooms::room_of_session(&pool, &live_a).await.unwrap(),
+            None,
+            "room_of_session only reports LIVE rooms, so the tool stops resolving to it",
+        );
+        let still: Option<Uuid> = sqlx::query_scalar("SELECT room_id FROM sessions WHERE id = $1")
+            .bind(&live_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(still, Some(mine), "room_id survives so the list still groups by it");
+
+        // Authz: another owner cannot even see the room, so cannot archive it.
+        assert!(rooms::load(&pool, mine, Uuid::new_v4()).await.unwrap().is_none());
+
+        // An archived room still relates its sessions: the archived state lives on
+        // the sessions, and unarchiving one restores its reach without the room.
+        assert_eq!(
+            crate::peer_policy::authorize(&pool, &live_a, &live_b, uid).await.unwrap().0,
+            crate::peer_policy::Relation::Room,
+        );
+        assert_eq!(
+            crate::peer_policy::authorize(&pool, &live_a, &other_room, uid).await.unwrap_err(),
+            crate::peer_policy::Refusal::Unrelated,
+            "a different room is still not a shared room",
+        );
 
         sqlx::query("DELETE FROM rooms WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
         sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();

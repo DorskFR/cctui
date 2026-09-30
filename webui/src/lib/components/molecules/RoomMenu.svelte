@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { Badge, Button, EmptyState, IconButton, Input, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, ConfirmModal, EmptyState, IconButton, Input, Text } from '@dorsk/tsumikit';
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
 	import {
+		archivableMembers,
 		canCreate,
 		deleteRoom,
 		listRooms,
@@ -36,6 +37,8 @@
 	let working = $state(false);
 	let renaming = $state<string | null>(null);
 	let renameTo = $state('');
+	// Archiving a room archives its sessions, so it is confirmed with the count.
+	let archiving = $state<Room | null>(null);
 
 	const ROW = 'justify-content:flex-start;text-align:left;min-width:0;font-size:var(--fs-sm)';
 	const live = $derived(pickable(rooms));
@@ -64,6 +67,15 @@
 		const hit = matchByName(rooms, name);
 		onpick(hit ? { id: hit.id } : { name });
 		query = '';
+	}
+
+	// The cascade reports what it did, so a pinned session that was left running
+	// is visible instead of silently surviving an "archive the room" gesture.
+	async function archive(room: Room) {
+		const res = await setRoomArchived(room.id, true);
+		if (res.skipped_pinned > 0) {
+			toasts.info(m.rooms_archive_skipped_pinned({ count: res.skipped_pinned }));
+		}
 	}
 
 	async function house(action: () => Promise<unknown>) {
@@ -160,7 +172,7 @@
 					inline
 					size={13}
 					disabled={working}
-					onclick={() => house(() => setRoomArchived(room.id, true))}
+					onclick={() => (archiving = room)}
 				/>
 				<IconButton
 					icon="trash"
@@ -195,6 +207,25 @@
 
 	<Text size="xs" tone="muted">{m.rooms_menu_hint()}</Text>
 </div>
+
+{#if archiving}
+	{@const count = archivableMembers(archiving).length}
+	<ConfirmModal
+		open
+		tone="danger"
+		title={m.rooms_archive()}
+		message={count === 0
+			? m.rooms_archive_confirm_empty({ room: archiving.name })
+			: m.rooms_archive_confirm({ room: archiving.name, count })}
+		confirmLabel={m.rooms_archive()}
+		onconfirm={() => {
+			const target = archiving;
+			archiving = null;
+			if (target) void house(() => archive(target));
+		}}
+		oncancel={() => (archiving = null)}
+	/>
+{/if}
 
 <style>
 	.menu {

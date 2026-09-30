@@ -372,10 +372,15 @@ describe('dimension color / group', () => {
 			);
 		});
 
-		// An archived room comes back with `room_name` NULL (the list query drops
-		// archived rooms from its join), so a session in one stops grouping at the
-		// same moment it stops being able to address its peers.
-		it('ungroups a session whose room is archived, even though room_id survives', () => {
+		// Archiving a room archives its sessions and leaves their `room_id`, and the
+		// list query joins archived rooms too — so an archived session still groups
+		// under its room. Only a missing name drops it to "—".
+		it('keeps grouping a session whose room is archived', () => {
+			const gs = dimGroupsOf(session({ room_id: 'r-1', room_name: 'wave 23' }), 'room');
+			expect(gs[0].key).toBe('room:r-1');
+		});
+
+		it('falls back to "—" when the room id has no name to show', () => {
 			expect(dimGroupsOf(session({ room_id: 'r-1', room_name: null }), 'room')[0].key).toBe(
 				DIM_NONE_KEY
 			);
