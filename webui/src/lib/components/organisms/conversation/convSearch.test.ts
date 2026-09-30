@@ -99,7 +99,9 @@ describe('ConversationSearch', () => {
 
 	it('appends a live event that matches every free-text term', async () => {
 		const { search } = ctl();
-		search.setQuery('needle');
+		// Open, not just queried: a closed bar keeps no hit list to append to.
+		search.open = true;
+		search.rawQuery = 'needle';
 		await search.run();
 
 		search.appendLive(text('a needle in here', 40));
@@ -115,6 +117,7 @@ describe('ConversationSearch', () => {
 
 	it('leaves a fielded query to the server rather than guessing locally', async () => {
 		const { search, fetchHits } = ctl();
+		search.open = true;
 		search.rawQuery = 'needle role:user';
 		await search.run();
 		expect(fetchHits).toHaveBeenCalledTimes(1);
