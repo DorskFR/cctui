@@ -103,6 +103,12 @@ pub struct CodexSession {
     /// tool plus the catalog it reads skills from. Empty for a session whose
     /// owner enabled no plugins.
     pub(super) skills: crate::plugins::SessionSkills,
+    /// Memory notes the server attached to this launch, staged and announced
+    /// through the neutral preamble.
+    pub(super) context: Vec<cctui_proto::api::SessionContextItem>,
+    /// The launch key the notes are staged under. A fork has no `spawn_key`
+    /// but does have a launch key, and staging needs one of them.
+    pub(super) staging_key: Option<String>,
     pub(super) events: mpsc::Sender<AdapterEvent>,
     pub(super) live: LiveSessionRegistry,
     pub(super) registry: SessionRegistry,
@@ -122,6 +128,17 @@ impl CodexSession {
     #[must_use]
     pub fn with_preflight(mut self, preflight: Option<crate::preflight::Preflight>) -> Self {
         self.preflight = preflight;
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_context(
+        mut self,
+        context: Vec<cctui_proto::api::SessionContextItem>,
+        staging_key: Option<String>,
+    ) -> Self {
+        self.context = context;
+        self.staging_key = staging_key;
         self
     }
 
@@ -158,6 +175,8 @@ impl CodexSession {
             agent_mcp: None,
             preflight: None,
             skills: crate::plugins::SessionSkills::none(),
+            context: Vec::new(),
+            staging_key: None,
             events,
             live,
             registry,
@@ -191,6 +210,8 @@ impl CodexSession {
             agent_mcp: None,
             preflight: None,
             skills: crate::plugins::SessionSkills::none(),
+            context: Vec::new(),
+            staging_key: None,
             events,
             live,
             registry,
@@ -221,6 +242,8 @@ impl CodexSession {
             agent_mcp: None,
             preflight: None,
             skills: crate::plugins::SessionSkills::none(),
+            context: Vec::new(),
+            staging_key: None,
             events,
             live,
             registry,
@@ -291,8 +314,22 @@ impl CodexSession {
     fn developer_instructions(&self) -> Option<String> {
         crate::preamble::merge(
             self.skills.catalog.clone(),
-            crate::preamble::block(&self.cwd, self.roster_self()),
+            crate::preamble::for_launch(
+                self.staging_id(),
+                &self.cwd,
+                self.roster_self(),
+                &self.context,
+            ),
         )
+    }
+
+    /// The id the session's files are staged under: the launch key when the
+    /// server pre-minted one, else the thread id a resume already has.
+    fn staging_id(&self) -> Option<&str> {
+        self.staging_key
+            .as_deref()
+            .or_else(|| self.spawn_key.as_deref())
+            .or_else(|| self.roster_self())
     }
 
     /// The roster id this session already holds, so the preamble does not
@@ -927,6 +964,8 @@ mod tests {
             agent_mcp: None,
             preflight: None,
             skills: crate::plugins::SessionSkills::none(),
+            context: Vec::new(),
+            staging_key: None,
             events,
             live: LiveSessionRegistry::default(),
             registry: SessionRegistry::default(),
@@ -1054,6 +1093,38 @@ mod tests {
         );
 
         crate::neighbours::global().forget(&[thread_id]);
+    }
+
+    /// Codex has no prompt preamble, so an attached memory has to arrive
+    /// through `developerInstructions` — next to the skill catalog, not
+    /// instead of it.
+    #[test]
+    fn attached_memory_reaches_a_codex_thread_through_developer_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = format!("launch-{}", uuid::Uuid::new_v4());
+        let mut session = session_with_tier(fresh_launch(), None);
+        session.cwd = dir.path().to_string_lossy().into_owned();
+        session.staging_key = Some(key.clone());
+        session.skills = skills_of("launch-key-9", "<cctui_skills>yubisashi</cctui_skills>");
+        session.context = vec![cctui_proto::api::SessionContextItem {
+            kind: "memory".to_owned(),
+            name: "house-style".to_owned(),
+            title: "House style".to_owned(),
+            body: "be terse".to_owned(),
+            version: 3,
+        }];
+
+        let (req, method) = session.stdio_thread_request();
+        assert_eq!(method, "thread/start");
+        let instructions = req["params"]["developerInstructions"].as_str().expect("instructions");
+        assert!(instructions.contains("<cctui_skills>yubisashi</cctui_skills>"), "{instructions}");
+        assert!(instructions.contains("context: 1 attached"), "{instructions}");
+        assert!(instructions.contains("House style"), "{instructions}");
+
+        let staged = std::path::Path::new("/tmp/cctui-uploads").join(&key).join("context.md");
+        assert!(instructions.contains(&staged.to_string_lossy().into_owned()), "{instructions}");
+        assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
+        let _ = std::fs::remove_dir_all(staged.parent().unwrap());
     }
 
     /// A session alone in its tree gets no instructions it did not ask for.

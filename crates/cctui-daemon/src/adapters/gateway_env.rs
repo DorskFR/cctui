@@ -93,6 +93,9 @@ pub struct LaunchEnv {
     /// Runtime plugins the session owner enabled, each with the skill files to
     /// mirror and the env to export.
     pub plugins: Vec<cctui_proto::api::SessionPlugin>,
+    /// Memory notes and the prompt template the server resolved for this
+    /// session, already scoped. Rendered into the neutral launch preamble.
+    pub context: Vec<cctui_proto::api::SessionContextItem>,
 }
 
 pub async fn resolve_launch(
@@ -111,8 +114,9 @@ pub async fn resolve_launch(
             let settings = resp.settings.clone();
             let spawn_capability = resp.spawn_capability.clone();
             let plugins = resp.plugins.clone();
+            let context = resp.context.clone();
             let env = launch_env_decision(adapter, local_id, &resp, hint, required_keys)?;
-            Ok(LaunchEnv { env, settings, spawn_capability, plugins })
+            Ok(LaunchEnv { env, settings, spawn_capability, plugins, context })
         }
         Err(e) => {
             tracing::warn!(

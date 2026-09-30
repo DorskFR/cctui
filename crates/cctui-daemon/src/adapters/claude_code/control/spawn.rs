@@ -404,6 +404,7 @@ impl Driver {
             &staged,
             launch_env.spawn_capability.as_ref().filter(|_| agent_tool),
             &crate::neighbours::cwd_neighbours(cwd, Some(session_id)),
+            crate::preamble::stage_context(session_id, &launch_env.context).as_deref(),
         );
         let prompt = match spec.prompt.as_deref().map(str::trim) {
             Some(b) if !b.is_empty() => format!("{session_context}\n\n{b}"),
