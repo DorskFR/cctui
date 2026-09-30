@@ -266,12 +266,11 @@ mod tests {
             b"# demo"
         );
 
-        let (hash,): (String,) =
-            sqlx::query_as("SELECT archive_hash FROM plugins WHERE id = $1")
-                .bind(ID)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (hash,): (String,) = sqlx::query_as("SELECT archive_hash FROM plugins WHERE id = $1")
+            .bind(ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert!(uninstall(&pool, &registry, ID).await.unwrap());
         assert!(!uninstall(&pool, &registry, ID).await.unwrap());
         assert!(!knows(&registry, ID));
