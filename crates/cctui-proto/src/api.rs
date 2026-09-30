@@ -562,9 +562,11 @@ pub struct UserActionList {
     pub items: Vec<UserAction>,
 }
 
-/// What the daemon-facing add/tick endpoints answer. A rejected call is a
-/// tool-level result, not an HTTP error: the model must always get the list back
-/// with the reason, never a bare failure it could read as "the list is gone".
+/// What the daemon-facing add/tick endpoints answer.
+///
+/// A rejected call is a tool-level result, not an HTTP error: the model must
+/// always get the list back with the reason, never a bare failure it could read
+/// as "the list is gone".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UserActionResult {

@@ -150,9 +150,11 @@ pub async fn add(
     Ok(result)
 }
 
-/// Resolve one item. `None` for an unknown id — the caller answers with the list
-/// and the reason rather than a failure. Callers gate on [`writable`] first, so a
-/// rejected tick can say *why* instead of pretending the item is gone.
+/// Resolve one item. `None` for an unknown id.
+///
+/// The caller answers an unknown id with the list and a reason rather than a
+/// failure, and gates on [`writable`] first, so a rejected tick can say *why*
+/// instead of pretending the item is gone.
 pub async fn tick(
     state: &AppState,
     session_id: &str,

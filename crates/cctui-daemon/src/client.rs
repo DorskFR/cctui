@@ -343,10 +343,11 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
-    /// Add one item to the session's user-action list, or tick one by id. The
-    /// server answers the whole list either way — including a rejection, which
-    /// arrives as `UserActionResult::error` rather than an HTTP failure, so the
-    /// model always sees the true state.
+    /// Add one item to the session's user-action list, or tick one by id.
+    ///
+    /// The server answers the whole list either way — including a rejection,
+    /// which arrives as `UserActionResult::error` rather than an HTTP failure, so
+    /// the model always sees the true state.
     pub async fn user_action_call(
         &self,
         machine_key: &str,
