@@ -1,6 +1,7 @@
 use cctui_proto::ws::AgentEvent;
 
-use super::state::{ConversationLine, LineKind};
+use super::state::{ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter};
+use super::transcript;
 
 fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
@@ -110,81 +111,417 @@ fn clean_user_message(text: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
-pub fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
-    match event {
-        AgentEvent::Text { content, meta, ts, kind: text_kind, .. } => {
-            let marker = matches!(
-                text_kind.as_deref(),
-                Some("system_marker" | "turn_annotation" | "queue_op")
-            );
-            let (kind, text) = if marker {
-                (LineKind::System, content.clone())
-            } else if content.starts_with("▷ User:") {
-                let user_text = content.trim_start_matches("▷ User: ");
-                // `meta` (set authoritatively at the adapter layer) marks a
-                // system/agent-directed message — render it as System, not a
-                // user line. Fall back to the local text-cleaning heuristic.
-                if *meta {
-                    (LineKind::System, user_text.to_owned())
-                } else {
-                    clean_user_message(user_text).map_or_else(
-                        || (LineKind::System, String::new()),
-                        |cleaned| (LineKind::User, cleaned),
-                    )
-                }
-            } else {
-                (LineKind::Assistant, content.clone())
-            };
-            ConversationLine { timestamp: *ts, kind, text, tool_input: None }
+/// A queue record: the enqueued prompt is the human's own message waiting its
+/// turn, and only a withdrawal is worth a line of its own. A bodiless `dequeued`
+/// is the agent picking the prompt up — the real turn follows, so it shows
+/// nothing.
+fn queue_op_line(content: &str, operation: Option<&str>, ts: i64) -> Option<ConversationLine> {
+    let body = content.trim();
+    match operation.unwrap_or("queued") {
+        "queued" if !body.is_empty() => {
+            Some(ConversationLine::new(LineKind::User, body, ts).with_status(LineStatus::Queued))
         }
-        AgentEvent::ToolCall { tool, input, ts, .. } => {
-            let detail = crate::views::sessions::format_tool_input(tool, input);
-            // Keep raw input for Edit/Write so we can generate diffs during render
-            let keep_input = matches!(tool.as_str(), "Edit" | "Write");
-            ConversationLine {
-                timestamp: *ts,
-                kind: LineKind::ToolCall,
-                text: format!("[{tool}] {detail}"),
-                tool_input: if keep_input { Some(input.clone()) } else { None },
+        "removed" | "cleared" if !body.is_empty() => {
+            Some(ConversationLine::new(LineKind::System, body, ts).with_status(LineStatus::Removed))
+        }
+        _ => None,
+    }
+}
+
+/// Classifies a stored user turn: peer relay, marker, injected, or human.
+fn user_line(text: &str, ts: i64, meta: bool) -> Option<ConversationLine> {
+    if let Some(peer) = transcript::parse_peer_message(text) {
+        let mut line = ConversationLine::new(LineKind::Peer, peer.body, ts);
+        line.peer_from = peer.from;
+        line.peer_room = peer.room;
+        return Some(line);
+    }
+    if transcript::parse_room_joined(text).is_some() {
+        return Some(ConversationLine::new(LineKind::Marker, "joined a room", ts));
+    }
+    if transcript::looks_keepalive_tick(text) {
+        return Some(ConversationLine::new(LineKind::Marker, "keep-alive tick", ts));
+    }
+    // `meta` is set authoritatively at the adapter layer; `looks_meta` catches
+    // the turns it misses.
+    if meta || transcript::looks_meta(text) {
+        return Some(ConversationLine::new(LineKind::System, text.trim(), ts));
+    }
+    clean_user_message(text).map(|cleaned| ConversationLine::new(LineKind::User, cleaned, ts))
+}
+
+/// Only annotations with something to show become a line.
+fn annotation_line(content: &str, ts: i64) -> Option<ConversationLine> {
+    let (kind, detail) = transcript::parse_annotation(content);
+    match kind {
+        "turn_duration" => {
+            let ms: u64 = detail.trim().parse().ok()?;
+            if ms == 0 {
+                return None;
             }
+            let mut line = ConversationLine::new(LineKind::Summary, String::new(), ts);
+            line.footer = Some(TurnFooter { duration_ms: Some(ms), ..TurnFooter::default() });
+            Some(line)
         }
-        AgentEvent::ToolResult { output_summary, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::ToolResult,
-            text: format!("  → {output_summary}"),
-            tool_input: None,
-        },
-        AgentEvent::Heartbeat { ts, .. } | AgentEvent::TurnEnd { ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: String::new(),
-            tool_input: None,
-        },
-        // /clear boundary within one session.
-        AgentEvent::ContextReset { ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: "⟳ context reset (/clear · /compact)".to_owned(),
-            tool_input: None,
-        },
-        // /compact summary (no rotation; carries the summary text).
-        AgentEvent::CompactSummary { content, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: format!("⟳ context compacted\n{content}"),
-            tool_input: None,
-        },
-        AgentEvent::TurnSummary { detail, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::System,
-            text: format!("· {detail}"),
-            tool_input: None,
-        },
-        AgentEvent::Reply { content, ts, .. } => ConversationLine {
-            timestamp: *ts,
-            kind: LineKind::Reply,
-            text: content.clone(),
-            tool_input: None,
-        },
+        "stop_hook_summary" if !detail.trim().is_empty() => {
+            Some(ConversationLine::new(LineKind::Marker, format!("hook: {}", detail.trim()), ts))
+        }
+        _ => None,
+    }
+}
+
+fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
+    let AgentEvent::Text { content, meta, ts, kind, operation, message_id, usage, turn_id, .. } =
+        event
+    else {
+        return None;
+    };
+    // Streaming emits an empty text event before the populated one.
+    if content.trim().is_empty() {
+        return None;
+    }
+    let mut line = match kind.as_deref() {
+        Some(k @ ("thinking" | "redacted_thinking")) => ConversationLine::new(
+            LineKind::Thinking { redacted: k == "redacted_thinking" },
+            content.clone(),
+            *ts,
+        ),
+        // Markers carry no user prefix, so they must be claimed before the
+        // assistant fallthrough or they read as assistant prose.
+        Some("system_marker") => ConversationLine::new(LineKind::Marker, content.clone(), *ts),
+        Some("queue_op") => return queue_op_line(content, operation.as_deref(), *ts),
+        Some("turn_annotation") => return annotation_line(content, *ts),
+        _ if content.starts_with(transcript::USER_PREFIX) => {
+            user_line(content[transcript::USER_PREFIX.len()..].trim_start(), *ts, *meta)?
+        }
+        _ => {
+            let mut line = ConversationLine::new(LineKind::Assistant, content.clone(), *ts);
+            line.footer = usage.as_ref().map(|u| TurnFooter {
+                duration_ms: None,
+                tokens_in: Some(u.tokens_in),
+                tokens_out: Some(u.tokens_out),
+                needs_action: false,
+            });
+            line
+        }
+    };
+    line.message_id.clone_from(message_id);
+    line.turn_id = *turn_id;
+    Some(line)
+}
+
+/// One event, at most one line.
+///
+/// Events with nothing to show — heartbeats, turn ends, the empty text event
+/// that precedes a streamed message — return `None` rather than a blank row.
+pub fn agent_event_to_line(event: &AgentEvent) -> Option<ConversationLine> {
+    match event {
+        AgentEvent::Text { .. } => text_line(event),
+        AgentEvent::ToolCall { tool, input, kind, ts, .. } => {
+            // A historical ask or plan renders as its questions rather than raw
+            // JSON; everything else takes the generic one-line summary.
+            let detail = super::prompt::historical_tool_text(tool, input)
+                .unwrap_or_else(|| crate::views::sessions::format_tool_input(tool, input));
+            let mut line = ConversationLine::new(
+                LineKind::Tool { category: ToolCategory::of(tool, kind.as_deref()) },
+                detail,
+                *ts,
+            );
+            line.tool = Some(tool.clone());
+            // Edit/Write inputs become an inline diff at render time.
+            if matches!(tool.as_str(), "Edit" | "Write") {
+                line.tool_input = Some(input.clone());
+            }
+            Some(line)
+        }
+        AgentEvent::ToolResult { tool, output_summary, error, ts, .. } => {
+            let kind = LineKind::Result { error: *error };
+            let mut line = ConversationLine::new(kind, output_summary.clone(), *ts);
+            line.tool = Some(tool.clone());
+            Some(line)
+        }
+        AgentEvent::Heartbeat { .. } | AgentEvent::TurnEnd { .. } => None,
+        AgentEvent::ContextReset { ts, .. } => {
+            Some(ConversationLine::new(LineKind::Reset, "context reset (/clear)", *ts))
+        }
+        AgentEvent::CompactSummary { content, ts, .. } => (!content.trim().is_empty())
+            .then(|| ConversationLine::new(LineKind::Compact, content.clone(), *ts)),
+        AgentEvent::TurnSummary { detail, status_category, needs_action, ts, .. } => {
+            let text = if detail.trim().is_empty() {
+                status_category.as_deref().unwrap_or_default().trim()
+            } else {
+                detail.trim()
+            };
+            if text.is_empty() {
+                return None;
+            }
+            let mut line = ConversationLine::new(LineKind::Summary, text, *ts);
+            line.footer = Some(TurnFooter { needs_action: *needs_action, ..TurnFooter::default() });
+            Some(line)
+        }
+        AgentEvent::Reply { content, ts, turn_id, .. } => {
+            if content.trim().is_empty() {
+                return None;
+            }
+            let mut line = ConversationLine::new(LineKind::Reply, content.clone(), *ts);
+            line.turn_id = *turn_id;
+            Some(line)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cctui_proto::models::TokenUsage;
+    use cctui_proto::ws::AgentEvent;
+    use serde_json::json;
+
+    use super::agent_event_to_line;
+    use crate::app::state::{ConversationLine, LineKind, LineStatus, ToolCategory};
+
+    fn queue_op(content: &str, operation: &str) -> AgentEvent {
+        AgentEvent::Text {
+            content: content.to_owned(),
+            meta: false,
+            kind: Some("queue_op".to_owned()),
+            operation: Some(operation.to_owned()),
+            ts: 100,
+            message_id: None,
+            usage: None,
+            seq: Some(7),
+            turn_id: None,
+        }
+    }
+
+    fn text(content: &str, kind: Option<&str>) -> AgentEvent {
+        AgentEvent::Text {
+            content: content.to_owned(),
+            meta: false,
+            kind: kind.map(str::to_owned),
+            operation: None,
+            ts: 100,
+            message_id: None,
+            usage: None,
+            seq: Some(1),
+            turn_id: None,
+        }
+    }
+
+    fn line(event: &AgentEvent) -> ConversationLine {
+        agent_event_to_line(event).expect("a line")
+    }
+
+    #[test]
+    fn thinking_is_its_own_kind_and_not_assistant_prose() {
+        let ln = line(&text("weighing two parsers", Some("thinking")));
+        assert_eq!(ln.kind, LineKind::Thinking { redacted: false });
+        assert_eq!(ln.text, "weighing two parsers");
+        assert!(ln.collapsible());
+
+        let redacted = line(&text("\u{fffd}", Some("redacted_thinking")));
+        assert_eq!(redacted.kind, LineKind::Thinking { redacted: true });
+    }
+
+    #[test]
+    fn an_empty_text_event_produces_no_line() {
+        assert!(agent_event_to_line(&text("   ", None)).is_none());
+        assert!(agent_event_to_line(&text("", Some("thinking"))).is_none());
+    }
+
+    #[test]
+    fn heartbeats_and_turn_ends_produce_no_line() {
+        let beat =
+            AgentEvent::Heartbeat { tokens_in: 1, tokens_out: 2, cost_usd: 0.1, ts: 1, seq: None };
+        assert!(agent_event_to_line(&beat).is_none());
+        assert!(agent_event_to_line(&AgentEvent::TurnEnd { ts: 1, seq: None }).is_none());
+    }
+
+    #[test]
+    fn a_user_turn_keeps_its_prose_and_loses_the_storage_prefix() {
+        let ln = line(&text("▷ User: refactor the parser", None));
+        assert_eq!(ln.kind, LineKind::User);
+        assert_eq!(ln.text, "refactor the parser");
+    }
+
+    #[test]
+    fn an_injected_user_turn_reads_as_system() {
+        let ln = line(&text("▷ User: <task-notification>agent done</task-notification>", None));
+        assert_eq!(ln.kind, LineKind::System);
+    }
+
+    #[test]
+    fn a_peer_relay_becomes_a_peer_line_with_its_sender() {
+        let ln = line(&text(
+            "▷ User: Another Claude session sent a message:\n<cross-session-message from=\"a-1\" from-name=\"lane-b\">rebase please</cross-session-message>",
+            None,
+        ));
+        assert_eq!(ln.kind, LineKind::Peer);
+        assert_eq!(ln.peer_from.as_deref(), Some("lane-b"));
+        assert_eq!(ln.text, "rebase please");
+    }
+
+    #[test]
+    fn a_keepalive_tick_collapses_to_a_marker() {
+        let ln = line(&text("▷ User: [cctui keep-alive 2/6]", None));
+        assert_eq!(ln.kind, LineKind::Marker);
+    }
+
+    #[test]
+    fn a_queued_prompt_is_the_humans_own_line_and_a_withdrawal_is_marked() {
+        let queued = line(&queue_op("ship it", "queued"));
+        assert_eq!(queued.kind, LineKind::User);
+        assert_eq!(queued.status, Some(LineStatus::Queued));
+        assert_eq!(queued.text, "ship it");
+
+        let removed = line(&queue_op("ship it", "removed"));
+        assert_eq!(removed.status, Some(LineStatus::Removed));
+
+        assert!(
+            agent_event_to_line(&queue_op("ship it", "dequeued")).is_none(),
+            "the agent taking a prompt off the queue is followed by the real turn"
+        );
+        assert!(agent_event_to_line(&queue_op("  ", "queued")).is_none());
+    }
+
+    #[test]
+    fn a_system_marker_is_not_mistaken_for_assistant_prose() {
+        let ln = line(&text("session hibernated", Some("system_marker")));
+        assert_eq!(ln.kind, LineKind::Marker);
+    }
+
+    #[test]
+    fn assistant_usage_becomes_the_turn_footer() {
+        let AgentEvent::Text { content, ts, .. } = text("done", None) else { unreachable!() };
+        let event = AgentEvent::Text {
+            content,
+            meta: false,
+            kind: None,
+            operation: None,
+            ts,
+            message_id: Some("m-1".to_owned()),
+            usage: Some(TokenUsage {
+                tokens_in: 12_400,
+                tokens_out: 1_100,
+                cost_usd: 0.4,
+                ..TokenUsage::default()
+            }),
+            seq: Some(2),
+            turn_id: None,
+        };
+        let ln = line(&event);
+        assert_eq!(ln.kind, LineKind::Assistant);
+        assert_eq!(ln.message_id.as_deref(), Some("m-1"));
+        let footer = ln.footer.expect("a footer");
+        assert_eq!(footer.tokens_in, Some(12_400));
+        assert_eq!(footer.tokens_out, Some(1_100));
+    }
+
+    #[test]
+    fn a_turn_duration_annotation_becomes_a_footer_and_the_rest_vanish() {
+        let ln = line(&text("turn_duration:38000", Some("turn_annotation")));
+        assert_eq!(ln.kind, LineKind::Summary);
+        assert_eq!(ln.footer.expect("a footer").duration_ms, Some(38_000));
+
+        let file_history = text("file_history:src/a.rs", Some("turn_annotation"));
+        assert!(agent_event_to_line(&file_history).is_none());
+        assert!(agent_event_to_line(&text("turn_duration:0", Some("turn_annotation"))).is_none());
+    }
+
+    #[test]
+    fn a_tool_call_carries_its_name_and_category() {
+        let event = AgentEvent::ToolCall {
+            tool: "Read".to_owned(),
+            input: json!({"file_path": "src/parser.rs"}),
+            kind: None,
+            ts: 1,
+            seq: Some(3),
+        };
+        let ln = line(&event);
+        assert_eq!(ln.kind, LineKind::Tool { category: ToolCategory::Read });
+        assert_eq!(ln.tool.as_deref(), Some("Read"));
+        assert!(ln.text.contains("src/parser.rs"));
+        assert!(ln.tool_input.is_none(), "only Edit/Write keep their input for a diff");
+    }
+
+    #[test]
+    fn an_edit_keeps_its_input_so_the_view_can_diff_it() {
+        let event = AgentEvent::ToolCall {
+            tool: "Edit".to_owned(),
+            input: json!({"file_path": "a.rs", "old_string": "a", "new_string": "b"}),
+            kind: None,
+            ts: 1,
+            seq: Some(4),
+        };
+        let ln = line(&event);
+        assert_eq!(ln.kind, LineKind::Tool { category: ToolCategory::Write });
+        assert!(ln.tool_input.is_some());
+    }
+
+    #[test]
+    fn a_provider_executed_tool_gets_the_server_category() {
+        let event = AgentEvent::ToolCall {
+            tool: "web_search".to_owned(),
+            input: json!({}),
+            kind: Some("server_tool_use".to_owned()),
+            ts: 1,
+            seq: Some(5),
+        };
+        assert_eq!(line(&event).kind, LineKind::Tool { category: ToolCategory::Server });
+    }
+
+    #[test]
+    fn a_failed_result_carries_the_error_flag_and_its_tool() {
+        let event = AgentEvent::ToolResult {
+            tool: "Bash".to_owned(),
+            output_summary: "exit 101 · 3 failed".to_owned(),
+            kind: None,
+            error: true,
+            ts: 1,
+            seq: Some(6),
+        };
+        let ln = line(&event);
+        assert_eq!(ln.kind, LineKind::Result { error: true });
+        assert_eq!(ln.tool.as_deref(), Some("Bash"));
+        assert_eq!(ln.text, "exit 101 · 3 failed");
+        assert!(ln.collapsible());
+    }
+
+    #[test]
+    fn reset_and_compact_are_distinct_kinds() {
+        assert_eq!(line(&AgentEvent::ContextReset { ts: 1, seq: None }).kind, LineKind::Reset);
+        let compact =
+            AgentEvent::CompactSummary { content: "we did X".to_owned(), ts: 1, seq: None };
+        let ln = line(&compact);
+        assert_eq!(ln.kind, LineKind::Compact);
+        assert_eq!(ln.text, "we did X");
+        assert!(
+            agent_event_to_line(&AgentEvent::CompactSummary {
+                content: " ".to_owned(),
+                ts: 1,
+                seq: None,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_turn_summary_falls_back_to_its_status_category() {
+        let event = AgentEvent::TurnSummary {
+            detail: "  ".to_owned(),
+            status_category: Some("waiting_on_you".to_owned()),
+            needs_action: true,
+            ts: 1,
+            seq: None,
+        };
+        let ln = line(&event);
+        assert_eq!(ln.kind, LineKind::Summary);
+        assert_eq!(ln.text, "waiting_on_you");
+        assert!(ln.footer.expect("a footer").needs_action);
+    }
+
+    #[test]
+    fn an_empty_reply_is_dropped() {
+        let event = AgentEvent::Reply { content: " ".to_owned(), ts: 1, seq: None, turn_id: None };
+        assert!(agent_event_to_line(&event).is_none());
     }
 }

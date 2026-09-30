@@ -3,6 +3,7 @@ use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{AutoApproveRequest, SessionListItem, SessionListResponse};
 use cctui_proto::diagnose::SessionDiagnoseResponse;
+use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
 use reqwest::StatusCode;
 use reqwest::header::{ETAG, IF_NONE_MATCH};
 use serde::Serialize;
@@ -37,6 +38,16 @@ impl<'de> serde::Deserialize<'de> for ConversationRow {
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
         Ok(Self { seq, ts, turn_id, event })
     }
+}
+
+/// One permission request the server is still holding.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct PendingPermissionItem {
+    pub session_id: String,
+    pub request_id: String,
+    pub tool_name: String,
+    pub description: String,
+    pub input_preview: String,
 }
 
 /// Which slice of a transcript to fetch. Rows always come back oldest-first.
@@ -310,8 +321,40 @@ impl Client {
         self.json(Self::route("get_settings")?, &[], &[], None).await
     }
 
+    /// Requests raised before this client connected, so a card still appears.
+    pub async fn pending_permissions(&self) -> Result<Vec<PendingPermissionItem>, ClientError> {
+        self.json(Self::route("get_permissions_pending")?, &[], &[], None).await
+    }
+
     pub async fn mark_seen(&self, session_id: &str) -> Result<(), ClientError> {
         self.unit(Self::route("post_sessions_by_id_seen")?, &[("id", session_id)], None).await
+    }
+
+    /// Every draft the caller owns, in one call.
+    pub async fn list_drafts(&self) -> Result<DraftList, ClientError> {
+        self.json(Self::route("get_drafts")?, &[], &[], None).await
+    }
+
+    /// One draft's text, `None` when the caller has no such draft.
+    pub async fn get_draft(&self, key: &str) -> Result<Option<String>, ClientError> {
+        let route = Self::route("get_drafts_by_*key")?;
+        match self.json::<Draft>(route, &[("*key", key)], &[], None).await {
+            Ok(draft) => Ok(Some(draft.text)),
+            Err(ClientError::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Save a draft. Empty text deletes the row, as the route documents.
+    pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
+        let route = Self::route("put_drafts_by_*key")?;
+        let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("*key", key)], Some(&body)).await
+    }
+
+    pub async fn delete_draft(&self, key: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_drafts_by_*key")?, &[("*key", key)], None).await
     }
 
     /// Revoke the key this client authenticates with (`cctui logout --revoke`).
@@ -401,6 +444,27 @@ mod tests {
         );
     }
 
+    /// The draft routes take a wildcard segment, so their placeholder is
+    /// `{*key}` and the param name carries the star.
+    #[test]
+    fn a_draft_key_fills_the_wildcard_segment() {
+        let c = client();
+        let put = Client::route("put_drafts_by_*key").unwrap();
+        assert_eq!(
+            c.url_for(put, &[("*key", "cctui_draft_s1")]),
+            "http://localhost:8700/api/v1/drafts/cctui_draft_s1"
+        );
+        let get = Client::route("get_drafts_by_*key").unwrap();
+        assert_eq!(
+            c.url_for(get, &[("*key", "cctui_history_s1")]),
+            "http://localhost:8700/api/v1/drafts/cctui_history_s1"
+        );
+        assert_eq!(
+            c.url_for(Client::route("get_drafts").unwrap(), &[]),
+            "http://localhost:8700/api/v1/drafts"
+        );
+    }
+
     #[test]
     fn every_named_route_exists_in_the_table() {
         for id in [
@@ -411,9 +475,14 @@ mod tests {
             "post_sessions_by_id_interrupt",
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
+            "get_permissions_pending",
             "get_me",
             "get_settings",
             "delete_me_key",
+            "get_drafts",
+            "get_drafts_by_*key",
+            "put_drafts_by_*key",
+            "delete_drafts_by_*key",
         ] {
             assert!(Client::route(id).is_ok(), "missing route id {id}");
         }

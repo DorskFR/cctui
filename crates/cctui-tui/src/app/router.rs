@@ -70,8 +70,8 @@ mod tests {
     fn push_pop_restores_the_view_below() {
         let mut router = Router::new(View::SessionList);
         router.push(View::Conversation);
-        router.push(View::PermissionDialog);
-        assert_eq!(router.current(), View::PermissionDialog);
+        router.push(View::Help);
+        assert_eq!(router.current(), View::Help);
         assert_eq!(router.below(), Some(View::Conversation));
         assert!(router.pop());
         assert_eq!(router.current(), View::Conversation);

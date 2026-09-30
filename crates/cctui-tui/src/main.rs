@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use app::effects::Effects;
+use app::session_live::{SessionLiveAction, TICK_MS};
 use app::toast::Level;
 use app::{Action, App, reduce, server_event};
 use cctui_client::{Client, Incoming};
@@ -215,8 +216,13 @@ async fn run(
     let (ws, mut event_rx) = server.connect_ws();
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
     effects.dispatch(app::action::Effect::FetchIdentity);
-    let mut refresh_interval = time::interval(Duration::from_secs(5));
-    refresh_interval.tick().await;
+    effects.dispatch(app::action::Effect::FetchPendingPermissions);
+    effects.dispatch(app::action::Effect::LoadDraftIndex);
+    // The one clock in the app. Delivery deadlines are the reducer's and the
+    // reducer only moves when it is called, so this has to be far tighter than
+    // the session-list poll, which the reducer gates on its own elapsed period.
+    let mut tick = time::interval(Duration::from_millis(TICK_MS));
+    tick.tick().await;
     let mut input_rx = spawn_input_task();
     let mut ws_closed = false;
     let mut ws_ever_connected = false;
@@ -233,7 +239,13 @@ async fn run(
             maybe_input = input_rx.recv() => {
                 maybe_input
                     .and_then(|input| {
-                        keys::map_input(&app.config.keys, app.view(), app.input_active, input)
+                        keys::map_input(
+                            &app.config.keys,
+                            app.view(),
+                            app.input_active,
+                            app.prompt_focus(),
+                            input,
+                        )
                     })
                     .map_or_else(Vec::new, |action| vec![action])
             }
@@ -248,7 +260,10 @@ async fn run(
                 maybe_event.map_or_else(
                     || {
                         ws_closed = true;
-                        vec![Action::Toast(Level::Error, "event stream closed".to_owned())]
+                        vec![
+                            Action::SessionLive(SessionLiveAction::WsHealth(false)),
+                            Action::Toast(Level::Error, "event stream closed".to_owned()),
+                        ]
                     },
                     |event| {
                         let mut actions = incoming_actions(event, &mut ws_ever_connected);
@@ -259,7 +274,7 @@ async fn run(
                     },
                 )
             }
-            _ = refresh_interval.tick() => vec![Action::RefreshSessions],
+            _ = tick.tick() => vec![Action::Tick],
         };
 
         for action in actions {
@@ -279,6 +294,7 @@ fn apply_config(app: &mut App) {
     app.clock_ms = now_ms();
     let loaded = config::load();
     app.config = loaded.config;
+    app.ui = config::uistate::load();
     for problem in loaded.problems {
         app.toast(Level::Warn, format!("tui.toml: {problem}"));
     }
@@ -297,6 +313,8 @@ async fn init_sessions(server: &Client, app: &mut App) {
     if let Ok(resp) = server.list_sessions().await {
         app.sessions = resp.sessions;
         app.update_aggregates();
+        app.refresh.sent += 1;
+        app.last_refresh_ms = app.clock_ms;
     }
 }
 
@@ -307,15 +325,19 @@ fn incoming_actions(incoming: Incoming, ever_connected: &mut bool) -> Vec<Action
         Incoming::Event(event) => server_event::to_actions(*event),
         Incoming::Undecodable(reason) => vec![Action::UndecodableWsMessage(reason)],
         Incoming::Connected => {
+            let healthy = Action::SessionLive(SessionLiveAction::WsHealth(true));
             if std::mem::replace(ever_connected, true) {
-                vec![Action::Reconnected]
+                vec![healthy, Action::Reconnected]
             } else {
-                Vec::new()
+                vec![healthy]
             }
         }
         Incoming::Disconnected(reason) => {
             tracing::warn!(%reason, "websocket dropped; reconnecting");
-            vec![Action::Toast(Level::Warn, "connection lost — reconnecting".to_owned())]
+            vec![
+                Action::SessionLive(SessionLiveAction::WsHealth(false)),
+                Action::Toast(Level::Warn, "connection lost — reconnecting".to_owned()),
+            ]
         }
     }
 }

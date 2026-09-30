@@ -34,6 +34,39 @@ pub const SPAWN_MEMORY_CAP: usize = 50;
 /// names, and — unlike NUL — storable in the JSONB settings blob.
 pub const KEY_SEP: char = '\u{1f}';
 
+/// Key prefix of a session's unsent composer text.
+pub const COMPOSER_DRAFT_PREFIX: &str = "cctui_draft_";
+
+/// Key prefix of a session's sent-prompt history.
+pub const SESSION_HISTORY_PREFIX: &str = "cctui_history_";
+
+/// Key of the global spawn-prompt history.
+pub const PROMPT_HISTORY_KEY: &str = "cctui_prompt_history";
+
+/// Draft key of one session's composer.
+#[must_use]
+pub fn composer_draft_key(session_id: &str) -> String {
+    format!("{COMPOSER_DRAFT_PREFIX}{session_id}")
+}
+
+/// Draft key of one session's prompt history.
+#[must_use]
+pub fn session_history_key(session_id: &str) -> String {
+    format!("{SESSION_HISTORY_PREFIX}{session_id}")
+}
+
+/// The session behind a composer-draft key, or `None` for any other key.
+#[must_use]
+pub fn draft_session_id(key: &str) -> Option<&str> {
+    key.strip_prefix(COMPOSER_DRAFT_PREFIX)
+}
+
+/// The session behind a prompt-history key, or `None` for any other key.
+#[must_use]
+pub fn history_session_id(key: &str) -> Option<&str> {
+    key.strip_prefix(SESSION_HISTORY_PREFIX)
+}
+
 /// One stored draft.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -160,6 +193,23 @@ mod tests {
         assert_eq!(machine_memory_key("m1", "/w/"), "m\u{1f}m1\u{1f}/w");
         assert_eq!(dispatch_memory_key("d1", " org/repo "), "d\u{1f}d1\u{1f}org/repo");
     }
+
+    #[test]
+    fn draft_keys_are_the_ones_the_web_ui_stores_and_round_trip() {
+        assert_eq!(composer_draft_key("s-1"), "cctui_draft_s-1");
+        assert_eq!(session_history_key("s-1"), "cctui_history_s-1");
+        assert_eq!(draft_session_id("cctui_draft_s-1"), Some("s-1"));
+        assert_eq!(history_session_id("cctui_history_s-1"), Some("s-1"));
+        assert_eq!(draft_session_id("cctui_history_s-1"), None);
+        assert_eq!(history_session_id("cctui_draft_s-1"), None);
+        for other in ["cctui_drafts_imported", PROMPT_HISTORY_KEY, SPAWN_DRAFT_KEY_SAMPLE] {
+            assert_eq!(draft_session_id(other), None, "{other} is not a composer draft");
+            assert_eq!(history_session_id(other), None, "{other} is not a prompt history");
+        }
+    }
+
+    /// A spawn-slot key, whose prefix must not read as a session's.
+    const SPAWN_DRAFT_KEY_SAMPLE: &str = "cctui_spawn_draft\u{1f}m1\u{1f}/w";
 
     #[test]
     fn eviction_drops_the_oldest_entries_only_past_the_cap() {

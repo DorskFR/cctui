@@ -25,6 +25,13 @@ impl Chord {
         Self { code: event.code, mods }
     }
 
+    /// The key press this chord stands for, for a binding that may have to
+    /// hand the character back to the composer.
+    #[must_use]
+    pub const fn event(self) -> KeyEvent {
+        KeyEvent::new(self.code, self.mods)
+    }
+
     /// The digit of a `1`..`9` chord, for the bindings that carry an index.
     pub const fn digit(self) -> Option<usize> {
         match self.code {
@@ -43,7 +50,8 @@ impl Chord {
         if self.mods.contains(KeyModifiers::ALT) {
             out.push_str("Alt+");
         }
-        if self.mods.contains(KeyModifiers::SHIFT) {
+        // BackTab already reads as Shift+Tab; prefixing it doubles the word.
+        if self.mods.contains(KeyModifiers::SHIFT) && self.code != KeyCode::BackTab {
             out.push_str("Shift+");
         }
         out.push_str(match self.code {
