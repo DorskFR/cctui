@@ -396,87 +396,10 @@ fn walk(
     }
 }
 
-const fn is_path_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'+' | b'%' | b'-' | b'/')
-}
-
-/// A candidate starts at a word boundary, so a URL's path (`https://h/a.png`)
-/// never matches: its `//` is preceded by `:` and `h/a.png` does not start
-/// with `/`.
+/// The shared scanner in `cctui_proto::paths` is the one implementation the
+/// server, the TUI and the webui regex are held to.
 fn scan_paths(s: &str, out: &mut std::collections::BTreeSet<String>) {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let lead_ok = i == 0
-            || matches!(bytes[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'(' | b'[' | b';' | b'>')
-            || matches!(bytes[i - 1], b'"' | b'\'' | b'`' | b',' | b'=' | b'*');
-        let starts = bytes[i] == b'/' || (bytes[i] == b'~' && bytes.get(i + 1) == Some(&b'/'));
-        if !(lead_ok && starts) {
-            i += 1;
-            continue;
-        }
-        let mut j = if bytes[i] == b'~' { i + 1 } else { i };
-        while j < bytes.len() && is_path_byte(bytes[j]) {
-            j += 1;
-        }
-        let cand = trim_dots(&s[i..j]);
-        if has_extension(cand) {
-            out.insert(cand.to_owned());
-        } else if let Some(end) = extend_over_spaces(s, i, j) {
-            out.insert(s[i..end].to_owned());
-            i = end;
-            continue;
-        }
-        i = j.max(i + 1);
-    }
-}
-
-/// How many space-separated chunks a name may absorb before the candidate is
-/// treated as prose rather than one file name.
-const MAX_SPACE_CHUNKS: usize = 5;
-
-/// Grow a candidate that carries no extension yet across single spaces, so
-/// `…/Screenshot 2026-09-29 at 10.11.12.png` links as one path. Returns the end
-/// of the first chunk that completes an alphabetic extension; a chunk opening
-/// with `/` starts a new path and ends the attempt, which is what keeps
-/// surrounding prose out.
-fn extend_over_spaces(s: &str, start: usize, end: usize) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut at = end;
-    for _ in 0..MAX_SPACE_CHUNKS {
-        if bytes.get(at) != Some(&b' ') || bytes.get(at + 1).is_none_or(|b| *b == b'/') {
-            return None;
-        }
-        let mut j = at + 1;
-        while j < bytes.len() && is_path_byte(bytes[j]) {
-            j += 1;
-        }
-        if j == at + 1 {
-            return None;
-        }
-        at = j;
-        let cand = trim_dots(&s[start..at]);
-        if extension_of(cand).is_some_and(|e| e.bytes().all(|b| b.is_ascii_alphabetic())) {
-            return Some(start + cand.len());
-        }
-    }
-    None
-}
-
-fn trim_dots(cand: &str) -> &str {
-    cand.trim_end_matches('.')
-}
-
-fn extension_of(cand: &str) -> Option<&str> {
-    let name = &cand[cand.rfind('/').map_or(0, |p| p + 1)..];
-    let dot = name.rfind('.')?;
-    let ext = &name[dot + 1..];
-    (!ext.is_empty() && ext.len() <= 8 && ext.bytes().all(|b| b.is_ascii_alphanumeric()) && dot > 0)
-        .then_some(ext)
-}
-
-fn has_extension(cand: &str) -> bool {
-    extension_of(cand).is_some()
+    cctui_proto::paths::scan_into(s, out);
 }
 
 /// Body of a refused read. A superset of `ApiError`, so a client that only
