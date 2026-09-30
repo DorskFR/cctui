@@ -12,6 +12,8 @@ pub enum Context {
     Conversation,
     Composer,
     History,
+    AttachPrompt,
+    FileViewer,
     Help,
     Permission,
     Ask,
@@ -26,6 +28,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::Conversation,
     Context::Composer,
     Context::History,
+    Context::AttachPrompt,
+    Context::FileViewer,
     Context::Help,
     Context::Permission,
     Context::Ask,
@@ -42,6 +46,8 @@ impl Context {
             Self::Conversation => "conversation",
             Self::Composer => "composer",
             Self::History => "history",
+            Self::AttachPrompt => "attach-prompt",
+            Self::FileViewer => "file-viewer",
             Self::Help => "help",
             Self::Permission => "permission",
             Self::Ask => "ask",
@@ -58,6 +64,8 @@ impl Context {
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
             Self::History => "Prompt history",
+            Self::AttachPrompt => "Attach a file",
+            Self::FileViewer => "File viewer",
             Self::Help => "Help",
             Self::Permission => "Permission card",
             Self::Ask => "Question card",
@@ -143,6 +151,17 @@ actions! {
     Interrupt => "interrupt", "Interrupt the turn";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    AttachFile => "attach-file", "Attach a file";
+    RemoveAttachment => "remove-attachment", "Remove the focused attachment";
+    FocusAttachments => "focus-attachments", "Focus the attachment chips";
+    AttachmentNext => "attachment-next", "Next attachment chip";
+    AttachmentPrev => "attachment-prev", "Previous attachment chip";
+    AttachConfirm => "attach-confirm", "Attach this path";
+    AttachCancel => "attach-cancel", "Cancel attaching";
+    AttachComplete => "attach-complete", "Complete the path";
+    OpenLinkedFile => "open-linked-file", "Open the file under the cursor";
+    FileViewerClose => "file-viewer-close", "Close the file viewer";
+    FileViewerOsOpen => "file-viewer-os-open", "Open in the desktop viewer";
     ToggleExpand => "toggle-expand", "Expand the focused line";
     ToggleExpandAll => "toggle-expand-all", "Expand every thinking and result block";
     RetrySend => "retry-send", "Retry the undelivered message";
@@ -276,6 +295,34 @@ const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "enter", ActionId::HistoryRecall),
 ];
 
+const ATTACH: &[BindingSpec] = &[
+    spec(Context::Composer, "ctrl+o", ActionId::AttachFile),
+    spec(Context::Conversation, "ctrl+o", ActionId::AttachFile),
+    spec(Context::Composer, "alt+backspace", ActionId::FocusAttachments),
+    spec(Context::AttachPrompt, "enter", ActionId::AttachConfirm),
+    spec(Context::AttachPrompt, "esc", ActionId::AttachCancel),
+    spec(Context::AttachPrompt, "tab", ActionId::AttachComplete),
+];
+
+/// The chip row only has focus while a chip is selected, which is why these live
+/// in the composer context rather than one of their own.
+const CHIPS: &[BindingSpec] = &[
+    spec(Context::Composer, "backspace", ActionId::RemoveAttachment),
+    spec(Context::Composer, "left", ActionId::AttachmentPrev),
+    spec(Context::Composer, "right", ActionId::AttachmentNext),
+];
+
+const FILE_VIEWER: &[BindingSpec] = &[
+    spec(Context::Conversation, "g f", ActionId::OpenLinkedFile),
+    spec(Context::FileViewer, "esc, q", ActionId::FileViewerClose),
+    spec(Context::FileViewer, "j, down", ActionId::ScrollDown),
+    spec(Context::FileViewer, "k, up", ActionId::ScrollUp),
+    spec(Context::FileViewer, "pagedown", ActionId::PageDown),
+    spec(Context::FileViewer, "pageup", ActionId::PageUp),
+    spec(Context::FileViewer, "g", ActionId::ScrollToTop),
+    spec(Context::FileViewer, "o", ActionId::FileViewerOsOpen),
+];
+
 const HELP: &[BindingSpec] = &[
     spec(Context::Help, "esc, q, ?", ActionId::CloseHelp),
     spec(Context::Help, "j, down", ActionId::ScrollDown),
@@ -330,6 +377,9 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     SESSION_LIST,
     CONVERSATION,
     COMPOSER,
+    ATTACH,
+    CHIPS,
+    FILE_VIEWER,
     HISTORY,
     HELP,
     PERMISSION,
@@ -342,11 +392,15 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {
     bindings: HashMap<(Context, Chord), ActionId>,
+    /// Two-chord bindings, written `"g f"` in a spec. A chord that only ever
+    /// leads a sequence resolves to nothing on its own, which is what lets `g`
+    /// prefix `gf` without shadowing anything bound to plain `g`.
+    sequences: HashMap<(Context, Chord, Chord), ActionId>,
 }
 
 impl Default for Keymap {
     fn default() -> Self {
-        let mut map = Self { bindings: HashMap::new() };
+        let mut map = Self { bindings: HashMap::new(), sequences: HashMap::new() };
         let mut problems = Vec::new();
         map.load_defaults(&mut problems);
         debug_assert!(problems.is_empty(), "built-in keymap: {problems:?}");
@@ -356,7 +410,7 @@ impl Default for Keymap {
 
 impl Keymap {
     pub fn new(problems: &mut Vec<String>) -> Self {
-        let mut map = Self { bindings: HashMap::new() };
+        let mut map = Self { bindings: HashMap::new(), sequences: HashMap::new() };
         map.load_defaults(problems);
         map
     }
@@ -364,6 +418,22 @@ impl Keymap {
     fn load_defaults(&mut self, problems: &mut Vec<String>) {
         for group in DEFAULT_BINDINGS {
             for spec in *group {
+                if let Some((lead, rest)) = spec.keys.split_once(' ')
+                    && !rest.trim().is_empty()
+                    && !lead.trim().is_empty()
+                    && !spec.keys.contains(',')
+                {
+                    match (Chord::parse(lead.trim()), Chord::parse(rest.trim())) {
+                        (Ok(lead), Ok(second)) => {
+                            self.sequences.insert((spec.context, lead, second), spec.action);
+                        }
+                        _ => problems.push(format!(
+                            "default sequence for `{}`: `{}` is not two chords",
+                            spec.action, spec.keys
+                        )),
+                    }
+                    continue;
+                }
                 let chords = match Chord::parse_list(spec.keys) {
                     Ok(chords) => chords,
                     Err(err) => {
@@ -416,10 +486,36 @@ impl Keymap {
             .find_map(|c| self.bindings.get(&(c, chord)).copied())
     }
 
+    /// Whether `chord` leads a two-chord binding in `context` (or a fallback),
+    /// so the caller holds it and waits for the second key.
+    #[must_use]
+    pub fn is_prefix(&self, context: Context, chord: Chord) -> bool {
+        std::iter::once(context)
+            .chain(Self::fallbacks(context).iter().copied())
+            .any(|c| self.sequences.keys().any(|(kc, lead, _)| *kc == c && *lead == chord))
+    }
+
+    /// The action a held `lead` plus `second` resolves to.
+    #[must_use]
+    pub fn lookup_sequence(
+        &self,
+        context: Context,
+        lead: Chord,
+        second: Chord,
+    ) -> Option<ActionId> {
+        std::iter::once(context)
+            .chain(Self::fallbacks(context).iter().copied())
+            .find_map(|c| self.sequences.get(&(c, lead, second)).copied())
+    }
+
     const fn fallbacks(context: Context) -> &'static [Context] {
         match context {
             Context::Permission => &[Context::Conversation, Context::Global],
-            Context::SessionList | Context::Conversation | Context::Help => &[Context::Global],
+            // The pager is a plain reader and keeps the globals; the attach
+            // prompt swallows typed characters and falls through to nothing.
+            Context::SessionList | Context::Conversation | Context::FileViewer | Context::Help => {
+                &[Context::Global]
+            }
             _ => &[],
         }
     }
@@ -438,6 +534,20 @@ impl Keymap {
             (named, c.to_string())
         });
         chords
+    }
+
+    /// Two-chord labels (`g f`) bound to `action` in `context`, for the cheat
+    /// sheet: a sequence has no single [`Chord`] to report.
+    #[must_use]
+    pub fn sequence_labels(&self, context: Context, action: ActionId) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .sequences
+            .iter()
+            .filter(|((c, _, _), a)| *c == context && **a == action)
+            .map(|((_, lead, second), _)| format!("{} {}", lead.label(), second.label()))
+            .collect();
+        out.sort();
+        out
     }
 
     /// Bound actions of a context, in declaration order, each with its chords.

@@ -16,6 +16,10 @@ pub use crate::config::uistate::UiState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    /// The overlay pager for an agent-linked local file.
+    FileViewer,
+    /// The `Ctrl-O` path prompt.
+    AttachPrompt,
     SessionList,
     Conversation,
     Help,
@@ -233,6 +237,14 @@ pub struct App {
     pub drafts: super::drafts::DraftState,
     /// Sends that have left the composer but are not confirmed delivered.
     pub outbox: super::send::Outbox,
+    /// Files staged for the composer, uploaded on send.
+    pub attachments: super::attach::Attachments,
+    /// The `Ctrl-O` path prompt, while it is open.
+    pub attach_prompt: Option<super::attach::AttachPrompt>,
+    /// A held lead chord (the `g` of `gf`), cleared by the next key.
+    pub pending_chord: Option<crate::config::chord::Chord>,
+    /// The file the viewer is showing, while it is open.
+    pub file_view: Option<super::fileview::FileView>,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
     /// clock so it stays pure and testable.
     pub clock_ms: i64,
@@ -304,6 +316,10 @@ impl App {
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
             outbox: super::send::Outbox::default(),
+            attachments: super::attach::Attachments::new(),
+            attach_prompt: None,
+            pending_chord: None,
+            file_view: None,
             clock_ms: 0,
             machine_liveness: HashMap::new(),
             ws_healthy: false,

@@ -469,8 +469,8 @@ ticket = "CCT-1257"
 [[route]]
 id = "get_machines_by_machine_fs_file"
 # GET /machines/{machine_id}/fs/file — Read one file on a machine (agent-linked path): inline or blob redirect.
-tui = "planned"
-ticket = "CCT-1234"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_machines_by_machine_codex_models"
@@ -1003,8 +1003,8 @@ ticket = "CCT-1256"
 [[route]]
 id = "post_sessions_by_id_files"
 # POST /sessions/{id}/files — Attach files to a live session mid-conversation.
-tui = "planned"
-ticket = "CCT-1232"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions"
@@ -1219,8 +1219,8 @@ ticket = "CCT-1232"
 [[route]]
 id = "get_sessions_by_id_linked_file_owner"
 # GET /sessions/{id}/linked-file-owner — Which session and machine linked a path, when this session did not.
-tui = "planned"
-ticket = "CCT-1234"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_by_id_diagnose"

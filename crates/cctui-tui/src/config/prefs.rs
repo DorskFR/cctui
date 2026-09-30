@@ -8,8 +8,12 @@ pub struct PrefsFile {
     pub timestamps: Option<bool>,
     pub compact_rows: Option<bool>,
     pub notifications: Option<bool>,
+    pub ascii_glyphs: Option<bool>,
 }
 
+// The knobs are independent switches, not a state machine, so grouping them
+// into enums would only obscure what each one does.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prefs {
     /// Conversation timestamps shown from the start (`t` still toggles).
@@ -18,11 +22,13 @@ pub struct Prefs {
     pub compact_rows: bool,
     /// Desktop/terminal notifications for sessions that want attention.
     pub notifications: bool,
+    /// Plain ASCII instead of emoji, for a terminal or font without them.
+    pub ascii_glyphs: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { timestamps: false, compact_rows: false, notifications: true }
+        Self { timestamps: false, compact_rows: false, notifications: true, ascii_glyphs: false }
     }
 }
 
@@ -47,6 +53,9 @@ impl Prefs {
         }
         if let Some(v) = file.notifications {
             self.notifications = v;
+        }
+        if let Some(v) = file.ascii_glyphs {
+            self.ascii_glyphs = v;
         }
     }
 }

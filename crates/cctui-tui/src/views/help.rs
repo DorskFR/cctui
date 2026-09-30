@@ -66,6 +66,13 @@ fn rows(keys: &Keymap) -> Vec<Row> {
         for (action, chords) in entries {
             rows.push(Row::Binding { keys: keys_label(&chords), desc: action.description() });
         }
+        // Sequences carry no single chord, so `entries` cannot report them.
+        for action in crate::config::keymap::ACTION_IDS {
+            let labels = keys.sequence_labels(*context, *action);
+            if !labels.is_empty() && is_wired(*action) {
+                rows.push(Row::Binding { keys: labels.join(" / "), desc: action.description() });
+            }
+        }
     }
     rows.push(Row::Heading("Row glyphs"));
     for &(glyph, desc) in crate::app::session_status::GLYPH_LEGEND {

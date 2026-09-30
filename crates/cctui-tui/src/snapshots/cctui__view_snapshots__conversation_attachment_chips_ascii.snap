@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 557
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25
+ Read  crates/cctui-tui/src/main.rs  read                                                          ▕
+└ 984 lines                                                                                        ▕
+ Bash  cargo test  write                                                                           ▕
+└ ✗ exit 101 · 3 failed  (2 more · o)                                                              ▕
+                                                                                                   ▕
+● Assistant                                                                                        ▐
+Looking at the views first.                                                                        ▐
+                                                                                                   ▐
+- one                                                                                              ▐
+- two                                                                                              ▐
+⏱ 12.4k in / 1.1k out                                                                              ▐
+⏱ 38s                                                                                              ▐
+                                                                                                   ▐
+◆ lane-b                                                                                           ▐
+the parser lane is rebased                                                                         ▐
+· keep-alive tick                                                                                  ▐
+⟳ context reset (/clear)                                                                           ▐
+                                                                                                   ▐
+◁ Reply done                                                                                       ▐
+───────────────────────────────────────────────────────────────────────────────────────────── draft
+ ◆ waiting for input
+ + [paste-1.txt 12 KB] [image: shot.png 1280x720 340 KB]
+❯ [paste-1.txt] [shot.png]

@@ -28,7 +28,8 @@ use app::toast::Level;
 use app::{Action, App, reduce, server_event};
 use cctui_client::{Client, Incoming};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEventKind, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -184,14 +185,19 @@ async fn run_tui() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run(&mut terminal, base_url, token).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -237,6 +243,9 @@ async fn run(
             biased;
 
             maybe_input = input_rx.recv() => {
+                // A held lead chord lives exactly one key long, whatever that
+                // key turns out to mean.
+                let pending = app.pending_chord.take();
                 maybe_input
                     .and_then(|input| {
                         keys::map_input(
@@ -244,6 +253,7 @@ async fn run(
                             app.view(),
                             app.input_active,
                             app.prompt_focus(),
+                            pending,
                             input,
                         )
                     })
@@ -368,6 +378,7 @@ fn spawn_input_task() -> mpsc::Receiver<InputEvent> {
             let Ok(ev) = event::read() else { return };
             let mapped = match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => Some(InputEvent::Key(key)),
+                Event::Paste(text) => Some(InputEvent::Paste(text)),
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => Some(InputEvent::ScrollUp),
                     MouseEventKind::ScrollDown => Some(InputEvent::ScrollDown),

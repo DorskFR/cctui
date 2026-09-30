@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 623
+expression: render_screen(&mut app)
+---
+┌ NOTES.md — Esc closes, o opens in the desktop viewer ────────────────────────────────────────────┐
+│# Title                                                                                           │
+│                                                                                                  │
+│Some bold text and a list:                                                                        │
+│                                                                                                  │
+│- one                                                                                             │
+│- two                                                                                             │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘

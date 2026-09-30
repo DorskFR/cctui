@@ -1,9 +1,11 @@
 pub mod action;
+pub mod attach;
 pub mod attention;
 pub mod conversation;
 pub mod conversation_store;
 pub mod drafts;
 pub mod effects;
+pub mod fileview;
 pub mod identity;
 pub mod line;
 pub mod prompt;

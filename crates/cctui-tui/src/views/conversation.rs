@@ -47,16 +47,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     let card_height = u16::try_from(cards.len()).unwrap_or(u16::MAX);
 
-    let [header_area, content_area, card_area, separator_area, banner_area, input_area] =
+    let chip_height = super::attach::height(app, &session.id);
+
+    let [header_area, content_area, card_area, separator_area, banner_area, chip_area, input_area] =
         Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(card_height),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(chip_height),
             Constraint::Length(input_height),
         ])
         .areas(main_area);
+
+    if chip_height > 0 {
+        super::attach::draw_chips(frame, app, &session.id, chip_area);
+    }
 
     if card_height > 0 {
         frame.render_widget(Paragraph::new(cards), card_area);

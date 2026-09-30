@@ -1,7 +1,9 @@
 use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::attach::AttachAction;
 use crate::app::drafts::DraftAction;
+use crate::app::fileview::FileViewAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, edit_permission_request,
@@ -502,5 +504,139 @@ fn conversation_permission_card_outranks_an_ask_card() {
     let id = selected(&app);
     app.asks.insert(id, ask_card());
     with_permission(&mut app, permission_request());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+// --- Attachments and the linked-file viewer ---
+
+/// A session with a pasted text file and an image staged, as `Ctrl-O` and a
+/// large paste leave it.
+fn app_with_attachments() -> crate::app::App {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let _ = reduce(
+        &mut app,
+        Action::Attach(AttachAction::Read {
+            session_id: id.clone(),
+            name: "paste-1.txt".to_owned(),
+            bytes: vec![b'x'; 12 * 1024],
+            content_type: "text/plain".to_owned(),
+            dimensions: None,
+        }),
+    );
+    let _ = reduce(
+        &mut app,
+        Action::Attach(AttachAction::Read {
+            session_id: id,
+            name: "shot.png".to_owned(),
+            bytes: vec![0; 340 * 1024],
+            content_type: "image/png".to_owned(),
+            dimensions: Some((1280, 720)),
+        }),
+    );
+    app
+}
+
+#[test]
+fn conversation_attachment_chips() {
+    let mut app = app_with_attachments();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_attachment_chip_focused() {
+    let mut app = app_with_attachments();
+    let _ = reduce(&mut app, Action::Attach(AttachAction::FocusChips));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_attachment_chips_ascii() {
+    let mut app = app_with_attachments();
+    app.config.prefs.ascii_glyphs = true;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_attachment_cap_error() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    let _ = reduce(
+        &mut app,
+        Action::Attach(AttachAction::Read {
+            session_id: id,
+            name: "huge.bin".to_owned(),
+            bytes: vec![0; 6 * 1024 * 1024],
+            content_type: "application/octet-stream".to_owned(),
+            dimensions: None,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn attach_prompt() {
+    let mut app = app_in_conversation();
+    let _ = reduce(&mut app, Action::Attach(AttachAction::OpenPrompt));
+    if let Some(prompt) = app.attach_prompt.as_mut() {
+        prompt.text = "/home/dev/cctui/READ".to_owned();
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn attach_prompt_with_candidates() {
+    let mut app = app_in_conversation();
+    let _ = reduce(&mut app, Action::Attach(AttachAction::OpenPrompt));
+    if let Some(prompt) = app.attach_prompt.as_mut() {
+        prompt.text = "/home/dev/cctui/src/a".to_owned();
+        prompt.completion = Some("action.rs  attach.rs  attention.rs".to_owned());
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn app_viewing(name: &str, content_type: &str, body: &[u8]) -> crate::app::App {
+    let mut app = app_in_conversation();
+    let _ = reduce(
+        &mut app,
+        Action::FileView(FileViewAction::Opened {
+            name: name.to_owned(),
+            path: format!("/home/dev/{name}"),
+            content_type: content_type.to_owned(),
+            bytes: body.to_vec(),
+        }),
+    );
+    app
+}
+
+#[test]
+fn file_viewer_highlights_source() {
+    let source = "fn main() {\n    let x = 1;\n    println!(\"{x}\");\n}\n";
+    let mut app = app_viewing("main.rs", "text/plain", source.as_bytes());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn file_viewer_renders_markdown() {
+    let doc = "# Title\n\nSome **bold** text and a list:\n\n- one\n- two\n";
+    let mut app = app_viewing("NOTES.md", "text/markdown", doc.as_bytes());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn file_viewer_scrolled() {
+    use std::fmt::Write as _;
+    let mut source = String::new();
+    for i in 1..=40 {
+        let _ = writeln!(source, "let line_{i} = {i};");
+    }
+    let mut app = app_viewing("long.rs", "text/plain", source.as_bytes());
+    let _ = reduce(&mut app, Action::FileView(FileViewAction::Scroll(20)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn file_viewer_image_placeholder() {
+    let mut app = app_viewing("shot.png", "image/png", &[0; 4096]);
     insta::assert_snapshot!(render_screen(&mut app));
 }

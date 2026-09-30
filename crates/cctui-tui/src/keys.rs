@@ -2,9 +2,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PromptFocus;
 use crate::app::action::Action;
+use crate::app::attach::AttachAction;
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::conversation::ConversationAction;
 use crate::app::drafts::DraftAction;
+use crate::app::fileview::FileViewAction;
 use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
@@ -12,9 +14,11 @@ use crate::app::state::View;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum InputEvent {
     Key(KeyEvent),
+    /// A bracketed paste's whole payload, arriving as one event.
+    Paste(String),
     ScrollUp,
     ScrollDown,
 }
@@ -44,6 +48,8 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
     match view {
         View::SessionList => Context::SessionList,
         View::Conversation => Context::Conversation,
+        View::FileViewer => Context::FileViewer,
+        View::AttachPrompt => Context::AttachPrompt,
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
     }
@@ -56,25 +62,52 @@ pub fn map_input(
     view: View,
     input_active: bool,
     prompt: Option<PromptFocus>,
+    pending: Option<Chord>,
     input: InputEvent,
 ) -> Option<Action> {
     match input {
         InputEvent::Key(key) => {
             let context = context_for(view, input_active, prompt);
             let chord = Chord::from_event(key);
+            // A held lead chord (`g` of `gf`) either completes a sequence or is
+            // dropped: falling back to `g`'s own binding would scroll to the top
+            // on every mistyped `gx`.
+            if let Some(lead) = pending {
+                return keys
+                    .lookup_sequence(context, lead, chord)
+                    .and_then(|id| to_action(id, chord));
+            }
+            if keys.is_prefix(context, chord) {
+                return Some(Action::PendingChord(chord));
+            }
             keys.lookup(context, chord)
                 .and_then(|id| to_action(id, chord))
                 .or_else(|| unbound(context, key))
         }
+        // A paste large enough to drown the composer becomes an attachment; a
+        // small one is just typing.
+        InputEvent::Paste(text) => {
+            if text.len() >= crate::app::attach::PASTE_THRESHOLD_BYTES {
+                Some(Action::Attach(AttachAction::LargePaste(text)))
+            } else {
+                Some(Action::PasteText(text))
+            }
+        }
+        InputEvent::ScrollUp if view == View::FileViewer => {
+            Some(Action::FileView(FileViewAction::Scroll(-3)))
+        }
+        InputEvent::ScrollDown if view == View::FileViewer => {
+            Some(Action::FileView(FileViewAction::Scroll(3)))
+        }
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
-            View::Help | View::HistoryPicker => None,
+            View::FileViewer | View::AttachPrompt | View::Help | View::HistoryPicker => None,
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
-            View::Help | View::HistoryPicker => None,
+            View::FileViewer | View::AttachPrompt | View::Help | View::HistoryPicker => None,
         },
     }
 }
@@ -111,6 +144,19 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ScrollToBottom => Action::ScrollToBottom,
         ActionId::ToggleTimestamps => Action::ToggleTimestamps,
         ActionId::LineCursor => Action::Conversation(ConversationAction::ToggleLineCursor),
+
+        ActionId::AttachFile => Action::Attach(AttachAction::OpenPrompt),
+        ActionId::AttachConfirm => Action::Attach(AttachAction::SubmitPrompt),
+        ActionId::AttachCancel => Action::Attach(AttachAction::ClosePrompt),
+        ActionId::AttachComplete => Action::Attach(AttachAction::CompletePrompt),
+        ActionId::FocusAttachments => Action::Attach(AttachAction::FocusChips),
+        ActionId::AttachmentNext => Action::Attach(AttachAction::MoveChip(1)),
+        ActionId::AttachmentPrev => Action::Attach(AttachAction::MoveChip(-1)),
+        ActionId::RemoveAttachment => Action::Attach(AttachAction::BackspaceOrChip),
+
+        ActionId::OpenLinkedFile => Action::FileView(FileViewAction::OpenUnderCursor),
+        ActionId::FileViewerClose => Action::FileView(FileViewAction::Close),
+        ActionId::FileViewerOsOpen => Action::FileView(FileViewAction::OpenInOsViewer),
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::InterruptSelected,
@@ -169,6 +215,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
+        Context::AttachPrompt => Some(Action::Attach(AttachAction::PromptKey(key))),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
         _ => None,
@@ -195,11 +242,11 @@ mod tests {
     }
 
     fn map(view: View, input_active: bool, code: KeyCode) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(key(code)))
+        map_input(&Keymap::default(), view, input_active, None, None, InputEvent::Key(key(code)))
     }
 
     fn map_event(view: View, input_active: bool, event: KeyEvent) -> Option<Action> {
-        map_input(&Keymap::default(), view, input_active, None, InputEvent::Key(event))
+        map_input(&Keymap::default(), view, input_active, None, None, InputEvent::Key(event))
     }
 
     fn map_card(code: KeyCode) -> Option<Action> {
@@ -212,6 +259,7 @@ mod tests {
             View::Conversation,
             false,
             Some(focus),
+            None,
             InputEvent::Key(key(code)),
         )
     }
@@ -461,6 +509,7 @@ mod tests {
                 View::Conversation,
                 true,
                 Some(PromptFocus::Permission),
+                None,
                 InputEvent::Key(key(code)),
             );
             assert!(matches!(action, Some(Action::InputKey(_))), "{code:?} must be typed");
@@ -481,14 +530,14 @@ mod tests {
     fn the_mouse_wheel_navigates_the_list_and_scrolls_the_conversation() {
         let keys = Keymap::default();
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, None, InputEvent::ScrollDown),
+            map_input(&keys, View::SessionList, false, None, None, InputEvent::ScrollDown),
             Some(Action::SelectNext)
         ));
         assert!(matches!(
-            map_input(&keys, View::Conversation, false, None, InputEvent::ScrollUp),
+            map_input(&keys, View::Conversation, false, None, None, InputEvent::ScrollUp),
             Some(Action::Scroll { lines: -3, release_follow: true })
         ));
-        assert!(map_input(&keys, View::Help, false, None, InputEvent::ScrollUp).is_none());
+        assert!(map_input(&keys, View::Help, false, None, None, InputEvent::ScrollUp).is_none());
     }
 
     #[test]
@@ -564,6 +613,7 @@ mod tests {
                 View::Conversation,
                 true,
                 Some(PromptFocus::Ask),
+                None,
                 InputEvent::Key(key(KeyCode::Char('2'))),
             ),
             Some(Action::InputKey(_))
@@ -591,7 +641,7 @@ mod tests {
         let mut keys = Keymap::default();
         keys.set(Context::SessionList, "ctrl+n", "select-next").expect("valid");
         assert!(matches!(
-            map_input(&keys, View::SessionList, false, None, InputEvent::Key(ctrl('n'))),
+            map_input(&keys, View::SessionList, false, None, None, InputEvent::Key(ctrl('n'))),
             Some(Action::SelectNext)
         ));
     }

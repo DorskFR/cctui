@@ -2,10 +2,12 @@ use cctui_proto::api::SessionListItem;
 use cctui_proto::models::SessionStatus;
 use crossterm::event::KeyEvent;
 
+use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
+use super::fileview::FileViewAction;
 use super::identity::AuthAction;
 use super::prompt::PromptAction;
 use super::send::SendAction;
@@ -55,7 +57,13 @@ pub enum Action {
         enabled: bool,
     },
 
+    Attach(AttachAction),
+    /// A lead chord of a two-chord binding is held; the next key completes it.
+    PendingChord(crate::config::chord::Chord),
+    /// A paste small enough to type straight into the composer.
+    PasteText(String),
     Attention(AttentionAction),
+    FileView(FileViewAction),
 
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
@@ -163,6 +171,28 @@ pub enum Effect {
         session_id: String,
         request_id: String,
         behavior: &'static str,
+    },
+    /// Read one local path into a composer attachment.
+    ReadAttachment {
+        session_id: String,
+        path: String,
+    },
+    /// Stage the composer's files, then send `content` with its tokens rewritten.
+    UploadAttachments {
+        session_id: String,
+        content: String,
+        files: Vec<(String, Vec<u8>)>,
+    },
+    /// Read an agent-linked path for the file viewer.
+    OpenLinkedFile {
+        session_id: String,
+        machine_id: String,
+        path: String,
+    },
+    /// Hand a staged attachment to the OS viewer.
+    OpenInOsViewer {
+        name: String,
+        bytes: Vec<u8>,
     },
     /// Persist the fold state to `tui-state.json`.
     SaveUiState(crate::config::uistate::UiState),

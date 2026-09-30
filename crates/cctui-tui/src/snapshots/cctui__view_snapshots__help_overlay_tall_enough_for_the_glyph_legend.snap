@@ -1,51 +1,51 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 109
+assertion_line: 111
 expression: "render_screen_sized(&mut app, 100, 46)"
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         k / ↑       Scroll up                        │
-▸ │  ?           Toggle this cheat sheet            PgDn        Page down                        │
-  │  q           Quit cctui                         PgUp        Page up                          │
-  │  Ctrl+g      Jump to the next pending approval  ? / q / Esc Close this cheat sheet           │
-  │Session list                                   Permission card                                │
-  │  j / ↓       Next session                       y           Allow                            │
-  │  k / ↑       Previous session                   n           Deny                             │
-  │  g           First session                      A           Allow and auto-approve           │
-  │  G           Last session                     Question card                                  │
-  │  Enter       Open the conversation              Esc         Answer later                     │
-  │  z / Tab     Fold or open the subagent group    j / ↓       Next option                      │
-  │  S           Fold or open the section           k / ↑       Previous option                  │
-  │  Z           Fold or open everything            1-9         Pick an option by number         │
-  │Conversation                                     Space       Toggle the focused option        │
-  │  1-9         Jump to session by number          Tab         Next question                    │
-  │  q / Esc     Back to the session list           Shift+Tab   Previous question                │
-  │  j / ↓       Scroll down                        o           Write a free-text answer         │
-  │  k / ↑       Scroll up                          Enter       Send the answer                  │
-  │  PgDn        Page down                        Question card — free text                      │
-  │  PgUp        Page up                            Enter       Accept the text                  │
-  │  g           Jump to the top                    Esc         Discard the text                 │
-  │  G           Jump to the bottom               Plan card                                      │
-  │  t           Show timestamps                    Esc         Answer later                     │
-  │  Ctrl+c      Interrupt the turn                 1           Approve, auto-accept edits       │
-  │  Ctrl+a      Toggle auto-approve                2           Approve, manually approve edits  │
-  │  v           Select transcript lines            3           Keep planning                    │
-  │  o           Expand the focused line            r           Refine the plan                  │
-  │  z           Expand every thinking and result…  j / ↓       Scroll the plan down             │
-  │  R           Retry the undelivered message      k / ↑       Scroll the plan up               │
-  │  e           Edit the undelivered message     Plan card — refine                             │
-  │  x           Drop the undelivered message       Enter       Accept the text                  │
-  │  Ctrl+r      Search sent prompts                Esc         Discard the text                 │
-  │  Tab         Answer the waiting prompt        Row glyphs                                     │
-  │Composer                                         ●           working                          │
-  │  Esc         Close the composer                 ◐           stale or asleep                  │
-  │  Enter       Send the message                   ○           idle                             │
-  │  Ctrl+j / A… Insert a newline                   ☾           hibernated                       │
-  │  ↑           Recall an earlier prompt           ↳           subagent                         │
-  │  ↓           Recall a later prompt              ▸ / ▾       folded / open group              │
-  │  Ctrl+r      Search sent prompts                !           permission waiting on you        │
-  │Prompt history                                   ?           question waiting on you          │
-  │  Esc         Close the prompt list              P           plan waiting for approval        │
+  │Anywhere                                       File viewer                                    │
+▸ │  ?           Toggle this cheat sheet            j / ↓       Scroll down                      │
+  │  q           Quit cctui                         k / ↑       Scroll up                        │
+  │  Ctrl+g      Jump to the next pending approval  PgDn        Page down                        │
+  │Session list                                     PgUp        Page up                          │
+  │  j / ↓       Next session                       g           Jump to the top                  │
+  │  k / ↑       Previous session                   q / Esc     Close the file viewer            │
+  │  g           First session                      o           Open in the desktop viewer       │
+  │  G           Last session                     Help                                           │
+  │  Enter       Open the conversation              j / ↓       Scroll down                      │
+  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll up                        │
+  │  S           Fold or open the section           PgDn        Page down                        │
+  │  Z           Fold or open everything            PgUp        Page up                          │
+  │Conversation                                     ? / q / Esc Close this cheat sheet           │
+  │  1-9         Jump to session by number        Permission card                                │
+  │  q / Esc     Back to the session list           y           Allow                            │
+  │  j / ↓       Scroll down                        n           Deny                             │
+  │  k / ↑       Scroll up                          A           Allow and auto-approve           │
+  │  PgDn        Page down                        Question card                                  │
+  │  PgUp        Page up                            Esc         Answer later                     │
+  │  g           Jump to the top                    j / ↓       Next option                      │
+  │  G           Jump to the bottom                 k / ↑       Previous option                  │
+  │  t           Show timestamps                    1-9         Pick an option by number         │
+  │  Ctrl+c      Interrupt the turn                 Space       Toggle the focused option        │
+  │  Ctrl+a      Toggle auto-approve                Tab         Next question                    │
+  │  v           Select transcript lines            Shift+Tab   Previous question                │
+  │  Ctrl+o      Attach a file                      o           Write a free-text answer         │
+  │  o           Expand the focused line            Enter       Send the answer                  │
+  │  z           Expand every thinking and result…Question card — free text                      │
+  │  R           Retry the undelivered message      Enter       Accept the text                  │
+  │  e           Edit the undelivered message       Esc         Discard the text                 │
+  │  x           Drop the undelivered message     Plan card                                      │
+  │  Ctrl+r      Search sent prompts                Esc         Answer later                     │
+  │  Tab         Answer the waiting prompt          1           Approve, auto-accept edits       │
+  │  g f         Open the file under the cursor     2           Approve, manually approve edits  │
+  │Composer                                         3           Keep planning                    │
+  │  Ctrl+o      Attach a file                      r           Refine the plan                  │
+  │  Bksp        Remove the focused attachment      j / ↓       Scroll the plan down             │
+  │  Alt+Bksp    Focus the attachment chips         k / ↑       Scroll the plan up               │
+  │  →           Next attachment chip             Plan card — refine                             │
+  │  ←           Previous attachment chip           Enter       Accept the text                  │
+  │  Esc         Close the composer                 Esc         Discard the text                 │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -16,7 +16,18 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::Attach(action) => super::attach::reduce_attach(app, action),
+        Action::PendingChord(chord) => {
+            app.pending_chord = Some(chord);
+            Vec::new()
+        }
+        Action::PasteText(text) => {
+            app.input_active = true;
+            app.message_input.insert_str(&text);
+            super::drafts::on_input(app)
+        }
         Action::Attention(attention) => super::attention::reduce_attention(app, attention),
+        Action::FileView(action) => super::fileview::reduce_fileview(app, action),
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
         Action::Send(action) => send::reduce_send(app, action),
         Action::SessionLive(action) => super::session_live::reduce_session_live(app, action),
@@ -98,6 +109,17 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         {
             conversation::reduce(app, ConversationAction::MoveCursor { delta: lines })
         }
+        // The pager borrows the conversation's scroll keys, so the same actions
+        // have to land on whichever is on top.
+        Action::Scroll { lines, .. } if app.view() == View::FileViewer => {
+            super::fileview::reduce_fileview(app, super::fileview::FileViewAction::Scroll(lines))
+        }
+        Action::ScrollToTop if app.view() == View::FileViewer => {
+            if let Some(view) = app.file_view.as_mut() {
+                view.scroll = 0;
+            }
+            Vec::new()
+        }
         Action::Scroll { lines, release_follow } => {
             snap_scroll_if_following(app);
             app.scroll_offset = if lines < 0 {
@@ -147,8 +169,14 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             app.reset_input();
             app.input_active = false;
             match target {
+                // Staged files have to reach the working dir before the prompt
+                // that references them does, so the upload goes first and its
+                // reply carries the send.
                 Some(session_id) if !content.trim().is_empty() => {
-                    send::submit(app, session_id, content, None)
+                    super::attach::upload_effect(app, &session_id, &content).map_or_else(
+                        || send::submit(app, session_id.clone(), content.clone(), None),
+                        |effect| vec![effect],
+                    )
                 }
                 // Nothing to send, but the emptied composer is still a draft
                 // change the store has to hear about.

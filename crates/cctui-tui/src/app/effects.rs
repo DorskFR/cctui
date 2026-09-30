@@ -2,16 +2,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cctui_client::{Client, ConversationFetch, Page, WsClient};
+use cctui_client::{Client, ConversationFetch, FileRead, Page, UploadFile, WsClient};
 use cctui_proto::drafts::{composer_draft_key, session_history_key};
 use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
+use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
+use super::fileview::{self, FileViewAction};
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
 use super::send::SendAction;
@@ -192,6 +194,17 @@ async fn run(
                 }
             }
         }
+        Effect::ReadAttachment { session_id, path } => read_attachment(&session_id, &path),
+        Effect::UploadAttachments { session_id, content, files } => {
+            upload_attachments(server, session_id, content, files).await
+        }
+        Effect::OpenLinkedFile { session_id, machine_id, path } => {
+            open_linked_file(server, &session_id, &machine_id, &path).await
+        }
+        Effect::OpenInOsViewer { name, bytes } => {
+            open_in_os_viewer(&name, &bytes);
+            Vec::new()
+        }
         Effect::SaveUiState(state) => {
             crate::config::uistate::save(&state);
             Vec::new()
@@ -309,4 +322,155 @@ async fn load_conversation_page(
         actions.push(Action::UndecodableAgentEvents(undecodable));
     }
     actions
+}
+
+/// Read one path off the local disk into a composer attachment. The name is the
+/// basename, and an image's pixel size is measured here so the chip can show it.
+fn read_attachment(session_id: &str, path: &str) -> Vec<Action> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return vec![Action::Attach(AttachAction::ReadFailed(format!(
+                "cannot read {path}: {e}"
+            )))];
+        }
+    };
+    let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+    if name.is_empty() {
+        return vec![Action::Attach(AttachAction::ReadFailed(format!("{path} is not a file")))];
+    }
+    let content_type = guess_content_type(&name);
+    let dimensions = image_dimensions(&bytes);
+    vec![Action::Attach(AttachAction::Read {
+        session_id: session_id.to_owned(),
+        name,
+        bytes,
+        content_type,
+        dimensions,
+    })]
+}
+
+/// Extension-based content type; only the families the composer treats
+/// specially need naming, everything else is opaque bytes.
+fn guess_content_type(name: &str) -> String {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "txt" | "log" | "rs" | "toml" | "py" | "ts" | "js" | "sh" => "text/plain",
+        "md" => "text/markdown",
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+    .to_owned()
+}
+
+/// Pixel size of an image, or `None` when the bytes are not an image the
+/// decoders compiled in can read.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+async fn upload_attachments(
+    server: &Client,
+    session_id: String,
+    content: String,
+    files: Vec<(String, Vec<u8>)>,
+) -> Vec<Action> {
+    let names: Vec<String> = files.iter().map(|(name, _)| name.clone()).collect();
+    let payload =
+        files.into_iter().map(|(name, bytes)| UploadFile { name, bytes }).collect::<Vec<_>>();
+    match server.stage_session_files(&session_id, payload).await {
+        Ok(resp) => vec![Action::Attach(AttachAction::Uploaded {
+            session_id,
+            content,
+            names,
+            paths: resp.paths,
+        })],
+        Err(e) => {
+            tracing::warn!(%e, %session_id, "staging attachments failed");
+            vec![Action::Attach(AttachAction::UploadFailed {
+                session_id,
+                content,
+                message: format!("attaching files failed: {e}"),
+            })]
+        }
+    }
+}
+
+/// Read an agent-linked path, re-asking the machine that linked it when this one
+/// says the path is denied or absent — the webui's `attemptOpen` chain.
+async fn open_linked_file(
+    server: &Client,
+    session_id: &str,
+    machine_id: &str,
+    path: &str,
+) -> Vec<Action> {
+    let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+    let first = match server.read_machine_file(machine_id, path, session_id).await {
+        Ok(read) => read,
+        Err(e) => {
+            tracing::warn!(%e, "reading a linked file failed");
+            FileRead::Refused(cctui_client::FileRefusal::network())
+        }
+    };
+    let refusal = match first {
+        FileRead::Ok { content_type, bytes } => {
+            return vec![opened(name, path, content_type, bytes)];
+        }
+        FileRead::Refused(refusal) => refusal,
+    };
+    if !fileview::may_live_elsewhere(refusal.status) {
+        return vec![refused(name, refusal)];
+    }
+    let Ok(Some(owner)) = server.linked_file_owner(session_id, path).await else {
+        return vec![refused(name, refusal)];
+    };
+    match server.read_machine_file(&owner.machine_id, path, &owner.session_id).await {
+        Ok(FileRead::Ok { content_type, bytes }) => {
+            vec![opened(name, path, content_type, bytes)]
+        }
+        // The owning machine had nothing better to say, so the first refusal stands.
+        _ => vec![refused(name, refusal)],
+    }
+}
+
+fn opened(name: String, path: &str, content_type: String, bytes: Vec<u8>) -> Action {
+    Action::FileView(FileViewAction::Opened { name, path: path.to_owned(), content_type, bytes })
+}
+
+fn refused(name: String, refusal: cctui_client::FileRefusal) -> Action {
+    Action::FileView(FileViewAction::Refused {
+        name,
+        refusal: Box::new(refusal),
+        source: fileview::FileSource::Machine,
+    })
+}
+
+/// Write the bytes to a temp file and hand it to the desktop's opener. A
+/// terminal that cannot draw images still gets the user to the picture.
+fn open_in_os_viewer(name: &str, bytes: &[u8]) {
+    let path = std::env::temp_dir().join(format!("cctui-{name}"));
+    if let Err(e) = std::fs::write(&path, bytes) {
+        tracing::warn!(%e, "cannot stage a file for the OS viewer");
+        return;
+    }
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    if let Err(e) = std::process::Command::new(opener)
+        .arg(&path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        tracing::warn!(%e, opener, "cannot launch the OS viewer");
+    }
 }
