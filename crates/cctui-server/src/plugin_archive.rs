@@ -136,15 +136,23 @@ pub mod test_support {
 
     pub const MANIFEST: &[u8] = br#"{"id":"demo","name":"Demo","version":"1.0.0","cctuiApi":1,"web":"web/index.js","skills":["demo"]}"#;
 
-    /// A valid plugin archive, optionally wrapped in a top-level folder.
-    pub fn demo_tgz(folder: Option<&str>, version: &str) -> Vec<u8> {
-        let manifest = String::from_utf8_lossy(MANIFEST).replace("1.0.0", version);
+    /// A valid plugin archive for `id`, optionally wrapped in a top-level folder.
+    /// A DB-backed test must pass its own `id`: the `plugins` table is shared by
+    /// every test in the run, so a shared id makes tests race.
+    pub fn plugin_tgz(id: &str, folder: Option<&str>, version: &str) -> Vec<u8> {
+        let manifest =
+            String::from_utf8_lossy(MANIFEST).replace("1.0.0", version).replace("demo", id);
         let p = |rel: &str| folder.map_or_else(|| rel.to_owned(), |f| format!("{f}/{rel}"));
         tgz(&[
             (&p("plugin.json"), manifest.as_bytes()),
             (&p("web/index.js"), b"export default { cctuiApi: 1 };"),
-            (&p("skills/demo/SKILL.md"), b"# demo"),
+            (&p(&format!("skills/{id}/SKILL.md")), b"# demo"),
         ])
+    }
+
+    /// A valid plugin archive with the id `demo`, for tests that touch no DB.
+    pub fn demo_tgz(folder: Option<&str>, version: &str) -> Vec<u8> {
+        plugin_tgz("demo", folder, version)
     }
 }
 

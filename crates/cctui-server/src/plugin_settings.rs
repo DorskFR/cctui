@@ -210,7 +210,7 @@ mod tests {
     use crate::plugins::{PluginInstanceSetting, PluginManifest};
     use std::collections::BTreeMap;
 
-    fn manifest() -> PluginManifest {
+    fn manifest(id: &str) -> PluginManifest {
         let decl = |key: &str, kind: &str, secret: bool| PluginInstanceSetting {
             key: key.to_owned(),
             label: key.to_owned(),
@@ -218,7 +218,7 @@ mod tests {
             secret,
         };
         PluginManifest {
-            id: "setting-test".to_owned(),
+            id: id.to_owned(),
             name: "N".to_owned(),
             description: String::new(),
             version: "1".to_owned(),
@@ -254,7 +254,7 @@ mod tests {
         };
         let pool =
             sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
-        let m = manifest();
+        let m = manifest("plugin-settings-sealed");
         delete(&pool, &m.id).await.unwrap();
 
         write(&pool, &m, &patch(&[("upstream", "https://up.example"), ("token", "s3cr3t")]))
@@ -298,25 +298,26 @@ mod tests {
 
     #[tokio::test]
     async fn a_proxy_secret_is_minted_once_and_rotates_to_a_new_value() {
+        const ID: &str = "plugin-settings-secret";
         let Some(url) = crate::routes::gateway::test_db_url("plugin_proxy_secret") else {
             return;
         };
         let pool =
             sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
-        delete(&pool, "secret-test").await.unwrap();
-        assert!(proxy_secret(&pool, "secret-test").await.unwrap().is_none());
+        delete(&pool, ID).await.unwrap();
+        assert!(proxy_secret(&pool, ID).await.unwrap().is_none());
 
-        let (first, fresh) = ensure_proxy_secret(&pool, "secret-test").await.unwrap();
+        let (first, fresh) = ensure_proxy_secret(&pool, ID).await.unwrap();
         assert!(fresh);
         assert_eq!(first.len(), 64);
-        let (again, fresh) = ensure_proxy_secret(&pool, "secret-test").await.unwrap();
+        let (again, fresh) = ensure_proxy_secret(&pool, ID).await.unwrap();
         assert_eq!(again, first);
         assert!(!fresh);
 
-        let rotated = rotate_proxy_secret(&pool, "secret-test").await.unwrap();
+        let rotated = rotate_proxy_secret(&pool, ID).await.unwrap();
         assert_ne!(rotated, first);
-        assert_eq!(proxy_secret(&pool, "secret-test").await.unwrap().as_deref(), Some(&*rotated));
-        delete(&pool, "secret-test").await.unwrap();
+        assert_eq!(proxy_secret(&pool, ID).await.unwrap().as_deref(), Some(&*rotated));
+        delete(&pool, ID).await.unwrap();
     }
 
     #[tokio::test]
@@ -326,7 +327,7 @@ mod tests {
         };
         let pool =
             sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
-        let m = manifest();
+        let m = manifest("plugin-settings-coexist");
         delete(&pool, &m.id).await.unwrap();
         let (secret, _) = ensure_proxy_secret(&pool, &m.id).await.unwrap();
         write(&pool, &m, &patch(&[("upstream", "https://up.example")])).await.unwrap();
