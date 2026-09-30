@@ -74,5 +74,8 @@ pub async fn diagnose_session(
         Err(err) => (None, Some(err.to_string())),
     };
 
-    Ok(Json(SessionDiagnoseResponse { session_id, daemon, daemon_error, server }))
+    Ok(Json(
+        SessionDiagnoseResponse { session_id, daemon, daemon_error, server, silence: vec![] }
+            .with_silence(),
+    ))
 }

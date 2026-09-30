@@ -2,6 +2,7 @@
 
 mod account_usage;
 mod accounts;
+mod catalog;
 mod admin_instance;
 mod admin_users;
 mod context;
@@ -53,6 +54,7 @@ pub fn register(r: Routes) -> Routes {
     let r = plugins::register(r);
     let r = context::register(r);
     let r = version::register(r);
+    let r = catalog::register(r);
     let r = session_lifecycle::register(r);
     let r = dispatch::register(r);
     let r = session_bulk::register(r);

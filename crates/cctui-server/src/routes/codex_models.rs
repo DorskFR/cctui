@@ -501,6 +501,28 @@ pub async fn get_codex_models(
     Ok(Json(catalog))
 }
 
+/// The catalog a picker should be driven by: the machine's own when one is
+/// named and nothing authoritative outranks it, else the cross-machine merge.
+pub(crate) fn effective_catalog(state: &AppState, machine: Option<Uuid>) -> CodexModelCatalog {
+    refresh_client_version_if_stale(state);
+    refresh_account_catalogs_if_stale(state);
+    let client_version = Some(codex_client_version(state));
+    let accounts: Vec<CachedCatalog> =
+        state.codex_account_catalogs.iter().map(|c| c.value().clone()).collect();
+    if !accounts.is_empty() {
+        return CodexModelCatalog { models: merge_catalogs(&accounts).models, client_version };
+    }
+    if let Some(machine) = machine
+        && let Some(cached) = state.codex_catalogs.get(&machine)
+        && !cached.catalog.models.is_empty()
+    {
+        return CodexModelCatalog { models: cached.catalog.models.clone(), client_version };
+    }
+    let cached: Vec<CachedCatalog> =
+        state.codex_catalogs.iter().map(|c| c.value().clone()).collect();
+    CodexModelCatalog { models: merge_catalogs(&cached).models, client_version }
+}
+
 pub async fn get_merged_codex_models(
     State(state): State<AppState>,
 ) -> Result<Json<MergedCodexCatalog>, AppError> {

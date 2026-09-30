@@ -60,7 +60,7 @@ pub(super) fn register(r: Routes) -> Routes {
     )
     .add(
         &[GET],
-        "/models/codex",
+        "/models/codex/catalog",
         "Codex model catalog merged across every machine (newest report wins).",
         get(routes::codex_models::get_merged_codex_models),
         Authn::Bearer,
