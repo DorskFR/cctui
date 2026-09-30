@@ -16,6 +16,7 @@
 	import {
 		accountBacksAdapter,
 		accountPickOptions,
+		compatiblePools,
 		adapterLabel,
 		allAdapters,
 		isCompatibleProvider,
@@ -109,8 +110,17 @@
 		draft.model_alias = null;
 		draft.effort = null;
 		draft.service_tier = null;
-		if (account && !accountBacksAdapter(account, harness)) draft.account_id = null;
 	}
+	// The account / pool picks follow the harness: one that can't back it
+	// (switched harness, or a kit saved before the filter) falls back to Auto
+	// instead of lingering off-list until the server refuses the spawn.
+	$effect(() => {
+		if (account && !accountBacksAdapter(account, draft.harness)) draft.account_id = null;
+	});
+	$effect(() => {
+		const pool = draft.pool_id && pools.find((p) => p.id === draft.pool_id);
+		if (pool && !compatiblePools([pool], accounts, draft.harness).length) draft.pool_id = null;
+	});
 </script>
 
 <div class="kit">
