@@ -41,6 +41,17 @@ impl std::fmt::Display for ApiError {
     }
 }
 
+/// Whether an `anyhow` error from one of the untyped calls is really a 401, so
+/// a rejected key surfaces as such instead of as a generic failure.
+#[must_use]
+pub fn is_unauthorized(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|e| e.status() == Some(reqwest::StatusCode::UNAUTHORIZED))
+    })
+}
+
 pub struct ServerClient {
     base_url: String,
     token: String,
@@ -75,6 +86,25 @@ impl ServerClient {
             .json::<MeResponse>()
             .await
             .map_err(|e| ApiError::Other(e.to_string()))
+    }
+
+    /// Revoke the key this client authenticates with (`cctui logout --revoke`).
+    pub async fn revoke_current_key(&self) -> std::result::Result<(), ApiError> {
+        let route = cctui_proto::api::routes::by_id("delete_me_key")
+            .ok_or_else(|| ApiError::Other("route table has no delete_me_key entry".to_owned()))?;
+        let url = format!("{}{}", self.base_url, route.url(&[]));
+        let resp = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| ApiError::Other(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Unauthorized);
+        }
+        resp.error_for_status().map_err(|e| ApiError::Other(e.to_string()))?;
+        Ok(())
     }
 
     pub async fn list_sessions(&self) -> Result<SessionListResponse> {

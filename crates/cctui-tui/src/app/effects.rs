@@ -84,6 +84,9 @@ async fn run(
     match effect {
         Effect::RefreshSessions => match server.list_sessions().await {
             Ok(resp) => vec![Action::SessionsLoaded(resp.sessions)],
+            Err(e) if crate::client::is_unauthorized(&e) => {
+                vec![Action::Auth(AuthAction::Rejected)]
+            }
             Err(e) => {
                 tracing::warn!(%e, "session refresh failed");
                 vec![Action::Toast(Level::Warn, "session refresh failed".to_owned())]

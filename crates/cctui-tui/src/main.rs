@@ -1,4 +1,5 @@
 mod app;
+mod auth;
 mod client;
 mod install;
 mod keys;
@@ -58,6 +59,22 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
+    /// Log in and store the credential in `~/.config/cctui/user.json`.
+    Login {
+        /// Server to log in to. Defaults to the stored one, then `CCTUI_URL`.
+        #[arg(long)]
+        server: Option<String>,
+        /// Use an existing key instead of the browser approval flow. Without a
+        /// value the key is read from stdin, keeping it out of the shell history.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        key: Option<String>,
+    },
+    /// Forget the stored credential.
+    Logout {
+        /// Also revoke the key server-side, so it cannot be used again.
+        #[arg(long)]
+        revoke: bool,
+    },
     /// Force re-download of the latest cctui release and re-apply settings.
     Update,
     /// One-call session diagnose: print everything the daemon knows
@@ -78,6 +95,8 @@ async fn main() -> Result<()> {
             let (base_url, _) = resolve_identity();
             selfupdate::force_update(&base_url).await
         }
+        Some(Command::Login { server, key }) => auth::login(server, key).await,
+        Some(Command::Logout { revoke }) => auth::logout(revoke).await,
         Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,
         None => {
             let (base_url, _) = resolve_identity();

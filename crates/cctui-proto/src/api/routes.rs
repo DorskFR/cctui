@@ -792,6 +792,14 @@ pub const ROUTES: &[Route] = &[
         response: Some("MeResponse"),
     },
     Route {
+        id: "delete_me_key",
+        method: Method::Delete,
+        path: "/me/key",
+        summary: "Revoke the credential this request authenticated with.",
+        request: None,
+        response: None,
+    },
+    Route {
         id: "get_settings",
         method: Method::Get,
         path: "/settings",

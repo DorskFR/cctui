@@ -5,7 +5,7 @@ use crate::authz::Authz::{self, Authenticated, Scope as ScopeAz};
 use crate::authz::{Action, Authn, IdFrom, ResourceKind, Routes};
 use crate::{auth, routes};
 use axum::http::Method;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
@@ -13,6 +13,14 @@ pub(super) fn register(r: Routes) -> Routes {
         "/me",
         "Get the current principal (user, scopes, machine).",
         get(routes::me::me),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[Method::DELETE],
+        "/me/key",
+        "Revoke the credential this request authenticated with.",
+        delete(routes::me::revoke_current_key),
         Authn::Bearer,
         Authenticated,
     )
