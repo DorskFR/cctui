@@ -17,6 +17,7 @@ pub const API_KEY_ENV: &str = "FIREWORKS_API_KEY";
 pub const BASE_URL_ENV: &str = "FIREWORKS_BASE_URL";
 pub const DEFAULT_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
 pub const REVIEWER_AGENT: &str = "cctui-reviewer";
+pub const BUILDER_AGENT: &str = "cctui-builder";
 pub const STOCK_AGENT: &str = "build";
 
 const REVIEWER_PROMPT: &str = "You are an automated code reviewer running without a human in the \
@@ -84,6 +85,7 @@ pub fn session_config(
         "permission": { "doom_loop": "deny" },
         "agent": {
             REVIEWER_AGENT: reviewer_agent(),
+            BUILDER_AGENT: builder_agent(),
             STOCK_AGENT: { "permission": reviewer_permission() },
         },
         "autoupdate": false,
@@ -191,6 +193,34 @@ pub fn reviewer_agent() -> Value {
     })
 }
 
+/// The working profile of a `yolo` or `whip` spawn.
+///
+/// Edits, bash and the network are open, like the other harnesses in those
+/// postures. `question` stays denied because no human answers mid-turn, and
+/// `doom_loop: deny` plus `steps` still bound a runaway turn. No `prompt`: the
+/// stock build prompt applies, not the reviewer's.
+#[must_use]
+pub fn builder_agent() -> Value {
+    json!({
+        "description": "Autonomous coding agent (cctui yolo/whip spawns)",
+        "mode": "primary",
+        "steps": 400,
+        "permission": {
+            "edit": "allow",
+            "bash": "allow",
+            "webfetch": "allow",
+            "websearch": "allow",
+            "task": "allow",
+            "question": "deny",
+            "doom_loop": "deny",
+            "external_directory": "allow",
+            "read": "allow",
+            "glob": "allow",
+            "grep": "allow",
+        },
+    })
+}
+
 /// Layout of the session's ephemeral opencode HOME.
 #[derive(Debug, Clone)]
 pub struct SessionHome {
@@ -293,6 +323,19 @@ mod tests {
     fn no_capability_leaves_the_session_config_without_an_mcp_block() {
         let cfg = with_agent_mcp(session_config(None, &BTreeMap::new(), &[]), None);
         assert!(cfg.get("mcp").is_none(), "the tool must be absent, not merely denied: {cfg}");
+    }
+
+    #[test]
+    fn the_builder_profile_can_edit_and_run_commands() {
+        let cfg = session_config(None, &BTreeMap::new(), &[]);
+        let b = &cfg["agent"][BUILDER_AGENT];
+        assert_eq!(b["permission"]["edit"], "allow");
+        assert_eq!(b["permission"]["bash"], "allow");
+        assert_eq!(b["permission"]["question"], "deny");
+        assert_eq!(b["permission"]["doom_loop"], "deny");
+        assert!(b.get("prompt").is_none(), "the reviewer prompt must not leak into the builder");
+        assert!(b["steps"].as_u64().is_some());
+        assert_eq!(cfg["agent"][STOCK_AGENT]["permission"]["edit"], "deny");
     }
 
     #[test]
