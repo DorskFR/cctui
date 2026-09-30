@@ -200,7 +200,9 @@
 				<ModelPicker
 					id="sp-model"
 					bind:value={form.model_account}
-					options={accountModelOptions.length ? accountModelOptions : [{ v: '', label: m.spawn_model_default() }]}
+					options={accountModelOptions.length
+						? accountModelOptions
+						: [{ v: '', label: m.spawn_model_default(), disabled: false }]}
 				/>
 			{:else if isCodex}
 				<ModelPicker id="sp-model" bind:value={form.model_codex} options={nativeModelOptions} />
