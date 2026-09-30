@@ -25,6 +25,7 @@ pub mod resources;
 pub mod session_end;
 pub mod silence;
 pub mod updatehook;
+pub mod uploads;
 pub mod util;
 pub mod worker_env;
 pub mod ws;

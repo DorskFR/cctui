@@ -16,7 +16,7 @@ use base64::Engine;
 use cctui_proto::adapter::BootstrapFile;
 use cctui_proto::api::ApiError;
 
-pub use cctui_proto::api::uploads::UploadCaps;
+pub use cctui_proto::api::uploads::{MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, UploadCaps};
 
 type ApiErr = (StatusCode, Json<ApiError>);
 

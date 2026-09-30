@@ -1,0 +1,54 @@
+[
+  {
+    "info": null,
+    "out": null
+  },
+  {
+    "info": {
+      "is_repo": false,
+      "is_worktree": false
+    },
+    "out": null
+  },
+  {
+    "info": {
+      "is_repo": true,
+      "is_worktree": false,
+      "branch": "main"
+    },
+    "out": {
+      "text": "main",
+      "worktree": false
+    }
+  },
+  {
+    "info": {
+      "is_repo": true,
+      "is_worktree": true,
+      "branch": "feat/x"
+    },
+    "out": {
+      "text": "feat/x",
+      "worktree": true
+    }
+  },
+  {
+    "info": {
+      "is_repo": true,
+      "is_worktree": false,
+      "detached_sha": "abc1234def"
+    },
+    "out": {
+      "text": "detached @abc1234",
+      "worktree": false,
+      "sha": "abc1234"
+    }
+  },
+  {
+    "info": {
+      "is_repo": true,
+      "is_worktree": false
+    },
+    "out": null
+  }
+]

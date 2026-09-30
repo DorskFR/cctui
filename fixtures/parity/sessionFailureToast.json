@@ -1,0 +1,82 @@
+{
+  "shouldToast": [
+    {
+      "reason": "crashed",
+      "out": true
+    },
+    {
+      "reason": "spawn_failed",
+      "out": true
+    },
+    {
+      "reason": "resume_failed",
+      "out": true
+    },
+    {
+      "reason": "completed",
+      "out": false
+    },
+    {
+      "reason": "stopped",
+      "out": false
+    }
+  ],
+  "toastDetail": [
+    {
+      "detail": null,
+      "out": null
+    },
+    {
+      "detail": "   ",
+      "out": null
+    },
+    {
+      "detail": "  boom  ",
+      "out": "boom"
+    },
+    {
+      "detail": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "out": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+    }
+  ],
+  "endBadgeText": [
+    {
+      "reason": "spawn_failed",
+      "label": "Failed to start",
+      "detail": "unknown model\nsecond line",
+      "out": "Failed to start: unknown model"
+    },
+    {
+      "reason": "spawn_failed",
+      "label": "Failed to start",
+      "detail": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "out": "Failed to start: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy…"
+    },
+    {
+      "reason": "completed",
+      "label": "Completed",
+      "detail": "ignored",
+      "out": "Completed"
+    },
+    {
+      "reason": "spawn_failed",
+      "label": "Failed to start",
+      "detail": null,
+      "out": "Failed to start"
+    }
+  ],
+  "sessionHref": [
+    {
+      "session_id": "s/1",
+      "out": "/sessions/s%2F1"
+    },
+    {
+      "session_id": "abc",
+      "out": "/sessions/abc"
+    },
+    {
+      "session_id": "a b",
+      "out": "/sessions/a%20b"
+    }
+  ]
+}

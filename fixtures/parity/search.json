@@ -1,0 +1,103 @@
+{
+  "tokenizeQuery": [
+    {
+      "q": "",
+      "out": []
+    },
+    {
+      "q": "  ",
+      "out": []
+    },
+    {
+      "q": "hello world",
+      "out": [
+        "hello",
+        "world"
+      ]
+    },
+    {
+      "q": "a \"two words\" b",
+      "out": [
+        "a",
+        "two words",
+        "b"
+      ]
+    },
+    {
+      "q": "\"unclosed",
+      "out": [
+        "unclosed"
+      ]
+    },
+    {
+      "q": "a b c d e f g h i j",
+      "out": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ]
+    },
+    {
+      "q": "tab\tsep",
+      "out": [
+        "tab",
+        "sep"
+      ]
+    }
+  ],
+  "highlightTerms": [
+    {
+      "html": "plain text with a term",
+      "terms": [
+        "term"
+      ],
+      "out": "plain text with a <mark class=\"search-hit\">term</mark>"
+    },
+    {
+      "html": "<b>bold term</b> and term",
+      "terms": [
+        "term"
+      ],
+      "out": "<b>bold <mark class=\"search-hit\">term</mark></b> and <mark class=\"search-hit\">term</mark>"
+    },
+    {
+      "html": "Term TERM term",
+      "terms": [
+        "term"
+      ],
+      "out": "<mark class=\"search-hit\">Term</mark> <mark class=\"search-hit\">TERM</mark> <mark class=\"search-hit\">term</mark>"
+    },
+    {
+      "html": "<a href=\"term\">x</a> term",
+      "terms": [
+        "term"
+      ],
+      "out": "<a href=\"term\">x</a> <mark class=\"search-hit\">term</mark>"
+    },
+    {
+      "html": "prefix prefixes",
+      "terms": [
+        "prefix",
+        "prefixes"
+      ],
+      "out": "<mark class=\"search-hit\">prefix</mark> <mark class=\"search-hit\">prefixes</mark>"
+    },
+    {
+      "html": "nothing",
+      "terms": [],
+      "out": "nothing"
+    },
+    {
+      "html": "a < b and term",
+      "terms": [
+        "term"
+      ],
+      "out": "a < b and <mark class=\"search-hit\">term</mark>"
+    }
+  ]
+}
