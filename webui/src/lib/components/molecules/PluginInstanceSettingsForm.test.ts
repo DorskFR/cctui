@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PluginInstanceSettings } from '@bindings/PluginInstanceSettings';
 
 const query = vi.hoisted(() => ({
@@ -62,7 +62,9 @@ function at(journey: string, key?: string): HTMLElement | null {
 
 function field(journey: string, key: string): HTMLInputElement {
 	const el = at(journey, key);
-	return (el instanceof HTMLInputElement ? el : el!.querySelector('input')!) as HTMLInputElement;
+	const input = el instanceof HTMLInputElement ? el : el?.querySelector('input');
+	if (!(input instanceof HTMLInputElement)) throw new Error(`no input for ${journey}[${key}]`);
+	return input;
 }
 
 function type(input: HTMLInputElement, value: string) {
@@ -79,7 +81,12 @@ beforeEach(() => {
 	endpoints.savePluginInstanceSettings.mockClear();
 	endpoints.rotatePluginProxySecret.mockClear();
 	copyText.mockClear();
-	vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+	// happy-dom has no `confirm`, so there is nothing to spy on: install one.
+	vi.stubGlobal('confirm', vi.fn(() => true));
+});
+
+afterEach(() => {
+	vi.unstubAllGlobals();
 });
 
 describe('plugin instance settings form', () => {
