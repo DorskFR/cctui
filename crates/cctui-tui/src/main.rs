@@ -305,6 +305,7 @@ fn apply_config(app: &mut App) {
 async fn apply_server_settings(server: &Client, app: &mut App) {
     if let Ok(payload) = server.settings().await {
         app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
+        app.macros = app::macros::from_settings(&payload.data);
     }
     app.show_timestamps = app.config.prefs.timestamps;
 }

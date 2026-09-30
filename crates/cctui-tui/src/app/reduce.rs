@@ -19,6 +19,11 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Attention(attention) => super::attention::reduce_attention(app, attention),
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
         Action::Pins(pins) => super::pins::reduce_pins(app, pins),
+        Action::Macros(action) => super::macros::reduce_macros(app, action),
+        Action::AcceptMention(key) => super::mentions::accept(app).unwrap_or_else(|| {
+            app.message_input.input(key);
+            super::drafts::on_input(app)
+        }),
         Action::Send(action) => send::reduce_send(app, action),
         Action::SessionLive(action) => super::session_live::reduce_session_live(app, action),
         // One clock for the whole app: delivery deadlines move, and the session
@@ -130,8 +135,12 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             app.message_input.input(key);
             super::drafts::on_input(app)
         }
+        // The first escape dismisses an open completion, the next one the
+        // composer itself.
         Action::CancelInput => {
-            app.input_active = false;
+            if !super::mentions::close(app) {
+                app.input_active = false;
+            }
             Vec::new()
         }
         Action::InputKey(key) => {
@@ -142,7 +151,12 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             app.message_input.insert_newline();
             super::drafts::on_input(app)
         }
+        // Enter takes an open completion instead of sending: the message is
+        // not finished if the user is still naming a session.
         Action::SubmitInput => {
+            if let Some(effects) = super::mentions::accept(app) {
+                return effects;
+            }
             let content = app.message_input.lines().join("\n");
             let target = app.selected_session_id();
             app.reset_input();

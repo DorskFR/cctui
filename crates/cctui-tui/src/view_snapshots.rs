@@ -2,6 +2,7 @@ use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::drafts::DraftAction;
+use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
@@ -345,6 +346,33 @@ fn conversation_with_a_pinned_line() {
     let mut app = app_in_conversation();
     let id = app.selected_session_id().expect("a selected session");
     reduce(&mut app, Action::Pins(PinAction::Loaded { session_id: id, seqs: vec![1, 2] }));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn macros_picker() {
+    let mut app = app_in_conversation();
+    app.macros = crate::app::macros::from_settings(&serde_json::json!({
+        "macros": {
+            "enabled": true,
+            "items": [
+                { "id": "m1", "title": "Triage", "prompt": "triage the inbox and file what matters" },
+                { "id": "m2", "title": "Release", "prompt": "cut a release", "adapter": "codex" },
+            ]
+        }
+    }));
+    reduce(&mut app, Action::Macros(MacroAction::Open));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn composer_session_mention_popup() {
+    let mut app = app_in_conversation();
+    app.input_active = true;
+    for c in "ping #".chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::InputKey(key));
+    }
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

@@ -6,6 +6,8 @@ pub mod drafts;
 pub mod effects;
 pub mod identity;
 pub mod line;
+pub mod macros;
+pub mod mentions;
 pub mod pins;
 pub mod prompt;
 pub mod reduce;

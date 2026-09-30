@@ -7,6 +7,7 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
+use super::macros::MacroAction;
 use super::pins::PinAction;
 use super::prompt::PromptAction;
 use super::send::SendAction;
@@ -82,6 +83,10 @@ pub enum Action {
     Auth(AuthAction),
     Drafts(DraftAction),
     Pins(PinAction),
+    Macros(MacroAction),
+    /// Take the highlighted `#session` completion. Carries the key so a
+    /// composer with no popup open still types it.
+    AcceptMention(KeyEvent),
     Send(SendAction),
     SessionLive(SessionLiveAction),
 

@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ infra (main) on orion ── opus ── $1.25
+∴ thinking (2 lines)  (2 more · o)                                                                 ▕
+ Read  crates/cctui-tui/src/main.rs  read                                                          ▕
+└ 984 lines                                                                                        ▕
+ Bash ┌ Macros ──────────────────────────────────────────────────────────────────────────────┐     ▕
+└ ✗ ex│ filter ▏                                                                             │     ▐
+      │                                                                                      │     ▐
+● Assi│❯ Triage triage the inbox and file what matters                                       │     ▐
+Lookin│  Release cut a release                                                               │     ▐
+      │                                                                                      │     ▐
+- one │                                                                                      │     ▐
+- two │                                                                                      │     ▐
+⏱ 12.4│                                                                                      │     ▐
+⏱ 38s │                                                                                      │     ▐
+      │                                                                                      │     ▐
+◆ lane│                                                                                      │     ▐
+the pa│                                                                                      │     ▐
+· keep│                                                                                      │     ▐
+⟳ cont│ ↑↓ Pick  Enter Insert  Esc Cancel                                                    │     ▐
+      └──────────────────────────────────────────────────────────────────────────────────────┘     ▐
+◁ Reply done                                                                                       ▐
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ waiting for input
+❯  Type a message...

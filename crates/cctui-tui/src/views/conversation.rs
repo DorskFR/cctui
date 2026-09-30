@@ -224,6 +224,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         textarea_widget.set_cursor_line_style(Style::default());
     }
     frame.render_widget(&textarea_widget, textarea_area);
+
+    if let Some(popup) = app.mentions.popup.as_ref() {
+        crate::views::mentions::draw(frame, popup, input_area);
+    }
 }
 
 // -- Styles: muted/subdued palette --

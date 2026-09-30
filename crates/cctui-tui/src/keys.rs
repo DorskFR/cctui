@@ -5,6 +5,7 @@ use crate::app::action::Action;
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::conversation::ConversationAction;
 use crate::app::drafts::DraftAction;
+use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
@@ -48,6 +49,7 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
         View::Pins => Context::Pins,
+        View::Macros => Context::Macros,
     }
 }
 
@@ -56,6 +58,7 @@ const fn modal_context(view: View) -> Option<Context> {
     match view {
         View::HistoryPicker => Some(Context::History),
         View::Pins => Some(Context::Pins),
+        View::Macros => Some(Context::Macros),
         _ => None,
     }
 }
@@ -80,12 +83,12 @@ pub fn map_input(
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
-            View::Help | View::HistoryPicker | View::Pins => None,
+            View::Help | View::HistoryPicker | View::Pins | View::Macros => None,
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
-            View::Help | View::HistoryPicker | View::Pins => None,
+            View::Help | View::HistoryPicker | View::Pins | View::Macros => None,
         },
     }
 }
@@ -150,6 +153,13 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PinsJump => Action::Pins(PinAction::Jump),
         ActionId::PinsUnpin => Action::Pins(PinAction::UnpinSelected),
 
+        ActionId::MentionAccept => Action::AcceptMention(chord.event()),
+        ActionId::MacrosOpen => Action::Macros(MacroAction::Open),
+        ActionId::MacrosClose => Action::Macros(MacroAction::Close),
+        ActionId::MacrosSelectNext => Action::Macros(MacroAction::SelectNext),
+        ActionId::MacrosSelectPrev => Action::Macros(MacroAction::SelectPrev),
+        ActionId::MacrosInsert => Action::Macros(MacroAction::Insert),
+
         ActionId::PermissionAllow => Action::Attention(AttentionAction::Respond(Decision::Allow)),
         ActionId::PermissionDeny => Action::Attention(AttentionAction::Respond(Decision::Deny)),
         ActionId::PermissionAllowAlways => {
@@ -189,6 +199,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
+        Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
         _ => None,
     }
@@ -202,6 +213,7 @@ mod tests {
         Action, AttentionAction, Decision, DraftAction, InputEvent, Keymap, PromptFocus, View,
         map_input,
     };
+    use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
     use crate::app::prompt::PromptAction;
     use crate::config::keymap::Context;
@@ -631,6 +643,42 @@ mod tests {
             ));
             assert!(map(View::Pins, active, KeyCode::Char('q')).is_none(), "modal, not global");
         }
+    }
+
+    #[test]
+    fn the_composer_takes_a_completion_with_tab_and_opens_the_macros() {
+        assert!(matches!(
+            map(View::Conversation, true, KeyCode::Tab),
+            Some(Action::AcceptMention(_))
+        ));
+        assert!(matches!(
+            map_event(View::Conversation, true, ctrl('t')),
+            Some(Action::Macros(MacroAction::Open))
+        ));
+        assert!(matches!(
+            map_event(View::Conversation, false, ctrl('t')),
+            Some(Action::Macros(MacroAction::Open))
+        ));
+    }
+
+    #[test]
+    fn the_macro_list_is_modal_and_types_into_its_filter() {
+        assert!(matches!(
+            map(View::Macros, false, KeyCode::Enter),
+            Some(Action::Macros(MacroAction::Insert))
+        ));
+        assert!(matches!(
+            map(View::Macros, false, KeyCode::Esc),
+            Some(Action::Macros(MacroAction::Close))
+        ));
+        assert!(matches!(
+            map(View::Macros, true, KeyCode::Up),
+            Some(Action::Macros(MacroAction::SelectPrev))
+        ));
+        assert!(matches!(
+            map(View::Macros, false, KeyCode::Char('r')),
+            Some(Action::Macros(MacroAction::FilterKey(_)))
+        ));
     }
 
     #[test]

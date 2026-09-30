@@ -3,6 +3,8 @@ pub mod cards;
 pub mod conversation;
 pub mod help;
 pub mod history;
+pub mod macros;
+pub mod mentions;
 pub mod pins;
 pub mod prompt;
 pub mod sessions;
@@ -40,6 +42,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             if let Some(list) = app.pins.list.as_ref() {
                 pins::draw(frame, list);
             }
+        }
+        View::Macros => {
+            draw_below(frame, app);
+            macros::draw(frame, &app.macros);
         }
     }
 }

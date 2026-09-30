@@ -21,6 +21,7 @@ pub enum View {
     Help,
     HistoryPicker,
     Pins,
+    Macros,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -234,6 +235,8 @@ pub struct App {
     pub auth: AuthState,
     pub drafts: super::drafts::DraftState,
     pub pins: super::pins::PinState,
+    pub mentions: super::mentions::MentionState,
+    pub macros: super::macros::MacroState,
     /// Sends that have left the composer but are not confirmed delivered.
     pub outbox: super::send::Outbox,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
@@ -269,6 +272,27 @@ impl App {
             let _ = textarea.insert_str(text);
         }
         self.message_input = textarea;
+    }
+
+    /// The same, with the caret at a character offset: a completion inserts
+    /// mid-text and the user keeps typing after the token, not at the end.
+    pub fn set_input_text_at(&mut self, text: &str, caret: usize) {
+        self.set_input_text(text);
+        let mut row = 0_usize;
+        let mut col = caret;
+        for line in text.split('\n') {
+            let len = line.chars().count();
+            if col <= len {
+                break;
+            }
+            col -= len + 1;
+            row += 1;
+        }
+        let jump = ratatui_textarea::CursorMove::Jump(
+            u16::try_from(row).unwrap_or(u16::MAX),
+            u16::try_from(col).unwrap_or(u16::MAX),
+        );
+        self.message_input.move_cursor(jump);
     }
 
     pub fn new() -> Self {
@@ -308,6 +332,8 @@ impl App {
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
             pins: super::pins::PinState::default(),
+            mentions: super::mentions::MentionState::default(),
+            macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
             clock_ms: 0,
             machine_liveness: HashMap::new(),

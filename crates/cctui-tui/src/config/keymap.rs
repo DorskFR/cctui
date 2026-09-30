@@ -13,6 +13,7 @@ pub enum Context {
     Composer,
     History,
     Pins,
+    Macros,
     Help,
     Permission,
     Ask,
@@ -28,6 +29,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Composer,
     Context::History,
     Context::Pins,
+    Context::Macros,
     Context::Help,
     Context::Permission,
     Context::Ask,
@@ -45,6 +47,7 @@ impl Context {
             Self::Composer => "composer",
             Self::History => "history",
             Self::Pins => "pins",
+            Self::Macros => "macros",
             Self::Help => "help",
             Self::Permission => "permission",
             Self::Ask => "ask",
@@ -62,6 +65,7 @@ impl Context {
             Self::Composer => "Composer",
             Self::History => "Prompt history",
             Self::Pins => "Pinned messages",
+            Self::Macros => "Macros",
             Self::Help => "Help",
             Self::Permission => "Permission card",
             Self::Ask => "Question card",
@@ -175,6 +179,13 @@ actions! {
     PinsJump => "pins-jump", "Jump to the pinned message";
     PinsUnpin => "pins-unpin", "Unpin this message";
 
+    MentionAccept => "mention-accept", "Take the session completion";
+    MacrosOpen => "macros-open", "Insert a canned prompt";
+    MacrosClose => "macros-close", "Close the macro list";
+    MacrosSelectNext => "macros-select-next", "Next macro";
+    MacrosSelectPrev => "macros-select-prev", "Previous macro";
+    MacrosInsert => "macros-insert", "Put this prompt in the composer";
+
     CloseHelp => "close-help", "Close this cheat sheet";
 
     PermissionAllow => "permission-allow", "Allow";
@@ -270,6 +281,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
     spec(Context::Conversation, "m", ActionId::PinToggle),
     spec(Context::Conversation, "'", ActionId::PinsOpen),
+    spec(Context::Conversation, "ctrl+t", ActionId::MacrosOpen),
 ];
 
 /// `shift+enter` is unreported by most terminals, so a newline also has a
@@ -281,6 +293,8 @@ const COMPOSER: &[BindingSpec] = &[
     spec(Context::Composer, "up", ActionId::HistoryPrev),
     spec(Context::Composer, "down", ActionId::HistoryNext),
     spec(Context::Composer, "ctrl+r", ActionId::HistoryOpen),
+    spec(Context::Composer, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Composer, "tab", ActionId::MentionAccept),
 ];
 
 const HISTORY: &[BindingSpec] = &[
@@ -296,6 +310,13 @@ const PINS: &[BindingSpec] = &[
     spec(Context::Pins, "up, ctrl+p", ActionId::PinsSelectPrev),
     spec(Context::Pins, "enter", ActionId::PinsJump),
     spec(Context::Pins, "m, d", ActionId::PinsUnpin),
+];
+
+const MACROS: &[BindingSpec] = &[
+    spec(Context::Macros, "esc", ActionId::MacrosClose),
+    spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
+    spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
+    spec(Context::Macros, "enter", ActionId::MacrosInsert),
 ];
 
 const HELP: &[BindingSpec] = &[
@@ -354,6 +375,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     COMPOSER,
     HISTORY,
     PINS,
+    MACROS,
     HELP,
     PERMISSION,
     ASK,
