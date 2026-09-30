@@ -1,0 +1,1541 @@
+# TUI feature-parity manifest.
+#
+# One entry per route in `cctui_proto::api::routes::ROUTES` and per
+# `cctui_proto::ws::ServerEvent` variant. `crates/cctui-tui/src/parity.rs`
+# fails `cargo test` when this file drifts from either.
+#
+#   tui = "handled" -> `module` names the file under crates/cctui-tui/src
+#   tui = "planned" -> `ticket` names the epic ticket that will handle it
+#   tui = "waived"  -> `reason` says why the TUI will never call it
+#
+# Flip "planned" to "handled" in the same commit that ships the handler.
+
+[[route]]
+id = "post_accounts_by_id_providers"
+# POST /accounts/{id}/providers — Attach a provider credential to an account.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "patch_accounts_by_id_providers_by_provider"
+# PATCH /accounts/{id}/providers/{provider_id} — Edit or remove one of an account's provider credentials.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "delete_accounts_by_id_providers_by_provider"
+# DELETE /accounts/{id}/providers/{provider_id} — Edit or remove one of an account's provider credentials.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "post_accounts_by_id_providers_by_provider_move"
+# POST /accounts/{id}/providers/{provider_id}/move — Move a provider credential to another account of the same owner.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "get_accounts_usage"
+# GET /accounts/usage — Usage windows of every provider credential the caller owns, in one call.
+tui = "planned"
+ticket = "CCT-1271"
+
+[[route]]
+id = "get_accounts_by_id_usage"
+# GET /accounts/{id}/usage — Get an account's usage/limits.
+tui = "planned"
+ticket = "CCT-1271"
+
+[[route]]
+id = "get_accounts_by_id_usage_history"
+# GET /accounts/{id}/usage/history — Sampled usage of one provider credential over time.
+tui = "planned"
+ticket = "CCT-1274"
+
+[[route]]
+id = "get_accounts_by_id_usage_closes"
+# GET /accounts/{id}/usage/closes — Closed usage windows of one provider credential, with unused share.
+tui = "planned"
+ticket = "CCT-1274"
+
+[[route]]
+id = "get_accounts_usage_closes"
+# GET /accounts/usage/closes — Closed usage windows of every owned credential, with unused share.
+tui = "planned"
+ticket = "CCT-1274"
+
+[[route]]
+id = "post_accounts_by_id_limit_reset"
+# POST /accounts/{id}/limit-reset — Claim a usage-limit reset on a provider credential.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "get_accounts_settings_catalog"
+# GET /accounts/settings-catalog — The per-account settings catalog (exposable keys, env allowlist, preset).
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "get_accounts"
+# GET /accounts — List your accounts (identities + provider credentials), or create one.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "post_accounts"
+# POST /accounts — List your accounts (identities + provider credentials), or create one.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "post_accounts_oauth_start"
+# POST /accounts/oauth/start — Begin an OAuth account authorization flow.
+tui = "waived"
+reason = "OAuth consent happens in a browser; the TUI cannot host the redirect"
+
+[[route]]
+id = "post_accounts_oauth_finish"
+# POST /accounts/oauth/finish — Complete an OAuth account authorization flow.
+tui = "waived"
+reason = "OAuth consent happens in a browser; the TUI cannot host the redirect"
+
+[[route]]
+id = "get_accounts_by_id"
+# GET /accounts/{id} — Get, rename/re-env, or delete an account identity.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "patch_accounts_by_id"
+# PATCH /accounts/{id} — Get, rename/re-env, or delete an account identity.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "delete_accounts_by_id"
+# DELETE /accounts/{id} — Get, rename/re-env, or delete an account identity.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "put_accounts_by_id_redirect"
+# PUT /accounts/{id}/redirect — Create/overwrite a launch-time redirect rule for this account.
+tui = "waived"
+reason = "OAuth consent happens in a browser; the TUI cannot host the redirect"
+
+[[route]]
+id = "get_accounts_by_id_tool_policy"
+# GET /accounts/{id}/tool-policy — Get or replace the account's gateway tool-call policy.
+tui = "waived"
+reason = "the tool-policy editor is a webui form; no TUI ticket in this epic"
+
+[[route]]
+id = "put_accounts_by_id_tool_policy"
+# PUT /accounts/{id}/tool-policy — Get or replace the account's gateway tool-call policy.
+tui = "waived"
+reason = "the tool-policy editor is a webui form; no TUI ticket in this epic"
+
+[[route]]
+id = "get_redirects"
+# GET /redirects — The caller's live account/model redirect rules.
+tui = "waived"
+reason = "OAuth consent happens in a browser; the TUI cannot host the redirect"
+
+[[route]]
+id = "delete_redirects_by_id"
+# DELETE /redirects/{id} — Delete a redirect rule.
+tui = "waived"
+reason = "OAuth consent happens in a browser; the TUI cannot host the redirect"
+
+[[route]]
+id = "post_admin_users"
+# POST /admin/users — List all users, or create a user (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "get_admin_users"
+# GET /admin/users — List all users, or create a user (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "put_admin_instance"
+# PUT /admin/instance — Set or clear the server-wide deployment name shown in the webui header (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "get_admin_instance_self_update"
+# GET /admin/instance/self-update — Read or set the machine + directory the self-update agent runs on (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "put_admin_instance_self_update"
+# PUT /admin/instance/self-update — Read or set the machine + directory the self-update agent runs on (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "get_admin_instance_spawn_defaults"
+# GET /admin/instance/spawn-defaults — Read or set the default CctuiAgent limits for sessions that declare none (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "put_admin_instance_spawn_defaults"
+# PUT /admin/instance/spawn-defaults — Read or set the default CctuiAgent limits for sessions that declare none (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "get_admin_instance_upstream_hosts"
+# GET /admin/instance/upstream-hosts — Read or set the hosts per-account upstreams may reach despite the SSRF guard (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "put_admin_instance_upstream_hosts"
+# PUT /admin/instance/upstream-hosts — Read or set the hosts per-account upstreams may reach despite the SSRF guard (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "get_admin_instance_upload_caps"
+# GET /admin/instance/upload-caps — Read or set the per-upload file count and size caps (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "put_admin_instance_upload_caps"
+# PUT /admin/instance/upload-caps — Read or set the per-upload file count and size caps (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "get_admin_harness_autoupdate"
+# GET /admin/harness-autoupdate — Read the harness auto-update settings of every machine, or set the instance default (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "put_admin_harness_autoupdate"
+# PUT /admin/harness-autoupdate — Read the harness auto-update settings of every machine, or set the instance default (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "put_admin_harness_autoupdate_by_machine"
+# PUT /admin/harness-autoupdate/{machine_id} — Set or clear one machine's harness auto-update override (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "delete_admin_users_by_id"
+# DELETE /admin/users/{id} — Revoke or update a user (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "patch_admin_users_by_id"
+# PATCH /admin/users/{id} — Revoke or update a user (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "delete_admin_users_by_id_purge"
+# DELETE /admin/users/{id}/purge — Hard-delete a user and all their data (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "post_admin_users_by_id_rotate"
+# POST /admin/users/{id}/rotate — Rotate a user's tokens (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "get_admin_users_by_id_machines"
+# GET /admin/users/{id}/machines — List a user's machines (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "get_admin_users_by_id_tokens"
+# GET /admin/users/{id}/tokens — List a user's tokens (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "patch_admin_users_by_id_tokens_by_token"
+# PATCH /admin/users/{id}/tokens/{token_id} — Relabel or revoke a user's token (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "delete_admin_users_by_id_tokens_by_token"
+# DELETE /admin/users/{id}/tokens/{token_id} — Relabel or revoke a user's token (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "delete_admin_users_by_id_tokens_by_token_purge"
+# DELETE /admin/users/{id}/tokens/{token_id}/purge — Hard-delete a user's token (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "delete_admin_machines_by_id"
+# DELETE /admin/machines/{id} — Revoke or rename a machine (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "patch_admin_machines_by_id"
+# PATCH /admin/machines/{id} — Revoke or rename a machine (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "post_admin_machines_by_id_rotate"
+# POST /admin/machines/{id}/rotate — Rotate a machine's key (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "delete_admin_machines_by_id_purge"
+# DELETE /admin/machines/{id}/purge — Hard-delete a machine (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "get_context"
+# GET /context — List the caller's context items, or create one.
+tui = "planned"
+ticket = "CCT-1263"
+
+[[route]]
+id = "post_context"
+# POST /context — List the caller's context items, or create one.
+tui = "planned"
+ticket = "CCT-1263"
+
+[[route]]
+id = "get_context_resolve"
+# GET /context/resolve — The context a spawn into these coordinates would attach on its own.
+tui = "planned"
+ticket = "CCT-1263"
+
+[[route]]
+id = "patch_context_by_id"
+# PATCH /context/{id} — Edit or delete a context item.
+tui = "planned"
+ticket = "CCT-1263"
+
+[[route]]
+id = "delete_context_by_id"
+# DELETE /context/{id} — Edit or delete a context item.
+tui = "planned"
+ticket = "CCT-1263"
+
+[[route]]
+id = "get_manifest_daemon"
+# GET /manifest/daemon — Daemon update manifest (latest version + download URLs).
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "get_daemon_binary_by_target"
+# GET /daemon/binary/{target} — Download a daemon binary for a target (self-update proxy).
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "post_sessions_dispatch"
+# POST /sessions/dispatch — Dispatch a session to an enrolled executor (remote runner).
+tui = "planned"
+ticket = "CCT-1263"
+
+[[route]]
+id = "get_sessions_dispatchers"
+# GET /sessions/dispatchers — List dispatch targets available for a spawn.
+tui = "planned"
+ticket = "CCT-1263"
+
+[[route]]
+id = "get_dispatchers"
+# GET /dispatchers — List enrolled dispatchers with liveness.
+tui = "planned"
+ticket = "CCT-1265"
+
+[[route]]
+id = "patch_dispatchers_by_id"
+# PATCH /dispatchers/{id} — Rename or remove an enrolled dispatcher.
+tui = "planned"
+ticket = "CCT-1265"
+
+[[route]]
+id = "delete_dispatchers_by_id"
+# DELETE /dispatchers/{id} — Rename or remove an enrolled dispatcher.
+tui = "planned"
+ticket = "CCT-1265"
+
+[[route]]
+id = "post_dispatcher_enroll"
+# POST /dispatcher/enroll — Enroll a new dispatcher (executor) and mint its key.
+tui = "waived"
+reason = "the dispatcher process enrols itself"
+
+[[route]]
+id = "get_keys"
+# GET /keys — List your provider API keys, or store a new one.
+tui = "planned"
+ticket = "CCT-1260"
+
+[[route]]
+id = "post_keys"
+# POST /keys — List your provider API keys, or store a new one.
+tui = "planned"
+ticket = "CCT-1260"
+
+[[route]]
+id = "delete_keys_by_id"
+# DELETE /keys/{id} — Delete a stored provider API key.
+tui = "planned"
+ticket = "CCT-1260"
+
+[[route]]
+id = "get_keys_by_id_value"
+# GET /keys/{id}/value — Reveal a stored provider API key's value.
+tui = "planned"
+ticket = "CCT-1260"
+
+[[route]]
+id = "get_labels"
+# GET /labels — List label definitions, or create one.
+tui = "planned"
+ticket = "CCT-1247"
+
+[[route]]
+id = "post_labels"
+# POST /labels — List label definitions, or create one.
+tui = "planned"
+ticket = "CCT-1247"
+
+[[route]]
+id = "patch_labels_by_id"
+# PATCH /labels/{id} — Rename or delete a label definition.
+tui = "planned"
+ticket = "CCT-1247"
+
+[[route]]
+id = "delete_labels_by_id"
+# DELETE /labels/{id} — Rename or delete a label definition.
+tui = "planned"
+ticket = "CCT-1247"
+
+[[route]]
+id = "post_sessions_by_id_labels"
+# POST /sessions/{id}/labels — Attach a label to a session.
+tui = "planned"
+ticket = "CCT-1247"
+
+[[route]]
+id = "delete_sessions_by_id_labels_by_label"
+# DELETE /sessions/{id}/labels/{label_id} — Detach a label from a session.
+tui = "planned"
+ticket = "CCT-1247"
+
+[[route]]
+id = "get_machines_by_machine_commands_pending"
+# GET /machines/{machine_id}/commands/pending — Poll a machine's pending spawn/control commands.
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "get_machines_by_machine_fs_dirs"
+# GET /machines/{machine_id}/fs/dirs — List directories on a machine (spawn dir picker).
+tui = "planned"
+ticket = "CCT-1257"
+
+[[route]]
+id = "get_machines_by_machine_fs_gitinfo"
+# GET /machines/{machine_id}/fs/gitinfo — Git branch / detached HEAD of a directory on a machine (spawn dir badge).
+tui = "planned"
+ticket = "CCT-1257"
+
+[[route]]
+id = "get_machines_by_machine_fs_file"
+# GET /machines/{machine_id}/fs/file — Read one file on a machine (agent-linked path): inline or blob redirect.
+tui = "planned"
+ticket = "CCT-1234"
+
+[[route]]
+id = "get_machines_by_machine_codex_models"
+# GET /machines/{machine_id}/codex-models — Machine/account-scoped codex model catalog.
+tui = "planned"
+ticket = "CCT-1258"
+
+[[route]]
+id = "post_machines_by_machine_codex_models_refresh"
+# POST /machines/{machine_id}/codex-models/refresh — Re-read every OpenAI account's codex model catalog from upstream.
+tui = "planned"
+ticket = "CCT-1258"
+
+[[route]]
+id = "get_models_codex_catalog"
+# GET /models/codex/catalog — Codex model catalog merged across every machine (newest report wins).
+tui = "planned"
+ticket = "CCT-1258"
+
+[[route]]
+id = "get_models_by_harness"
+# GET /models/{harness} — Model and effort options for a harness picker (optional machine_id).
+tui = "planned"
+ticket = "CCT-1258"
+
+[[route]]
+id = "get_meta_domain"
+# GET /meta/domain — Provider metadata, quota probes, end-reason tones, permission modes.
+tui = "waived"
+reason = "browser host metadata used to build webui links"
+
+[[route]]
+id = "get_me"
+# GET /me — Get the current principal (user, scopes, machine).
+tui = "planned"
+ticket = "CCT-1269"
+
+[[route]]
+id = "get_settings"
+# GET /settings — Get your user settings.
+tui = "planned"
+ticket = "CCT-1277"
+
+[[route]]
+id = "put_settings"
+# PUT /settings — Replace your user settings.
+tui = "planned"
+ticket = "CCT-1277"
+
+[[route]]
+id = "post_settings_rescrub"
+# POST /settings/rescrub — Start a privacy scan over your stored events; returns its job.
+tui = "waived"
+reason = "a re-scrub is an admin maintenance action driven from the webui"
+
+[[route]]
+id = "get_settings_rescrub"
+# GET /settings/rescrub — Your most recent privacy scan job, running or finished.
+tui = "waived"
+reason = "a re-scrub is an admin maintenance action driven from the webui"
+
+[[route]]
+id = "post_settings_rescrub_cancel"
+# POST /settings/rescrub/cancel — Cancel your running privacy scan.
+tui = "waived"
+reason = "a re-scrub is an admin maintenance action driven from the webui"
+
+[[route]]
+id = "get_capabilities"
+# GET /capabilities — List server capabilities/feature flags.
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "post_enroll"
+# POST /enroll — Enroll this machine and mint its machine key.
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "get_machines_resources"
+# GET /machines/resources — The caller's daemon machines with their last host CPU/memory/disk snapshot.
+tui = "planned"
+ticket = "CCT-1255"
+
+[[route]]
+id = "get_machines_by_machine_status"
+# GET /machines/{machine_id}/status — Machine connectivity/liveness snapshot (remote-enroll verification).
+tui = "planned"
+ticket = "CCT-1255"
+
+[[route]]
+id = "post_deenroll"
+# POST /deenroll — Deenroll the current machine.
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "get_version"
+# GET /version — Server version and build info. Public; deployment fields need a token.
+tui = "handled"
+module = "selfupdate.rs"
+
+[[route]]
+id = "get_passkeys"
+# GET /passkeys — List the passkeys enrolled on your account.
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "post_passkeys_register_start"
+# POST /passkeys/register/start — Begin enrolling a passkey on your account.
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "post_passkeys_register_finish"
+# POST /passkeys/register/finish — Finish enrolling a passkey and store the credential.
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "post_passkeys_test_start"
+# POST /passkeys/test/start — Begin a test of an enrolled passkey without signing out.
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "post_passkeys_test_finish"
+# POST /passkeys/test/finish — Finish a passkey test and report which key answered.
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "patch_passkeys_by_id"
+# PATCH /passkeys/{id} — Rename or revoke one of your passkeys.
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "delete_passkeys_by_id"
+# DELETE /passkeys/{id} — Rename or revoke one of your passkeys.
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "put_admin_passkeys_auto_prompt"
+# PUT /admin/passkeys/auto-prompt — Server-wide: try the passkey as soon as the login screen opens (admin).
+tui = "waived"
+reason = "WebAuthn passkeys need a browser authenticator"
+
+[[route]]
+id = "get_plugins"
+# GET /plugins — List installed plugins with the caller's enabled flags.
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "get_plugins_by_id_backend_by_*path"
+# GET /plugins/{id}/backend/{*path} — Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "post_plugins_by_id_backend_by_*path"
+# POST /plugins/{id}/backend/{*path} — Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "put_plugins_by_id_backend_by_*path"
+# PUT /plugins/{id}/backend/{*path} — Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "patch_plugins_by_id_backend_by_*path"
+# PATCH /plugins/{id}/backend/{*path} — Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "delete_plugins_by_id_backend_by_*path"
+# DELETE /plugins/{id}/backend/{*path} — Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "post_plugins_rescan"
+# POST /plugins/rescan — Re-read the plugins directory (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "get_admin_plugins"
+# GET /admin/plugins — List every plugin with its source and instance toggle, or install one from a published catalog id (JSON `{catalog}`), an https URL (JSON `{url}`) or a multipart `file` upload (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "post_admin_plugins"
+# POST /admin/plugins — List every plugin with its source and instance toggle, or install one from a published catalog id (JSON `{catalog}`), an https URL (JSON `{url}`) or a multipart `file` upload (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "get_admin_plugins_catalog"
+# GET /admin/plugins/catalog — List the published plugin catalog, annotated with what this instance has installed (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "patch_admin_plugins_by_id"
+# PATCH /admin/plugins/{id} — Enable or disable an installed plugin instance-wide, or uninstall it (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "delete_admin_plugins_by_id"
+# DELETE /admin/plugins/{id} — Enable or disable an installed plugin instance-wide, or uninstall it (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "get_admin_plugins_by_id_settings"
+# GET /admin/plugins/{id}/settings — Read or write a plugin's instance-level settings; secret values are never returned, only whether each is set (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "put_admin_plugins_by_id_settings"
+# PUT /admin/plugins/{id}/settings — Read or write a plugin's instance-level settings; secret values are never returned, only whether each is set (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "post_admin_plugins_by_id_proxy_secret"
+# POST /admin/plugins/{id}/proxy-secret — Rotate the plugin's backend-proxy signing secret and return the new value once (admin).
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "get_sessions_by_id_previews"
+# GET /sessions/{id}/previews — Dev-server previews open on a session (owner only).
+tui = "waived"
+reason = "web previews are browser iframes"
+
+[[route]]
+id = "post_sessions_by_id_previews_by_pid_ticket"
+# POST /sessions/{id}/previews/{pid}/ticket — Mint a 60 s single-use ticket that signs the owner into a preview host.
+tui = "waived"
+reason = "web previews are browser iframes"
+
+[[route]]
+id = "get_profiles"
+# GET /profiles — List the caller's spawn profiles, or create one.
+tui = "planned"
+ticket = "CCT-1261"
+
+[[route]]
+id = "post_profiles"
+# POST /profiles — List the caller's spawn profiles, or create one.
+tui = "planned"
+ticket = "CCT-1261"
+
+[[route]]
+id = "put_profiles_order"
+# PUT /profiles/order — Persist the caller's profile order.
+tui = "planned"
+ticket = "CCT-1261"
+
+[[route]]
+id = "patch_profiles_by_id"
+# PATCH /profiles/{id} — Rename, adjust or delete a spawn profile.
+tui = "planned"
+ticket = "CCT-1261"
+
+[[route]]
+id = "delete_profiles_by_id"
+# DELETE /profiles/{id} — Rename, adjust or delete a spawn profile.
+tui = "planned"
+ticket = "CCT-1261"
+
+[[route]]
+id = "get_account_pools"
+# GET /account-pools — List the caller's account pools, or create one.
+tui = "planned"
+ticket = "CCT-1275"
+
+[[route]]
+id = "post_account_pools"
+# POST /account-pools — List the caller's account pools, or create one.
+tui = "planned"
+ticket = "CCT-1275"
+
+[[route]]
+id = "get_account_pools_usage"
+# GET /account-pools/usage — Every pool's quota windows aggregated per provider family: level, pace, projection.
+tui = "planned"
+ticket = "CCT-1271"
+
+[[route]]
+id = "patch_account_pools_by_id"
+# PATCH /account-pools/{id} — Edit a pool (name, strategy, failover, membership) or delete it.
+tui = "planned"
+ticket = "CCT-1275"
+
+[[route]]
+id = "delete_account_pools_by_id"
+# DELETE /account-pools/{id} — Edit a pool (name, strategy, failover, membership) or delete it.
+tui = "planned"
+ticket = "CCT-1275"
+
+[[route]]
+id = "get_sessions_by_id_rebinds"
+# GET /sessions/{id}/rebinds — Every mid-run account move this session made, newest first.
+tui = "planned"
+ticket = "CCT-1273"
+
+[[route]]
+id = "get_bookmarks"
+# GET /bookmarks — List your saved messages, or save one.
+tui = "planned"
+ticket = "CCT-1252"
+
+[[route]]
+id = "post_bookmarks"
+# POST /bookmarks — List your saved messages, or save one.
+tui = "planned"
+ticket = "CCT-1252"
+
+[[route]]
+id = "patch_bookmarks_by_id"
+# PATCH /bookmarks/{id} — Edit a bookmark's title/note, or delete it.
+tui = "planned"
+ticket = "CCT-1252"
+
+[[route]]
+id = "delete_bookmarks_by_id"
+# DELETE /bookmarks/{id} — Edit a bookmark's title/note, or delete it.
+tui = "planned"
+ticket = "CCT-1252"
+
+[[route]]
+id = "get_prompts"
+# GET /prompts — List your saved prompts, or create one.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "post_prompts"
+# POST /prompts — List your saved prompts, or create one.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "get_prompts_resolve"
+# GET /prompts/resolve — Resolve a prompt by name/reference.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "get_prompts_by_id"
+# GET /prompts/{id} — Get or delete a saved prompt.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "delete_prompts_by_id"
+# DELETE /prompts/{id} — Get or delete a saved prompt.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "get_provider_status"
+# GET /provider-status — What each upstream provider family reports on its status page.
+tui = "planned"
+ticket = "CCT-1272"
+
+[[route]]
+id = "get_rooms"
+# GET /rooms — List rooms, for the picker.
+tui = "waived"
+reason = "the TUI session list does not group by room"
+
+[[route]]
+id = "patch_rooms_by_id"
+# PATCH /rooms/{id} — Rename/archive, or delete a room.
+tui = "waived"
+reason = "the TUI session list does not group by room"
+
+[[route]]
+id = "delete_rooms_by_id"
+# DELETE /rooms/{id} — Rename/archive, or delete a room.
+tui = "waived"
+reason = "the TUI session list does not group by room"
+
+[[route]]
+id = "put_sessions_by_id_room"
+# PUT /sessions/{id}/room — Put this session in a room (by id or name), or take it out of one.
+tui = "waived"
+reason = "the TUI session list does not group by room"
+
+[[route]]
+id = "delete_sessions_by_id_room"
+# DELETE /sessions/{id}/room — Put this session in a room (by id or name), or take it out of one.
+tui = "waived"
+reason = "the TUI session list does not group by room"
+
+[[route]]
+id = "post_sessions_archive"
+# POST /sessions/archive — Archive a batch of sessions by id.
+tui = "planned"
+ticket = "CCT-1246"
+
+[[route]]
+id = "post_sessions_unarchive"
+# POST /sessions/unarchive — Unarchive a batch of sessions by id.
+tui = "planned"
+ticket = "CCT-1246"
+
+[[route]]
+id = "post_sessions_pin"
+# POST /sessions/pin — Pin a batch of sessions by id.
+tui = "planned"
+ticket = "CCT-1246"
+
+[[route]]
+id = "post_sessions_unpin"
+# POST /sessions/unpin — Unpin a batch of sessions by id.
+tui = "planned"
+ticket = "CCT-1246"
+
+[[route]]
+id = "post_sessions_by_id_launch"
+# POST /sessions/{id}/launch — Launch a draft session into a live spawn.
+tui = "planned"
+ticket = "CCT-1262"
+
+[[route]]
+id = "post_sessions_by_id_discard"
+# POST /sessions/{id}/discard — Discard a draft session.
+tui = "planned"
+ticket = "CCT-1262"
+
+[[route]]
+id = "post_sessions_by_id_schedule_launch"
+# POST /sessions/{id}/schedule-launch — Queue a draft session to launch later.
+tui = "planned"
+ticket = "CCT-1262"
+
+[[route]]
+id = "post_sessions_by_id_cancel_launch"
+# POST /sessions/{id}/cancel-launch — Cancel a draft session's queued launch.
+tui = "planned"
+ticket = "CCT-1262"
+
+[[route]]
+id = "put_sessions_by_id_draft"
+# PUT /sessions/{id}/draft — Replace a draft session's stored spawn payload in place.
+tui = "planned"
+ticket = "CCT-1262"
+
+[[route]]
+id = "post_sessions_by_id_interrupt"
+# POST /sessions/{id}/interrupt — Interrupt a session's current turn.
+tui = "handled"
+module = "client.rs"
+
+[[route]]
+id = "post_sessions_by_id_resume"
+# POST /sessions/{id}/resume — Resume an exited session.
+tui = "planned"
+ticket = "CCT-1264"
+
+[[route]]
+id = "post_sessions_by_id_set_model"
+# POST /sessions/{id}/set-model — Change a session's model.
+tui = "planned"
+ticket = "CCT-1236"
+
+[[route]]
+id = "post_sessions_by_id_switch_account"
+# POST /sessions/{id}/switch-account — Switch the account backing a session.
+tui = "planned"
+ticket = "CCT-1273"
+
+[[route]]
+id = "get_sessions_by_id_bindings"
+# GET /sessions/{id}/bindings — List a session's per-family account bindings.
+tui = "planned"
+ticket = "CCT-1273"
+
+[[route]]
+id = "post_sessions_register"
+# POST /sessions/register — Register a session the daemon just launched.
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "post_sessions_by_id_deregister"
+# POST /sessions/{id}/deregister — Deregister a session (mark it gone).
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "post_sessions_spawn"
+# POST /sessions/spawn — Spawn a new session on a machine, with optional file uploads.
+tui = "planned"
+ticket = "CCT-1256"
+
+[[route]]
+id = "post_sessions_by_id_files"
+# POST /sessions/{id}/files — Attach files to a live session mid-conversation.
+tui = "planned"
+ticket = "CCT-1232"
+
+[[route]]
+id = "get_sessions"
+# GET /sessions — List your sessions (admin: all).
+tui = "handled"
+module = "client.rs"
+
+[[route]]
+id = "get_sessions_stats"
+# GET /sessions/stats — Aggregate session counts/status stats.
+tui = "planned"
+ticket = "CCT-1253"
+
+[[route]]
+id = "get_sessions_stats_tokens"
+# GET /sessions/stats/tokens — Token-usage stats across sessions.
+tui = "planned"
+ticket = "CCT-1274"
+
+[[route]]
+id = "get_sessions_stats_usage"
+# GET /sessions/stats/usage — Overview usage analytics: tokens over time, per-model, heatmap.
+tui = "planned"
+ticket = "CCT-1274"
+
+[[route]]
+id = "get_sessions_stats_cache_busts"
+# GET /sessions/stats/cache-busts — Dollars lost to prompt-cache busts per day, by reason.
+tui = "planned"
+ticket = "CCT-1274"
+
+[[route]]
+id = "get_sessions_search"
+# GET /sessions/search — Full-text search across your sessions.
+tui = "planned"
+ticket = "CCT-1242"
+
+[[route]]
+id = "get_sessions_search_values"
+# GET /sessions/search/values — Autocomplete values for a search field.
+tui = "planned"
+ticket = "CCT-1242"
+
+[[route]]
+id = "get_sessions_recent_dirs"
+# GET /sessions/recent-dirs — List recently used working directories.
+tui = "planned"
+ticket = "CCT-1257"
+
+[[route]]
+id = "post_sessions_by_id_message"
+# POST /sessions/{id}/message — Send a message to a live session.
+tui = "planned"
+ticket = "CCT-1221"
+
+[[route]]
+id = "get_sessions_by_id_messages_scheduled"
+# GET /sessions/{id}/messages/scheduled — List a session's scheduled messages.
+tui = "planned"
+ticket = "CCT-1224"
+
+[[route]]
+id = "patch_sessions_by_id_messages_scheduled_by_queue"
+# PATCH /sessions/{id}/messages/scheduled/{queue_id} — Edit/reschedule or cancel a scheduled message.
+tui = "planned"
+ticket = "CCT-1224"
+
+[[route]]
+id = "delete_sessions_by_id_messages_scheduled_by_queue"
+# DELETE /sessions/{id}/messages/scheduled/{queue_id} — Edit/reschedule or cancel a scheduled message.
+tui = "planned"
+ticket = "CCT-1224"
+
+[[route]]
+id = "post_sessions_by_id_messages_scheduled_by_queue_send_now"
+# POST /sessions/{id}/messages/scheduled/{queue_id}/send-now — Deliver a scheduled message immediately.
+tui = "planned"
+ticket = "CCT-1224"
+
+[[route]]
+id = "post_sessions_by_id_kill"
+# POST /sessions/{id}/kill — Kill a session's underlying process.
+tui = "planned"
+ticket = "CCT-1245"
+
+[[route]]
+id = "get_sessions_by_id_pins"
+# GET /sessions/{id}/pins — List the caller's pinned messages in a session.
+tui = "planned"
+ticket = "CCT-1235"
+
+[[route]]
+id = "post_sessions_by_id_pins"
+# POST /sessions/{id}/pins — Pin a message (by stream seq) in a session.
+tui = "planned"
+ticket = "CCT-1235"
+
+[[route]]
+id = "delete_sessions_by_id_pins_by_seq"
+# DELETE /sessions/{id}/pins/{seq} — Unpin a message in a session.
+tui = "planned"
+ticket = "CCT-1235"
+
+[[route]]
+id = "post_sessions_by_id_seen"
+# POST /sessions/{id}/seen — Mark this session's messages seen for the caller.
+tui = "planned"
+ticket = "CCT-1248"
+
+[[route]]
+id = "get_sessions_by_id_brief"
+# GET /sessions/{id}/brief — Render a session's user/assistant transcript as a capped markdown brief.
+tui = "planned"
+ticket = "CCT-1251"
+
+[[route]]
+id = "post_sessions_by_id_fork"
+# POST /sessions/{id}/fork — Fork a session into a new one.
+tui = "planned"
+ticket = "CCT-1264"
+
+[[route]]
+id = "post_sessions_by_id_auto_approve"
+# POST /sessions/{id}/auto-approve — Toggle auto-approval of tool-use for a session.
+tui = "handled"
+module = "client.rs"
+
+[[route]]
+id = "post_sessions_by_id_archive"
+# POST /sessions/{id}/archive — Archive a single session.
+tui = "planned"
+ticket = "CCT-1245"
+
+[[route]]
+id = "post_sessions_by_id_unarchive"
+# POST /sessions/{id}/unarchive — Unarchive a single session.
+tui = "planned"
+ticket = "CCT-1245"
+
+[[route]]
+id = "post_sessions_by_id_pin"
+# POST /sessions/{id}/pin — Pin a single session.
+tui = "planned"
+ticket = "CCT-1245"
+
+[[route]]
+id = "post_sessions_by_id_unpin"
+# POST /sessions/{id}/unpin — Unpin a single session.
+tui = "planned"
+ticket = "CCT-1245"
+
+[[route]]
+id = "post_sessions_by_id_keepalive"
+# POST /sessions/{id}/keepalive — Set or clear the session's prompt-cache keep-alive schedule.
+tui = "waived"
+reason = "the daemon calls this, not a human client"
+
+[[route]]
+id = "post_sessions_by_id_policy"
+# POST /sessions/{id}/policy — Set a session's permission policy.
+tui = "planned"
+ticket = "CCT-1226"
+
+[[route]]
+id = "patch_sessions_by_id_plugins_by_plugin"
+# PATCH /sessions/{id}/plugins/{plugin_id} — Set or clear a session's per-plugin data slot.
+tui = "waived"
+reason = "plugin panes and their backends are webui iframes"
+
+[[route]]
+id = "get_sessions_by_id"
+# GET /sessions/{id} — Get one session's details.
+tui = "planned"
+ticket = "CCT-1251"
+
+[[route]]
+id = "patch_sessions_by_id"
+# PATCH /sessions/{id} — Rename a session.
+tui = "planned"
+ticket = "CCT-1245"
+
+[[route]]
+id = "get_sessions_by_id_conversation"
+# GET /sessions/{id}/conversation — Fetch a session's normalized conversation transcript.
+tui = "handled"
+module = "client.rs"
+
+[[route]]
+id = "get_sessions_by_id_search"
+# GET /sessions/{id}/search — Find-in-conversation hit list for one session's transcript.
+tui = "planned"
+ticket = "CCT-1231"
+
+[[route]]
+id = "get_sessions_by_id_images_by_image"
+# GET /sessions/{id}/images/{image_id} — Fetch an agent-posted image blob.
+tui = "planned"
+ticket = "CCT-1233"
+
+[[route]]
+id = "get_sessions_by_id_blobs_by_hash"
+# GET /sessions/{id}/blobs/{hash} — Resolve a content-addressed embedded-attachment blob.
+tui = "planned"
+ticket = "CCT-1232"
+
+[[route]]
+id = "get_sessions_by_id_attachments"
+# GET /sessions/{id}/attachments — List the files the user uploaded into a session (served via blobs).
+tui = "planned"
+ticket = "CCT-1232"
+
+[[route]]
+id = "get_sessions_by_id_linked_file_owner"
+# GET /sessions/{id}/linked-file-owner — Which session and machine linked a path, when this session did not.
+tui = "planned"
+ticket = "CCT-1234"
+
+[[route]]
+id = "get_sessions_by_id_diagnose"
+# GET /sessions/{id}/diagnose — Snapshot everything the daemon knows about a session, dated.
+tui = "handled"
+module = "client.rs"
+
+[[route]]
+id = "get_sessions_by_id_langfuse"
+# GET /sessions/{id}/langfuse — Langfuse cost/usage rollup for a session.
+tui = "waived"
+reason = "Langfuse trace links open in a browser"
+
+[[route]]
+id = "get_accounts_by_id_shares"
+# GET /accounts/{id}/shares — List or grant shares of an account to other users.
+tui = "waived"
+reason = "resource sharing is managed from the webui; no TUI ticket in this epic"
+
+[[route]]
+id = "post_accounts_by_id_shares"
+# POST /accounts/{id}/shares — List or grant shares of an account to other users.
+tui = "waived"
+reason = "resource sharing is managed from the webui; no TUI ticket in this epic"
+
+[[route]]
+id = "delete_accounts_by_id_shares_by_user"
+# DELETE /accounts/{id}/shares/{user_id} — Revoke a user's share of an account.
+tui = "waived"
+reason = "resource sharing is managed from the webui; no TUI ticket in this epic"
+
+[[route]]
+id = "get_by_resource_type_by_id_shares"
+# GET /{resource_type}/{id}/shares — List or grant shares of a resource to other users.
+tui = "waived"
+reason = "resource sharing is managed from the webui; no TUI ticket in this epic"
+
+[[route]]
+id = "post_by_resource_type_by_id_shares"
+# POST /{resource_type}/{id}/shares — List or grant shares of a resource to other users.
+tui = "waived"
+reason = "resource sharing is managed from the webui; no TUI ticket in this epic"
+
+[[route]]
+id = "delete_by_resource_type_by_id_shares_by_user"
+# DELETE /{resource_type}/{id}/shares/{user_id} — Revoke a user's share of a resource.
+tui = "waived"
+reason = "resource sharing is managed from the webui; no TUI ticket in this epic"
+
+[[route]]
+id = "get_permissions_pending"
+# GET /permissions/pending — List pending tool-use permission requests.
+tui = "planned"
+ticket = "CCT-1226"
+
+[[route]]
+id = "get_skills_index"
+# GET /skills/index — List available skills.
+tui = "waived"
+reason = "the skills editor is webui-only"
+
+[[route]]
+id = "put_skills_by_name"
+# PUT /skills/{name} — Upload or fetch a skill bundle by name.
+tui = "waived"
+reason = "the skills editor is webui-only"
+
+[[route]]
+id = "get_skills_by_name"
+# GET /skills/{name} — Upload or fetch a skill bundle by name.
+tui = "waived"
+reason = "the skills editor is webui-only"
+
+[[route]]
+id = "get_sessions_by_id_user_actions"
+# GET /sessions/{id}/user-actions — What the agent is waiting on from the user (owner only).
+tui = "planned"
+ticket = "CCT-1249"
+
+[[route]]
+id = "post_sessions_by_id_user_actions_by_aid_tick"
+# POST /sessions/{id}/user-actions/{aid}/tick — Resolve one user action as the user (done or dropped).
+tui = "planned"
+ticket = "CCT-1249"
+
+[[route]]
+id = "get_drafts"
+# GET /drafts — List your unsent drafts.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "get_drafts_by_*key"
+# GET /drafts/{*key} — Read, save or discard one draft.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "put_drafts_by_*key"
+# PUT /drafts/{*key} — Read, save or discard one draft.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "delete_drafts_by_*key"
+# DELETE /drafts/{*key} — Read, save or discard one draft.
+tui = "planned"
+ticket = "CCT-1222"
+
+[[route]]
+id = "get_spawn_memory"
+# GET /spawn-memory — Get or replace your remembered spawn configuration per target.
+tui = "planned"
+ticket = "CCT-1256"
+
+[[route]]
+id = "put_spawn_memory"
+# PUT /spawn-memory — Get or replace your remembered spawn configuration per target.
+tui = "planned"
+ticket = "CCT-1256"
+
+[[route]]
+id = "post_users_by_id_tokens"
+# POST /users/{id}/tokens — Mint a token for a user (self or admin).
+tui = "planned"
+ticket = "CCT-1270"
+
+[[route]]
+id = "get_users_by_id_acls"
+# GET /users/{id}/acls — Get or set a user's scope ceiling (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "patch_users_by_id_acls"
+# PATCH /users/{id}/acls — Get or set a user's scope ceiling (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "get_users_by_id_keys"
+# GET /users/{id}/keys — List or mint a user's API keys (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "post_users_by_id_keys"
+# POST /users/{id}/keys — List or mint a user's API keys (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "delete_users_by_id_keys_by_kid"
+# DELETE /users/{id}/keys/{kid} — Revoke a user's API key (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "patch_users_by_id_keys_by_kid_acls"
+# PATCH /users/{id}/keys/{kid}/acls — Set a key's scope grant (admin).
+tui = "planned"
+ticket = "CCT-1276"
+
+[[route]]
+id = "post_version_refresh"
+# POST /version/refresh — Probe upstream for a newer release now instead of waiting out the background interval.
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "get_version_changelog"
+# GET /version/changelog — Release notes of every upstream release newer than this server.
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "post_version_self_update"
+# POST /version/self-update — Deploy the newer release: the machine's own update hook when it has one, a YOLO agent otherwise (admin).
+tui = "planned"
+ticket = "CCT-1278"
+
+[[route]]
+id = "get_version_self_update"
+# GET /version/self-update — The most recent update-hook run and where it got to.
+tui = "planned"
+ticket = "CCT-1278"
+
+# --- ServerEvent variants -----------------------------------------------------
+#
+# `tui` must agree with the per-variant arms in src/app/server_event.rs: an arm
+# that calls `waived(...)` may not be "handled" here, and vice versa.
+
+[[ws_event]]
+name = "stream"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "status"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "session_registered"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "session_deregistered"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "permission_request"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "permission_resolved"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "ask_question"
+tui = "planned"
+ticket = "CCT-1219"
+
+[[ws_event]]
+name = "ask_resolved"
+tui = "planned"
+ticket = "CCT-1219"
+
+[[ws_event]]
+name = "plan_request"
+tui = "planned"
+ticket = "CCT-1220"
+
+[[ws_event]]
+name = "plan_resolved"
+tui = "planned"
+ticket = "CCT-1220"
+
+[[ws_event]]
+name = "command_result"
+tui = "planned"
+ticket = "CCT-1221"
+
+[[ws_event]]
+name = "session_ended"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "message_ack"
+tui = "planned"
+ticket = "CCT-1213"
+
+[[ws_event]]
+name = "archive_manifest"
+tui = "waived"
+reason = "the TUI has no archive browser"
+
+[[ws_event]]
+name = "machine_liveness"
+tui = "planned"
+ticket = "CCT-1250"
+
+[[ws_event]]
+name = "machine_resources"
+tui = "planned"
+ticket = "CCT-1250"
+
+[[ws_event]]
+name = "account_usage"
+tui = "planned"
+ticket = "CCT-1271"
+
+[[ws_event]]
+name = "dispatcher_liveness"
+tui = "planned"
+ticket = "CCT-1265"
+
+[[ws_event]]
+name = "archive_uploaded"
+tui = "waived"
+reason = "the TUI has no archive browser"
+
+[[ws_event]]
+name = "github_event"
+tui = "waived"
+reason = "PR links come from the session rows the REST refresh returns"
+
+[[ws_event]]
+name = "soft_limit_reached"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "soft_limit_cleared"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "tool_call_blocked"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "pty_chunk"
+tui = "planned"
+ticket = "CCT-1229"
+
+[[ws_event]]
+name = "scheduled_launch"
+tui = "planned"
+ticket = "CCT-1262"
+
+[[ws_event]]
+name = "room_members"
+tui = "waived"
+reason = "the TUI session list does not group by room"
+
+[[ws_event]]
+name = "user_actions"
+tui = "planned"
+ticket = "CCT-1249"
+
+[[ws_event]]
+name = "heartbeat"
+tui = "waived"
+reason = "liveness tick with nothing to render"
+
+[[ws_event]]
+name = "resync"
+tui = "handled"
+module = "app/server_event.rs"
