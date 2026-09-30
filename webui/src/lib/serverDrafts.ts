@@ -93,6 +93,9 @@ class ServerDrafts implements DraftRemote {
 		const onServer = new Set<string>();
 		for (const d of list.drafts) {
 			onServer.add(d.key);
+			// Adopting the server's text makes a write queued before the load stale:
+			// letting it fire would push this tab's older copy back over it.
+			this.#cancel(d.key);
 			hydrateLocal(d.key, d.text);
 		}
 		if (localStorage.getItem(IMPORTED)) return;
