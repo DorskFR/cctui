@@ -2428,6 +2428,9 @@ pub struct AccountUsage {
     /// Whether a usage-limit reset can be claimed right now (Codex reset
     /// credits, Claude `juniper_tide`); `None` when the payload has no such block.
     pub limit_reset: Option<crate::routes::limit_reset::LimitResetStatus>,
+    /// Every reset this credential currently offers, usable first then by
+    /// soonest expiry. Empty ⇒ nothing to claim and nothing to list.
+    pub limit_resets: Vec<crate::routes::limit_reset::LimitResetEntry>,
     /// The upstream family's incident reading, present only when this
     /// credential's provider is degraded: a healthy or unknown upstream is not
     /// news, and a compatible endpoint never inherits a first-party incident.
@@ -2506,7 +2509,20 @@ impl AccountUsage {
         let limit_reset = usage
             .as_ref()
             .and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
-        Self { account_id, provider, usage, windows, age_secs, limit_reset, provider_status: None }
+        let limit_resets = usage
+            .as_ref()
+            .map(|u| crate::routes::limit_reset::limit_resets(&provider, u))
+            .unwrap_or_default();
+        Self {
+            account_id,
+            provider,
+            usage,
+            windows,
+            age_secs,
+            limit_reset,
+            limit_resets,
+            provider_status: None,
+        }
     }
 
     /// Attach the upstream incident reading for this credential's family, read

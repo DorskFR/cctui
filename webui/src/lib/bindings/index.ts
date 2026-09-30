@@ -96,6 +96,7 @@ export type * from './LabelListResponse';
 export type * from './LangfuseCapability';
 export type * from './LangfuseSessionUsage';
 export type * from './LaunchRequest';
+export type * from './LimitResetEntry';
 export type * from './LimitResetResponse';
 export type * from './LimitResetStatus';
 export type * from './Liveness';
