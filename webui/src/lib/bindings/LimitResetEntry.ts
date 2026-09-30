@@ -5,42 +5,42 @@
  * Claude's two programs. [`LimitResetStatus`] is the one the card button spends;
  * this is every offer the cached payload names.
  */
-export type LimitResetEntry = {
+export type LimitResetEntry = { 
 /**
  * `codex` (reset credit) or `claude` (`cedar_ember` grant / `juniper_tide`).
  */
-kind: "codex" | "claude",
+kind: "codex" | "claude", 
 /**
  * What a claim names: a Codex credit id, a `cedar_ember` grant id, or the
  * program name for `juniper_tide`.
  */
-id: string,
+id: string, 
 /**
  * Codex `title` / Claude `label`; absent when upstream named none.
  */
-title: string | null,
+title: string | null, 
 /**
  * The limit windows a claim refills (`five_hour`, `seven_day`, …). Empty
  * when upstream did not say, which the UI must not read as "nothing".
  */
-restores: Array<string>,
+restores: Array<string>, 
 /**
  * Codex `expires_at` / Claude `ends_at`, or when the at-wall program comes
  * back.
  */
-expires_at: string | null,
+expires_at: string | null, 
 /**
  * Claude `cedar_ember`: claims left on this grant.
  */
-resets_left: number | null,
+resets_left: number | null, 
 /**
  * Claude `cedar_ember`: the grant may only be spent at a limit.
  */
-requires_limit: boolean | null,
+requires_limit: boolean | null, 
 /**
  * Whether claiming this entry right now would do anything.
  */
-usable: boolean,
+usable: boolean, 
 /**
  * Why not, when `usable` is false.
  */

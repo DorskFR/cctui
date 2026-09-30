@@ -2,8 +2,10 @@
 import type { UserActionList } from "./UserActionList";
 
 /**
- * What the daemon-facing add/tick endpoints answer. A rejected call is a
- * tool-level result, not an HTTP error: the model must always get the list back
- * with the reason, never a bare failure it could read as "the list is gone".
+ * What the daemon-facing add/tick endpoints answer.
+ *
+ * A rejected call is a tool-level result, not an HTTP error: the model must
+ * always get the list back with the reason, never a bare failure it could read
+ * as "the list is gone".
  */
 export type UserActionResult = { error?: string | null, added?: string | null, list: UserActionList, };

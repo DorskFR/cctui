@@ -17,4 +17,4 @@ scope: string,
 /**
  * Machine id, working-dir prefix or label id. `None` for `user` scope.
  */
-scope_ref?: string | null, tags: Array<string>, enabled: boolean, version: number, created_at: string, updated_at: string, };
+scope_ref: string | null, tags: Array<string>, enabled: boolean, version: number, created_at: string, updated_at: string, };

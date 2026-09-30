@@ -36,12 +36,12 @@ age_secs: number,
  * Whether a usage-limit reset can be claimed right now (Codex reset
  * credits, Claude `juniper_tide`); `None` when the payload has no such block.
  */
-limit_reset: LimitResetStatus | null,
+limit_reset: LimitResetStatus | null, 
 /**
  * Every reset this credential currently offers, usable first then by
  * soonest expiry. Empty ⇒ nothing to claim and nothing to list.
  */
-limit_resets: Array<LimitResetEntry>,
+limit_resets: Array<LimitResetEntry>, 
 /**
  * The upstream family's incident reading, present only when this
  * credential's provider is degraded: a healthy or unknown upstream is not
