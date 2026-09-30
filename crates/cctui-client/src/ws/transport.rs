@@ -36,6 +36,7 @@ pub struct StreamTransport<S> {
 }
 
 impl<S> StreamTransport<S> {
+    #[must_use]
     pub const fn new(inner: WebSocketStream<S>) -> Self {
         Self { inner }
     }

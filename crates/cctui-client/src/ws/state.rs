@@ -94,6 +94,7 @@ impl AckRegistry {
     }
 
     /// Registers `client_msg_id` and returns the handle that resolves on its ack.
+    #[must_use]
     pub fn register(&self, client_msg_id: String) -> oneshot::Receiver<Ack> {
         let (tx, rx) = oneshot::channel();
         if let Ok(mut pending) = self.pending.lock() {
@@ -103,12 +104,14 @@ impl AckRegistry {
     }
 
     /// Whether the ack matched a waiter.
+    #[must_use]
     pub fn resolve(&self, ack: Ack) -> bool {
         let Ok(mut pending) = self.pending.lock() else { return false };
         let Some(index) = pending.iter().position(|(id, _)| *id == ack.client_msg_id) else {
             return false;
         };
         let (_, tx) = pending.swap_remove(index);
+        drop(pending);
         tx.send(ack).is_ok()
     }
 
@@ -173,7 +176,7 @@ impl Default for Watchdog {
 
 impl Watchdog {
     #[must_use]
-    pub const fn check(&self, quiet_for: Duration) -> Health {
+    pub fn check(&self, quiet_for: Duration) -> Health {
         if quiet_for >= self.dead_after {
             Health::Dead
         } else if quiet_for >= self.probe_after {
@@ -348,7 +351,11 @@ mod tests {
     async fn an_error_ack_still_resolves_the_handle() {
         let registry = AckRegistry::new();
         let handle = AckHandle::new("m1".to_owned(), registry.register("m1".to_owned()));
-        registry.resolve(Ack { ok: false, error: Some("no daemon".to_owned()), ..ack("m1") });
+        assert!(registry.resolve(Ack {
+            ok: false,
+            error: Some("no daemon".to_owned()),
+            ..ack("m1")
+        }));
         let resolved = handle.wait(Duration::from_millis(50)).await.unwrap();
         assert!(!resolved.ok);
         assert_eq!(resolved.error.as_deref(), Some("no daemon"));

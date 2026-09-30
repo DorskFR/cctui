@@ -127,12 +127,10 @@ impl Client {
     /// The `ws://`/`wss://` URL of the client event stream.
     #[must_use]
     pub fn ws_url(&self) -> String {
-        let origin = if let Some(rest) = self.base_url.strip_prefix("https://") {
-            format!("wss://{rest}")
-        } else if let Some(rest) = self.base_url.strip_prefix("http://") {
-            format!("ws://{rest}")
-        } else {
-            self.base_url.clone()
+        let origin = match self.base_url.split_once("://") {
+            Some(("https", rest)) => format!("wss://{rest}"),
+            Some(("http", rest)) => format!("ws://{rest}"),
+            _ => self.base_url.clone(),
         };
         format!("{origin}{}/ws", cctui_proto::api::routes::API_PREFIX)
     }
@@ -361,10 +359,9 @@ async fn decode_body<R: DeserializeOwned>(
 
 fn truncate(body: &str) -> String {
     const MAX: usize = 400;
-    match body.char_indices().nth(MAX) {
-        Some((cut, _)) => format!("{}…", &body[..cut]),
-        None => body.to_owned(),
-    }
+    body.char_indices()
+        .nth(MAX)
+        .map_or_else(|| body.to_owned(), |(cut, _)| format!("{}…", &body[..cut]))
 }
 
 #[cfg(test)]
@@ -410,6 +407,7 @@ mod tests {
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
             "get_me",
+            "get_settings",
             "delete_me_key",
         ] {
             assert!(Client::route(id).is_ok(), "missing route id {id}");
