@@ -9,8 +9,18 @@
     "working_dir": "/home/dev/cctui"
   },
   "events": [
-    { "type": "text", "content": "▷ User: refactor the parser", "meta": false, "ts": 1 },
-    { "type": "text", "content": "weighing two options", "kind": "thinking", "ts": 2 },
+    {
+      "type": "text",
+      "content": "▷ User: refactor the parser",
+      "meta": false,
+      "ts": 1
+    },
+    {
+      "type": "text",
+      "content": "weighing two options",
+      "kind": "thinking",
+      "ts": 2
+    },
     {
       "type": "tool_call",
       "tool": "Bash",
@@ -41,7 +51,12 @@
       "ts": 6
     },
     { "type": "text", "content": "the parser is fixed", "ts": 7 },
-    { "type": "text", "content": "session hibernated", "kind": "system_marker", "ts": 8 },
+    {
+      "type": "text",
+      "content": "session hibernated",
+      "kind": "system_marker",
+      "ts": 8
+    },
     {
       "type": "text",
       "content": "▷ User: Another Claude session sent a message:\n<cross-session-message from=\"a-1\" from-name=\"lane-b\">rebase please</cross-session-message>",
@@ -54,11 +69,27 @@
       "meta": false,
       "ts": 10
     },
-    { "type": "text", "content": "▷ User: # Autonomous loop\ncheck the queue", "meta": false, "ts": 11 },
+    {
+      "type": "text",
+      "content": "▷ User: # Autonomous loop\ncheck the queue",
+      "meta": false,
+      "ts": 11
+    },
     { "type": "context_reset", "ts": 12 },
     { "type": "compact_summary", "content": "we fixed the parser", "ts": 13 },
-    { "type": "turn_summary", "detail": "waiting on you", "needs_action": true, "ts": 14 },
-    { "type": "heartbeat", "tokens_in": 10, "tokens_out": 2, "cost_usd": 0.1, "ts": 15 },
+    {
+      "type": "turn_summary",
+      "detail": "waiting on you",
+      "needs_action": true,
+      "ts": 14
+    },
+    {
+      "type": "heartbeat",
+      "tokens_in": 10,
+      "tokens_out": 2,
+      "cost_usd": 0.1,
+      "ts": 15
+    },
     { "type": "turn_end", "ts": 16 },
     { "type": "text", "content": "   ", "ts": 17 }
   ],

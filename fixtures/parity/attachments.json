@@ -34,7 +34,11 @@
     { "text": "", "names": ["a.txt"], "out": "[a.txt]" },
     { "text": "look", "names": ["a.txt"], "out": "look [a.txt]" },
     { "text": "look ", "names": ["a.txt"], "out": "look [a.txt]" },
-    { "text": "has [a.txt]", "names": ["a.txt", "b.txt"], "out": "has [a.txt] [b.txt]" }
+    {
+      "text": "has [a.txt]",
+      "names": ["a.txt", "b.txt"],
+      "out": "has [a.txt] [b.txt]"
+    }
   ],
   "rewriteFileTokens": [
     {
