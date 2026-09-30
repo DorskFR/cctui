@@ -759,6 +759,12 @@ pub enum ServerEvent {
         /// Whose rooms these are; scopes delivery to the owner.
         user_id: uuid::Uuid,
     },
+    /// The session's "needs you" list changed. Carries the whole list: a tab
+    /// that missed an earlier frame must not have to reconstruct it.
+    UserActions {
+        session_id: String,
+        actions: Vec<crate::api::UserAction>,
+    },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
     /// This socket lagged. Refetch the session, or everything when `None`.

@@ -56,4 +56,5 @@ pub mod tool_policy;
 pub mod triggers;
 pub mod update_hook;
 pub mod usage_history;
+pub mod user_actions;
 pub mod web;

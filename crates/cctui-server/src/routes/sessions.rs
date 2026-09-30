@@ -450,6 +450,7 @@ fn skeleton_list_item(
         last_tool_name: None,
         tool_use_count: 0,
         todos: Vec::new(),
+        user_actions: None,
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
@@ -606,6 +607,7 @@ struct EnrichContext {
     /// `None` when there is no viewer to count unread messages for.
     unread: Option<HashMap<String, u32>>,
     todos: HashMap<String, serde_json::Value>,
+    user_actions: HashMap<String, cctui_proto::api::UserActionCounts>,
     signals: HashMap<String, SignalRow>,
     pr_snapshot: HashMap<String, cctui_proto::classifier::OwnedPrStatus>,
     labels: HashMap<String, Vec<Label>>,
@@ -648,6 +650,7 @@ impl EnrichContext {
             ctx.unread = Some(fetch_unread_counts(state, &session_ids, uid).await?);
         }
         ctx.todos = fetch_todos(state, &session_ids).await?;
+        ctx.user_actions = fetch_user_actions(state, &session_ids).await?;
         ctx.signals = fetch_signals(state, &session_ids).await?;
         ctx.pr_snapshot = state.pr_status_cache.snapshot();
         ctx.labels = fetch_labels(state, &session_ids).await?;
@@ -776,6 +779,42 @@ async fn fetch_todos(
             .fetch_all(&state.pool)
             .await?;
     Ok(rows.into_iter().collect())
+}
+
+/// Open "needs you" counts, own and rolled up from the session's subagents: a
+/// parent following a child has to see that the child is blocked on the user.
+async fn fetch_user_actions(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, cctui_proto::api::UserActionCounts>, AppError> {
+    type CountRow = (String, Option<String>, i64, i64);
+    let rows: Vec<CountRow> = sqlx::query_as(
+        "SELECT ua.session_id, s.parent_id, count(*), \
+         count(*) FILTER (WHERE ua.blocking) \
+         FROM session_user_actions ua JOIN sessions s ON s.id = ua.session_id \
+         WHERE ua.status = 'open' AND (ua.session_id = ANY($1) OR s.parent_id = ANY($1)) \
+         GROUP BY ua.session_id, s.parent_id",
+    )
+    .bind(session_ids)
+    .fetch_all(&state.pool)
+    .await?;
+    let listed: HashSet<&String> = session_ids.iter().collect();
+    let mut out: HashMap<String, cctui_proto::api::UserActionCounts> = HashMap::new();
+    for (sid, parent_id, open, blocking) in &rows {
+        let open = u32::try_from(*open).unwrap_or(u32::MAX);
+        let blocking = u32::try_from(*blocking).unwrap_or(u32::MAX);
+        if listed.contains(sid) {
+            let entry = out.entry(sid.clone()).or_default();
+            entry.open += open;
+            entry.blocking += blocking;
+        }
+        if let Some(parent) = parent_id.as_ref().filter(|p| listed.contains(p)) {
+            let entry = out.entry(parent.clone()).or_default();
+            entry.child_open += open;
+            entry.child_blocking += blocking;
+        }
+    }
+    Ok(out)
 }
 
 async fn fetch_signals(
@@ -911,6 +950,7 @@ fn enrich(
         if let Some(v) = ctx.todos.remove(&s.id) {
             s.todos = serde_json::from_value(v).unwrap_or_default();
         }
+        s.user_actions = ctx.user_actions.remove(&s.id);
         if let Some(row) = ctx.signals.remove(&s.id) {
             apply_signals(s, row, &pr_cache, ctx.archive_after_secs);
         }
@@ -1563,7 +1603,7 @@ pub async fn get_session(
             .ok()
             .flatten()
             .and_then(|(m,)| m);
-            let item = SessionListItem {
+            let mut item = SessionListItem {
                 id: handle.session.id.clone(),
                 parent_id: handle.session.parent_id.clone(),
                 machine_id: handle.session.machine_id.clone(),
@@ -1608,6 +1648,7 @@ pub async fn get_session(
                 last_tool_name: None,
                 tool_use_count: 0,
                 todos: Vec::new(),
+                user_actions: None,
                 has_token_credentials: false,
                 account_traffic_observed: false,
                 pr_links: Vec::new(),
@@ -1621,6 +1662,9 @@ pub async fn get_session(
                 launch_at: None,
                 launch_error: None,
             };
+            item.user_actions = fetch_user_actions(&state, std::slice::from_ref(&item.id))
+                .await?
+                .remove(&item.id);
             return Ok(Json(item));
         }
     }
@@ -1677,6 +1721,7 @@ pub async fn get_session(
         last_tool_name: None,
         tool_use_count: 0,
         todos: Vec::new(),
+        user_actions: None,
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
@@ -1714,6 +1759,9 @@ pub async fn get_session(
             state.config.archive_after_secs,
         );
     }
+    item.user_actions = fetch_user_actions(&state, std::slice::from_ref(&item.id))
+        .await?
+        .remove(&item.id);
     Ok(Json(item))
 }
 

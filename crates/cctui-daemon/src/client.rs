@@ -346,6 +346,36 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    /// Add one item to the session's user-action list, or tick one by id. The
+    /// server answers the whole list either way — including a rejection, which
+    /// arrives as `UserActionResult::error` rather than an HTTP failure, so the
+    /// model always sees the true state.
+    pub async fn user_action_call(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<cctui_proto::api::UserActionResult> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/user-actions{}",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+            path,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(body).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let reason = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .unwrap_or(text);
+            anyhow::bail!("user action list unavailable ({status}): {reason}");
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Ask whether the session token a trusted worker was launched with still
     /// resolves at the gateway. `token_hash` is the sha256 hex of the
     /// token — the token itself never travels on this call. `Err` covers both

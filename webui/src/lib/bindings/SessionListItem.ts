@@ -10,6 +10,7 @@ import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionStatus } from "./SessionStatus";
 import type { TodoEntry } from "./TodoEntry";
 import type { TokenUsage } from "./TokenUsage";
+import type { UserActionCounts } from "./UserActionCounts";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 export type SessionListItem = { id: string, parent_id: string | null, machine_id: string, working_dir: string, status: SessionStatus, liveness: Liveness, attention?: Attention | null, bucket: Bucket, token_usage: TokenUsage, metadata: JsonValue, adapter_id: AdapterId | null, machine_name?: string | null, 
@@ -28,7 +29,11 @@ unread_count: number, activity_detail?: string | null, last_tool_at?: string | n
 /**
  * Empty means render nothing.
  */
-todos: Array<TodoEntry>, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, 
+todos: Array<TodoEntry>, 
+/**
+ * Absent when this session has no open user action and no child with one.
+ */
+user_actions?: UserActionCounts | null, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, 
 /**
  * Draft only: when the queued launch is due.
  */

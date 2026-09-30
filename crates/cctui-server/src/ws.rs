@@ -544,7 +544,8 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. }
         | ServerEvent::SoftLimitReached { session_id, .. }
-        | ServerEvent::SoftLimitCleared { session_id } => session(session_id),
+        | ServerEvent::SoftLimitCleared { session_id }
+        | ServerEvent::UserActions { session_id, .. } => session(session_id),
         ServerEvent::SessionRegistered { session: s } => session(&s.id),
         ServerEvent::CommandResult { session_id, .. } => {
             session_id.as_deref().map_or(AdminsOnly, session)

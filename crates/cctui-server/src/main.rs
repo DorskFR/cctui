@@ -369,6 +369,14 @@ fn outer_routes() -> Router<AppState> {
         // machine-key self-auth as gateway-env.
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
+        .route(
+            "/api/v1/daemon/sessions/{id}/user-actions",
+            post(routes::user_actions::daemon_add),
+        )
+        .route(
+            "/api/v1/daemon/sessions/{id}/user-actions/tick",
+            post(routes::user_actions::daemon_tick),
+        )
         .route("/api/v1/daemon/sessions/{id}/spawn-child", post(routes::spawn_child::spawn_child))
         .route("/api/v1/daemon/sessions/{id}/room", post(routes::rooms::room_tool))
         .route("/api/v1/daemon/sessions/{id}/peers", get(routes::peer::list_peers))
@@ -958,6 +966,8 @@ mod tests {
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unarchive Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/user-actions Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/user-actions/{aid}/tick Bearer Resource(Session, Write, Path("id"))"#,
             "GET /settings Bearer Authenticated",
             "PUT /settings Bearer Authenticated",
             "GET /settings/rescrub Bearer Authenticated",

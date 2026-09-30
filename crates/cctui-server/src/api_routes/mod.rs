@@ -27,6 +27,7 @@ mod session_state;
 mod session_view;
 mod shares;
 mod skills;
+mod user_actions;
 mod users;
 mod version;
 
@@ -76,5 +77,6 @@ pub fn register(r: Routes) -> Routes {
     let r = admin_instance::register(r);
     let r = admin_users::register(r);
     let r = skills::register(r);
+    let r = user_actions::register(r);
     users::register(r)
 }

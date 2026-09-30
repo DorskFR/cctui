@@ -28,6 +28,8 @@ pub const PEERS_TOOL_NAME: &str = "CctuiPeers";
 pub const SEND_TOOL_NAME: &str = "CctuiSend";
 pub const HISTORY_TOOL_NAME: &str = "CctuiHistory";
 pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
+pub const USER_ACTION_ADD_TOOL_NAME: &str = "CctuiUserActionAdd";
+pub const USER_ACTION_TICK_TOOL_NAME: &str = "CctuiUserActionTick";
 
 /// A limits lookup is one cached server read; it must never hold a turn open
 /// the way a followed child does. The peer tools are the same shape: one
@@ -41,6 +43,8 @@ const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (SEND_TOOL_NAME, "send_peer"),
     (HISTORY_TOOL_NAME, "peer_history"),
     (ROOM_TOOL_NAME, "room"),
+    (USER_ACTION_ADD_TOOL_NAME, "user_action_add"),
+    (USER_ACTION_TICK_TOOL_NAME, "user_action_tick"),
 ];
 
 /// The socket `kind` a tool call becomes. `spawn_agent` is the only kind that
@@ -325,6 +329,93 @@ pub fn room_tool_schema() -> Value {
     })
 }
 
+
+/// The split both user-action tools must state, so a model does not file its own
+/// steps here or the user's here into its own plan.
+const USER_ACTION_SPLIT: &str = "This list is what YOU are waiting on from the USER — approvals, \
+    commands only they can run, secrets, decisions, a yubikey touch. Track your OWN work with \
+    TodoWrite / update_plan instead; never put your own steps here, and never put a request for \
+    the user into your task list. The tools never block: they return immediately and the user \
+    answers in their own time.";
+
+/// The `CctuiUserActionAdd` input schema.
+#[must_use]
+pub fn user_action_add_schema() -> Value {
+    json!({
+        "name": USER_ACTION_ADD_TOOL_NAME,
+        "description": format!(
+            "Pin one thing you need from the user onto this session's \"needs you\" list, shown as \
+    a card in the conversation and a badge on the session card, so the request does not scroll away. \
+    {USER_ACTION_SPLIT} Returns the item's id and the whole current list, including items the user \
+    ticked in the UI — read it to learn what they have already done. Re-adding an identical open \
+    title returns the existing item instead of a duplicate."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "One imperative line addressed to the user, e.g. \"Approve PR \
+    #12\" or \"Run `! gcloud auth login`\". Trimmed to 120 characters; an empty title is rejected.",
+                },
+                "detail": {
+                    "type": "string",
+                    "description": "Markdown: why it is needed, the exact command to run, links.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["action", "input", "decision"],
+                    "description": "action = the user must DO something; input = the user must TELL \
+    you something; decision = the user must CHOOSE. Default: action.",
+                },
+                "blocking": {
+                    "type": "boolean",
+                    "description": "True when you cannot continue your main line of work without \
+    it. A blocking item notifies the user the way a permission prompt does, so reserve it for a \
+    real stop.",
+                },
+            },
+            "required": ["title"],
+            "additionalProperties": false,
+        },
+    })
+}
+
+/// The `CctuiUserActionTick` input schema.
+#[must_use]
+pub fn user_action_tick_schema() -> Value {
+    json!({
+        "name": USER_ACTION_TICK_TOOL_NAME,
+        "description": format!(
+            "Resolve one item on this session's \"needs you\" list by id — the user did it, or it \
+    is no longer needed. {USER_ACTION_SPLIT} Returns the whole current list. An unknown id comes \
+    back as an error that still carries the list, so you can re-read the real ids."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Id of the item, as returned by CctuiUserActionAdd or a previous \
+    tick.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["done", "dropped"],
+                    "description": "done = you saw it happen (the user said so, or the command's \
+    output landed); dropped = no longer needed.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Short outcome, e.g. \"token received\".",
+                },
+            },
+            "required": ["id", "status"],
+            "additionalProperties": false,
+        },
+    })
+}
+
 /// Every tool this relay advertises, in a stable order. One list, one relay:
 /// registering it for codex or opencode (`adapters::agent_mcp`) offers exactly
 /// the same surface as claude_code's `--mcp-config`.
@@ -337,6 +428,8 @@ pub fn tool_schemas() -> Vec<Value> {
         send_tool_schema(),
         history_tool_schema(),
         room_tool_schema(),
+        user_action_add_schema(),
+        user_action_tick_schema(),
     ]
 }
 
@@ -630,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_the_agent_usage_and_peer_tools() {
+    fn tools_list_returns_the_agent_usage_peer_and_user_action_tools() {
         let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
         let resp = handle("s1", Path::new("/tmp/x.sock"), &req).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
@@ -644,6 +737,8 @@ mod tests {
                 SEND_TOOL_NAME,
                 HISTORY_TOOL_NAME,
                 ROOM_TOOL_NAME,
+                USER_ACTION_ADD_TOOL_NAME,
+                USER_ACTION_TICK_TOOL_NAME,
             ]
         );
     }
@@ -847,6 +942,88 @@ mod tests {
         assert!(is_error);
         assert!(text.starts_with(USAGE_TOOL_NAME), "{text}");
         assert!(text.contains("cannot reach the cctui daemon"), "{text}");
+    }
+
+    #[test]
+    fn the_add_schema_requires_only_a_title_and_states_the_todo_split() {
+        let schema = user_action_add_schema();
+        assert_eq!(schema["name"], USER_ACTION_ADD_TOOL_NAME);
+        assert_eq!(schema["inputSchema"]["required"], json!(["title"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        for key in ["title", "detail", "kind", "blocking"] {
+            assert!(props.contains_key(key), "{key} missing from the schema");
+        }
+        assert_eq!(props["kind"]["enum"], json!(["action", "input", "decision"]));
+        assert_eq!(props["blocking"]["type"], "boolean");
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("TodoWrite"), "{desc}");
+        assert!(desc.contains("waiting on from the USER"), "{desc}");
+        assert_eq!(tool_kind(USER_ACTION_ADD_TOOL_NAME), Some("user_action_add"));
+    }
+
+    #[test]
+    fn the_tick_schema_requires_an_id_and_a_terminal_status() {
+        let schema = user_action_tick_schema();
+        assert_eq!(schema["name"], USER_ACTION_TICK_TOOL_NAME);
+        assert_eq!(schema["inputSchema"]["required"], json!(["id", "status"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["status"]["enum"], json!(["done", "dropped"]));
+        assert!(props.contains_key("note"));
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("TodoWrite"), "{desc}");
+        assert_eq!(tool_kind(USER_ACTION_TICK_TOOL_NAME), Some("user_action_tick"));
+    }
+
+    #[test]
+    fn user_action_schemas_round_trip_as_json() {
+        for schema in [user_action_add_schema(), user_action_tick_schema()] {
+            let raw = serde_json::to_string(&schema).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), schema);
+        }
+    }
+
+    #[test]
+    fn an_add_call_reaches_the_daemon_as_a_user_action_add_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(req["kind"], json!("user_action_add"));
+            assert_eq!(req["session_id"], json!("s1"));
+            assert_eq!(req["args"]["title"], json!("Approve PR #12"));
+            assert_eq!(req["timeout_secs"], json!(USAGE_TIMEOUT.as_secs()));
+            writeln!(stream, "{}", json!({ "ok": true, "result": "user actions (1 open of 1):" }))
+                .unwrap();
+        });
+        let (text, is_error) = call_daemon(
+            "s1",
+            &sock_path,
+            "user_action_add",
+            &json!({ "title": "Approve PR #12", "blocking": true }),
+            None,
+            &Outbox::new(),
+        );
+        server.join().unwrap();
+        assert!(!is_error);
+        assert!(text.contains("1 open"), "{text}");
+    }
+
+    #[test]
+    fn a_dead_socket_fails_a_tick_by_name_instead_of_hanging() {
+        let (text, is_error) = call_daemon(
+            "s1",
+            Path::new("/nonexistent/cctui-agent.sock"),
+            "user_action_tick",
+            &json!({ "id": "x", "status": "done" }),
+            None,
+            &Outbox::new(),
+        );
+        assert!(is_error);
+        assert!(text.starts_with(USER_ACTION_TICK_TOOL_NAME), "{text}");
     }
 
     #[test]

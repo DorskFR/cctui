@@ -8,6 +8,7 @@ import type { ScheduledLaunchState } from "./ScheduledLaunchState";
 import type { Session } from "./Session";
 import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionStatus } from "./SessionStatus";
+import type { UserAction } from "./UserAction";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 export type ServerEvent = { "type": "stream", session_id: string, data: AgentEvent, } | { "type": "status", session_id: string, status: SessionStatus, } | { "type": "session_registered", session: Session, } | { "type": "session_deregistered", session_id: string, } | { "type": "permission_request", session_id: string, request_id: string, tool_name: string, description: string, input_preview: string, } | { "type": "permission_resolved", session_id: string, request_id: string, } | { "type": "ask_question", session_id: string, question: string, questions?: JsonValue | null, 
@@ -30,4 +31,4 @@ user_id?: string | null, state: ScheduledLaunchState, launch_at?: string | null,
 /**
  * Whose rooms these are; scopes delivery to the owner.
  */
-user_id: string, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
+user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };

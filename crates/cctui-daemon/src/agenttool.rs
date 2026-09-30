@@ -66,6 +66,10 @@ enum CallKind {
         session_id: String,
         query: Vec<(&'static str, String)>,
     },
+    /// `CctuiUserActionAdd` / `CctuiUserActionTick`: the body is forwarded to the
+    /// server, which owns the list and answers with all of it.
+    UserActionAdd(Value),
+    UserActionTick(Value),
     /// The relay announcing that it answered `initialize`.
     RelayReady,
     /// The session's `SessionStart` hook holding the first turn until the relay
@@ -183,6 +187,34 @@ fn parse_call(line: &str) -> Result<Call, String> {
                 query.push(("format", format.to_ascii_lowercase()));
             }
             CallKind::PeerHistory { session_id: target, query }
+        }
+        Some("user_action_add") => CallKind::UserActionAdd(json!({
+            "title": args.get("title").and_then(Value::as_str).unwrap_or("").trim(),
+            "detail": string_arg(&args, "detail"),
+            "kind": match string_arg(&args, "kind").as_deref() {
+                Some("input") => "input",
+                Some("decision") => "decision",
+                _ => "action",
+            },
+            "blocking": args.get("blocking").and_then(Value::as_bool).unwrap_or(false),
+        })),
+        Some("user_action_tick") => {
+            let id = string_arg(&args, "id").ok_or("id is required")?;
+            let status = match string_arg(&args, "status").as_deref() {
+                Some("done") => "done",
+                Some("dropped") => "dropped",
+                other => {
+                    return Err(format!(
+                        "status must be \"done\" or \"dropped\", got {}",
+                        other.unwrap_or("nothing"),
+                    ));
+                }
+            };
+            CallKind::UserActionTick(json!({
+                "id": id,
+                "status": status,
+                "note": string_arg(&args, "note"),
+            }))
         }
         Some("relay_ready") => CallKind::RelayReady,
         Some("relay_wait") => CallKind::RelayWait,
@@ -309,6 +341,8 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
         | CallKind::SendPeer(_)
         | CallKind::Room(_)
         | CallKind::PeerHistory { .. }
+        | CallKind::UserActionAdd(_)
+        | CallKind::UserActionTick(_)
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
@@ -664,6 +698,77 @@ async fn run_usage(
     }
 }
 
+/// One list line as the model reads it back. The resolver is always named: a
+/// `done` the user ticked in the UI is the whole point of returning the list.
+fn render_user_action(item: &Value) -> String {
+    let title = item.get("title").and_then(Value::as_str).unwrap_or("(untitled)");
+    let status = item.get("status").and_then(Value::as_str).unwrap_or("open");
+    let kind = item.get("kind").and_then(Value::as_str).unwrap_or("action");
+    let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+    let mut line = if status == "open" {
+        let blocking =
+            if item.get("blocking").and_then(Value::as_bool).unwrap_or(false) { " BLOCKING" } else { "" };
+        format!("[ ]{blocking} {title} ({kind}, id {id})")
+    } else {
+        let by = item
+            .get("resolved_by")
+            .and_then(Value::as_str)
+            .map(|b| format!(" by {b}"))
+            .unwrap_or_default();
+        format!("[{status}{by}] {title} (id {id})")
+    };
+    if let Some(note) = item.get("note").and_then(Value::as_str).filter(|n| !n.is_empty()) {
+        line.push_str(&format!(" — {note}"));
+    }
+    line
+}
+
+/// Render a `UserActionResult` for the model: the rejection reason if any, then
+/// the whole list, so a caller never has to guess what the user changed.
+fn render_user_action_result(v: &Value) -> String {
+    let mut out = Vec::new();
+    if let Some(err) = v.get("error").and_then(Value::as_str) {
+        out.push(format!("rejected: {err}"));
+    }
+    if let Some(added) = v.get("added").and_then(Value::as_str) {
+        out.push(format!("item id: {added}"));
+    }
+    let items: Vec<&Value> =
+        v.pointer("/list/items").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+    if items.is_empty() {
+        out.push("the user action list is empty".to_owned());
+    } else {
+        let open = items
+            .iter()
+            .filter(|i| i.get("status").and_then(Value::as_str) == Some("open"))
+            .count();
+        out.push(format!("user actions ({open} open of {}):", items.len()));
+        out.extend(items.iter().map(|i| render_user_action(i)));
+    }
+    out.join("\n")
+}
+
+async fn run_user_action(
+    server: &ServerClient,
+    machine_key: &str,
+    session_id: &str,
+    path: &str,
+    body: &Value,
+) -> Value {
+    match server.user_action_call(machine_key, session_id, path, body).await {
+        Ok(result) => {
+            let raw = serde_json::to_value(&result).unwrap_or_else(|_| json!({}));
+            let text = render_user_action_result(&raw);
+            if result.error.is_some() {
+                json!({ "ok": false, "error": text })
+            } else {
+                json!({ "ok": true, "result": text })
+            }
+        }
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    }
+}
+
 async fn run_call(
     server: &ServerClient,
     machine_key: &str,
@@ -710,6 +815,12 @@ async fn run_call(
                 Ok(v) => json!({ "ok": true, "result": render_history(&v) }),
                 Err(err) => json!({ "ok": false, "error": err.to_string() }),
             };
+        }
+        CallKind::UserActionAdd(body) => {
+            return run_user_action(server, machine_key, &call.session_id, "", body).await;
+        }
+        CallKind::UserActionTick(body) => {
+            return run_user_action(server, machine_key, &call.session_id, "/tick", body).await;
         }
         CallKind::RelayReady => {
             crate::mcpready::announce(&call.session_id);
@@ -771,6 +882,8 @@ async fn run_call(
         | CallKind::SendPeer(_)
         | CallKind::Room(_)
         | CallKind::PeerHistory { .. }
+        | CallKind::UserActionAdd(_)
+        | CallKind::UserActionTick(_)
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
@@ -962,6 +1075,113 @@ mod tests {
         assert_eq!(req.cwd.as_deref(), Some("/workspace"));
         assert_eq!(req.permission_mode, Some(cctui_proto::adapter::PermissionMode::Auto));
         assert_eq!(req.name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn a_user_action_add_normalizes_its_kind_and_blocking_defaults() {
+        let line = json!({
+            "kind": "user_action_add",
+            "session_id": "s1",
+            "args": { "title": "  Approve PR #12  ", "kind": "nonsense" },
+        })
+        .to_string();
+        let CallKind::UserActionAdd(body) = parse_call(&line).unwrap().kind else {
+            panic!("expected an add")
+        };
+        assert_eq!(body["title"], json!("Approve PR #12"));
+        assert_eq!(body["kind"], json!("action"));
+        assert_eq!(body["blocking"], json!(false));
+        assert!(body["detail"].is_null());
+    }
+
+    #[test]
+    fn a_user_action_add_keeps_a_known_kind_and_a_blocking_flag() {
+        let line = json!({
+            "kind": "user_action_add",
+            "session_id": "s1",
+            "args": {
+                "title": "Pick a layout",
+                "kind": "decision",
+                "blocking": true,
+                "detail": " two options ",
+            },
+        })
+        .to_string();
+        let CallKind::UserActionAdd(body) = parse_call(&line).unwrap().kind else {
+            panic!("expected an add")
+        };
+        assert_eq!(body["kind"], json!("decision"));
+        assert_eq!(body["blocking"], json!(true));
+        assert_eq!(body["detail"], json!("two options"));
+    }
+
+    #[test]
+    fn a_tick_needs_an_id_and_a_terminal_status() {
+        let ok = json!({
+            "kind": "user_action_tick",
+            "session_id": "s1",
+            "args": { "id": "abc", "status": "dropped", "note": " never mind " },
+        })
+        .to_string();
+        let CallKind::UserActionTick(body) = parse_call(&ok).unwrap().kind else {
+            panic!("expected a tick")
+        };
+        assert_eq!(body["id"], json!("abc"));
+        assert_eq!(body["status"], json!("dropped"));
+        assert_eq!(body["note"], json!("never mind"));
+
+        let no_id = json!({ "kind": "user_action_tick", "session_id": "s1", "args": {} });
+        assert!(parse_call(&no_id.to_string()).is_err());
+        let bad_status = json!({
+            "kind": "user_action_tick",
+            "session_id": "s1",
+            "args": { "id": "abc", "status": "open" },
+        });
+        let err = parse_call(&bad_status.to_string()).unwrap_err();
+        assert!(err.contains("done"), "{err}");
+    }
+
+    #[test]
+    fn the_rendered_list_names_open_blocking_items_and_who_resolved_the_rest() {
+        let payload = json!({
+            "list": {
+                "session_id": "s1",
+                "items": [
+                    {
+                        "id": "id-1",
+                        "title": "Approve PR #12",
+                        "kind": "decision",
+                        "blocking": true,
+                        "status": "open",
+                    },
+                    {
+                        "id": "id-2",
+                        "title": "Run gcloud auth login",
+                        "kind": "action",
+                        "status": "done",
+                        "resolved_by": "user",
+                        "note": "token received",
+                    },
+                ],
+            },
+            "added": "id-1",
+        });
+        let text = render_user_action_result(&payload);
+        assert!(text.contains("user actions (1 open of 2):"), "{text}");
+        assert!(text.contains("[ ] BLOCKING Approve PR #12 (decision, id id-1)"), "{text}");
+        assert!(text.contains("[done by user] Run gcloud auth login (id id-2)"), "{text}");
+        assert!(text.contains("token received"), "{text}");
+        assert!(text.contains("item id: id-1"), "{text}");
+    }
+
+    #[test]
+    fn a_rejection_is_rendered_with_the_list_so_the_model_sees_the_true_state() {
+        let text = render_user_action_result(&json!({
+            "error": "title is required and was empty",
+            "list": { "session_id": "s1", "items": [] },
+        }));
+        assert!(text.starts_with("rejected: title is required"), "{text}");
+        assert!(text.contains("the user action list is empty"), "{text}");
     }
 
     #[test]
