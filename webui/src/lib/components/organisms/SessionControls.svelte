@@ -11,7 +11,7 @@
 	import MacrosMenu from './MacrosMenu.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
-	import type { ViewMode } from '../../../routes/sessions/sessionsPage.svelte';
+	import type { ViewMode } from '$lib/sessionsView.svelte';
 
 	// The sessions list toolbar: title + search + section/label filters +
 	// view picker + multi-select toggle + New. A uniform, self-contained block —

@@ -23,7 +23,7 @@
 	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container, Toaster } from '@dorsk/tsumikit';
 	import { dockLayout } from '$lib/spawnDock.svelte';
-	import { fullBleed } from '$lib/fullBleed.svelte';
+	import { sessionsView } from '$lib/sessionsView.svelte';
 	import { mountJourneys } from '$lib/journey';
 
 	let { children } = $props();
@@ -38,7 +38,8 @@
 	// full-height layout, so they render outside the width-capped Container and
 	// without content padding.
 	const isApp = $derived(page.url.pathname.startsWith('/apps/'));
-	const bleed = $derived(isApp || fullBleed.on);
+	const isTiles = $derived(page.url.pathname.startsWith('/sessions') && sessionsView.tiles);
+	const bleed = $derived(isApp || isTiles);
 
 	// Every route renders in the --content-wide column; only the session list's
 	// width is user-settable (Settings › Session list), and the cap only bites
@@ -157,7 +158,7 @@
 				<main
 					class="content"
 					class:app={isApp}
-					class:tiles={fullBleed.on}
+					class:tiles={isTiles}
 					class:dock-left={!!docks?.left}
 					class:dock-right={!!docks?.right}
 					style:--dock-left-w={docks?.left ?? undefined}
@@ -215,5 +216,13 @@
 		height: 100dvh;
 		padding-top: calc(var(--header-h) + var(--safe-top));
 		padding-bottom: var(--bottom-chrome);
+	}
+	/* `flex: 1` would make the flex basis 0 and let the automatic minimum size
+	   floor this at the tiles' min-content height — the window height is the
+	   whole point here, so opt out of flexing and let the panes scroll inside. */
+	.content.tiles {
+		flex: none;
+		min-height: 0;
+		overflow: hidden;
 	}
 </style>

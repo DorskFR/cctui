@@ -4,7 +4,7 @@
 	// full-width row like the dimension pickers; tapping it advances the view.
 	import { Button, Icon, SegmentedControl, type IconName } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import type { ViewMode } from '../../../routes/sessions/sessionsPage.svelte';
+	import type { ViewMode } from '$lib/sessionsView.svelte';
 
 	let {
 		view = $bindable(),

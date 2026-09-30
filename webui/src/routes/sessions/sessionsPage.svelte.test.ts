@@ -9,10 +9,10 @@ import {
 	LIST_LABELS,
 	LIST_SECTION,
 	LIST_TILE_SECTION,
-	LIST_VIEW,
 	type SpawnSlotPayload
 } from '$lib/drafts';
 import type { SessionListSettings } from '$lib/settings.svelte';
+import { sessionsView } from '$lib/sessionsView.svelte';
 import { SessionsPage, type SessionsPageDeps, type SpawnForm } from './sessionsPage.svelte';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
@@ -141,6 +141,8 @@ beforeEach(() => {
 	vi.useFakeTimers();
 });
 afterEach(() => {
+	sessionsView.mode = 'list';
+	sessionsView.wide = true;
 	for (const stop of cleanup) stop();
 	cleanup = [];
 	vi.useRealTimers();
@@ -151,12 +153,12 @@ describe('SessionsPage — persisted preferences', () => {
 		const { sp } = make(
 			{},
 			{
-				[LIST_VIEW]: 'card',
 				[LIST_SECTION]: 'live,archived',
 				[LIST_HIDDEN]: 'done,drafts',
 				[LIST_LABELS]: 'a,b'
 			}
 		);
+		sessionsView.mode = 'grid';
 		expect(sp.viewMode).toBe('grid');
 		expect(sp.cardView).toBe(true);
 		expect([...sp.sections]).toEqual(['live', 'archived']);
@@ -172,8 +174,9 @@ describe('SessionsPage — persisted preferences', () => {
 		expect(sp.viewMode).toBe('list');
 	});
 
-	it('restores tiles as a third view and gives them their own section set', () => {
-		const { sp, store } = make({}, { [LIST_VIEW]: 'tiles' });
+	it('gives tiles their own section set, with dispatched off', () => {
+		const { sp, store } = make();
+		sessionsView.mode = 'tiles';
 		expect(sp.viewMode).toBe('tiles');
 		expect(sp.tiles).toBe(true);
 		// Dispatched is on for the list and off for tiles, which show every match at once.
@@ -185,24 +188,24 @@ describe('SessionsPage — persisted preferences', () => {
 		expect(store.get(LIST_SECTION)).toBe('starred,live,dispatched');
 	});
 
-	it('falls back to the default view below the mobile breakpoint', () => {
-		const { sp, store } = make({ mobile: () => true }, { [LIST_VIEW]: 'tiles' });
+	it('falls back to the default view below the tiles breakpoint', () => {
+		const { sp } = make();
+		sessionsView.mode = 'tiles';
+		sessionsView.wide = false;
 		expect(sp.tiles).toBe(false);
 		expect(sp.view).toBe('list');
 		// The choice is kept, not overwritten: a wider window gets tiles back.
 		expect(sp.viewMode).toBe('tiles');
-		flushSync();
-		expect(store.get(LIST_VIEW)).toBe('tiles');
+		sessionsView.wide = true;
+		expect(sp.tiles).toBe(true);
 	});
 
 	it('writes every preference back as it changes', () => {
 		const { sp, store } = make();
-		sp.viewMode = 'grid';
 		sp.sections = new Set(['archived']);
 		sp.toggleSection('working');
 		sp.labelFilter = new Set(['x']);
 		flushSync();
-		expect(store.get(LIST_VIEW)).toBe('card');
 		expect(store.get(LIST_SECTION)).toBe('archived');
 		expect(store.get(LIST_HIDDEN)).toBe('working');
 		expect(store.get(LIST_LABELS)).toBe('x');

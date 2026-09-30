@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { rowCounts, stableTileOrder, tileGrid, tileLayout } from './tiles';
+import {
+	MIN_PANE_HEIGHT,
+	MIN_PANE_WIDTH,
+	paneCapacity,
+	rowCounts,
+	stableTileOrder,
+	tileGrid,
+	tileLayout
+} from './tiles';
 
 const MONITOR = { width: 1920, height: 1080 };
 const ULTRAWIDE = { width: 3840, height: 1080 };
@@ -99,5 +107,47 @@ describe('stableTileOrder', () => {
 
 	it('seeds straight from the sort when nothing is placed', () => {
 		expect(stableTileOrder([], ['a', 'b'])).toEqual(['a', 'b']);
+	});
+});
+
+describe('paneCapacity', () => {
+	it('mounts nothing before the area has been measured', () => {
+		expect(paneCapacity({ width: 0, height: 0 })).toBe(0);
+		expect(paneCapacity({ width: 1920, height: 0 })).toBe(0);
+	});
+
+	it('fits as many readable panes as the area allows', () => {
+		// 1920/360 = 5 cols, 900/220 = 4 rows.
+		expect(paneCapacity({ width: 1920, height: 900 })).toBe(20);
+		// A 32:9 strip is wide but short: ten columns, four rows.
+		expect(paneCapacity({ width: 3840, height: 900 })).toBe(40);
+	});
+
+	it('always allows one pane, however cramped', () => {
+		expect(paneCapacity({ width: 320, height: 200 })).toBe(1);
+		expect(paneCapacity({ width: 1, height: 1 })).toBe(1);
+	});
+
+	it('grows monotonically with the area', () => {
+		let last = 0;
+		for (let w = 400; w <= 4000; w += 200) {
+			const cap = paneCapacity({ width: w, height: 1000 });
+			expect(cap).toBeGreaterThanOrEqual(last);
+			last = cap;
+		}
+	});
+
+	it('never lets a pane fall below the readable minimum', () => {
+		for (const vp of [
+			{ width: 1920, height: 1080 },
+			{ width: 3840, height: 1080 },
+			{ width: 1080, height: 1920 },
+			{ width: 1280, height: 720 }
+		]) {
+			const cap = paneCapacity(vp);
+			const { cols, rows } = tileGrid(cap, vp);
+			expect(vp.width / cols, `${vp.width}x${vp.height}`).toBeGreaterThanOrEqual(MIN_PANE_WIDTH);
+			expect(vp.height / rows, `${vp.width}x${vp.height}`).toBeGreaterThanOrEqual(MIN_PANE_HEIGHT);
+		}
 	});
 });

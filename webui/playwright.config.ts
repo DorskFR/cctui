@@ -50,6 +50,11 @@ export default defineConfig({
 			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
 		},
 		{
+			name: 'tiles',
+			testMatch: 'tiles-crash.spec.ts',
+			use: { baseURL: headerUrl }
+		},
+		{
 			name: 'plugins',
 			testMatch: ['plugin-review-pane.spec.ts', 'plugin-admin.spec.ts'],
 			use: { baseURL: process.env.PLUGIN_E2E_URL ?? headerUrl }

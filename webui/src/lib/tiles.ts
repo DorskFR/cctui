@@ -116,6 +116,22 @@ export function tileLayout(n: number, viewport: Viewport = FALLBACK): TileLayout
  * session changing state must not move its tile. New ids land at the index the
  * sort gives them, gone ids leave a hole that closes.
  */
+export const MIN_PANE_WIDTH = 360;
+export const MIN_PANE_HEIGHT = 220;
+
+/**
+ * How many panes the area can hold before each one stops being readable. Above
+ * this the grid stops growing: N live conversation panes each cost a history
+ * fetch and a socket subscription, so an unbounded count is what wedges the tab.
+ * Returns 0 for an unmeasured area so nothing mounts before a size is known.
+ */
+export function paneCapacity(viewport: Viewport): number {
+	if (!(viewport.width > 0 && viewport.height > 0)) return 0;
+	const cols = Math.floor(viewport.width / MIN_PANE_WIDTH);
+	const rows = Math.floor(viewport.height / MIN_PANE_HEIGHT);
+	return Math.max(1, cols * rows);
+}
+
 export function stableTileOrder(prev: string[], next: string[]): string[] {
 	const wanted = new Set(next);
 	const out = prev.filter((id) => wanted.has(id));

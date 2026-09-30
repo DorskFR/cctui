@@ -10,7 +10,6 @@ import {
   LIST_LABELS,
   LIST_SECTION,
   LIST_TILE_SECTION,
-  LIST_VIEW,
   type SpawnSlotPayload,
 } from "$lib/drafts";
 import { ApiError, errMessage } from "$lib/api";
@@ -48,6 +47,7 @@ import {
   type Dimension,
 } from "./sessions.logic";
 import { stableTileOrder } from "$lib/tiles";
+import { sessionsView, type ViewMode } from "$lib/sessionsView.svelte";
 import { SessionsListController } from "./SessionsListController.svelte";
 import { ArchiveConfirm } from "./archiveConfirm.svelte";
 
@@ -107,19 +107,9 @@ export interface SessionsPageDeps {
   labels: () => Label[] | undefined;
   // Visual document order of the rendered rows, for shift-range selection.
   renderedOrder: () => string[];
-  // True below the mobile breakpoint, where tiles are not offered.
-  mobile?: () => boolean;
 }
 
-export type ViewMode = "list" | "grid" | "tiles";
-
-const parseViewMode = (raw: string): ViewMode =>
-  raw === "card" || raw === "grid"
-    ? "grid"
-    : raw === "tiles"
-      ? "tiles"
-      : "list";
-const serializeViewMode = (v: ViewMode): string => (v === "grid" ? "card" : v);
+export type { ViewMode } from "$lib/sessionsView.svelte";
 
 export class SessionsPage {
   #d: SessionsPageDeps;
@@ -131,7 +121,14 @@ export class SessionsPage {
   // cards released to the full window) and tiles (live conversation panes
   // filling the window). Grid and tiles are top-level only (subagents stay
   // in list view / the drawer).
-  viewMode = $state<ViewMode>("list");
+  // Delegated to the module that also drives the app layout: see
+  // sessionsView.svelte.ts for why this must not be page-owned state.
+  get viewMode(): ViewMode {
+    return sessionsView.mode;
+  }
+  set viewMode(v: ViewMode) {
+    sessionsView.mode = v;
+  }
   // Section filter: independent on/off toggles over the loaded list
   // (starred / live / dispatched / drafts / archived / unread), persisted.
   // Tiles keep their own set so hiding the dispatched swarm there does not
@@ -180,7 +177,6 @@ export class SessionsPage {
 
   constructor(d: SessionsPageDeps) {
     this.#d = d;
-    this.viewMode = parseViewMode(d.store.get(LIST_VIEW));
     this.listSections = parseSections(d.store.get(LIST_SECTION));
     this.tileSections = parseSections(
       d.store.get(LIST_TILE_SECTION),
@@ -212,9 +208,6 @@ export class SessionsPage {
       renderedOrder: d.renderedOrder,
     });
 
-    $effect(() => {
-      d.store.set(LIST_VIEW, serializeViewMode(this.viewMode));
-    });
     $effect(() => {
       d.store.set(LIST_SECTION, [...this.listSections].join(","));
     });
@@ -270,11 +263,19 @@ export class SessionsPage {
     });
   }
 
-  mobile = $derived.by(() => this.#d.mobile?.() ?? false);
-  // A persisted tiles choice falls back to the default view on a phone.
-  view: ViewMode = $derived(
-    this.viewMode === "tiles" && this.mobile ? "list" : this.viewMode,
-  );
+  // The tiles boundary caught a render error: drop to the list rather than leave
+  // a dead area, and keep the reason in the console for a bug report.
+  abandonTiles = (error: unknown) => {
+    console.error("tiles view failed, falling back to list", error);
+    this.viewMode = "list";
+  };
+
+  get mobile(): boolean {
+    return !sessionsView.wide;
+  }
+  get view(): ViewMode {
+    return sessionsView.effective;
+  }
   get cardView(): boolean {
     return this.view === "grid";
   }

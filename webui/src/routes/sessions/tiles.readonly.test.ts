@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import tiles from './SessionTiles.svelte?raw';
 import page from './+page.svelte?raw';
+import layout from '../+layout.svelte?raw';
 
 describe('opening tiles never costs a turn', () => {
 	it('sends no message, reply or resume from the tiles view', () => {
@@ -35,14 +36,25 @@ describe('tiles view mode', () => {
 		const css = tiles.slice(tiles.indexOf('<style>'));
 		expect(css).toMatch(/\.tiles \{[^}]*flex: 1/);
 		expect(css).toMatch(/\.tiles \{[^}]*min-height: 0/);
-		expect(page).toContain('holdFullBleed()');
+		// A bare `1fr` row floors at the pane's min-content height and the page
+		// grows a scrollbar; only minmax(0, …) lets the transcripts scroll inside.
+		expect(tiles).toContain('minmax(0, 1fr)');
+		expect(tiles).not.toMatch(/repeat\(\{[^}]*\}, 1fr\)/);
+	});
+
+	it('lets the layout decide full-bleed, never the page from inside it', () => {
+		// The layout renders this page inside the branch full-bleed toggles, so a
+		// page-raised flag unmounts its own setter and the two flip forever.
+		expect(page).not.toContain('holdFullBleed');
+		expect(layout).toContain('sessionsView.tiles');
+		expect(layout).toContain("page.url.pathname.startsWith('/sessions')");
 	});
 
 	it('sizes itself from the measured viewport, not from a CSS guess', () => {
 		expect(tiles).toContain('bind:clientWidth={width}');
 		expect(tiles).toContain('bind:clientHeight={height}');
-		expect(tiles).toContain('tileLayout(shown.length, { width, height })');
-		expect(tiles).toContain('repeat({layout.tracks}, 1fr)');
+		expect(tiles).toContain('tileLayout(panes.length, { width, height })');
+		expect(tiles).toContain('paneCapacity({ width, height })');
 	});
 
 	it('draws one hairline between neighbours and no radius', () => {
