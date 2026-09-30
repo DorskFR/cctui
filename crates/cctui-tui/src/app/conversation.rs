@@ -37,7 +37,7 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
                     *cursor += merge.inserted;
                 }
             }
-            Vec::new()
+            super::pins::after_page(app, &session_id)
         }
         ConversationAction::ToggleLineCursor => {
             toggle_line_cursor(app);
@@ -69,6 +69,7 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
         }
         ConversationAction::Failed { session_id, kind } => {
             app.conversation_mut(&session_id).page_failed(kind);
+            super::pins::page_failed(app);
             Vec::new()
         }
     }
@@ -95,6 +96,7 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
             etag,
         },
         Effect::Subscribe { session_id: session_id.clone() },
+        super::pins::on_open(&session_id),
         Effect::MarkSeen { session_id },
     ]
 }
@@ -207,6 +209,7 @@ mod tests {
             [
                 Effect::LoadConversationPage { kind: PageKind::Latest, etag: None, .. },
                 Effect::Subscribe { .. },
+                Effect::LoadPins { .. },
                 Effect::MarkSeen { .. },
             ]
         ));

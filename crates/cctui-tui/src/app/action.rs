@@ -7,6 +7,7 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
+use super::pins::PinAction;
 use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
@@ -80,6 +81,7 @@ pub enum Action {
 
     Auth(AuthAction),
     Drafts(DraftAction),
+    Pins(PinAction),
     Send(SendAction),
     SessionLive(SessionLiveAction),
 
@@ -122,6 +124,18 @@ pub enum Effect {
     },
     /// `GET /drafts`: every unsent draft, pulled once at startup.
     LoadDraftIndex,
+    /// `GET /sessions/{id}/pins`: the caller's pins in one session.
+    LoadPins {
+        session_id: String,
+    },
+    PinMessage {
+        session_id: String,
+        seq: i64,
+    },
+    UnpinMessage {
+        session_id: String,
+        seq: i64,
+    },
     /// Re-read one session's draft and prompt history.
     LoadDrafts {
         session_id: String,

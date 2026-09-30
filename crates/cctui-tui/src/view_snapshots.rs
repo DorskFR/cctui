@@ -2,6 +2,7 @@ use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::drafts::DraftAction;
+use crate::app::pins::PinAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, edit_permission_request,
@@ -327,6 +328,23 @@ fn history_picker() {
     let list = DraftList { drafts: vec![history] };
     reduce(&mut app, Action::Drafts(DraftAction::IndexLoaded(Box::new(list))));
     reduce(&mut app, Action::Drafts(DraftAction::OpenPicker));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn pins_list() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    reduce(&mut app, Action::Pins(PinAction::Loaded { session_id: id, seqs: vec![1, 3, 99] }));
+    reduce(&mut app, Action::Pins(PinAction::OpenList));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_with_a_pinned_line() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session_id().expect("a selected session");
+    reduce(&mut app, Action::Pins(PinAction::Loaded { session_id: id, seqs: vec![1, 2] }));
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

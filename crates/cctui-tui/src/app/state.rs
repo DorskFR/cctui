@@ -20,6 +20,7 @@ pub enum View {
     Conversation,
     Help,
     HistoryPicker,
+    Pins,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -217,6 +218,7 @@ pub struct App {
     /// `show_timestamps` the cache was built with: the prefix is baked into
     /// every cached row, so toggling it has to rebuild.
     pub render_cache_timestamps: bool,
+    pub render_cache_pins: u64,
     /// First display row of each cached entry; the line cursor maps an entry
     /// onto its rows through this.
     pub render_cache_starts: Vec<usize>,
@@ -231,6 +233,7 @@ pub struct App {
     pub status: StatusCounters,
     pub auth: AuthState,
     pub drafts: super::drafts::DraftState,
+    pub pins: super::pins::PinState,
     /// Sends that have left the composer but are not confirmed delivered.
     pub outbox: super::send::Outbox,
     /// Refreshed once per loop iteration; the reducer reads this instead of the
@@ -295,6 +298,7 @@ impl App {
             render_cache_entries: 0,
             render_cache_epoch: 0,
             render_cache_timestamps: false,
+            render_cache_pins: 0,
             render_cache_starts: Vec::new(),
             line_cursor: None,
             expand_all: false,
@@ -303,6 +307,7 @@ impl App {
             status: StatusCounters::default(),
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
+            pins: super::pins::PinState::default(),
             outbox: super::send::Outbox::default(),
             clock_ms: 0,
             machine_liveness: HashMap::new(),

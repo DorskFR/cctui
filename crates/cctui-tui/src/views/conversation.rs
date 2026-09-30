@@ -65,10 +65,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Header
     let auto = if session.auto_approve { " ── ✓ auto-approve" } else { "" };
     let waiting = app.prompt_marker(&session.id).map_or_else(String::new, |m| format!(" ── {m}"));
+    let pins = match app.pins.count(&session.id) {
+        0 => String::new(),
+        n => format!(" ── ⚑ {n}"),
+    };
     let header_text = if branch.is_empty() {
-        format!(" {project} on {machine} ── {model} ── {cost}{auto}{waiting}")
+        format!(" {project} on {machine} ── {model} ── {cost}{auto}{pins}{waiting}")
     } else {
-        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}{waiting}")
+        format!(" {project} ({branch}) on {machine} ── {model} ── {cost}{auto}{pins}{waiting}")
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
     header_spans.extend(crate::widgets::status::status_spans(app));
@@ -87,6 +91,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if app.render_cache_session != session.id
             || app.render_cache_epoch != epoch
             || app.render_cache_timestamps != app.show_timestamps
+            || app.render_cache_pins != app.pins.epoch
             || app.render_cache_entries > entries.len()
         {
             app.render_cache.clear();
@@ -94,14 +99,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.render_cache_session.clone_from(&session.id);
             app.render_cache_epoch = epoch;
             app.render_cache_timestamps = app.show_timestamps;
+            app.render_cache_pins = app.pins.epoch;
             app.render_cache_entries = 0;
         }
         if app.render_cache_entries < entries.len() {
-            for entry in &entries[app.render_cache_entries..] {
+            let pinned: Vec<bool> = entries[app.render_cache_entries..]
+                .iter()
+                .map(|entry| entry.sequenced && app.pins.pinned(&session.id, entry.seq))
+                .collect();
+            for (entry, pinned) in entries[app.render_cache_entries..].iter().zip(pinned) {
                 app.render_cache_starts.push(app.render_cache.len());
                 let opts =
                     RenderOpts { show_timestamps: app.show_timestamps, expanded: entry.expanded };
-                app.render_cache.extend(render_line(&entry.line, opts));
+                let rows = render_line(&entry.line, opts);
+                app.render_cache.extend(if pinned { with_pin_marker(rows) } else { rows });
             }
             app.render_cache_entries = entries.len();
         }
@@ -420,6 +431,15 @@ fn render_peer(line: &ConversationLine, ts: String) -> Vec<Line<'static>> {
         vec![Line::from(""), Line::from(vec![Span::raw(ts), Span::styled(label, LABEL_PEER)])];
     out.extend(markdown_lines(&line.text));
     out
+}
+
+/// Mark a pinned entry on its first row that carries text, so the blank
+/// separators a turn starts with stay blank.
+fn with_pin_marker(mut rows: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    if let Some(row) = rows.iter_mut().find(|row| !row.spans.is_empty()) {
+        row.spans.insert(0, Span::styled("⚑ ", theme::hotkey()));
+    }
+    rows
 }
 
 /// Everything on screen for a line, so the render cache holds exactly that.

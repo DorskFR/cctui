@@ -18,6 +18,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
         Action::Attention(attention) => super::attention::reduce_attention(app, attention),
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
+        Action::Pins(pins) => super::pins::reduce_pins(app, pins),
         Action::Send(action) => send::reduce_send(app, action),
         Action::SessionLive(action) => super::session_live::reduce_session_live(app, action),
         // One clock for the whole app: delivery deadlines move, and the session
@@ -391,9 +392,10 @@ mod tests {
             [
                 Effect::LoadConversationPage { session_id, .. },
                 Effect::Subscribe { .. },
+                Effect::LoadPins { .. },
                 Effect::MarkSeen { .. },
             ] => assert_eq!(session_id, "s-a"),
-            _ => panic!("expected a load, a subscribe and a seen mark"),
+            _ => panic!("expected a load, a subscribe, a pin read and a seen mark"),
         }
     }
 

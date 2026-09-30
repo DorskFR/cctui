@@ -1093,20 +1093,20 @@ ticket = "CCT-1245"
 [[route]]
 id = "get_sessions_by_id_pins"
 # GET /sessions/{id}/pins — List the caller's pinned messages in a session.
-tui = "planned"
-ticket = "CCT-1235"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_pins"
 # POST /sessions/{id}/pins — Pin a message (by stream seq) in a session.
-tui = "planned"
-ticket = "CCT-1235"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_sessions_by_id_pins_by_seq"
 # DELETE /sessions/{id}/pins/{seq} — Unpin a message in a session.
-tui = "planned"
-ticket = "CCT-1235"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_seen"

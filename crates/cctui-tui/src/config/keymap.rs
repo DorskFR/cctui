@@ -12,6 +12,7 @@ pub enum Context {
     Conversation,
     Composer,
     History,
+    Pins,
     Help,
     Permission,
     Ask,
@@ -26,6 +27,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Conversation,
     Context::Composer,
     Context::History,
+    Context::Pins,
     Context::Help,
     Context::Permission,
     Context::Ask,
@@ -42,6 +44,7 @@ impl Context {
             Self::Conversation => "conversation",
             Self::Composer => "composer",
             Self::History => "history",
+            Self::Pins => "pins",
             Self::Help => "help",
             Self::Permission => "permission",
             Self::Ask => "ask",
@@ -58,6 +61,7 @@ impl Context {
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
             Self::History => "Prompt history",
+            Self::Pins => "Pinned messages",
             Self::Help => "Help",
             Self::Permission => "Permission card",
             Self::Ask => "Question card",
@@ -163,6 +167,14 @@ actions! {
     HistorySelectPrev => "history-select-prev", "Previous prompt";
     HistoryRecall => "history-recall", "Put this prompt in the composer";
 
+    PinToggle => "pin-toggle", "Pin or unpin the focused line";
+    PinsOpen => "pins-open", "Open the pinned messages";
+    PinsClose => "pins-close", "Close the pinned messages";
+    PinsSelectNext => "pins-select-next", "Next pin";
+    PinsSelectPrev => "pins-select-prev", "Previous pin";
+    PinsJump => "pins-jump", "Jump to the pinned message";
+    PinsUnpin => "pins-unpin", "Unpin this message";
+
     CloseHelp => "close-help", "Close this cheat sheet";
 
     PermissionAllow => "permission-allow", "Allow";
@@ -256,6 +268,8 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
+    spec(Context::Conversation, "m", ActionId::PinToggle),
+    spec(Context::Conversation, "'", ActionId::PinsOpen),
 ];
 
 /// `shift+enter` is unreported by most terminals, so a newline also has a
@@ -274,6 +288,14 @@ const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "down, ctrl+n", ActionId::HistorySelectNext),
     spec(Context::History, "up, ctrl+p", ActionId::HistorySelectPrev),
     spec(Context::History, "enter", ActionId::HistoryRecall),
+];
+
+const PINS: &[BindingSpec] = &[
+    spec(Context::Pins, "esc", ActionId::PinsClose),
+    spec(Context::Pins, "down, ctrl+n", ActionId::PinsSelectNext),
+    spec(Context::Pins, "up, ctrl+p", ActionId::PinsSelectPrev),
+    spec(Context::Pins, "enter", ActionId::PinsJump),
+    spec(Context::Pins, "m, d", ActionId::PinsUnpin),
 ];
 
 const HELP: &[BindingSpec] = &[
@@ -331,6 +353,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CONVERSATION,
     COMPOSER,
     HISTORY,
+    PINS,
     HELP,
     PERMISSION,
     ASK,

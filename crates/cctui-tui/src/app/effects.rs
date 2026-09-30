@@ -14,6 +14,7 @@ use super::conversation_store::{PageKind, PageRequest};
 use super::drafts::DraftAction;
 use super::identity::AuthAction;
 use super::line::agent_event_to_line;
+use super::pins::PinAction;
 use super::send::SendAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
@@ -131,6 +132,18 @@ async fn run(
             }
             Vec::new()
         }
+        Effect::LoadPins { session_id } => match server.list_pins(&session_id).await {
+            Ok(pins) => vec![Action::Pins(PinAction::Loaded {
+                session_id,
+                seqs: pins.iter().map(|p| p.seq).collect(),
+            })],
+            Err(e) => {
+                tracing::warn!(%e, session_id, "pin list fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::PinMessage { session_id, seq } => pin(server, session_id, seq, true).await,
+        Effect::UnpinMessage { session_id, seq } => pin(server, session_id, seq, false).await,
         Effect::LoadDraftIndex => load_draft_index(server).await,
         Effect::LoadDrafts { session_id } => load_drafts(server, session_id).await,
         Effect::SaveDraft { key, text } => {
@@ -202,6 +215,24 @@ async fn run(
                 tracing::warn!(%e, "permission response failed");
             }
             Vec::new()
+        }
+    }
+}
+
+/// A pin is applied once the server owns it, so a failed write leaves no
+/// marker the next list fetch would contradict.
+async fn pin(server: &Client, session_id: String, seq: i64, pinned: bool) -> Vec<Action> {
+    let outcome = if pinned {
+        server.pin_message(&session_id, seq).await.map(|_| ())
+    } else {
+        server.unpin_message(&session_id, seq).await
+    };
+    match outcome {
+        Ok(()) => vec![Action::Pins(PinAction::Changed { session_id, seq, pinned })],
+        Err(e) => {
+            tracing::warn!(%e, session_id, seq, "pin write failed");
+            let what = if pinned { "pin" } else { "unpin" };
+            vec![Action::Toast(Level::Error, format!("could not {what} that message"))]
         }
     }
 }

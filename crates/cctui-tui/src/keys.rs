@@ -5,6 +5,7 @@ use crate::app::action::Action;
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::conversation::ConversationAction;
 use crate::app::drafts::DraftAction;
+use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
@@ -26,8 +27,8 @@ pub enum InputEvent {
 /// function's: a permission request blocks the turn and is answered in one
 /// keystroke, so it outranks an ask or plan card, which can be deferred.
 pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFocus>) -> Context {
-    if matches!(view, View::HistoryPicker) {
-        return Context::History;
+    if let Some(modal) = modal_context(view) {
+        return modal;
     }
     if input_active {
         return Context::Composer;
@@ -46,6 +47,16 @@ pub const fn context_for(view: View, input_active: bool, prompt: Option<PromptFo
         View::Conversation => Context::Conversation,
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
+        View::Pins => Context::Pins,
+    }
+}
+
+/// A modal overlay owns the keyboard outright, composer or card underneath.
+const fn modal_context(view: View) -> Option<Context> {
+    match view {
+        View::HistoryPicker => Some(Context::History),
+        View::Pins => Some(Context::Pins),
+        _ => None,
     }
 }
 
@@ -69,12 +80,12 @@ pub fn map_input(
         InputEvent::ScrollUp => match view {
             View::Conversation => Some(Action::Scroll { lines: -3, release_follow: true }),
             View::SessionList => Some(Action::SelectPrev),
-            View::Help | View::HistoryPicker => None,
+            View::Help | View::HistoryPicker | View::Pins => None,
         },
         InputEvent::ScrollDown => match view {
             View::Conversation => Some(Action::Scroll { lines: 3, release_follow: false }),
             View::SessionList => Some(Action::SelectNext),
-            View::Help | View::HistoryPicker => None,
+            View::Help | View::HistoryPicker | View::Pins => None,
         },
     }
 }
@@ -131,6 +142,14 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::HistorySelectPrev => Action::Drafts(DraftAction::PickerSelectPrev),
         ActionId::HistoryRecall => Action::Drafts(DraftAction::PickerRecall),
 
+        ActionId::PinToggle => Action::Pins(PinAction::Toggle),
+        ActionId::PinsOpen => Action::Pins(PinAction::OpenList),
+        ActionId::PinsClose => Action::Pins(PinAction::CloseList),
+        ActionId::PinsSelectNext => Action::Pins(PinAction::SelectNext),
+        ActionId::PinsSelectPrev => Action::Pins(PinAction::SelectPrev),
+        ActionId::PinsJump => Action::Pins(PinAction::Jump),
+        ActionId::PinsUnpin => Action::Pins(PinAction::UnpinSelected),
+
         ActionId::PermissionAllow => Action::Attention(AttentionAction::Respond(Decision::Allow)),
         ActionId::PermissionDeny => Action::Attention(AttentionAction::Respond(Decision::Deny)),
         ActionId::PermissionAllowAlways => {
@@ -183,6 +202,7 @@ mod tests {
         Action, AttentionAction, Decision, DraftAction, InputEvent, Keymap, PromptFocus, View,
         map_input,
     };
+    use crate::app::pins::PinAction;
     use crate::app::prompt::PromptAction;
     use crate::config::keymap::Context;
 
@@ -576,6 +596,41 @@ mod tests {
             map(View::Conversation, false, KeyCode::Tab),
             Some(Action::Prompt(PromptAction::Focus))
         ));
+    }
+
+    #[test]
+    fn the_conversation_pins_the_focused_line_and_opens_the_pins_list() {
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('m')),
+            Some(Action::Pins(PinAction::Toggle))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('\'')),
+            Some(Action::Pins(PinAction::OpenList))
+        ));
+    }
+
+    #[test]
+    fn the_pins_list_owns_the_keyboard_over_an_active_composer() {
+        for active in [true, false] {
+            assert!(matches!(
+                map(View::Pins, active, KeyCode::Enter),
+                Some(Action::Pins(PinAction::Jump))
+            ));
+            assert!(matches!(
+                map(View::Pins, active, KeyCode::Esc),
+                Some(Action::Pins(PinAction::CloseList))
+            ));
+            assert!(matches!(
+                map(View::Pins, active, KeyCode::Down),
+                Some(Action::Pins(PinAction::SelectNext))
+            ));
+            assert!(matches!(
+                map(View::Pins, active, KeyCode::Char('d')),
+                Some(Action::Pins(PinAction::UnpinSelected))
+            ));
+            assert!(map(View::Pins, active, KeyCode::Char('q')).is_none(), "modal, not global");
+        }
     }
 
     #[test]
