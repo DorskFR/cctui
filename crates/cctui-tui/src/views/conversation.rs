@@ -51,28 +51,40 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(Line::from(header_spans)), header_area);
 
     // Conversation
-    if let Some(lines) = app.stream_buffer.get(&session.id) {
+    if let Some(store) = app.conversations.get(&session.id).filter(|s| !s.is_empty()) {
         let visible_height = content_area.height as usize;
+        let entries = store.entries();
+        let epoch = store.epoch();
 
-        // Incremental render cache: only re-render new lines
-        let current_len = lines.len();
-        if app.render_cache_session != session.id || app.render_cache_len > current_len {
-            // Session changed or content shrank — full rebuild
+        // The cache may only be appended to: any entry that landed earlier than
+        // the end bumps `epoch` and forces a rebuild.
+        if app.render_cache_session != session.id
+            || app.render_cache_epoch != epoch
+            || app.render_cache_entries > entries.len()
+        {
             app.render_cache.clear();
             app.render_cache_session.clone_from(&session.id);
-            app.render_cache_len = 0;
+            app.render_cache_epoch = epoch;
+            app.render_cache_entries = 0;
         }
-        if app.render_cache_len < current_len {
-            // Render only new lines and append to cache
-            for line in &lines[app.render_cache_len..] {
-                app.render_cache.extend(render_line(line, app.show_timestamps));
+        if app.render_cache_entries < entries.len() {
+            for entry in &entries[app.render_cache_entries..] {
+                app.render_cache.extend(render_line(&entry.line, app.show_timestamps));
             }
-            app.render_cache_len = current_len;
+            app.render_cache_entries = entries.len();
         }
 
+        let previous_total = app.total_display_lines;
         let total = app.render_cache.len();
         app.viewport_height = visible_height;
         app.total_display_lines = total;
+
+        // Older lines were prepended: hold the viewport on what the reader was
+        // looking at rather than letting it slide down by the page's height.
+        if std::mem::take(&mut app.pending_prepend) && !app.follow_tail {
+            app.scroll_offset =
+                app.scroll_offset.saturating_add(total.saturating_sub(previous_total));
+        }
 
         let max_offset = total.saturating_sub(visible_height);
         let offset = if app.follow_tail { max_offset } else { app.scroll_offset.min(max_offset) };

@@ -1,14 +1,10 @@
 //! `cctui login` / `cctui logout`.
 
 use anyhow::{Context, Result, bail};
-use cctui_proto::api::device_auth::{
-    self, DeviceAuthPoll, DeviceAuthPollRequest, DeviceAuthStart, DeviceAuthStartRequest,
-    DeviceAuthStatus,
-};
+use cctui_client::{Client, device_auth};
+use cctui_proto::api::device_auth::DeviceAuthStatus;
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::identity::{self, UserIdentity};
-
-use crate::client::{ApiError, ServerClient};
 
 pub const DEFAULT_SERVER_URL: &str = "http://localhost:8700";
 
@@ -43,9 +39,9 @@ fn stored_server_url() -> Option<String> {
 /// Validate `key` against `server_url` via `GET /me`. No credential is written
 /// before the server has agreed it is one.
 pub async fn validate(server_url: &str, key: &str) -> Result<MeResponse> {
-    match ServerClient::new(server_url, key).me().await {
+    match Client::new(server_url, key).me().await {
         Ok(me) => Ok(me),
-        Err(ApiError::Unauthorized) => bail!("key rejected by {server_url}"),
+        Err(e) if e.is_unauthorized() => bail!("key rejected by {server_url}"),
         Err(e) => bail!("could not reach {server_url}: {e}"),
     }
 }
@@ -82,17 +78,9 @@ pub async fn device_login(server: Option<String>) -> Result<()> {
     );
     let http = reqwest::Client::new();
     let client_name = format!("cctui on {}", cctui_proto::util::hostname());
-    let start: DeviceAuthStart = http
-        .post(format!("{server_url}{}", device_auth::START_PATH))
-        .json(&DeviceAuthStartRequest { client_name: Some(client_name) })
-        .send()
+    let start = device_auth::start(&http, &server_url, Some(client_name))
         .await
-        .with_context(|| format!("POST {server_url}{}", device_auth::START_PATH))?
-        .error_for_status()
-        .context("device login could not be started")?
-        .json()
-        .await
-        .context("deserialize device login")?;
+        .context("device login could not be started")?;
 
     println!("open {}", start.verification_uri_complete);
     println!("and confirm the code: {}", start.user_code);
@@ -122,18 +110,12 @@ async fn poll_once(
     server_url: &str,
     device_code: &str,
 ) -> Result<Option<String>> {
-    let resp = http
-        .post(format!("{server_url}{}", device_auth::POLL_PATH))
-        .json(&DeviceAuthPollRequest { device_code: device_code.to_owned() })
-        .send()
+    let Some(poll) = device_auth::poll(http, server_url, device_code)
         .await
-        .context("poll device login")?;
-    // The server rate-limits polling; a client that hits it simply waits again.
-    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        .context("poll device login")?
+    else {
         return Ok(None);
-    }
-    let poll: DeviceAuthPoll =
-        resp.error_for_status().context("device login poll failed")?.json().await?;
+    };
     match poll.status {
         DeviceAuthStatus::Pending => Ok(None),
         DeviceAuthStatus::Approved => poll
@@ -185,9 +167,11 @@ pub async fn logout(revoke: bool) -> Result<()> {
         return Ok(());
     };
     if revoke {
-        match ServerClient::new(&id.server_url, &id.user_key).revoke_current_key().await {
+        match Client::new(&id.server_url, &id.user_key).revoke_current_key().await {
             Ok(()) => println!("key revoked on {}", id.server_url),
-            Err(ApiError::Unauthorized) => println!("key was already invalid on {}", id.server_url),
+            Err(e) if e.is_unauthorized() => {
+                println!("key was already invalid on {}", id.server_url);
+            }
             Err(e) => eprintln!("could not revoke the key on {}: {e}", id.server_url),
         }
     }
