@@ -21,7 +21,7 @@
 	const ICONS: Record<ViewMode, IconName> = {
 		list: 'list',
 		grid: 'grid',
-		tiles: 'viewport'
+		tiles: 'film'
 	};
 	const LABELS: Record<ViewMode, () => string> = {
 		list: () => m.sessions_view_list(),
