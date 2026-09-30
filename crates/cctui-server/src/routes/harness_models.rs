@@ -20,6 +20,9 @@ use crate::state::AppState;
 pub struct ModelsQuery {
     #[serde(default)]
     pub machine_id: Option<String>,
+    /// The already-selected model, so `efforts` are the ones it supports.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 pub async fn get_harness_models(
@@ -35,5 +38,6 @@ pub async fn get_harness_models(
         None => None,
     };
     let catalog = (harness == "codex").then(|| effective_catalog(&state, machine));
-    Ok(Json(harness_models(&harness, catalog.as_ref())))
+    let model = query.model.as_deref().unwrap_or_default();
+    Ok(Json(harness_models(&harness, catalog.as_ref(), model)))
 }

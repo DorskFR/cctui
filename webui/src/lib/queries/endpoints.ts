@@ -392,11 +392,11 @@ export const endpoints = {
    *  pickers with no machine in hand (dispatch, fork). */
   codexModelsMerged: () => api.get<CodexModelCatalog>("/models/codex/catalog"),
   /** Model + effort options for a harness picker, derived server-side. */
-  harnessModels: (harness: string, machineId?: string) =>
-    api.get<HarnessModels>(
-      `/models/${harness}`,
-      machineId ? { machine_id: machineId } : undefined,
-    ),
+  harnessModels: (harness: string, machineId?: string, model?: string) =>
+    api.get<HarnessModels>(`/models/${harness}`, {
+      ...(machineId ? { machine_id: machineId } : {}),
+      ...(model ? { model } : {}),
+    }),
   /** Provider metadata, quota probes, end-reason tones, permission modes. */
   domainMeta: () => api.get<DomainMeta>("/meta/domain"),
   /** Ask the machine's daemon to re-run codex `model/list`; the fresh

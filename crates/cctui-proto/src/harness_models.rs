@@ -166,12 +166,17 @@ pub fn codex_efforts_for(catalog: Option<&CodexModelCatalog>, model_id: &str) ->
     std::iter::once(String::new()).chain(supported).collect()
 }
 
-/// The lists for one harness. An unknown harness gets the claude shape, which
-/// is also what a free-text picker needs.
+/// The lists for one harness, with `model` the id already selected (its
+/// efforts are what the picker needs). An unknown harness gets the claude
+/// shape, which is also what a free-text picker needs.
 #[must_use]
-pub fn harness_models(harness: &str, catalog: Option<&CodexModelCatalog>) -> HarnessModels {
+pub fn harness_models(
+    harness: &str,
+    catalog: Option<&CodexModelCatalog>,
+    model: &str,
+) -> HarnessModels {
     let (models, efforts) = match harness {
-        "codex" => (codex_models_for(catalog), codex_efforts_for(catalog, "")),
+        "codex" => (codex_models_for(catalog), codex_efforts_for(catalog, model)),
         "opencode" => (vec![default_option()], Vec::new()),
         _ => (claude_models(), claude_efforts()),
     };
@@ -307,8 +312,8 @@ mod tests {
 
     #[test]
     fn an_unknown_harness_gets_the_claude_lists() {
-        assert_eq!(harness_models("claude-code", None).models, claude_models());
-        assert_eq!(harness_models("whatever", None).efforts, claude_efforts());
-        assert_eq!(harness_models("codex", None).models, codex_models());
+        assert_eq!(harness_models("claude-code", None, "").models, claude_models());
+        assert_eq!(harness_models("whatever", None, "").efforts, claude_efforts());
+        assert_eq!(harness_models("codex", None, "").models, codex_models());
     }
 }

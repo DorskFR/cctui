@@ -62,8 +62,9 @@ export const qk = {
   codexModels: ["codex-models"] as const,
   codexModelsFor: (machineId: string) => ["codex-models", machineId] as const,
   codexModelsMerged: ["codex-models", "merged"] as const,
-  harnessModels: (harness: string, machineId: string) =>
-    ["harness-models", harness, machineId] as const,
+  harnessModelsAll: ["harness-models"] as const,
+  harnessModels: (harness: string, machineId: string, model: string) =>
+    ["harness-models", harness, machineId, model] as const,
   domainMeta: ["domain-meta"] as const,
   sessionBindings: (sessionId: string) => ["session-bindings", sessionId] as const,
   dispatchers: ["dispatchers"] as const,

@@ -4,23 +4,24 @@
 	// same fields — the editor only adds a name row and its save actions.
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
+	import { useHarnessModels } from '$lib/queries';
 	import { AutoGrid, Field, OptionButton, Select, Switch, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import PermissionModes from './PermissionModes.svelte';
-	import { declaredModelOptions, preferCatalog, withDeclaredModels } from '$lib/harnessModels';
+	import {
+		DEFAULT_MODELS,
+		declaredModelOptions,
+		modelHintText,
+		withDeclaredModels
+	} from '$lib/harnessModels';
 	import {
 		accountBacksAdapter,
 		accountPickOptions,
 		adapterLabel,
 		allAdapters,
-		claudeEfforts,
-		claudeModels,
-		codexEffortsFor,
-		codexModelsFor,
 		isCompatibleProvider,
 		NO_ACCOUNT,
 		POOL_PREFIX,
@@ -74,22 +75,25 @@
 		})
 	);
 
-	const machineCodex = useCodexModels(() => (draft.harness === 'codex' ? machineId : ''));
-	const mergedCodex = useMergedCodexModels(() => draft.harness === 'codex');
-	const codexCatalog = $derived(preferCatalog(machineCodex.data, mergedCodex.data));
+	const harnessModels = useHarnessModels(
+		() => draft.harness,
+		() => machineId,
+		() => draft.model_alias ?? ''
+	);
+	const nativeModels = $derived(harnessModels.data?.models ?? DEFAULT_MODELS);
 	const modelOptions = $derived.by<SelectOption[]>(() => {
 		const list = usesAccountModels
 			? declaredModelOptions(provider?.models)
 			: withDeclaredModels(
 					provider?.models,
 					draft.harness === 'codex'
-						? codexModelsFor(codexCatalog)
-						: withAliasTargets(claudeModels, provider?.model_aliases)
+						? nativeModels
+						: withAliasTargets(nativeModels, provider?.model_aliases)
 				);
 		const out: SelectOption[] = list.map((o) => ({
 			value: o.v,
 			label: o.v ? o.label : m.spawn_model_default(),
-			hint: o.hint,
+			hint: modelHintText(o.hint),
 			disabled: o.disabled
 		}));
 		if (!out.some((o) => o.value === '')) out.unshift({ value: '', label: m.spawn_model_default() });
@@ -97,9 +101,7 @@
 		if (current && !out.some((o) => o.value === current)) out.push({ value: current, label: current });
 		return out;
 	});
-	const efforts = $derived(
-		draft.harness === 'codex' ? codexEffortsFor(codexCatalog, draft.model_alias ?? '') : claudeEfforts
-	);
+	const efforts = $derived(harnessModels.data?.efforts ?? ['']);
 
 	function pickHarness(harness: string) {
 		if (harness === draft.harness) return;

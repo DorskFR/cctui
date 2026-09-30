@@ -4,16 +4,13 @@
 	// `payload` (name, identity, repo, ticket, prompt, prompt file, model, timeout,
 	// effort). The adapter picker chooses the claude or codex worker; the
 	// model/effort sets follow it.
+	import { DEFAULT_MODELS } from '$lib/harnessModels';
 	import EffortSlider from './EffortSlider.svelte';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import { Button, Field, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { useMergedCodexModels, useSessions } from '$lib/queries';
+	import { useHarnessModels, useSessions } from '$lib/queries';
 	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
 	import {
-		claudeModels,
-		claudeEfforts,
-		codexModelsFor,
-		codexEffortsFor,
 		accountAdapters,
 		providerForAdapter,
 		isCompatibleProvider,
@@ -75,18 +72,19 @@
 	// machine-scoped catalog, so codex dispatch reads the cross-machine merge
 	// (static offline list when empty); claude families are annotated with the
 	// account's alias targets.
-	const mergedCodexCatalog = useMergedCodexModels(() => isCodex);
+	const harnessModels = useHarnessModels(
+		() => (isCodex ? 'codex' : 'claude-code'),
+		() => '',
+		() => (isCodex ? form.model_codex : '')
+	);
+	const nativeModels = $derived(harnessModels.data?.models ?? DEFAULT_MODELS);
 	const nativeModelOptions = $derived(
 		withDeclaredModels(
 			selectedProvider?.models,
-			isCodex
-				? codexModelsFor(mergedCodexCatalog.data)
-				: withAliasTargets(claudeModels, selectedProvider?.model_aliases)
+			isCodex ? nativeModels : withAliasTargets(nativeModels, selectedProvider?.model_aliases)
 		)
 	);
-	const nativeEfforts = $derived(
-		isCodex ? codexEffortsFor(mergedCodexCatalog.data, form.model_codex) : claudeEfforts
-	);
+	const nativeEfforts = $derived(harnessModels.data?.efforts ?? ['']);
 
 	$effect(() => {
 		if (form.account && !dispatchAccounts.some((a) => a.name === form.account)) {
