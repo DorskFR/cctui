@@ -109,7 +109,8 @@ mod tests {
 
     #[test]
     fn apply_replaces_one_slot_without_touching_another() {
-        let mut meta = json!({ "plugins": { "youtrack": { "issue": "CCT-1" }, "slack": { "ts": "1" } } });
+        let mut meta =
+            json!({ "plugins": { "youtrack": { "issue": "CCT-1" }, "slack": { "ts": "1" } } });
         apply_slot(&mut meta, "youtrack", Some(json!({ "issue": "CCT-2" })));
         assert_eq!(meta["plugins"]["youtrack"]["issue"], "CCT-2");
         assert_eq!(meta["plugins"]["slack"]["ts"], "1");

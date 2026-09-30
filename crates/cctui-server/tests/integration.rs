@@ -877,7 +877,13 @@ async fn session_plugin_slot_is_owner_or_admin_and_capped() {
         .unwrap();
     assert_eq!(resp.status(), 413);
 
-    let resp = client.patch(&url).bearer_auth(&owner_key).json(&json!({"data": null})).send().await.unwrap();
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&owner_key)
+        .json(&json!({"data": null}))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let slots: serde_json::Value = resp.json().await.unwrap();
     assert!(slots.get("youtrack").is_none());
