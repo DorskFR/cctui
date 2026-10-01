@@ -168,6 +168,13 @@ async fn run(
                 }
             }
         }
+        Effect::CreateBookmark { draft } => match server.create_bookmark(&draft).await {
+            Ok(bookmark) => vec![Action::Bookmarks(BookmarkAction::Saved(Box::new(bookmark)))],
+            Err(e) => {
+                tracing::warn!(%e, "bookmark save failed");
+                vec![Action::Toast(Level::Error, "could not save the bookmark".to_owned())]
+            }
+        },
         Effect::UpdateBookmark { id, title, note } => {
             match server.update_bookmark(&id, &title, note.as_deref()).await {
                 Ok(bookmark) => {

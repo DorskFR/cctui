@@ -817,8 +817,8 @@ module = "app/effects.rs"
 [[route]]
 id = "post_bookmarks"
 # POST /bookmarks — List your saved messages, or save one.
-tui = "planned"
-ticket = "CCT-1252"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "patch_bookmarks_by_id"

@@ -1,13 +1,15 @@
 //! The saved-message collection: browse, search, open at the source, copy,
 //! edit and prune.
 
-use cctui_clientcore::bookmarks::{bookmark_markdown, is_dead_link, query_terms};
-use cctui_proto::api::bookmarks::Bookmark;
+use cctui_clientcore::bookmarks::{
+    bookmark_markdown, default_title, is_dead_link, query_terms, snapshot_body,
+};
+use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
 use crossterm::event::{KeyCode, KeyEvent};
 use uuid::Uuid;
 
 use super::action::Effect;
-use super::state::App;
+use super::state::{App, LineKind};
 use super::toast::Level;
 
 /// Rows per page; the server clamps anything larger.
@@ -23,16 +25,31 @@ pub enum Field {
 /// The one-line prompt the view can open over itself.
 #[derive(Debug)]
 pub enum Prompt {
-    Search { buffer: String },
-    Edit { id: Uuid, field: Field, title: String, note: String },
+    Search {
+        buffer: String,
+    },
+    Edit {
+        id: Uuid,
+        field: Field,
+        title: String,
+        note: String,
+    },
+    /// Saving a transcript message: the draft carries the snapshot, the prompt
+    /// only edits its title and note.
+    Save {
+        draft: Box<CreateBookmark>,
+        field: Field,
+    },
 }
 
 impl Prompt {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Search { .. } => "search",
-            Self::Edit { field: Field::Title, .. } => "title",
-            Self::Edit { field: Field::Note, .. } => "note",
+            Self::Edit { field: Field::Title, .. } | Self::Save { field: Field::Title, .. } => {
+                "title"
+            }
+            Self::Edit { field: Field::Note, .. } | Self::Save { field: Field::Note, .. } => "note",
         }
     }
 
@@ -41,14 +58,18 @@ impl Prompt {
             Self::Search { buffer } => buffer,
             Self::Edit { field: Field::Title, title, .. } => title,
             Self::Edit { field: Field::Note, note, .. } => note,
+            Self::Save { draft, field: Field::Title } => &draft.title,
+            Self::Save { draft, field: Field::Note } => draft.note.as_deref().unwrap_or(""),
         }
     }
 
-    const fn buffer_mut(&mut self) -> &mut String {
+    fn buffer_mut(&mut self) -> &mut String {
         match self {
             Self::Search { buffer } => buffer,
             Self::Edit { field: Field::Title, title, .. } => title,
             Self::Edit { field: Field::Note, note, .. } => note,
+            Self::Save { draft, field: Field::Title } => &mut draft.title,
+            Self::Save { draft, field: Field::Note } => draft.note.get_or_insert_with(String::new),
         }
     }
 }
@@ -131,7 +152,10 @@ pub fn age_label(created_at: chrono::DateTime<chrono::Utc>, now_ms: i64) -> Stri
 }
 
 pub enum BookmarkAction {
-    Loaded { rows: Vec<Bookmark>, append: bool },
+    Loaded {
+        rows: Vec<Bookmark>,
+        append: bool,
+    },
     Failed,
     SelectNext,
     SelectPrev,
@@ -148,10 +172,15 @@ pub enum BookmarkAction {
     DeleteAsk,
     DeleteConfirm,
     DeleteCancel,
-    Deleted { id: Uuid },
+    Deleted {
+        id: Uuid,
+    },
     Updated(Box<Bookmark>),
     OpenSource,
     CopyMarkdown,
+    /// `b` in line-select: open the save form for the focused message.
+    Save(KeyEvent),
+    Saved(Box<Bookmark>),
 }
 
 pub fn reduce_bookmarks(app: &mut App, action: BookmarkAction) -> Vec<Effect> {
@@ -200,8 +229,11 @@ pub fn reduce_bookmarks(app: &mut App, action: BookmarkAction) -> Vec<Effect> {
             Vec::new()
         }
         BookmarkAction::PromptSwitch => {
-            if let Some(Prompt::Edit { field, .. }) = app.bookmarks.prompt.as_mut() {
-                *field = if *field == Field::Title { Field::Note } else { Field::Title };
+            match app.bookmarks.prompt.as_mut() {
+                Some(Prompt::Edit { field, .. } | Prompt::Save { field, .. }) => {
+                    *field = if *field == Field::Title { Field::Note } else { Field::Title };
+                }
+                _ => return Vec::new(),
             }
             Vec::new()
         }
@@ -238,7 +270,70 @@ pub fn reduce_bookmarks(app: &mut App, action: BookmarkAction) -> Vec<Effect> {
         }
         BookmarkAction::OpenSource => open_source(app),
         BookmarkAction::CopyMarkdown => copy(app),
+        BookmarkAction::Save(key) => save_focused(app, key),
+        BookmarkAction::Saved(bookmark) => {
+            app.toast(Level::Info, format!("saved “{}”", bookmark.title));
+            // The list is read per visit, so a save during this one has to land
+            // in it rather than wait for the next.
+            if app.bookmarks.loaded_once {
+                app.bookmarks.rows.insert(0, *bookmark);
+                app.bookmarks.clamp();
+            }
+            Vec::new()
+        }
     }
+}
+
+/// The role names the web UI's line model uses, so a bookmark saved here reads
+/// the same in both clients.
+const fn role_of(kind: LineKind) -> &'static str {
+    match kind {
+        LineKind::User => "user",
+        LineKind::Assistant => "assistant",
+        LineKind::Thinking { .. } => "thinking",
+        LineKind::Tool { .. } => "tool",
+        LineKind::Result { .. } => "result",
+        LineKind::Peer => "peer",
+        LineKind::Marker => "marker",
+        LineKind::Reset => "reset",
+        LineKind::Compact => "compact",
+        LineKind::Summary => "summary",
+        LineKind::System | LineKind::Reply => "system",
+    }
+}
+
+fn is_mcp(tool: Option<&str>) -> bool {
+    tool.is_some_and(|t| t.starts_with("mcp__"))
+}
+
+/// Save the line under the transcript cursor. The body is snapshotted the way
+/// the web UI snapshots it, and the title is its first line.
+fn save_focused(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+    let Some(cursor) = app.line_cursor else {
+        return super::reduce(app, super::action::Action::ActivateInputWith(key));
+    };
+    let Some(session_id) = app.selected_session_id() else { return Vec::new() };
+    let session_name =
+        app.sessions.iter().find(|s| s.id == session_id).and_then(|s| s.name.clone());
+    let Some(entry) = app.conversation_mut(&session_id).entries().get(cursor) else {
+        return Vec::new();
+    };
+    let role = role_of(entry.line.kind);
+    let tool = entry.line.tool.as_deref();
+    let body = snapshot_body(role, &entry.line.text, tool, is_mcp(tool), None);
+    let draft = CreateBookmark {
+        session_id: Some(session_id),
+        seq: entry.sequenced.then_some(entry.seq),
+        message_id: entry.line.message_id.clone(),
+        title: default_title(&body),
+        body,
+        role: role.to_owned(),
+        session_name,
+        note: None,
+        message_ts: entry.line.timestamp.saturating_mul(1_000),
+    };
+    app.bookmarks.prompt = Some(Prompt::Save { draft: Box::new(draft), field: Field::Title });
+    Vec::new()
 }
 
 /// Entering the slice reads the first page once; the switcher owns the routing.
@@ -331,6 +426,16 @@ fn prompt_commit(app: &mut App) -> Vec<Effect> {
             app.bookmarks.exhausted = false;
             app.bookmarks.loading = true;
             vec![Effect::LoadBookmarks { q: app.bookmarks.query.clone(), before: None }]
+        }
+        Prompt::Save { mut draft, .. } => {
+            let title = draft.title.trim().to_owned();
+            draft.title = title;
+            if draft.title.is_empty() {
+                app.toast(Level::Warn, "a bookmark needs a title");
+                return Vec::new();
+            }
+            draft.note = draft.note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
+            vec![Effect::CreateBookmark { draft }]
         }
         Prompt::Edit { id, title, note, .. } => {
             let title = title.trim().to_owned();
@@ -736,6 +841,157 @@ mod tests {
             app.bookmarks.selected_bookmark().map(|b| b.title.clone()),
             Some("one".to_owned())
         );
+    }
+
+    /// A conversation with the line cursor on the assistant's message.
+    fn app_on_a_line() -> App {
+        let mut app = app();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        reduce(
+            &mut app,
+            Action::Conversation(crate::app::conversation::ConversationAction::Loaded {
+                session_id: "s-a".to_owned(),
+                kind: crate::app::conversation_store::PageKind::Latest,
+                rows: vec![(
+                    7,
+                    crate::app::state::ConversationLine::new(
+                        crate::app::state::LineKind::Assistant,
+                        "The gateway fix\n\nmore detail",
+                        1_700_000,
+                    ),
+                )],
+                etag: None,
+                has_more: false,
+            }),
+        );
+        reduce(
+            &mut app,
+            Action::Conversation(crate::app::conversation::ConversationAction::ToggleLineCursor),
+        );
+        app
+    }
+
+    fn tab() -> KeyEvent {
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn b_saves_the_focused_message_with_the_payload_the_web_ui_sends() {
+        let mut app = app_on_a_line();
+        assert_eq!(app.line_cursor, Some(0));
+        assert!(reduce(&mut app, Action::Bookmarks(BookmarkAction::Save(tab()))).is_empty());
+
+        match app.bookmarks.prompt.as_ref() {
+            Some(Prompt::Save { draft, field }) => {
+                assert_eq!(*field, Field::Title);
+                assert_eq!(
+                    draft.title, "The gateway fix",
+                    "the message's first line, as the web titles it"
+                );
+                assert_eq!(draft.session_id.as_deref(), Some("s-a"));
+                assert_eq!(draft.seq, Some(7));
+                assert_eq!(draft.role, "assistant");
+                assert_eq!(draft.message_ts, 1_700_000_000, "epoch millis on the wire");
+                assert_eq!(
+                    draft.body, "The gateway fix\n\nmore detail",
+                    "the body is the message itself, as the web snapshots it"
+                );
+                assert!(draft.note.is_none());
+            }
+            _ => panic!("expected the save form"),
+        }
+
+        type_text(&mut app, " summary");
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptSwitch));
+        type_text(&mut app, "for the notes");
+        let effects = reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptCommit));
+        match effects.as_slice() {
+            [Effect::CreateBookmark { draft }] => {
+                assert_eq!(draft.title, "The gateway fix summary");
+                assert_eq!(draft.note.as_deref(), Some("for the notes"));
+            }
+            _ => panic!("expected a save"),
+        }
+        assert!(app.bookmarks.prompt.is_none());
+    }
+
+    #[test]
+    fn b_outside_line_select_types_into_the_composer_instead() {
+        let mut app = app();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        assert_eq!(app.line_cursor, None);
+        reduce(
+            &mut app,
+            Action::Bookmarks(BookmarkAction::Save(KeyEvent::new(
+                KeyCode::Char('b'),
+                KeyModifiers::NONE,
+            ))),
+        );
+        assert!(app.bookmarks.prompt.is_none(), "no save form without a focused line");
+        assert!(app.input_active, "the key opened the composer");
+        assert_eq!(app.message_input.lines().join("\n"), "b");
+    }
+
+    #[test]
+    fn an_unsequenced_line_still_saves_as_a_session_back_link() {
+        let mut app = app();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        crate::app::conversation::stream(
+            &mut app,
+            "s-a",
+            None,
+            crate::app::state::ConversationLine::new(
+                crate::app::state::LineKind::User,
+                "typed just now",
+                0,
+            ),
+        );
+        reduce(
+            &mut app,
+            Action::Conversation(crate::app::conversation::ConversationAction::ToggleLineCursor),
+        );
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::Save(tab())));
+        match app.bookmarks.prompt.as_ref() {
+            Some(Prompt::Save { draft, .. }) => {
+                assert_eq!(draft.seq, None, "no server address yet, but the save still works");
+                assert_eq!(draft.role, "user");
+            }
+            _ => panic!("expected the save form"),
+        }
+    }
+
+    #[test]
+    fn a_saved_bookmark_joins_a_list_that_has_already_been_read() {
+        let mut app = with_rows(vec![bookmark("old", Some("s-a"), None)]);
+        let fresh = bookmark("brand new", Some("s-a"), Some(2));
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::Saved(Box::new(fresh))));
+        assert_eq!(titles(&app), vec!["brand new".to_owned(), "old".to_owned()]);
+        assert!(app.toasts.latest().expect("a toast").text.contains("brand new"));
+    }
+
+    #[test]
+    fn a_save_form_with_no_title_is_refused() {
+        let mut app = app_on_a_line();
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::Save(tab())));
+        for _ in 0.."The gateway fix".len() {
+            reduce(
+                &mut app,
+                Action::Bookmarks(BookmarkAction::PromptKey(KeyEvent::new(
+                    KeyCode::Backspace,
+                    KeyModifiers::NONE,
+                ))),
+            );
+        }
+        assert!(reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptCommit)).is_empty());
+        assert!(app.toasts.latest().is_some());
+    }
+
+    #[test]
+    fn escaping_the_save_form_saves_nothing() {
+        let mut app = app_on_a_line();
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::Save(tab())));
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptCancel));
+        assert!(app.bookmarks.prompt.is_none());
     }
 
     #[test]

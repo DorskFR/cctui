@@ -195,6 +195,9 @@ pub enum Effect {
         q: String,
         before: Option<chrono::DateTime<chrono::Utc>>,
     },
+    CreateBookmark {
+        draft: Box<cctui_proto::api::bookmarks::CreateBookmark>,
+    },
     UpdateBookmark {
         id: String,
         title: String,

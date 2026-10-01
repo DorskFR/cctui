@@ -1,4 +1,4 @@
-use cctui_proto::api::bookmarks::Bookmark;
+use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
@@ -714,6 +714,15 @@ impl Client {
         self.json(Self::route("get_bookmarks")?, &[], &query, None).await
     }
 
+    /// Save a message as a bookmark. The body is a snapshot, so the row
+    /// outlives both the message and its session.
+    pub async fn create_bookmark(&self, draft: &CreateBookmark) -> Result<Bookmark, ClientError> {
+        let route = Self::route("post_bookmarks")?;
+        let body = serde_json::to_value(draft)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
     /// Edit a bookmark's title and note; the snapshot itself is immutable.
     pub async fn update_bookmark(
         &self,
@@ -886,6 +895,7 @@ mod tests {
             "post_sessions_by_id_pins",
             "delete_sessions_by_id_pins_by_seq",
             "get_bookmarks",
+            "post_bookmarks",
             "patch_bookmarks_by_id",
             "delete_bookmarks_by_id",
         ] {

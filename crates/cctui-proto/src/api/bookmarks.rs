@@ -28,7 +28,7 @@ pub struct Bookmark {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateBookmark {
     #[serde(default)]

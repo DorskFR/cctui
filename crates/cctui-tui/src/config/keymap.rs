@@ -330,6 +330,7 @@ actions! {
     PinsJump => "pins-jump", "Jump to the pinned message";
     PinsUnpin => "pins-unpin", "Unpin this message";
 
+    BookmarkLine => "bookmark-line", "Save the focused message as a bookmark";
     BookmarksSelectNext => "bookmarks-select-next", "Next bookmark";
     BookmarksSelectPrev => "bookmarks-select-prev", "Previous bookmark";
     BookmarksSelectFirst => "bookmarks-select-first", "First bookmark";
@@ -510,6 +511,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "f", ActionId::FilterCycle),
     spec(Context::Conversation, "F", ActionId::FilterMenu),
     spec(Context::Conversation, "tab", ActionId::FocusPrompt),
+    spec(Context::Conversation, "b", ActionId::BookmarkLine),
     spec(Context::Conversation, "m", ActionId::PinToggle),
     spec(Context::Conversation, "'", ActionId::PinsOpen),
     spec(Context::Conversation, "ctrl+t", ActionId::MacrosOpen),

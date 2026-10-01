@@ -374,6 +374,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PinsJump => Action::Pins(PinAction::Jump),
         ActionId::PinsUnpin => Action::Pins(PinAction::UnpinSelected),
 
+        ActionId::BookmarkLine => Action::Bookmarks(BookmarkAction::Save(chord.event())),
         ActionId::BookmarksSelectNext => Action::Bookmarks(BookmarkAction::SelectNext),
         ActionId::BookmarksSelectPrev => Action::Bookmarks(BookmarkAction::SelectPrev),
         ActionId::BookmarksSelectFirst => Action::Bookmarks(BookmarkAction::SelectFirst),

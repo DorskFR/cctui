@@ -80,61 +80,61 @@ expression: "render_screen_sized(&mut app, 100, 160)"
   │  Ctrl+r      Search sent prompts                k / ↑       Previous bookmark                │
   │  m           Pin or unpin the focused line      g           First bookmark                   │
   │  '           Open the pinned messages           G           Last bookmark                    │
-  │  Ctrl+t      Insert a canned prompt             Ctrl+f / P… Scroll the preview down          │
-  │  Tab         Answer the waiting prompt          Ctrl+b / P… Scroll the preview up            │
-  │  g f         Open the file under the cursor     /           Search the bookmarks             │
-  │Composer                                         Enter       Open the source message          │
-  │  Ctrl+o      Attach a file                      y           Copy the bookmark as markdown    │
-  │  Bksp        Remove the focused attachment      e           Edit the title and note          │
-  │  Alt+Bksp    Focus the attachment chips         d           Delete the bookmark              │
-  │  →           Next attachment chip             Overview                                       │
-  │  ←           Previous attachment chip           j / ↓       Scroll the overview down         │
-  │  Esc         Close the composer                 k / ↑       Scroll the overview up           │
-  │  Enter       Send the message                   r           Refresh the counts               │
-  │  Ctrl+j / A… Insert a newline                 Question card                                  │
-  │  ↑           Recall an earlier prompt           Esc         Answer later                     │
-  │  ↓           Recall a later prompt              j / ↓       Next option                      │
-  │  Ctrl+r      Search sent prompts                k / ↑       Previous option                  │
-  │  Tab         Take the session completion        1-9         Pick an option by number         │
-  │  Ctrl+t      Insert a canned prompt             Space       Toggle the focused option        │
-  │Sections popup                                   Tab         Next question                    │
-  │  f / q / Esc Choose which sections show         Shift+Tab   Previous question                │
-  │  j / ↓       Next section                       o           Write a free-text answer         │
-  │  k / ↑       Previous section                   Enter       Send the answer                  │
-  │  Space / En… Show or hide this section        Question card — free text                      │
-  │List search                                      Enter       Accept the text                  │
-  │  Ctrl+n      Next search hit                    Esc         Discard the text                 │
-  │  Ctrl+p      Previous search hit              Plan card                                      │
-  │  Tab         Complete the field or value        Esc         Answer later                     │
-  │  Enter       Open the result                    1           Approve, auto-accept edits       │
-  │  Esc         Clear the search                   2           Approve, manually approve edits  │
-  │  Ctrl+a      Include archived sessions          3           Keep planning                    │
-  │  Ctrl+m      Load more results                  r           Refine the plan                  │
-  │Search and commands                              j / ↓       Scroll the plan down             │
-  │  Enter       Run it                             k / ↑       Scroll the plan up               │
-  │  Esc         Abandon it                       Plan card — refine                             │
-  │  Tab         Complete the path                  Enter       Accept the text                  │
-  │Filter menu                                      Esc         Discard the text                 │
-  │  F / q / Esc Choose which lines to show       Row glyphs                                     │
-  │  a           Show every category                ●           working                          │
-  │  r           Back to the default filter         ◐           stale or asleep                  │
-  │  Space / En… Show or hide this category         ○           idle                             │
-  │  j / ↓       Next category                      ☾           hibernated                       │
-  │  k / ↑       Previous category                  ↳           subagent                         │
-  │Prompt history                                   ▸ / ▾       folded / open group              │
-  │  Esc         Close the prompt list              [name]      a label, tinted by its hue       │
-  │  Ctrl+n / ↓  Next prompt                        +N          more labels than fit             │
-  │  Ctrl+p / ↑  Previous prompt                    !           permission waiting on you        │
-  │  Enter       Put this prompt in the composer    ?           question waiting on you          │
-  │File viewer                                      P           plan waiting for approval        │
-  │  j / ↓       Scroll down                        ●N          unread messages                  │
-  │  k / ↑       Scroll up                          ⚡           auto-approve on                  │
-  │  PgDn        Page down                          ⏸           account soft-limited             │
-  │  PgUp        Page up                            ⚠           account traffic never seen       │
-  │  g           Jump to the top                    ❄           cache cold, next turn re-reads   │
-  │  q / Esc     Close the file viewer              ✕reason     how it ended                     │
-  │  o           Open in the desktop viewer         ⚙N age      tool calls, age of the last      │
-  │                                                                                              │
+  │  b           Save the focused message as a b…   Ctrl+f / P… Scroll the preview down          │
+  │  Ctrl+t      Insert a canned prompt             Ctrl+b / P… Scroll the preview up            │
+  │  Tab         Answer the waiting prompt          /           Search the bookmarks             │
+  │  g f         Open the file under the cursor     Enter       Open the source message          │
+  │Composer                                         y           Copy the bookmark as markdown    │
+  │  Ctrl+o      Attach a file                      e           Edit the title and note          │
+  │  Bksp        Remove the focused attachment      d           Delete the bookmark              │
+  │  Alt+Bksp    Focus the attachment chips       Overview                                       │
+  │  →           Next attachment chip               j / ↓       Scroll the overview down         │
+  │  ←           Previous attachment chip           k / ↑       Scroll the overview up           │
+  │  Esc         Close the composer                 r           Refresh the counts               │
+  │  Enter       Send the message                 Question card                                  │
+  │  Ctrl+j / A… Insert a newline                   Esc         Answer later                     │
+  │  ↑           Recall an earlier prompt           j / ↓       Next option                      │
+  │  ↓           Recall a later prompt              k / ↑       Previous option                  │
+  │  Ctrl+r      Search sent prompts                1-9         Pick an option by number         │
+  │  Tab         Take the session completion        Space       Toggle the focused option        │
+  │  Ctrl+t      Insert a canned prompt             Tab         Next question                    │
+  │Sections popup                                   Shift+Tab   Previous question                │
+  │  f / q / Esc Choose which sections show         o           Write a free-text answer         │
+  │  j / ↓       Next section                       Enter       Send the answer                  │
+  │  k / ↑       Previous section                 Question card — free text                      │
+  │  Space / En… Show or hide this section          Enter       Accept the text                  │
+  │List search                                      Esc         Discard the text                 │
+  │  Ctrl+n      Next search hit                  Plan card                                      │
+  │  Ctrl+p      Previous search hit                Esc         Answer later                     │
+  │  Tab         Complete the field or value        1           Approve, auto-accept edits       │
+  │  Enter       Open the result                    2           Approve, manually approve edits  │
+  │  Esc         Clear the search                   3           Keep planning                    │
+  │  Ctrl+a      Include archived sessions          r           Refine the plan                  │
+  │  Ctrl+m      Load more results                  j / ↓       Scroll the plan down             │
+  │Search and commands                              k / ↑       Scroll the plan up               │
+  │  Enter       Run it                           Plan card — refine                             │
+  │  Esc         Abandon it                         Enter       Accept the text                  │
+  │  Tab         Complete the path                  Esc         Discard the text                 │
+  │Filter menu                                    Row glyphs                                     │
+  │  F / q / Esc Choose which lines to show         ●           working                          │
+  │  a           Show every category                ◐           stale or asleep                  │
+  │  r           Back to the default filter         ○           idle                             │
+  │  Space / En… Show or hide this category         ☾           hibernated                       │
+  │  j / ↓       Next category                      ↳           subagent                         │
+  │  k / ↑       Previous category                  ▸ / ▾       folded / open group              │
+  │Prompt history                                   [name]      a label, tinted by its hue       │
+  │  Esc         Close the prompt list              +N          more labels than fit             │
+  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
+  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
+  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
+  │File viewer                                      ●N          unread messages                  │
+  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
+  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
+  │  PgDn        Page down                          ⚠           account traffic never seen       │
+  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
+  │  g           Jump to the top                    ✕reason     how it ended                     │
+  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
+  │  o           Open in the desktop viewer                                                      │
   │                                                                                              │
   │                                                                                              │
   │                                                                                              │

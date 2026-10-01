@@ -79,7 +79,7 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         let text = if app.bookmarks.loading {
             " loading…"
         } else if app.bookmarks.query.is_empty() && terms.is_empty() {
-            " nothing saved yet — bookmark a message from the web UI"
+            " nothing saved yet — press b on a message in a conversation"
         } else {
             " no bookmark matches"
         };
@@ -212,7 +212,9 @@ fn prompt_line(app: &App) -> Line<'static> {
     if let Some(prompt) = app.bookmarks.prompt.as_ref() {
         let hint = match prompt {
             Prompt::Search { .. } => "  Enter search · Esc cancel",
-            Prompt::Edit { .. } => "  Tab title/note · Enter save · Esc cancel",
+            Prompt::Edit { .. } | Prompt::Save { .. } => {
+                "  Tab title/note · Enter save · Esc cancel"
+            }
         };
         return Line::from(vec![
             Span::styled(format!(" {} ", prompt.label()), theme::hotkey()),
