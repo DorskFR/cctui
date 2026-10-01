@@ -1,12 +1,16 @@
-//! Row actions on the selected session list row: pin, rename, archive, kill.
+//! Row actions on the session list: pin, rename, archive, kill, and the
+//! multi-select the batch archive runs over.
 //!
-//! Everything here is keyed by session id, never by row index: a websocket
-//! event reorders the list under the cursor, and an index would then act on
-//! whatever slid into that slot.
+//! Selection is held by session id, never by row index: a websocket event
+//! reorders the list under the cursor, and an index-keyed selection would then
+//! archive whatever slid into that slot.
+
+use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::action::Effect;
+use super::session_list::{Group, Row};
 use super::state::App;
 use super::toast::Level;
 
@@ -17,6 +21,11 @@ pub const UNDO_MS: i64 = super::toast::Toasts::TTL_MS;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
     Kill(String),
+    /// Archive these ids; the label is what the undo toast calls them.
+    Archive {
+        ids: Vec<String>,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,20 +49,46 @@ pub struct Undo {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RowActionState {
+    /// Ids the user has picked. Non-empty implies select mode is on.
+    pub selected: HashSet<String>,
+    /// True once `space` has been pressed, so the strip stays up after the
+    /// last row is toggled back off.
+    pub mode: bool,
+    /// Where `V` measures its range from.
+    pub anchor: Option<String>,
     pub confirm: Option<Confirm>,
     pub rename: Option<Rename>,
     pub undo: Option<Undo>,
 }
 
 impl RowActionState {
+    #[must_use]
+    pub fn is_selected(&self, session_id: &str) -> bool {
+        self.selected.contains(session_id)
+    }
+
     /// The strip's own text, or `None` when the list is in its normal state.
     #[must_use]
     pub fn strip(&self) -> Option<String> {
         if let Some(confirm) = &self.confirm {
             return Some(format!(" {} y/N", confirm.prompt));
         }
-        let rename = self.rename.as_ref()?;
-        Some(format!(" rename: {}_", rename.input))
+        if let Some(rename) = &self.rename {
+            return Some(format!(" rename: {}_", rename.input));
+        }
+        if !self.mode {
+            return None;
+        }
+        Some(format!(
+            " -- SELECT ({}) --  space toggle  V range  * all  x archive  esc cancel",
+            self.selected.len()
+        ))
+    }
+
+    fn leave_select(&mut self) {
+        self.selected.clear();
+        self.anchor = None;
+        self.mode = false;
     }
 }
 
@@ -64,10 +99,17 @@ pub enum RowAction {
     RenameKey(KeyEvent),
     RenameCommit,
     RenameCancel,
+    /// `x`: the selection if there is one, else the row under the cursor.
     ArchiveOrUnarchive,
     KillStart,
+    /// `A`: everything in the section the cursor sits in.
+    ArchiveSection,
     ConfirmYes,
     ConfirmNo,
+    ToggleSelect,
+    RangeToAnchor,
+    SelectAllVisible,
+    ClearSelection,
     Undo,
 }
 
@@ -112,13 +154,47 @@ pub fn reduce_row_actions(app: &mut App, action: RowAction) -> Vec<Effect> {
             app.row_actions.confirm = Some(Confirm { prompt, action: Pending::Kill(session_id) });
             Vec::new()
         }
+        RowAction::ArchiveSection => archive_section(app),
+
         RowAction::ConfirmYes => {
             let Some(confirm) = app.row_actions.confirm.take() else { return Vec::new() };
-            let Pending::Kill(session_id) = confirm.action;
-            vec![Effect::KillSession { session_id }]
+            match confirm.action {
+                Pending::Kill(session_id) => vec![Effect::KillSession { session_id }],
+                Pending::Archive { ids, label } => archive(app, ids, &label),
+            }
         }
         RowAction::ConfirmNo => {
             app.row_actions.confirm = None;
+            Vec::new()
+        }
+
+        RowAction::ToggleSelect => {
+            let Some(id) = app.selected_session_id() else { return Vec::new() };
+            app.row_actions.mode = true;
+            if !app.row_actions.selected.remove(&id) {
+                app.row_actions.selected.insert(id.clone());
+            }
+            app.row_actions.anchor = Some(id);
+            Vec::new()
+        }
+        RowAction::RangeToAnchor => {
+            range_to_anchor(app);
+            Vec::new()
+        }
+        RowAction::SelectAllVisible => {
+            let ids = visible_ids(app);
+            if ids.is_empty() {
+                return Vec::new();
+            }
+            app.row_actions.mode = true;
+            app.row_actions.selected.extend(ids);
+            Vec::new()
+        }
+        RowAction::ClearSelection => {
+            if app.row_actions.confirm.take().is_some() || app.row_actions.rename.take().is_some() {
+                return Vec::new();
+            }
+            app.row_actions.leave_select();
             Vec::new()
         }
 
@@ -135,8 +211,18 @@ fn toggle_pin(app: &mut App) -> Vec<Effect> {
     vec![Effect::PinSessions { ids, pinned }]
 }
 
-/// One row acts at once: the undo toast is the confirmation.
+/// `x`: a selection is a batch and asks first; one row acts at once, since the
+/// undo toast is the confirmation.
 fn archive_or_unarchive(app: &mut App) -> Vec<Effect> {
+    if app.row_actions.mode && !app.row_actions.selected.is_empty() {
+        let ids = selected_in_view_order(app);
+        let label = format!("{} sessions", ids.len());
+        app.row_actions.confirm = Some(Confirm {
+            prompt: format!("Archive {} sessions?", ids.len()),
+            action: Pending::Archive { ids, label },
+        });
+        return Vec::new();
+    }
     let Some(session) = app.selected_session() else { return Vec::new() };
     let id = session.id.clone();
     let archived = session.status == cctui_proto::models::SessionStatus::Archived;
@@ -148,10 +234,28 @@ fn archive_or_unarchive(app: &mut App) -> Vec<Effect> {
     archive(app, vec![id], &label)
 }
 
+/// `A`: the section header the cursor is under, which is how "archive all
+/// dispatched" is done.
+fn archive_section(app: &mut App) -> Vec<Effect> {
+    let Some(group) = section_of_selection(app) else { return Vec::new() };
+    let ids = section_ids(app, group);
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let label = format!("{} in {}", ids.len(), group.label());
+    app.row_actions.rename = None;
+    app.row_actions.confirm = Some(Confirm {
+        prompt: format!("Archive all {} in {}?", ids.len(), group.label()),
+        action: Pending::Archive { ids, label },
+    });
+    Vec::new()
+}
+
 /// One request for the whole batch, plus the undo the toast advertises.
 fn archive(app: &mut App, ids: Vec<String>, label: &str) -> Vec<Effect> {
     app.row_actions.undo =
         Some(Undo { ids: ids.clone(), expires_ms: app.clock_ms.saturating_add(UNDO_MS) });
+    app.row_actions.leave_select();
     app.toast(Level::Info, format!("archived {label} — u undo"));
     vec![Effect::ArchiveSessions { ids, archived: true }]
 }
@@ -165,11 +269,64 @@ fn undo(app: &mut App) -> Vec<Effect> {
     vec![Effect::ArchiveSessions { ids: undo.ids, archived: false }]
 }
 
-/// Drops an undo offer the clock has run out on.
+/// Drops an expired undo offer and any selected id the list no longer holds.
 pub fn prune(app: &mut App) {
     if app.row_actions.undo.as_ref().is_some_and(|u| u.expires_ms <= app.clock_ms) {
         app.row_actions.undo = None;
     }
+    if app.row_actions.selected.is_empty() {
+        return;
+    }
+    let live: HashSet<&str> = app.sessions.iter().map(|s| s.id.as_str()).collect();
+    app.row_actions.selected.retain(|id| live.contains(id.as_str()));
+}
+
+/// `V`: every visible row between the anchor and the cursor. A folded group
+/// contributes nothing, because the rows it hides are not on screen.
+fn range_to_anchor(app: &mut App) {
+    let Some(cursor) = app.selected_session_id() else { return };
+    let ids = visible_ids(app);
+    let anchor = app.row_actions.anchor.clone().unwrap_or_else(|| cursor.clone());
+    let Some(from) = ids.iter().position(|id| *id == anchor) else { return };
+    let Some(to) = ids.iter().position(|id| *id == cursor) else { return };
+    let (lo, hi) = if from <= to { (from, to) } else { (to, from) };
+    app.row_actions.mode = true;
+    app.row_actions.selected.extend(ids[lo..=hi].iter().cloned());
+}
+
+fn visible_ids(app: &App) -> Vec<String> {
+    super::session_list::sessions_of(&app.list_rows()).iter().map(|s| s.id.clone()).collect()
+}
+
+/// The selection in the order the list shows it, so a batch request and the
+/// undo that follows it agree on order.
+fn selected_in_view_order(app: &App) -> Vec<String> {
+    visible_ids(app).into_iter().filter(|id| app.row_actions.is_selected(id)).collect()
+}
+
+/// The group whose rows the cursor is inside.
+fn section_of_selection(app: &App) -> Option<Group> {
+    let selected = app.selected_session_id()?;
+    let rows = app.list_rows();
+    let mut current = None;
+    for row in &rows {
+        match row {
+            Row::Header { group, .. } => current = Some(*group),
+            Row::Session { session, .. } if session.id == selected => return current,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every top-level session of a group, folded or not: `A` archives the section
+/// the header counts, not just the rows that happen to be on screen.
+fn section_ids(app: &App, group: Group) -> Vec<String> {
+    app.sessions
+        .iter()
+        .filter(|s| super::session_list::group_of(s) == group)
+        .map(|s| s.id.clone())
+        .collect()
 }
 
 /// A row's name if it has one, else its project, else its id.
@@ -201,11 +358,11 @@ fn type_into(buffer: &mut String, key: KeyEvent) {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{RowAction, UNDO_MS, prune};
+    use super::{Pending, RowAction, UNDO_MS, prune};
     use crate::app::action::Effect;
     use crate::app::state::App;
     use crate::app::{Action, reduce};
-    use crate::testsupport::{pinned_session, session};
+    use crate::testsupport::{dispatched_session, pinned_session, session, subagent};
 
     fn app() -> App {
         let mut app = App::new();
@@ -224,6 +381,12 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn selected(app: &App) -> Vec<String> {
+        let mut ids: Vec<String> = app.row_actions.selected.iter().cloned().collect();
+        ids.sort();
+        ids
     }
 
     #[test]
@@ -355,6 +518,163 @@ mod tests {
     }
 
     #[test]
+    fn space_enters_select_mode_and_toggles_the_row_under_the_cursor() {
+        let mut app = app();
+        act(&mut app, RowAction::ToggleSelect);
+        assert!(app.row_actions.mode);
+        assert_eq!(selected(&app), ["s-a"]);
+        assert!(app.row_actions.strip().expect("a strip").contains("SELECT (1)"));
+
+        act(&mut app, RowAction::ToggleSelect);
+        assert!(selected(&app).is_empty());
+        assert!(app.row_actions.mode, "the strip stays up with nothing selected");
+
+        act(&mut app, RowAction::ClearSelection);
+        assert!(!app.row_actions.mode);
+        assert!(app.row_actions.strip().is_none());
+    }
+
+    #[test]
+    fn a_range_covers_the_rows_between_the_anchor_and_the_cursor() {
+        let mut app = app();
+        act(&mut app, RowAction::ToggleSelect);
+        reduce(&mut app, Action::SelectLast);
+        act(&mut app, RowAction::RangeToAnchor);
+        assert_eq!(selected(&app), ["s-a", "s-b", "s-c"]);
+    }
+
+    #[test]
+    fn a_range_runs_backwards_too() {
+        let mut app = app();
+        reduce(&mut app, Action::SelectLast);
+        act(&mut app, RowAction::ToggleSelect);
+        reduce(&mut app, Action::SelectFirst);
+        act(&mut app, RowAction::RangeToAnchor);
+        assert_eq!(selected(&app), ["s-a", "s-b", "s-c"]);
+    }
+
+    /// Mirrors the webui `rangeIds` test: the range walks what is on screen.
+    #[test]
+    fn a_range_over_a_folded_group_takes_only_the_visible_rows() {
+        let mut app = App::new();
+        app.sessions = vec![session("s-p", "parent", "active", "working")];
+        for i in 0..12 {
+            app.sessions.push(subagent(&format!("s-c{i:02}"), "s-p", "lane"));
+        }
+        app.sessions.push(session("s-z", "last", "active", "done"));
+        app.update_aggregates();
+
+        act(&mut app, RowAction::ToggleSelect);
+        reduce(&mut app, Action::SelectLast);
+        act(&mut app, RowAction::RangeToAnchor);
+        assert_eq!(
+            selected(&app),
+            ["s-p", "s-z"],
+            "the twelve folded children are not on screen, so they are not in the range"
+        );
+    }
+
+    #[test]
+    fn star_selects_every_visible_row() {
+        let mut app = app();
+        act(&mut app, RowAction::SelectAllVisible);
+        assert_eq!(selected(&app), ["s-a", "s-b", "s-c"]);
+    }
+
+    #[test]
+    fn a_batch_archive_confirms_once_and_sends_one_request() {
+        let mut app = app();
+        act(&mut app, RowAction::SelectAllVisible);
+        assert!(act(&mut app, RowAction::ArchiveOrUnarchive).is_empty(), "it asks first");
+        assert_eq!(app.row_actions.strip().as_deref(), Some(" Archive 3 sessions? y/N"));
+
+        match act(&mut app, RowAction::ConfirmYes).as_slice() {
+            [Effect::ArchiveSessions { ids, archived: true }] => {
+                assert_eq!(ids, &["s-a".to_owned(), "s-b".to_owned(), "s-c".to_owned()]);
+            }
+            _ => panic!("expected one batch archive"),
+        }
+        assert!(!app.row_actions.mode, "the batch leaves select mode");
+        assert!(app.toasts.latest().expect("a toast").text.contains("3 sessions — u undo"));
+    }
+
+    #[test]
+    fn declining_the_batch_keeps_the_selection() {
+        let mut app = app();
+        act(&mut app, RowAction::SelectAllVisible);
+        act(&mut app, RowAction::ArchiveOrUnarchive);
+        act(&mut app, RowAction::ConfirmNo);
+        assert_eq!(selected(&app), ["s-a", "s-b", "s-c"]);
+    }
+
+    #[test]
+    fn escape_answers_the_confirm_before_it_leaves_select_mode() {
+        let mut app = app();
+        act(&mut app, RowAction::SelectAllVisible);
+        act(&mut app, RowAction::ArchiveOrUnarchive);
+        act(&mut app, RowAction::ClearSelection);
+        assert!(app.row_actions.confirm.is_none());
+        assert_eq!(selected(&app), ["s-a", "s-b", "s-c"], "one key, one job");
+    }
+
+    #[test]
+    fn capital_a_archives_the_whole_section_the_cursor_is_in() {
+        let mut app = App::new();
+        app.sessions = vec![
+            session("s-w", "work", "active", "working"),
+            dispatched_session("s-d1", "worker-one", "working"),
+            dispatched_session("s-d2", "worker-two", "working"),
+        ];
+        app.update_aggregates();
+        reduce(&mut app, Action::SelectLast);
+
+        assert!(act(&mut app, RowAction::ArchiveSection).is_empty());
+        assert_eq!(app.row_actions.strip().as_deref(), Some(" Archive all 2 in Dispatched? y/N"));
+        match act(&mut app, RowAction::ConfirmYes).as_slice() {
+            [Effect::ArchiveSessions { ids, archived: true }] => {
+                assert_eq!(ids.len(), 2);
+                assert!(ids.contains(&"s-d1".to_owned()) && ids.contains(&"s-d2".to_owned()));
+            }
+            _ => panic!("expected the section archive"),
+        }
+    }
+
+    #[test]
+    fn a_folded_section_still_archives_every_row_it_counts() {
+        let mut app = App::new();
+        app.sessions = vec![
+            dispatched_session("s-d1", "worker-one", "working"),
+            dispatched_session("s-d2", "worker-two", "working"),
+        ];
+        app.update_aggregates();
+        act(&mut app, RowAction::ArchiveSection);
+        let Some(confirm) = app.row_actions.confirm.clone() else { panic!("expected a confirm") };
+        let Pending::Archive { ids, .. } = confirm.action else { panic!("expected an archive") };
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn the_selection_survives_the_rows_reordering_under_it() {
+        let mut app = app();
+        act(&mut app, RowAction::ToggleSelect);
+        reduce(&mut app, Action::SelectNext);
+        act(&mut app, RowAction::ToggleSelect);
+        assert_eq!(selected(&app), ["s-a", "s-b"]);
+
+        // A live update reorders the list and drops one of the selected rows.
+        app.sessions = vec![
+            session("s-c", "gamma", "active", "blocked"),
+            session("s-b", "beta", "active", "working"),
+        ];
+        app.update_aggregates();
+        prune(&mut app);
+        assert_eq!(selected(&app), ["s-b"], "ids follow the row, not the slot");
+
+        act(&mut app, RowAction::ArchiveOrUnarchive);
+        assert_eq!(app.row_actions.strip().as_deref(), Some(" Archive 1 sessions? y/N"));
+    }
+
+    #[test]
     fn nothing_acts_on_an_empty_list() {
         let mut app = App::new();
         for action in [
@@ -362,6 +682,10 @@ mod tests {
             RowAction::RenameStart,
             RowAction::ArchiveOrUnarchive,
             RowAction::KillStart,
+            RowAction::ArchiveSection,
+            RowAction::ToggleSelect,
+            RowAction::RangeToAnchor,
+            RowAction::SelectAllVisible,
             RowAction::Undo,
             RowAction::ConfirmYes,
         ] {

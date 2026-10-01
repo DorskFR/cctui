@@ -4,97 +4,97 @@ expression: "render_screen_sized(&mut app, 100, 96)"
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         k / ↑       Scroll up                        │
-▸ │  ?           Toggle this cheat sheet            PgDn        Page down                        │
-  │  q           Quit cctui                         PgUp        Page up                          │
-  │  /           Search the current view            g           Jump to the top                  │
-  │  n           Next search hit                    q / Esc     Close the file viewer            │
-  │  N           Previous search hit                o           Open in the desktop viewer       │
-  │  D           Diagnose the selected session    Pinned messages                                │
-  │  i           Session info                       Esc         Close the pinned messages        │
-  │  Ctrl+g      Jump to the next pending approv…   Ctrl+n / ↓  Next pin                         │
-  │Session list                                     Ctrl+p / ↑  Previous pin                     │
-  │  j / ↓       Next session                       Enter       Jump to the pinned message       │
-  │  k / ↑       Previous session                   d / m       Unpin this message               │
-  │  g           First session                    Macros                                         │
-  │  G           Last session                       Esc         Close the macro list             │
-  │  Enter       Open the conversation              Ctrl+n / ↓  Next macro                       │
-  │  z / Tab     Fold or open the subagent group    Ctrl+p / ↑  Previous macro                   │
-  │  S           Fold or open the section           Enter       Put this prompt in the composer  │
-  │  Z           Fold or open everything          Terminal pane                                  │
-  │  p           Pin or unpin the session           T / q / Esc Close the terminal pane          │
-  │  x           Archive or unarchive the session   j / ↓       Scroll the terminal down         │
-  │  r           Rename the session                 k / ↑       Scroll the terminal up           │
-  │  X           Kill the session                 Help                                           │
-  │  u           Undo the last archive              j / ↓       Scroll down                      │
-  │Confirm prompt                                   k / ↑       Scroll up                        │
-  │  Y / y       Yes                                PgDn        Page down                        │
-  │  N / n / q … No                                 PgUp        Page up                          │
-  │Rename a session                                 ? / q / Esc Close this cheat sheet           │
-  │  Enter       Save the name                    Model picker                                   │
-  │  Esc         Discard the name                   q / Esc     Close the picker                 │
-  │Conversation                                     j / ↓       Next entry                       │
-  │  1-9         Jump to session by number          k / ↑       Previous entry                   │
-  │  Ctrl+f      Fork the session                   h / ←       Focus the model list             │
-  │  q / Esc     Back to the session list           l / → / Tab Focus the effort list            │
-  │  j / ↓       Scroll down                        Enter       Apply model and effort           │
-  │  k / ↑       Scroll up                        Sidebar                                        │
-  │  PgDn        Page down                          j / ↓       Next subagent                    │
-  │  PgUp        Page up                            k / ↑       Previous subagent                │
-  │  g           Jump to the top                    Enter       Open the subagent                │
-  │  G           Jump to the bottom                 > / Esc     Close the sidebar                │
-  │  t           Show timestamps                    u           Go to the parent session         │
-  │  Ctrl+c      Interrupt the turn               Permission card                                │
-  │  M           Change model and effort            y           Allow                            │
-  │  >           Todo and subagent sidebar          n           Deny                             │
-  │  u           Go to the parent session           A           Allow and auto-approve           │
-  │  Ctrl+a      Toggle auto-approve              Diagnose / info                                │
-  │  v           Select transcript lines            D           Diagnose the selected session    │
-  │  Ctrl+o      Attach a file                      i           Session info                     │
-  │  o           Expand the focused line            q / Esc     Close the panel                  │
-  │  z           Expand every thinking and resul…   j / ↓       Scroll the panel down            │
-  │  R           Retry the undelivered message      k / ↑       Scroll the panel up              │
-  │  e           Edit the undelivered message       PgDn        Page the panel down              │
-  │  x           Drop the undelivered message       PgUp        Page the panel up                │
-  │  y           Copy the focused line as Markdo…   g           Jump to the top of the panel     │
-  │  Y           Copy the code under the cursor     r           Refresh the report               │
-  │  Ctrl+y      Copy a link to this session        y           Copy the session id              │
-  │  :           Run a command (:export)          Question card                                  │
-  │  f           Cycle assistant / you / tools      Esc         Answer later                     │
-  │  F           Choose which lines to show         j / ↓       Next option                      │
-  │  T           Watch the live terminal            k / ↑       Previous option                  │
-  │  Ctrl+r      Search sent prompts                1-9         Pick an option by number         │
-  │  m           Pin or unpin the focused line      Space       Toggle the focused option        │
-  │  '           Open the pinned messages           Tab         Next question                    │
-  │  Ctrl+t      Insert a canned prompt             Shift+Tab   Previous question                │
-  │  Tab         Answer the waiting prompt          o           Write a free-text answer         │
-  │  g f         Open the file under the cursor     Enter       Send the answer                  │
-  │Composer                                       Question card — free text                      │
-  │  Ctrl+o      Attach a file                      Enter       Accept the text                  │
-  │  Bksp        Remove the focused attachment      Esc         Discard the text                 │
-  │  Alt+Bksp    Focus the attachment chips       Plan card                                      │
-  │  →           Next attachment chip               Esc         Answer later                     │
-  │  ←           Previous attachment chip           1           Approve, auto-accept edits       │
-  │  Esc         Close the composer                 2           Approve, manually approve edits  │
-  │  Enter       Send the message                   3           Keep planning                    │
-  │  Ctrl+j / A… Insert a newline                   r           Refine the plan                  │
-  │  ↑           Recall an earlier prompt           j / ↓       Scroll the plan down             │
-  │  ↓           Recall a later prompt              k / ↑       Scroll the plan up               │
-  │  Ctrl+r      Search sent prompts              Plan card — refine                             │
-  │  Tab         Take the session completion        Enter       Accept the text                  │
-  │  Ctrl+t      Insert a canned prompt             Esc         Discard the text                 │
-  │Search and commands                            Row glyphs                                     │
-  │  Enter       Run it                             ●           working                          │
-  │  Esc         Abandon it                         ◐           stale or asleep                  │
-  │  Tab         Complete the path                  ○           idle                             │
-  │Filter menu                                      ☾           hibernated                       │
-  │  F / q / Esc Choose which lines to show         ↳           subagent                         │
-  │  a           Show every category                ▸ / ▾       folded / open group              │
-  │  r           Back to the default filter         !           permission waiting on you        │
-  │  Space / En… Show or hide this category         ?           question waiting on you          │
-  │  j / ↓       Next category                      P           plan waiting for approval        │
-  │  k / ↑       Previous category                  ●N          unread messages                  │
-  │Prompt history                                   ⚡           auto-approve on                  │
-  │  Esc         Close the prompt list              ⏸           account soft-limited             │
+  │Anywhere                                         Enter       Put this prompt in the composer  │
+▸ │  ?           Toggle this cheat sheet          File viewer                                    │
+  │  q           Quit cctui                         j / ↓       Scroll down                      │
+  │  /           Search the current view            k / ↑       Scroll up                        │
+  │  n           Next search hit                    PgDn        Page down                        │
+  │  N           Previous search hit                PgUp        Page up                          │
+  │  D           Diagnose the selected session      g           Jump to the top                  │
+  │  i           Session info                       q / Esc     Close the file viewer            │
+  │  Ctrl+g      Jump to the next pending approv…   o           Open in the desktop viewer       │
+  │Session list                                   Pinned messages                                │
+  │  j / ↓       Next session                       Esc         Close the pinned messages        │
+  │  k / ↑       Previous session                   Ctrl+n / ↓  Next pin                         │
+  │  g           First session                      Ctrl+p / ↑  Previous pin                     │
+  │  G           Last session                       Enter       Jump to the pinned message       │
+  │  Enter       Open the conversation              d / m       Unpin this message               │
+  │  z / Tab     Fold or open the subagent group  Macros                                         │
+  │  S           Fold or open the section           Esc         Close the macro list             │
+  │  Z           Fold or open everything            Ctrl+n / ↓  Next macro                       │
+  │  p           Pin or unpin the session           Ctrl+p / ↑  Previous macro                   │
+  │  x           Archive or unarchive the session   Enter       Put this prompt in the composer  │
+  │  r           Rename the session               Terminal pane                                  │
+  │  A           Archive every session in the se…   T / q / Esc Close the terminal pane          │
+  │  X           Kill the session                   j / ↓       Scroll the terminal down         │
+  │  u           Undo the last archive              k / ↑       Scroll the terminal up           │
+  │  Space       Select or deselect the row       Help                                           │
+  │  V           Select up to the anchor            j / ↓       Scroll down                      │
+  │  *           Select every visible row           k / ↑       Scroll up                        │
+  │  Esc         Leave select mode                  PgDn        Page down                        │
+  │Confirm prompt                                   PgUp        Page up                          │
+  │  Y / y       Yes                                ? / q / Esc Close this cheat sheet           │
+  │  N / n / q … No                               Model picker                                   │
+  │Rename a session                                 q / Esc     Close the picker                 │
+  │  Enter       Save the name                      j / ↓       Next entry                       │
+  │  Esc         Discard the name                   k / ↑       Previous entry                   │
+  │Conversation                                     h / ←       Focus the model list             │
+  │  1-9         Jump to session by number          l / → / Tab Focus the effort list            │
+  │  Ctrl+f      Fork the session                   Enter       Apply model and effort           │
+  │  q / Esc     Back to the session list         Sidebar                                        │
+  │  j / ↓       Scroll down                        j / ↓       Next subagent                    │
+  │  k / ↑       Scroll up                          k / ↑       Previous subagent                │
+  │  PgDn        Page down                          Enter       Open the subagent                │
+  │  PgUp        Page up                            > / Esc     Close the sidebar                │
+  │  g           Jump to the top                    u           Go to the parent session         │
+  │  G           Jump to the bottom               Permission card                                │
+  │  t           Show timestamps                    y           Allow                            │
+  │  Ctrl+c      Interrupt the turn                 n           Deny                             │
+  │  M           Change model and effort            A           Allow and auto-approve           │
+  │  >           Todo and subagent sidebar        Diagnose / info                                │
+  │  u           Go to the parent session           D           Diagnose the selected session    │
+  │  Ctrl+a      Toggle auto-approve                i           Session info                     │
+  │  v           Select transcript lines            q / Esc     Close the panel                  │
+  │  Ctrl+o      Attach a file                      j / ↓       Scroll the panel down            │
+  │  o           Expand the focused line            k / ↑       Scroll the panel up              │
+  │  z           Expand every thinking and resul…   PgDn        Page the panel down              │
+  │  R           Retry the undelivered message      PgUp        Page the panel up                │
+  │  e           Edit the undelivered message       g           Jump to the top of the panel     │
+  │  x           Drop the undelivered message       r           Refresh the report               │
+  │  y           Copy the focused line as Markdo…   y           Copy the session id              │
+  │  Y           Copy the code under the cursor   Question card                                  │
+  │  Ctrl+y      Copy a link to this session        Esc         Answer later                     │
+  │  :           Run a command (:export)            j / ↓       Next option                      │
+  │  f           Cycle assistant / you / tools      k / ↑       Previous option                  │
+  │  F           Choose which lines to show         1-9         Pick an option by number         │
+  │  T           Watch the live terminal            Space       Toggle the focused option        │
+  │  Ctrl+r      Search sent prompts                Tab         Next question                    │
+  │  m           Pin or unpin the focused line      Shift+Tab   Previous question                │
+  │  '           Open the pinned messages           o           Write a free-text answer         │
+  │  Ctrl+t      Insert a canned prompt             Enter       Send the answer                  │
+  │  Tab         Answer the waiting prompt        Question card — free text                      │
+  │  g f         Open the file under the cursor     Enter       Accept the text                  │
+  │Composer                                         Esc         Discard the text                 │
+  │  Ctrl+o      Attach a file                    Plan card                                      │
+  │  Bksp        Remove the focused attachment      Esc         Answer later                     │
+  │  Alt+Bksp    Focus the attachment chips         1           Approve, auto-accept edits       │
+  │  →           Next attachment chip               2           Approve, manually approve edits  │
+  │  ←           Previous attachment chip           3           Keep planning                    │
+  │  Esc         Close the composer                 r           Refine the plan                  │
+  │  Enter       Send the message                   j / ↓       Scroll the plan down             │
+  │  Ctrl+j / A… Insert a newline                   k / ↑       Scroll the plan up               │
+  │  ↑           Recall an earlier prompt         Plan card — refine                             │
+  │  ↓           Recall a later prompt              Enter       Accept the text                  │
+  │  Ctrl+r      Search sent prompts                Esc         Discard the text                 │
+  │  Tab         Take the session completion      Row glyphs                                     │
+  │  Ctrl+t      Insert a canned prompt             ●           working                          │
+  │Search and commands                              ◐           stale or asleep                  │
+  │  Enter       Run it                             ○           idle                             │
+  │  Esc         Abandon it                         ☾           hibernated                       │
+  │  Tab         Complete the path                  ↳           subagent                         │
+  │Filter menu                                      ▸ / ▾       folded / open group              │
+  │  F / q / Esc Choose which lines to show         !           permission waiting on you        │
+  │  a           Show every category                ?           question waiting on you          │
+  │  r           Back to the default filter         P           plan waiting for approval        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -274,8 +274,13 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::RenameCommit => Action::RowAction(RowAction::RenameCommit),
         ActionId::RenameCancel => Action::RowAction(RowAction::RenameCancel),
         ActionId::Archive => Action::RowAction(RowAction::ArchiveOrUnarchive),
+        ActionId::ArchiveSection => Action::RowAction(RowAction::ArchiveSection),
         ActionId::KillSession => Action::RowAction(RowAction::KillStart),
         ActionId::UndoArchive => Action::RowAction(RowAction::Undo),
+        ActionId::SelectToggle => Action::RowAction(RowAction::ToggleSelect),
+        ActionId::SelectRange => Action::RowAction(RowAction::RangeToAnchor),
+        ActionId::SelectAll => Action::RowAction(RowAction::SelectAllVisible),
+        ActionId::SelectClear => Action::RowAction(RowAction::ClearSelection),
         ActionId::ConfirmYes => Action::RowAction(RowAction::ConfirmYes),
         ActionId::ConfirmNo => Action::RowAction(RowAction::ConfirmNo),
 

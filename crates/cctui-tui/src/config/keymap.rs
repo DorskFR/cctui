@@ -233,8 +233,13 @@ actions! {
     CmdLineComplete => "cmdline-complete", "Complete the path";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
     RenameSession => "rename-session", "Rename the session";
+    ArchiveSection => "archive-section", "Archive every session in the section";
     KillSession => "kill-session", "Kill the session";
     UndoArchive => "undo-archive", "Undo the last archive";
+    SelectToggle => "select-toggle", "Select or deselect the row";
+    SelectRange => "select-range", "Select up to the anchor";
+    SelectAll => "select-all", "Select every visible row";
+    SelectClear => "select-clear", "Leave select mode";
     ConfirmYes => "confirm-yes", "Yes";
     ConfirmNo => "confirm-no", "No";
     RenameCommit => "rename-commit", "Save the name";
@@ -355,7 +360,12 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "r", ActionId::RenameSession),
     spec(Context::SessionList, "x", ActionId::Archive),
     spec(Context::SessionList, "X", ActionId::KillSession),
+    spec(Context::SessionList, "A", ActionId::ArchiveSection),
     spec(Context::SessionList, "u", ActionId::UndoArchive),
+    spec(Context::SessionList, "space", ActionId::SelectToggle),
+    spec(Context::SessionList, "V", ActionId::SelectRange),
+    spec(Context::SessionList, "*", ActionId::SelectAll),
+    spec(Context::SessionList, "esc", ActionId::SelectClear),
 ];
 
 const CONFIRM: &[BindingSpec] = &[
