@@ -97,10 +97,7 @@ async fn main() -> Result<()> {
     use clap::Parser;
     let _ = rustls::crypto::ring::default_provider().install_default();
     match Cli::parse().command {
-        Some(Command::Update) => {
-            let (base_url, _) = resolve_identity();
-            selfupdate::force_update(&base_url).await
-        }
+        Some(Command::Update) => selfupdate::force_update().await,
         Some(Command::Login { server, key }) => auth::login(server, key).await,
         Some(Command::Logout { revoke }) => auth::logout(revoke).await,
         Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,

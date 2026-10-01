@@ -8,8 +8,8 @@
 //!      the asset's `.minisig` from the matching GitHub release, verify
 //!      checksum and release signature, stage it, require `--version` to
 //!      succeed, then rename over `current_exe()` keeping a `.bak`.
-//!   3. If `install::SETTINGS_SCHEMA_VERSION` exceeds the marker file,
-//!      re-apply hook/MCP config.
+//!   3. If `install::SETTINGS_SCHEMA_VERSION` exceeds the marker file, run
+//!      the settings migration that clears cctui's retired hooks.
 //!   4. `exec()` into the freshly-written binary with `CCTUI_UPDATED=1` so we
 //!      don't recurse on the next launch.
 //!
@@ -208,12 +208,12 @@ fn install_staged(staging: &Path, current: &Path, backup: &Path) -> Result<()> {
     Ok(())
 }
 
-fn maybe_reapply_settings(server_url: &str, bin_path: &Path) {
+fn migrate_settings_if_behind() {
     if install::SETTINGS_SCHEMA_VERSION <= install::read_schema_marker() {
         return;
     }
-    if let Err(e) = install::apply_settings(server_url, bin_path) {
-        eprintln!("[cctui] settings re-apply failed: {e}");
+    if let Err(e) = install::migrate_legacy_hooks() {
+        eprintln!("[cctui] settings migration failed: {e}");
         return;
     }
     if let Err(e) = install::write_schema_marker(install::SETTINGS_SCHEMA_VERSION) {
@@ -240,9 +240,9 @@ fn exec_new(_: &Path) -> ! {
     std::process::exit(0);
 }
 
-async fn update_inner(server_url: &str, target_tag: Option<&str>) -> Result<()> {
+async fn update_inner(target_tag: Option<&str>) -> Result<()> {
     let new_exe = swap_binary(target_tag).await?;
-    maybe_reapply_settings(server_url, &new_exe);
+    migrate_settings_if_behind();
     exec_new(&new_exe);
 }
 
@@ -266,30 +266,25 @@ pub async fn maybe_update(server_url: &str) {
     }
     let Ok(server_version) = fetch_server_version(server_url).await else { return };
     if !should_update(CURRENT_VERSION, &server_version, update_channel()) {
-        // Still run the schema-only reapply if needed — covers users who
-        // manually updated the binary but never re-ran install.sh.
-        if install::SETTINGS_SCHEMA_VERSION > install::read_schema_marker()
-            && let Ok(exe) = std::env::current_exe()
-        {
-            maybe_reapply_settings(server_url, &exe);
-        }
+        migrate_settings_if_behind();
         return;
     }
     eprintln!("[cctui] updating {CURRENT_VERSION} -> {server_version}…");
     let tag = tag_override().or_else(|| Some(format!("v{server_version}")));
-    if let Err(e) = update_inner(server_url, tag.as_deref()).await {
+    if let Err(e) = update_inner(tag.as_deref()).await {
         eprintln!("[cctui] update failed: {e}");
     }
 }
 
 /// Invoked by the `cctui update` subcommand. Always re-downloads from the
-/// latest release (or `$CCTUI_TAG`) and re-applies settings unconditionally.
-pub async fn force_update(server_url: &str) -> Result<()> {
+/// latest release (or `$CCTUI_TAG`). It adds nothing to the user's settings:
+/// the only write left is clearing cctui's retired hooks.
+pub async fn force_update() -> Result<()> {
     clear_updated_flag();
     eprintln!("[cctui] forcing update from {}", repo());
     let new_exe = swap_binary(tag_override().as_deref()).await?;
-    if let Err(e) = install::apply_settings(server_url, &new_exe) {
-        eprintln!("[cctui] settings re-apply failed: {e}");
+    if let Err(e) = install::migrate_legacy_hooks() {
+        eprintln!("[cctui] settings migration failed: {e}");
     } else {
         let _ = install::write_schema_marker(install::SETTINGS_SCHEMA_VERSION);
     }
