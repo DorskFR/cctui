@@ -160,7 +160,11 @@
     },
     {
       "name": "a bare root working dir keeps its slash",
-      "fields": { "machine_id": "m-1", "working_dir": "///", "adapter_id": "claude-code" },
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "///",
+        "adapter_id": "claude-code"
+      },
       "provider": null,
       "expect": { "working_dir": "/" }
     },
