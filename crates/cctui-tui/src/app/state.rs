@@ -12,6 +12,7 @@ use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
 pub use super::session_list::uptime_secs_at;
 use super::session_live::RefreshCounters;
+use super::slice::{Cursor, Slice};
 use super::toast::{Level, StatusCounters, Toasts};
 pub use crate::config::uistate::UiState;
 
@@ -29,6 +30,9 @@ pub enum View {
     Terminal,
     ModelPicker,
     Sidebar,
+    /// Slice roots: the switcher resets the router to one of these.
+    Bookmarks,
+    Overview,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -280,6 +284,13 @@ pub struct App {
     pub refresh: RefreshCounters,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
+    /// Which top-level slice `1-9` last selected.
+    pub slice: Slice,
+    /// Where each slice's cursor was when it was last left.
+    pub slice_cursors: HashMap<Slice, Cursor>,
+    /// `GET /sessions/stats`, `None` until the first reply.
+    pub stats: Option<cctui_proto::api::SessionStats>,
+    pub overview_scroll: usize,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -388,6 +399,10 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             ui: UiState::default(),
+            slice: Slice::Sessions,
+            slice_cursors: HashMap::new(),
+            stats: None,
+            overview_scroll: 0,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             terminal: None,

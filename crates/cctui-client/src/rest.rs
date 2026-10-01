@@ -3,7 +3,7 @@ use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
     AutoApproveRequest, ForkRequest, ForkResponse, SessionListItem, SessionListResponse,
-    SetModelRequest, StageFilesResponse,
+    SessionStats, SetModelRequest, StageFilesResponse,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -331,6 +331,18 @@ impl Client {
 
     pub async fn get_session(&self, session_id: &str) -> Result<SessionListItem, ClientError> {
         self.json(Self::route("get_sessions_by_id")?, &[("id", session_id)], &[], None).await
+    }
+
+    /// `timezone` is an IANA name: the today/week/month counts are local
+    /// calendar periods and the server defaults to UTC without it.
+    pub async fn session_stats(&self, timezone: &str) -> Result<SessionStats, ClientError> {
+        self.json(
+            Self::route("get_sessions_stats")?,
+            &[],
+            &[("timezone", timezone.to_owned())],
+            None,
+        )
+        .await
     }
 
     pub async fn me(&self) -> Result<MeResponse, ClientError> {
@@ -680,6 +692,7 @@ mod tests {
         for id in [
             "get_sessions",
             "get_sessions_by_id",
+            "get_sessions_stats",
             "get_sessions_by_id_conversation",
             "get_sessions_by_id_diagnose",
             "post_sessions_by_id_interrupt",

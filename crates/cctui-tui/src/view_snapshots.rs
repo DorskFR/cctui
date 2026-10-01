@@ -10,6 +10,7 @@ use crate::app::fileview::FileViewAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
+use crate::app::slice::SliceAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnosable_session,
@@ -1045,4 +1046,75 @@ fn conversation_sidebar_suppressed_when_narrow() {
     let mut app = app_with_a_subagent();
     reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+fn app_with_stats() -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    app.machine_liveness.insert("orion".to_owned(), cctui_proto::models::MachineLiveness::Online);
+    app.machine_liveness.insert("rigel".to_owned(), cctui_proto::models::MachineLiveness::Offline);
+    reduce(
+        &mut app,
+        Action::Slice(SliceAction::StatsLoaded(Box::new(cctui_proto::api::SessionStats {
+            total: 18,
+            live: 3,
+            needs_input: 1,
+            archived: 6,
+            today: 4,
+            yesterday: 2,
+            week: 11,
+            month: 17,
+        }))),
+    );
+    app
+}
+
+#[test]
+fn session_list_tab_bar_and_summary() {
+    let mut app = app_with_stats();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_summary_before_the_stats_land() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view() {
+    let mut app = app_with_stats();
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view_before_the_stats_land() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view_with_a_session_needing_input() {
+    let mut app = app_with_stats();
+    session_mut(&mut app, "s-blocked").attention = Some(cctui_proto::models::Attention::NeedsInput);
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view_narrow() {
+    let mut app = app_with_stats();
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+#[test]
+fn bookmarks_view_awaiting_its_feature() {
+    let mut app = app_with_stats();
+    reduce(&mut app, Action::Slice(SliceAction::Switch(2)));
+    insta::assert_snapshot!(render_screen(&mut app));
 }

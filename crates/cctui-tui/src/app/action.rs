@@ -17,6 +17,7 @@ use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::sidebar::SidebarAction;
+use super::slice::SliceAction;
 use super::state::ConversationLine;
 use super::terminal::TerminalAction;
 use super::toast::Level;
@@ -80,6 +81,7 @@ pub enum Action {
     Copy(CopyWhat),
     Prompt(PromptAction),
     Diagnose(DiagnoseAction),
+    Slice(SliceAction),
 
     StreamLine {
         session_id: String,
@@ -272,5 +274,7 @@ pub enum Effect {
         session_id: String,
     },
     /// Persist the fold state to `tui-state.json`.
+    /// `GET /sessions/stats`: the counts the summary line and Overview show.
+    FetchSessionStats,
     SaveUiState(crate::config::uistate::UiState),
 }

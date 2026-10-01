@@ -20,6 +20,7 @@ use super::identity::AuthAction;
 use super::line::agent_event_to_line;
 use super::pins::PinAction;
 use super::send::SendAction;
+use super::slice::SliceAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -263,6 +264,16 @@ async fn run(
         Effect::OpenInOsViewer { name, bytes } => {
             open_in_os_viewer(&name, &bytes);
             Vec::new()
+        }
+        Effect::FetchSessionStats => {
+            match server.session_stats(&super::slice::local_timezone()).await {
+                Ok(stats) => vec![Action::Slice(SliceAction::StatsLoaded(Box::new(stats)))],
+                Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+                Err(e) => {
+                    tracing::warn!(%e, "session stats fetch failed");
+                    vec![Action::Slice(SliceAction::StatsFailed)]
+                }
+            }
         }
         Effect::SaveUiState(state) => {
             crate::config::uistate::save(&state);

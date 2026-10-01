@@ -1015,8 +1015,8 @@ module = "app/effects.rs"
 [[route]]
 id = "get_sessions_stats"
 # GET /sessions/stats — Aggregate session counts/status stats.
-tui = "planned"
-ticket = "CCT-1253"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_stats_tokens"
@@ -1178,7 +1178,7 @@ reason = "plugin panes and their backends are webui iframes"
 id = "get_sessions_by_id"
 # GET /sessions/{id} — Get one session's details.
 tui = "planned"
-ticket = "CCT-1251"
+ticket = "CCT-1254"
 
 [[route]]
 id = "patch_sessions_by_id"

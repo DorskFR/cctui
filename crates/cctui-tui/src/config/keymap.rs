@@ -25,6 +25,8 @@ pub enum Context {
     Sidebar,
     Permission,
     Diagnose,
+    Bookmarks,
+    Overview,
     Ask,
     AskText,
     Plan,
@@ -48,6 +50,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::Sidebar,
     Context::Permission,
     Context::Diagnose,
+    Context::Bookmarks,
+    Context::Overview,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -73,6 +77,8 @@ impl Context {
             Self::Sidebar => "sidebar",
             Self::Permission => "permission",
             Self::Diagnose => "diagnose",
+            Self::Bookmarks => "bookmarks",
+            Self::Overview => "overview",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -98,6 +104,8 @@ impl Context {
             Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
             Self::Diagnose => "Diagnose / info",
+            Self::Bookmarks => "Bookmarks",
+            Self::Overview => "Overview",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -255,6 +263,10 @@ actions! {
     MacrosInsert => "macros-insert", "Put this prompt in the composer";
 
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
+    OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
+    OverviewRefresh => "overview-refresh", "Refresh the counts";
 
     DiagnoseClose => "diagnose-close", "Close the panel";
     DiagnoseScrollDown => "diagnose-scroll-down", "Scroll the panel down";
@@ -457,6 +469,16 @@ const MACROS: &[BindingSpec] = &[
     spec(Context::Macros, "enter", ActionId::MacrosInsert),
 ];
 
+/// Slice roots, not overlays: each falls through to the globals, so `1-9`,
+/// `?` and `q` keep working from them.
+const BOOKMARKS: &[BindingSpec] = &[];
+
+const OVERVIEW: &[BindingSpec] = &[
+    spec(Context::Overview, "j, down", ActionId::OverviewScrollDown),
+    spec(Context::Overview, "k, up", ActionId::OverviewScrollUp),
+    spec(Context::Overview, "r", ActionId::OverviewRefresh),
+];
+
 /// The panel is modal, so it claims its own scrolling rather than falling
 /// through to the view underneath.
 const DIAGNOSE: &[BindingSpec] = &[
@@ -561,6 +583,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     SIDEBAR,
     PERMISSION,
     DIAGNOSE,
+    BOOKMARKS,
+    OVERVIEW,
     ASK,
     ASK_TEXT,
     PLAN,
@@ -693,9 +717,12 @@ impl Keymap {
             Context::Permission | Context::Sidebar => &[Context::Conversation, Context::Global],
             // The pager is a plain reader and keeps the globals; the attach
             // prompt swallows typed characters and falls through to nothing.
-            Context::SessionList | Context::Conversation | Context::FileViewer | Context::Help => {
-                &[Context::Global]
-            }
+            Context::SessionList
+            | Context::Conversation
+            | Context::FileViewer
+            | Context::Help
+            | Context::Bookmarks
+            | Context::Overview => &[Context::Global],
             _ => &[],
         }
     }

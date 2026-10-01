@@ -9,7 +9,7 @@ use crate::app::{App, session_list, session_live, session_status};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [status_area, title_area, list_area, hotkeys_area] = Layout::vertical([
+    let [status_area, tabs_area, list_area, hotkeys_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -20,8 +20,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Status bar
     draw_status_bar(frame, app, status_area);
 
-    // Title line
-    draw_title(frame, title_area);
+    // Tab bar: which slice `1-9` is on, in place of a static title.
+    frame.render_widget(Paragraph::new(crate::widgets::tabs::tab_line(app)), tabs_area);
 
     // Session list
     draw_session_list(frame, app, list_area);
@@ -31,17 +31,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let total = app.sessions.len();
-    let active = app.active_count;
     let mut spans = vec![
         Span::styled(" cctui ", theme::status_bar_bg()),
         Span::raw(" "),
         Span::styled(format!("v{}", app.version), theme::dim()),
         Span::raw("  "),
-        Span::styled(format!("{total} sessions"), theme::dim()),
-        Span::raw("  "),
-        Span::styled(format!("● {active} active"), theme::active()),
     ];
+    spans.extend(crate::widgets::tabs::summary_spans(app, usize::from(area.width)));
     if app.refresh.requested > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -51,11 +47,6 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
     spans.extend(crate::widgets::status::status_spans(app));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
-    let line = Line::from(vec![Span::styled(" Sessions", theme::section_title())]);
-    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {

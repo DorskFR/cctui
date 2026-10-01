@@ -16,6 +16,7 @@ use crate::app::prompt::PromptAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
+use crate::app::slice::SliceAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
 use crate::config::chord::Chord;
@@ -95,6 +96,8 @@ pub const fn context_for(
         // Not modal: it takes the keyboard but leaves the strips, the composer
         // and the cards ahead of it, and falls through to the transcript.
         View::Sidebar => Context::Sidebar,
+        View::Bookmarks => Context::Bookmarks,
+        View::Overview => Context::Overview,
     }
 }
 
@@ -165,7 +168,9 @@ pub fn map_input(
             View::SessionList => Some(Action::SelectPrev),
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
-            View::FileViewer
+            View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(-3))),
+            View::Bookmarks
+            | View::FileViewer
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -179,7 +184,9 @@ pub fn map_input(
             View::SessionList => Some(Action::SelectNext),
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(-3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
-            View::FileViewer
+            View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(3))),
+            View::Bookmarks
+            | View::FileViewer
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -207,6 +214,10 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SelectPrev => Action::SelectPrev,
         ActionId::SelectFirst => Action::SelectFirst,
         ActionId::SelectLast => Action::SelectLast,
+        // `1-9` is the view switcher everywhere the keymap lets the global
+        // through; inside a conversation the context's own binding wins and the
+        // digit jumps to a session row instead.
+        ActionId::SwitchView => Action::Slice(SliceAction::Switch(chord.digit()? + 1)),
         ActionId::SelectIndex => Action::SelectIndex(chord.digit()?),
         ActionId::OpenConversation => Action::OpenSelectedConversation,
         ActionId::ToggleFold => Action::SessionLive(SessionLiveAction::ToggleFold),
@@ -340,6 +351,10 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 
         ActionId::Diagnose => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)),
         ActionId::Info => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)),
+        ActionId::OverviewScrollDown => Action::Slice(SliceAction::OverviewScroll(1)),
+        ActionId::OverviewScrollUp => Action::Slice(SliceAction::OverviewScroll(-1)),
+        ActionId::OverviewRefresh => Action::Slice(SliceAction::Refresh),
+
         ActionId::DiagnoseClose => Action::Diagnose(DiagnoseAction::Close),
         ActionId::DiagnoseScrollDown => Action::Diagnose(DiagnoseAction::Scroll(1)),
         ActionId::DiagnoseScrollUp => Action::Diagnose(DiagnoseAction::Scroll(-1)),
@@ -375,7 +390,7 @@ mod tests {
 
     use super::{
         Action, AttentionAction, ControlsAction, Decision, DiagnoseAction, DiagnoseMode,
-        DraftAction, InputEvent, Keymap, PickerColumn, PromptFocus, View, map_input,
+        DraftAction, InputEvent, Keymap, PickerColumn, PromptFocus, SliceAction, View, map_input,
     };
     use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
@@ -509,14 +524,26 @@ mod tests {
         }
     }
 
-    /// A global bound to an action no wave implements yet must not eat the key:
-    /// `switch-view` is the last one still reserved, and `1-9` has to stay inert
-    /// in the list rather than resolving to something else.
+    /// `1-9` is the view switcher wherever the global comes through, and the
+    /// session jump inside a conversation, where the context's own binding wins.
     #[test]
-    fn a_reserved_global_claims_nothing() {
-        for code in [KeyCode::Char('1'), KeyCode::Char('9')] {
-            assert!(map(View::SessionList, false, code).is_none(), "{code:?} should stay reserved");
-        }
+    fn digits_switch_slices_outside_a_conversation_and_jump_rows_inside_one() {
+        assert!(matches!(
+            map(View::SessionList, false, KeyCode::Char('1')),
+            Some(Action::Slice(SliceAction::Switch(1)))
+        ));
+        assert!(matches!(
+            map(View::SessionList, false, KeyCode::Char('9')),
+            Some(Action::Slice(SliceAction::Switch(9)))
+        ));
+        assert!(matches!(
+            map(View::Overview, false, KeyCode::Char('2')),
+            Some(Action::Slice(SliceAction::Switch(2)))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('3')),
+            Some(Action::SelectIndex(2)),
+        ));
     }
 
     #[test]

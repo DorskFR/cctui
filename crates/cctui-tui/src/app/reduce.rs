@@ -230,6 +230,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Copy(what) => copy(app, what),
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
         Action::Diagnose(action) => super::diagnose::reduce_diagnose(app, action),
+        Action::Slice(action) => super::slice::reduce_slice(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {

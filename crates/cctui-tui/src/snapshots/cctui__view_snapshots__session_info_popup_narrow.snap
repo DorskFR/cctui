@@ -2,8 +2,8 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: "render_screen_sized(&mut app, 60, 20)"
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
- Sessions
+ cctui  v0.0.0-test  ● ~3  ⚠ ~0  ▪ 0/0  $1.25
+ 1 Sessions  2 Bookmarks  3 Overview  4 Access  5 Accounts
    ┌ Session info ──────────────────────────────────────┐
    │s-working                                           │
    │session:                                            │
