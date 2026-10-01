@@ -1,9 +1,8 @@
 <script lang="ts">
-	import { Button, Modal, Text } from '@dorsk/tsumikit';
+	import { Button, Modal, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { LimitResetEntry } from '$lib/queries';
 	import {
-		resetExpiry,
 		resetReason,
 		resetRestores,
 		resetTitle
@@ -42,7 +41,6 @@
 
 	{#each entries as entry (entry.id)}
 		{@const restores = resetRestores(entry)}
-		{@const expiry = resetExpiry(entry)}
 		{@const reason = resetReason(entry)}
 		<div class="row" class:spent={isEmptyProgram(entry)}>
 			<div class="what">
@@ -54,8 +52,11 @@
 						{#if restores}
 							<Text as="span" size="xs" tone="muted">{m.sessions_limit_reset_clears({ windows: restores })}</Text>
 						{/if}
-						{#if expiry}
-							<Text as="span" size="xs" tone="muted">{expiry}</Text>
+						{#if entry.expires_at}
+							<Text as="span" size="xs" tone="muted">
+								{m.limit_resets_expires_label()}
+								<Timestamp value={entry.expires_at} mode="date" utc tone="inherit" />
+							</Text>
 						{/if}
 						{#if entry.resets_left !== null && entry.resets_left > 1}
 							<Text as="span" size="xs" tone="muted">{m.limit_resets_claims_left({ n: entry.resets_left })}</Text>

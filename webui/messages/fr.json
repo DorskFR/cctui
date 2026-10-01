@@ -772,6 +772,7 @@
 	"limit_resets_claim": "Réinitialiser",
 	"limit_resets_claims_left": "{n} utilisations restantes",
 	"limit_resets_empty": "Aucune réinitialisation de limite à utiliser pour cet identifiant.",
+	"limit_resets_expires_label": "Expire le",
 	"limit_resets_intro": "Toutes les réinitialisations de limite actuellement proposées pour cet identifiant, celle qui expire le plus tôt en premier.",
 	"limit_resets_more": "+{n} autre(s)",
 	"limit_resets_next": "{title} : {expiry}",

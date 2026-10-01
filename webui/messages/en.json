@@ -772,6 +772,7 @@
 	"limit_resets_claim": "Reset",
 	"limit_resets_claims_left": "{n} claims left",
 	"limit_resets_empty": "This credential has no limit reset to claim.",
+	"limit_resets_expires_label": "Expires",
 	"limit_resets_intro": "Every usage-limit reset this credential currently offers, soonest to expire first.",
 	"limit_resets_more": "+{n} more",
 	"limit_resets_next": "{title}: {expiry}",
