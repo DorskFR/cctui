@@ -7,7 +7,9 @@ use super::{row_actions, send, terminal};
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
+    let anchor = app.selection_anchor();
     let mut effects = reduce_action(app, action);
+    app.restore_selection(&anchor);
     effects.extend(super::drafts::sync_composer(app));
     // Every action can move a session in or out of waiting, so the diff runs
     // once per pass rather than being hooked onto the handful that obviously do.
@@ -28,6 +30,10 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Pools(action) => super::pools::reduce_pools(app, action),
         Action::Spend(action) => super::spend::reduce_spend(app, action),
         Action::Usage(action) => super::usage::reduce_usage(app, action),
+        Action::SettingsSaved(blob) => {
+            app.settings_blob = Some(*blob);
+            Vec::new()
+        }
         Action::Dispatchers(action) => super::dispatchers::reduce_dispatchers(app, action),
         Action::Access(action) => super::admin::reduce_access(app, action),
         Action::Instance(action) => super::instance::reduce_instance(app, action),
@@ -79,7 +85,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
 
         Action::Quit => {
             app.should_quit = true;
-            Vec::new()
+            super::drafts::on_quit(app)
         }
 
         Action::SelectNext => {
@@ -225,7 +231,21 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
                 // reply carries the send.
                 Some(session_id) if !content.trim().is_empty() => {
                     super::attach::upload_effect(app, &session_id, &content).map_or_else(
-                        || send::submit(app, session_id.clone(), content.clone(), None),
+                        || {
+                            // Spending the draft belongs to the composer, not to
+                            // `send::submit`: a card answer goes out through the
+                            // same outbox and must leave it alone. The upload
+                            // branch spends it when the upload lands, so a failed
+                            // upload still has a draft to fall back on.
+                            let mut effects = super::drafts::on_send(app, &session_id, &content);
+                            effects.extend(send::submit(
+                                app,
+                                session_id.clone(),
+                                content.clone(),
+                                None,
+                            ));
+                            effects
+                        },
                         |effect| vec![effect],
                     )
                 }
@@ -329,6 +349,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             let mut effects = conversation::reconnect(app);
             effects.extend(send::redispatch_parked(app));
             effects.extend(super::session_live::refresh(app));
+            app.permissions.fetch_started();
             effects.push(Effect::FetchPendingPermissions);
             effects
         }
@@ -498,6 +519,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
 fn deregister_session(app: &mut App, session_id: &str) {
     app.sessions.retain(|s| s.id != session_id);
     app.conversations.remove(session_id);
+    super::send::session_deregistered(app, session_id);
     app.permissions.drop_session(session_id);
     app.drafts.forget(session_id);
     if app.subscribed.as_deref() == Some(session_id) {
@@ -871,5 +893,116 @@ mod tests {
         let toast = app.toasts.latest().expect("a toast");
         assert_eq!(toast.text, "boom");
         assert_eq!(toast.expires_ms, 1_000 + crate::app::toast::Toasts::TTL_MS);
+    }
+
+    /// F2: a poll that reorders or drops rows must not move the cursor onto a
+    /// different session.
+    mod selection_follows_the_session {
+        use super::{Action, App, reduce};
+        use crate::testsupport::app_with_sessions;
+
+        fn flat_ids(app: &App) -> Vec<String> {
+            app.flattened_sessions().iter().map(|s| s.id.clone()).collect()
+        }
+
+        /// Puts the cursor on the third visible row and returns its session id.
+        fn cursor_on_third_row(app: &mut App) -> String {
+            reduce(app, Action::SelectNext);
+            reduce(app, Action::SelectNext);
+            app.selected_session_id().expect("a selection")
+        }
+
+        #[test]
+        fn a_refresh_that_drops_a_row_above_the_cursor_keeps_the_same_session() {
+            let mut app = app_with_sessions();
+            let target = cursor_on_third_row(&mut app);
+            let gone = flat_ids(&app)[0].clone();
+            assert_ne!(gone, target);
+
+            let kept: Vec<_> = app.sessions.iter().filter(|s| s.id != gone).cloned().collect();
+            reduce(&mut app, Action::SessionsLoaded(kept));
+
+            assert_eq!(app.selected_session_id().as_deref(), Some(target.as_str()));
+        }
+
+        #[test]
+        fn a_refresh_that_regroups_a_row_above_the_cursor_keeps_the_same_session() {
+            let mut app = app_with_sessions();
+            let target = cursor_on_third_row(&mut app);
+            let moved = flat_ids(&app)[0].clone();
+            assert_ne!(moved, target);
+
+            let next: Vec<_> = app
+                .sessions
+                .iter()
+                .map(|s| {
+                    if s.id == moved {
+                        crate::testsupport::session(&s.id, "alpha", "inactive", "done")
+                    } else {
+                        s.clone()
+                    }
+                })
+                .collect();
+            reduce(&mut app, Action::SessionsLoaded(next));
+
+            assert_eq!(app.selected_session_id().as_deref(), Some(target.as_str()));
+        }
+
+        #[test]
+        fn a_send_after_a_reordering_refresh_reaches_the_session_the_cursor_was_on() {
+            let mut app = app_with_sessions();
+            let target = cursor_on_third_row(&mut app);
+            let gone = flat_ids(&app)[0].clone();
+
+            let kept: Vec<_> = app.sessions.iter().filter(|s| s.id != gone).cloned().collect();
+            reduce(&mut app, Action::SessionsLoaded(kept));
+
+            app.input_active = true;
+            app.message_input.insert_str("ship it");
+            reduce(&mut app, Action::SubmitInput);
+
+            let sent = app.outbox.tracked().last().expect("a send");
+            assert_eq!(sent.session_id, target);
+        }
+
+        #[test]
+        fn deregistering_a_row_above_the_cursor_keeps_the_same_session() {
+            let mut app = app_with_sessions();
+            let target = cursor_on_third_row(&mut app);
+            let gone = flat_ids(&app)[0].clone();
+
+            reduce(&mut app, Action::SessionDeregistered(gone.clone()));
+
+            assert!(!flat_ids(&app).contains(&gone));
+            assert_eq!(app.selected_session_id().as_deref(), Some(target.as_str()));
+        }
+
+        /// A filter or a regroup can drop the subscribed session off the
+        /// visible list entirely, leaving the cursor on someone else.
+        #[test]
+        fn an_open_conversation_is_addressed_by_what_it_subscribed_to() {
+            let mut app = app_with_sessions();
+            let opened = app.selected_session_id().expect("a selection");
+            reduce(&mut app, Action::OpenSelectedConversation);
+            assert_eq!(app.subscribed.as_deref(), Some(opened.as_str()));
+
+            app.selected_index = 2;
+
+            assert_eq!(app.selected_session_id().as_deref(), Some(opened.as_str()));
+            app.input_active = true;
+            app.message_input.insert_str("still you");
+            reduce(&mut app, Action::SubmitInput);
+            assert_eq!(app.outbox.tracked().last().expect("a send").session_id, opened);
+        }
+
+        /// Moving the cursor is still the user's call: the anchor must not
+        /// snap it back.
+        #[test]
+        fn an_explicit_cursor_move_is_not_undone() {
+            let mut app = app_with_sessions();
+            let first = app.selected_session_id().expect("a selection");
+            reduce(&mut app, Action::SelectNext);
+            assert_ne!(app.selected_session_id().as_deref(), Some(first.as_str()));
+        }
     }
 }

@@ -94,13 +94,37 @@ pub async fn device_login(server: Option<String>) -> Result<()> {
         if std::time::Instant::now() >= deadline {
             bail!("the code expired before it was approved; run `cctui login` again");
         }
-        if let Some(token) = poll_once(&http, &server_url, &start.device_code).await? {
-            break token;
+        match poll_once(&http, &server_url, &start.device_code).await {
+            Ok(Some(token)) => break token,
+            Ok(None) => {}
+            // A blip must not throw away an approval the user already gave: the
+            // code's own deadline is what ends the wait.
+            Err(PollFailed::Transient(e)) => {
+                eprintln!("[cctui] still waiting ({e})");
+            }
+            Err(PollFailed::Fatal(e)) => return Err(e),
         }
     };
 
     let me = validate(&server_url, &token).await?;
     persist(&server_url, &token, &me)
+}
+
+/// Why a poll did not produce a key. A transient failure is retried until the
+/// code expires; a fatal one ends the login.
+enum PollFailed {
+    Transient(cctui_client::ClientError),
+    Fatal(anyhow::Error),
+}
+
+/// Whether polling again is worth it: the server being briefly unreachable or
+/// erroring says nothing about whether the request is still approvable.
+const fn transient(e: &cctui_client::ClientError) -> bool {
+    match e {
+        cctui_client::ClientError::Transport { .. } => true,
+        cctui_client::ClientError::Status { status, .. } => *status >= 500,
+        _ => false,
+    }
 }
 
 /// One poll. `Ok(None)` means "still pending, keep waiting"; a refused code
@@ -109,21 +133,27 @@ async fn poll_once(
     http: &reqwest::Client,
     server_url: &str,
     device_code: &str,
-) -> Result<Option<String>> {
-    let Some(poll) =
-        device_auth::poll(http, server_url, device_code).await.context("poll device login")?
-    else {
+) -> std::result::Result<Option<String>, PollFailed> {
+    let polled = device_auth::poll(http, server_url, device_code).await.map_err(|e| {
+        if transient(&e) {
+            PollFailed::Transient(e)
+        } else {
+            PollFailed::Fatal(anyhow::Error::new(e).context("poll device login"))
+        }
+    })?;
+    let Some(poll) = polled else {
         return Ok(None);
     };
+    let fatal = |msg: &str| PollFailed::Fatal(anyhow::anyhow!("{}", msg.to_owned()));
     match poll.status {
         DeviceAuthStatus::Pending => Ok(None),
         DeviceAuthStatus::Approved => poll
             .token
-            .ok_or_else(|| anyhow::anyhow!("the server approved the login but minted no key"))
+            .ok_or_else(|| fatal("the server approved the login but minted no key"))
             .map(Some),
-        DeviceAuthStatus::Denied => bail!("the login was denied"),
+        DeviceAuthStatus::Denied => Err(fatal("the login was denied")),
         DeviceAuthStatus::Expired => {
-            bail!("the code expired before it was approved; run `cctui login` again")
+            Err(fatal("the code expired before it was approved; run `cctui login` again"))
         }
     }
 }
@@ -219,5 +249,30 @@ mod tests {
         assert_eq!(id.user_key, "cctui_u_k");
         assert_eq!(id.name.as_deref(), Some("dorsk"));
         assert_eq!(id.user_id.as_deref(), Some(uuid::Uuid::nil().to_string().as_str()));
+    }
+
+    /// A device login that is already approved must survive a server blip: the
+    /// approval is spent and cannot be given again, so aborting loses it.
+    #[test]
+    fn a_transient_poll_failure_keeps_waiting_and_a_definite_one_does_not() {
+        use cctui_client::ClientError;
+        let route = "post_auth_device_poll";
+
+        assert!(super::transient(&ClientError::Status {
+            route,
+            status: 500,
+            body: "boom".to_owned()
+        }));
+        assert!(super::transient(&ClientError::Status { route, status: 503, body: String::new() }));
+
+        // A definite answer about the request itself ends the login.
+        assert!(!super::transient(&ClientError::Status {
+            route,
+            status: 404,
+            body: "unknown device code".to_owned()
+        }));
+        assert!(!super::transient(&ClientError::NotFound { route }));
+        assert!(!super::transient(&ClientError::Unauthorized));
+        assert!(!super::transient(&ClientError::Forbidden { route }));
     }
 }

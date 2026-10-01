@@ -285,13 +285,15 @@
 	"conversation_scheduled_for": "Programmé pour {time}",
 	"device_approve": "Approuver",
 	"device_approved": "Approuvé — l'appareil peut terminer sa connexion.",
-	"device_client": "Client : {name}",
+	"device_client": "Client (nom que l\u2019appareil s\u2019est donn\u00e9, non v\u00e9rifi\u00e9) : {name}",
 	"device_code_label": "Code de l'appareil",
 	"device_denied": "Refusé.",
 	"device_deny": "Refuser",
 	"device_expires_in": "Expire dans {seconds} secondes",
 	"device_intro": "Un client cctui demande à se connecter en votre nom. Ne l'approuvez que si vous avez lancé cette connexion, et seulement si le code ci-dessous correspond à celui affiché par le client.",
 	"device_lookup": "Rechercher",
+	"device_prefilled_hint": "Cette page a \u00e9t\u00e9 ouverte avec un code d\u00e9j\u00e0 rempli. V\u00e9rifiez qu\u2019il correspond \u00e0 celui affich\u00e9 par l\u2019appareil, puis recherchez-le.",
+	"device_requester": "Origine de cette demande",
 	"device_status_dead": "Ce code a expiré ou a déjà été traité. Relancez la connexion depuis l'appareil.",
 	"device_title": "Approuver un appareil",
 	"device_unknown_client": "un client sans nom",
@@ -466,10 +468,11 @@
 	"conversation_unpin_title": "Retirer cette épingle",
 	"conversation_waiting_input": "✋ En attente de votre réponse",
 	"conversation_working": "En cours…",
-	"diagnose_age_h": "il y a {h} h",
-	"diagnose_age_m": "il y a {min} min",
-	"diagnose_age_ms": "il y a {ms} ms",
-	"diagnose_age_s": "il y a {s} s",
+	"diagnose_age_h": "{h} h",
+	"diagnose_age_ago": "il y a {age}",
+	"diagnose_age_m": "{min} min",
+	"diagnose_age_ms": "{ms} ms",
+	"diagnose_age_s": "{s} s",
 	"diagnose_block_account": "Compte / limites",
 	"diagnose_block_process": "Processus",
 	"diagnose_block_transport": "Transport",
@@ -917,8 +920,13 @@
 	"pools_leave": "Retirer du pool",
 	"pools_legend": [
 		{
-			"declarations": ["input n", "local nPlural = n: plural"],
-			"selectors": ["nPlural"],
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
 			"match": {
 				"nPlural=one": "pool · {n} compte",
 				"nPlural=other": "pool · {n} comptes"
@@ -927,8 +935,13 @@
 	],
 	"pools_legend_failover": [
 		{
-			"declarations": ["input n", "local nPlural = n: plural"],
-			"selectors": ["nPlural"],
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
 			"match": {
 				"nPlural=one": "pool · {n} compte · basculement armé",
 				"nPlural=other": "pool · {n} comptes · basculement armé"
@@ -957,8 +970,14 @@
 	"pools_usage_failover_off": "Failover désactivé : la projection ne vaut que pour les sessions neuves",
 	"pools_usage_family": [
 		{
-			"declarations": ["input family", "input n", "local nPlural = n: plural"],
-			"selectors": ["nPlural"],
+			"declarations": [
+				"input family",
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
 			"match": {
 				"nPlural=one": "{family} · {n} compte",
 				"nPlural=other": "{family} · {n} comptes"
@@ -2029,33 +2048,33 @@
 	"settings_plugins_admin_enabled": "{name} activé pour cette instance",
 	"settings_plugins_admin_disabled": "{name} désactivé pour cette instance",
 	"settings_plugins_admin_uninstalled": "{name} désinstallé",
-  "provider_status_aria": "État des fournisseurs en amont ({count} dégradé·s)",
-  "provider_status_heading": "{provider} · {severity}",
-  "provider_status_affected": "Touché : {components}",
-  "provider_status_page": "Page d'état",
-  "provider_status_minor": "dégradé",
-  "provider_status_major": "panne partielle",
-  "provider_status_critical": "panne majeure",
-  "provider_status_account_badge": "{provider} en amont : {detail}",
-  "accounts_field_usage_probe": "Sonde de consommation",
-  "accounts_usage_probe_help": "Lit le quota propre à ce point d'accès pour que la clé obtienne de vraies fenêtres, un rythme et une limite souple. Sans sonde, elle reste non mesurée.",
-  "rooms_joined_marker": "Ajouté à une salle",
-  "rooms_name_label": "Nom de la salle",
-  "rooms_name_placeholder": "vague 23",
-  "rooms_badge_title": "Dans la salle {room}",
-  "rooms_members_count": "{count} membre(s)",
-  "rooms_none": "Aucune salle. Sélectionnez plusieurs sessions pour en créer une.",
-  "rooms_archive": "Archiver la salle",
-  "rooms_delete": "Supprimer la salle",
-  "rooms_line_from_room": "dans {room}",
-  "rooms_menu_label": "Salle",
-  "rooms_menu_action": "Salle…",
-  "rooms_menu_hint": "Les sessions d'une salle peuvent s'écrire et lire leurs historiques.",
-  "rooms_clear": "Aucune salle",
-  "rooms_rename": "Renommer la salle",
-  "rooms_move_count": "Déplacer {count} vers une salle",
-  "sessions_dim_room": "Salle",
-  "rooms_archive_confirm": "Archiver « {room} » et les {count} session(s) qu'elle contient ? Elles s'arrêtent ; désarchivez-les ensuite une par une.",
-  "rooms_archive_confirm_empty": "Archiver « {room} » ? Rien n'y tourne encore.",
-  "rooms_archive_skipped_pinned": "{count} session(s) épinglée(s) laissée(s) en cours."
+	"provider_status_aria": "État des fournisseurs en amont ({count} dégradé·s)",
+	"provider_status_heading": "{provider} · {severity}",
+	"provider_status_affected": "Touché : {components}",
+	"provider_status_page": "Page d'état",
+	"provider_status_minor": "dégradé",
+	"provider_status_major": "panne partielle",
+	"provider_status_critical": "panne majeure",
+	"provider_status_account_badge": "{provider} en amont : {detail}",
+	"accounts_field_usage_probe": "Sonde de consommation",
+	"accounts_usage_probe_help": "Lit le quota propre à ce point d'accès pour que la clé obtienne de vraies fenêtres, un rythme et une limite souple. Sans sonde, elle reste non mesurée.",
+	"rooms_joined_marker": "Ajouté à une salle",
+	"rooms_name_label": "Nom de la salle",
+	"rooms_name_placeholder": "vague 23",
+	"rooms_badge_title": "Dans la salle {room}",
+	"rooms_members_count": "{count} membre(s)",
+	"rooms_none": "Aucune salle. Sélectionnez plusieurs sessions pour en créer une.",
+	"rooms_archive": "Archiver la salle",
+	"rooms_delete": "Supprimer la salle",
+	"rooms_line_from_room": "dans {room}",
+	"rooms_menu_label": "Salle",
+	"rooms_menu_action": "Salle…",
+	"rooms_menu_hint": "Les sessions d'une salle peuvent s'écrire et lire leurs historiques.",
+	"rooms_clear": "Aucune salle",
+	"rooms_rename": "Renommer la salle",
+	"rooms_move_count": "Déplacer {count} vers une salle",
+	"sessions_dim_room": "Salle",
+	"rooms_archive_confirm": "Archiver « {room} » et les {count} session(s) qu'elle contient ? Elles s'arrêtent ; désarchivez-les ensuite une par une.",
+	"rooms_archive_confirm_empty": "Archiver « {room} » ? Rien n'y tourne encore.",
+	"rooms_archive_skipped_pinned": "{count} session(s) épinglée(s) laissée(s) en cours."
 }

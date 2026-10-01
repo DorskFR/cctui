@@ -30,7 +30,10 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
     match action {
         ConversationAction::Loaded { session_id, kind, rows, etag, has_more } => {
             let merge = app.conversation_mut(&session_id).merge_page(kind, rows, etag, has_more);
-            if kind == PageKind::Older && merge.inserted > 0 && merge.reordered {
+            // The cursor, the viewport and the anchor all belong to whatever is
+            // on screen; a background session's page must not move them.
+            let on_screen = app.subscribed.as_deref() == Some(session_id.as_str());
+            if on_screen && kind == PageKind::Older && merge.inserted > 0 && merge.reordered {
                 app.pending_prepend = true;
                 // The cursor addresses an entry by index, so a prepend moves it.
                 if let Some(cursor) = app.line_cursor.as_mut() {
@@ -80,12 +83,18 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
 /// stored `ETag` makes the repeat a 304, and any cheaper gate loses the history
 /// to a live event that happens to arrive first.
 pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
+    // An anchor for another session would otherwise fire on this one's first
+    // page, at whatever line happens to carry that seq.
+    if app.pending_seq_anchor.as_ref().is_some_and(|(id, _)| *id != session_id) {
+        app.pending_seq_anchor = None;
+    }
     app.follow_tail = true;
     app.scroll_offset = 0;
     app.line_cursor = None;
     app.router.push(View::Conversation);
     app.subscribed = Some(session_id.clone());
     super::unread::opened(app, &session_id);
+    evict_cold_stores(app);
 
     let store = app.conversation_mut(&session_id);
     let page = ConversationStore::latest_request();
@@ -143,6 +152,25 @@ pub fn load_older(app: &mut App) -> Vec<Effect> {
 
 pub fn stream(app: &mut App, session_id: &str, seq: Option<i64>, line: ConversationLine) {
     app.conversation_mut(session_id).push_live(seq, line);
+    evict_cold_stores(app);
+}
+
+/// Bound the buffered transcripts. Runs where stores are created — opening a
+/// conversation and streaming into a background one — and is a length check
+/// until the cap is actually exceeded.
+fn evict_cold_stores(app: &mut App) {
+    if app.conversations.len() <= super::conversation_store::MAX_STORES {
+        return;
+    }
+    let keep = app.conversations_in_use();
+    let dropped = super::conversation_store::evict_cold(
+        &mut app.conversations,
+        &keep,
+        super::conversation_store::MAX_STORES,
+    );
+    if !dropped.is_empty() {
+        tracing::debug!(count = dropped.len(), "evicted cold transcripts");
+    }
 }
 
 /// Line-select starts at the newest line and holds the viewport there: the
@@ -161,7 +189,10 @@ fn toggle_line_cursor(app: &mut App) {
 /// a search hit, a pin — by focusing that entry, so line-select's own scroll
 /// carries it on screen. A seq not in this page is left pending for the next.
 fn anchor_pending_seq(app: &mut App, session_id: &str) {
-    let Some(seq) = app.pending_seq_anchor else { return };
+    let Some((anchored, seq)) = app.pending_seq_anchor.clone() else { return };
+    if anchored != session_id {
+        return;
+    }
     let Some(at) =
         app.conversation_mut(session_id).entries().iter().position(|e| e.sequenced && e.seq == seq)
     else {
@@ -379,6 +410,95 @@ mod tests {
         assert!(!load_older(&mut app).is_empty(), "the failed page can be asked for again");
     }
 
+    /// A page for a session other than `s-a`, which the helper above hardcodes.
+    fn page_for(app: &mut App, session_id: &str, kind: PageKind, rows: &[(i64, &str)]) {
+        let rows = rows.iter().map(|(seq, text)| (*seq, line(text))).collect();
+        reduce(
+            app,
+            Action::Conversation(ConversationAction::Loaded {
+                session_id: session_id.to_owned(),
+                kind,
+                rows,
+                etag: None,
+                has_more: false,
+            }),
+        );
+    }
+
+    #[test]
+    fn a_background_sessions_older_page_leaves_the_visible_cursor_alone() {
+        let mut app = app();
+        app.sessions.push(session("s-b", "beta", "active", "working"));
+        app.update_aggregates();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(10, "a"), (11, "b")], true);
+        line_select(&mut app);
+        assert_eq!(app.line_cursor, Some(1));
+
+        // s-b holds newer rows, so its older page really prepends — the case
+        // that used to shift whatever cursor was on screen.
+        page_for(&mut app, "s-b", PageKind::Latest, &[(20, "b-new")]);
+        page_for(&mut app, "s-b", PageKind::Older, &[(1, "x"), (2, "y"), (3, "z")]);
+        assert_eq!(app.conversation_mut("s-b").entries().len(), 4, "the page did land");
+
+        assert_eq!(app.line_cursor, Some(1), "the cursor still points at the line it was on");
+        assert!(!app.pending_prepend, "and the viewport is not re-anchored");
+    }
+
+    #[test]
+    fn another_sessions_page_cannot_consume_the_search_anchor() {
+        let mut app = app();
+        app.sessions.push(session("s-b", "beta", "active", "working"));
+        app.update_aggregates();
+        app.pending_seq_anchor = Some(("s-a".to_owned(), 11));
+        open(&mut app, "s-a".to_owned());
+
+        // s-b happens to hold seq 11 too — seqs are per session.
+        page_for(&mut app, "s-b", PageKind::Latest, &[(11, "someone else's line")]);
+        assert_eq!(
+            app.pending_seq_anchor,
+            Some(("s-a".to_owned(), 11)),
+            "the anchor waits for its own session"
+        );
+        assert!(app.line_cursor.is_none(), "and nothing is focused in the open conversation");
+
+        page(&mut app, PageKind::Latest, &[(10, "a"), (11, "the hit"), (12, "c")], false);
+        assert_eq!(app.line_cursor, Some(1), "the real page lands on the hit");
+        assert!(app.pending_seq_anchor.is_none());
+    }
+
+    #[test]
+    fn opening_a_different_conversation_drops_a_stale_anchor() {
+        let mut app = app();
+        app.sessions.push(session("s-b", "beta", "active", "working"));
+        app.update_aggregates();
+        app.pending_seq_anchor = Some(("s-a".to_owned(), 11));
+
+        open(&mut app, "s-b".to_owned());
+        assert!(app.pending_seq_anchor.is_none(), "an anchor for elsewhere must not fire here");
+    }
+
+    #[test]
+    fn cold_transcripts_are_evicted_but_the_open_one_survives() {
+        use super::super::conversation_store::MAX_STORES;
+
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(1, "mine")], false);
+
+        for i in 0..MAX_STORES + 8 {
+            super::stream(&mut app, &format!("bg-{i}"), Some(1), line("background chatter"));
+        }
+
+        assert!(
+            app.conversations.len() <= MAX_STORES,
+            "stores are bounded, got {}",
+            app.conversations.len()
+        );
+        assert!(app.conversations.contains_key("s-a"), "the open conversation is never evicted");
+        assert_eq!(app.conversation_mut("s-a").entries().len(), 1, "and it keeps the lines it had");
+    }
+
     fn line_select(app: &mut App) -> Vec<Effect> {
         reduce(app, Action::Conversation(ConversationAction::ToggleLineCursor))
     }
@@ -510,7 +630,7 @@ mod tests {
     #[test]
     fn a_page_that_carries_the_pending_seq_lands_on_it() {
         let mut app = app();
-        app.pending_seq_anchor = Some(11);
+        app.pending_seq_anchor = Some(("s-a".to_owned(), 11));
         open(&mut app, "s-a".to_owned());
         page(&mut app, PageKind::Latest, &[(10, "a"), (11, "b"), (12, "c")], false);
         assert_eq!(app.line_cursor, Some(1), "the matched line takes the focus");
@@ -521,10 +641,10 @@ mod tests {
     #[test]
     fn a_seq_this_page_does_not_hold_stays_pending_for_the_next() {
         let mut app = app();
-        app.pending_seq_anchor = Some(5);
+        app.pending_seq_anchor = Some(("s-a".to_owned(), 5));
         open(&mut app, "s-a".to_owned());
         page(&mut app, PageKind::Latest, &[(10, "a")], true);
-        assert_eq!(app.pending_seq_anchor, Some(5));
+        assert_eq!(app.pending_seq_anchor, Some(("s-a".to_owned(), 5)));
         assert!(app.line_cursor.is_none());
 
         page(&mut app, PageKind::Older, &[(5, "the one")], false);

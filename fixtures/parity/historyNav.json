@@ -175,5 +175,85 @@
         "browsing": false
       }
     ]
+  },
+  {
+    "name": "a history that shrank under the cursor falls back to the draft",
+    "list": ["old", "mid", "new"],
+    "initial": "half-typed",
+    "steps": [
+      {
+        "op": "caret",
+        "at": 0
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "new"
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "mid"
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "old"
+      },
+      {
+        "op": "setList",
+        "list": ["only"]
+      },
+      {
+        "op": "key",
+        "key": "ArrowDown",
+        "handled": true,
+        "value": "half-typed"
+      },
+      {
+        "op": "expectBrowsing",
+        "browsing": false
+      }
+    ]
+  },
+  {
+    "name": "a history emptied under the cursor falls back to the draft",
+    "list": ["old", "new"],
+    "initial": "half-typed",
+    "steps": [
+      {
+        "op": "caret",
+        "at": 0
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "new"
+      },
+      {
+        "op": "key",
+        "key": "ArrowUp",
+        "handled": true,
+        "value": "old"
+      },
+      {
+        "op": "setList",
+        "list": []
+      },
+      {
+        "op": "key",
+        "key": "ArrowDown",
+        "handled": true,
+        "value": "half-typed"
+      },
+      {
+        "op": "expectBrowsing",
+        "browsing": false
+      }
+    ]
   }
 ]

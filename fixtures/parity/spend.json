@@ -14,15 +14,29 @@
           "costUsd": 2.0,
           "tokens": 20
         },
-        { "model": null, "registeredAtMs": null, "costUsd": 4.0, "tokens": 40 }
+        {
+          "model": null,
+          "registeredAtMs": null,
+          "costUsd": 4.0,
+          "tokens": 40
+        }
       ],
       "cutoffMs": 100,
       "out": 1.0
     },
-    { "sessions": [], "cutoffMs": 0, "out": 0.0 },
+    {
+      "sessions": [],
+      "cutoffMs": 0,
+      "out": 0.0
+    },
     {
       "sessions": [
-        { "model": "x", "registeredAtMs": 5, "costUsd": 0.0, "tokens": 0 }
+        {
+          "model": "x",
+          "registeredAtMs": 5,
+          "costUsd": 0.0,
+          "tokens": 0
+        }
       ],
       "cutoffMs": 0,
       "out": 0.0
@@ -62,13 +76,37 @@
           "tokens": 0
         }
       ],
-      "windows": { "todayMs": 2592000000, "weekMs": 2073600000, "monthMs": 0 },
+      "windows": {
+        "todayMs": 2592000000,
+        "weekMs": 2073600000,
+        "monthMs": 0
+      },
       "out": [
-        { "model": "sonnet", "today": 0.0, "week": 0.0, "month": 9.0 },
-        { "model": "opus", "today": 4.1, "week": 5.1, "month": 5.1 },
-        { "model": "unknown", "today": 0.5, "week": 0.5, "month": 0.5 }
+        {
+          "model": "sonnet",
+          "today": 0.0,
+          "week": 0.0,
+          "month": 9.0
+        },
+        {
+          "model": "opus",
+          "today": 4.1,
+          "week": 5.1,
+          "month": 5.1
+        },
+        {
+          "model": "unknown",
+          "today": 0.5,
+          "week": 0.5,
+          "month": 0.5
+        }
       ],
-      "totals": { "model": "total", "today": 4.6, "week": 5.6, "month": 14.6 }
+      "totals": {
+        "model": "total",
+        "today": 4.6,
+        "week": 5.6,
+        "month": 14.6
+      }
     },
     {
       "sessions": [
@@ -79,24 +117,49 @@
           "tokens": 5
         }
       ],
-      "windows": { "todayMs": 0, "weekMs": 0, "monthMs": 0 },
+      "windows": {
+        "todayMs": 0,
+        "weekMs": 0,
+        "monthMs": 0
+      },
       "out": [],
-      "totals": { "model": "total", "today": 0.0, "week": 0.0, "month": 0.0 }
+      "totals": {
+        "model": "total",
+        "today": 0.0,
+        "week": 0.0,
+        "month": 0.0
+      }
     }
   ],
   "fillDaily": [
     {
       "points": [
-        { "dayMs": 864000000, "tokens": 7 },
-        { "dayMs": 691200000, "tokens": 3 }
+        {
+          "dayMs": 864000000,
+          "tokens": 7
+        },
+        {
+          "dayMs": 691200000,
+          "tokens": 3
+        }
       ],
       "days": 4,
       "endDayMs": 864000000,
       "out": [0, 3, 0, 7]
     },
-    { "points": [], "days": 3, "endDayMs": 0, "out": [0, 0, 0] },
     {
-      "points": [{ "dayMs": 0, "tokens": 9 }],
+      "points": [],
+      "days": 3,
+      "endDayMs": 0,
+      "out": [0, 0, 0]
+    },
+    {
+      "points": [
+        {
+          "dayMs": 0,
+          "tokens": 9
+        }
+      ],
       "days": 0,
       "endDayMs": 0,
       "out": []
@@ -130,21 +193,77 @@
           "busts": 2
         }
       ],
-      "out": { "usd": 2.35, "tokens": 1680, "busts": 5 }
+      "out": {
+        "usd": 2.35,
+        "tokens": 1680,
+        "busts": 5
+      }
     },
-    { "days": [], "out": { "usd": 0.0, "tokens": 0, "busts": 0 } }
+    {
+      "days": [],
+      "out": {
+        "usd": 0.0,
+        "tokens": 0,
+        "busts": 0
+      }
+    }
   ],
   "langfuseCostLabel": [
-    { "costUsd": 0.0234, "out": "$0.023" },
-    { "costUsd": 0.0, "out": "$0.000" },
-    { "costUsd": 0.9999, "out": "$1.000" },
-    { "costUsd": 1.0, "out": "$1.00" },
-    { "costUsd": 1.5, "out": "$1.50" },
-    { "costUsd": 123.456, "out": "$123.46" }
+    {
+      "costUsd": 0.0234,
+      "out": "$0.023"
+    },
+    {
+      "costUsd": 0.0,
+      "out": "$0.000"
+    },
+    {
+      "costUsd": 0.9999,
+      "out": "$1.000"
+    },
+    {
+      "costUsd": 1.0,
+      "out": "$1.00"
+    },
+    {
+      "costUsd": 1.5,
+      "out": "$1.50"
+    },
+    {
+      "costUsd": 123.456,
+      "out": "$123.46"
+    },
+    {
+      "costUsd": 0.0125,
+      "out": "$0.013"
+    },
+    {
+      "costUsd": 1.125,
+      "out": "$1.13"
+    },
+    {
+      "costUsd": 0.1235,
+      "out": "$0.123"
+    }
   ],
   "hasLangfuseCost": [
-    { "usage": null, "out": false },
-    { "usage": { "cost_usd": 0.0, "trace_count": 0 }, "out": false },
-    { "usage": { "cost_usd": 0.0, "trace_count": 2 }, "out": true }
+    {
+      "usage": null,
+      "out": false
+    },
+    {
+      "usage": {
+        "cost_usd": 0.0,
+        "trace_count": 0
+      },
+      "out": false
+    },
+    {
+      "usage": {
+        "cost_usd": 0.0,
+        "trace_count": 2
+      },
+      "out": true
+    }
   ]
 }

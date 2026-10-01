@@ -226,7 +226,7 @@ fn expected_ids(c: &Value) -> Vec<String> {
 fn history_nav_parity() {
     let fx = fixture("historyNav");
     for case in fx.as_array().unwrap() {
-        let list: Vec<String> = strings(&case["list"]);
+        let mut list: Vec<String> = strings(&case["list"]);
         let mut value = s(case, "initial");
         let mut caret = value.chars().count();
         let mut nav = HistoryNav::new();
@@ -234,6 +234,7 @@ fn history_nav_parity() {
         for step in case["steps"].as_array().unwrap() {
             match step["op"].as_str().unwrap() {
                 "caret" => caret = step["at"].as_u64().unwrap() as usize,
+                "setList" => list = strings(&step["list"]),
                 "reset" => nav.reset(),
                 "resetAll" => nav.reset_all(),
                 "recall" => {
@@ -1150,5 +1151,22 @@ fn spawn_accounts_parity() {
             want,
             "compatiblePools {c}"
         );
+    }
+}
+
+/// `fixtures/parity/age.json`, replayed by the web UI's `age.parity.test.ts`.
+#[test]
+fn age_parity() {
+    use cctui_clientcore::age::{age, age_ago, age_bare};
+
+    let fx = fixture("age");
+    for c in cases(&fx, "cases") {
+        let ms = c["ms"].as_i64().expect("ms");
+        let got = age(ms);
+        let unit = serde_json::to_value(got.unit).expect("a unit");
+        assert_eq!(unit.as_str().unwrap_or_default(), s(c, "unit"), "unit of {ms}");
+        assert_eq!(got.value, c["value"].as_i64().expect("value"), "value of {ms}");
+        assert_eq!(age_bare(ms), s(c, "bare"), "bare of {ms}");
+        assert_eq!(age_ago(ms), s(c, "ago"), "ago of {ms}");
     }
 }

@@ -116,6 +116,31 @@ impl Attachments {
     }
 }
 
+/// Why a path may not be staged, decided from its metadata BEFORE its bytes are
+/// read: a FIFO or a device has no size to respect (`/dev/zero` would read until
+/// OOM), and an oversized file must be refused rather than read and then
+/// rejected. Both the composer and the spawn dialog gate on this.
+#[must_use]
+pub fn path_refusal(name: &str, meta: &std::fs::Metadata, caps: UploadCaps) -> Option<String> {
+    if !meta.is_file() {
+        return Some(format!("{name} is not a regular file"));
+    }
+    if cctui_clientcore::uploads::over_file_cap(meta.len(), caps) {
+        return Some(format!(
+            "{name} is {} — over the {} per-file cap",
+            fmt_size(meta.len()),
+            fmt_size(caps.max_file_bytes)
+        ));
+    }
+    None
+}
+
+/// The caps every local read is gated on.
+#[must_use]
+pub fn caps() -> UploadCaps {
+    default_caps()
+}
+
 pub enum AttachAction {
     /// A path's bytes arrived from the disk.
     Read {
@@ -186,7 +211,11 @@ pub fn reduce_attach(app: &mut App, action: AttachAction) -> Vec<Effect> {
                 .extend(paths.iter().map(|p| p.rsplit('/').next().unwrap_or(p).to_owned()));
             app.attachments.stage_mut(&session_id).items.clear();
             app.attachments.chip_cursor = None;
-            super::send::submit(app, session_id, content, None)
+            // The upload is the second half of a composer submit, so this is
+            // where that draft is finally spent.
+            let mut effects = super::drafts::on_send(app, &session_id, &content);
+            effects.extend(super::send::submit(app, session_id, content, None));
+            effects
         }
         AttachAction::UploadFailed { session_id, content, message } => {
             // The staged files stay put so the send can be retried; the composer
@@ -468,6 +497,73 @@ mod tests {
             other => panic!("expected one upload effect, got {}", other.len()),
         }
         assert!(app.outbox.tracked().next().is_none(), "nothing is sent before the upload lands");
+    }
+
+    #[test]
+    fn an_oversized_path_is_refused_from_its_metadata_not_after_reading_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("big.bin");
+        let caps = super::caps();
+        std::fs::write(&path, vec![0u8; usize::try_from(caps.max_file_bytes).expect("cap") + 1])
+            .expect("write");
+        let meta = std::fs::metadata(&path).expect("stat");
+
+        let refusal = super::path_refusal("big.bin", &meta, caps).expect("a refusal");
+        assert!(refusal.contains("per-file cap"), "{refusal}");
+    }
+
+    #[test]
+    fn a_file_inside_the_cap_is_allowed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("small.txt");
+        std::fs::write(&path, b"hi").expect("write");
+        let meta = std::fs::metadata(&path).expect("stat");
+        assert_eq!(super::path_refusal("small.txt", &meta, super::caps()), None);
+    }
+
+    #[test]
+    fn a_directory_or_device_is_not_a_file_to_read() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let meta = std::fs::metadata(tmp.path()).expect("stat");
+        let refusal = super::path_refusal("adir", &meta, super::caps()).expect("a refusal");
+        assert!(refusal.contains("not a regular file"), "{refusal}");
+
+        // `/dev/zero` is the finding's case: unbounded, and never a regular file.
+        if let Ok(meta) = std::fs::metadata("/dev/zero") {
+            assert!(
+                super::path_refusal("zero", &meta, super::caps()).is_some(),
+                "an endless device must be refused before any read"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_upload_leaves_the_draft_to_fall_back_on() {
+        let mut app = app();
+        let _ = reduce(
+            &mut app,
+            Action::InputKey(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('h'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
+        attach(&mut app, read("a.txt", 3));
+        let _ = reduce(&mut app, Action::SubmitInput);
+
+        let effects = attach(
+            &mut app,
+            AttachAction::UploadFailed {
+                session_id: "s-a".to_owned(),
+                content: "h [a.txt]".to_owned(),
+                message: "no".to_owned(),
+            },
+        );
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::DiscardDraft { .. })),
+            "a draft the user can still see must not be discarded server-side"
+        );
+        assert_eq!(app.message_input.lines().join("\n"), "h [a.txt]");
+        assert!(app.drafts.has_draft("s-a"), "the text is still recoverable after a quit");
     }
 
     #[test]

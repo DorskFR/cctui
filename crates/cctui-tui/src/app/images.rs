@@ -74,6 +74,8 @@ pub struct Images {
     pub support: Support,
     /// `None` is "auto": inline when the terminal has a real protocol.
     pub inline_pref: Option<bool>,
+    /// The open picture, decoded once off the draw path.
+    decoded: Option<(String, image::DynamicImage)>,
     encoded: RefCell<Option<Encoded>>,
 }
 
@@ -110,52 +112,80 @@ impl Images {
         self.picker.is_some() && self.inline_pref.unwrap_or_else(|| self.support.is_graphics())
     }
 
+    /// Decode `bytes` once, when the file opens. Decoding is the expensive,
+    /// attackable half — a 100 MP PNG is a few hundred KB on the wire — so it
+    /// never runs from a draw call, and a blob over the limits is dropped here
+    /// rather than resized on every frame.
+    pub fn prepare(&mut self, name: &str, bytes: &[u8]) {
+        *self.encoded.borrow_mut() = None;
+        self.decoded = decode(bytes).map(|image| (name.to_owned(), image));
+    }
+
     /// The picture encoded for `area`, or `None` when it cannot be drawn there
-    /// — an undecodable blob, an area too small, or no protocol at all. The
-    /// caller falls back to the placeholder.
-    pub fn encode(
-        &self,
-        name: &str,
-        bytes: &[u8],
-        area: Rect,
-    ) -> Option<std::cell::Ref<'_, Protocol>> {
+    /// — nothing decoded for `name`, an area too small, or no protocol at all.
+    /// The caller falls back to the placeholder.
+    pub fn encode(&self, name: &str, area: Rect) -> Option<std::cell::Ref<'_, Protocol>> {
         if !self.inline() || area.width < 4 || area.height < 2 {
+            return None;
+        }
+        let (decoded_name, image) = self.decoded.as_ref()?;
+        if decoded_name != name {
             return None;
         }
         let key = (name.to_owned(), area.width, area.height);
         let stale = self.encoded.borrow().as_ref().is_none_or(|e| e.key != key);
         if stale {
             let picker = self.picker.as_ref()?;
-            let protocol = decode(bytes).and_then(|img| {
-                picker
-                    .new_protocol(
-                        img,
-                        ratatui::layout::Size::new(area.width, area.height),
-                        Resize::Fit(None),
-                    )
-                    .inspect_err(
-                        |e| tracing::debug!(%e, "cannot encode an image for this terminal"),
-                    )
-                    .ok()
-            });
+            let protocol = picker
+                .new_protocol(
+                    image.clone(),
+                    ratatui::layout::Size::new(area.width, area.height),
+                    Resize::Fit(None),
+                )
+                .inspect_err(|e| tracing::debug!(%e, "cannot encode an image for this terminal"))
+                .ok();
             *self.encoded.borrow_mut() = Some(Encoded { key, protocol });
         }
         let borrowed = self.encoded.borrow();
         std::cell::Ref::filter_map(borrowed, |e| e.as_ref()?.protocol.as_ref()).ok()
     }
 
-    pub fn forget(&self) {
+    /// Whether a decoded picture for `name` is in hand. The draw path reads it
+    /// through `encode`; this is the seam a test without a terminal protocol
+    /// can observe.
+    #[cfg(test)]
+    #[must_use]
+    pub fn has_decoded(&self, name: &str) -> bool {
+        self.decoded.as_ref().is_some_and(|(held, _)| held == name)
+    }
+
+    pub fn forget(&mut self) {
         *self.encoded.borrow_mut() = None;
+        self.decoded = None;
     }
 }
 
+/// A decode allocates width × height × 4 bytes however small the file is, so a
+/// blob is refused rather than trusted: these bounds are generous for a
+/// screenshot and fatal to a decompression bomb.
+const MAX_PIXELS: u32 = 8192;
+const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
+
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_PIXELS);
+    limits.max_image_height = Some(MAX_PIXELS);
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    limits
+}
+
 fn decode(bytes: &[u8]) -> Option<image::DynamicImage> {
-    image::ImageReader::new(std::io::Cursor::new(bytes))
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .ok()?
-        .decode()
-        .inspect_err(|e| tracing::debug!(%e, "cannot decode an image"))
-        .ok()
+        .inspect_err(|e| tracing::debug!(%e, "cannot read an image header"))
+        .ok()?;
+    reader.limits(decode_limits());
+    reader.decode().inspect_err(|e| tracing::debug!(%e, "cannot decode an image")).ok()
 }
 
 #[must_use]
@@ -303,6 +333,71 @@ mod tests {
         app.router.push(crate::app::View::Conversation);
         let _ = crate::app::drafts::sync_composer(&mut app);
         app
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("a png");
+        out.into_inner()
+    }
+
+    #[test]
+    fn the_picture_is_decoded_when_the_file_opens_and_never_from_a_draw() {
+        use crate::app::fileview::FileViewAction;
+
+        let mut app = app();
+        let png = tiny_png();
+        reduce(
+            &mut app,
+            Action::FileView(FileViewAction::Opened {
+                name: "shot.png".to_owned(),
+                path: "/tmp/shot.png".to_owned(),
+                content_type: "image/png".to_owned(),
+                bytes: png,
+            }),
+        );
+        assert!(app.images.has_decoded("shot.png"), "opening the file does the decode");
+
+        // The draw path takes a name and an area — no bytes — so it cannot
+        // decode: once the picture is forgotten it declines instead.
+        app.images.forget();
+        assert!(!app.images.has_decoded("shot.png"));
+        assert!(app.images.encode("shot.png", ratatui::layout::Rect::new(0, 0, 40, 20)).is_none());
+    }
+
+    #[test]
+    fn closing_the_pager_releases_the_decoded_picture() {
+        use crate::app::fileview::FileViewAction;
+
+        let mut app = app();
+        reduce(
+            &mut app,
+            Action::FileView(FileViewAction::Opened {
+                name: "shot.png".to_owned(),
+                path: "/tmp/shot.png".to_owned(),
+                content_type: "image/png".to_owned(),
+                bytes: tiny_png(),
+            }),
+        );
+        reduce(&mut app, Action::FileView(FileViewAction::Close));
+        assert!(
+            !app.images.has_decoded("shot.png"),
+            "a full-size bitmap must not outlive the view"
+        );
+    }
+
+    #[test]
+    fn a_decode_is_bounded_so_a_bomb_cannot_claim_the_heap() {
+        let limits = super::decode_limits();
+        assert_eq!(limits.max_image_width, Some(super::MAX_PIXELS));
+        assert_eq!(limits.max_image_height, Some(super::MAX_PIXELS));
+        assert_eq!(limits.max_alloc, Some(super::MAX_DECODE_BYTES));
+
+        let mut app = App::new();
+        app.images.prepare("not-an-image.png", b"certainly not a png");
+        assert!(!app.images.has_decoded("not-an-image.png"));
     }
 
     #[test]

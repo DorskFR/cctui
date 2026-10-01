@@ -10,6 +10,12 @@ use super::state::{ConversationLine, LineKind, LineStatus};
 
 pub const PAGE_LIMIT: i64 = 200;
 
+/// How many transcripts stay buffered. A session left streaming in the
+/// background keeps every line it ever produced otherwise, and a TUI open for
+/// days on a busy fleet grows without bound. Pages are refetchable; memory is
+/// not recoverable.
+pub const MAX_STORES: usize = 24;
+
 /// A `before`/`after`/`limit` window over one session's transcript.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PageRequest {
@@ -84,6 +90,34 @@ pub struct ConversationStore {
     loaded: bool,
     has_more_older: bool,
     loading_older: bool,
+    /// Value of the app's access counter when this store was last read or
+    /// written: the eviction order.
+    pub touched: u64,
+}
+
+/// Drop the coldest buffered transcripts once there are more than `max`.
+/// `keep` is never evicted: the open conversation, the selection, and any
+/// session whose send has not been acked (its pending line lives only here).
+pub fn evict_cold(
+    stores: &mut std::collections::HashMap<String, ConversationStore>,
+    keep: &HashSet<String>,
+    max: usize,
+) -> Vec<String> {
+    if stores.len() <= max {
+        return Vec::new();
+    }
+    let mut candidates: Vec<(u64, String)> = stores
+        .iter()
+        .filter(|(id, _)| !keep.contains(*id))
+        .map(|(id, store)| (store.touched, id.clone()))
+        .collect();
+    candidates.sort_unstable();
+    let over = stores.len() - max;
+    let doomed: Vec<String> = candidates.into_iter().take(over).map(|(_, id)| id).collect();
+    for id in &doomed {
+        stores.remove(id);
+    }
+    doomed
 }
 
 impl ConversationStore {
@@ -173,6 +207,9 @@ impl ConversationStore {
         etag: Option<String>,
         has_more: bool,
     ) -> Merge {
+        if kind == PageKind::Latest && self.disjoint_from_latest(&rows) {
+            self.drop_history();
+        }
         let epoch_before = self.epoch;
         let mut inserted = 0;
         for (seq, line) in rows {
@@ -182,6 +219,24 @@ impl ConversationStore {
         }
         self.finish_page(kind, etag, has_more);
         Merge { inserted, reordered: self.epoch != epoch_before }
+    }
+
+    /// Whether a newest page starts above everything held, leaving seqs between
+    /// the two that no fetch would ever ask for: older paging walks back from
+    /// the *oldest* seq held, so a hole below it is unreachable.
+    fn disjoint_from_latest(&self, rows: &[(i64, ConversationLine)]) -> bool {
+        let Some(held_newest) = self.newest_seq() else { return false };
+        let Some(page_oldest) = rows.iter().map(|(seq, _)| *seq).min() else { return false };
+        page_oldest > held_newest + 1
+    }
+
+    /// Forget the buffered transcript, keeping the live-event bookkeeping. The
+    /// rows are all refetchable; a hole is not.
+    fn drop_history(&mut self) {
+        self.entries.clear();
+        self.seqs.clear();
+        self.epoch += 1;
+        self.has_more_older = false;
     }
 
     /// A 304: the page is unchanged, so only the in-flight bookkeeping moves.
@@ -332,6 +387,63 @@ mod tests {
 
     fn texts(store: &ConversationStore) -> Vec<String> {
         store.lines().map(|l| l.text.clone()).collect()
+    }
+
+    #[test]
+    fn a_latest_page_above_everything_held_replaces_the_buffer_rather_than_leaving_a_hole() {
+        let mut store = loaded();
+        assert_eq!(store.oldest_seq(), Some(10));
+
+        // Away long enough that the newest page starts far above seq 12.
+        store.merge_page(PageKind::Latest, rows(&[(501, "x"), (502, "y")]), None, true);
+
+        assert_eq!(texts(&store), ["x", "y"], "the stale half is dropped, not interleaved");
+        assert_eq!(
+            store.begin_older(),
+            Some(PageRequest::before(501, PAGE_LIMIT)),
+            "older paging walks back from the new page, so 13..500 is reachable"
+        );
+    }
+
+    #[test]
+    fn a_latest_page_that_touches_what_is_held_merges_as_before() {
+        let mut store = loaded();
+        store.merge_page(PageKind::Latest, rows(&[(13, "d"), (14, "e")]), None, true);
+        assert_eq!(texts(&store), ["a", "b", "c", "d", "e"], "contiguous pages still merge");
+
+        let mut overlapping = loaded();
+        overlapping.merge_page(PageKind::Latest, rows(&[(12, "c"), (13, "d")]), None, true);
+        assert_eq!(texts(&overlapping), ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn eviction_drops_the_coldest_transcripts_and_spares_the_ones_in_use() {
+        use std::collections::{HashMap, HashSet};
+
+        let mut stores: HashMap<String, ConversationStore> = HashMap::new();
+        for i in 0..6 {
+            let mut store = ConversationStore::new();
+            store.touched = i;
+            stores.insert(format!("s-{i}"), store);
+        }
+        let keep = HashSet::from(["s-0".to_owned()]);
+
+        let dropped = super::evict_cold(&mut stores, &keep, 4);
+
+        assert_eq!(dropped, ["s-1", "s-2"], "coldest first, s-0 spared despite being coldest");
+        assert_eq!(stores.len(), 4);
+        assert!(stores.contains_key("s-0"), "an in-use transcript is never dropped");
+        assert!(stores.contains_key("s-5"));
+    }
+
+    #[test]
+    fn eviction_is_a_no_op_under_the_cap() {
+        use std::collections::{HashMap, HashSet};
+
+        let mut stores: HashMap<String, ConversationStore> = HashMap::new();
+        stores.insert("s-a".to_owned(), ConversationStore::new());
+        assert!(super::evict_cold(&mut stores, &HashSet::new(), 4).is_empty());
+        assert_eq!(stores.len(), 1);
     }
 
     fn loaded() -> ConversationStore {

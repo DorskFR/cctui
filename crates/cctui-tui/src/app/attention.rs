@@ -56,9 +56,20 @@ pub enum AttentionAction {
 /// Every pending permission request, in arrival order, whatever session it
 /// belongs to. Requests are never modal: a card renders inside its own
 /// session's transcript and only that session's keys can answer it.
+/// How many resolutions are remembered as newer than the last fetch. One per
+/// card answered while a reconnect fetch is in flight, which is a handful.
+const RESOLVED_MEMORY: usize = 32;
+
 #[derive(Debug, Default)]
 pub struct PermissionInbox {
     items: Vec<PendingPermission>,
+    /// Arrival stamp per item, same order as `items`.
+    arrived: Vec<u64>,
+    seq: u64,
+    /// The stamp the newest in-flight fetch was issued at. Anything stamped
+    /// above it the server's reply cannot know about yet.
+    fetched_at: u64,
+    resolved_since: Vec<(String, String, u64)>,
 }
 
 impl PermissionInbox {
@@ -66,21 +77,85 @@ impl PermissionInbox {
         if self.contains(&req.session_id, &req.request_id) {
             return;
         }
+        self.seq += 1;
         self.items.push(req);
+        self.arrived.push(self.seq);
     }
 
-    /// The server's list is authoritative: it has both what we missed while
-    /// disconnected and nothing that was resolved elsewhere.
-    pub fn replace_all(&mut self, items: Vec<PendingPermission>) {
-        self.items = items;
+    /// Called when a pending-permissions fetch is issued, so its reply can tell
+    /// what the server had yet to see.
+    pub fn fetch_started(&mut self) {
+        self.fetched_at = self.seq;
+    }
+
+    /// The server's list is authoritative for everything it could observe: it
+    /// has what we missed while disconnected and drops what was resolved
+    /// elsewhere. It cannot speak for what happened after the fetch was issued,
+    /// so a card that arrived since survives, and one answered since stays gone
+    /// rather than being resurrected by an older list.
+    pub fn merge_fetched(&mut self, items: Vec<PendingPermission>) {
+        let mut merged: Vec<PendingPermission> = Vec::with_capacity(items.len() + self.items.len());
+        let mut stamps: Vec<u64> = Vec::with_capacity(merged.capacity());
+        for req in items {
+            if self.resolved_after_fetch(&req.session_id, &req.request_id) {
+                continue;
+            }
+            let stamp =
+                self.position(&req.session_id, &req.request_id).map_or(0, |at| self.arrived[at]);
+            merged.push(req);
+            stamps.push(stamp);
+        }
+        for (at, req) in self.items.iter().enumerate() {
+            if self.arrived[at] <= self.fetched_at {
+                continue;
+            }
+            if merged
+                .iter()
+                .any(|m| m.session_id == req.session_id && m.request_id == req.request_id)
+            {
+                continue;
+            }
+            merged.push(req.clone());
+            stamps.push(self.arrived[at]);
+        }
+        self.items = merged;
+        self.arrived = stamps;
+        self.resolved_since.retain(|(_, _, at)| *at > self.fetched_at);
     }
 
     pub fn resolve(&mut self, session_id: &str, request_id: &str) {
-        self.items.retain(|p| !(p.session_id == session_id && p.request_id == request_id));
+        if let Some(at) = self.position(session_id, request_id) {
+            self.items.remove(at);
+            self.arrived.remove(at);
+        }
+        self.seq += 1;
+        self.resolved_since.push((session_id.to_owned(), request_id.to_owned(), self.seq));
+        if self.resolved_since.len() > RESOLVED_MEMORY {
+            self.resolved_since.remove(0);
+        }
+    }
+
+    fn resolved_after_fetch(&self, session_id: &str, request_id: &str) -> bool {
+        self.resolved_since
+            .iter()
+            .any(|(s, r, at)| s == session_id && r == request_id && *at > self.fetched_at)
+    }
+
+    fn position(&self, session_id: &str, request_id: &str) -> Option<usize> {
+        self.items.iter().position(|p| p.session_id == session_id && p.request_id == request_id)
     }
 
     pub fn drop_session(&mut self, session_id: &str) {
-        self.items.retain(|p| p.session_id != session_id);
+        let mut at = 0;
+        self.items.retain(|p| {
+            let keep = p.session_id != session_id;
+            if !keep {
+                self.arrived.remove(at);
+            } else {
+                at += 1;
+            }
+            keep
+        });
     }
 
     fn contains(&self, session_id: &str, request_id: &str) -> bool {
@@ -116,7 +191,7 @@ pub fn reduce_attention(app: &mut App, action: AttentionAction) -> Vec<Effect> {
             Vec::new()
         }
         AttentionAction::PendingPermissionsLoaded(items) => {
-            app.permissions.replace_all(items);
+            app.permissions.merge_fetched(items);
             Vec::new()
         }
         AttentionAction::Respond(decision) => respond(app, decision),
@@ -269,6 +344,7 @@ fn end_session(
     detail: Option<String>,
 ) -> Vec<Effect> {
     app.permissions.drop_session(session_id);
+    super::send::session_ended(app, session_id);
     let badge = EndBadge::new(reason, detail.as_deref());
     let ended_at = chrono::DateTime::from_timestamp_millis(app.clock_ms);
     if let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id) {
@@ -494,15 +570,53 @@ mod tests {
     }
 
     #[test]
-    fn the_servers_pending_list_replaces_what_we_had() {
+    fn the_servers_pending_list_replaces_what_it_could_see() {
         let mut app = app();
         attention(&mut app, AttentionAction::PermissionRequested(request("s-a", "stale")));
+        app.permissions.fetch_started();
         attention(
             &mut app,
             AttentionAction::PendingPermissionsLoaded(vec![request("s-b", "fresh")]),
         );
-        assert!(!app.permissions.has("s-a"));
+        assert!(!app.permissions.has("s-a"), "resolved elsewhere while we were away");
         assert!(app.permissions.has("s-b"));
+    }
+
+    /// The reply speaks for the moment the fetch was issued, so a card the
+    /// socket delivered after that has to survive it.
+    #[test]
+    fn a_request_that_arrives_during_the_fetch_survives_the_reply() {
+        let mut app = app();
+        app.permissions.fetch_started();
+        attention(&mut app, AttentionAction::PermissionRequested(request("s-a", "live")));
+        attention(
+            &mut app,
+            AttentionAction::PendingPermissionsLoaded(vec![request("s-b", "fetched")]),
+        );
+        assert!(app.permissions.has("s-a"), "the live card must not be dropped");
+        assert!(app.permissions.has("s-b"));
+        assert_eq!(
+            app.permissions.head("s-a").map(|p| p.request_id.clone()),
+            Some("live".to_owned())
+        );
+    }
+
+    /// And one answered after the fetch was issued must not come back, because
+    /// the list in flight still has it.
+    #[test]
+    fn a_card_answered_during_the_fetch_is_not_resurrected() {
+        let mut app = app();
+        attention(&mut app, AttentionAction::PermissionRequested(request("s-a", "r1")));
+        app.permissions.fetch_started();
+        attention(
+            &mut app,
+            AttentionAction::PermissionResolved {
+                session_id: "s-a".to_owned(),
+                request_id: "r1".to_owned(),
+            },
+        );
+        attention(&mut app, AttentionAction::PendingPermissionsLoaded(vec![request("s-a", "r1")]));
+        assert!(!app.permissions.has("s-a"), "the answered card stays gone");
     }
 
     #[test]

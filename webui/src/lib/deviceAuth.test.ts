@@ -4,6 +4,7 @@ import {
 	isCompleteUserCode,
 	isDecidable,
 	normalizeUserCode,
+	requesterFacts,
 	statusTone
 } from './deviceAuth';
 
@@ -57,5 +58,40 @@ describe('status', () => {
 		expect(statusTone('approved')).toBe('success');
 		expect(statusTone('denied')).toBe('danger');
 		expect(statusTone('expired')).toBe('danger');
+	});
+});
+
+describe('requesterFacts', () => {
+	const base = {
+		client_ip: '203.0.113.7',
+		user_agent: 'cctui/0.23',
+		created_at: '2026-10-01T12:00:00Z'
+	};
+	const nowMs = Date.parse('2026-10-01T12:00:30Z');
+
+	it('shows what the requester did not get to choose', () => {
+		expect(requesterFacts(base, nowMs)).toEqual([
+			{ label: 'from', value: '203.0.113.7' },
+			{ label: 'client', value: 'cctui/0.23' },
+			{ label: 'started', value: '30s ago' }
+		]);
+	});
+
+	it('omits what the deployment did not record rather than showing blanks', () => {
+		expect(requesterFacts({ ...base, client_ip: null, user_agent: null }, nowMs)).toEqual([
+			{ label: 'started', value: '30s ago' }
+		]);
+	});
+
+	it('spells a longer wait in minutes, so a stale request is obvious', () => {
+		const later = Date.parse('2026-10-01T12:07:05Z');
+		expect(requesterFacts(base, later).at(-1)).toEqual({ label: 'started', value: '7m 5s ago' });
+	});
+
+	it('drops an unparseable timestamp instead of rendering NaN', () => {
+		expect(requesterFacts({ ...base, created_at: 'not a date' }, nowMs)).toEqual([
+			{ label: 'from', value: '203.0.113.7' },
+			{ label: 'client', value: 'cctui/0.23' }
+		]);
 	});
 });

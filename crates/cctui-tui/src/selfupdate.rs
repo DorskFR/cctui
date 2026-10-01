@@ -276,13 +276,53 @@ pub async fn maybe_update(server_url: &str) {
     }
 }
 
-/// Invoked by the `cctui update` subcommand. Always re-downloads from the
-/// latest release (or `$CCTUI_TAG`). It adds nothing to the user's settings:
-/// the only write left is clearing cctui's retired hooks.
-pub async fn force_update() -> Result<()> {
+/// Whether going from `current` to `target` would move backwards. An
+/// unparseable pair is not a downgrade: the comparison is what is unknown, not
+/// the direction.
+#[must_use]
+pub fn is_downgrade(current: &str, target: &str) -> bool {
+    match (semver::Version::parse(current), semver::Version::parse(target.trim_start_matches('v')))
+    {
+        (Ok(current), Ok(target)) => target < current,
+        _ => false,
+    }
+}
+
+/// Which tag `cctui update` should install: `$CCTUI_TAG`, else the version the
+/// server runs, which is the one the rest of the fleet is on. `latest` is a
+/// different release line and would silently move a beta user to stable.
+async fn update_target(server_url: &str) -> Option<String> {
+    if let Some(tag) = tag_override() {
+        return Some(tag);
+    }
+    match fetch_server_version(server_url).await {
+        Ok(version) => Some(format!("v{version}")),
+        Err(e) => {
+            eprintln!("[cctui] cannot ask {server_url} which version it runs: {e}");
+            None
+        }
+    }
+}
+
+/// Invoked by the `cctui update` subcommand. Re-downloads the release the server
+/// runs (or `$CCTUI_TAG`), refusing to move backwards unless asked. It adds
+/// nothing to the user's settings: the only write left is clearing cctui's
+/// retired hooks.
+pub async fn force_update(server_url: &str, force: bool) -> Result<()> {
     clear_updated_flag();
-    eprintln!("[cctui] forcing update from {}", repo());
-    let new_exe = swap_binary(tag_override().as_deref()).await?;
+    let target = update_target(server_url).await;
+    match target.as_deref() {
+        Some(tag) if is_downgrade(CURRENT_VERSION, tag) && !force => {
+            bail!(
+                "{tag} is older than the {CURRENT_VERSION} you are running;                  pass --force to install it anyway"
+            );
+        }
+        Some(tag) => eprintln!("[cctui] updating {CURRENT_VERSION} -> {tag} from {}", repo()),
+        None => bail!(
+            "refusing to install an unknown version: set CCTUI_TAG=vX.Y.Z,              or make the server reachable so its version can be matched"
+        ),
+    }
+    let new_exe = swap_binary(target.as_deref()).await?;
     if let Err(e) = install::migrate_legacy_hooks() {
         eprintln!("[cctui] settings migration failed: {e}");
     } else {
@@ -295,6 +335,42 @@ pub async fn force_update() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F18: `cctui update` took `releases/latest`, which is the stable line, so
+    /// a beta user was moved backwards until the next startup update undid it.
+    #[test]
+    fn a_lower_target_is_recognised_as_a_downgrade() {
+        assert!(is_downgrade("0.23.0-beta.22", "v0.22.0"));
+        assert!(is_downgrade("0.23.0", "v0.23.0-beta.22"), "a prerelease is below its release");
+        assert!(is_downgrade("0.23.0-beta.22", "v0.23.0-beta.21"));
+    }
+
+    #[test]
+    fn the_same_or_a_newer_target_is_not_a_downgrade() {
+        assert!(!is_downgrade("0.23.0-beta.22", "v0.23.0-beta.22"), "reinstalling is allowed");
+        assert!(!is_downgrade("0.23.0-beta.22", "v0.23.0"));
+        assert!(!is_downgrade("0.22.0", "v0.23.0-beta.1"));
+    }
+
+    /// An unknown comparison must not masquerade as a refusal: the direction is
+    /// what cannot be established.
+    #[test]
+    fn an_unparseable_version_is_not_treated_as_a_downgrade() {
+        assert!(!is_downgrade("not-a-version", "v0.1.0"));
+        assert!(!is_downgrade("0.23.0", "nightly"));
+    }
+
+    /// The tag is built the same way the startup path builds it, so `update` and
+    /// an automatic update land on the same release.
+    #[test]
+    fn the_update_target_is_the_servers_own_version() {
+        assert_eq!(format!("v{}", "0.23.0-beta.22"), "v0.23.0-beta.22");
+        assert!(
+            !release_url("cctui-linux-amd64", Some("v0.23.0-beta.22")).contains("/latest/"),
+            "a pinned tag must not resolve through the latest release"
+        );
+        assert!(release_url("cctui-linux-amd64", None).contains("/latest/"));
+    }
 
     #[test]
     fn asset_names() {

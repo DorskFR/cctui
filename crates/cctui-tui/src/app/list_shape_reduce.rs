@@ -86,26 +86,13 @@ fn settle(app: &mut App) -> Vec<Effect> {
     vec![save(app)]
 }
 
-/// Merges this view's keys into the settings blob the server last gave us, so a
-/// write never drops the knobs only the web UI uses.
+/// Sends only this view's own keys, under `sessionList`.
 fn save(app: &mut App) -> Effect {
-    let patch = app.list_shape.settings_patch();
-    let mut blob = match app.settings_blob.clone() {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
-    let mut list = match blob.get("sessionList").cloned() {
-        Some(serde_json::Value::Object(map)) => map,
-        _ => serde_json::Map::new(),
-    };
-    if let serde_json::Value::Object(patch) = patch {
-        for (key, value) in patch {
-            list.insert(key, value);
-        }
+    let patch = serde_json::json!({"sessionList": app.list_shape.settings_patch()});
+    if let Some(blob) = app.settings_blob.as_mut() {
+        super::settings_write::deep_merge(blob, patch.clone());
     }
-    blob.insert("sessionList".to_owned(), serde_json::Value::Object(list));
-    app.settings_blob = serde_json::Value::Object(blob.clone());
-    Effect::SaveSettings { data: serde_json::Value::Object(blob) }
+    super::settings_write::save(patch)
 }
 
 #[cfg(test)]
@@ -128,7 +115,7 @@ mod tests {
 
     fn saved_list(effects: &[Effect]) -> serde_json::Value {
         match effects {
-            [Effect::SaveSettings { data }] => data["sessionList"].clone(),
+            [Effect::SaveSettings { patch }] => patch["sessionList"].clone(),
             _ => panic!("expected one settings write, got {} effects", effects.len()),
         }
     }
@@ -192,19 +179,41 @@ mod tests {
         assert_eq!(saved_list(&effects)["section"], "starred,dispatched");
     }
 
+    /// The write names only `sessionList` keys. Keeping `display` and the
+    /// web-UI-only siblings is the merge's job, against a read taken at write
+    /// time — see `settings_write`.
     #[test]
-    fn a_write_keeps_the_keys_only_the_web_ui_uses() {
+    fn a_write_carries_only_this_views_own_keys() {
         let mut app = app();
-        app.settings_blob = serde_json::json!({
+        app.settings_blob = Some(serde_json::json!({
             "display": {"theme": "dark"},
             "sessionList": {"width": "wide", "accountNames": true, "sort": "activity"},
-        });
+        }));
         let effects = reduce(&mut app, ListShapeAction::CycleSort);
-        let Effect::SaveSettings { data } = &effects[0] else { panic!("expected a write") };
-        assert_eq!(data["display"]["theme"], "dark", "another section survives");
-        assert_eq!(data["sessionList"]["width"], "wide", "a sibling key survives");
-        assert_eq!(data["sessionList"]["accountNames"], true);
-        assert_eq!(data["sessionList"]["sort"], "created", "and ours is updated");
+        let Effect::SaveSettings { patch } = &effects[0] else { panic!("expected a write") };
+        assert_eq!(patch["sessionList"]["sort"], "created", "ours is updated");
+        assert!(patch.get("display").is_none(), "a section we do not own is not sent");
+        assert!(
+            patch["sessionList"].get("width").is_none(),
+            "a sibling key we do not own is not sent"
+        );
+        let blob = app.settings_blob.as_ref().expect("known");
+        assert_eq!(blob["display"]["theme"], "dark", "the local copy still has it");
+        assert_eq!(blob["sessionList"]["width"], "wide");
+        assert_eq!(blob["sessionList"]["sort"], "created");
+    }
+
+    /// The F3 case for this writer: with no row read, the write is still a
+    /// patch of our own keys, not a full replace built from an empty map.
+    #[test]
+    fn a_write_with_no_settings_row_read_is_still_only_a_patch() {
+        let mut app = app();
+        assert_eq!(app.settings_blob, None);
+        let effects = reduce(&mut app, ListShapeAction::CycleSort);
+        let Effect::SaveSettings { patch } = &effects[0] else { panic!("expected a write") };
+        let keys: Vec<&String> = patch.as_object().expect("an object").keys().collect();
+        assert_eq!(keys, vec!["sessionList"], "nothing outside what we own");
+        assert_eq!(app.settings_blob, None, "an unread row stays unread");
     }
 
     #[test]

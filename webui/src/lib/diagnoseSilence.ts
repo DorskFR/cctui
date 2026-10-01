@@ -1,12 +1,20 @@
 import type { SilenceReason } from '@bindings/SilenceReason';
 import { m } from '$lib/paraglide/messages';
 
+/** The age alone, with no preposition: a sentence that already says "last …
+ *  ago" or "no frame for …" supplies its own, and a second one reads "ago ago". */
 export function fmtAge(ms: number | null): string {
 	if (ms === null) return m.diagnose_undated();
 	if (ms < 1_000) return m.diagnose_age_ms({ ms });
 	if (ms < 60_000) return m.diagnose_age_s({ s: Math.floor(ms / 1_000) });
 	if (ms < 3_600_000) return m.diagnose_age_m({ min: Math.floor(ms / 60_000) });
 	return m.diagnose_age_h({ h: Math.floor(ms / 3_600_000) });
+}
+
+/** An age standing on its own, which does need the preposition. */
+export function fmtAgo(ms: number | null): string {
+	if (ms === null) return m.diagnose_undated();
+	return m.diagnose_age_ago({ age: fmtAge(ms) });
 }
 
 /** The server decides which reasons apply; this only words them. */

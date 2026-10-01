@@ -340,7 +340,7 @@ fn step(app: &mut App, delta: i32) {
 fn open_selected(app: &mut App) -> Vec<Effect> {
     let Some(hit) = focused_result(app) else { return Vec::new() };
     let (id, seq) = (hit.id.clone(), hit.match_seq);
-    app.pending_seq_anchor = seq;
+    app.pending_seq_anchor = seq.map(|seq| (id.clone(), seq));
     super::conversation::open(app, id)
 }
 
@@ -591,7 +591,7 @@ mod tests {
         reduce(&mut app, ListSearchAction::Next);
 
         let effects = reduce(&mut app, ListSearchAction::Commit);
-        assert_eq!(app.pending_seq_anchor, Some(22));
+        assert_eq!(app.pending_seq_anchor, Some(("s-2".to_owned(), 22)));
         assert!(
             effects.iter().any(|e| matches!(e, Effect::LoadConversationPage { session_id, .. } if session_id == "s-2")),
             "the second result is the one that opens"

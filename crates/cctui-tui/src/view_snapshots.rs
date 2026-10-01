@@ -2052,7 +2052,7 @@ fn session_info_popup_names_a_foreign_origin() {
 fn harness_mode_picker() {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
-    app.settings_blob = serde_json::json!({"harnessMode": "bg"});
+    app.settings_blob = Some(serde_json::json!({"harnessMode": "bg"}));
     reduce(&mut app, Action::HarnessMode(HarnessModeAction::Open));
     insta::assert_snapshot!(render_screen(&mut app));
 }
@@ -2061,7 +2061,7 @@ fn harness_mode_picker() {
 fn harness_mode_picker_on_a_mode_that_is_not_in_use() {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
-    app.settings_blob = serde_json::json!({"harnessMode": "sdk"});
+    app.settings_blob = Some(serde_json::json!({"harnessMode": "sdk"}));
     reduce(&mut app, Action::HarnessMode(HarnessModeAction::Open));
     reduce(&mut app, Action::HarnessMode(HarnessModeAction::SelectNext));
     insta::assert_snapshot!(render_screen(&mut app));

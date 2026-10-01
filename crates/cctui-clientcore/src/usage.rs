@@ -132,7 +132,7 @@ pub fn usd_pct(amount_usd: Option<f64>, cap_usd: Option<f64>) -> Option<i64> {
 
 #[must_use]
 pub fn money(n: f64) -> String {
-    format!("${n:.2}")
+    format!("${}", crate::format::js_to_fixed(n, 2))
 }
 
 /// `$12.40 / $60.00`, or just the spend when nothing caps it.

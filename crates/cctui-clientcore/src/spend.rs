@@ -185,7 +185,7 @@ pub const fn has_langfuse_cost(usage: Option<LangfuseSpend>) -> bool {
 #[must_use]
 pub fn langfuse_cost_label(cost_usd: f64) -> String {
     let cost = if cost_usd.is_finite() { cost_usd } else { 0.0 };
-    if cost >= 1.0 { format!("${cost:.2}") } else { format!("${cost:.3}") }
+    format!("${}", crate::format::js_to_fixed(cost, if cost >= 1.0 { 2 } else { 3 }))
 }
 
 #[cfg(test)]

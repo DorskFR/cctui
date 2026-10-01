@@ -30,6 +30,17 @@ use crate::usage::{AccountUsageEntry, PoolUsageView};
 /// Envoy strips `ETag` off responses it compresses; the server mirrors it here.
 const ETAG_MIRROR: &str = "x-etag";
 
+/// Reaching a listening server is fast or not happening at all.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Enough for a slow server paging a long transcript. Without it a hung request
+/// never returns and the caller cannot tell that from a slow one.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// Uploads push attachment bytes, so they are bounded by the link rather than
+/// by how long an answer should take.
+const UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
+
 /// One conversation row, addressed by `seq`.
 ///
 /// `event` is the untouched server object (it still carries `seq`, `ts` and
@@ -232,10 +243,27 @@ pub struct Client {
 impl Client {
     #[must_use]
     pub fn new(base_url: impl AsRef<str>, token: impl Into<String>) -> Self {
+        Self::with_timeouts(base_url, token, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// `new` with the bounds spelled out, so a caller that knows its link is
+    /// slow — or a test that needs a short deadline — can say so.
+    #[must_use]
+    pub fn with_timeouts(
+        base_url: impl AsRef<str>,
+        token: impl Into<String>,
+        connect: std::time::Duration,
+        request: std::time::Duration,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .connect_timeout(connect)
+            .timeout(request)
+            .build()
+            .expect("a reqwest client with timeouts, as reqwest::Client::new also expects");
         Self {
             base_url: base_url.as_ref().trim_end_matches('/').to_owned(),
             token: token.into(),
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -863,6 +891,7 @@ impl Client {
             .post(self.url_for(route, &[]))
             .bearer_auth(&self.token)
             .multipart(form)
+            .timeout(UPLOAD_TIMEOUT)
             .send()
             .await
             .map_err(|source| ClientError::Transport { route: route.id, source })?;
@@ -903,6 +932,7 @@ impl Client {
             .post(self.url_for(route, &[("id", session_id)]))
             .bearer_auth(&self.token)
             .multipart(form)
+            .timeout(UPLOAD_TIMEOUT)
             .send()
             .await
             .map_err(|source| ClientError::Transport { route: route.id, source })?;
@@ -1490,6 +1520,52 @@ mod tests {
         assert_eq!(row.seq, 0);
         assert_eq!(row.ts, None);
         assert_eq!(row.turn_id, None);
+    }
+
+    /// A listener that accepts and then says nothing, standing in for a server
+    /// that has stopped answering while the socket stays up.
+    fn hung_server() -> (String, std::net::TcpListener) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        (format!("http://127.0.0.1:{port}"), listener)
+    }
+
+    #[tokio::test]
+    async fn a_server_that_accepts_and_never_answers_is_given_up_on() {
+        let (base, listener) = hung_server();
+        std::thread::spawn(move || {
+            let held = listener.accept();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            drop(held);
+        });
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::with_timeouts(
+            &base,
+            "tok",
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(300),
+        );
+        let started = std::time::Instant::now();
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_secs(10), client.list_sessions()).await;
+
+        let result = outcome.expect("the request has a deadline of its own and must not hang");
+        assert!(result.is_err(), "a server that never answers cannot produce a session list");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "it gave up after {:?}, which is not a deadline",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_default_bounds_are_finite_and_ordered() {
+        assert!(CONNECT_TIMEOUT < REQUEST_TIMEOUT, "connecting is the tight bound");
+        assert!(
+            REQUEST_TIMEOUT < UPLOAD_TIMEOUT,
+            "an upload pushes bytes, so it gets longer than a plain request"
+        );
     }
 
     #[test]

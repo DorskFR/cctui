@@ -85,6 +85,12 @@ pub trait SpawnSection: Send {
         None
     }
 
+    /// The files section identifies itself the same way, so a finished read can
+    /// reach its state without a downcast.
+    fn as_files_mut(&mut self) -> Option<&mut files::FilesSection> {
+        None
+    }
+
     /// Files this section attaches, as multipart parts. The spawn route carries
     /// them alongside the request, so they are up before the first turn runs.
     fn parts(&self) -> Vec<(String, Vec<u8>)> {
@@ -841,6 +847,11 @@ pub enum SpawnAction {
         path: String,
         info: Option<Box<cctui_proto::git::GitInfo>>,
     },
+    /// Bytes for a path the files section asked for, or why it was refused.
+    FileRead {
+        path: String,
+        outcome: Result<(Vec<u8>, String), String>,
+    },
     DirsLoaded(Vec<String>),
     RecentDirsLoaded(Vec<String>),
     /// Down/up over the recent-dirs and completion dropdown.
@@ -961,6 +972,7 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
         SpawnAction::Launched { command_id, ok, error, session_id } => {
             launched(app, command_id, ok, error.as_deref(), session_id.as_deref())
         }
+        SpawnAction::FileRead { path, outcome } => file_read(app, &path, outcome),
         SpawnAction::DataLoaded(data) => data_loaded(app, *data),
         SpawnAction::Failed(reason) => {
             if let Some(form) = app.spawn.as_mut() {
@@ -970,6 +982,25 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             Vec::new()
         }
     }
+}
+
+/// Bytes an effect read for the files section, or the refusal to show instead.
+fn file_read(
+    app: &mut super::state::App,
+    path: &str,
+    outcome: Result<(Vec<u8>, String), String>,
+) -> Vec<Effect> {
+    let Some(form) = app.spawn.as_mut() else { return Vec::new() };
+    let Some(files) = form.sections.iter_mut().find_map(|s| s.as_files_mut()) else {
+        return Vec::new();
+    };
+    match outcome {
+        Ok((bytes, content_type)) => {
+            files.staged_read(std::path::Path::new(path), bytes, content_type);
+        }
+        Err(message) => files.read_failed(message),
+    }
+    Vec::new()
 }
 
 /// The Dispatch tab is a different route with a different body, so it answers
@@ -1066,7 +1097,17 @@ fn launched(
     let landing = session_id.map(str::to_owned).or_else(|| form.session_id.clone());
     app.spawn = None;
     app.router.pop();
-    super::deeplink::apply(app, super::deeplink::Startup { open: landing, ..Default::default() })
+    // The autosaved draft this dialog was holding is now a real session: leaving
+    // the row would strand a copy of the spawn in everyone's list.
+    let superseded = app.spawn_drafts.editing.take();
+    let mut effects = super::deeplink::apply(
+        app,
+        super::deeplink::Startup { open: landing, ..Default::default() },
+    );
+    if let Some(session_id) = superseded {
+        effects.push(Effect::DiscardDraftSession { session_id });
+    }
+    effects
 }
 
 fn open(app: &mut super::state::App) -> Vec<Effect> {

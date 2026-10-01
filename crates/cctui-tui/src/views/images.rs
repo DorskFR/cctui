@@ -31,14 +31,8 @@ pub fn placeholder(name: &str, bytes: &[u8], hint: bool) -> Vec<Line<'static>> {
 
 /// Draw the picture itself. `false` means the caller must fall back to the
 /// placeholder: no protocol, an undecodable blob, or too little room.
-pub fn draw_inline(
-    frame: &mut Frame,
-    images: &Images,
-    name: &str,
-    bytes: &[u8],
-    area: Rect,
-) -> bool {
-    let Some(protocol) = images.encode(name, bytes, area) else { return false };
+pub fn draw_inline(frame: &mut Frame, images: &Images, name: &str, area: Rect) -> bool {
+    let Some(protocol) = images.encode(name, area) else { return false };
     frame.render_widget(Image::new(&protocol), area);
     true
 }

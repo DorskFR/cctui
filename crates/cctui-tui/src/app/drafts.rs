@@ -266,6 +266,52 @@ pub fn on_send(app: &mut App, session_id: &str, content: &str) -> Vec<Effect> {
     effects
 }
 
+/// Everything that would be lost by exiting, written immediately rather than on
+/// the typing debounce: the composer's own draft, the open spawn form, and any
+/// message still in the outbox.
+///
+/// An undelivered send is text the user typed and pressed Enter on; the process
+/// is about to go and the outbox is memory-only, so it goes back into the
+/// session's draft — above whatever is in the composer, so neither is lost.
+pub fn on_quit(app: &mut App) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    if let Some(session_id) = app.drafts.composer_session.clone() {
+        let typed = app.message_input.lines().join("\n");
+        app.drafts.set_text(session_id, typed);
+    }
+    for (session_id, text) in undelivered_by_session(app) {
+        let kept = app.drafts.text(&session_id);
+        let merged = if kept.trim().is_empty() { text } else { format!("{text}\n\n{kept}") };
+        app.drafts.set_text(session_id, merged);
+    }
+    for (session_id, text) in &app.drafts.texts {
+        if text.trim().is_empty() {
+            continue;
+        }
+        effects
+            .push(Effect::SaveDraftNow { key: composer_draft_key(session_id), text: text.clone() });
+    }
+    // The spawn form's own debounce is just as abandoned, and its row may not
+    // exist yet.
+    effects.extend(super::spawn_drafts::autosave(app));
+    effects
+}
+
+/// Outbox text that never reached the server, oldest first, one entry per
+/// session.
+fn undelivered_by_session(app: &App) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for send in app.outbox.tracked().filter(|s| s.undelivered()) {
+        if let Some(entry) = out.iter_mut().find(|(id, _)| *id == send.session_id) {
+            entry.1.push_str("\n\n");
+            entry.1.push_str(&send.content);
+        } else {
+            out.push((send.session_id.clone(), send.content.clone()));
+        }
+    }
+    out
+}
+
 /// The caret as a character offset, which is what the shared recall rule reads.
 pub fn caret_offset(app: &App) -> usize {
     let cursor = app.message_input.cursor();
@@ -377,6 +423,115 @@ mod tests {
         ];
         app.update_aggregates();
         app
+    }
+
+    fn saved_now(effects: &[Effect]) -> Vec<(String, String)> {
+        effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::SaveDraftNow { key, text } => Some((key.clone(), text.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The composer bound to `s-a` with text typed into it.
+    fn typing(app: &mut App, text: &str) {
+        app.router.push(View::Conversation);
+        let _ = super::sync_composer(app);
+        app.set_input_text(text);
+        let _ =
+            reduce(app, Action::InputKey(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn quitting_writes_the_last_keystrokes_without_waiting_for_the_debounce() {
+        let mut app = app();
+        typing(&mut app, "half a thought");
+
+        let effects = reduce(&mut app, Action::Quit);
+        assert!(app.should_quit);
+        let saved = saved_now(&effects);
+        assert_eq!(saved.len(), 1, "one immediate write");
+        assert_eq!(saved[0].0, super::composer_draft_key("s-a"));
+        assert_eq!(saved[0].1, "half a thought!");
+    }
+
+    #[test]
+    fn quitting_with_an_empty_composer_writes_nothing() {
+        let mut app = app();
+        app.router.push(View::Conversation);
+        let _ = super::sync_composer(&mut app);
+        assert!(saved_now(&reduce(&mut app, Action::Quit)).is_empty());
+    }
+
+    #[test]
+    fn quitting_puts_an_undelivered_message_back_into_the_draft() {
+        let mut app = app();
+        app.router.push(View::Conversation);
+        let _ = super::sync_composer(&mut app);
+        // Enter during a reconnect: the outbox holds it, the server never saw it.
+        let _ = crate::app::send::submit(
+            &mut app,
+            "s-a".to_owned(),
+            "the message that never left".to_owned(),
+            None,
+        );
+        assert!(app.outbox.tracked().any(crate::app::send::TrackedSend::undelivered));
+
+        let effects = reduce(&mut app, Action::Quit);
+        let saved = saved_now(&effects);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].0, super::composer_draft_key("s-a"));
+        assert_eq!(saved[0].1, "the message that never left");
+    }
+
+    #[test]
+    fn an_undelivered_message_is_kept_above_whatever_is_in_the_composer() {
+        let mut app = app();
+        let _ = crate::app::send::submit(&mut app, "s-a".to_owned(), "parked".to_owned(), None);
+        typing(&mut app, "newer text");
+
+        let saved = saved_now(&reduce(&mut app, Action::Quit));
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].1, "parked\n\nnewer text!", "neither is lost");
+    }
+
+    #[test]
+    fn a_delivered_message_is_not_written_back() {
+        use crate::app::send::SendAction;
+        let mut app = app();
+        app.router.push(View::Conversation);
+        let _ = super::sync_composer(&mut app);
+        let _ = crate::app::send::submit(&mut app, "s-a".to_owned(), "went out".to_owned(), None);
+        let send_id = app.outbox.tracked().next().expect("a send").id;
+        let command_id = uuid::Uuid::new_v4();
+        let _ = reduce(
+            &mut app,
+            Action::Send(SendAction::Dispatched {
+                send_id,
+                client_msg_id: "c-1".to_owned(),
+                turn_id: uuid::Uuid::new_v4(),
+            }),
+        );
+        let _ = reduce(
+            &mut app,
+            Action::Send(SendAction::Acked {
+                client_msg_id: "c-1".to_owned(),
+                ok: true,
+                error: None,
+                command_id: Some(command_id),
+            }),
+        );
+        let _ = reduce(
+            &mut app,
+            Action::Send(SendAction::DeliveryResult { command_id, ok: true, error: None }),
+        );
+        assert!(
+            !app.outbox.tracked().any(crate::app::send::TrackedSend::undelivered),
+            "the fixture needs it actually delivered"
+        );
+        assert!(saved_now(&reduce(&mut app, Action::Quit)).is_empty());
     }
 
     fn draft(key: &str, text: &str) -> Draft {
@@ -621,7 +776,7 @@ mod tests {
     #[test]
     fn recall_never_reaches_another_sessions_prompts() {
         let mut app = with_history(&["alpha only"]);
-        reduce(&mut app, Action::SelectNext);
+        super::super::conversation::switch_to(&mut app, "s-b".to_owned());
         reduce(&mut app, Action::Drafts(DraftAction::HistoryPrev));
         assert_eq!(composer(&app), "", "beta has sent nothing");
     }
@@ -656,7 +811,7 @@ mod tests {
     #[test]
     fn the_picker_offers_prompts_sent_from_another_session() {
         let mut app = with_history(&["alpha's prompt"]);
-        reduce(&mut app, Action::SelectNext);
+        super::super::conversation::switch_to(&mut app, "s-b".to_owned());
         reduce(&mut app, Action::Drafts(DraftAction::OpenPicker));
         let effects = reduce(&mut app, Action::Drafts(DraftAction::PickerRecall));
         assert_eq!(composer(&app), "alpha's prompt");

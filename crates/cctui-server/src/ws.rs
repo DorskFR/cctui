@@ -164,6 +164,25 @@ async fn handle_message(
     // a hibernated worker revives it with a fresh valid token rather than empty
     // env. Ignored when the worker is already alive.
     let env = crate::routes::gateway::resume_env_for_session(state, &session_id).await;
+    // A reply is not idempotent, and a client that never saw its ack retries the
+    // same turn. Ack the repeat as delivered without dispatching it again: the
+    // first attempt is already on its way to the agent.
+    if let Some(turn_id) = turn_id
+        && !crate::state::claim_turn(&state.dispatched_turns, &session_id, turn_id)
+    {
+        tracing::debug!(%session_id, %turn_id, "dropping a resend of an already dispatched turn");
+        if let Some(client_msg_id) = client_msg_id {
+            let ack = ServerEvent::MessageAck {
+                session_id,
+                client_msg_id,
+                ok: true,
+                error: None,
+                command_id: None,
+            };
+            send_event(event_tx, &ack).await;
+        }
+        return;
+    }
     // A successful dispatch only means the frame was queued toward a daemon; the
     // adapter's `CommandResult` under this id is the delivery proof.
     let command_id = uuid::Uuid::new_v4();

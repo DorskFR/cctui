@@ -33,22 +33,18 @@ impl FilesSection {
         self.error = None;
     }
 
-    /// Reads the file now, so a path that disappears before launch is an error
-    /// the operator sees while the dialog is still open.
-    pub fn add_path(&mut self, path: &Path) {
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                let name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                );
-                let content_type = crate::app::effects::guess_content_type(&name);
-                self.staged.push(Attachment { name, bytes, content_type, dimensions: None });
-                self.paths.push(path.to_path_buf());
-                self.error = None;
-            }
-            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
-        }
+    /// Stage bytes an effect already read and gated against the upload caps.
+    pub fn staged_read(&mut self, path: &Path, bytes: Vec<u8>, content_type: String) {
+        let name = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        self.staged.push(Attachment { name, bytes, content_type, dimensions: None });
+        self.paths.push(path.to_path_buf());
+        self.error = None;
+    }
+
+    pub fn read_failed(&mut self, message: String) {
+        self.error = Some(message);
     }
 
     pub fn remove_at_cursor(&mut self) {
@@ -128,9 +124,15 @@ impl FilesSection {
                     let typed = std::mem::take(input);
                     self.input = None;
                     let trimmed = typed.trim();
-                    if !trimmed.is_empty() {
-                        self.add_path(&expand_tilde(trimmed));
+                    if trimmed.is_empty() {
+                        return Vec::new();
                     }
+                    // The bytes are read by an effect: a path can be a multi-GB
+                    // file or a FIFO, and this runs on the input/render thread.
+                    self.error = None;
+                    return vec![Effect::ReadSpawnFile {
+                        path: expand_tilde(trimmed).display().to_string(),
+                    }];
                 }
                 KeyCode::Esc => self.input = None,
                 _ => {}
@@ -151,6 +153,10 @@ impl FilesSection {
 }
 
 impl SpawnSection for FilesSection {
+    fn as_files_mut(&mut self) -> Option<&mut Self> {
+        Some(self)
+    }
+
     fn title(&self) -> &'static str {
         "Files"
     }
@@ -206,6 +212,13 @@ mod tests {
             .expect("a request")
     }
 
+    /// Stage a path the way the effect's reply does, so the tests exercise the
+    /// same seam the dialog uses.
+    fn staged(section: &mut FilesSection, path: &std::path::Path) {
+        let bytes = std::fs::read(path).expect("read");
+        section.staged_read(path, bytes, "text/plain".to_owned());
+    }
+
     fn typed(section: &mut FilesSection, text: &str) {
         let mut fields = SpawnFields::default();
         for c in text.chars() {
@@ -222,7 +235,15 @@ mod tests {
         let mut s = FilesSection::default();
         s.handle(0, key(KeyCode::Char('o')), &mut SpawnFields::default());
         typed(&mut s, path.to_str().expect("utf8"));
-        s.handle(0, key(KeyCode::Enter), &mut SpawnFields::default());
+        // Enter asks for the bytes rather than reading them on this thread.
+        match s.handle(0, key(KeyCode::Enter), &mut SpawnFields::default()).as_slice() {
+            [crate::app::action::Effect::ReadSpawnFile { path: asked }] => {
+                assert_eq!(asked, path.to_str().expect("utf8"));
+            }
+            other => panic!("expected one read effect, got {}", other.len()),
+        }
+        assert!(s.staged.is_empty(), "nothing is staged until the bytes land");
+        staged(&mut s, &path);
 
         assert_eq!(s.staged.len(), 1);
         assert_eq!(s.staged[0].name, "trace.log");
@@ -243,7 +264,7 @@ mod tests {
         let path = tmp.path().join("notes.md");
         std::fs::write(&path, b"hi").expect("write");
         let mut s = FilesSection::default();
-        s.add_path(&path);
+        staged(&mut s, &path);
 
         let mut req = request();
         s.apply(&mut req);
@@ -260,7 +281,7 @@ mod tests {
         let mut s = FilesSection::default();
         assert!(s.upload_effect("s-1").is_none(), "nothing staged, nothing to upload");
 
-        s.add_path(&path);
+        staged(&mut s, &path);
         match s.upload_effect("s-1") {
             Some(crate::app::action::Effect::UploadAttachments { session_id, files, .. }) => {
                 assert_eq!(session_id, "s-1");
@@ -274,7 +295,7 @@ mod tests {
     #[test]
     fn a_path_that_is_not_there_says_so_and_stages_nothing() {
         let mut s = FilesSection::default();
-        s.add_path(std::path::Path::new("/nope/missing.txt"));
+        s.read_failed("cannot read /nope/missing.txt: No such file".to_owned());
         assert!(s.staged.is_empty());
         assert!(s.error.as_deref().expect("an error").contains("missing.txt"));
     }
@@ -286,8 +307,8 @@ mod tests {
             std::fs::write(tmp.path().join(name), b"x").expect("write");
         }
         let mut s = FilesSection::default();
-        s.add_path(&tmp.path().join("one.txt"));
-        s.add_path(&tmp.path().join("two.txt"));
+        staged(&mut s, &tmp.path().join("one.txt"));
+        staged(&mut s, &tmp.path().join("two.txt"));
         s.cursor = 0;
         s.handle(0, key(KeyCode::Char('d')), &mut SpawnFields::default());
         assert_eq!(s.staged.len(), 1);

@@ -7,6 +7,7 @@
 pub mod account_switch;
 pub mod accounts;
 pub mod admin;
+pub mod age;
 pub mod bookmarks;
 pub mod dispatch;
 pub mod drafts;

@@ -216,6 +216,12 @@ pub enum LineKind {
     Image,
 }
 
+/// The selected session's identity, taken before an action may reorder the list.
+pub struct SelectionAnchor {
+    index: usize,
+    id: Option<String>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub router: Router,
@@ -362,12 +368,19 @@ pub struct App {
     pub sections_menu: Option<usize>,
     /// The `/` search over the list.
     pub list_search: super::list_search::ListSearch,
-    /// Seq a just-opened conversation should land on, set by whatever opened it
-    /// at a match. Cleared by the view once it has anchored.
-    pub pending_seq_anchor: Option<i64>,
+    /// Session and seq a just-opened conversation should land on, set by
+    /// whatever opened it at a match. Seqs are per session, so the id is part
+    /// of the anchor: another session's page must not consume it. Cleared by
+    /// the view once it has anchored.
+    pub pending_seq_anchor: Option<(String, i64)>,
+    /// Bumped on every transcript access; `ConversationStore::touched` records
+    /// it, which is what makes eviction least-recently-used.
+    pub conversation_clock: u64,
     /// The settings blob as the server last gave it, so a write patches it
     /// instead of dropping the keys only the web UI uses.
-    pub settings_blob: serde_json::Value,
+    /// `None` until a settings read succeeds: an unknown row must never be
+    /// used as the base of a write.
+    pub settings_blob: Option<serde_json::Value>,
     /// The harness-mode picker, `None` when closed.
     pub harness_picker: Option<HarnessPicker>,
     pub account_switch: Option<AccountSwitchPicker>,
@@ -511,7 +524,8 @@ impl App {
             sections_menu: None,
             list_search: super::list_search::ListSearch::default(),
             pending_seq_anchor: None,
-            settings_blob: serde_json::Value::Null,
+            conversation_clock: 0,
+            settings_blob: None,
             harness_picker: None,
             account_switch: None,
             controls: super::controls::Controls::default(),
@@ -531,7 +545,17 @@ impl App {
         self.toasts.push(level, text, self.clock_ms);
     }
 
+    /// The session every target is read off.
+    ///
+    /// An open conversation is addressed by the session it subscribed to, not
+    /// by the list cursor: the cursor indexes the visible rows, which a filter
+    /// or a regroup can drop the subscribed session out of entirely.
     pub fn selected_session(&self) -> Option<&SessionListItem> {
+        if self.view() == View::Conversation
+            && let Some(id) = self.subscribed.as_deref()
+        {
+            return self.sessions.iter().find(|s| s.id == id);
+        }
         let flat = self.flattened_sessions();
         flat.get(self.selected_index).copied()
     }
@@ -613,7 +637,22 @@ impl App {
     }
 
     pub fn conversation_mut(&mut self, session_id: &str) -> &mut ConversationStore {
-        self.conversations.entry(session_id.to_owned()).or_default()
+        self.conversation_clock += 1;
+        let touched = self.conversation_clock;
+        let store = self.conversations.entry(session_id.to_owned()).or_default();
+        store.touched = touched;
+        store
+    }
+
+    /// Sessions whose transcript may not be dropped: the open conversation, the
+    /// selection, and anything with a send still in flight — a pending line
+    /// lives only in its store.
+    #[must_use]
+    pub fn conversations_in_use(&self) -> HashSet<String> {
+        let mut keep: HashSet<String> = self.subscribed.iter().cloned().collect();
+        keep.extend(self.selected_session_id());
+        keep.extend(self.outbox.tracked().map(|s| s.session_id.clone()));
+        keep
     }
 
     /// The rows on screen: `sessions` narrowed by the sections, in the chosen
@@ -625,6 +664,36 @@ impl App {
         let mut visible = super::list_view::visible_refs(&self.sessions, &self.list_shape);
         visible.retain(|s| self.labels.passes(s));
         super::session_list::rows_by(&visible, &self.sessions, &self.ui, self.list_shape.group_by)
+    }
+
+    /// Which session the cursor was on, and the row it sat at.
+    pub fn selection_anchor(&self) -> SelectionAnchor {
+        SelectionAnchor {
+            index: self.selected_index,
+            id: self.flattened_sessions().get(self.selected_index).map(|s| s.id.clone()),
+        }
+    }
+
+    /// The cursor follows the session, not the row number.
+    ///
+    /// A poll, a deregister or a regroup reorders the list under a cursor that
+    /// did not move; without this the row number would address a different
+    /// session, and with it every target read off the selection. An action that
+    /// moved the cursor itself is left alone.
+    pub fn restore_selection(&mut self, anchor: &SelectionAnchor) {
+        if self.selected_index != anchor.index {
+            return;
+        }
+        let Some(id) = anchor.id.as_deref() else { return };
+        let flat = self.flattened_sessions();
+        if flat.get(self.selected_index).is_some_and(|s| s.id == id) {
+            return;
+        }
+        if let Some(position) = flat.iter().position(|s| s.id == id) {
+            self.selected_index = position;
+        } else if self.selected_index >= flat.len() {
+            self.selected_index = flat.len().saturating_sub(1);
+        }
     }
 
     /// Brings the selection back inside the list after its shape changed.

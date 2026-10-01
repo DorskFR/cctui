@@ -102,6 +102,8 @@ pub enum Action {
     Pools(PoolAction),
     Dispatchers(DispatcherAction),
     Usage(super::usage::UsageAction),
+    /// The row as the server stored it, so the next patch merges onto it.
+    SettingsSaved(Box<serde_json::Value>),
     Spend(super::spend::SpendAction),
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
@@ -335,6 +337,9 @@ pub enum Effect {
         ask_picks: Option<Vec<Vec<usize>>>,
         /// Minted on the first attempt and replayed on every retry.
         turn_id: Option<uuid::Uuid>,
+        /// Minted on the first attempt and replayed on every retry, so the
+        /// server can recognise a resend of a frame it already dispatched.
+        client_msg_id: Option<String>,
     },
     Interrupt {
         session_id: String,
@@ -398,6 +403,20 @@ pub enum Effect {
         session_id: String,
         path: String,
     },
+    /// Read one path for the spawn dialog's files section, capped like the
+    /// composer's.
+    ReadSpawnFile {
+        path: String,
+    },
+    /// Write a draft immediately, skipping the typing debounce. Quit uses this:
+    /// a debounced save is abandoned when the process goes.
+    SaveDraftNow {
+        key: String,
+        text: String,
+    },
+    /// Signals once every effect queued before it has run, so quit can wait a
+    /// bounded time for the writes it just asked for.
+    Barrier(tokio::sync::oneshot::Sender<()>),
     /// Stage the composer's files, then send `content` with its tokens rewritten.
     UploadAttachments {
         session_id: String,
@@ -576,9 +595,10 @@ pub enum Effect {
         /// Attachments the dialog staged, sent as parts of the same request.
         files: Vec<(String, Vec<u8>)>,
     },
-    /// `PUT /settings` with the whole blob, patched: the route replaces.
+    /// The keys the caller owns. The route replaces the row, so the body is
+    /// merged into a read taken immediately before the write.
     SaveSettings {
-        data: serde_json::Value,
+        patch: serde_json::Value,
     },
     SearchSessions {
         q: String,

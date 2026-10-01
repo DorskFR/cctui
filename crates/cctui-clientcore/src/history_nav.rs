@@ -93,12 +93,20 @@ impl HistoryNav {
 
     pub fn forward(&mut self, list: &[String]) -> Option<String> {
         let current = self.index?;
+        // The list can shrink under a browsing index (a shorter history arrives
+        // from the server), so the index is re-anchored against the list in hand
+        // before stepping: `len - 1 - index` would otherwise run off the front.
+        let current = current.min(list.len().saturating_sub(1));
         let Some(next) = current.checked_sub(1) else {
             self.index = None;
             return Some(self.stash.clone());
         };
         self.index = Some(next);
-        Some(list[list.len() - 1 - next].clone())
+        if let Some(entry) = list.get(list.len() - 1 - next) {
+            return Some(entry.clone());
+        }
+        self.index = None;
+        Some(self.stash.clone())
     }
 
     /// Jump straight to an entry (menu pick), stashing the live draft first.

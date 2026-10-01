@@ -44,6 +44,7 @@ pub mod server_event;
 pub mod session_list;
 pub mod session_live;
 pub mod session_status;
+pub mod settings_write;
 pub mod sidebar;
 pub mod slice;
 pub mod spawn;

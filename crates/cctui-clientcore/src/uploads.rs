@@ -163,9 +163,9 @@ pub fn fmt_size(n: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
     let kb = n as f64 / 1024.0;
     if n < 1024 * 1024 {
-        return format!("{kb:.0} KB");
+        return format!("{} KB", crate::format::js_to_fixed(kb, 0));
     }
-    format!("{:.1} MB", kb / 1024.0)
+    format!("{} MB", crate::format::js_to_fixed(kb / 1024.0, 1))
 }
 
 /// The cap a list of sizes breaks, worded exactly as `fileCapError` words it.

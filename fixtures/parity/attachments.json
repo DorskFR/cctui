@@ -3,13 +3,50 @@
   "MAX_TOTAL_BYTES": 20971520,
   "MAX_FILES": 10,
   "fmtSize": [
-    { "bytes": 0, "text": "0 B" },
-    { "bytes": 1023, "text": "1023 B" },
-    { "bytes": 1024, "text": "1 KB" },
-    { "bytes": 12288, "text": "12 KB" },
-    { "bytes": 1258291, "text": "1.2 MB" },
-    { "bytes": 5242880, "text": "5.0 MB" },
-    { "bytes": 20971520, "text": "20.0 MB" }
+    {
+      "bytes": 0,
+      "text": "0 B"
+    },
+    {
+      "bytes": 1023,
+      "text": "1023 B"
+    },
+    {
+      "bytes": 1024,
+      "text": "1 KB"
+    },
+    {
+      "bytes": 12288,
+      "text": "12 KB"
+    },
+    {
+      "bytes": 1258291,
+      "text": "1.2 MB"
+    },
+    {
+      "bytes": 5242880,
+      "text": "5.0 MB"
+    },
+    {
+      "bytes": 20971520,
+      "text": "20.0 MB"
+    },
+    {
+      "bytes": 2560,
+      "text": "3 KB"
+    },
+    {
+      "bytes": 1536,
+      "text": "2 KB"
+    },
+    {
+      "bytes": 2621440,
+      "text": "2.5 MB"
+    },
+    {
+      "bytes": 1572864,
+      "text": "1.5 MB"
+    }
   ],
   "capError": {
     "perFile": "A file exceeds the 5.0 MB per-file cap",
@@ -17,23 +54,81 @@
     "total": "Attachments exceed the 20.0 MB total cap"
   },
   "uniqueName": [
-    { "taken": ["a.txt"], "incoming": "b.txt", "name": "b.txt" },
-    { "taken": ["a.txt"], "incoming": "a.txt", "name": "a-2.txt" },
-    { "taken": ["a.txt", "a-2.txt"], "incoming": "a.txt", "name": "a-3.txt" },
-    { "taken": ["a.tar.gz"], "incoming": "a.tar.gz", "name": "a.tar-2.gz" }
+    {
+      "taken": ["a.txt"],
+      "incoming": "b.txt",
+      "name": "b.txt"
+    },
+    {
+      "taken": ["a.txt"],
+      "incoming": "a.txt",
+      "name": "a-2.txt"
+    },
+    {
+      "taken": ["a.txt", "a-2.txt"],
+      "incoming": "a.txt",
+      "name": "a-3.txt"
+    },
+    {
+      "taken": ["a.tar.gz"],
+      "incoming": "a.tar.gz",
+      "name": "a.tar-2.gz"
+    }
   ],
   "nextPasteIndex": [
-    { "names": [], "text": "", "used": [], "next": 1 },
-    { "names": ["paste-3.txt"], "text": "", "used": [], "next": 4 },
-    { "names": [], "text": "see [paste-7.txt] please", "used": [], "next": 8 },
-    { "names": [], "text": "", "used": ["paste-9.txt"], "next": 10 },
-    { "names": ["mypaste-9.txt"], "text": "", "used": [], "next": 1 },
-    { "names": ["paste-9.txtx"], "text": "", "used": [], "next": 1 }
+    {
+      "names": [],
+      "text": "",
+      "used": [],
+      "next": 1
+    },
+    {
+      "names": ["paste-3.txt"],
+      "text": "",
+      "used": [],
+      "next": 4
+    },
+    {
+      "names": [],
+      "text": "see [paste-7.txt] please",
+      "used": [],
+      "next": 8
+    },
+    {
+      "names": [],
+      "text": "",
+      "used": ["paste-9.txt"],
+      "next": 10
+    },
+    {
+      "names": ["mypaste-9.txt"],
+      "text": "",
+      "used": [],
+      "next": 1
+    },
+    {
+      "names": ["paste-9.txtx"],
+      "text": "",
+      "used": [],
+      "next": 1
+    }
   ],
   "appendFileTokens": [
-    { "text": "", "names": ["a.txt"], "out": "[a.txt]" },
-    { "text": "look", "names": ["a.txt"], "out": "look [a.txt]" },
-    { "text": "look ", "names": ["a.txt"], "out": "look [a.txt]" },
+    {
+      "text": "",
+      "names": ["a.txt"],
+      "out": "[a.txt]"
+    },
+    {
+      "text": "look",
+      "names": ["a.txt"],
+      "out": "look [a.txt]"
+    },
+    {
+      "text": "look ",
+      "names": ["a.txt"],
+      "out": "look [a.txt]"
+    },
     {
       "text": "has [a.txt]",
       "names": ["a.txt", "b.txt"],
@@ -49,9 +144,21 @@
     }
   ],
   "extForType": [
-    { "type": "image/png", "ext": "png" },
-    { "type": "image/jpeg", "ext": "jpg" },
-    { "type": "text/csv", "ext": "csv" },
-    { "type": "nonsense", "ext": "bin" }
+    {
+      "type": "image/png",
+      "ext": "png"
+    },
+    {
+      "type": "image/jpeg",
+      "ext": "jpg"
+    },
+    {
+      "type": "text/csv",
+      "ext": "csv"
+    },
+    {
+      "type": "nonsense",
+      "ext": "bin"
+    }
   ]
 }
