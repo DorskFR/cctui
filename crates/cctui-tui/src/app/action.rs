@@ -16,13 +16,14 @@ use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
-use super::spawn_drafts::SpawnDraftAction;
+use super::profiles::ProfileAction;
 use super::prompt::PromptAction;
 use super::row_actions::RowAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::sidebar::SidebarAction;
 use super::slice::SliceAction;
+use super::spawn_drafts::SpawnDraftAction;
 use super::state::ConversationLine;
 use super::terminal::TerminalAction;
 use super::toast::Level;
@@ -85,6 +86,7 @@ pub enum Action {
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
     ListShape(super::list_shape_reduce::ListShapeAction),
+    Spawn(super::spawn::SpawnAction),
     ListSearch(super::list_search::ListSearchAction),
     /// `/` and `n`/`N`: decision 7 scopes them to the view in front.
     SearchCurrentView,
@@ -119,6 +121,7 @@ pub enum Action {
     Pins(PinAction),
     Bookmarks(BookmarkAction),
     SpawnDrafts(SpawnDraftAction),
+    Profiles(ProfileAction),
     Macros(MacroAction),
     /// Take the highlighted `#session` completion. Carries the key so a
     /// composer with no popup open still types it.
@@ -196,6 +199,24 @@ pub enum Effect {
     LoadBookmarks {
         q: String,
         before: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// `GET /profiles`: the caller's spawn profiles.
+    LoadProfiles,
+    CreateProfile {
+        name: String,
+        spec: Box<cctui_proto::api::profiles::ProfileSpec>,
+    },
+    UpdateProfile {
+        id: String,
+        /// `None` keeps the stored name.
+        name: Option<String>,
+        spec: Box<cctui_proto::api::profiles::ProfileSpec>,
+    },
+    DeleteProfile {
+        id: String,
+    },
+    ReorderProfiles {
+        ids: Vec<uuid::Uuid>,
     },
     /// Launch a draft session. `env` is entered at launch, never stored.
     LaunchDraft {
@@ -367,6 +388,10 @@ pub enum Effect {
         seq: Option<i64>,
     },
     SaveUiState(crate::config::uistate::UiState),
+    /// `POST /sessions/spawn`. The reply arrives as a `command_result`.
+    SpawnSession {
+        request: Box<cctui_proto::api::SpawnRequest>,
+    },
     /// `PUT /settings` with the whole blob, patched: the route replaces.
     SaveSettings {
         data: serde_json::Value,

@@ -1,14 +1,13 @@
 //! Spawn-profile rules, shared with the web UI's `spawn/profiles.ts`.
 //!
+//! The form they read and write is [`crate::spawn::SpawnFields`]; the picker
+//! value space (`NO_ACCOUNT`, pools) is [`crate::spawn`]'s too.
+//!
 //! A profile carries the compute knobs only: harness, account binding, model,
 //! effort, permission mode, service tier. Everything else about a spawn — where
 //! it runs, the prompt, labels, env — stays whatever the form already held.
 
-/// The account picker's "no account at all" value, outside the name space.
-pub const NO_ACCOUNT: &str = "\u{0}no-account";
-
-/// Prefix marking a picker value as a pool rather than an account.
-pub const POOL_PREFIX: &str = "\u{0}pool:";
+use crate::spawn::{NO_ACCOUNT, SpawnFields, is_compatible_provider, pool_name, pool_value};
 
 /// The knobs a profile stores. `None` means "leave it to the harness or the
 /// account"; at most one of `account_id` / `pool_id` / `no_account` is set.
@@ -22,22 +21,6 @@ pub struct ProfileSpec {
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
     pub service_tier: Option<String>,
-}
-
-/// The form fields a spec reads and writes, named as the web UI's form names
-/// them. The caller owns every other field of its own form.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SpecForm {
-    pub adapter_id: String,
-    pub account: String,
-    pub account_provider: String,
-    pub model_claude: String,
-    pub model_codex: String,
-    pub model_account: String,
-    pub effort_claude: String,
-    pub effort_codex: String,
-    pub permission_mode: String,
-    pub service_tier: String,
 }
 
 /// An account as the rules need to see it.
@@ -75,25 +58,6 @@ pub enum ModelField {
 }
 
 #[must_use]
-pub fn pool_value(name: &str) -> String {
-    format!("{POOL_PREFIX}{name}")
-}
-
-/// The pool name behind a picker value, or `None` when it names an account
-/// (or Auto / no-account).
-#[must_use]
-pub fn pool_name(value: &str) -> Option<&str> {
-    value.strip_prefix(POOL_PREFIX)
-}
-
-/// A compatible-endpoint account carries its own model list; a native
-/// subscription account uses the harness's families.
-#[must_use]
-pub fn is_compatible_provider(provider: &str) -> bool {
-    provider.ends_with("-compatible")
-}
-
-#[must_use]
 pub fn adapter_label(adapter: &str) -> &'static str {
     if adapter == "codex" { "Codex" } else { "Claude Code" }
 }
@@ -112,15 +76,8 @@ pub fn adapter_for_provider(provider: &str) -> &'static str {
 
 /// The provider credential backing a harness on this account, if any.
 #[must_use]
-pub fn provider_for_adapter<'a>(
-    account: Option<&'a AccountRef>,
-    adapter: &str,
-) -> Option<&'a str> {
-    account?
-        .providers
-        .iter()
-        .map(String::as_str)
-        .find(|p| adapter_for_provider(p) == adapter)
+pub fn provider_for_adapter<'a>(account: Option<&'a AccountRef>, adapter: &str) -> Option<&'a str> {
+    account?.providers.iter().map(String::as_str).find(|p| adapter_for_provider(p) == adapter)
 }
 
 #[must_use]
@@ -143,10 +100,7 @@ pub fn account_by_name<'a>(accounts: &'a [AccountRef], name: &str) -> Option<&'a
 }
 
 #[must_use]
-pub fn account_by_id<'a>(
-    accounts: &'a [AccountRef],
-    id: Option<&str>,
-) -> Option<&'a AccountRef> {
+pub fn account_by_id<'a>(accounts: &'a [AccountRef], id: Option<&str>) -> Option<&'a AccountRef> {
     let id = id?;
     accounts.iter().find(|a| a.id == id)
 }
@@ -167,23 +121,20 @@ pub fn account_pick(spec: &ProfileSpec, accounts: &[AccountRef], pools: &[PoolRe
     if let Some(pool) = pool_by_id(pools, spec.pool_id.as_deref()) {
         return pool_value(&pool.name);
     }
-    account_by_id(accounts, spec.account_id.as_deref())
-        .map(|a| a.name.clone())
-        .unwrap_or_default()
+    account_by_id(accounts, spec.account_id.as_deref()).map(|a| a.name.clone()).unwrap_or_default()
 }
 
 /// The knobs a form is currently set to — the seed for a new profile.
 #[must_use]
 pub fn spec_from_form(
-    form: &SpecForm,
+    form: &SpawnFields,
     accounts: &[AccountRef],
     pools: &[PoolRef],
 ) -> ProfileSpec {
     let harness =
         if form.adapter_id.is_empty() { "claude-code".to_owned() } else { form.adapter_id.clone() };
     let pool = pool_name(&form.account);
-    let account =
-        if pool.is_none() { account_by_name(accounts, &form.account) } else { None };
+    let account = if pool.is_none() { account_by_name(accounts, &form.account) } else { None };
     let model = match model_field(&harness, account) {
         ModelField::Account => &form.model_account,
         ModelField::Codex => &form.model_codex,
@@ -205,22 +156,20 @@ pub fn spec_from_form(
 /// caller's form is its own business.
 #[must_use]
 pub fn apply_spec(
-    form: &SpecForm,
+    form: &SpawnFields,
     spec: &ProfileSpec,
     accounts: &[AccountRef],
     pools: &[PoolRef],
-) -> SpecForm {
+) -> SpawnFields {
     let account = account_by_id(accounts, spec.account_id.as_deref());
-    let mut out = SpecForm {
-        adapter_id: spec.harness.clone(),
-        account: account_pick(spec, accounts, pools),
-        account_provider: provider_for_adapter(account, &spec.harness)
-            .unwrap_or_default()
-            .to_owned(),
-        permission_mode: spec.permission_mode.clone().unwrap_or_default(),
-        service_tier: spec.service_tier.clone().unwrap_or_default(),
-        ..form.clone()
-    };
+    let mut out = form.clone();
+    out.adapter_id.clone_from(&spec.harness);
+    out.account = account_pick(spec, accounts, pools);
+    provider_for_adapter(account, &spec.harness)
+        .unwrap_or_default()
+        .clone_into(&mut out.account_provider);
+    out.permission_mode = spec.permission_mode.clone().unwrap_or_default();
+    out.service_tier = spec.service_tier.clone().unwrap_or_default();
     let model = spec.model_alias.clone().unwrap_or_default();
     match model_field(&spec.harness, account) {
         ModelField::Account => out.model_account = model,
@@ -270,10 +219,11 @@ pub fn spec_chain(
     } else if let Some(pool) = pool {
         pool.name.clone()
     } else if let Some(account) = account {
-        match account.emoji.as_deref().filter(|e| !e.is_empty()) {
-            Some(emoji) => format!("{emoji} {}", account.name),
-            None => account.name.clone(),
-        }
+        account
+            .emoji
+            .as_deref()
+            .filter(|e| !e.is_empty())
+            .map_or_else(|| account.name.clone(), |emoji| format!("{emoji} {}", account.name))
     } else {
         labels.auto.to_owned()
     };
@@ -291,10 +241,9 @@ pub fn spec_chain(
 
 fn capitalize(text: &str) -> String {
     let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    chars
+        .next()
+        .map_or_else(String::new, |first| first.to_uppercase().collect::<String>() + chars.as_str())
 }
 
 /// `base`, else `base 2`, `base 3`… — whatever the list lacks.
@@ -346,10 +295,10 @@ pub fn move_profile_onto(ids: &[String], id: &str, target: &str) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountRef, ChainLabels, ModelField, NO_ACCOUNT, PoolRef, ProfileSpec, SpecForm,
-        account_pick, adapter_for_provider, apply_spec, initial_profile, model_field,
-        move_profile, move_profile_onto, pool_value, same_spec, spec_chain, spec_changes,
-        spec_from_form, unique_profile_name,
+        AccountRef, ChainLabels, ModelField, NO_ACCOUNT, PoolRef, ProfileSpec, SpawnFields,
+        account_pick, adapter_for_provider, apply_spec, initial_profile, model_field, move_profile,
+        move_profile_onto, pool_value, same_spec, spec_chain, spec_changes, spec_from_form,
+        unique_profile_name,
     };
 
     fn account(id: &str, name: &str, providers: &[&str]) -> AccountRef {
@@ -363,7 +312,10 @@ mod tests {
 
     fn accounts() -> Vec<AccountRef> {
         vec![
-            AccountRef { emoji: Some("🐼".to_owned()), ..account("a1", "personal", &["anthropic"]) },
+            AccountRef {
+                emoji: Some("🐼".to_owned()),
+                ..account("a1", "personal", &["anthropic"])
+            },
             account("a2", "compat", &["anthropic-compatible"]),
             account("a3", "oai", &["openai"]),
         ]
@@ -432,8 +384,8 @@ mod tests {
         );
     }
 
-    fn form() -> SpecForm {
-        SpecForm {
+    fn form() -> SpawnFields {
+        SpawnFields {
             adapter_id: "claude-code".to_owned(),
             account: "personal".to_owned(),
             account_provider: "anthropic".to_owned(),
@@ -443,7 +395,7 @@ mod tests {
             effort_claude: "medium".to_owned(),
             effort_codex: "high".to_owned(),
             permission_mode: "yolo".to_owned(),
-            service_tier: String::new(),
+            ..SpawnFields::default()
         }
     }
 
@@ -457,7 +409,7 @@ mod tests {
         assert_eq!(spec.effort.as_deref(), Some("medium"));
         assert_eq!(spec.service_tier, None, "service tier is codex-only");
 
-        let codex = SpecForm {
+        let codex = SpawnFields {
             adapter_id: "codex".to_owned(),
             account: "oai".to_owned(),
             service_tier: "fast".to_owned(),
@@ -468,7 +420,7 @@ mod tests {
         assert_eq!(spec.effort.as_deref(), Some("high"));
         assert_eq!(spec.service_tier.as_deref(), Some("fast"));
 
-        let compat = SpecForm { account: "compat".to_owned(), ..form() };
+        let compat = SpawnFields { account: "compat".to_owned(), ..form() };
         assert_eq!(
             spec_from_form(&compat, &accounts, &pools).model_alias.as_deref(),
             Some("llama"),
@@ -479,7 +431,7 @@ mod tests {
     #[test]
     fn a_pool_pick_round_trips_through_the_spec() {
         let (accounts, pools) = (accounts(), pools());
-        let picked = SpecForm { account: pool_value("shared"), ..form() };
+        let picked = SpawnFields { account: pool_value("shared"), ..form() };
         let spec = spec_from_form(&picked, &accounts, &pools);
         assert_eq!(spec.pool_id.as_deref(), Some("pool1"));
         assert_eq!(spec.account_id, None);
@@ -524,7 +476,8 @@ mod tests {
     fn a_form_and_its_own_spec_differ_in_nothing() {
         let (accounts, pools) = (accounts(), pools());
         let spec = spec_from_form(&form(), &accounts, &pools);
-        let round = spec_from_form(&apply_spec(&form(), &spec, &accounts, &pools), &accounts, &pools);
+        let round =
+            spec_from_form(&apply_spec(&form(), &spec, &accounts, &pools), &accounts, &pools);
         assert!(same_spec(&spec, &round));
         assert_eq!(spec_changes(&spec, &round), 0);
     }

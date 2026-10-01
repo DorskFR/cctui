@@ -1025,6 +1025,7 @@ dependencies = [
  "cctui-proto",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Anywhere                                       Labels                                         │
-▸ │  ?           Toggle this cheat sheet            Esc         Close the label list             │
-  │  q           Quit cctui                         Ctrl+n / ↓  Next label                       │
-  │  1-9         Switch view                        Ctrl+p / ↑  Previous label                   │
-  │  /           Search the current view            Space       Attach or detach this label      │
-  │  n           Next search hit                    Ctrl+c      Create a label                   │
-  │  N           Previous search hit                Ctrl+e      Rename or recolor                │
-  │  D           Diagnose the selected session      Ctrl+d      Delete this label                │
-  │  i           Session info                       Enter       Confirm                          │
-  │  Ctrl+g      Jump to the next session needin… Label filter                                   │
-  │Session list                                     Esc         Close the label list             │
-  │  j / ↓       Next session                       Ctrl+n / ↓  Next label                       │
-  │  k / ↑       Previous session                   Ctrl+p / ↑  Previous label                   │
-  │  g           First session                      Space / En… Include or exclude this label    │
-  │  G           Last session                       a           Show every label again           │
-  │  Enter       Open the conversation            Pinned messages                                │
-  │  z / Tab     Fold or open the subagent group    Esc         Close the pinned messages        │
-  │  S           Fold or open the section           Ctrl+n / ↓  Next pin                         │
-  │  Z           Fold or open everything            Ctrl+p / ↑  Previous pin                     │
-  │  f           Choose which sections show         Enter       Jump to the pinned message       │
+  │Anywhere                                         Ctrl+n / ↓  Next label                       │
+▸ │  ?           Toggle this cheat sheet            Ctrl+p / ↑  Previous label                   │
+  │  q           Quit cctui                         Space       Attach or detach this label      │
+  │  1-9         Switch view                        Ctrl+c      Create a label                   │
+  │  /           Search the current view            Ctrl+e      Rename or recolor                │
+  │  n           Next search hit                    Ctrl+d      Delete this label                │
+  │  N           Previous search hit                Enter       Confirm                          │
+  │  D           Diagnose the selected session    Label filter                                   │
+  │  i           Session info                       Esc         Close the label list             │
+  │  Ctrl+g      Jump to the next session needin…   Ctrl+n / ↓  Next label                       │
+  │Session list                                     Ctrl+p / ↑  Previous label                   │
+  │  j / ↓       Next session                       Space / En… Include or exclude this label    │
+  │  k / ↑       Previous session                   a           Show every label again           │
+  │  g           First session                    Pinned messages                                │
+  │  G           Last session                       Esc         Close the pinned messages        │
+  │  Enter       Open the conversation              Ctrl+n / ↓  Next pin                         │
+  │  z / Tab     Fold or open the subagent group    Ctrl+p / ↑  Previous pin                     │
+  │  S           Fold or open the section           Enter       Jump to the pinned message       │
+  │  Z           Fold or open everything            d / m       Unpin this message               │
+  │  Ctrl+n      Start a new session              Macros                                         │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -38,6 +38,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Pins(pins) => super::pins::reduce_pins(app, pins),
         Action::Bookmarks(action) => super::bookmarks::reduce_bookmarks(app, action),
         Action::SpawnDrafts(action) => super::spawn_drafts::reduce_drafts(app, action),
+        Action::Profiles(action) => super::profiles::reduce_profiles(app, action),
         Action::Macros(action) => super::macros::reduce_macros(app, action),
         Action::AcceptMention(key) => super::mentions::accept(app).unwrap_or_else(|| {
             app.message_input.input(key);
@@ -239,6 +240,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::Conversation(action) => conversation::reduce(app, action),
         Action::ListShape(action) => super::list_shape_reduce::reduce(app, action),
+        Action::Spawn(action) => super::spawn::reduce(app, action),
         Action::ListSearch(action) => super::list_search::reduce(app, action),
         // Decision 7: one key, scoped to whatever view is in front.
         Action::SearchCurrentView => match app.view() {

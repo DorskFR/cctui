@@ -22,9 +22,10 @@ use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
 use super::pins::PinAction;
-use super::spawn_drafts::SpawnDraftAction;
+use super::profiles::ProfileAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
+use super::spawn_drafts::SpawnDraftAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -169,6 +170,50 @@ async fn run(
                 }
             }
         }
+        Effect::LoadProfiles => match server.profiles().await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Loaded(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile list fetch failed");
+                vec![Action::Profiles(ProfileAction::Failed)]
+            }
+        },
+        Effect::CreateProfile { name, spec } => {
+            let body = cctui_proto::api::profiles::CreateProfileRequest { name, spec: *spec };
+            match server.create_profile(&body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, "profile create failed");
+                    vec![Action::Toast(Level::Error, "could not create the profile".to_owned())]
+                }
+            }
+        }
+        Effect::UpdateProfile { id, name, spec } => {
+            let body = cctui_proto::api::profiles::UpdateProfileRequest { name, spec: Some(*spec) };
+            match server.update_profile(&id, &body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, id, "profile update failed");
+                    vec![Action::Toast(Level::Error, "could not save the profile".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteProfile { id } => match server.delete_profile(&id).await {
+            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
+                |_| Vec::new(),
+                |id| vec![Action::Profiles(ProfileAction::Deleted(id))],
+            ),
+            Err(e) => {
+                tracing::warn!(%e, id, "profile delete failed");
+                vec![Action::Toast(Level::Error, "could not delete the profile".to_owned())]
+            }
+        },
+        Effect::ReorderProfiles { ids } => match server.reorder_profiles(ids).await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Reordered(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile reorder failed");
+                vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
+            }
+        },
         Effect::LaunchDraft { session_id, env } => {
             match server.launch_draft(&session_id, &env).await {
                 Ok(_) => vec![Action::SpawnDrafts(SpawnDraftAction::Launched { session_id })],
@@ -492,6 +537,13 @@ async fn run(
             Err(e) => {
                 tracing::warn!(%e, field, "the value autocomplete failed");
                 Vec::new()
+            }
+        },
+        Effect::SpawnSession { request } => match server.spawn_session(&request).await {
+            Ok(()) => Vec::new(),
+            Err(e) => {
+                tracing::warn!(%e, "the spawn request failed");
+                vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
             }
         },
         Effect::SaveSettings { data } => {

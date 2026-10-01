@@ -16,11 +16,7 @@ pub fn draft_payload(metadata: &Value) -> &Value {
 /// The prompt a draft row previews.
 #[must_use]
 pub fn draft_prompt(metadata: &Value) -> String {
-    draft_payload(metadata)
-        .get("prompt")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
+    draft_payload(metadata).get("prompt").and_then(Value::as_str).unwrap_or_default().to_owned()
 }
 
 /// The env var names a launch asks for. Values are never stored, so a launch
@@ -31,7 +27,11 @@ pub fn draft_env_keys(metadata: &Value) -> Vec<String> {
         .get("env_keys")
         .and_then(Value::as_array)
         .map(|keys| {
-            keys.iter().filter_map(Value::as_str).filter(|k| !k.is_empty()).map(str::to_owned).collect()
+            keys.iter()
+                .filter_map(Value::as_str)
+                .filter(|k| !k.is_empty())
+                .map(str::to_owned)
+                .collect()
         })
         .unwrap_or_default()
 }

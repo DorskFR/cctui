@@ -34,6 +34,8 @@ pub enum View {
     Terminal,
     ModelPicker,
     Sidebar,
+    /// The new-session dialog.
+    Spawn,
     /// Slice roots: the switcher resets the router to one of these.
     Bookmarks,
     Overview,
@@ -290,6 +292,8 @@ pub struct App {
     pub refresh: RefreshCounters,
     /// Selection and the pending prompts of the list's row actions.
     pub row_actions: super::row_actions::RowActionState,
+    /// The open spawn dialog, or `None`.
+    pub spawn: Option<super::spawn::SpawnForm>,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
     /// Which top-level slice `1-9` last selected.
@@ -427,6 +431,7 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             row_actions: super::row_actions::RowActionState::default(),
+            spawn: None,
             ui: UiState::default(),
             slice: Slice::Sessions,
             slice_cursors: HashMap::new(),
@@ -476,7 +481,7 @@ impl App {
     /// The modal strip or panel holding the keyboard, if any. A feature with
     /// its own context adds an arm here.
     #[must_use]
-    pub const fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
+    pub fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
         use crate::config::keymap::Context;
         // A row-action prompt is modal over the list: it answers one key and
         // closes, so it outranks the strips that stay open while you work.
@@ -500,6 +505,14 @@ impl App {
         }
         // Last: every strip above belongs to the sessions slice, these two to
         // the bookmarks slice, so no pair of them is ever open together.
+        if let Some(form) = self.spawn.as_ref().and_then(super::spawn::SpawnForm::profiles) {
+            if form.prompt.is_some() {
+                return Some(Context::SpawnProfileName);
+            }
+            if form.confirm.is_some() {
+                return Some(Context::SpawnProfileConfirm);
+            }
+        }
         if self.spawn_drafts.env_prompt.is_some() {
             return Some(Context::DraftEnv);
         }

@@ -11,6 +11,8 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The new-session dialog.
+    Spawn,
     /// The `f` sections popup over the list.
     Sections,
     /// The `/` prompt over the list.
@@ -33,6 +35,8 @@ pub enum Context {
     BookmarkConfirm,
     DraftEnv,
     DraftConfirm,
+    SpawnProfileName,
+    SpawnProfileConfirm,
     Terminal,
     Help,
     ModelPicker,
@@ -54,6 +58,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Rename,
     Context::Conversation,
     Context::Composer,
+    Context::Spawn,
     Context::Sections,
     Context::ListSearch,
     Context::CmdLine,
@@ -68,6 +73,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::BookmarkConfirm,
     Context::DraftEnv,
     Context::DraftConfirm,
+    Context::SpawnProfileName,
+    Context::SpawnProfileConfirm,
     Context::Terminal,
     Context::Help,
     Context::ModelPicker,
@@ -89,6 +96,7 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::Spawn => "spawn",
             Self::Sections => "sections",
             Self::ListSearch => "list-search",
             Self::CmdLine => "cmdline",
@@ -105,6 +113,8 @@ impl Context {
             Self::BookmarkConfirm => "bookmark-confirm",
             Self::DraftEnv => "draft-env",
             Self::DraftConfirm => "draft-confirm",
+            Self::SpawnProfileName => "spawn-profile-name",
+            Self::SpawnProfileConfirm => "spawn-profile-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
             Self::ModelPicker => "model-picker",
@@ -126,6 +136,7 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::Spawn => "New session",
             Self::Sections => "Sections popup",
             Self::ListSearch => "List search",
             Self::CmdLine => "Search and commands",
@@ -142,6 +153,8 @@ impl Context {
             Self::BookmarkConfirm => "Bookmarks — confirm",
             Self::DraftEnv => "Draft launch — env",
             Self::DraftConfirm => "Draft — confirm",
+            Self::SpawnProfileName => "Profile — name",
+            Self::SpawnProfileConfirm => "Profile — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::ModelPicker => "Model picker",
@@ -216,6 +229,11 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
+    SpawnOpen => "spawn-open", "Start a new session";
+    SpawnNextField => "spawn-next-field", "Next field";
+    SpawnPrevField => "spawn-prev-field", "Previous field";
+    SpawnSubmit => "spawn-submit", "Launch";
+    SpawnCancel => "spawn-cancel", "Close without launching";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -350,6 +368,10 @@ actions! {
     DraftEdit => "draft-edit", "Edit the draft";
     DraftDiscard => "draft-discard", "Discard the draft";
     SpawnFromConfig => "spawn-from-config", "New session from this configuration";
+    ProfileNameCommit => "profile-name-commit", "Save the profile";
+    ProfileNameCancel => "profile-name-cancel", "Do not save";
+    ProfileDeleteConfirm => "profile-delete-confirm", "Delete the profile";
+    ProfileDeleteCancel => "profile-delete-cancel", "Keep the profile";
     DraftEnvNext => "draft-env-next", "Next variable";
     DraftEnvCommit => "draft-env-commit", "Launch with these values";
     DraftEnvCancel => "draft-env-cancel", "Do not launch";
@@ -457,6 +479,9 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    // The ticket asks for `n`, but decision 7 makes `n` next-search-hit
+    // everywhere and a context binding would silently shadow it.
+    spec(Context::SessionList, "ctrl+n", ActionId::SpawnOpen),
     spec(Context::SessionList, "f", ActionId::ListSections),
     spec(Context::SessionList, "o", ActionId::ListSortCycle),
     spec(Context::SessionList, "O", ActionId::ListSortFlip),
@@ -571,6 +596,14 @@ const FILTER_MENU: &[BindingSpec] = &[
     spec(Context::FilterMenu, "r", ActionId::FilterReset),
 ];
 
+/// Typed characters reach the focused field through the unbound fall-through.
+const SPAWN: &[BindingSpec] = &[
+    spec(Context::Spawn, "tab", ActionId::SpawnNextField),
+    spec(Context::Spawn, "backtab, shift+tab", ActionId::SpawnPrevField),
+    spec(Context::Spawn, "ctrl+s", ActionId::SpawnSubmit),
+    spec(Context::Spawn, "esc", ActionId::SpawnCancel),
+];
+
 const SECTIONS_POPUP: &[BindingSpec] = &[
     spec(Context::Sections, "esc, q, f", ActionId::ListSections),
     spec(Context::Sections, "j, down", ActionId::SectionsNext),
@@ -627,10 +660,10 @@ const FILE_VIEWER: &[BindingSpec] = &[
 /// The picker is modal, so it claims plain letters: `space` toggles, and the
 /// manage verbs sit on the keys the webui's menu uses.
 const LABELS: &[BindingSpec] = &[
-    spec(Context::SessionList, "L", ActionId::DraftLaunch),
+    spec(Context::SessionList, "s", ActionId::DraftLaunch),
     spec(Context::SessionList, "E", ActionId::DraftEdit),
-    spec(Context::SessionList, "X", ActionId::DraftDiscard),
-    spec(Context::SessionList, "N", ActionId::SpawnFromConfig),
+    spec(Context::SessionList, "d", ActionId::DraftDiscard),
+    spec(Context::SessionList, "C", ActionId::SpawnFromConfig),
     spec(Context::SessionList, "l", ActionId::OpenLabels),
     spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
     spec(Context::LabelPicker, "esc", ActionId::LabelsClose),
@@ -699,6 +732,16 @@ const DIAGNOSE: &[BindingSpec] = &[
     spec(Context::Diagnose, "y", ActionId::DiagnoseCopyId),
     spec(Context::Diagnose, "D", ActionId::Diagnose),
     spec(Context::Diagnose, "i", ActionId::Info),
+];
+
+const SPAWN_PROFILE_NAME: &[BindingSpec] = &[
+    spec(Context::SpawnProfileName, "enter", ActionId::ProfileNameCommit),
+    spec(Context::SpawnProfileName, "esc", ActionId::ProfileNameCancel),
+];
+
+const SPAWN_PROFILE_CONFIRM: &[BindingSpec] = &[
+    spec(Context::SpawnProfileConfirm, "y, enter", ActionId::ProfileDeleteConfirm),
+    spec(Context::SpawnProfileConfirm, "n, esc, q", ActionId::ProfileDeleteCancel),
 ];
 
 const DRAFT_ENV: &[BindingSpec] = &[
@@ -785,6 +828,7 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    SPAWN,
     SECTIONS_POPUP,
     LIST_SEARCH,
     CONFIRM,
@@ -804,6 +848,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     BOOKMARK_CONFIRM,
     DRAFT_ENV,
     DRAFT_CONFIRM,
+    SPAWN_PROFILE_NAME,
+    SPAWN_PROFILE_CONFIRM,
     TERMINAL,
     HELP,
     MODEL_PICKER,

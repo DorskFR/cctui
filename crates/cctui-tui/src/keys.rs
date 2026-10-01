@@ -16,13 +16,15 @@ use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
-use crate::app::spawn_drafts::SpawnDraftAction;
+use crate::app::profiles::ProfileAction;
 use crate::app::prompt::PromptAction;
 use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::slice::SliceAction;
+use crate::app::spawn::SpawnAction;
+use crate::app::spawn_drafts::SpawnDraftAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
 use crate::app::unread::UnreadAction;
@@ -90,6 +92,7 @@ pub const fn context_for(
         };
     }
     match view {
+        View::Spawn => Context::Spawn,
         View::SessionList => Context::SessionList,
         View::Bookmarks => Context::Bookmarks,
         View::Conversation => Context::Conversation,
@@ -181,7 +184,8 @@ pub fn map_input(
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(-3))),
-            View::FileViewer
+            View::Spawn
+            | View::FileViewer
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -199,7 +203,8 @@ pub fn map_input(
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(-3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(3))),
-            View::FileViewer
+            View::Spawn
+            | View::FileViewer
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -239,6 +244,11 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleFoldSection => Action::SessionLive(SessionLiveAction::ToggleFoldSection),
         ActionId::ToggleFoldAll => Action::SessionLive(SessionLiveAction::ToggleFoldAll),
 
+        ActionId::SpawnOpen => Action::Spawn(SpawnAction::Open),
+        ActionId::SpawnNextField => Action::Spawn(SpawnAction::NextField),
+        ActionId::SpawnPrevField => Action::Spawn(SpawnAction::PrevField),
+        ActionId::SpawnSubmit => Action::Spawn(SpawnAction::Submit),
+        ActionId::SpawnCancel => Action::Spawn(SpawnAction::Close),
         ActionId::ListSections => Action::ListShape(ListShapeAction::ToggleSectionsMenu),
         ActionId::ListSortCycle => Action::ListShape(ListShapeAction::CycleSort),
         ActionId::ListSortFlip => Action::ListShape(ListShapeAction::FlipSortDir),
@@ -387,6 +397,10 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DraftEdit => Action::SpawnDrafts(SpawnDraftAction::Edit),
         ActionId::DraftDiscard => Action::SpawnDrafts(SpawnDraftAction::Discard),
         ActionId::SpawnFromConfig => Action::SpawnDrafts(SpawnDraftAction::NewFromConfig),
+        ActionId::ProfileNameCommit => Action::Profiles(ProfileAction::PromptCommit),
+        ActionId::ProfileNameCancel => Action::Profiles(ProfileAction::PromptCancel),
+        ActionId::ProfileDeleteConfirm => Action::Profiles(ProfileAction::DeleteConfirm),
+        ActionId::ProfileDeleteCancel => Action::Profiles(ProfileAction::DeleteCancel),
         ActionId::DraftEnvNext => Action::SpawnDrafts(SpawnDraftAction::EnvNext),
         ActionId::DraftEnvCommit => Action::SpawnDrafts(SpawnDraftAction::EnvCommit),
         ActionId::DraftEnvCancel => Action::SpawnDrafts(SpawnDraftAction::EnvCancel),
@@ -463,6 +477,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
         Context::ListSearch => Some(Action::ListSearch(ListSearchAction::Key(key))),
+        Context::Spawn => Some(Action::Spawn(SpawnAction::Key(key))),
         Context::Rename => Some(Action::RowAction(RowAction::RenameKey(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
@@ -471,6 +486,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
         Context::DraftEnv => Some(Action::SpawnDrafts(SpawnDraftAction::EnvKey(key))),
+        Context::SpawnProfileName => Some(Action::Profiles(ProfileAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
         _ => None,
     }

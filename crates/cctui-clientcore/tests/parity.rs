@@ -5,7 +5,8 @@
 
 use cctui_clientcore::history_nav::HistoryNav;
 use cctui_clientcore::{
-    bookmarks, format, git, labels, macros, mention, profiles, search, session_failure, uploads,
+    bookmarks, format, git, labels, macros, mention, profiles, search, session_failure, spawn,
+    uploads,
 };
 use cctui_proto::git::GitInfo;
 use serde_json::Value;
@@ -345,8 +346,8 @@ fn spec_of(v: &Value) -> profiles::ProfileSpec {
     }
 }
 
-fn form_of(v: &Value) -> profiles::SpecForm {
-    profiles::SpecForm {
+fn form_of(v: &Value) -> spawn::SpawnFields {
+    spawn::SpawnFields {
         adapter_id: s(v, "adapter_id"),
         account: s(v, "account"),
         account_provider: s(v, "account_provider"),
@@ -357,6 +358,7 @@ fn form_of(v: &Value) -> profiles::SpecForm {
         effort_codex: s(v, "effort_codex"),
         permission_mode: s(v, "permission_mode"),
         service_tier: s(v, "service_tier"),
+        ..spawn::SpawnFields::default()
     }
 }
 
@@ -503,5 +505,62 @@ fn macro_spawn_parity() {
             .map(|p| p.as_str().to_owned())
             .collect();
         assert_eq!(problems, strings(&c["out"]), "macroProblems {c}");
+    }
+}
+
+/// `fixtures/parity/spawnBody.json`, replayed by the web UI's own test against
+/// `buildSpawnBody`. Only the keys a case names are asserted, so a field a
+/// later lane adds cannot invalidate the file.
+#[test]
+fn spawn_body_parity() {
+    use cctui_clientcore::spawn::{SpawnFields, build_spawn_body};
+
+    let fx = fixture("spawnBody");
+    for case in cases(&fx, "cases") {
+        let name = s(case, "name");
+        let f = &case["fields"];
+        let text = |key: &str| f[key].as_str().unwrap_or_default().to_string();
+        let list = |key: &str| {
+            f[key]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(ToString::to_string)).collect())
+                .unwrap_or_default()
+        };
+        let fields = SpawnFields {
+            machine_id: text("machine_id"),
+            working_dir: text("working_dir"),
+            name: text("name"),
+            prompt: text("prompt"),
+            adapter_id: text("adapter_id"),
+            permission_mode: text("permission_mode"),
+            model_claude: text("model_claude"),
+            model_codex: text("model_codex"),
+            model_account: text("model_account"),
+            effort_claude: text("effort_claude"),
+            effort_codex: text("effort_codex"),
+            service_tier: text("service_tier"),
+            account: text("account"),
+            account_provider: text("account_provider"),
+            labels: list("labels"),
+            context_items: list("context_items"),
+            context_auto: f["context_auto"].as_bool().unwrap_or(false),
+        };
+        let provider = case["provider"].as_str();
+        let got =
+            build_spawn_body(&fields, provider, std::collections::BTreeMap::new(), None, None);
+        let got = serde_json::to_value(&got).unwrap_or_else(|e| panic!("{name}: {e}"));
+
+        let expect = case["expect"].as_object().unwrap_or_else(|| panic!("{name}: no expect"));
+        for (key, want) in expect {
+            // The wire omits a `false` flag and an empty list; the TypeScript
+            // object spells both out. Same meaning, so an absent key is read as
+            // whatever empty the expectation is shaped like.
+            let actual = got.get(key).cloned().unwrap_or_else(|| match want {
+                Value::Bool(_) => Value::Bool(false),
+                Value::Array(_) => Value::Array(Vec::new()),
+                _ => Value::Null,
+            });
+            assert_eq!(&actual, want, "{name}: {key}");
+        }
     }
 }

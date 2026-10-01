@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Filter menu                                    Row glyphs                                     │
-▸ │  F / q / Esc Choose which lines to show         ●           working                          │
-  │  a           Show every category                ◐           stale or asleep                  │
-  │  r           Back to the default filter         ○           idle                             │
-  │  Space / En… Show or hide this category         ☾           hibernated                       │
-  │  j / ↓       Next category                      ↳           subagent                         │
-  │  k / ↑       Previous category                  ▸ / ▾       folded / open group              │
-  │Prompt history                                   [name]      a label, tinted by its hue       │
-  │  Esc         Close the prompt list              +N          more labels than fit             │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │File viewer                                      ●N          unread messages                  │
-  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
-  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
-  │  PgDn        Page down                          ⚠           account traffic never seen       │
-  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
-  │  o           Open in the desktop viewer                                                      │
+  │  a           Show every category              Row glyphs                                     │
+▸ │  r           Back to the default filter         ●           working                          │
+  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
+  │  j / ↓       Next category                      ○           idle                             │
+  │  k / ↑       Previous category                  ☾           hibernated                       │
+  │Prompt history                                   ↳           subagent                         │
+  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
+  │  Ctrl+n / ↓  Next prompt                        [name]      a label, tinted by its hue       │
+  │  Ctrl+p / ↑  Previous prompt                    +N          more labels than fit             │
+  │  Enter       Put this prompt in the composer    !           permission waiting on you        │
+  │File viewer                                      ?           question waiting on you          │
+  │  j / ↓       Scroll down                        P           plan waiting for approval        │
+  │  k / ↑       Scroll up                          ●N          unread messages                  │
+  │  PgDn        Page down                          ⚡           auto-approve on                  │
+  │  PgUp        Page up                            ⏸           account soft-limited             │
+  │  g           Jump to the top                    ⚠           account traffic never seen       │
+  │  q / Esc     Close the file viewer              ❄           cache cold, next turn re-reads   │
+  │  o           Open in the desktop viewer         ✕reason     how it ended                     │
+  │Labels                                           ⚙N age      tool calls, age of the last      │
+  │  Esc         Close the label list                                                            │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

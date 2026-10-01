@@ -32,6 +32,7 @@ pub enum MacroProblem {
 }
 
 impl MacroProblem {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Title => "title",

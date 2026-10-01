@@ -1,8 +1,8 @@
 use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
+use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::profiles::{
     CreateProfileRequest, ReorderProfilesRequest, SessionProfile, UpdateProfileRequest,
 };
-use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
@@ -671,6 +671,18 @@ impl Client {
         self.json(Self::route("get_sessions_search_values")?, &[], &query, None).await
     }
 
+    /// `POST /sessions/spawn`. The route is multipart so a spawn can carry file
+    /// uploads; with none to send, the JSON body is the only part.
+    pub async fn spawn_session(
+        &self,
+        request: &cctui_proto::api::SpawnRequest,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_spawn")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[], Some(&body)).await
+    }
+
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
         let route = Self::route("put_drafts_by_*key")?;
         let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
@@ -928,6 +940,7 @@ mod tests {
             "get_sessions_search",
             "get_sessions_search_values",
             "put_settings",
+            "post_sessions_spawn",
             "get_sessions_by_id",
             "get_sessions_stats",
             "get_sessions_by_id_conversation",

@@ -82,7 +82,7 @@ pub fn is_draft(session: &SessionListItem) -> bool {
     session.status == SessionStatus::Draft
 }
 
-fn metadata(session: &SessionListItem) -> &Value {
+const fn metadata(session: &SessionListItem) -> &Value {
     &session.metadata
 }
 
@@ -249,7 +249,7 @@ fn run_macro(app: &mut App) -> Vec<Effect> {
 }
 
 fn label_ids(session: &SessionListItem) -> Vec<String> {
-    session.labels.iter().map(|l| l.id.to_string()).collect()
+    session.labels.iter().map(|l| l.id.clone()).collect()
 }
 
 /// A session's configuration as a spawn request: what the row itself says,
@@ -303,16 +303,21 @@ mod tests {
     use crate::app::{Action, reduce};
     use crate::testsupport::session;
 
-    fn draft_row(id: &str, draft: serde_json::Value) -> cctui_proto::api::SessionListItem {
+    fn draft_row(id: &str, draft: &serde_json::Value) -> cctui_proto::api::SessionListItem {
         let mut row = session(id, "alpha", "draft", "working");
         row.status = cctui_proto::models::SessionStatus::Draft;
         row.metadata = json!({ "draft": draft });
         row
     }
 
+    /// Draft rows are hidden until the Drafts section is on, so a test that
+    /// acts on one turns it on exactly as the user does.
     fn app_with(rows: Vec<cctui_proto::api::SessionListItem>) -> App {
         let mut app = App::new();
         app.sessions = rows;
+        if !app.list_shape.sections.has(crate::app::list_view::Section::Drafts) {
+            app.list_shape.sections.toggle(crate::app::list_view::Section::Drafts);
+        }
         app.update_aggregates();
         app
     }
@@ -323,7 +328,7 @@ mod tests {
 
     #[test]
     fn a_draft_without_env_launches_straight_away() {
-        let mut app = app_with(vec![draft_row("d-1", json!({ "prompt": "do it" }))]);
+        let mut app = app_with(vec![draft_row("d-1", &json!({ "prompt": "do it" }))]);
         assert!(is_draft(app.selected_session().expect("a row")));
         match act(&mut app, SpawnDraftAction::Launch).as_slice() {
             [Effect::LaunchDraft { session_id, env }] => {
@@ -336,8 +341,7 @@ mod tests {
 
     #[test]
     fn a_draft_with_env_names_asks_for_the_values_first() {
-        let mut app =
-            app_with(vec![draft_row("d-1", json!({ "env_keys": ["TOKEN", "HOST"] }))]);
+        let mut app = app_with(vec![draft_row("d-1", &json!({ "env_keys": ["TOKEN", "HOST"] }))]);
         assert!(act(&mut app, SpawnDraftAction::Launch).is_empty(), "nothing is sent yet");
         let prompt = app.spawn_drafts.env_prompt.as_ref().expect("an env prompt");
         assert_eq!(prompt.keys, vec!["TOKEN".to_owned(), "HOST".to_owned()]);
@@ -372,7 +376,7 @@ mod tests {
 
     #[test]
     fn an_env_value_left_blank_is_not_sent() {
-        let mut app = app_with(vec![draft_row("d-1", json!({ "env_keys": ["TOKEN", "HOST"] }))]);
+        let mut app = app_with(vec![draft_row("d-1", &json!({ "env_keys": ["TOKEN", "HOST"] }))]);
         act(&mut app, SpawnDraftAction::Launch);
         type_env(&mut app, "abc");
         match act(&mut app, SpawnDraftAction::EnvCommit).as_slice() {
@@ -386,7 +390,7 @@ mod tests {
 
     #[test]
     fn escaping_the_env_prompt_launches_nothing() {
-        let mut app = app_with(vec![draft_row("d-1", json!({ "env_keys": ["TOKEN"] }))]);
+        let mut app = app_with(vec![draft_row("d-1", &json!({ "env_keys": ["TOKEN"] }))]);
         act(&mut app, SpawnDraftAction::Launch);
         assert!(act(&mut app, SpawnDraftAction::EnvCancel).is_empty());
         assert!(app.spawn_drafts.env_prompt.is_none());
@@ -403,7 +407,7 @@ mod tests {
 
     #[test]
     fn discard_waits_for_a_confirm_and_drops_the_row() {
-        let mut app = app_with(vec![draft_row("d-1", json!({}))]);
+        let mut app = app_with(vec![draft_row("d-1", &json!({}))]);
         act(&mut app, SpawnDraftAction::Discard);
         assert_eq!(app.spawn_drafts.confirm.as_deref(), Some("d-1"));
         act(&mut app, SpawnDraftAction::DiscardCancel);
@@ -422,7 +426,7 @@ mod tests {
     fn editing_a_draft_prefills_the_dialog_from_its_payload() {
         let mut app = app_with(vec![draft_row(
             "d-1",
-            json!({
+            &json!({
                 "machine_id": "m-9",
                 "working_dir": "/w/elsewhere",
                 "prompt": "half a plan",
