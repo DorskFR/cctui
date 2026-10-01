@@ -12,6 +12,7 @@ pub mod mentions;
 pub mod model_picker;
 pub mod pins;
 pub mod prompt;
+pub mod sections;
 pub mod sessions;
 pub mod sidebar;
 pub mod terminal;

@@ -280,6 +280,18 @@ pub struct App {
     pub refresh: RefreshCounters,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
+    /// Sections, sort and group-by, restored from the server settings.
+    pub list_shape: super::list_view::ListShape,
+    /// Focused row of the sections popup while it is open.
+    pub sections_menu: Option<usize>,
+    /// The `/` search over the list.
+    pub list_search: super::list_search::ListSearch,
+    /// Seq a just-opened conversation should land on, set by whatever opened it
+    /// at a match. Cleared by the view once it has anchored.
+    pub pending_seq_anchor: Option<i64>,
+    /// The settings blob as the server last gave it, so a write patches it
+    /// instead of dropping the keys only the web UI uses.
+    pub settings_blob: serde_json::Value,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -388,6 +400,11 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             ui: UiState::default(),
+            list_shape: super::list_view::ListShape::default(),
+            sections_menu: None,
+            list_search: super::list_search::ListSearch::default(),
+            pending_seq_anchor: None,
+            settings_blob: serde_json::Value::Null,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             terminal: None,
@@ -432,6 +449,12 @@ impl App {
         if self.filter_menu.is_some() {
             return Some(Context::FilterMenu);
         }
+        if self.sections_menu.is_some() {
+            return Some(Context::Sections);
+        }
+        if self.list_search.open {
+            return Some(Context::ListSearch);
+        }
         None
     }
 
@@ -448,8 +471,22 @@ impl App {
         self.conversations.entry(session_id.to_owned()).or_default()
     }
 
+    /// The rows on screen: `sessions` narrowed by the sections, in the chosen
+    /// sort, grouped by the chosen dimension. Borrowed throughout, so an
+    /// in-place edit to a session shows up without anything being recomputed.
     pub fn list_rows(&self) -> Vec<super::session_list::Row<'_>> {
-        super::session_list::rows(&self.sessions, &self.ui)
+        let visible = super::list_view::visible_refs(&self.sessions, &self.list_shape);
+        super::session_list::rows_by(&visible, &self.ui, self.list_shape.group_by)
+    }
+
+    /// Brings the selection back inside the list after its shape changed.
+    pub fn reshape(&mut self) {
+        let len = self.flattened_sessions().len();
+        if len == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= len {
+            self.selected_index = len - 1;
+        }
     }
 
     pub fn flattened_sessions(&self) -> Vec<&SessionListItem> {
@@ -486,6 +523,7 @@ impl App {
             .iter()
             .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
             .count();
+        self.reshape();
     }
 }
 

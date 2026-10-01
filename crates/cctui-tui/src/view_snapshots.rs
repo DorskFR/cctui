@@ -7,6 +7,8 @@ use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::diagnose::DiagnoseAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::list_search::ListSearchAction;
+use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
@@ -115,7 +117,7 @@ fn help_overlay_tall_enough_for_the_glyph_legend() {
     // Tall enough for the legend's last entry: the sheet is two columns, the
     // legend is the tail of the right one, and this case is where it is
     // reviewable in full.
-    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 96));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 110));
 }
 
 #[test]
@@ -129,6 +131,120 @@ fn session_list_shows_a_waiting_prompt_marker() {
 #[test]
 fn session_list() {
     let mut app = app_with_sessions();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_sections_popup() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListShape(ListShapeAction::ToggleSectionsMenu));
+    reduce(&mut app, Action::ListShape(ListShapeAction::SectionsNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_grouped_by_machine_with_accents() {
+    let mut app = app_with_sessions();
+    app.sessions[1].machine_id = "cyberia".to_owned();
+    app.sessions[1].machine_name = Some("cyberia".to_owned());
+    app.list_shape.group_by = crate::app::list_view::GroupBy::Machine;
+    app.list_shape.color_by = crate::app::list_view::ColorBy::Machine;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_sorted_by_name_ascending() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListShape(ListShapeAction::CycleSort));
+    reduce(&mut app, Action::ListShape(ListShapeAction::CycleSort));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_with_archived_shown() {
+    let mut app = app_with_sessions();
+    let mut old = crate::testsupport::session("s-arch", "retired", "archived", "done");
+    old.status = cctui_proto::models::SessionStatus::Archived;
+    app.sessions.push(old);
+    app.list_shape.sections.toggle(crate::app::list_view::Section::Archived);
+    app.update_aggregates();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn searching(query: &str) -> crate::app::App {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListSearch(ListSearchAction::Open));
+    for c in query.chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::ListSearch(ListSearchAction::Key(key)));
+    }
+    app
+}
+
+fn search_hit(
+    id: &str,
+    project: &str,
+    snippet: &str,
+    seq: i64,
+) -> cctui_proto::api::SessionListItem {
+    let mut s = crate::testsupport::session(id, project, "active", "working");
+    s.match_snippet = Some(snippet.to_owned());
+    s.match_seq = Some(seq);
+    s
+}
+
+#[test]
+fn session_list_search_prompt_before_any_reply() {
+    let mut app = searching("machine:cyberia auth");
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_results_with_highlighted_snippets() {
+    let mut app = searching("auth token");
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "auth token".to_owned(),
+            offset: 0,
+            sessions: vec![
+                search_hit("s-1", "gateway", "refresh the auth token before the gateway", 42),
+                search_hit("s-2", "api", "the auth token expired", 7),
+            ],
+            has_more: false,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_with_no_match() {
+    let mut app = searching("nothing matches this");
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "nothing matches this".to_owned(),
+            offset: 0,
+            sessions: vec![],
+            has_more: false,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_including_archived() {
+    let mut app = searching("auth");
+    reduce(&mut app, Action::ListSearch(ListSearchAction::ToggleArchived));
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "auth".to_owned(),
+            offset: 0,
+            sessions: vec![search_hit("s-1", "gateway", "the auth flow", 1)],
+            has_more: true,
+        }),
+    );
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

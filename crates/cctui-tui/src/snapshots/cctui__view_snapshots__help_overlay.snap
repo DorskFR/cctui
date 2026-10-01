@@ -1,28 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 655
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         o           Open in the desktop viewer       │
-▸ │  ?           Toggle this cheat sheet          Pinned messages                                │
-  │  q           Quit cctui                         Esc         Close the pinned messages        │
-  │  /           Search the current view            Ctrl+n / ↓  Next pin                         │
-  │  n           Next search hit                    Ctrl+p / ↑  Previous pin                     │
-  │  N           Previous search hit                Enter       Jump to the pinned message       │
-  │  D           Diagnose the selected session      d / m       Unpin this message               │
-  │  i           Session info                     Macros                                         │
-  │  Ctrl+g      Jump to the next pending approv…   Esc         Close the macro list             │
-  │Session list                                     Ctrl+n / ↓  Next macro                       │
-  │  j / ↓       Next session                       Ctrl+p / ↑  Previous macro                   │
-  │  k / ↑       Previous session                   Enter       Put this prompt in the composer  │
-  │  g           First session                    Terminal pane                                  │
-  │  G           Last session                       T / q / Esc Close the terminal pane          │
-  │  Enter       Open the conversation              j / ↓       Scroll the terminal down         │
-  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll the terminal up           │
-  │  S           Fold or open the section         Help                                           │
-  │  Z           Fold or open everything            j / ↓       Scroll down                      │
-  │Conversation                                     k / ↑       Scroll up                        │
-  │  1-9         Jump to session by number          PgDn        Page down                        │
+  │Anywhere                                         Ctrl+p / ↑  Previous prompt                  │
+▸ │  ?           Toggle this cheat sheet            Enter       Put this prompt in the composer  │
+  │  q           Quit cctui                       File viewer                                    │
+  │  /           Search the current view            j / ↓       Scroll down                      │
+  │  n           Next search hit                    k / ↑       Scroll up                        │
+  │  N           Previous search hit                PgDn        Page down                        │
+  │  D           Diagnose the selected session      PgUp        Page up                          │
+  │  i           Session info                       g           Jump to the top                  │
+  │  Ctrl+g      Jump to the next pending approv…   q / Esc     Close the file viewer            │
+  │Session list                                     o           Open in the desktop viewer       │
+  │  j / ↓       Next session                     Pinned messages                                │
+  │  k / ↑       Previous session                   Esc         Close the pinned messages        │
+  │  g           First session                      Ctrl+n / ↓  Next pin                         │
+  │  G           Last session                       Ctrl+p / ↑  Previous pin                     │
+  │  Enter       Open the conversation              Enter       Jump to the pinned message       │
+  │  z / Tab     Fold or open the subagent group    d / m       Unpin this message               │
+  │  S           Fold or open the section         Macros                                         │
+  │  Z           Fold or open everything            Esc         Close the macro list             │
+  │  f           Choose which sections show         Ctrl+n / ↓  Next macro                       │
+  │  o           Cycle the sort field               Ctrl+p / ↑  Previous macro                   │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

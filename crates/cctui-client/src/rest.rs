@@ -539,6 +539,43 @@ impl Client {
     }
 
     /// Save a draft. Empty text deletes the row, as the route documents.
+    /// Replaces the settings blob. `PUT /settings` is a replace, so the caller
+    /// must send the whole blob it read, patched — never just its own keys.
+    pub async fn put_settings(
+        &self,
+        version: i32,
+        data: Value,
+    ) -> Result<SettingsPayload, ClientError> {
+        let route = Self::route("put_settings")?;
+        let body = serde_json::to_value(SettingsPayload { version, data })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Full-text session search. `q` is the raw query: the server parses it with
+    /// the same `cctui-query` grammar the TUI uses to complete it.
+    pub async fn search_sessions(
+        &self,
+        q: &str,
+        include_archived: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<SessionListResponse, ClientError> {
+        let query = vec![
+            ("q", q.to_owned()),
+            ("include_archived", include_archived.to_string()),
+            ("limit", limit.to_string()),
+            ("offset", offset.to_string()),
+        ];
+        self.json(Self::route("get_sessions_search")?, &[], &query, None).await
+    }
+
+    /// Autocomplete values for one search field.
+    pub async fn search_values(&self, field: &str, q: &str) -> Result<Vec<String>, ClientError> {
+        let query = vec![("field", field.to_owned()), ("q", q.to_owned())];
+        self.json(Self::route("get_sessions_search_values")?, &[], &query, None).await
+    }
+
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
         let route = Self::route("put_drafts_by_*key")?;
         let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
@@ -679,6 +716,9 @@ mod tests {
     fn every_named_route_exists_in_the_table() {
         for id in [
             "get_sessions",
+            "get_sessions_search",
+            "get_sessions_search_values",
+            "put_settings",
             "get_sessions_by_id",
             "get_sessions_by_id_conversation",
             "get_sessions_by_id_diagnose",

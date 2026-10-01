@@ -37,6 +37,7 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
                     *cursor += merge.inserted;
                 }
             }
+            anchor_pending_seq(app, &session_id);
             super::pins::after_page(app, &session_id)
         }
         ConversationAction::ToggleLineCursor => {
@@ -152,6 +153,21 @@ fn toggle_line_cursor(app: &mut App) {
         app.line_cursor = Some(last);
         app.follow_tail = false;
     }
+}
+
+/// Lands the viewport on the seq whatever opened this conversation asked for —
+/// a search hit, a pin — by focusing that entry, so line-select's own scroll
+/// carries it on screen. A seq not in this page is left pending for the next.
+fn anchor_pending_seq(app: &mut App, session_id: &str) {
+    let Some(seq) = app.pending_seq_anchor else { return };
+    let Some(at) =
+        app.conversation_mut(session_id).entries().iter().position(|e| e.sequenced && e.seq == seq)
+    else {
+        return;
+    };
+    app.pending_seq_anchor = None;
+    app.line_cursor = Some(at);
+    app.follow_tail = false;
 }
 
 /// Entry indices the filter is letting through, which is what the cursor may
@@ -486,6 +502,31 @@ mod tests {
         reduce(&mut app, Action::Conversation(ConversationAction::ToggleExpandAll));
         assert!(!app.expand_all);
         assert!(!app.conversation_mut("s-a").entries()[0].expanded);
+    }
+
+    #[test]
+    fn a_page_that_carries_the_pending_seq_lands_on_it() {
+        let mut app = app();
+        app.pending_seq_anchor = Some(11);
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(10, "a"), (11, "b"), (12, "c")], false);
+        assert_eq!(app.line_cursor, Some(1), "the matched line takes the focus");
+        assert!(!app.follow_tail, "and the viewport stops chasing the tail");
+        assert!(app.pending_seq_anchor.is_none());
+    }
+
+    #[test]
+    fn a_seq_this_page_does_not_hold_stays_pending_for_the_next() {
+        let mut app = app();
+        app.pending_seq_anchor = Some(5);
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(10, "a")], true);
+        assert_eq!(app.pending_seq_anchor, Some(5));
+        assert!(app.line_cursor.is_none());
+
+        page(&mut app, PageKind::Older, &[(5, "the one")], false);
+        assert!(app.pending_seq_anchor.is_none());
+        assert_eq!(app.line_cursor, Some(0));
     }
 
     #[test]

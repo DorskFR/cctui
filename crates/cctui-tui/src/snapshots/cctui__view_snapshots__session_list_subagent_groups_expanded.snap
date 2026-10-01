@@ -1,9 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 329
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  18 sessions  ● 18 active
- Sessions
+ Sessions  starred · live · dispatched  sort: activity ↓  group: status
    ▾ Pinned (1)
 ▸    ● [claude-code] starred (main)  opus  0s  $1.25
    ▾ Working (1)

@@ -1,9 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 749
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
- Sessions
+ Sessions  starred · live · dispatched  sort: activity ↓  group: status
    ┌ Diagnose ──────────────────────────────────────────────────────────────────────────────────┐
    │s-working                                                                                   │
    │server:                                                                                     │

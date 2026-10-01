@@ -11,6 +11,10 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The `f` sections popup over the list.
+    Sections,
+    /// The `/` prompt over the list.
+    ListSearch,
     /// The `/` search and `:` command prompt.
     CmdLine,
     /// The `F` category menu.
@@ -36,6 +40,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::SessionList,
     Context::Conversation,
     Context::Composer,
+    Context::Sections,
+    Context::ListSearch,
     Context::CmdLine,
     Context::FilterMenu,
     Context::History,
@@ -61,6 +67,8 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::Sections => "sections",
+            Self::ListSearch => "list-search",
             Self::CmdLine => "cmdline",
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
@@ -86,6 +94,8 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::Sections => "Sections popup",
+            Self::ListSearch => "List search",
             Self::CmdLine => "Search and commands",
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
@@ -164,6 +174,19 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
+    ListSections => "list-sections", "Choose which sections show";
+    ListSortCycle => "list-sort", "Cycle the sort field";
+    ListSortFlip => "list-sort-flip", "Flip the sort direction";
+    ListGroupCycle => "list-group", "Cycle what rows group by";
+    ListColorCycle => "list-color", "Cycle the row accent dimension";
+    SectionsNext => "sections-next", "Next section";
+    SectionsPrev => "sections-prev", "Previous section";
+    SectionsToggle => "sections-toggle", "Show or hide this section";
+    ListSearchComplete => "list-search-complete", "Complete the field or value";
+    ListSearchCommit => "list-search-commit", "Open the result";
+    ListSearchCancel => "list-search-cancel", "Clear the search";
+    ListSearchArchived => "list-search-archived", "Include archived sessions";
+    ListSearchMore => "list-search-more", "Load more results";
     TogglePin => "toggle-pin", "Pin the selected session";
     NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive the selected session";
@@ -334,6 +357,11 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    spec(Context::SessionList, "f", ActionId::ListSections),
+    spec(Context::SessionList, "o", ActionId::ListSortCycle),
+    spec(Context::SessionList, "O", ActionId::ListSortFlip),
+    spec(Context::SessionList, "v", ActionId::ListGroupCycle),
+    spec(Context::SessionList, "V", ActionId::ListColorCycle),
 ];
 
 const CONVERSATION: &[BindingSpec] = &[
@@ -405,6 +433,24 @@ const FILTER_MENU: &[BindingSpec] = &[
     spec(Context::FilterMenu, "space, enter", ActionId::FilterMenuToggle),
     spec(Context::FilterMenu, "a", ActionId::FilterShowAll),
     spec(Context::FilterMenu, "r", ActionId::FilterReset),
+];
+
+const SECTIONS_POPUP: &[BindingSpec] = &[
+    spec(Context::Sections, "esc, q, f", ActionId::ListSections),
+    spec(Context::Sections, "j, down", ActionId::SectionsNext),
+    spec(Context::Sections, "k, up", ActionId::SectionsPrev),
+    spec(Context::Sections, "space, enter", ActionId::SectionsToggle),
+];
+
+/// Typed characters reach the query through the unbound fall-through.
+const LIST_SEARCH: &[BindingSpec] = &[
+    spec(Context::ListSearch, "tab", ActionId::ListSearchComplete),
+    spec(Context::ListSearch, "enter", ActionId::ListSearchCommit),
+    spec(Context::ListSearch, "esc", ActionId::ListSearchCancel),
+    spec(Context::ListSearch, "ctrl+a", ActionId::ListSearchArchived),
+    spec(Context::ListSearch, "ctrl+n", ActionId::SearchNext),
+    spec(Context::ListSearch, "ctrl+p", ActionId::SearchPrev),
+    spec(Context::ListSearch, "ctrl+m", ActionId::ListSearchMore),
 ];
 
 const HISTORY: &[BindingSpec] = &[
@@ -545,6 +591,8 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    SECTIONS_POPUP,
+    LIST_SEARCH,
     CONVERSATION,
     COMPOSER,
     ATTACH,

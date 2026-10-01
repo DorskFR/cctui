@@ -320,6 +320,10 @@ async fn apply_server_settings(server: &Client, app: &mut App) {
     if let Ok(payload) = server.settings().await {
         app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
         app.macros = app::macros::from_settings(&payload.data);
+        app.list_shape = app::list_view::ListShape::from_settings(&payload.data);
+        // Kept whole: a settings write is a replace, so a patch needs the rest.
+        app.settings_blob = payload.data;
+        app.reshape();
     }
     app.show_timestamps = app.config.prefs.timestamps;
 }

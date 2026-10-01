@@ -75,6 +75,12 @@ pub enum Action {
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
+    ListShape(super::list_shape_reduce::ListShapeAction),
+    ListSearch(super::list_search::ListSearchAction),
+    /// `/` and `n`/`N`: decision 7 scopes them to the view in front.
+    SearchCurrentView,
+    SearchHitNext,
+    SearchHitPrev,
     CmdLine(super::cmdline::CmdAction),
     /// `y` / `Y` / the link key, all resolved against the focused line.
     Copy(CopyWhat),
@@ -273,4 +279,17 @@ pub enum Effect {
     },
     /// Persist the fold state to `tui-state.json`.
     SaveUiState(crate::config::uistate::UiState),
+    /// `PUT /settings` with the whole blob, patched: the route replaces.
+    SaveSettings {
+        data: serde_json::Value,
+    },
+    SearchSessions {
+        q: String,
+        include_archived: bool,
+        offset: usize,
+    },
+    SearchValues {
+        field: String,
+        q: String,
+    },
 }

@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 212
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions  starred · live · dispatched  sort: activity ↓  group: status
+▸    ● [claude-code] gateway (main)  opus  0s  $1.25
+       …refresh the auth token before the gateway
+     ● [claude-code] api (main)  opus  0s  $1.25
+       …the auth token expired
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ / auth token▏   [archived: off]  2 hits

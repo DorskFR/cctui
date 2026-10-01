@@ -81,8 +81,13 @@ fn toggle_section(app: &mut App) -> Vec<Effect> {
 
 fn toggle_fold_all(app: &mut App) -> Vec<Effect> {
     let probe = crate::config::uistate::UiState::probe();
-    let (groups, sections) =
-        super::session_list::fold_targets(&super::session_list::rows(&app.sessions, &probe));
+    let visible = super::list_view::visible_refs(&app.sessions, &app.list_shape);
+    let (groups, sections) = super::session_list::fold_targets(&super::session_list::rows_by(
+        &visible,
+        &probe,
+        app.list_shape.group_by,
+    ));
+    let sections: Vec<&str> = sections.iter().map(String::as_str).collect();
     app.ui.fold_all(&groups, &sections);
     settle(app)
 }

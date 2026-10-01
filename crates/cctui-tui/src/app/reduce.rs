@@ -43,6 +43,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Tick => {
             let mut effects = send::tick(app);
             effects.extend(super::session_live::poll_if_due(app));
+            effects.extend(super::list_search::on_tick(app));
             effects
         }
 
@@ -226,6 +227,30 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             super::controls::take_pending_jump(app)
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::ListShape(action) => super::list_shape_reduce::reduce(app, action),
+        Action::ListSearch(action) => super::list_search::reduce(app, action),
+        // Decision 7: one key, scoped to whatever view is in front.
+        Action::SearchCurrentView => match app.view() {
+            View::SessionList => {
+                super::list_search::reduce(app, super::list_search::ListSearchAction::Open)
+            }
+            _ => super::cmdline::reduce(
+                app,
+                super::cmdline::CmdAction::Open(super::cmdline::Mode::Search),
+            ),
+        },
+        Action::SearchHitNext => match app.view() {
+            View::SessionList => {
+                super::list_search::reduce(app, super::list_search::ListSearchAction::Next)
+            }
+            _ => super::cmdline::reduce(app, super::cmdline::CmdAction::NextHit),
+        },
+        Action::SearchHitPrev => match app.view() {
+            View::SessionList => {
+                super::list_search::reduce(app, super::list_search::ListSearchAction::Prev)
+            }
+            _ => super::cmdline::reduce(app, super::cmdline::CmdAction::PrevHit),
+        },
         Action::CmdLine(action) => super::cmdline::reduce(app, action),
         Action::Copy(what) => copy(app, what),
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
