@@ -1,9 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 160
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
- 1 Sessions  2 Bookmarks  3 Overview  4 Access  5 Accounts  6 Settings
+ 1 Sessions  2 Bookmarks  3 Overview  4 Machines  5 Access  6 Accounts  7 Settings
  0 saved
  nothing saved yet — press b on a message in a conversation
 

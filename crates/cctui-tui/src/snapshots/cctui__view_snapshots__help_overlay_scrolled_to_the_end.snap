@@ -1,28 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 829
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
- 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Filter menu                                    Row glyphs                                     │
-▸ │  F / q / Esc Choose which lines to show         ●           working                          │
-  │  a           Show every category                ◐           stale or asleep                  │
-  │  r           Back to the default filter         ○           idle                             │
-  │  Space / En… Show or hide this category         ☾           hibernated                       │
-  │  j / ↓       Next category                      ↳           subagent                         │
-  │  k / ↑       Previous category                  ▸ / ▾       folded / open group              │
-  │Prompt history                                   [name]      a label, tinted by its hue       │
-  │  Esc         Close the prompt list              +N          more labels than fit             │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │File viewer                                      ●N          unread messages                  │
-  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
-  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
-  │  PgDn        Page down                          ⚠           account traffic never seen       │
-  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
-  │  o           Open in the desktop viewer                                                      │
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
+  │Prompt history                                   Esc         Discard the text                 │
+▸ │  Esc         Close the prompt list            Row glyphs                                     │
+  │  Ctrl+n / ↓  Next prompt                        ●           working                          │
+  │  Ctrl+p / ↑  Previous prompt                    ◐           stale or asleep                  │
+  │  Enter       Put this prompt in the composer    ○           idle                             │
+  │File viewer                                      ☾           hibernated                       │
+  │  j / ↓       Scroll down                        ↳           subagent                         │
+  │  k / ↑       Scroll up                          ▸ / ▾       folded / open group              │
+  │  PgDn        Page down                          [name]      a label, tinted by its hue       │
+  │  PgUp        Page up                            +N          more labels than fit             │
+  │  g           Jump to the top                    !           permission waiting on you        │
+  │  q / Esc     Close the file viewer              ?           question waiting on you          │
+  │  o           Open in the desktop viewer         P           plan waiting for approval        │
+  │Machines                                         ●N          unread messages                  │
+  │  j / ↓       Next machine                       ⚡           auto-approve on                  │
+  │  k / ↑       Previous machine                   ⏸           account soft-limited             │
+  │  r           Refresh the machine list           ⚠           account traffic never seen       │
+  │  Enter       Aim a spawn at this machine        ❄           cache cold, next turn re-reads   │
+  │  Esc         Back to the sessions               ✕reason     how it ended                     │
+  │Dispatchers                                      ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

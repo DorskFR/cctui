@@ -22,6 +22,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::RowAction(action) => row_actions::reduce_row_actions(app, action),
         Action::Attach(action) => super::attach::reduce_attach(app, action),
         Action::Labels(action) => super::labels::reduce_labels(app, action),
+        Action::Machines(action) => super::machines::reduce_machines(app, action),
+        Action::Dispatchers(action) => super::dispatchers::reduce_dispatchers(app, action),
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
             app.pending_chord = Some(chord);

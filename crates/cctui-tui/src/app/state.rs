@@ -18,6 +18,10 @@ pub use crate::config::uistate::UiState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    /// The machines slice's table.
+    Machines,
+    /// The dispatchers admin panel.
+    Dispatchers,
     /// The `l` label picker for one session.
     LabelPicker,
     /// The `L` any-of label filter.
@@ -293,6 +297,13 @@ pub struct App {
     pub ui: UiState,
     /// Which top-level slice `1-9` last selected.
     pub slice: Slice,
+    /// The machines slice's table and cursor.
+    pub machines: super::machines::Machines,
+    /// The dispatchers panel, open only while it is.
+    pub dispatchers: super::dispatchers::Dispatchers,
+    /// The machine a spawn should aim at, set by `Enter` in the machines table.
+    /// The spawn dialog reads it; nothing else does.
+    pub spawn_target: Option<String>,
     /// Where each slice's cursor was when it was last left.
     pub slice_cursors: HashMap<Slice, Cursor>,
     /// `GET /sessions/stats`, `None` until the first reply.
@@ -428,6 +439,9 @@ impl App {
             ui: UiState::default(),
             slice: Slice::Sessions,
             slice_cursors: HashMap::new(),
+            machines: super::machines::Machines::default(),
+            dispatchers: super::dispatchers::Dispatchers::default(),
+            spawn_target: None,
             stats: None,
             overview_scroll: 0,
             labels: super::labels::Labels::default(),
