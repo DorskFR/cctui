@@ -248,7 +248,8 @@
 	.spawn-failure-detail {
 		margin: var(--sp-1) 0 0;
 		max-height: 8rem;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 		white-space: pre-wrap;
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
@@ -346,6 +347,7 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
+		overflow-x: hidden;
 		padding: var(--sp-3);
 	}
 	.dock-foot {

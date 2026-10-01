@@ -186,14 +186,16 @@
 		flex-direction: column;
 		gap: var(--sp-4);
 		max-height: 60vh;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 	}
 	.run {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
 		max-height: 60vh;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 	}
 	.out {
 		margin: 0;
@@ -204,7 +206,8 @@
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		max-height: 30vh;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 	}
 	.release {
 		display: flex;

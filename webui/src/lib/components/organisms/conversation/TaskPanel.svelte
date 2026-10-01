@@ -105,6 +105,7 @@
 		min-width: 0;
 		max-height: 32vh;
 		overflow-y: auto;
+		overflow-x: hidden;
 	}
 	.task {
 		display: flex;

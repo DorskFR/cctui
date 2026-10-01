@@ -264,7 +264,8 @@
   outline-offset: 1px;
 }
 .md-fileviewer-body {
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--sp-3, 12px);
 }
 .md-fileviewer-body .md-lightbox-img {

@@ -214,7 +214,8 @@
 		margin: var(--sp-1) 0 0;
 		padding: var(--sp-2);
 		max-height: 22rem;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 		white-space: pre-wrap;
 		font-size: calc(var(--fs-sm) - 0.0625rem);
 		background: var(--bg-elevated-2);

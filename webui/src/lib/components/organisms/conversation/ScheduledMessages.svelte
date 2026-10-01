@@ -138,6 +138,7 @@
 		gap: var(--sp-2);
 		max-height: 30vh;
 		overflow-y: auto;
+		overflow-x: hidden;
 	}
 	.pending {
 		display: flex;

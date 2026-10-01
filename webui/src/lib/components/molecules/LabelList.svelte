@@ -111,6 +111,7 @@
 		gap: 0.05rem;
 		max-height: 14rem;
 		overflow-y: auto;
+		overflow-x: hidden;
 		/* Top padding both spaces the list from the input and keeps the scroll
 		   container from clipping the first row's focus outline. */
 		padding: var(--sp-2) var(--sp-2) var(--sp-1);
