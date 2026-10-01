@@ -16,14 +16,19 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
 use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
+use super::machines::MachineAction;
 use super::pins::PinAction;
+use super::profiles::ProfileAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
+use super::spawn::{SpawnAction, SpawnFetch};
+use super::spawn_drafts::SpawnDraftAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -105,6 +110,30 @@ impl DraftSaver {
         self.pending.insert(key, handle);
     }
 
+    /// One pending autosave at a time, keyed on the dialog rather than a
+    /// draft id: the first save is what mints the id.
+    fn autosave(
+        &mut self,
+        session_id: Option<String>,
+        request: Box<cctui_proto::api::SpawnRequest>,
+    ) {
+        const KEY: &str = "\u{0}spawn-draft";
+        self.cancel(KEY);
+        let server = Arc::clone(&self.server);
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            let outcome = match session_id.as_deref() {
+                Some(id) => server.update_draft(id, &request).await.map(|_| ()),
+                // An autosave stores names, never bytes: the files go up at launch.
+                None => server.spawn_session(&request, Vec::new()).await.map(|_| ()),
+            };
+            if let Err(e) = outcome {
+                tracing::warn!(%e, "autosaving the spawn draft failed");
+            }
+        });
+        self.pending.insert(KEY.to_owned(), handle);
+    }
+
     fn cancel(&mut self, key: &str) {
         if let Some(handle) = self.pending.remove(key) {
             handle.abort();
@@ -165,6 +194,72 @@ async fn run(
                 Err(e) => {
                     tracing::warn!(%e, "bookmark list fetch failed");
                     vec![Action::Bookmarks(BookmarkAction::Failed)]
+                }
+            }
+        }
+        Effect::LoadProfiles => match server.profiles().await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Loaded(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile list fetch failed");
+                vec![Action::Profiles(ProfileAction::Failed)]
+            }
+        },
+        Effect::CreateProfile { name, spec } => {
+            let body = cctui_proto::api::profiles::CreateProfileRequest { name, spec: *spec };
+            match server.create_profile(&body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, "profile create failed");
+                    vec![Action::Toast(Level::Error, "could not create the profile".to_owned())]
+                }
+            }
+        }
+        Effect::UpdateProfile { id, name, spec } => {
+            let body = cctui_proto::api::profiles::UpdateProfileRequest { name, spec: Some(*spec) };
+            match server.update_profile(&id, &body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, id, "profile update failed");
+                    vec![Action::Toast(Level::Error, "could not save the profile".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteProfile { id } => match server.delete_profile(&id).await {
+            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
+                |_| Vec::new(),
+                |id| vec![Action::Profiles(ProfileAction::Deleted(id))],
+            ),
+            Err(e) => {
+                tracing::warn!(%e, id, "profile delete failed");
+                vec![Action::Toast(Level::Error, "could not delete the profile".to_owned())]
+            }
+        },
+        Effect::ReorderProfiles { ids } => match server.reorder_profiles(ids).await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Reordered(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile reorder failed");
+                vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
+            }
+        },
+        Effect::AutosaveDraft { session_id, request } => {
+            drafts.autosave(session_id, request);
+            Vec::new()
+        }
+        Effect::LaunchDraft { session_id, env } => {
+            match server.launch_draft(&session_id, &env).await {
+                Ok(_) => vec![Action::SpawnDrafts(SpawnDraftAction::Launched { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft launch failed");
+                    vec![Action::Toast(Level::Error, "could not launch the draft".to_owned())]
+                }
+            }
+        }
+        Effect::DiscardDraftSession { session_id } => {
+            match server.discard_draft(&session_id).await {
+                Ok(()) => vec![Action::SpawnDrafts(SpawnDraftAction::Discarded { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft discard failed");
+                    vec![Action::Toast(Level::Error, "could not discard the draft".to_owned())]
                 }
             }
         }
@@ -379,6 +474,71 @@ async fn run(
                 vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
             }
         },
+        Effect::FetchMachines => match server.machines().await {
+            Ok(rows) => vec![Action::Machines(MachineAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing machines failed");
+                vec![Action::Machines(MachineAction::Failed(machine_error(&e)))]
+            }
+        },
+        Effect::FetchDispatchers => match server.dispatchers().await {
+            Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing dispatchers failed");
+                vec![Action::Dispatchers(DispatcherAction::Failed(dispatcher_error(&e)))]
+            }
+        },
+        // The reply carries the key: it goes straight into the action and is
+        // never logged, because the log is not somewhere a secret may land.
+        Effect::EnrollDispatcher { name, request } => {
+            match server.enroll_dispatcher(&request).await {
+                Ok(reply) => vec![Action::Dispatchers(DispatcherAction::Enrolled {
+                    name,
+                    reply: Box::new(reply),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "enrolling a dispatcher failed");
+                    vec![Action::Toast(Level::Error, format!("could not enroll {name}"))]
+                }
+            }
+        }
+        Effect::UpdateDispatcher { id, request } => {
+            match server.update_dispatcher(&id, &request).await {
+                Ok(_) => refetch_dispatchers(server).await,
+                Err(e) => {
+                    tracing::warn!(%e, "editing a dispatcher failed");
+                    vec![Action::Toast(Level::Error, "could not edit the dispatcher".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteDispatcher { id } => match server.delete_dispatcher(&id).await {
+            Ok(()) => refetch_dispatchers(server).await,
+            Err(e) => {
+                tracing::warn!(%e, "removing a dispatcher failed");
+                vec![Action::Toast(Level::Error, "could not remove the dispatcher".to_owned())]
+            }
+        },
+        Effect::FetchAccounts => match server.accounts().await {
+            Ok(accounts) => vec![spawn_data(SpawnFetch::Accounts(accounts))],
+            Err(e) => {
+                tracing::warn!(%e, "listing accounts failed");
+                vec![Action::Toast(Level::Warn, "could not list accounts".to_owned())]
+            }
+        },
+        Effect::FetchAccountPools => match server.account_pools().await {
+            Ok(pools) => vec![spawn_data(SpawnFetch::Pools(pools))],
+            Err(e) => {
+                tracing::warn!(%e, "listing account pools failed");
+                Vec::new()
+            }
+        },
+        Effect::FetchAccountsUsage => match server.accounts_usage().await {
+            Ok(usage) => vec![spawn_data(SpawnFetch::Usage(usage))],
+            Err(e) => {
+                tracing::warn!(%e, "reading account usage failed");
+                Vec::new()
+            }
+        },
         Effect::FetchLabels => match server.labels().await {
             Ok(labels) => vec![Action::Labels(LabelAction::Loaded(labels))],
             Err(e) => {
@@ -526,16 +686,22 @@ async fn run(
             }
             vec![Action::Spawn(super::spawn::SpawnAction::ModelsRefreshed)]
         }
-        Effect::SpawnSession { request } => match server.spawn_session(&request).await {
-            Ok(resp) => vec![Action::Spawn(super::spawn::SpawnAction::Accepted {
-                command_id: resp.command_id,
-                session_id: resp.session_id.map(|id| id.to_string()),
-            })],
-            Err(e) => {
-                tracing::warn!(%e, "the spawn request failed");
-                vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+        Effect::SpawnSession { request, files } => {
+            let files = files
+                .into_iter()
+                .map(|(name, bytes)| cctui_client::UploadFile { name, bytes })
+                .collect();
+            match server.spawn_session(&request, files).await {
+                Ok(resp) => vec![Action::Spawn(super::spawn::SpawnAction::Accepted {
+                    command_id: resp.command_id,
+                    session_id: resp.session_id.map(|id| id.to_string()),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "the spawn request failed");
+                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+                }
             }
-        },
+        }
         Effect::SaveSettings { data } => {
             // The version the server last reported travels with the blob; it
             // migrates an older payload forward rather than rejecting it.
@@ -635,6 +801,10 @@ async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
             Vec::new()
         }
     }
+}
+
+fn spawn_data(fetch: SpawnFetch) -> Action {
+    Action::Spawn(SpawnAction::DataLoaded(Box::new(fetch)))
 }
 
 async fn subscribe(ws: &WsClient, session_id: String) {
@@ -798,7 +968,7 @@ fn read_attachment(session_id: &str, path: &str) -> Vec<Action> {
 
 /// Extension-based content type; only the families the composer treats
 /// specially need naming, everything else is opaque bytes.
-fn guess_content_type(name: &str) -> String {
+pub fn guess_content_type(name: &str) -> String {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "png" => "image/png",
@@ -930,5 +1100,38 @@ async fn refetch_labels(server: &Client) -> Vec<Action> {
             tracing::warn!(%e, "refetching labels failed");
             Vec::new()
         }
+    }
+}
+
+/// Why the machines list is empty, in the words the view shows. A 403 is worth
+/// naming on its own: it means the key cannot enumerate machines, which is a
+/// different problem from having none.
+fn machine_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => "this key may not list machines".to_owned(),
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list machines: {other}"),
+    }
+}
+
+async fn refetch_dispatchers(server: &Client) -> Vec<Action> {
+    match server.dispatchers().await {
+        Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching dispatchers failed");
+            Vec::new()
+        }
+    }
+}
+
+/// A 403 here means the key may not even list them, which is worth saying apart
+/// from an install with none enrolled.
+fn dispatcher_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => {
+            "this key may not list dispatchers".to_owned()
+        }
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list dispatchers: {other}"),
     }
 }

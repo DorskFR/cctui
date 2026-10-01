@@ -4,7 +4,10 @@
 //! changed case fails on both sides until both implementations agree.
 
 use cctui_clientcore::history_nav::HistoryNav;
-use cctui_clientcore::{bookmarks, format, git, labels, mention, search, session_failure, uploads};
+use cctui_clientcore::{
+    bookmarks, format, git, labels, macros, mention, profiles, search, session_failure, spawn,
+    uploads,
+};
 use cctui_proto::git::GitInfo;
 use serde_json::Value;
 
@@ -311,6 +314,200 @@ fn attachment_caps_parity() {
     assert_eq!(u64::from(uploads::MAX_FILES), fx["MAX_FILES"].as_u64().unwrap());
 }
 
+fn accounts_of(fx: &Value) -> Vec<profiles::AccountRef> {
+    cases(fx, "accounts")
+        .iter()
+        .map(|a| profiles::AccountRef {
+            id: s(a, "id"),
+            name: s(a, "name"),
+            emoji: opt_s(a, "emoji"),
+            providers: strings(&a["providers"]),
+        })
+        .collect()
+}
+
+fn pools_of(fx: &Value) -> Vec<profiles::PoolRef> {
+    cases(fx, "pools")
+        .iter()
+        .map(|p| profiles::PoolRef { id: s(p, "id"), name: s(p, "name") })
+        .collect()
+}
+
+fn spec_of(v: &Value) -> profiles::ProfileSpec {
+    profiles::ProfileSpec {
+        harness: s(v, "harness"),
+        account_id: opt_s(v, "account_id"),
+        pool_id: opt_s(v, "pool_id"),
+        no_account: v["no_account"].as_bool().unwrap_or(false),
+        model_alias: opt_s(v, "model_alias"),
+        effort: opt_s(v, "effort"),
+        permission_mode: opt_s(v, "permission_mode"),
+        service_tier: opt_s(v, "service_tier"),
+    }
+}
+
+fn form_of(v: &Value) -> spawn::SpawnFields {
+    spawn::SpawnFields {
+        adapter_id: s(v, "adapter_id"),
+        account: s(v, "account"),
+        account_provider: s(v, "account_provider"),
+        model_claude: s(v, "model_claude"),
+        model_codex: s(v, "model_codex"),
+        model_account: s(v, "model_account"),
+        effort_claude: s(v, "effort_claude"),
+        effort_codex: s(v, "effort_codex"),
+        permission_mode: s(v, "permission_mode"),
+        service_tier: s(v, "service_tier"),
+        ..spawn::SpawnFields::default()
+    }
+}
+
+#[test]
+fn profiles_parity() {
+    let fx = fixture("profiles");
+    let (accounts, pools) = (accounts_of(&fx), pools_of(&fx));
+
+    for c in cases(&fx, "modelField") {
+        let account = profiles::account_by_id(&accounts, c["account_id"].as_str());
+        let field = match profiles::model_field(&s(c, "harness"), account) {
+            profiles::ModelField::Account => "model_account",
+            profiles::ModelField::Codex => "model_codex",
+            profiles::ModelField::Claude => "model_claude",
+        };
+        assert_eq!(field, s(c, "out"), "modelField {c}");
+    }
+    for c in cases(&fx, "accountPick") {
+        assert_eq!(
+            profiles::account_pick(&spec_of(&c["spec"]), &accounts, &pools),
+            s(c, "out"),
+            "accountPick {c}"
+        );
+    }
+    for c in cases(&fx, "specFromForm") {
+        assert_eq!(
+            profiles::spec_from_form(&form_of(&c["form"]), &accounts, &pools),
+            spec_of(&c["out"]),
+            "specFromForm {c}"
+        );
+    }
+    for c in cases(&fx, "applySpec") {
+        assert_eq!(
+            profiles::apply_spec(&form_of(&c["form"]), &spec_of(&c["spec"]), &accounts, &pools),
+            form_of(&c["out"]),
+            "applySpec {c}"
+        );
+    }
+    for c in cases(&fx, "specChanges") {
+        let out = usize::try_from(c["out"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            profiles::spec_changes(&spec_of(&c["a"]), &spec_of(&c["b"])),
+            out,
+            "specChanges {c}"
+        );
+    }
+    let labels = profiles::ChainLabels {
+        auto: fx["labels"]["auto"].as_str().unwrap(),
+        no_account: fx["labels"]["noAccount"].as_str().unwrap(),
+        default_model: fx["labels"]["defaultModel"].as_str().unwrap(),
+        default_effort: fx["labels"]["defaultEffort"].as_str().unwrap(),
+        default_mode: fx["labels"]["defaultMode"].as_str().unwrap(),
+    };
+    for c in cases(&fx, "specChain") {
+        assert_eq!(
+            profiles::spec_chain(&spec_of(&c["spec"]), &accounts, &pools, labels, &|_, alias| {
+                alias.to_owned()
+            }),
+            s(c, "out"),
+            "specChain {c}"
+        );
+    }
+    for c in cases(&fx, "uniqueProfileName") {
+        assert_eq!(
+            profiles::unique_profile_name(&s(c, "base"), &strings(&c["existing"])),
+            s(c, "out"),
+            "uniqueProfileName {c}"
+        );
+    }
+    for c in cases(&fx, "initialProfile") {
+        assert_eq!(
+            profiles::initial_profile(&strings(&c["ids"]), c["last_used"].as_str()),
+            opt_s(c, "out"),
+            "initialProfile {c}"
+        );
+    }
+    for c in cases(&fx, "moveProfile") {
+        let index = usize::try_from(c["index"].as_u64().unwrap()).unwrap();
+        assert_eq!(
+            profiles::move_profile(&strings(&c["ids"]), &s(c, "id"), index),
+            strings(&c["out"]),
+            "moveProfile {c}"
+        );
+    }
+    for c in cases(&fx, "moveProfileOnto") {
+        assert_eq!(
+            profiles::move_profile_onto(&strings(&c["ids"]), &s(c, "id"), &s(c, "target")),
+            strings(&c["out"]),
+            "moveProfileOnto {c}"
+        );
+    }
+}
+
+fn macro_of(v: &Value) -> macros::MacroSpec {
+    macros::MacroSpec {
+        id: s(v, "id"),
+        title: s(v, "title"),
+        prompt: s(v, "prompt"),
+        adapter: s(v, "adapter"),
+        machine_id: opt_s(v, "machine_id"),
+        working_dir: opt_s(v, "working_dir"),
+        model: opt_s(v, "model"),
+        effort: opt_s(v, "effort"),
+        pool_id: opt_s(v, "pool_id"),
+        permission_mode: opt_s(v, "permission_mode"),
+        confirm: v["confirm"].as_bool().unwrap_or(true),
+    }
+}
+
+/// Field by field rather than by serialized JSON: the request skips its empty
+/// fields on the wire, and a named mismatch says which knob drifted.
+#[test]
+fn macro_spawn_parity() {
+    let fx = fixture("macroSpawn");
+    for c in cases(&fx, "spawnBodyFor") {
+        let body = macros::macro_spawn_body(&macro_of(&c["macro"]));
+        let out = &c["out"];
+        assert_eq!(body.machine_id, s(out, "machine_id"), "machine_id {c}");
+        assert_eq!(body.working_dir, s(out, "working_dir"), "working_dir {c}");
+        assert_eq!(body.adapter_id, opt_s(out, "adapter_id"), "adapter_id {c}");
+        assert_eq!(body.name, opt_s(out, "name"), "name {c}");
+        assert_eq!(body.prompt, opt_s(out, "prompt"), "prompt {c}");
+        assert_eq!(body.prompt_name, opt_s(out, "prompt_name"), "prompt_name {c}");
+        assert_eq!(
+            body.permission_mode.map(|m| serde_json::to_value(m).unwrap()),
+            opt_s(out, "permission_mode").map(Value::String),
+            "permission_mode {c}"
+        );
+        assert_eq!(body.effort, opt_s(out, "effort"), "effort {c}");
+        assert_eq!(body.model, opt_s(out, "model"), "model {c}");
+        assert_eq!(body.service_tier, opt_s(out, "service_tier"), "service_tier {c}");
+        assert_eq!(body.account, opt_s(out, "account"), "account {c}");
+        assert_eq!(body.provider, opt_s(out, "provider"), "provider {c}");
+        assert_eq!(body.pool, opt_s(out, "pool"), "pool {c}");
+        assert_eq!(body.no_account, out["no_account"].as_bool().unwrap(), "no_account {c}");
+        assert_eq!(body.auto_account, out["auto_account"].as_bool().unwrap(), "auto_account {c}");
+        assert_eq!(body.save_draft, out["save_draft"].as_bool().unwrap(), "save_draft {c}");
+        assert_eq!(body.auto_archive, out["auto_archive"].as_bool().unwrap(), "auto_archive {c}");
+        assert!(body.env.is_empty(), "a macro carries no env {c}");
+    }
+    for c in cases(&fx, "macroProblems") {
+        let problems: Vec<String> = macros::macro_problems(&macro_of(&c["macro"]))
+            .into_iter()
+            .map(|p| p.as_str().to_owned())
+            .collect();
+        assert_eq!(problems, strings(&c["out"]), "macroProblems {c}");
+    }
+}
+
 /// `fixtures/parity/spawnBody.json`, replayed by the web UI's own test against
 /// `buildSpawnBody`. Only the keys a case names are asserted, so a field a
 /// later lane adds cannot invalidate the file.
@@ -365,5 +562,105 @@ fn spawn_body_parity() {
             });
             assert_eq!(&actual, want, "{name}: {key}");
         }
+    }
+}
+
+#[test]
+fn spawn_accounts_parity() {
+    use cctui_clientcore::spawn_accounts::{
+        ALL_ADAPTERS, PoolMembers, UsageWindow, account_adapters, account_backs_adapter,
+        adapter_for_provider, compatible_pools, effective_adapter_for, env_key_valid, headline_pct,
+        provider_for_adapter, stale_account_pick,
+    };
+
+    let fx = fixture("spawnAccounts");
+    assert_eq!(strings(&fx["allAdapters"]), ALL_ADAPTERS);
+
+    for c in cases(&fx, "adapterForProvider") {
+        assert_eq!(adapter_for_provider(&s(c, "provider")), s(c, "out"), "adapter {c}");
+    }
+    for c in cases(&fx, "accountAdapters") {
+        let providers = strings(&c["providers"]);
+        assert_eq!(account_adapters(&providers), strings(&c["out"]), "accountAdapters {c}");
+    }
+    for c in cases(&fx, "accountBacksAdapter") {
+        let providers = c["providers"].as_array().map(|_| strings(&c["providers"]));
+        assert_eq!(
+            account_backs_adapter(providers.as_deref(), &s(c, "adapter")),
+            c["out"].as_bool().expect("a bool"),
+            "accountBacksAdapter {c}"
+        );
+    }
+    for c in cases(&fx, "effectiveAdapterFor") {
+        let providers = c["providers"].as_array().map(|_| strings(&c["providers"]));
+        assert_eq!(
+            effective_adapter_for(providers.as_deref(), &s(c, "adapter")),
+            s(c, "out"),
+            "effectiveAdapterFor {c}"
+        );
+    }
+    for c in cases(&fx, "providerForAdapter") {
+        let providers = strings(&c["providers"]);
+        assert_eq!(
+            provider_for_adapter(&providers, &s(c, "adapter")),
+            opt_s(c, "out").as_deref(),
+            "providerForAdapter {c}"
+        );
+    }
+    for c in cases(&fx, "staleAccountPick") {
+        assert_eq!(
+            stale_account_pick(&s(c, "value"), &strings(&c["names"])),
+            c["out"].as_bool().expect("a bool"),
+            "staleAccountPick {c}"
+        );
+    }
+    for c in cases(&fx, "envKeyValid") {
+        assert_eq!(
+            env_key_valid(&s(c, "key")),
+            c["out"].as_bool().expect("a bool"),
+            "envKeyValid {c}"
+        );
+    }
+    for c in cases(&fx, "headlinePct") {
+        let windows: Vec<UsageWindow> = c["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .map(|w| UsageWindow {
+                key: s(w, "key"),
+                utilization: w["utilization"].as_f64().expect("a number"),
+            })
+            .collect();
+        let want = c["out"].as_u64().map(|n| u32::try_from(n).expect("fits"));
+        assert_eq!(headline_pct(&windows), want, "headlinePct {c}");
+    }
+
+    let group = &fx["compatiblePools"];
+    let lookup = |key: &str| -> Option<Vec<String>> {
+        group["accounts"]
+            .as_array()
+            .expect("accounts")
+            .iter()
+            .find(|a| a["key"] == key)
+            .map(|a| strings(&a["providers"]))
+    };
+    for c in cases(group, "cases") {
+        let owned: Vec<Vec<String>> =
+            c["pools"].as_array().expect("pools").iter().map(strings).collect();
+        let pools: Vec<PoolMembers<'_>> = owned
+            .iter()
+            .map(|members| PoolMembers { members: members.iter().map(String::as_str).collect() })
+            .collect();
+        let want: Vec<usize> = c["out"]
+            .as_array()
+            .expect("out")
+            .iter()
+            .map(|v| usize::try_from(v.as_u64().expect("an index")).expect("fits"))
+            .collect();
+        assert_eq!(
+            compatible_pools(&pools, &lookup, &s(c, "harness")),
+            want,
+            "compatiblePools {c}"
+        );
     }
 }

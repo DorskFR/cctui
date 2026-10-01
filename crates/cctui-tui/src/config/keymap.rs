@@ -27,12 +27,18 @@ pub enum Context {
     Rename,
     History,
     FileViewer,
+    Machines,
+    Dispatchers,
     LabelPicker,
     LabelFilter,
     Pins,
     Macros,
     BookmarkPrompt,
     BookmarkConfirm,
+    DraftEnv,
+    DraftConfirm,
+    SpawnProfileName,
+    SpawnProfileConfirm,
     Terminal,
     Help,
     ModelPicker,
@@ -41,6 +47,7 @@ pub enum Context {
     Diagnose,
     Bookmarks,
     Overview,
+    HarnessMode,
     Ask,
     AskText,
     Plan,
@@ -61,12 +68,18 @@ pub const CONTEXTS: &[Context] = &[
     Context::FilterMenu,
     Context::History,
     Context::FileViewer,
+    Context::Machines,
+    Context::Dispatchers,
     Context::LabelPicker,
     Context::LabelFilter,
     Context::Pins,
     Context::Macros,
     Context::BookmarkPrompt,
     Context::BookmarkConfirm,
+    Context::DraftEnv,
+    Context::DraftConfirm,
+    Context::SpawnProfileName,
+    Context::SpawnProfileConfirm,
     Context::Terminal,
     Context::Help,
     Context::ModelPicker,
@@ -75,6 +88,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Diagnose,
     Context::Bookmarks,
     Context::Overview,
+    Context::HarnessMode,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -97,12 +111,18 @@ impl Context {
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
+            Self::Machines => "machines",
+            Self::Dispatchers => "dispatchers",
             Self::LabelPicker => "label-picker",
             Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
             Self::Macros => "macros",
             Self::BookmarkPrompt => "bookmark-prompt",
             Self::BookmarkConfirm => "bookmark-confirm",
+            Self::DraftEnv => "draft-env",
+            Self::DraftConfirm => "draft-confirm",
+            Self::SpawnProfileName => "spawn-profile-name",
+            Self::SpawnProfileConfirm => "spawn-profile-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
             Self::ModelPicker => "model-picker",
@@ -111,6 +131,7 @@ impl Context {
             Self::Diagnose => "diagnose",
             Self::Bookmarks => "bookmarks",
             Self::Overview => "overview",
+            Self::HarnessMode => "harness-mode",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -133,12 +154,18 @@ impl Context {
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
+            Self::Machines => "Machines",
+            Self::Dispatchers => "Dispatchers",
             Self::LabelPicker => "Labels",
             Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
             Self::Macros => "Macros",
             Self::BookmarkPrompt => "Bookmarks — search or edit",
             Self::BookmarkConfirm => "Bookmarks — confirm",
+            Self::DraftEnv => "Draft launch — env",
+            Self::DraftConfirm => "Draft — confirm",
+            Self::SpawnProfileName => "Profile — name",
+            Self::SpawnProfileConfirm => "Profile — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::ModelPicker => "Model picker",
@@ -147,6 +174,7 @@ impl Context {
             Self::Diagnose => "Diagnose / info",
             Self::Bookmarks => "Bookmarks",
             Self::Overview => "Overview",
+            Self::HarnessMode => "Harness mode",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -266,6 +294,23 @@ actions! {
     PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    OpenMachines => "open-machines", "Machines and daemons";
+    OpenDispatchers => "open-dispatchers", "Dispatchers";
+    DispatchersNext => "dispatchers-next", "Next dispatcher";
+    DispatchersPrev => "dispatchers-prev", "Previous dispatcher";
+    DispatchersEnroll => "dispatchers-enroll", "Enroll a dispatcher";
+    DispatchersEdit => "dispatchers-edit", "Rename or rebind";
+    DispatchersDelete => "dispatchers-delete", "Remove this dispatcher";
+    DispatchersRefresh => "dispatchers-refresh", "Refresh the dispatcher list";
+    DispatchersField => "dispatchers-field", "Next field, or cycle the kind";
+    DispatchersCommit => "dispatchers-commit", "Confirm";
+    DispatchersCancel => "dispatchers-cancel", "Back";
+    DispatchersCopyKey => "dispatchers-copy-key", "Copy the new key";
+    MachinesNext => "machines-next", "Next machine";
+    MachinesPrev => "machines-prev", "Previous machine";
+    MachinesRefresh => "machines-refresh", "Refresh the machine list";
+    MachinesSpawn => "machines-spawn", "Aim a spawn at this machine";
+    MachinesClose => "machines-close", "Back to the sessions";
     OpenLabels => "open-labels", "Label this session";
     OpenLabelFilter => "open-label-filter", "Filter by label";
     LabelsClose => "labels-close", "Close the label list";
@@ -352,6 +397,19 @@ actions! {
     BookmarksPreviewDown => "bookmarks-preview-down", "Scroll the preview down";
     BookmarksPreviewUp => "bookmarks-preview-up", "Scroll the preview up";
     BookmarksSearch => "bookmarks-search", "Search the bookmarks";
+    DraftLaunch => "draft-launch", "Launch the draft";
+    DraftEdit => "draft-edit", "Edit the draft";
+    DraftDiscard => "draft-discard", "Discard the draft";
+    SpawnFromConfig => "spawn-from-config", "New session from this configuration";
+    ProfileNameCommit => "profile-name-commit", "Save the profile";
+    ProfileNameCancel => "profile-name-cancel", "Do not save";
+    ProfileDeleteConfirm => "profile-delete-confirm", "Delete the profile";
+    ProfileDeleteCancel => "profile-delete-cancel", "Keep the profile";
+    DraftEnvNext => "draft-env-next", "Next variable";
+    DraftEnvCommit => "draft-env-commit", "Launch with these values";
+    DraftEnvCancel => "draft-env-cancel", "Do not launch";
+    DraftDiscardConfirm => "draft-discard-confirm", "Discard it";
+    DraftDiscardCancel => "draft-discard-cancel", "Keep it";
     BookmarksOpenSource => "bookmarks-open-source", "Open the source message";
     BookmarksCopy => "bookmarks-copy", "Copy the bookmark as markdown";
     BookmarksEdit => "bookmarks-edit", "Edit the title and note";
@@ -368,8 +426,14 @@ actions! {
     MacrosSelectNext => "macros-select-next", "Next macro";
     MacrosSelectPrev => "macros-select-prev", "Previous macro";
     MacrosInsert => "macros-insert", "Put this prompt in the composer";
+    MacrosRun => "macros-run", "Run this macro as a new session";
 
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    HarnessModeClose => "harness-mode-close", "Close the harness picker";
+    HarnessModeNext => "harness-mode-next", "Next mode";
+    HarnessModePrev => "harness-mode-prev", "Previous mode";
+    HarnessModeCommit => "harness-mode-commit", "Apply this mode to every daemon";
 
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
@@ -637,7 +701,40 @@ const FILE_VIEWER: &[BindingSpec] = &[
 
 /// The picker is modal, so it claims plain letters: `space` toggles, and the
 /// manage verbs sit on the keys the webui's menu uses.
+/// The slice has its own context so `j`/`k` move its table rather than the
+/// session list underneath.
+const MACHINES: &[BindingSpec] = &[
+    spec(Context::Global, "M", ActionId::OpenMachines),
+    spec(Context::Machines, "j, down", ActionId::MachinesNext),
+    spec(Context::Machines, "k, up", ActionId::MachinesPrev),
+    spec(Context::Machines, "r", ActionId::MachinesRefresh),
+    spec(Context::Machines, "enter", ActionId::MachinesSpawn),
+    spec(Context::Machines, "esc", ActionId::MachinesClose),
+];
+
+/// `D` is the diagnose global (decision 7), so the panel takes `Ctrl+d`.
+///
+/// The verbs are Ctrl-modified because the enroll and edit forms need the plain
+/// letters to type a name — the same reason the label picker uses `Ctrl+c`.
+const DISPATCHERS: &[BindingSpec] = &[
+    spec(Context::Global, "ctrl+d", ActionId::OpenDispatchers),
+    spec(Context::Dispatchers, "down, ctrl+n", ActionId::DispatchersNext),
+    spec(Context::Dispatchers, "up, ctrl+p", ActionId::DispatchersPrev),
+    spec(Context::Dispatchers, "ctrl+a", ActionId::DispatchersEnroll),
+    spec(Context::Dispatchers, "ctrl+e", ActionId::DispatchersEdit),
+    spec(Context::Dispatchers, "ctrl+x", ActionId::DispatchersDelete),
+    spec(Context::Dispatchers, "ctrl+r", ActionId::DispatchersRefresh),
+    spec(Context::Dispatchers, "tab", ActionId::DispatchersField),
+    spec(Context::Dispatchers, "enter", ActionId::DispatchersCommit),
+    spec(Context::Dispatchers, "esc", ActionId::DispatchersCancel),
+    spec(Context::Dispatchers, "ctrl+y", ActionId::DispatchersCopyKey),
+];
+
 const LABELS: &[BindingSpec] = &[
+    spec(Context::SessionList, "s", ActionId::DraftLaunch),
+    spec(Context::SessionList, "E", ActionId::DraftEdit),
+    spec(Context::SessionList, "d", ActionId::DraftDiscard),
+    spec(Context::SessionList, "C", ActionId::SpawnFromConfig),
     spec(Context::SessionList, "l", ActionId::OpenLabels),
     spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
     spec(Context::LabelPicker, "esc", ActionId::LabelsClose),
@@ -668,6 +765,7 @@ const MACROS: &[BindingSpec] = &[
     spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
     spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
     spec(Context::Macros, "enter", ActionId::MacrosInsert),
+    spec(Context::Macros, "R", ActionId::MacrosRun),
 ];
 
 /// Slice roots, not overlays: each falls through to the globals, so `1-9`,
@@ -684,6 +782,14 @@ const BOOKMARKS: &[BindingSpec] = &[
     spec(Context::Bookmarks, "y", ActionId::BookmarksCopy),
     spec(Context::Bookmarks, "e", ActionId::BookmarksEdit),
     spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
+];
+
+/// Modal: a settings write is not something to trigger by a fall-through.
+const HARNESS_MODE: &[BindingSpec] = &[
+    spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
+    spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
+    spec(Context::HarnessMode, "up, ctrl+p, k", ActionId::HarnessModePrev),
+    spec(Context::HarnessMode, "enter", ActionId::HarnessModeCommit),
 ];
 
 const OVERVIEW: &[BindingSpec] = &[
@@ -705,6 +811,27 @@ const DIAGNOSE: &[BindingSpec] = &[
     spec(Context::Diagnose, "y", ActionId::DiagnoseCopyId),
     spec(Context::Diagnose, "D", ActionId::Diagnose),
     spec(Context::Diagnose, "i", ActionId::Info),
+];
+
+const SPAWN_PROFILE_NAME: &[BindingSpec] = &[
+    spec(Context::SpawnProfileName, "enter", ActionId::ProfileNameCommit),
+    spec(Context::SpawnProfileName, "esc", ActionId::ProfileNameCancel),
+];
+
+const SPAWN_PROFILE_CONFIRM: &[BindingSpec] = &[
+    spec(Context::SpawnProfileConfirm, "y, enter", ActionId::ProfileDeleteConfirm),
+    spec(Context::SpawnProfileConfirm, "n, esc, q", ActionId::ProfileDeleteCancel),
+];
+
+const DRAFT_ENV: &[BindingSpec] = &[
+    spec(Context::DraftEnv, "tab", ActionId::DraftEnvNext),
+    spec(Context::DraftEnv, "enter", ActionId::DraftEnvCommit),
+    spec(Context::DraftEnv, "esc", ActionId::DraftEnvCancel),
+];
+
+const DRAFT_CONFIRM: &[BindingSpec] = &[
+    spec(Context::DraftConfirm, "y, enter", ActionId::DraftDiscardConfirm),
+    spec(Context::DraftConfirm, "n, esc, q", ActionId::DraftDiscardCancel),
 ];
 
 const HELP: &[BindingSpec] = &[
@@ -793,11 +920,17 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    MACHINES,
+    DISPATCHERS,
     LABELS,
     PINS,
     MACROS,
     BOOKMARK_PROMPT,
     BOOKMARK_CONFIRM,
+    DRAFT_ENV,
+    DRAFT_CONFIRM,
+    SPAWN_PROFILE_NAME,
+    SPAWN_PROFILE_CONFIRM,
     TERMINAL,
     HELP,
     MODEL_PICKER,
@@ -806,6 +939,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     DIAGNOSE,
     BOOKMARKS,
     OVERVIEW,
+    HARNESS_MODE,
     ASK,
     ASK_TEXT,
     PLAN,

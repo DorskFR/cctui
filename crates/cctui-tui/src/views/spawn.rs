@@ -98,9 +98,10 @@ fn cwd_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
 /// Every section's rows, then the errors, then the key hints.
 fn body_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
     let mut out = Vec::new();
+    let core = form.core_index();
     for (index, section) in form.sections.iter().enumerate() {
         let focused = (form.focus.section == index).then_some(form.focus.row);
-        if index > 0 {
+        if Some(index) != core {
             out.push(Line::from(Span::styled(
                 clip(&format!(" {}", section.title()), width),
                 theme::section_title(),
@@ -110,7 +111,7 @@ fn body_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
         // The badge and the dropdown belong to the cwd state, not to the core
         // section, which only knows the field's text — so they are slotted in
         // under the Dir row rather than appended after the section.
-        if index == 0 {
+        if Some(index) == core {
             // Slot each row's own extra lines in from the bottom up, so an
             // earlier insert cannot move a later index.
             let model_at =

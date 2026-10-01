@@ -421,6 +421,7 @@ fn skeleton_list_item(
         attention: None,
         bucket: Bucket::Working,
         token_usage: cctui_proto::models::TokenUsage::default(),
+        origin: cctui_proto::api::SessionOrigin::from_metadata(&metadata),
         metadata,
         adapter_id,
         machine_name: None,
@@ -1615,6 +1616,7 @@ pub async fn get_session(
                 attention: None,
                 bucket: Bucket::Working,
                 token_usage: handle.token_usage.clone(),
+                origin: cctui_proto::api::SessionOrigin::from_metadata(&handle.session.metadata),
                 metadata: handle.session.metadata.clone(),
                 adapter_id: handle.session.adapter_id.clone(),
                 machine_name: None,
@@ -1691,6 +1693,7 @@ pub async fn get_session(
         attention: None,
         bucket: Bucket::Working,
         token_usage: cctui_proto::models::TokenUsage::default(),
+        origin: cctui_proto::api::SessionOrigin::from_metadata(&row.metadata),
         metadata: row.metadata,
         adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
         machine_name: row.resolved_machine_name,
@@ -3408,6 +3411,74 @@ mod tests {
 
     fn contents(rows: &[super::RenderableRow]) -> Vec<String> {
         rows.iter().map(|(_, v, _, _)| v["content"].as_str().unwrap().to_owned()).collect()
+    }
+
+    /// A session the daemon discovered rather than launched carries the marker
+    /// in its metadata; the list's own SELECT -> item mapping has to surface it
+    /// as a typed origin, since that is what keeps the TUI's automatic paths off
+    /// someone else's `claude --bg` job.
+    #[tokio::test]
+    async fn a_discovered_job_lists_with_a_foreign_origin() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("a_discovered_job_lists_with_a_foreign_origin")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("u-{uid}"))
+            .bind(format!("k-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mk-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let cases = [
+            (serde_json::json!({"origin": "foreign"}), cctui_proto::api::SessionOrigin::Foreign),
+            (serde_json::json!({"origin": "fleet"}), cctui_proto::api::SessionOrigin::Fleet),
+            // No marker at all: an older row, or one registered before the
+            // daemon published an origin. Ours until proven otherwise.
+            (serde_json::json!({}), cctui_proto::api::SessionOrigin::Fleet),
+            (serde_json::json!({"origin": "nonsense"}), cctui_proto::api::SessionOrigin::Fleet),
+        ];
+        for (metadata, want) in cases {
+            let sid = format!("cct1266-{}", uuid::Uuid::new_v4());
+            sqlx::query(
+                "INSERT INTO sessions \
+                 (id, machine_id, machine_uuid, user_id, working_dir, status, metadata) \
+                 VALUES ($1, $2, $2, $3, '/w', 'active', $4)",
+            )
+            .bind(&sid)
+            .bind(machine)
+            .bind(uid)
+            .bind(&metadata)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let sql = format!("{} WHERE s.id = $1", super::SEARCH_SELECT);
+            let row = sqlx::query_as::<_, super::DbSession>(sqlx::AssertSqlSafe(sql))
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let item = super::db_list_item(row);
+            assert_eq!(item.origin, want, "metadata {metadata} should list as {want:?}");
+            assert_eq!(item.origin.is_foreign(), want.is_foreign());
+        }
     }
 
     #[tokio::test]

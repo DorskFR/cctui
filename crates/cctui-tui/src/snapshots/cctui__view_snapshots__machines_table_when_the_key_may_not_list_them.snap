@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1629
+expression: render_screen(&mut app)
+---
+ Machines  0/0 online  ! 1 need input — Ctrl+g
+   NAME                    STATE   SEEN  SESS CPU  MEM
+ this key may not list machines
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:move  Enter:spawn here  r:refresh  Esc:back

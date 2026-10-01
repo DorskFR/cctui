@@ -33,6 +33,9 @@ pub fn dir_line_index(adapter: &str) -> usize {
     rows_for(adapter).iter().position(|r| *r == Row::Dir).unwrap_or(0)
 }
 
+/// Also the dialog's own frame title, so the core rows carry no heading.
+pub const TITLE: &str = "New session";
+
 /// Which rendered line the Model row is, for the same reason as
 /// [`dir_line_index`]: Model also comes before Mode.
 #[must_use]
@@ -88,7 +91,7 @@ pub struct CoreSection {
 
 impl SpawnSection for CoreSection {
     fn title(&self) -> &'static str {
-        "New session"
+        TITLE
     }
 
     fn rows(&self, fields: &SpawnFields) -> usize {

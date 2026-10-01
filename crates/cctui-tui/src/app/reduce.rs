@@ -22,6 +22,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::RowAction(action) => row_actions::reduce_row_actions(app, action),
         Action::Attach(action) => super::attach::reduce_attach(app, action),
         Action::Labels(action) => super::labels::reduce_labels(app, action),
+        Action::Machines(action) => super::machines::reduce_machines(app, action),
+        Action::Dispatchers(action) => super::dispatchers::reduce_dispatchers(app, action),
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
             app.pending_chord = Some(chord);
@@ -37,6 +39,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
         Action::Pins(pins) => super::pins::reduce_pins(app, pins),
         Action::Bookmarks(action) => super::bookmarks::reduce_bookmarks(app, action),
+        Action::SpawnDrafts(action) => super::spawn_drafts::reduce_drafts(app, action),
+        Action::Profiles(action) => super::profiles::reduce_profiles(app, action),
         Action::Macros(action) => super::macros::reduce_macros(app, action),
         Action::AcceptMention(key) => super::mentions::accept(app).unwrap_or_else(|| {
             app.message_input.input(key);
@@ -268,6 +272,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
         Action::Diagnose(action) => super::diagnose::reduce_diagnose(app, action),
         Action::Slice(action) => super::slice::reduce_slice(app, action),
+        Action::HarnessMode(action) => super::harness_mode::reduce_harness_mode(app, action),
         Action::DeepLink(action) => super::deeplink::reduce_deeplink(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
@@ -386,6 +391,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         // Classifier signals arrive on the next REST refresh; Working until then.
         bucket: cctui_proto::classifier::Bucket::Working,
         token_usage: cctui_proto::models::TokenUsage::default(),
+        origin: cctui_proto::api::SessionOrigin::from_metadata(&session.metadata),
         metadata: session.metadata,
         adapter_id: session.adapter_id,
         machine_name: None,

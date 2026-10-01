@@ -9,13 +9,17 @@ use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
 use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
+use crate::app::dispatchers::DispatcherAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::harness_mode::HarnessModeAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
+use crate::app::machines::MachineAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
+use crate::app::profiles::ProfileAction;
 use crate::app::prompt::PromptAction;
 use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
@@ -23,6 +27,7 @@ use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::slice::SliceAction;
 use crate::app::spawn::SpawnAction;
+use crate::app::spawn_drafts::SpawnDraftAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
 use crate::app::unread::UnreadAction;
@@ -95,6 +100,8 @@ pub const fn context_for(
         View::Bookmarks => Context::Bookmarks,
         View::Conversation => Context::Conversation,
         View::FileViewer => Context::FileViewer,
+        View::Machines => Context::Machines,
+        View::Dispatchers => Context::Dispatchers,
         View::LabelPicker => Context::LabelPicker,
         View::LabelFilter => Context::LabelFilter,
         View::Help => Context::Help,
@@ -108,6 +115,7 @@ pub const fn context_for(
         // and the cards ahead of it, and falls through to the transcript.
         View::Sidebar => Context::Sidebar,
         View::Overview => Context::Overview,
+        View::HarnessMode => Context::HarnessMode,
     }
 }
 
@@ -121,6 +129,7 @@ const fn modal_context(view: View) -> Option<Context> {
         View::Diagnose => Some(Context::Diagnose),
         View::Terminal => Some(Context::Terminal),
         View::FileViewer => Some(Context::FileViewer),
+        View::Dispatchers => Some(Context::Dispatchers),
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
@@ -173,6 +182,12 @@ pub fn map_input(
         InputEvent::ScrollDown if view == View::FileViewer => {
             Some(Action::FileView(FileViewAction::Scroll(3)))
         }
+        InputEvent::ScrollUp if view == View::Machines => {
+            Some(Action::Machines(MachineAction::SelectPrev))
+        }
+        InputEvent::ScrollDown if view == View::Machines => {
+            Some(Action::Machines(MachineAction::SelectNext))
+        }
         InputEvent::ScrollUp => match view {
             View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewUp)),
             View::Conversation | View::Sidebar => {
@@ -184,13 +199,16 @@ pub fn map_input(
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(-3))),
             View::Spawn
             | View::FileViewer
+            | View::HarnessMode
             | View::Help
             | View::HistoryPicker
             | View::Pins
             | View::Macros
             | View::ModelPicker
             | View::LabelPicker
-            | View::LabelFilter => None,
+            | View::LabelFilter
+            | View::Machines
+            | View::Dispatchers => None,
         },
         InputEvent::ScrollDown => match view {
             View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewDown)),
@@ -203,13 +221,16 @@ pub fn map_input(
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(3))),
             View::Spawn
             | View::FileViewer
+            | View::HarnessMode
             | View::Help
             | View::HistoryPicker
             | View::Pins
             | View::Macros
             | View::ModelPicker
             | View::LabelPicker
-            | View::LabelFilter => None,
+            | View::LabelFilter
+            | View::Machines
+            | View::Dispatchers => None,
         },
     }
 }
@@ -269,6 +290,24 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ScrollToBottom => Action::ScrollToBottom,
         ActionId::ToggleTimestamps => Action::ToggleTimestamps,
         ActionId::LineCursor => Action::Conversation(ConversationAction::ToggleLineCursor),
+
+        ActionId::OpenMachines => Action::Machines(MachineAction::Open),
+        ActionId::OpenDispatchers => Action::Dispatchers(DispatcherAction::Open),
+        ActionId::DispatchersNext => Action::Dispatchers(DispatcherAction::SelectNext),
+        ActionId::DispatchersPrev => Action::Dispatchers(DispatcherAction::SelectPrev),
+        ActionId::DispatchersEnroll => Action::Dispatchers(DispatcherAction::StartEnroll),
+        ActionId::DispatchersEdit => Action::Dispatchers(DispatcherAction::StartEdit),
+        ActionId::DispatchersDelete => Action::Dispatchers(DispatcherAction::StartDelete),
+        ActionId::DispatchersRefresh => Action::Dispatchers(DispatcherAction::Refresh),
+        ActionId::DispatchersField => Action::Dispatchers(DispatcherAction::NextField),
+        ActionId::DispatchersCommit => Action::Dispatchers(DispatcherAction::Commit),
+        ActionId::DispatchersCancel => Action::Dispatchers(DispatcherAction::Cancel),
+        ActionId::DispatchersCopyKey => Action::Dispatchers(DispatcherAction::CopyKey),
+        ActionId::MachinesNext => Action::Machines(MachineAction::SelectNext),
+        ActionId::MachinesPrev => Action::Machines(MachineAction::SelectPrev),
+        ActionId::MachinesRefresh => Action::Machines(MachineAction::Refresh),
+        ActionId::MachinesSpawn => Action::Machines(MachineAction::SpawnHere),
+        ActionId::MachinesClose => Action::Machines(MachineAction::Close),
 
         ActionId::OpenLabels => Action::Labels(LabelAction::OpenPicker),
         ActionId::OpenLabelFilter => Action::Labels(LabelAction::OpenFilter),
@@ -395,6 +434,19 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::BookmarksPreviewDown => Action::Bookmarks(BookmarkAction::PreviewDown),
         ActionId::BookmarksPreviewUp => Action::Bookmarks(BookmarkAction::PreviewUp),
         ActionId::BookmarksSearch => Action::Bookmarks(BookmarkAction::SearchOpen),
+        ActionId::DraftLaunch => Action::SpawnDrafts(SpawnDraftAction::Launch),
+        ActionId::DraftEdit => Action::SpawnDrafts(SpawnDraftAction::Edit),
+        ActionId::DraftDiscard => Action::SpawnDrafts(SpawnDraftAction::Discard),
+        ActionId::SpawnFromConfig => Action::SpawnDrafts(SpawnDraftAction::NewFromConfig),
+        ActionId::ProfileNameCommit => Action::Profiles(ProfileAction::PromptCommit),
+        ActionId::ProfileNameCancel => Action::Profiles(ProfileAction::PromptCancel),
+        ActionId::ProfileDeleteConfirm => Action::Profiles(ProfileAction::DeleteConfirm),
+        ActionId::ProfileDeleteCancel => Action::Profiles(ProfileAction::DeleteCancel),
+        ActionId::DraftEnvNext => Action::SpawnDrafts(SpawnDraftAction::EnvNext),
+        ActionId::DraftEnvCommit => Action::SpawnDrafts(SpawnDraftAction::EnvCommit),
+        ActionId::DraftEnvCancel => Action::SpawnDrafts(SpawnDraftAction::EnvCancel),
+        ActionId::DraftDiscardConfirm => Action::SpawnDrafts(SpawnDraftAction::DiscardConfirm),
+        ActionId::DraftDiscardCancel => Action::SpawnDrafts(SpawnDraftAction::DiscardCancel),
         ActionId::BookmarksOpenSource => Action::Bookmarks(BookmarkAction::OpenSource),
         ActionId::BookmarksCopy => Action::Bookmarks(BookmarkAction::CopyMarkdown),
         ActionId::BookmarksEdit => Action::Bookmarks(BookmarkAction::EditOpen),
@@ -411,6 +463,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::MacrosSelectNext => Action::Macros(MacroAction::SelectNext),
         ActionId::MacrosSelectPrev => Action::Macros(MacroAction::SelectPrev),
         ActionId::MacrosInsert => Action::Macros(MacroAction::Insert),
+        ActionId::MacrosRun => Action::SpawnDrafts(SpawnDraftAction::RunSelectedMacro),
 
         ActionId::PermissionAllow => Action::Attention(AttentionAction::Respond(Decision::Allow)),
         ActionId::PermissionDeny => Action::Attention(AttentionAction::Respond(Decision::Deny)),
@@ -440,6 +493,11 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 
         ActionId::Diagnose => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)),
         ActionId::Info => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)),
+        ActionId::HarnessModeClose => Action::HarnessMode(HarnessModeAction::Close),
+        ActionId::HarnessModeNext => Action::HarnessMode(HarnessModeAction::SelectNext),
+        ActionId::HarnessModePrev => Action::HarnessMode(HarnessModeAction::SelectPrev),
+        ActionId::HarnessModeCommit => Action::HarnessMode(HarnessModeAction::Commit),
+
         ActionId::OverviewScrollDown => Action::Slice(SliceAction::OverviewScroll(1)),
         ActionId::OverviewScrollUp => Action::Slice(SliceAction::OverviewScroll(-1)),
         ActionId::OverviewRefresh => Action::Slice(SliceAction::Refresh),
@@ -470,9 +528,12 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::LabelPicker => Some(Action::Labels(LabelAction::Key(key))),
+        Context::Dispatchers => Some(Action::Dispatchers(DispatcherAction::Key(key))),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
+        Context::DraftEnv => Some(Action::SpawnDrafts(SpawnDraftAction::EnvKey(key))),
+        Context::SpawnProfileName => Some(Action::Profiles(ProfileAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
         _ => None,
     }

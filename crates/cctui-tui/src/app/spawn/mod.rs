@@ -8,8 +8,12 @@
 //! after it and must leave the account fields alone: blank / `NO_ACCOUNT` /
 //! `POOL_PREFIX` / a name is one coupled rule the shared builder owns.
 
+pub mod accounts;
 pub mod core_section;
 pub mod cwd;
+pub mod env;
+pub mod files;
+pub mod labels;
 
 use cctui_clientcore::spawn::SpawnFields;
 use cctui_proto::api::SpawnRequest;
@@ -71,9 +75,68 @@ pub trait SpawnSection: Send {
         None
     }
 
+    /// The profile section identifies itself, so the profile effects can reach
+    /// its state without a downcast. Every other section leaves these `None`.
+    fn as_profiles(&self) -> Option<&crate::app::profiles::ProfileSection> {
+        None
+    }
+
+    fn as_profiles_mut(&mut self) -> Option<&mut crate::app::profiles::ProfileSection> {
+        None
+    }
+
+    /// Files this section attaches, as multipart parts. The spawn route carries
+    /// them alongside the request, so they are up before the first turn runs.
+    fn parts(&self) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
+
+    /// Catalogs fetched for the dialog. Called when the dialog opens and again
+    /// whenever one lands, so a section never owns a fetch of its own.
+    fn receive(&mut self, _data: &SpawnData) {}
+
     /// Handed the model and effort lists when they change. Only the core
     /// section's pickers use them.
     fn set_options(&mut self, _options: core_section::Options) {}
+}
+
+/// Cuts a section's rows to the dialog's inner width. A row that wrapped would
+/// push every row under it down by one.
+#[must_use]
+pub fn clamp_rows(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut left = width;
+            let mut spans = Vec::with_capacity(line.spans.len());
+            for span in line.spans {
+                if left == 0 {
+                    break;
+                }
+                let cols = span.content.chars().count();
+                if cols <= left {
+                    left -= cols;
+                    spans.push(span);
+                    continue;
+                }
+                let cut: String = span.content.chars().take(left).collect();
+                left = 0;
+                spans.push(ratatui::text::Span::styled(cut, span.style));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// What the dialog's sections read but none of them fetches: the catalogs live
+/// on [`super::state::App`], so they outlive one dialog and are fetched once.
+#[derive(Debug, Default, Clone)]
+pub struct SpawnData {
+    pub accounts: Vec<cctui_client::AccountPick>,
+    pub pools: Vec<cctui_client::PoolPick>,
+    pub usage: Vec<cctui_client::AccountUsagePick>,
+    pub labels: Vec<cctui_proto::api::Label>,
 }
 
 /// Where focus is: which section, and which of its rows.
@@ -140,7 +203,24 @@ impl SpawnForm {
     /// adds**: push your section here.
     #[must_use]
     pub fn sections() -> Vec<Box<dyn SpawnSection>> {
-        vec![Box::new(core_section::CoreSection::default())]
+        vec![
+            Box::new(crate::app::profiles::ProfileSection::default()),
+            Box::new(core_section::CoreSection::default()),
+            Box::new(accounts::AccountSection::default()),
+            Box::new(labels::LabelsSection::default()),
+            Box::new(env::EnvSection::default()),
+            Box::new(files::FilesSection::default()),
+        ]
+    }
+
+    /// The profile section, which the profile effects load and store into. It
+    /// is registered first, so this is where it is.
+    pub fn profiles_mut(&mut self) -> Option<&mut crate::app::profiles::ProfileSection> {
+        self.sections.first_mut().and_then(|s| s.as_profiles_mut())
+    }
+
+    pub fn profiles(&self) -> Option<&crate::app::profiles::ProfileSection> {
+        self.sections.first().and_then(|s| s.as_profiles())
     }
 
     #[must_use]
@@ -222,6 +302,7 @@ impl SpawnForm {
             self.fields.account = account;
         }
         self.sync_provider();
+        self.sync_profile_strip();
         if self.list_key() != before {
             effects.extend(self.fetch_models());
         }
@@ -236,14 +317,37 @@ impl SpawnForm {
         (self.fields.machine_id.clone(), self.fields.adapter_id.clone(), self.model().to_owned())
     }
 
-    /// Hands the core section the lists its pickers step through. Called after
-    /// every key and whenever the catalog lands, because switching harness
-    /// changes both lists.
+    /// Hands every section the lists the pickers step through. Called after
+    /// every key and whenever the lists land, because switching harness
+    /// changes both.
     pub fn sync_options(&mut self) {
         let models = self.model_options();
         let efforts = self.effort_options();
-        if let Some(core) = self.sections.first_mut() {
-            core.set_options(core_section::Options { models, efforts });
+        for section in &mut self.sections {
+            section.set_options(core_section::Options {
+                models: models.clone(),
+                efforts: efforts.clone(),
+            });
+        }
+    }
+
+    /// Keeps the profile strip and the fields in step: the strip's own pick
+    /// writes the compute knobs, and a knob changed anywhere else re-counts
+    /// the one-off adjust.
+    fn sync_profile_strip(&mut self) {
+        let Some(section) = self.profiles() else { return };
+        if section.selected.is_none() {
+            return;
+        }
+        let picked = crate::app::profiles::applied(section, &self.fields);
+        if picked != self.fields {
+            self.fields = picked;
+            return;
+        }
+        let fields = self.fields.clone();
+        let mut said = None;
+        if let Some(section) = self.profiles_mut() {
+            let _ = section.form_changed(Box::new(fields), &mut said);
         }
     }
 
@@ -253,6 +357,13 @@ impl SpawnForm {
         if let Some(provider) = self.provider().map(str::to_owned) {
             self.fields.account_provider = provider;
         }
+    }
+
+    /// Where the core section sits, which the renderer needs: the dir and model
+    /// rows carry extra lines the section itself cannot draw.
+    #[must_use]
+    pub fn core_index(&self) -> Option<usize> {
+        self.sections.iter().position(|s| s.title() == core_section::TITLE)
     }
 
     /// The target this form's configuration is remembered under.
@@ -355,7 +466,7 @@ impl SpawnForm {
     /// dropdown keys treat specially.
     #[must_use]
     pub fn on_dir_row(&self) -> bool {
-        self.focus.section == 0
+        self.core_index() == Some(self.focus.section)
             && core_section::rows_for(&self.fields.adapter_id).get(self.focus.row).copied()
                 == Some(core_section::Row::Dir)
     }
@@ -447,11 +558,16 @@ pub fn form_snapshot(app: &super::state::App) -> Option<SpawnRequest> {
 /// Opens the dialog seeded from a request: a draft being edited, a session
 /// cloned, or a macro run as a session. Published for Q3.
 #[allow(dead_code)]
-pub fn open_prefilled(app: &mut super::state::App, request: &SpawnRequest) {
+pub fn open_prefilled(app: &mut super::state::App, request: &SpawnRequest) -> Vec<Effect> {
     let mut form = SpawnForm::new();
     form.prefill(request);
     app.spawn = Some(form);
     app.router.push(super::state::View::Spawn);
+    app.spawn
+        .as_mut()
+        .and_then(SpawnForm::profiles_mut)
+        .map(crate::app::profiles::ProfileSection::on_open)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -515,34 +631,48 @@ mod tests {
         form
     }
 
+    /// The core section sits after the profile strip.
+    const CORE: usize = 1;
+
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
     #[test]
     fn the_core_section_is_registered_and_takes_focus_first() {
-        let form = SpawnForm::new();
-        assert_eq!(form.sections.len(), 1);
-        assert_eq!(form.focus, Focus { section: 0, row: 0 });
-        assert!(form.sections[0].rows(&form.fields) > 0);
+        let mut form = SpawnForm::new();
+        form.settle_focus();
+        assert_eq!(form.sections[0].title(), "Profile", "the profile strip comes first");
+        assert_eq!(form.sections[CORE].title(), "New session", "then the core fields");
+        assert_eq!(
+            form.focus,
+            Focus { section: CORE, row: 0 },
+            "an empty profile strip takes no focus, so the core section has it"
+        );
+        assert!(form.sections[CORE].rows(&form.fields) > 0);
+        assert!(
+            form.sections.len() > 2,
+            "the lane sections register themselves; this count is not pinned"
+        );
     }
 
     #[test]
     fn tab_walks_every_row_of_every_section_and_wraps() {
         let mut form = form();
-        let core_rows = form.sections[0].rows(&form.fields);
         form.sections.push(Box::new(Stub { rows: 2, seen: Vec::new() }));
+        form.settle_focus();
 
-        let total = core_rows + 2;
+        let total: usize = form.sections.iter().map(|s| s.rows(&form.fields)).sum();
         for _ in 0..total {
             form.step_focus(1);
         }
-        assert_eq!(form.focus, Focus { section: 0, row: 0 }, "a full lap comes home");
+        assert_eq!(form.focus, Focus { section: CORE, row: 0 }, "a full lap comes home");
 
+        let last = form.sections.len() - 1;
         form.step_focus(-1);
         assert_eq!(
             form.focus,
-            Focus { section: 1, row: 1 },
+            Focus { section: last, row: 1 },
             "stepping back from the first row wraps to the last section's last row"
         );
     }
@@ -550,22 +680,25 @@ mod tests {
     #[test]
     fn a_section_with_no_rows_draws_but_never_takes_focus() {
         let mut form = form();
-        let core_rows = form.sections[0].rows(&form.fields);
         form.sections.push(Box::new(Stub { rows: 0, seen: Vec::new() }));
-        for _ in 0..core_rows {
+        let rowless = form.sections.len() - 1;
+        form.settle_focus();
+        let total: usize = form.sections.iter().map(|s| s.rows(&form.fields)).sum();
+        for _ in 0..=total {
             form.step_focus(1);
+            assert_ne!(form.focus.section, rowless, "focus never reached the rowless section");
         }
-        assert_eq!(form.focus.section, 0, "focus never reached the rowless section");
     }
 
     #[test]
     fn a_key_reaches_the_focused_section_with_its_own_row_index() {
         let mut form = form();
         form.sections.push(Box::new(Stub { rows: 2, seen: Vec::new() }));
-        form.focus = Focus { section: 1, row: 1 };
+        let stub_at = form.sections.len() - 1;
+        form.focus = Focus { section: stub_at, row: 1 };
         form.handle_key(key('x'));
 
-        let stub = &form.sections[1];
+        let stub = &form.sections[stub_at];
         assert_eq!(stub.rows(&form.fields), 2);
         // The stub recorded the row it was handed; read it back through Debug.
         assert!(
@@ -628,10 +761,11 @@ mod tests {
     fn focus_comes_back_inside_after_a_section_shrinks() {
         let mut form = form();
         form.sections.push(Box::new(Stub { rows: 2, seen: Vec::new() }));
-        form.focus = Focus { section: 1, row: 1 };
-        form.sections[1] = Box::new(Stub { rows: 0, seen: Vec::new() });
+        let at = form.sections.len() - 1;
+        form.focus = Focus { section: at, row: 1 };
+        form.sections[at] = Box::new(Stub { rows: 0, seen: Vec::new() });
         form.settle_focus();
-        assert_eq!(form.focus, Focus { section: 0, row: 0 });
+        assert_eq!(form.focus, Focus { section: CORE, row: 0 });
     }
 
     #[test]
@@ -644,7 +778,15 @@ mod tests {
 }
 
 #[derive(Debug, Clone)]
+/// One landed catalog.
+pub enum SpawnFetch {
+    Accounts(Vec<cctui_client::AccountPick>),
+    Pools(Vec<cctui_client::PoolPick>),
+    Usage(Vec<cctui_client::AccountUsagePick>),
+}
+
 pub enum SpawnAction {
+    DataLoaded(Box<SpawnFetch>),
     Open,
     Close,
     NextField,
@@ -712,8 +854,9 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
         }
         SpawnAction::Key(key) => {
             let mut form = app.spawn.take();
-            let effects = form.as_mut().map_or_else(Vec::new, |f| f.handle_key(key));
+            let mut effects = form.as_mut().map_or_else(Vec::new, |f| f.handle_key(key));
             app.spawn = form;
+            effects.extend(crate::app::spawn_drafts::autosave(app));
             effects
         }
         SpawnAction::Tick => {
@@ -775,14 +918,29 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
         SpawnAction::Launched { command_id, ok, error, session_id } => {
             launched(app, command_id, ok, error.as_deref(), session_id.as_deref())
         }
+        SpawnAction::DataLoaded(data) => data_loaded(app, *data),
         SpawnAction::Failed(reason) => {
             if let Some(form) = app.spawn.as_mut() {
                 form.submitting = false;
-                form.errors = vec![reason];
+                form.errors = vec![accounts::spawn_error_hint(&reason)];
             }
             Vec::new()
         }
     }
+}
+
+fn data_loaded(app: &mut super::state::App, data: SpawnFetch) -> Vec<Effect> {
+    match data {
+        SpawnFetch::Accounts(accounts) => app.spawn_data.accounts = accounts,
+        SpawnFetch::Pools(pools) => app.spawn_data.pools = pools,
+        SpawnFetch::Usage(usage) => app.spawn_data.usage = usage,
+    }
+    if let Some(form) = app.spawn.as_mut() {
+        for section in &mut form.sections {
+            section.receive(&app.spawn_data);
+        }
+    }
+    Vec::new()
 }
 
 fn memory_loaded(
@@ -854,10 +1012,30 @@ fn open(app: &mut super::state::App) -> Vec<Effect> {
     if let Some(entry) = app.spawn_memory.get(&form.memory_key()) {
         form.apply_memory(&entry.clone());
     }
-    let mut effects = vec![Effect::FetchRecentDirs, Effect::FetchSpawnMemory];
+    // The labels the last spawn carried; the labels section drops any the
+    // catalog has since lost.
+    form.fields.labels.clone_from(&app.ui.last_spawn_labels);
+    app.spawn_data.labels.clone_from(&app.labels.all);
+    for section in &mut form.sections {
+        section.receive(&app.spawn_data);
+    }
+    let mut effects = vec![
+        Effect::FetchRecentDirs,
+        Effect::FetchSpawnMemory,
+        Effect::FetchAccounts,
+        Effect::FetchAccountPools,
+        Effect::FetchAccountsUsage,
+    ];
     effects.extend(form.fetch_models());
     app.spawn = Some(form);
     app.router.push(View::Spawn);
+    effects.extend(
+        app.spawn
+            .as_mut()
+            .and_then(SpawnForm::profiles_mut)
+            .map(crate::app::profiles::ProfileSection::on_open)
+            .unwrap_or_default(),
+    );
     effects
 }
 
@@ -916,16 +1094,23 @@ fn submit(app: &mut super::state::App) -> Vec<Effect> {
     form.submitting = true;
     form.launching = None;
     form.session_id = None;
-    let request = form.request();
+    let files = form.sections.iter().flat_map(|section| section.parts()).collect();
+    let request = Box::new(form.request());
+    let labels = request.label_ids.clone();
     // Remembered on submit rather than on a confirmed launch: a spawn that
     // never lands still recorded what was asked for.
     let (key, entry) = (form.memory_key(), form.memory_entry(app.clock_ms));
     app.spawn_memory.insert(key, entry);
     cctui_proto::drafts::evict_spawn_memory(&mut app.spawn_memory, SPAWN_MEMORY_CAP);
-    vec![
-        Effect::SpawnSession { request: Box::new(request) },
+    let mut effects = vec![
+        Effect::SpawnSession { request, files },
         Effect::PutSpawnMemory { entries: app.spawn_memory.clone() },
-    ]
+    ];
+    if app.ui.last_spawn_labels != labels {
+        app.ui.last_spawn_labels = labels;
+        effects.push(Effect::SaveUiState(app.ui.clone()));
+    }
+    effects
 }
 
 #[cfg(test)]
@@ -988,7 +1173,7 @@ mod reduce_tests {
         let mut app = app();
         reduce(&mut app, SpawnAction::Open);
         match reduce(&mut app, SpawnAction::Submit).as_slice() {
-            [Effect::SpawnSession { request }, Effect::PutSpawnMemory { .. }] => {
+            [Effect::SpawnSession { request, .. }, Effect::PutSpawnMemory { .. }] => {
                 assert_eq!(request.machine_id, "orion");
                 assert_eq!(request.working_dir, "/home/dev/alpha");
                 assert_eq!(request.adapter_id.as_deref(), Some("claude-code"));
@@ -1124,7 +1309,8 @@ mod reduce_tests {
             .iter()
             .position(|r| *r == super::core_section::Row::Prompt)
             .expect("a prompt row");
-        form.focus = super::Focus { section: 0, row: prompt_row };
+        let core = form.core_index().expect("the core section");
+        form.focus = super::Focus { section: core, row: prompt_row };
         let typed = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
         form.handle_key(typed('a'));
         reduce(&mut app, SpawnAction::DirAccept);
@@ -1261,18 +1447,21 @@ mod reduce_tests {
     #[test]
     fn opening_asks_for_the_recent_dirs_and_the_machines_model_lists() {
         let mut app = app();
-        match reduce(&mut app, SpawnAction::Open).as_slice() {
-            [
-                Effect::FetchRecentDirs,
-                Effect::FetchSpawnMemory,
-                Effect::FetchHarnessModels { want, harness, machine_id, .. },
-            ] => {
-                assert_eq!(*want, crate::app::action::ModelsFor::SpawnDialog);
-                assert_eq!(harness, "claude-code");
-                assert_eq!(machine_id, "orion");
-            }
-            other => panic!("expected the three fetches, got {} effects", other.len()),
-        }
+        let effects = reduce(&mut app, SpawnAction::Open);
+        assert!(effects.iter().any(|e| matches!(e, Effect::FetchRecentDirs)));
+        assert!(effects.iter().any(|e| matches!(e, Effect::FetchSpawnMemory)));
+        let models = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::FetchHarnessModels { want, harness, machine_id, .. } => {
+                    Some((*want, harness.clone(), machine_id.clone()))
+                }
+                _ => None,
+            })
+            .expect("the model lists are fetched");
+        assert_eq!(models.0, crate::app::action::ModelsFor::SpawnDialog);
+        assert_eq!(models.1, "claude-code");
+        assert_eq!(models.2, "orion");
     }
 
     #[test]
@@ -1284,12 +1473,17 @@ mod reduce_tests {
             .iter()
             .position(|r| *r == super::core_section::Row::Harness)
             .expect("a harness row");
-        form.focus = super::Focus { section: 0, row: harness_row };
+        let core = form.core_index().expect("the core section");
+        form.focus = super::Focus { section: core, row: harness_row };
         let effects = form.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        match effects.as_slice() {
-            [Effect::FetchHarnessModels { harness, .. }] => assert_eq!(harness, "codex"),
-            other => panic!("expected a refetch, got {} effects", other.len()),
-        }
+        let harness = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::FetchHarnessModels { harness, .. } => Some(harness.clone()),
+                _ => None,
+            })
+            .expect("a refetch");
+        assert_eq!(harness, "codex");
     }
 
     #[test]
@@ -1309,7 +1503,8 @@ mod reduce_tests {
             .iter()
             .position(|r| *r == super::core_section::Row::Model)
             .expect("a model row");
-        form.focus = super::Focus { section: 0, row: model_row };
+        let core = form.core_index().expect("the core section");
+        form.focus = super::Focus { section: core, row: model_row };
         let mut seen = Vec::new();
         for _ in 0..6 {
             form.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));

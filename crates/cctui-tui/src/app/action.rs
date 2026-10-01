@@ -10,18 +10,23 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
+use super::harness_mode::HarnessModeAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
+use super::machines::MachineAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
+use super::profiles::ProfileAction;
 use super::prompt::PromptAction;
 use super::row_actions::RowAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::sidebar::SidebarAction;
 use super::slice::SliceAction;
+use super::spawn_drafts::SpawnDraftAction;
 use super::state::ConversationLine;
 use super::terminal::TerminalAction;
 use super::toast::Level;
@@ -73,6 +78,8 @@ pub enum Action {
 
     Attach(AttachAction),
     Labels(LabelAction),
+    Machines(MachineAction),
+    Dispatchers(DispatcherAction),
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
     /// A paste small enough to type straight into the composer.
@@ -96,6 +103,7 @@ pub enum Action {
     Prompt(PromptAction),
     Diagnose(DiagnoseAction),
     Slice(SliceAction),
+    HarnessMode(HarnessModeAction),
     DeepLink(DeepLinkAction),
 
     StreamLine {
@@ -118,6 +126,8 @@ pub enum Action {
     Drafts(DraftAction),
     Pins(PinAction),
     Bookmarks(BookmarkAction),
+    SpawnDrafts(SpawnDraftAction),
+    Profiles(ProfileAction),
     Macros(MacroAction),
     /// Take the highlighted `#session` completion. Carries the key so a
     /// composer with no popup open still types it.
@@ -202,6 +212,38 @@ pub enum Effect {
     LoadBookmarks {
         q: String,
         before: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// `GET /profiles`: the caller's spawn profiles.
+    LoadProfiles,
+    CreateProfile {
+        name: String,
+        spec: Box<cctui_proto::api::profiles::ProfileSpec>,
+    },
+    UpdateProfile {
+        id: String,
+        /// `None` keeps the stored name.
+        name: Option<String>,
+        spec: Box<cctui_proto::api::profiles::ProfileSpec>,
+    },
+    DeleteProfile {
+        id: String,
+    },
+    ReorderProfiles {
+        ids: Vec<uuid::Uuid>,
+    },
+    /// Save the open dialog as a draft after a quiet period: a `PUT` when it
+    /// already has a row, else a `save_draft` spawn that makes one.
+    AutosaveDraft {
+        session_id: Option<String>,
+        request: Box<cctui_proto::api::SpawnRequest>,
+    },
+    /// Launch a draft session. `env` is entered at launch, never stored.
+    LaunchDraft {
+        session_id: String,
+        env: std::collections::BTreeMap<String, String>,
+    },
+    DiscardDraftSession {
+        session_id: String,
     },
     CreateBookmark {
         draft: Box<cctui_proto::api::bookmarks::CreateBookmark>,
@@ -331,8 +373,26 @@ pub enum Effect {
     FetchDiagnose {
         session_id: String,
     },
+    /// `GET /machines/resources`: the caller's daemon machines.
+    FetchMachines,
+    /// `GET /dispatchers`: the enrolled executors.
+    FetchDispatchers,
+    EnrollDispatcher {
+        name: String,
+        request: Box<cctui_client::EnrollDispatcher>,
+    },
+    UpdateDispatcher {
+        id: String,
+        request: Box<cctui_client::UpdateDispatcher>,
+    },
+    DeleteDispatcher {
+        id: String,
+    },
     /// `GET /labels`: the whole catalogue.
     FetchLabels,
+    FetchAccounts,
+    FetchAccountPools,
+    FetchAccountsUsage,
     CreateLabel {
         name: String,
         color: String,
@@ -388,6 +448,8 @@ pub enum Effect {
     /// `POST /sessions/spawn`. The reply arrives as a `command_result`.
     SpawnSession {
         request: Box<cctui_proto::api::SpawnRequest>,
+        /// Attachments the dialog staged, sent as parts of the same request.
+        files: Vec<(String, Vec<u8>)>,
     },
     /// `PUT /settings` with the whole blob, patched: the route replaces.
     SaveSettings {

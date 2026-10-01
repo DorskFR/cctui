@@ -17,6 +17,7 @@ pub enum Slice {
     Sessions,
     Bookmarks,
     Overview,
+    Machines,
 }
 
 impl Slice {
@@ -26,6 +27,7 @@ impl Slice {
             Self::Sessions => View::SessionList,
             Self::Bookmarks => View::Bookmarks,
             Self::Overview => View::Overview,
+            Self::Machines => View::Machines,
         }
     }
 }
@@ -48,6 +50,7 @@ pub const TABS: &[Tab] = &[
     tab("Sessions", Some(Slice::Sessions)),
     tab("Bookmarks", Some(Slice::Bookmarks)),
     tab("Overview", Some(Slice::Overview)),
+    tab("Machines", Some(Slice::Machines)),
     tab("Access", None),
     tab("Accounts", None),
     tab("Settings", None),
@@ -76,12 +79,13 @@ pub struct Summary {
     pub pending: bool,
 }
 
-/// Online over non-revoked, from the liveness the socket reports.
-///
-/// The web UI counts rows of an admin-only machines endpoint; the TUI has no
-/// such list, so the live tiers it already tracks are the honest source.
+/// Online over total. The fetched machine list is authoritative once it has
+/// arrived; before that the live tiers the socket reported are all there is.
 #[must_use]
 pub fn machines(app: &App) -> (usize, usize) {
+    if app.machines.loaded {
+        return app.machines.counts();
+    }
     let total = app.machine_liveness.len();
     let online =
         app.machine_liveness.values().filter(|tier| **tier == MachineLiveness::Online).count();
@@ -193,6 +197,12 @@ fn switch(app: &mut App, number: usize) -> Vec<Effect> {
         app.toast(super::toast::Level::Info, format!("{} is not in the TUI yet", tab.label));
         return Vec::new();
     };
+    go_to(app, target)
+}
+
+/// Switch to `target`, keeping each slice's cursor where it was. The one path a
+/// slice is entered by, whether a tab number or a slice's own key did it.
+pub fn go_to(app: &mut App, target: Slice) -> Vec<Effect> {
     if target == app.slice {
         return Vec::new();
     }
@@ -208,7 +218,7 @@ fn switch(app: &mut App, number: usize) -> Vec<Effect> {
     match target {
         Slice::Overview => vec![Effect::FetchSessionStats],
         Slice::Bookmarks => super::bookmarks::on_enter(app),
-        Slice::Sessions => Vec::new(),
+        Slice::Machines | Slice::Sessions => Vec::new(),
     }
 }
 
@@ -259,7 +269,8 @@ mod tests {
         assert_eq!(TABS[0].slice, Some(Slice::Sessions));
         assert_eq!(TABS[1].slice, Some(Slice::Bookmarks));
         assert_eq!(TABS[2].slice, Some(Slice::Overview));
-        assert!(TABS[3..].iter().all(|t| t.slice.is_none()), "only the built slices are keyed");
+        assert_eq!(TABS[3].slice, Some(Slice::Machines));
+        assert!(TABS[4..].iter().all(|t| t.slice.is_none()), "only the built slices are keyed");
     }
 
     #[test]
@@ -313,7 +324,8 @@ mod tests {
     #[test]
     fn an_unbuilt_tab_says_so_instead_of_switching() {
         let mut app = app();
-        assert!(dispatch(&mut app, SliceAction::Switch(4)).is_empty());
+        // 5 is Access: the built slices lead the bar, the unbuilt ones trail it.
+        assert!(dispatch(&mut app, SliceAction::Switch(5)).is_empty());
         assert_eq!(app.slice, Slice::Sessions);
         assert!(app.toasts.latest().is_some());
     }
@@ -321,7 +333,7 @@ mod tests {
     #[test]
     fn a_number_past_the_tab_bar_does_nothing() {
         let mut app = app();
-        assert!(dispatch(&mut app, SliceAction::Switch(9)).is_empty());
+        assert!(dispatch(&mut app, SliceAction::Switch(99)).is_empty());
         assert!(dispatch(&mut app, SliceAction::Switch(0)).is_empty());
         assert_eq!(app.slice, Slice::Sessions);
     }
