@@ -16,6 +16,17 @@
 	import SpawnPromptSection from './spawn/SpawnPromptSection.svelte';
 	import SpawnGrantsSection from './spawn/SpawnGrantsSection.svelte';
 
+	// The kit's Button/SplitButton take no flex prop whose basis is the content
+	// (`grow` is `1 1 0`, i.e. equal columns), so the footer buttons carry theirs
+	// inline. The primary's basis is the width below which it would be squeezed:
+	// past it the row wraps and it spans the whole footer.
+	const FOOT_GROW = 'flex: 1 1 auto';
+	const FOOT_PRIMARY_GROW = 'flex: 1 1 11rem';
+	// SplitButton packs its two segments at the start of its box, so a stretched
+	// root would leave slack after the caret; a grid root hands the slack to the
+	// main segment and keeps the caret glued to it.
+	const FOOT_SPLIT_GROW = `${FOOT_PRIMARY_GROW}; display: grid; grid-template-columns: 1fr auto`;
+
 	let dragging = $state(false);
 	let viewportWidth = $state(0);
 	const maxPx = $derived(maxDockWidth(viewportWidth));
@@ -146,7 +157,14 @@
 		<div class="dock-foot">{@render footer()}</div>
 	</aside>
 {:else}
-	<Modal title={m.spawn_modal_title()} {onclose} resizeKey="cctui_spawn_modal_width" {body} {footer} />
+	<Modal
+		title={m.spawn_modal_title()}
+		{onclose}
+		resizeKey="cctui_spawn_modal_width"
+		footerFill
+		{body}
+		{footer}
+	/>
 {/if}
 
 {#snippet body()}
@@ -181,11 +199,12 @@
 			<pre class="spawn-failure-detail">{sf.spawnFailure}</pre>
 		</Callout>
 	{/if}
-	<span class="foot-secondary">
-		<Button onclick={sf.clearForm}>{m.spawn_clear()}</Button>
+	<div class="foot-row">
+		<Button style={FOOT_GROW} onclick={sf.clearForm}>{m.spawn_clear()}</Button>
 		{#if sf.target === 'machine'}
 			<Button
 				data-journey="draft"
+				style={FOOT_GROW}
 				disabled={sf.busy || !sf.draftValid}
 				title={sf.disabledReason}
 				onclick={sf.submitDraft}
@@ -193,8 +212,6 @@
 				{m.spawn_draft()}
 			</Button>
 		{/if}
-	</span>
-	<span class="foot-primary">
 		<!-- No machines: nothing to schedule either, and only a plain Button can
 		     carry the disabled reason as its own title. -->
 		{#if sf.target === 'machine' && !sf.noMachines}
@@ -202,7 +219,7 @@
 				data-journey="submit"
 				variant="primary"
 				caret="half"
-				style="width: 100%"
+				style={FOOT_SPLIT_GROW}
 				placement="top-end"
 				label={m.spawn_schedule_menu()}
 				items={scheduleItems}
@@ -218,7 +235,7 @@
 			<Button
 				data-journey="submit"
 				variant="primary"
-				grow
+				style={FOOT_PRIMARY_GROW}
 				loading={sf.busy}
 				disabled={sf.busy || !sf.valid}
 				title={sf.disabledReason}
@@ -227,7 +244,7 @@
 				{sf.spawnLabel}
 			</Button>
 		{/if}
-	</span>
+	</div>
 {/snippet}
 
 {#if customOpen}
@@ -356,15 +373,11 @@
 		padding: var(--sp-2) var(--sp-3);
 		border-top: 1px solid var(--border);
 	}
-	.foot-secondary {
+	.foot-row {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--sp-2);
-		flex: 0 1 auto;
-	}
-	/* The basis is the width below which the primary action would be squeezed:
-	   past it the row wraps and grow makes it span the whole footer. */
-	.foot-primary {
-		display: flex;
-		flex: 1 1 11rem;
+		flex: 1 1 auto;
+		width: 100%;
 	}
 </style>
