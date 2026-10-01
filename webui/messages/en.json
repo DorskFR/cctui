@@ -303,7 +303,7 @@
 	"onboarding_step_account": "Connect a provider account",
 	"onboarding_step_machine": "Enroll a machine",
 	"onboarding_step_session": "Start a session",
-	"scheduled_pending_label": "Scheduled for {when}",
+	"scheduled_pending_label": "Scheduled for",
 	"scheduled_retrying": "Retrying after {attempts} failed attempts: {reason}",
 	"scheduled_dead": "Not delivered: {reason}",
 	"scheduled_edit": "Edit",

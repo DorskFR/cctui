@@ -14,7 +14,7 @@
 		useSessionAttachments,
 		useSessions
 	} from '$lib/queries';
-	import { Button, FileButton, IconButton, InputGroup, Text, Textarea } from '@dorsk/tsumikit';
+	import { Button, FileButton, IconButton, InputGroup, Text, Textarea, formatTimestamp } from '@dorsk/tsumikit';
 	import ArchivedActions from './ArchivedActions.svelte';
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
@@ -153,11 +153,7 @@
 		}
 		toasts.info(
 			m.composer_schedule_toast({
-				when: at.toLocaleString([], {
-					weekday: 'short',
-					hour: '2-digit',
-					minute: '2-digit'
-				})
+				when: formatTimestamp(at, 'datetime')
 			})
 		);
 		msgHistory.push(session.id, text);
