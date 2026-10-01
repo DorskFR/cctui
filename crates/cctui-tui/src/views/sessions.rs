@@ -42,6 +42,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw("  "),
         Span::styled(format!("● {active} active"), theme::active()),
     ];
+    let unread = crate::app::unread::total(app);
+    if unread > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("●{unread} unread"), theme::unread()));
+    }
+    if app.ui.unread_only {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled("unread only", theme::cost()));
+    }
     if app.refresh.requested > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(

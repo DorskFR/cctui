@@ -2,7 +2,7 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: "render_screen_sized(&mut app, 80, 24)"
 ---
- cctui  v0.0.0-test  6 sessions  ● 4 active  ⚠ 1 approval pending — Ctrl+g to ju
+ cctui  v0.0.0-test  6 sessions  ● 4 active  ●4 unread  ⚠ 1 approval pending — C
  Sessions
    ▾ Needs input (1)
 ▸    ● [claude-code] deploy (main)  opus  0s  $1.25  ! ⚡

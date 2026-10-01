@@ -236,10 +236,15 @@ impl<'a> Walk<'a, '_> {
 /// its rows but keeps its header and count; a folded subagent group likewise.
 #[must_use]
 pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
+    // Parentage is judged against every session, so a hidden row never turns
+    // its children into top-level ones; only membership is filtered. Applied
+    // here because `rows` is the one way into the list: the viewport, the
+    // selection and every count go through it.
     let ids: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let shown = |s: &SessionListItem| !ui.unread_only || super::unread::keeps_row(sessions, s);
     let mut kids: HashMap<&str, Vec<&SessionListItem>> = HashMap::new();
     for s in sessions {
-        if is_fork(s) {
+        if is_fork(s) || !shown(s) {
             continue;
         }
         if let Some(p) = s.parent_id.as_deref().filter(|p| ids.contains(p) && *p != s.id) {
@@ -250,7 +255,9 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
     let mut tops: Vec<&SessionListItem> = sessions
         .iter()
         .filter(|s| {
-            is_fork(s) || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id)
+            shown(s)
+                && (is_fork(s)
+                    || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id))
         })
         .collect();
     tops.sort_by_key(|s| (group_of(s).rank(), uptime_secs(s)));

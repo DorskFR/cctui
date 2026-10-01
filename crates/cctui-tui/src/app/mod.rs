@@ -31,6 +31,7 @@ pub mod terminal;
 pub mod toast;
 pub mod transcript;
 pub mod transcript_filter;
+pub mod unread;
 
 pub use action::Action;
 #[cfg(test)]

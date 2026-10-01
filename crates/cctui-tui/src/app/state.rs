@@ -284,6 +284,8 @@ pub struct App {
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
     pub sidebar: super::sidebar::Sidebar,
+    /// Mark-seen debounce state; the counts themselves live on the rows.
+    pub unread: super::unread::Unread,
     /// The watched session's emulated screen, open only while the pane is.
     pub terminal: Option<super::terminal::TerminalPane>,
 }
@@ -390,6 +392,7 @@ impl App {
             ui: UiState::default(),
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
+            unread: super::unread::Unread::default(),
             terminal: None,
         }
     }

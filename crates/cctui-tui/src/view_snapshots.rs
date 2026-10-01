@@ -10,6 +10,7 @@ use crate::app::fileview::FileViewAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
+use crate::app::unread::UnreadAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnosable_session,
@@ -247,6 +248,14 @@ fn app_with_rich_statuses() -> crate::app::App {
 #[test]
 fn session_list_rich_statuses() {
     let mut app = app_with_rich_statuses();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// `U`: only the rows with something new, and the header says the filter is on.
+#[test]
+fn session_list_unread_only() {
+    let mut app = app_with_rich_statuses();
+    reduce(&mut app, Action::Unread(UnreadAction::ToggleOnly));
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

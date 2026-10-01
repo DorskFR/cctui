@@ -164,6 +164,7 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
+    ToggleUnreadOnly => "toggle-unread-only", "Show only unread sessions";
     TogglePin => "toggle-pin", "Pin the selected session";
     NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive the selected session";
@@ -334,6 +335,7 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    spec(Context::SessionList, "U", ActionId::ToggleUnreadOnly),
 ];
 
 const CONVERSATION: &[BindingSpec] = &[

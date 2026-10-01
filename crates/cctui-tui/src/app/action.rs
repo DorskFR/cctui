@@ -20,6 +20,7 @@ use super::sidebar::SidebarAction;
 use super::state::ConversationLine;
 use super::terminal::TerminalAction;
 use super::toast::Level;
+use super::unread::UnreadAction;
 
 /// Everything that can change the app. Key handlers, the websocket and
 /// completed effects all funnel through this one vocabulary.
@@ -58,6 +59,7 @@ pub enum Action {
 
     Controls(ControlsAction),
     Sidebar(SidebarAction),
+    Unread(UnreadAction),
     ToggleAutoApproveSelected,
     AutoApproveSet {
         session_id: String,

@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  6 sessions  ● 4 active  ●4 unread  unread only  ⚠ 1 approval pending — Ctrl+g t
+ Sessions
+   ▾ Working (1)
+▸    ● [claude-code] cctui (main)  opus  0s  $1.25  ⚙14 8s  3/7 Running tests  ●4
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

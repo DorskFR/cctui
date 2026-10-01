@@ -43,6 +43,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Tick => {
             let mut effects = send::tick(app);
             effects.extend(super::session_live::poll_if_due(app));
+            effects.extend(super::unread::tick(app));
             effects
         }
 
@@ -207,6 +208,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
 
         Action::Controls(action) => super::controls::reduce_controls(app, action),
         Action::Sidebar(action) => super::sidebar::reduce_sidebar(app, action),
+        Action::Unread(action) => super::unread::reduce_unread(app, action),
         Action::ToggleAutoApproveSelected => app
             .selected_session()
             .map(|s| (s.id.clone(), !s.auto_approve))
@@ -236,6 +238,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
                 apply_heartbeat_usage(app, &session_id, &usage);
             }
             if let Some(line) = line {
+                super::unread::stream(app, &session_id, line.kind);
                 conversation::stream(app, &session_id, seq, *line);
             }
             Vec::new()

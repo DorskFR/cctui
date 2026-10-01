@@ -18,6 +18,7 @@ use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
+use crate::app::unread::UnreadAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -252,6 +253,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         }
         ActionId::PickerApply => Action::Controls(ControlsAction::PickerApply),
 
+        ActionId::ToggleUnreadOnly => Action::Unread(UnreadAction::ToggleOnly),
         ActionId::ToggleSidebar => Action::Sidebar(SidebarAction::Toggle),
         ActionId::SidebarClose => Action::Sidebar(SidebarAction::Close),
         ActionId::SidebarNext => Action::Sidebar(SidebarAction::Move(1)),
