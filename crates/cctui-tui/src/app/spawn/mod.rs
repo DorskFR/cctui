@@ -10,6 +10,9 @@
 
 pub mod accounts;
 pub mod core_section;
+pub mod env;
+pub mod files;
+pub mod labels;
 
 use cctui_clientcore::spawn::SpawnFields;
 use cctui_proto::api::SpawnRequest;
@@ -70,6 +73,12 @@ pub trait SpawnSection: Send {
         None
     }
 
+    /// Files this section attaches, as multipart parts. The spawn route carries
+    /// them alongside the request, so they are up before the first turn runs.
+    fn parts(&self) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
+
     /// Catalogs fetched for the dialog. Called when the dialog opens and again
     /// whenever one lands, so a section never owns a fetch of its own.
     fn receive(&mut self, _data: &SpawnData) {}
@@ -111,6 +120,7 @@ pub struct SpawnData {
     pub accounts: Vec<cctui_client::AccountPick>,
     pub pools: Vec<cctui_client::PoolPick>,
     pub usage: Vec<cctui_client::AccountUsagePick>,
+    pub labels: Vec<cctui_proto::api::Label>,
 }
 
 /// Which tab the dialog is on. The toggle belongs to the dialog; a tab's own
@@ -175,7 +185,13 @@ impl SpawnForm {
     /// adds**: push your section here.
     #[must_use]
     pub fn sections() -> Vec<Box<dyn SpawnSection>> {
-        vec![Box::new(core_section::CoreSection), Box::new(accounts::AccountSection::default())]
+        vec![
+            Box::new(core_section::CoreSection),
+            Box::new(accounts::AccountSection::default()),
+            Box::new(labels::LabelsSection::default()),
+            Box::new(env::EnvSection::default()),
+            Box::new(files::FilesSection::default()),
+        ]
     }
 
     #[must_use]
@@ -584,6 +600,10 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
                 form.fields.machine_id.clone_from(&session.machine_id);
                 form.fields.working_dir.clone_from(&session.working_dir);
             }
+            // The labels the last spawn carried; the labels section drops any
+            // the catalog has since lost.
+            form.fields.labels.clone_from(&app.ui.last_spawn_labels);
+            app.spawn_data.labels.clone_from(&app.labels.all);
             for section in &mut form.sections {
                 section.receive(&app.spawn_data);
             }
@@ -646,7 +666,15 @@ fn submit(app: &mut super::state::App) -> Vec<Effect> {
         return Vec::new();
     }
     form.submitting = true;
-    vec![Effect::SpawnSession { request: Box::new(form.request()) }]
+    let files = form.sections.iter().flat_map(|section| section.parts()).collect();
+    let request = Box::new(form.request());
+    let labels = request.label_ids.clone();
+    let mut effects = vec![Effect::SpawnSession { request, files }];
+    if app.ui.last_spawn_labels != labels {
+        app.ui.last_spawn_labels = labels;
+        effects.push(Effect::SaveUiState(app.ui.clone()));
+    }
+    effects
 }
 
 #[cfg(test)]
