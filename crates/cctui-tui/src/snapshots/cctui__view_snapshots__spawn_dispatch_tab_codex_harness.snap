@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2057
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1 Sessions  2  3  4   starred · live · dispatched  sort: activity ↓  group: status
+   ▾ Needs input (1)
+▸    ● [claude-code] infra (main)  opus  0s  $1.25
+   ▾ Working (1)
+     ● [claude-code] cctui (main)  opus  0s  $1.25
+     ▾ subagen┌ New session ─────────────────────────────────────────────────────────┐
+       ↳ ● [cl│   Machine   [Dispatch]   Ctrl-D switches                             │
+   ▾ Completed│ Dispatch                                                             │
+     ○ [claude│ Dispatcher [k8s-cyberia           ]  Harness ( ) claude (*) codex    │
+              │ Repo [cctui             ] Ticket [CCT-1102      ] Timeout [60   ] min│
+              │ Prompt [                                                          ]  │
+              │ Context pack                                                         │
+              │   URL [https://git.example/packs.git                             ]   │
+              │   ref [main        ] subdir [packs/cctui     ] token [********  ]    │
+              │  Tab field  ctrl+d dispatcher  ctrl+h harness  ctrl+s dispatch       │
+              │  Ctrl-S launch   Tab next   Esc cancel                               │
+              └──────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

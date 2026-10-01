@@ -4,15 +4,16 @@ assertion_line: 403
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0┌ New session ─────────────────────────────────────────────────────────┐
- 1 Sessions  2│ Profile                                                              │
-   ▾ Needs inp│   no profiles yet — press + to save this setup                       │
-▸    ● [claude│  Machine  orion                                                      │
-   ▾ Working (│  Dir      /home/dev/infra                                            │
-     ● [claude│  Name     —                                                          │
-     ▾ subagen│  Harness  codex                                                      │
-       ↳ ● [cl│  Model    —                                                          │
-   ▾ Completed│  Effort   —                                                          │
-     ○ [claude│  Tier     —                                                          │
+ 1 Sessions  2│  [Machine]   Dispatch    Ctrl-D switches                             │
+   ▾ Needs inp│ Profile                                                              │
+▸    ● [claude│   no profiles yet — press + to save this setup                       │
+   ▾ Working (│  Machine  orion                                                      │
+     ● [claude│  Dir      /home/dev/infra                                            │
+     ▾ subagen│  Name     —                                                          │
+       ↳ ● [cl│  Harness  codex                                                      │
+   ▾ Completed│  Model    —                                                          │
+     ○ [claude│  Effort   —                                                          │
+              │  Tier     —                                                          │
               │  Mode     yolo                                                       │
               │           skips prompts and sandbox                                  │
               │  Prompt   —                                                          │
@@ -25,5 +26,4 @@ expression: render_screen(&mut app)
               │ Files                                                                │
               │   none  (o add path)                                                 │
               │  Ctrl-S launch   Tab next   Esc cancel                               │
-              └──────────────────────────────────────────────────────────────────────┘
- j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
+ j/k:nav  Ente└──────────────────────────────────────────────────────────────────────┘

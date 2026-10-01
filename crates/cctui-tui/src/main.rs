@@ -249,6 +249,7 @@ async fn run(
     effects.dispatch(app::action::Effect::FetchIdentity);
     effects.dispatch(app::action::Effect::FetchPendingPermissions);
     effects.dispatch(app::action::Effect::LoadDraftIndex);
+    effects.dispatch(app::action::Effect::FetchDispatchers);
     // The one clock in the app. Delivery deadlines are the reducer's and the
     // reducer only moves when it is called, so this has to be far tighter than
     // the session-list poll, which the reducer gates on its own elapsed period.

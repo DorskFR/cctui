@@ -1,8 +1,5 @@
 {
-  "allAdapters": [
-    "claude-code",
-    "codex"
-  ],
+  "allAdapters": ["claude-code", "codex"],
   "adapterForProvider": [
     {
       "provider": "openai",
@@ -31,62 +28,32 @@
   ],
   "accountAdapters": [
     {
-      "providers": [
-        "anthropic",
-        "openai"
-      ],
-      "out": [
-        "claude-code",
-        "codex"
-      ]
+      "providers": ["anthropic", "openai"],
+      "out": ["claude-code", "codex"]
     },
     {
-      "providers": [
-        "openai",
-        "anthropic-compatible"
-      ],
-      "out": [
-        "claude-code",
-        "codex"
-      ]
+      "providers": ["openai", "anthropic-compatible"],
+      "out": ["claude-code", "codex"]
     },
     {
-      "providers": [
-        "anthropic"
-      ],
-      "out": [
-        "claude-code"
-      ]
+      "providers": ["anthropic"],
+      "out": ["claude-code"]
     },
     {
-      "providers": [
-        "openai-compatible"
-      ],
-      "out": [
-        "codex"
-      ]
+      "providers": ["openai-compatible"],
+      "out": ["codex"]
     },
     {
       "providers": [],
       "out": []
     },
     {
-      "providers": [
-        "fireworks"
-      ],
-      "out": [
-        "opencode"
-      ]
+      "providers": ["fireworks"],
+      "out": ["opencode"]
     },
     {
-      "providers": [
-        "anthropic",
-        "fireworks"
-      ],
-      "out": [
-        "claude-code",
-        "opencode"
-      ]
+      "providers": ["anthropic", "fireworks"],
+      "out": ["claude-code", "opencode"]
     }
   ],
   "accountBacksAdapter": [
@@ -101,52 +68,37 @@
       "out": true
     },
     {
-      "providers": [
-        "anthropic",
-        "openai"
-      ],
+      "providers": ["anthropic", "openai"],
       "adapter": "codex",
       "out": true
     },
     {
-      "providers": [
-        "anthropic"
-      ],
+      "providers": ["anthropic"],
       "adapter": "claude-code",
       "out": true
     },
     {
-      "providers": [
-        "anthropic"
-      ],
+      "providers": ["anthropic"],
       "adapter": "codex",
       "out": false
     },
     {
-      "providers": [
-        "openai-compatible"
-      ],
+      "providers": ["openai-compatible"],
       "adapter": "claude-code",
       "out": false
     },
     {
-      "providers": [
-        "fireworks"
-      ],
+      "providers": ["fireworks"],
       "adapter": "claude-code",
       "out": false
     },
     {
-      "providers": [
-        "fireworks"
-      ],
+      "providers": ["fireworks"],
       "adapter": "codex",
       "out": false
     },
     {
-      "providers": [
-        "fireworks"
-      ],
+      "providers": ["fireworks"],
       "adapter": "opencode",
       "out": true
     },
@@ -163,24 +115,17 @@
       "out": "codex"
     },
     {
-      "providers": [
-        "anthropic",
-        "openai"
-      ],
+      "providers": ["anthropic", "openai"],
       "adapter": "codex",
       "out": "codex"
     },
     {
-      "providers": [
-        "anthropic"
-      ],
+      "providers": ["anthropic"],
       "adapter": "codex",
       "out": "claude-code"
     },
     {
-      "providers": [
-        "openai-compatible"
-      ],
+      "providers": ["openai-compatible"],
       "adapter": "claude-code",
       "out": "codex"
     },
@@ -192,25 +137,17 @@
   ],
   "providerForAdapter": [
     {
-      "providers": [
-        "anthropic",
-        "openai"
-      ],
+      "providers": ["anthropic", "openai"],
       "adapter": "claude-code",
       "out": "anthropic"
     },
     {
-      "providers": [
-        "anthropic",
-        "openai"
-      ],
+      "providers": ["anthropic", "openai"],
       "adapter": "codex",
       "out": "openai"
     },
     {
-      "providers": [
-        "anthropic"
-      ],
+      "providers": ["anthropic"],
       "adapter": "codex",
       "out": null
     },
@@ -223,37 +160,27 @@
   "staleAccountPick": [
     {
       "value": "",
-      "names": [
-        "work"
-      ],
+      "names": ["work"],
       "out": false
     },
     {
       "value": "\u0000no-account",
-      "names": [
-        "work"
-      ],
+      "names": ["work"],
       "out": false
     },
     {
       "value": "\u0000pool:personal",
-      "names": [
-        "work"
-      ],
+      "names": ["work"],
       "out": false
     },
     {
       "value": "work",
-      "names": [
-        "work"
-      ],
+      "names": ["work"],
       "out": false
     },
     {
       "value": "gone",
-      "names": [
-        "work"
-      ],
+      "names": ["work"],
       "out": true
     },
     {
@@ -266,73 +193,32 @@
     "accounts": [
       {
         "key": "claude",
-        "providers": [
-          "anthropic"
-        ]
+        "providers": ["anthropic"]
       },
       {
         "key": "spark",
-        "providers": [
-          "fireworks"
-        ]
+        "providers": ["fireworks"]
       },
       {
         "key": "gpt",
-        "providers": [
-          "openai"
-        ]
+        "providers": ["openai"]
       }
     ],
     "cases": [
       {
-        "pools": [
-          [
-            "spark"
-          ],
-          [
-            "spark",
-            "claude"
-          ],
-          [
-            "gpt"
-          ]
-        ],
+        "pools": [["spark"], ["spark", "claude"], ["gpt"]],
         "harness": "claude-code",
-        "out": [
-          1
-        ]
+        "out": [1]
       },
       {
-        "pools": [
-          [
-            "spark"
-          ],
-          [
-            "spark",
-            "claude"
-          ],
-          [
-            "gpt"
-          ]
-        ],
+        "pools": [["spark"], ["spark", "claude"], ["gpt"]],
         "harness": "codex",
-        "out": [
-          2
-        ]
+        "out": [2]
       },
       {
-        "pools": [
-          [
-            "spark",
-            "someone-else"
-          ],
-          []
-        ],
+        "pools": [["spark", "someone-else"], []],
         "harness": "claude-code",
-        "out": [
-          0,
-          1
-        ]
+        "out": [0, 1]
       }
     ]
   },

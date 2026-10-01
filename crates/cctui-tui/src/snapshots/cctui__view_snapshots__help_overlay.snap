@@ -5,25 +5,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         Ctrl+a      Enroll a dispatcher              │
-▸ │  ?           Toggle this cheat sheet            Ctrl+e      Rename or rebind                 │
-  │  q           Quit cctui                         Ctrl+x      Remove this dispatcher           │
-  │  1-9         Switch view                        Ctrl+r      Refresh the dispatcher list      │
-  │  /           Search the current view            Tab         Next field, or cycle the kind    │
-  │  n           Next search hit                    Enter       Confirm                          │
-  │  N           Previous search hit                Esc         Back                             │
-  │  D           Diagnose the selected session      Ctrl+y      Copy the new key                 │
-  │  i           Session info                     Labels                                         │
-  │  M           Machines and daemons               Esc         Close the label list             │
-  │  Ctrl+d      Dispatchers                        Ctrl+n / ↓  Next label                       │
-  │  Ctrl+g      Jump to the next session needin…   Ctrl+p / ↑  Previous label                   │
-  │Session list                                     Space       Attach or detach this label      │
-  │  j / ↓       Next session                       Ctrl+c      Create a label                   │
-  │  k / ↑       Previous session                   Ctrl+e      Rename or recolor                │
-  │  g           First session                      Ctrl+d      Delete this label                │
-  │  G           Last session                       Enter       Confirm                          │
-  │  Enter       Open the conversation            Label filter                                   │
-  │  z / Tab     Fold or open the subagent group    Esc         Close the label list             │
-  │  S           Fold or open the section           Ctrl+n / ↓  Next label                       │
+  │Anywhere                                         Ctrl+r      Refresh the dispatcher list      │
+▸ │  ?           Toggle this cheat sheet            Tab         Next field, or cycle the kind    │
+  │  q           Quit cctui                         Enter       Confirm                          │
+  │  1-9         Switch view                        Esc         Back                             │
+  │  /           Search the current view            Ctrl+y      Copy the new key                 │
+  │  n           Next search hit                  Labels                                         │
+  │  N           Previous search hit                Esc         Close the label list             │
+  │  D           Diagnose the selected session      Ctrl+n / ↓  Next label                       │
+  │  i           Session info                       Ctrl+p / ↑  Previous label                   │
+  │  M           Machines and daemons               Space       Attach or detach this label      │
+  │  Ctrl+d      Dispatchers                        Ctrl+c      Create a label                   │
+  │  Ctrl+g      Jump to the next session needin…   Ctrl+e      Rename or recolor                │
+  │Session list                                     Ctrl+d      Delete this label                │
+  │  j / ↓       Next session                       Enter       Confirm                          │
+  │  k / ↑       Previous session                 Label filter                                   │
+  │  g           First session                      Esc         Close the label list             │
+  │  G           Last session                       Ctrl+n / ↓  Next label                       │
+  │  Enter       Open the conversation              Ctrl+p / ↑  Previous label                   │
+  │  z / Tab     Fold or open the subagent group    Space / En… Include or exclude this label    │
+  │  S           Fold or open the section           a           Show every label again           │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

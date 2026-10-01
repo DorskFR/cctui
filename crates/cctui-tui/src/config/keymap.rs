@@ -41,6 +41,7 @@ pub enum Context {
     SpawnProfileConfirm,
     Terminal,
     Help,
+    ForkDialog,
     ModelPicker,
     Sidebar,
     Permission,
@@ -82,6 +83,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::SpawnProfileConfirm,
     Context::Terminal,
     Context::Help,
+    Context::ForkDialog,
     Context::ModelPicker,
     Context::Sidebar,
     Context::Permission,
@@ -125,6 +127,7 @@ impl Context {
             Self::SpawnProfileConfirm => "spawn-profile-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
+            Self::ForkDialog => "fork-dialog",
             Self::ModelPicker => "model-picker",
             Self::Sidebar => "sidebar",
             Self::Permission => "permission",
@@ -168,6 +171,7 @@ impl Context {
             Self::SpawnProfileConfirm => "Profile — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
+            Self::ForkDialog => "Fork a session",
             Self::ModelPicker => "Model picker",
             Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
@@ -250,6 +254,7 @@ actions! {
     SpawnDirPrev => "spawn-dir-prev", "Previous directory";
     SpawnDirAccept => "spawn-dir-accept", "Accept, or a prompt newline";
     SpawnRefreshModels => "spawn-refresh-models", "Re-read the model catalog";
+    SpawnToggleTarget => "spawn-toggle-target", "Machine or dispatch";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -268,7 +273,13 @@ actions! {
     NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
-    Resume => "resume", "Resume the session";
+    Resume => "resume", "Resume the ended session";
+    ForkSubmit => "fork-submit", "Fork with these options";
+    ForkCancel => "fork-cancel", "Abandon the fork";
+    ForkNextField => "fork-next-field", "Next field";
+    ForkPrevField => "fork-prev-field", "Previous field";
+    ForkCycleNext => "fork-cycle-next", "Next choice";
+    ForkCyclePrev => "fork-cycle-prev", "Previous choice";
 
     LeaveConversation => "leave-conversation", "Back to the session list";
     ScrollDown => "scroll-down", "Scroll down";
@@ -583,6 +594,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, ">", ActionId::ToggleSidebar),
     spec(Context::Conversation, "u", ActionId::OpenParent),
     spec(Context::Conversation, "ctrl+f", ActionId::Fork),
+    spec(Context::Conversation, "r", ActionId::Resume),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
     spec(Context::Conversation, "y", ActionId::CopyMessage),
@@ -646,6 +658,7 @@ const SPAWN: &[BindingSpec] = &[
     spec(Context::Spawn, "enter", ActionId::SpawnDirAccept),
     spec(Context::Spawn, "ctrl+r", ActionId::SpawnRefreshModels),
     spec(Context::Spawn, "ctrl+e", ActionId::OpenInEditor),
+    spec(Context::Spawn, "ctrl+d", ActionId::SpawnToggleTarget),
 ];
 
 const SECTIONS_POPUP: &[BindingSpec] = &[
@@ -854,6 +867,16 @@ const SIDEBAR: &[BindingSpec] = &[
     spec(Context::Sidebar, "u", ActionId::OpenParent),
 ];
 
+/// Modal: a stray key must not reach the composer behind it.
+const FORK_DIALOG: &[BindingSpec] = &[
+    spec(Context::ForkDialog, "esc", ActionId::ForkCancel),
+    spec(Context::ForkDialog, "ctrl+s", ActionId::ForkSubmit),
+    spec(Context::ForkDialog, "tab, down", ActionId::ForkNextField),
+    spec(Context::ForkDialog, "backtab, up", ActionId::ForkPrevField),
+    spec(Context::ForkDialog, "right", ActionId::ForkCycleNext),
+    spec(Context::ForkDialog, "left", ActionId::ForkCyclePrev),
+];
+
 /// Modal over the conversation: everything it does not claim stays claimed,
 /// so a stray key cannot type into the composer behind it.
 const MODEL_PICKER: &[BindingSpec] = &[
@@ -935,6 +958,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     SPAWN_PROFILE_CONFIRM,
     TERMINAL,
     HELP,
+    FORK_DIALOG,
     MODEL_PICKER,
     SIDEBAR,
     PERMISSION,

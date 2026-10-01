@@ -4,15 +4,16 @@ assertion_line: 427
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0┌ New session ─────────────────────────────────────────────────────────┐
- 1 Sessions  2│ Profile                                                              │
-   ▾ Needs inp│   no profiles yet — press + to save this setup                       │
-▸    ● [claude│  Machine  orion                                                      │
-   ▾ Working (│  Dir      /home/dev/infra                                            │
-     ● [claude│  Name     —                                                          │
-     ▾ subagen│  Harness  codex                                                      │
-       ↳ ● [cl│  Model    gpt-6-preview                                              │
-   ▾ Completed│           needs codex ≥ 0.200.0, catalog is 0.150.0                  │
-     ○ [claude│  Effort   —                                                          │
+ 1 Sessions  2│  [Machine]   Dispatch    Ctrl-D switches                             │
+   ▾ Needs inp│ Profile                                                              │
+▸    ● [claude│   no profiles yet — press + to save this setup                       │
+   ▾ Working (│  Machine  orion                                                      │
+     ● [claude│  Dir      /home/dev/infra                                            │
+     ▾ subagen│  Name     —                                                          │
+       ↳ ● [cl│  Harness  codex                                                      │
+   ▾ Completed│  Model    gpt-6-preview                                              │
+     ○ [claude│           needs codex ≥ 0.200.0, catalog is 0.150.0                  │
+              │  Effort   —                                                          │
               │  Tier     —                                                          │
               │  Mode     default                                                    │
               │           the account's own setting                                  │
@@ -25,5 +26,4 @@ expression: render_screen(&mut app)
               │   none  (a add)                                                      │
               │ Files                                                                │
               │   none  (o add path)                                                 │
-              │  Ctrl-S launch   Tab next   Esc cancel                               │
  j/k:nav  Ente└──────────────────────────────────────────────────────────────────────┘

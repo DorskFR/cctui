@@ -4,9 +4,11 @@ pub mod bookmarks;
 pub mod cards;
 pub mod conversation;
 pub mod diagnose;
+pub mod dispatch;
 pub mod dispatchers;
 pub mod fileview;
 pub mod filters;
+pub mod forkform;
 pub mod harness_mode;
 pub mod help;
 pub mod history;
@@ -66,6 +68,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Help => {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
+        }
+        View::ForkDialog => {
+            conversation::draw(frame, app);
+            if let Some(form) = app.fork.as_ref() {
+                forkform::draw(frame, form);
+            }
         }
         View::ModelPicker => {
             conversation::draw(frame, app);

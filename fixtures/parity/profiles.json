@@ -1,856 +1,770 @@
 {
- "_comment": "Spawn-profile rules: webui spawn/profiles.ts and cctui-clientcore::profiles must agree.",
- "accounts": [
-  {
-   "id": "a1",
-   "name": "personal",
-   "emoji": "🐼",
-   "providers": [
-    "anthropic"
-   ]
+  "_comment": "Spawn-profile rules: webui spawn/profiles.ts and cctui-clientcore::profiles must agree.",
+  "accounts": [
+    {
+      "id": "a1",
+      "name": "personal",
+      "emoji": "🐼",
+      "providers": ["anthropic"]
+    },
+    {
+      "id": "a2",
+      "name": "compat",
+      "emoji": null,
+      "providers": ["anthropic-compatible"]
+    },
+    {
+      "id": "a3",
+      "name": "oai",
+      "emoji": "🦊",
+      "providers": ["openai"]
+    }
+  ],
+  "pools": [
+    {
+      "id": "pool1",
+      "name": "shared"
+    }
+  ],
+  "labels": {
+    "auto": "Auto",
+    "noAccount": "none",
+    "defaultModel": "default model",
+    "defaultEffort": "default",
+    "defaultMode": "Default"
   },
-  {
-   "id": "a2",
-   "name": "compat",
-   "emoji": null,
-   "providers": [
-    "anthropic-compatible"
-   ]
-  },
-  {
-   "id": "a3",
-   "name": "oai",
-   "emoji": "🦊",
-   "providers": [
-    "openai"
-   ]
-  }
- ],
- "pools": [
-  {
-   "id": "pool1",
-   "name": "shared"
-  }
- ],
- "labels": {
-  "auto": "Auto",
-  "noAccount": "none",
-  "defaultModel": "default model",
-  "defaultEffort": "default",
-  "defaultMode": "Default"
- },
- "modelField": [
-  {
-   "harness": "claude-code",
-   "account_id": null,
-   "out": "model_claude"
-  },
-  {
-   "harness": "codex",
-   "account_id": null,
-   "out": "model_codex"
-  },
-  {
-   "harness": "claude-code",
-   "account_id": "a1",
-   "out": "model_claude"
-  },
-  {
-   "harness": "claude-code",
-   "account_id": "a2",
-   "out": "model_account"
-  },
-  {
-   "harness": "codex",
-   "account_id": "a3",
-   "out": "model_codex"
-  },
-  {
-   "harness": "codex",
-   "account_id": "a2",
-   "out": "model_codex"
-  }
- ],
- "accountPick": [
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": ""
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": true,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": "\u0000no-account"
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": "pool1",
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": "\u0000pool:shared"
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": "a1",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": "personal"
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": "gone",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": ""
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": "gone",
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": ""
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": "a1",
-    "pool_id": null,
-    "no_account": true,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": "\u0000no-account"
-  }
- ],
- "specFromForm": [
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "out": {
-    "harness": "claude-code",
-    "account_id": "a1",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "fable",
-    "effort": "medium",
-    "permission_mode": "yolo",
-    "service_tier": null
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "codex",
-    "account": "oai",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": "fast"
-   },
-   "out": {
-    "harness": "codex",
-    "account_id": "a3",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "gpt-5.6",
-    "effort": "high",
-    "permission_mode": "yolo",
-    "service_tier": "fast"
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "compat",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "out": {
-    "harness": "claude-code",
-    "account_id": "a2",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "llama",
-    "effort": "medium",
-    "permission_mode": "yolo",
-    "service_tier": null
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "\u0000pool:shared",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "out": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": "pool1",
-    "no_account": false,
-    "model_alias": "fable",
-    "effort": "medium",
-    "permission_mode": "yolo",
-    "service_tier": null
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "\u0000no-account",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "out": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": true,
-    "model_alias": "fable",
-    "effort": "medium",
-    "permission_mode": "yolo",
-    "service_tier": null
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "  ",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "  ",
-    "service_tier": ""
-   },
-   "out": {
-    "harness": "claude-code",
-    "account_id": "a1",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": "medium",
-    "permission_mode": null,
-    "service_tier": null
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "codex",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": "  "
-   },
-   "out": {
-    "harness": "codex",
-    "account_id": "a1",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "gpt-5.6",
-    "effort": "high",
-    "permission_mode": "yolo",
-    "service_tier": null
-   }
-  }
- ],
- "applySpec": [
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "spec": {
-    "harness": "codex",
-    "account_id": "a3",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "gpt-5.6-sol",
-    "effort": "high",
-    "permission_mode": "yolo",
-    "service_tier": "fast"
-   },
-   "out": {
-    "adapter_id": "codex",
-    "account": "oai",
-    "account_provider": "openai",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6-sol",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": "fast"
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": {
-    "adapter_id": "claude-code",
-    "account": "",
-    "account_provider": "",
-    "model_claude": "",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "",
-    "effort_codex": "high",
-    "permission_mode": "",
-    "service_tier": ""
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "spec": {
-    "harness": "claude-code",
-    "account_id": "a2",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "llama-3",
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": {
-    "adapter_id": "claude-code",
-    "account": "compat",
-    "account_provider": "anthropic-compatible",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama-3",
-    "effort_claude": "",
-    "effort_codex": "high",
-    "permission_mode": "",
-    "service_tier": ""
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": "pool1",
-    "no_account": false,
-    "model_alias": "fable",
-    "effort": "low",
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": {
-    "adapter_id": "claude-code",
-    "account": "\u0000pool:shared",
-    "account_provider": "",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "low",
-    "effort_codex": "high",
-    "permission_mode": "",
-    "service_tier": ""
-   }
-  },
-  {
-   "form": {
-    "adapter_id": "claude-code",
-    "account": "personal",
-    "account_provider": "anthropic",
-    "model_claude": "fable",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "medium",
-    "effort_codex": "high",
-    "permission_mode": "yolo",
-    "service_tier": ""
-   },
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": true,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": {
-    "adapter_id": "claude-code",
-    "account": "\u0000no-account",
-    "account_provider": "",
-    "model_claude": "",
-    "model_codex": "gpt-5.6",
-    "model_account": "llama",
-    "effort_claude": "",
-    "effort_codex": "high",
-    "permission_mode": "",
-    "service_tier": ""
-   }
-  }
- ],
- "specChanges": [
-  {
-   "a": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "b": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": 0
-  },
-  {
-   "a": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "b": {
-    "harness": "codex",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": "high",
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": 2
-  },
-  {
-   "a": {
-    "harness": "claude-code",
-    "account_id": "a1",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "b": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": "pool1",
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": 2
-  },
-  {
-   "a": {
-    "harness": "codex",
-    "account_id": "a3",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "fable",
-    "effort": "medium",
-    "permission_mode": "yolo",
-    "service_tier": "fast"
-   },
-   "b": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": 6
-  }
- ],
- "specChain": [
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": "a1",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "fable",
-    "effort": "medium",
-    "permission_mode": "yolo",
-    "service_tier": null
-   },
-   "out": "Claude Code · 🐼 personal · fable · medium · Yolo"
-  },
-  {
-   "spec": {
-    "harness": "codex",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": "Codex · Auto · default model · default · Default"
-  },
-  {
-   "spec": {
-    "harness": "codex",
-    "account_id": null,
-    "pool_id": null,
-    "no_account": true,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": "Codex · none · default model · default · Default"
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": null,
-    "pool_id": "pool1",
-    "no_account": false,
-    "model_alias": null,
-    "effort": null,
-    "permission_mode": "ask",
-    "service_tier": null
-   },
-   "out": "Claude Code · shared · default model · default · Ask"
-  },
-  {
-   "spec": {
-    "harness": "claude-code",
-    "account_id": "a2",
-    "pool_id": null,
-    "no_account": false,
-    "model_alias": "llama",
-    "effort": null,
-    "permission_mode": null,
-    "service_tier": null
-   },
-   "out": "Claude Code · compat · llama · default · Default"
-  }
- ],
- "uniqueProfileName": [
-  {
-   "base": "Default",
-   "existing": [],
-   "out": "Default"
-  },
-  {
-   "base": "Default",
-   "existing": [
-    "Default"
-   ],
-   "out": "Default 2"
-  },
-  {
-   "base": "Default",
-   "existing": [
-    "default",
-    "Default 2"
-   ],
-   "out": "Default 3"
-  },
-  {
-   "base": "codex-hi",
-   "existing": [
-    "other"
-   ],
-   "out": "codex-hi"
-  }
- ],
- "initialProfile": [
-  {
-   "ids": [
-    "p1",
-    "p2"
-   ],
-   "last_used": "p2",
-   "out": "p2"
-  },
-  {
-   "ids": [
-    "p1",
-    "p2"
-   ],
-   "last_used": "gone",
-   "out": "p1"
-  },
-  {
-   "ids": [
-    "p1",
-    "p2"
-   ],
-   "last_used": null,
-   "out": "p1"
-  },
-  {
-   "ids": [],
-   "last_used": "p1",
-   "out": null
-  }
- ],
- "moveProfile": [
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "a",
-   "index": 2,
-   "out": [
-    "b",
-    "c",
-    "a"
-   ]
-  },
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "c",
-   "index": 0,
-   "out": [
-    "c",
-    "a",
-    "b"
-   ]
-  },
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "a",
-   "index": 99,
-   "out": [
-    "b",
-    "c",
-    "a"
-   ]
-  },
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "gone",
-   "index": 0,
-   "out": [
-    "a",
-    "b",
-    "c"
-   ]
-  }
- ],
- "moveProfileOnto": [
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "c",
-   "target": "a",
-   "out": [
-    "c",
-    "a",
-    "b"
-   ]
-  },
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "a",
-   "target": "a",
-   "out": [
-    "a",
-    "b",
-    "c"
-   ]
-  },
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "a",
-   "target": "gone",
-   "out": [
-    "a",
-    "b",
-    "c"
-   ]
-  },
-  {
-   "ids": [
-    "a",
-    "b",
-    "c"
-   ],
-   "id": "a",
-   "target": "c",
-   "out": [
-    "b",
-    "c",
-    "a"
-   ]
-  }
- ]
+  "modelField": [
+    {
+      "harness": "claude-code",
+      "account_id": null,
+      "out": "model_claude"
+    },
+    {
+      "harness": "codex",
+      "account_id": null,
+      "out": "model_codex"
+    },
+    {
+      "harness": "claude-code",
+      "account_id": "a1",
+      "out": "model_claude"
+    },
+    {
+      "harness": "claude-code",
+      "account_id": "a2",
+      "out": "model_account"
+    },
+    {
+      "harness": "codex",
+      "account_id": "a3",
+      "out": "model_codex"
+    },
+    {
+      "harness": "codex",
+      "account_id": "a2",
+      "out": "model_codex"
+    }
+  ],
+  "accountPick": [
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": ""
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": true,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": "\u0000no-account"
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": "pool1",
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": "\u0000pool:shared"
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": "a1",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": "personal"
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": "gone",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": ""
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": "gone",
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": ""
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": "a1",
+        "pool_id": null,
+        "no_account": true,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": "\u0000no-account"
+    }
+  ],
+  "specFromForm": [
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "out": {
+        "harness": "claude-code",
+        "account_id": "a1",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "fable",
+        "effort": "medium",
+        "permission_mode": "yolo",
+        "service_tier": null
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "codex",
+        "account": "oai",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": "fast"
+      },
+      "out": {
+        "harness": "codex",
+        "account_id": "a3",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "gpt-5.6",
+        "effort": "high",
+        "permission_mode": "yolo",
+        "service_tier": "fast"
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "compat",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "out": {
+        "harness": "claude-code",
+        "account_id": "a2",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "llama",
+        "effort": "medium",
+        "permission_mode": "yolo",
+        "service_tier": null
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "\u0000pool:shared",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "out": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": "pool1",
+        "no_account": false,
+        "model_alias": "fable",
+        "effort": "medium",
+        "permission_mode": "yolo",
+        "service_tier": null
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "\u0000no-account",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "out": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": true,
+        "model_alias": "fable",
+        "effort": "medium",
+        "permission_mode": "yolo",
+        "service_tier": null
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "  ",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "  ",
+        "service_tier": ""
+      },
+      "out": {
+        "harness": "claude-code",
+        "account_id": "a1",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": "medium",
+        "permission_mode": null,
+        "service_tier": null
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "codex",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": "  "
+      },
+      "out": {
+        "harness": "codex",
+        "account_id": "a1",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "gpt-5.6",
+        "effort": "high",
+        "permission_mode": "yolo",
+        "service_tier": null
+      }
+    }
+  ],
+  "applySpec": [
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "spec": {
+        "harness": "codex",
+        "account_id": "a3",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "gpt-5.6-sol",
+        "effort": "high",
+        "permission_mode": "yolo",
+        "service_tier": "fast"
+      },
+      "out": {
+        "adapter_id": "codex",
+        "account": "oai",
+        "account_provider": "openai",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6-sol",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": "fast"
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": {
+        "adapter_id": "claude-code",
+        "account": "",
+        "account_provider": "",
+        "model_claude": "",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "",
+        "effort_codex": "high",
+        "permission_mode": "",
+        "service_tier": ""
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "spec": {
+        "harness": "claude-code",
+        "account_id": "a2",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "llama-3",
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": {
+        "adapter_id": "claude-code",
+        "account": "compat",
+        "account_provider": "anthropic-compatible",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama-3",
+        "effort_claude": "",
+        "effort_codex": "high",
+        "permission_mode": "",
+        "service_tier": ""
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": "pool1",
+        "no_account": false,
+        "model_alias": "fable",
+        "effort": "low",
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": {
+        "adapter_id": "claude-code",
+        "account": "\u0000pool:shared",
+        "account_provider": "",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "low",
+        "effort_codex": "high",
+        "permission_mode": "",
+        "service_tier": ""
+      }
+    },
+    {
+      "form": {
+        "adapter_id": "claude-code",
+        "account": "personal",
+        "account_provider": "anthropic",
+        "model_claude": "fable",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "medium",
+        "effort_codex": "high",
+        "permission_mode": "yolo",
+        "service_tier": ""
+      },
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": true,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": {
+        "adapter_id": "claude-code",
+        "account": "\u0000no-account",
+        "account_provider": "",
+        "model_claude": "",
+        "model_codex": "gpt-5.6",
+        "model_account": "llama",
+        "effort_claude": "",
+        "effort_codex": "high",
+        "permission_mode": "",
+        "service_tier": ""
+      }
+    }
+  ],
+  "specChanges": [
+    {
+      "a": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "b": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": 0
+    },
+    {
+      "a": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "b": {
+        "harness": "codex",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": "high",
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": 2
+    },
+    {
+      "a": {
+        "harness": "claude-code",
+        "account_id": "a1",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "b": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": "pool1",
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": 2
+    },
+    {
+      "a": {
+        "harness": "codex",
+        "account_id": "a3",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "fable",
+        "effort": "medium",
+        "permission_mode": "yolo",
+        "service_tier": "fast"
+      },
+      "b": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": 6
+    }
+  ],
+  "specChain": [
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": "a1",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "fable",
+        "effort": "medium",
+        "permission_mode": "yolo",
+        "service_tier": null
+      },
+      "out": "Claude Code · 🐼 personal · fable · medium · Yolo"
+    },
+    {
+      "spec": {
+        "harness": "codex",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": "Codex · Auto · default model · default · Default"
+    },
+    {
+      "spec": {
+        "harness": "codex",
+        "account_id": null,
+        "pool_id": null,
+        "no_account": true,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": "Codex · none · default model · default · Default"
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": null,
+        "pool_id": "pool1",
+        "no_account": false,
+        "model_alias": null,
+        "effort": null,
+        "permission_mode": "ask",
+        "service_tier": null
+      },
+      "out": "Claude Code · shared · default model · default · Ask"
+    },
+    {
+      "spec": {
+        "harness": "claude-code",
+        "account_id": "a2",
+        "pool_id": null,
+        "no_account": false,
+        "model_alias": "llama",
+        "effort": null,
+        "permission_mode": null,
+        "service_tier": null
+      },
+      "out": "Claude Code · compat · llama · default · Default"
+    }
+  ],
+  "uniqueProfileName": [
+    {
+      "base": "Default",
+      "existing": [],
+      "out": "Default"
+    },
+    {
+      "base": "Default",
+      "existing": ["Default"],
+      "out": "Default 2"
+    },
+    {
+      "base": "Default",
+      "existing": ["default", "Default 2"],
+      "out": "Default 3"
+    },
+    {
+      "base": "codex-hi",
+      "existing": ["other"],
+      "out": "codex-hi"
+    }
+  ],
+  "initialProfile": [
+    {
+      "ids": ["p1", "p2"],
+      "last_used": "p2",
+      "out": "p2"
+    },
+    {
+      "ids": ["p1", "p2"],
+      "last_used": "gone",
+      "out": "p1"
+    },
+    {
+      "ids": ["p1", "p2"],
+      "last_used": null,
+      "out": "p1"
+    },
+    {
+      "ids": [],
+      "last_used": "p1",
+      "out": null
+    }
+  ],
+  "moveProfile": [
+    {
+      "ids": ["a", "b", "c"],
+      "id": "a",
+      "index": 2,
+      "out": ["b", "c", "a"]
+    },
+    {
+      "ids": ["a", "b", "c"],
+      "id": "c",
+      "index": 0,
+      "out": ["c", "a", "b"]
+    },
+    {
+      "ids": ["a", "b", "c"],
+      "id": "a",
+      "index": 99,
+      "out": ["b", "c", "a"]
+    },
+    {
+      "ids": ["a", "b", "c"],
+      "id": "gone",
+      "index": 0,
+      "out": ["a", "b", "c"]
+    }
+  ],
+  "moveProfileOnto": [
+    {
+      "ids": ["a", "b", "c"],
+      "id": "c",
+      "target": "a",
+      "out": ["c", "a", "b"]
+    },
+    {
+      "ids": ["a", "b", "c"],
+      "id": "a",
+      "target": "a",
+      "out": ["a", "b", "c"]
+    },
+    {
+      "ids": ["a", "b", "c"],
+      "id": "a",
+      "target": "gone",
+      "out": ["a", "b", "c"]
+    },
+    {
+      "ids": ["a", "b", "c"],
+      "id": "a",
+      "target": "c",
+      "out": ["b", "c", "a"]
+    }
+  ]
 }

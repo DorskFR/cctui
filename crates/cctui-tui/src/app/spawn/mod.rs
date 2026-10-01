@@ -98,6 +98,21 @@ pub trait SpawnSection: Send {
     /// Handed the model and effort lists when they change. Only the core
     /// section's pickers use them.
     fn set_options(&mut self, _options: core_section::Options) {}
+
+    /// The body to POST instead of a spawn, for a section that is a different
+    /// route rather than more of this one. Only the Dispatch tab answers.
+    fn dispatch_body(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Called once the server accepted a dispatch, so the section can remember
+    /// the job it just sent.
+    fn remember_dispatch(&mut self) {}
+
+    /// Which tab this section belongs to. The dialog draws one tab at a time.
+    fn tab(&self) -> SpawnTarget {
+        SpawnTarget::Machine
+    }
 }
 
 /// Cuts a section's rows to the dialog's inner width. A row that wrapped would
@@ -133,10 +148,23 @@ pub fn clamp_rows(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
 /// on [`super::state::App`], so they outlive one dialog and are fetched once.
 #[derive(Debug, Default, Clone)]
 pub struct SpawnData {
+    /// Dispatch targets, from `GET /sessions/dispatchers`. Distinct from the
+    /// admin `GET /dispatchers`: this one merges the env-configured registry
+    /// and is readable by any caller, which the picker needs.
+    pub dispatchers: Vec<String>,
     pub accounts: Vec<cctui_client::AccountPick>,
     pub pools: Vec<cctui_client::PoolPick>,
     pub usage: Vec<cctui_client::AccountUsagePick>,
     pub labels: Vec<cctui_proto::api::Label>,
+}
+
+/// Which tab the dialog is on. The toggle belongs to the dialog; a tab's own
+/// fields belong to whichever lane owns it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SpawnTarget {
+    #[default]
+    Machine,
+    Dispatch,
 }
 
 /// Where focus is: which section, and which of its rows.
@@ -165,6 +193,8 @@ pub struct SpawnForm {
     pub session_id: Option<String>,
     /// Memory that lands after the dialog opens only seeds an untouched form.
     pub edited: bool,
+    /// Which tab the dialog is on.
+    pub target: SpawnTarget,
     pub focus: Focus,
     /// Inline errors from the last submit, cleared on the next edit.
     pub errors: Vec<String>,
@@ -185,6 +215,7 @@ impl std::fmt::Debug for SpawnForm {
             .field("launching", &self.launching)
             .field("session_id", &self.session_id)
             .field("edited", &self.edited)
+            .field("target", &self.target)
             .field("errors", &self.errors)
             .field("submitting", &self.submitting)
             .field("sections", &self.sections.iter().map(|s| s.title()).collect::<Vec<_>>())
@@ -210,6 +241,7 @@ impl SpawnForm {
             Box::new(labels::LabelsSection::default()),
             Box::new(env::EnvSection::default()),
             Box::new(files::FilesSection::default()),
+            Box::new(super::dispatch::DispatchSection::default()),
         ]
     }
 
@@ -234,6 +266,7 @@ impl SpawnForm {
             launching: None,
             session_id: None,
             edited: false,
+            target: SpawnTarget::default(),
             focus: Focus::default(),
             errors: Vec::new(),
             submitting: false,
@@ -246,7 +279,7 @@ impl SpawnForm {
         self.sections
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.rows(&self.fields) > 0)
+            .filter(|(_, s)| s.tab() == self.target && s.rows(&self.fields) > 0)
             .map(|(index, s)| (index, s.rows(&self.fields)))
             .collect()
     }
@@ -357,6 +390,12 @@ impl SpawnForm {
         if let Some(provider) = self.provider().map(str::to_owned) {
             self.fields.account_provider = provider;
         }
+    }
+
+    /// Whether a section belongs to the tab the dialog is on.
+    #[must_use]
+    pub fn shows(&self, index: usize) -> bool {
+        self.sections.get(index).is_some_and(|s| s.tab() == self.target)
     }
 
     /// Where the core section sits, which the renderer needs: the dir and model
@@ -780,6 +819,7 @@ mod tests {
 #[derive(Debug, Clone)]
 /// One landed catalog.
 pub enum SpawnFetch {
+    Dispatchers(Vec<String>),
     Accounts(Vec<cctui_client::AccountPick>),
     Pools(Vec<cctui_client::PoolPick>),
     Usage(Vec<cctui_client::AccountUsagePick>),
@@ -824,6 +864,8 @@ pub enum SpawnAction {
     /// `Ctrl+r` in the dialog.
     RefreshModels,
     ModelsRefreshed,
+    /// The Machine/Dispatch toggle in the dialog chrome.
+    ToggleTarget,
 }
 
 pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
@@ -901,13 +943,14 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             Vec::new()
         }
         SpawnAction::MemoryLoaded(payload) => memory_loaded(app, payload.entries),
+        SpawnAction::ToggleTarget => toggle_target(app),
         SpawnAction::RefreshModels => refresh_models(app),
         SpawnAction::ModelsRefreshed => {
             let Some(form) = app.spawn.as_mut() else { return Vec::new() };
             form.refreshing_models = false;
             form.fetch_models().into_iter().collect()
         }
-        SpawnAction::Submit => submit(app),
+        SpawnAction::Submit => submit_or_dispatch(app),
         SpawnAction::Accepted { command_id, session_id } => {
             if let Some(form) = app.spawn.as_mut() {
                 form.launching = Some(command_id);
@@ -929,8 +972,37 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
     }
 }
 
+/// The Dispatch tab is a different route with a different body, so it answers
+/// for the submit rather than filling a `SpawnRequest`.
+fn submit_or_dispatch(app: &mut super::state::App) -> Vec<Effect> {
+    if let Some(body) = app
+        .spawn
+        .as_ref()
+        .filter(|f| f.target == SpawnTarget::Dispatch)
+        .and_then(|f| f.sections.iter().find_map(|s| s.dispatch_body()))
+    {
+        return vec![Effect::Dispatch { body: Box::new(body) }];
+    }
+    submit(app)
+}
+
+/// The tabs do not show the same sections, so focus has to come back inside
+/// whatever the new one draws.
+fn toggle_target(app: &mut super::state::App) -> Vec<Effect> {
+    if let Some(form) = app.spawn.as_mut() {
+        form.target = match form.target {
+            SpawnTarget::Machine => SpawnTarget::Dispatch,
+            SpawnTarget::Dispatch => SpawnTarget::Machine,
+        };
+        form.focus = Focus::default();
+        form.settle_focus();
+    }
+    Vec::new()
+}
+
 fn data_loaded(app: &mut super::state::App, data: SpawnFetch) -> Vec<Effect> {
     match data {
+        SpawnFetch::Dispatchers(names) => app.spawn_data.dispatchers = names,
         SpawnFetch::Accounts(accounts) => app.spawn_data.accounts = accounts,
         SpawnFetch::Pools(pools) => app.spawn_data.pools = pools,
         SpawnFetch::Usage(usage) => app.spawn_data.usage = usage,
@@ -1022,6 +1094,7 @@ fn open(app: &mut super::state::App) -> Vec<Effect> {
     let mut effects = vec![
         Effect::FetchRecentDirs,
         Effect::FetchSpawnMemory,
+        Effect::FetchSpawnDispatchers,
         Effect::FetchAccounts,
         Effect::FetchAccountPools,
         Effect::FetchAccountsUsage,
@@ -1380,6 +1453,26 @@ mod reduce_tests {
             }
             other => panic!("expected a spawn and a remember, got {} effects", other.len()),
         }
+    }
+
+    #[test]
+    fn the_toggle_swaps_which_tab_the_dialog_draws_and_focuses() {
+        use super::SpawnTarget;
+
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let core = app.spawn.as_ref().expect("a form").core_index().expect("the core section");
+        assert!(app.spawn.as_ref().expect("a form").shows(core), "the machine tab is in front");
+
+        reduce(&mut app, SpawnAction::ToggleTarget);
+        let form = app.spawn.as_ref().expect("a form");
+        assert_eq!(form.target, SpawnTarget::Dispatch);
+        assert!(!form.shows(core), "the core rows belong to the machine tab");
+        assert_ne!(form.focus.section, core, "focus left the hidden tab");
+
+        reduce(&mut app, SpawnAction::ToggleTarget);
+        assert_eq!(app.spawn.as_ref().expect("a form").target, SpawnTarget::Machine);
+        assert!(app.spawn.as_ref().expect("a form").shows(core));
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub enum View {
     Diagnose,
     Terminal,
     ModelPicker,
+    ForkDialog,
     Sidebar,
     /// The new-session dialog.
     Spawn,
@@ -341,6 +342,8 @@ pub struct App {
     pub harness_picker: Option<HarnessPicker>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
+    /// The open fork dialog, if one is.
+    pub fork: Option<super::forkform::ForkForm>,
     /// Cursor state of the todo/subagent sidebar.
     pub sidebar: super::sidebar::Sidebar,
     /// Mark-seen debounce state; the counts themselves live on the rows.
@@ -473,6 +476,7 @@ impl App {
             settings_blob: serde_json::Value::Null,
             harness_picker: None,
             controls: super::controls::Controls::default(),
+            fork: None,
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
             watch: super::attention::Watch::default(),

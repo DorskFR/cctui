@@ -10,9 +10,11 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatch::DispatchAction;
 use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
+use super::forkform::ForkAction;
 use super::harness_mode::HarnessModeAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
@@ -76,6 +78,8 @@ pub enum Action {
     SubmitInput,
 
     Controls(ControlsAction),
+    Dispatch(DispatchAction),
+    Fork(ForkAction),
     Sidebar(SidebarAction),
     Unread(UnreadAction),
     ToggleAutoApproveSelected,
@@ -180,6 +184,7 @@ pub struct HeartbeatUsage {
 pub enum ModelsFor {
     RunningSession,
     SpawnDialog,
+    ForkDialog,
 }
 
 /// The only way the reducer reaches the network. Nothing here runs on the
@@ -333,8 +338,21 @@ pub enum Effect {
     },
     Fork {
         session_id: String,
+        request: Box<cctui_proto::api::ForkRequest>,
     },
-    /// `GET /models/{harness}`: the picker's model and effort lists.
+    Resume {
+        session_id: String,
+    },
+    /// `GET /sessions/dispatchers`: the dispatch targets a spawn can pick.
+    /// Not the admin `FetchDispatchers`: that one is the enrolled rows with
+    /// liveness and misses the env-configured registry this picker needs.
+    FetchSpawnDispatchers,
+    /// `POST /sessions/dispatch` with the shared body.
+    Dispatch {
+        body: Box<serde_json::Value>,
+    },
+    /// `GET /models/{harness}`: the model and effort lists. Two dialogs ask
+    /// for them, so the asker rides along rather than being guessed at.
     FetchHarnessModels {
         want: ModelsFor,
         harness: String,

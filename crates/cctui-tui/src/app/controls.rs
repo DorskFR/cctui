@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use cctui_proto::adapter::PermissionMode;
-use cctui_proto::api::SessionListItem;
+use cctui_proto::api::{ForkRequest, SessionListItem};
 use cctui_proto::harness_models::HarnessModels;
 
 use super::action::{Effect, ModelsFor};
@@ -125,7 +125,6 @@ pub enum ControlsAction {
         session_id: String,
         error: Option<String>,
     },
-    Fork,
     Forked(Option<String>),
     OpenModelPicker,
     ClosePicker,
@@ -145,7 +144,6 @@ pub fn reduce_controls(app: &mut App, action: ControlsAction) -> Vec<Effect> {
         ControlsAction::InterruptFinished { session_id, error } => {
             interrupt_finished(app, &session_id, error)
         }
-        ControlsAction::Fork => confirm(app, Confirm::Fork),
         ControlsAction::Forked(session_id) => forked(app, session_id),
         ControlsAction::OpenModelPicker => open_picker(app),
         ControlsAction::ClosePicker => close_picker(app),
@@ -202,7 +200,7 @@ fn fire(app: &mut App, what: Confirm, session_id: String) -> Vec<Effect> {
         }
         Confirm::Fork => {
             app.toast(Level::Info, "forking…");
-            vec![Effect::Fork { session_id }]
+            vec![Effect::Fork { session_id, request: Box::new(ForkRequest::default()) }]
         }
     }
 }
@@ -458,16 +456,6 @@ mod tests {
         assert_eq!(app.controls.armed_for("s-b", app.clock_ms), Some(Confirm::Interrupt));
     }
 
-    /// Two armed keys never share a confirmation: arming fork then pressing
-    /// interrupt must not fork.
-    #[test]
-    fn a_different_armed_key_does_not_answer_for_the_other() {
-        let mut app = app();
-        controls(&mut app, ControlsAction::Fork);
-        assert!(controls(&mut app, ControlsAction::Interrupt).is_empty());
-        assert_eq!(app.controls.armed_for("s-a", app.clock_ms), Some(Confirm::Interrupt));
-    }
-
     #[test]
     fn the_result_clears_the_in_flight_state_and_toasts() {
         let mut app = app();
@@ -493,12 +481,15 @@ mod tests {
         assert!(app.toasts.latest().expect("a toast").text.contains("gone"));
     }
 
+    /// `:fork` fires without a confirmation, and the fork opens once the
+    /// session it made reaches the list.
     #[test]
-    fn forking_confirms_then_opens_the_new_session_once_it_is_listed() {
+    fn a_fork_opens_the_new_session_once_it_is_listed() {
         let mut app = app();
-        controls(&mut app, ControlsAction::Fork);
-        let effects = controls(&mut app, ControlsAction::Fork);
-        assert!(matches!(effects.as_slice(), [Effect::Fork { session_id }] if session_id == "s-a"));
+        let effects = super::fork_now(&mut app);
+        assert!(
+            matches!(effects.as_slice(), [Effect::Fork { session_id, .. }] if session_id == "s-a")
+        );
 
         let effects = controls(&mut app, ControlsAction::Forked(Some("s-new".to_owned())));
         assert!(matches!(effects.as_slice(), [Effect::RefreshSessions]));
@@ -511,8 +502,6 @@ mod tests {
         assert!(app.controls.pending_jump.is_none());
     }
 
-    /// Whichever arrives first — the socket's registration or the refresh —
-    /// opens the fork, and only once.
     #[test]
     fn a_fork_that_registers_over_the_socket_opens_without_waiting() {
         let mut app = app();

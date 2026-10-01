@@ -19,6 +19,8 @@ pub enum Command {
     },
     /// A whole-session fork: every dial inherited from the parent.
     Fork,
+    /// Resume an ended session.
+    Resume,
     /// `None` opens the picker; a named mode is applied outright.
     Harness(Option<super::harness_mode::HarnessMode>),
 }
@@ -50,6 +52,12 @@ pub fn parse(input: &str) -> Result<Command, String> {
                 return Err("usage: :fork".to_owned());
             }
             Ok(Command::Fork)
+        }
+        "resume" => {
+            if words.next().is_some() {
+                return Err("usage: :resume".to_owned());
+            }
+            Ok(Command::Resume)
         }
         // Session-independent: the harness mode is a user setting, so unlike
         // the others this one works with nothing selected.
@@ -88,8 +96,12 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
             return Vec::new();
         }
     };
-    if command == Command::Fork {
-        return super::controls::fork_now(app);
+    match command {
+        Command::Fork => return super::controls::fork_now(app),
+        Command::Resume => {
+            return super::forkform::reduce_fork(app, super::forkform::ForkAction::Resume);
+        }
+        _ => {}
     }
     if let Command::Harness(mode) = command {
         let action = mode.map_or(super::harness_mode::HarnessModeAction::Open, |m| {
@@ -99,7 +111,7 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
     }
     let Some(session) = app.selected_session().cloned() else { return Vec::new() };
     match command {
-        Command::Fork | Command::Harness(_) => Vec::new(),
+        Command::Fork | Command::Resume | Command::Harness(_) => Vec::new(),
         Command::Attach { path } => {
             let path = super::cmdline::expand_home(&path.to_string_lossy());
             vec![Effect::ReadAttachment { session_id: session.id, path }]
@@ -153,7 +165,7 @@ mod tests {
 
         let mut app = app();
         match run(&mut app, "fork").as_slice() {
-            [Effect::Fork { session_id }] => assert_eq!(session_id, "s-a"),
+            [Effect::Fork { session_id, .. }] => assert_eq!(session_id, "s-a"),
             other => panic!("expected one fork effect, got {} effects", other.len()),
         }
         assert!(app.controls.armed.is_none(), "the command line does not arm anything");

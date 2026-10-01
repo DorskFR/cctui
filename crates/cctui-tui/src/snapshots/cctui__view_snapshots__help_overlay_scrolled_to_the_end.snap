@@ -5,25 +5,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+n / ↓  Next prompt                      Row glyphs                                     │
-▸ │  Ctrl+p / ↑  Previous prompt                    ●           working                          │
-  │  Enter       Put this prompt in the composer    ◐           stale or asleep                  │
-  │File viewer                                      ○           idle                             │
-  │  j / ↓       Scroll down                        ☾           hibernated                       │
-  │  k / ↑       Scroll up                          ↳           subagent                         │
-  │  PgDn        Page down                          ▸ / ▾       folded / open group              │
-  │  PgUp        Page up                            [name]      a label, tinted by its hue       │
-  │  g           Jump to the top                    +N          more labels than fit             │
-  │  q / Esc     Close the file viewer              !           permission waiting on you        │
-  │  o           Open in the desktop viewer         ?           question waiting on you          │
-  │Machines                                         P           plan waiting for approval        │
-  │  j / ↓       Next machine                       ●N          unread messages                  │
-  │  k / ↑       Previous machine                   ⚡           auto-approve on                  │
-  │  r           Refresh the machine list           ⏸           account soft-limited             │
-  │  Enter       Aim a spawn at this machine        ⚠           account traffic never seen       │
-  │  Esc         Back to the sessions               ❄           cache cold, next turn re-reads   │
-  │Dispatchers                                      ⌂           a job cctui did not start        │
-  │  Ctrl+n / ↓  Next dispatcher                    ✕reason     how it ended                     │
-  │  Ctrl+p / ↑  Previous dispatcher                ⚙N age      tool calls, age of the last      │
+  │File viewer                                      ●           working                          │
+▸ │  j / ↓       Scroll down                        ◐           stale or asleep                  │
+  │  k / ↑       Scroll up                          ○           idle                             │
+  │  PgDn        Page down                          ☾           hibernated                       │
+  │  PgUp        Page up                            ↳           subagent                         │
+  │  g           Jump to the top                    ▸ / ▾       folded / open group              │
+  │  q / Esc     Close the file viewer              [name]      a label, tinted by its hue       │
+  │  o           Open in the desktop viewer         +N          more labels than fit             │
+  │Machines                                         !           permission waiting on you        │
+  │  j / ↓       Next machine                       ?           question waiting on you          │
+  │  k / ↑       Previous machine                   P           plan waiting for approval        │
+  │  r           Refresh the machine list           ●N          unread messages                  │
+  │  Enter       Aim a spawn at this machine        ⚡           auto-approve on                  │
+  │  Esc         Back to the sessions               ⏸           account soft-limited             │
+  │Dispatchers                                      ⚠           account traffic never seen       │
+  │  Ctrl+n / ↓  Next dispatcher                    ❄           cache cold, next turn re-reads   │
+  │  Ctrl+p / ↑  Previous dispatcher                ⌂           a job cctui did not start        │
+  │  Ctrl+a      Enroll a dispatcher                ✕reason     how it ended                     │
+  │  Ctrl+e      Rename or rebind                   ⚙N age      tool calls, age of the last      │
+  │  Ctrl+x      Remove this dispatcher                                                          │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

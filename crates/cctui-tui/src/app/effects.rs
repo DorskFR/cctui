@@ -7,7 +7,7 @@ use cctui_proto::drafts::{composer_draft_key, session_history_key};
 use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
-use super::action::{Action, Effect};
+use super::action::{Action, Effect, ModelsFor};
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::bookmarks::BookmarkAction;
@@ -16,9 +16,11 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatch::DispatchAction;
 use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
+use super::forkform::ForkAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
@@ -400,7 +402,33 @@ async fn run(
                 error: error.map(|e| e.to_string()),
             })]
         }
-        Effect::Fork { session_id } => match server.fork(&session_id).await {
+        Effect::Resume { session_id } => {
+            let error = server.resume(&session_id).await.err();
+            if let Some(e) = error.as_ref() {
+                tracing::warn!(%e, "resume failed");
+            }
+            vec![Action::Fork(ForkAction::Resumed(error.map(|e| e.to_string())))]
+        }
+        Effect::FetchSpawnDispatchers => match server.spawn_dispatchers().await {
+            Ok(names) => vec![spawn_data(SpawnFetch::Dispatchers(names))],
+            Err(e) => {
+                tracing::warn!(%e, "spawn dispatcher list fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::Dispatch { body } => match server.dispatch(&body).await {
+            Ok(resp) => vec![Action::Dispatch(DispatchAction::Submitted {
+                session_id: resp.session_id,
+                // `deduplicated` is the idempotency key landing on the job that
+                // is already running.
+                existing: resp.status == "deduplicated",
+            })],
+            Err(e) => {
+                tracing::warn!(%e, "dispatch failed");
+                vec![Action::Toast(Level::Error, format!("dispatch failed: {e}"))]
+            }
+        },
+        Effect::Fork { session_id, request } => match server.fork(&session_id, &request).await {
             Ok(resp) => vec![Action::Controls(ControlsAction::Forked(resp.session_id))],
             Err(e) => {
                 tracing::warn!(%e, "fork failed");
@@ -410,13 +438,16 @@ async fn run(
         Effect::FetchHarnessModels { want, harness, machine_id, model } => {
             match server.harness_models(&harness, Some(&machine_id), &model).await {
                 Ok(models) => match want {
-                    super::action::ModelsFor::RunningSession => {
+                    ModelsFor::RunningSession => {
                         vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
                     }
-                    super::action::ModelsFor::SpawnDialog => {
+                    ModelsFor::SpawnDialog => {
                         vec![Action::Spawn(super::spawn::SpawnAction::ModelsLoaded(Box::new(
                             models,
                         )))]
+                    }
+                    ModelsFor::ForkDialog => {
+                        vec![Action::Fork(ForkAction::ModelsLoaded(Box::new(models)))]
                     }
                 },
                 Err(e) => {

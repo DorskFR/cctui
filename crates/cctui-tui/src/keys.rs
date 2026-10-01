@@ -12,6 +12,7 @@ use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
 use crate::app::dispatchers::DispatcherAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::forkform::ForkAction;
 use crate::app::harness_mode::HarnessModeAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
@@ -111,6 +112,7 @@ pub const fn context_for(
         View::Diagnose => Context::Diagnose,
         View::Terminal => Context::Terminal,
         View::ModelPicker => Context::ModelPicker,
+        View::ForkDialog => Context::ForkDialog,
         // Not modal: it takes the keyboard but leaves the strips, the composer
         // and the cards ahead of it, and falls through to the transcript.
         View::Sidebar => Context::Sidebar,
@@ -133,6 +135,7 @@ const fn modal_context(view: View) -> Option<Context> {
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
+        View::ForkDialog => Some(Context::ForkDialog),
         _ => None,
     }
 }
@@ -205,6 +208,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::ForkDialog
             | View::LabelPicker
             | View::LabelFilter
             | View::Machines
@@ -227,6 +231,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::ForkDialog
             | View::LabelPicker
             | View::LabelFilter
             | View::Machines
@@ -272,6 +277,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SpawnDirPrev => Action::Spawn(SpawnAction::DirPick(-1)),
         ActionId::SpawnDirAccept => Action::Spawn(SpawnAction::DirAccept),
         ActionId::SpawnRefreshModels => Action::Spawn(SpawnAction::RefreshModels),
+        ActionId::SpawnToggleTarget => Action::Spawn(SpawnAction::ToggleTarget),
         ActionId::OpenInEditor => Action::OpenInEditor,
         ActionId::ListSections => Action::ListShape(ListShapeAction::ToggleSectionsMenu),
         ActionId::ListSortCycle => Action::ListShape(ListShapeAction::CycleSort),
@@ -340,7 +346,15 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::Controls(ControlsAction::Interrupt),
-        ActionId::Fork => Action::Controls(ControlsAction::Fork),
+        ActionId::Fork => Action::Fork(ForkAction::Open),
+        ActionId::Resume => Action::Fork(ForkAction::Resume),
+        ActionId::ForkSubmit => Action::Fork(ForkAction::Submit),
+        ActionId::ForkCancel => Action::Fork(ForkAction::Close),
+        ActionId::ForkNextField => Action::Fork(ForkAction::FocusNext),
+        ActionId::ForkPrevField => Action::Fork(ForkAction::FocusPrev),
+        ActionId::ForkCycleNext => Action::Fork(ForkAction::Cycle(1)),
+        ActionId::ForkCyclePrev => Action::Fork(ForkAction::Cycle(-1)),
+
         ActionId::ModelPicker => Action::Controls(ControlsAction::OpenModelPicker),
         ActionId::PickerClose => Action::Controls(ControlsAction::ClosePicker),
         ActionId::PickerNext => Action::Controls(ControlsAction::PickerMove(1)),
@@ -536,6 +550,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::DraftEnv => Some(Action::SpawnDrafts(SpawnDraftAction::EnvKey(key))),
         Context::SpawnProfileName => Some(Action::Profiles(ProfileAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
+        Context::ForkDialog => Some(Action::Fork(ForkAction::Key(key))),
         _ => None,
     }
 }
@@ -546,8 +561,8 @@ mod tests {
 
     use super::{
         Action, AttentionAction, ControlsAction, Decision, DiagnoseAction, DiagnoseMode,
-        DraftAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus, SliceAction,
-        View, map_input,
+        DraftAction, ForkAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus,
+        SliceAction, View, map_input,
     };
     use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
@@ -802,7 +817,11 @@ mod tests {
         ));
         assert!(matches!(
             map_event(View::Conversation, false, ctrl('f')),
-            Some(Action::Controls(ControlsAction::Fork))
+            Some(Action::Fork(ForkAction::Open))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('r')),
+            Some(Action::Fork(ForkAction::Resume))
         ));
     }
 

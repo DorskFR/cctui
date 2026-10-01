@@ -35,6 +35,7 @@ const row = (
   liveness: "online",
   resources: r,
   updated_at: r ? "2026-09-06T10:00:00Z" : null,
+  last_seen_at: "2026-09-06T10:00:00Z",
 });
 
 describe("resourceTone", () => {

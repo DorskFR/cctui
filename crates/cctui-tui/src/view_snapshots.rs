@@ -1421,14 +1421,6 @@ fn conversation_interrupt_in_flight() {
 }
 
 #[test]
-fn conversation_fork_armed_by_one_press() {
-    let mut app = app_on("s-working");
-    focus(&mut app, "s-working");
-    reduce(&mut app, Action::Controls(ControlsAction::Fork));
-    insta::assert_snapshot!(render_screen(&mut app));
-}
-
-#[test]
 fn model_picker_while_the_lists_load() {
     let mut app = codex_conversation();
     reduce(&mut app, Action::Controls(ControlsAction::OpenModelPicker));
@@ -2000,4 +1992,149 @@ fn harness_mode_picker_narrow() {
     app.clock_ms = CLOCK_MS;
     reduce(&mut app, Action::HarnessMode(HarnessModeAction::Open));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+// -- the dispatch tab, as a section of the spawn dialog --
+
+/// The dialog open on the Dispatch tab with a job filled in. The dispatcher
+/// names arrive the way every catalog does: through `SpawnData`.
+fn app_dispatching() -> crate::app::App {
+    use crate::app::dispatch::Field;
+    use crate::app::spawn::{SpawnAction, SpawnFetch, SpawnTarget};
+
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Spawn(SpawnAction::Open));
+    reduce(
+        &mut app,
+        Action::Spawn(SpawnAction::DataLoaded(Box::new(SpawnFetch::Dispatchers(vec![
+            "k8s-cyberia".to_owned(),
+            "docker-local".to_owned(),
+        ])))),
+    );
+    if let Some(form) = app.spawn.as_mut() {
+        form.target = SpawnTarget::Dispatch;
+    }
+    for (field, text) in [
+        (Field::Repo, "cctui"),
+        (Field::Ticket, "CCT-1102"),
+        (Field::Timeout, "60"),
+        (Field::PackUrl, "https://git.example/packs.git"),
+        (Field::PackRef, "main"),
+        (Field::PackSubdir, "packs/cctui"),
+        (Field::PackToken, "hunter2"),
+    ] {
+        let row = Field::ORDER.iter().position(|f| *f == field).expect("a field");
+        for c in text.chars() {
+            dispatch_key(&mut app, row, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+    app
+}
+
+/// A key straight at the section, so the fixture does not depend on where the
+/// dialog's global focus happens to sit.
+fn dispatch_key(app: &mut crate::app::App, row: usize, key: KeyEvent) {
+    let Some(form) = app.spawn.as_mut() else { return };
+    let mut fields = form.fields.clone();
+    for section in &mut form.sections {
+        if section.title() == "Dispatch" {
+            let _ = section.handle(row, key, &mut fields);
+        }
+    }
+    form.fields = fields;
+}
+
+#[test]
+fn spawn_dispatch_tab() {
+    let mut app = app_dispatching();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dispatch_tab_codex_harness() {
+    let mut app = app_dispatching();
+    dispatch_key(&mut app, 0, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dispatch_tab_at_eighty_columns() {
+    let mut app = app_dispatching();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+/// No dispatcher enrolled: the section takes no rows and draws nothing.
+#[test]
+fn spawn_dispatch_section_hidden_without_a_dispatcher() {
+    use crate::app::spawn::SpawnAction;
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Spawn(SpawnAction::Open));
+    let rendered = render_screen(&mut app);
+    assert!(!rendered.contains("Dispatcher"), "{rendered}");
+    insta::assert_snapshot!(rendered);
+}
+
+fn app_forking(codex: bool) -> crate::app::App {
+    use crate::app::forkform::ForkAction;
+    use cctui_proto::harness_models::{HarnessModels, ModelOption};
+    let mut app = app_on("s-working");
+    if codex {
+        session_mut(&mut app, "s-working").adapter_id =
+            Some(cctui_proto::adapter::AdapterId::new("codex"));
+    }
+    session_mut(&mut app, "s-working").model = Some("opus".to_owned());
+    session_mut(&mut app, "s-working").effort = Some("high".to_owned());
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Fork(ForkAction::Open));
+    reduce(
+        &mut app,
+        Action::Fork(ForkAction::ModelsLoaded(Box::new(HarnessModels {
+            harness: "claude-code".to_owned(),
+            models: vec![
+                ModelOption {
+                    v: String::new(),
+                    label: "Default".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+                ModelOption {
+                    v: "sonnet".to_owned(),
+                    label: "Sonnet".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+            ],
+            efforts: vec![String::new(), "low".to_owned(), "high".to_owned()],
+        }))),
+    );
+    app
+}
+
+#[test]
+fn fork_dialog() {
+    let mut app = app_forking(false);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Codex cannot fork a slice, so the row is not offered at all.
+#[test]
+fn fork_dialog_codex_hides_the_extract_row() {
+    let mut app = app_forking(true);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn fork_dialog_on_the_prompt_row() {
+    use crate::app::forkform::ForkAction;
+    let mut app = app_forking(false);
+    for _ in 0..4 {
+        reduce(&mut app, Action::Fork(ForkAction::FocusNext));
+    }
+    for c in "try the other approach".chars() {
+        reduce(
+            &mut app,
+            Action::Fork(ForkAction::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
 }
