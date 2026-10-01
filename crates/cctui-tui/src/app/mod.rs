@@ -14,6 +14,7 @@ pub mod drafts;
 pub mod effects;
 pub mod export;
 pub mod fileview;
+pub mod harness_mode;
 pub mod identity;
 pub mod labels;
 pub mod line;

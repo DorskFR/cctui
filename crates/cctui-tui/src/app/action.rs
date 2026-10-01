@@ -12,6 +12,7 @@ use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
+use super::harness_mode::HarnessModeAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::macros::MacroAction;
@@ -95,6 +96,7 @@ pub enum Action {
     Prompt(PromptAction),
     Diagnose(DiagnoseAction),
     Slice(SliceAction),
+    HarnessMode(HarnessModeAction),
     DeepLink(DeepLinkAction),
 
     StreamLine {

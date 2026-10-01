@@ -39,6 +39,7 @@ pub enum Context {
     Diagnose,
     Bookmarks,
     Overview,
+    HarnessMode,
     Ask,
     AskText,
     Plan,
@@ -72,6 +73,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Diagnose,
     Context::Bookmarks,
     Context::Overview,
+    Context::HarnessMode,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -107,6 +109,7 @@ impl Context {
             Self::Diagnose => "diagnose",
             Self::Bookmarks => "bookmarks",
             Self::Overview => "overview",
+            Self::HarnessMode => "harness-mode",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -142,6 +145,7 @@ impl Context {
             Self::Diagnose => "Diagnose / info",
             Self::Bookmarks => "Bookmarks",
             Self::Overview => "Overview",
+            Self::HarnessMode => "Harness mode",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -356,6 +360,11 @@ actions! {
     MacrosInsert => "macros-insert", "Put this prompt in the composer";
 
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    HarnessModeClose => "harness-mode-close", "Close the harness picker";
+    HarnessModeNext => "harness-mode-next", "Next mode";
+    HarnessModePrev => "harness-mode-prev", "Previous mode";
+    HarnessModeCommit => "harness-mode-commit", "Apply this mode to every daemon";
 
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
@@ -657,6 +666,14 @@ const BOOKMARKS: &[BindingSpec] = &[
     spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
 ];
 
+/// Modal: a settings write is not something to trigger by a fall-through.
+const HARNESS_MODE: &[BindingSpec] = &[
+    spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
+    spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
+    spec(Context::HarnessMode, "up, ctrl+p, k", ActionId::HarnessModePrev),
+    spec(Context::HarnessMode, "enter", ActionId::HarnessModeCommit),
+];
+
 const OVERVIEW: &[BindingSpec] = &[
     spec(Context::Overview, "j, down", ActionId::OverviewScrollDown),
     spec(Context::Overview, "k, up", ActionId::OverviewScrollUp),
@@ -776,6 +793,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     DIAGNOSE,
     BOOKMARKS,
     OVERVIEW,
+    HARNESS_MODE,
     ASK,
     ASK_TEXT,
     PLAN,

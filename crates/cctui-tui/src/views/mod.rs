@@ -6,6 +6,7 @@ pub mod conversation;
 pub mod diagnose;
 pub mod fileview;
 pub mod filters;
+pub mod harness_mode;
 pub mod help;
 pub mod history;
 pub mod labels;
@@ -38,6 +39,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view() {
         View::SessionList => sessions::draw(frame, app),
         View::Bookmarks => bookmarks::draw(frame, app),
+        View::HarnessMode => {
+            draw_below(frame, app);
+            if let Some(picker) = app.harness_picker.as_ref() {
+                harness_mode::draw(frame, picker);
+            }
+        }
         View::Overview => overview::draw(frame, app),
         // The sidebar is focus only: the conversation draws the panel itself,
         // so taking the keyboard never redraws the transcript differently.

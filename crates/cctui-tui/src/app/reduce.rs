@@ -266,6 +266,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
         Action::Diagnose(action) => super::diagnose::reduce_diagnose(app, action),
         Action::Slice(action) => super::slice::reduce_slice(app, action),
+        Action::HarnessMode(action) => super::harness_mode::reduce_harness_mode(app, action),
         Action::DeepLink(action) => super::deeplink::reduce_deeplink(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
