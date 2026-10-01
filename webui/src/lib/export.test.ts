@@ -190,6 +190,17 @@ describe("exportMarkdown parity fixture", () => {
     expected: string;
   }
 
+  it("drops the label when the served result carries no tool name", () => {
+    const fx = parityFixture<Fixture>("exportMarkdown");
+    const md = conversationToMarkdown(
+      fx.session as unknown as SessionListItem,
+      fx.events,
+      opts(),
+    );
+    expect(md).toContain("**Result**");
+    expect(md).not.toContain("**Result · undefined**");
+  });
+
   it("renders the golden transcript byte for byte", () => {
     const fx = parityFixture<Fixture>("exportMarkdown");
     const md = conversationToMarkdown(

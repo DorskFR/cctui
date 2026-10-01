@@ -9,6 +9,9 @@ use super::state::App;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub role: String,
+    /// Who the key resolves to. The recovery file is scoped to it: a shared host
+    /// must not hand one user's unsent prompts to the next.
+    pub user_id: Option<String>,
     pub user_name: Option<String>,
     pub scopes: Vec<String>,
     pub token_preview: String,
@@ -19,6 +22,7 @@ impl Identity {
     pub fn from_response(me: MeResponse) -> Self {
         Self {
             role: me.role,
+            user_id: me.user_id.map(|id| id.to_string()),
             user_name: me.user_name,
             scopes: me.scopes,
             token_preview: me.token_preview,
@@ -78,6 +82,8 @@ pub fn reduce_auth(app: &mut App, action: AuthAction) -> Vec<Effect> {
     match action {
         AuthAction::Identified(me) => {
             app.auth = AuthState::Identified(Identity::from_response(*me));
+            // Only now is it known whose drafts a recovery file holds.
+            return super::drafts::restore_for_identity(app);
         }
         AuthAction::Rejected => app.auth = AuthState::Rejected,
     }

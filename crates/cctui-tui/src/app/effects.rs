@@ -294,6 +294,7 @@ impl DraftSaver {
         session_id: Option<String>,
         request: Box<cctui_proto::api::SpawnRequest>,
         immediate: bool,
+        generation: u64,
     ) {
         // A create already on the wire owns the row this dialog is about to get.
         // Replacing it would lose that id and mint a second row, so the save is
@@ -324,7 +325,10 @@ impl DraftSaver {
             match outcome {
                 Ok(Some(session_id)) => {
                     let _ = actions
-                        .send(Action::SpawnDrafts(SpawnDraftAction::DraftCreated { session_id }))
+                        .send(Action::SpawnDrafts(SpawnDraftAction::DraftCreated {
+                            session_id,
+                            generation,
+                        }))
                         .await;
                 }
                 Ok(None) => {}
@@ -395,8 +399,8 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
             }
         },
         Effect::FetchPendingPermissions => fetch_pending_permissions(server).await,
-        Effect::LoadConversationPage { session_id, kind, page, etag } => {
-            load_conversation_page(server, &session_id, kind, page, etag.as_deref()).await
+        Effect::LoadConversationPage { session_id, kind, claim, page, etag } => {
+            load_conversation_page(server, &session_id, kind, claim, page, etag.as_deref()).await
         }
         Effect::MarkSeen { session_id } => {
             if let Err(e) = server.mark_seen(&session_id).await {
@@ -470,8 +474,8 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
                 vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
             }
         },
-        Effect::AutosaveDraft { session_id, request, immediate } => {
-            drafts.autosave(session_id, request, immediate);
+        Effect::AutosaveDraft { session_id, request, immediate, generation } => {
+            drafts.autosave(session_id, request, immediate, generation);
             Vec::new()
         }
         Effect::CancelSpawnAutosave => {
@@ -709,12 +713,16 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
         }
         Effect::ReadAttachment { session_id, path } => read_attachment(&session_id, &path).await,
         Effect::ReadSpawnFile { path } => read_spawn_file(&path).await,
-        Effect::SaveDraftNow { key, text } => {
-            if let Err(e) = server.put_draft(&key, &text).await {
-                // The process is on its way out and this is the only copy, so it
-                // goes to disk rather than into the log.
-                tracing::warn!(%e, "flushing a draft on quit failed; keeping it locally");
-                crate::config::recovery::record(&key, &text);
+        Effect::SaveDraftNow { key, text, recovery } => {
+            match server.put_draft(&key, &text).await {
+                // The local copy was written before this was sent, so success is
+                // what removes it rather than failure being what writes it.
+                Ok(()) => {
+                    if let Some(target) = recovery {
+                        crate::config::recovery::confirm(&target.path, &target.owner, &key);
+                    }
+                }
+                Err(e) => tracing::warn!(%e, "flushing a draft on quit failed; it is kept locally"),
             }
             Vec::new()
         }
@@ -1385,6 +1393,7 @@ async fn load_conversation_page(
     server: &Client,
     session_id: &str,
     kind: PageKind,
+    claim: Option<u64>,
     page: PageRequest,
     etag: Option<&str>,
 ) -> Vec<Action> {
@@ -1396,6 +1405,7 @@ async fn load_conversation_page(
             return vec![Action::Conversation(ConversationAction::Failed {
                 session_id: session_id.to_owned(),
                 kind,
+                claim,
             })];
         }
     };
@@ -1404,6 +1414,7 @@ async fn load_conversation_page(
         return vec![Action::Conversation(ConversationAction::NotModified {
             session_id: session_id.to_owned(),
             kind,
+            claim,
         })];
     };
 
@@ -1422,6 +1433,7 @@ async fn load_conversation_page(
     let mut actions = vec![Action::Conversation(ConversationAction::Loaded {
         session_id: session_id.to_owned(),
         kind,
+        claim,
         rows: decoded,
         etag,
         has_more,
@@ -1586,20 +1598,6 @@ fn refused(name: String, refusal: cctui_client::FileRefusal) -> Action {
     })
 }
 
-/// Write the bytes to a temp file and hand it to the desktop's opener. A
-/// terminal that cannot draw images still gets the user to the picture.
-/// One path component, safe to join: no separators, no `..`, no leading dot, and
-/// nothing a shell or a handler reads as an option.
-fn staged_file_name(name: &str) -> String {
-    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
-    let cleaned: String = base
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
-        .collect();
-    let trimmed = cleaned.trim_start_matches('.').trim_matches('_');
-    if trimmed.is_empty() { "file".to_owned() } else { trimmed.chars().take(96).collect() }
-}
-
 /// Stages the bytes somewhere only this user can read and hands the path over.
 ///
 /// The directory is created fresh with 0700 and the file written 0600, so the
@@ -1621,7 +1619,7 @@ fn open_in_os_viewer(name: &str, bytes: &[u8]) {
         tracing::warn!(%e, "cannot make the staging directory private");
         return;
     }
-    let path = dir.path().join(staged_file_name(name));
+    let path = dir.path().join(super::fileview::staged_file_name(name));
     let written = {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -2044,7 +2042,7 @@ mod tests {
             Box::new(form.request())
         };
 
-        saver.autosave(None, request(), true);
+        saver.autosave(None, request(), true, 1);
         // `immediate` means the request is already going out; give it the tick it
         // needs to reach the hung server and raise its flag.
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -2054,11 +2052,69 @@ mod tests {
         assert!(saver.spawn_create_in_flight(), "it is let go of, not aborted");
 
         // And a save that arrives while it is in flight does not mint a rival row.
-        saver.autosave(None, request(), true);
+        saver.autosave(None, request(), true, 1);
         assert!(
             saver.spawn_create_in_flight(),
             "the second save is skipped until the first one's id lands"
         );
+    }
+
+    /// Answers 200 to everything, on every connection it is given.
+    ///
+    /// It has to keep accepting: building the client also starts a websocket to
+    /// the same host, so a one-shot listener is spent before the request under
+    /// test ever arrives.
+    fn accepting_server() -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(32) {
+                let Ok(mut stream) = stream else { continue };
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    let _ = stream.read(&mut buf);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+                    );
+                    let _ = stream.flush();
+                });
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
+    /// The other half of the flush: once the server has the text, the local copy
+    /// must go, or the next start would restore text that is already saved.
+    #[tokio::test]
+    async fn a_draft_the_server_takes_is_dropped_from_the_local_copy() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("a.json");
+        let owner = crate::config::recovery::Owner::new("https://one.example", "user-alice");
+        crate::config::recovery::write_to(
+            &path,
+            &owner,
+            std::iter::once(("draft:s-a".to_owned(), "saved after all".to_owned())).collect(),
+        );
+        assert!(path.exists(), "the fixture needs a local copy to start from");
+
+        let (base, _server) = accepting_server();
+        let (effects, _actions) = effects_against(&base);
+        effects.dispatch(Effect::SaveDraftNow {
+            key: "draft:s-a".to_owned(),
+            text: "saved after all".to_owned(),
+            recovery: Some(crate::config::recovery::Target {
+                owner: owner.clone(),
+                path: path.clone(),
+            }),
+        });
+        effects.drain(Duration::from_secs(10)).await;
+
+        assert!(
+            crate::config::recovery::load_from(&path, &owner).is_empty(),
+            "a confirmed save must take its key with it"
+        );
+        assert!(!path.exists(), "and the file goes once nothing is left to recover");
     }
 
     /// R13: the whole point of the flush is the case where the server is gone,
@@ -2066,22 +2122,34 @@ mod tests {
     #[tokio::test]
     async fn a_draft_the_server_refuses_is_kept_on_disk() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("recovery.json");
-        crate::config::recovery::set_path_for_tests(&path);
+        let path = tmp.path().join("a.json");
+        let owner = crate::config::recovery::Owner::new("https://one.example", "user-alice");
+        // The local copy is written by `on_quit` before the save is dispatched;
+        // this is the half that must leave it alone when the server never takes it.
+        crate::config::recovery::write_to(
+            &path,
+            &owner,
+            std::iter::once(("draft:s-a".to_owned(), "the text the server never took".to_owned()))
+                .collect(),
+        );
 
         // Nothing listening at all, so the PUT fails rather than hanging.
         let (effects, _actions) = effects_against("http://127.0.0.1:1");
         effects.dispatch(Effect::SaveDraftNow {
             key: "draft:s-a".to_owned(),
             text: "the text the server never took".to_owned(),
+            recovery: Some(crate::config::recovery::Target {
+                owner: owner.clone(),
+                path: path.clone(),
+            }),
         });
         effects.drain(Duration::from_secs(10)).await;
 
-        let held = crate::config::recovery::load_from(&path);
+        let held = crate::config::recovery::load_from(&path, &owner);
         assert_eq!(
             held.drafts.get("draft:s-a").map(String::as_str),
             Some("the text the server never took"),
-            "a failed flush must not be only a log line"
+            "a refused flush must leave the local copy in place"
         );
     }
 
@@ -2091,7 +2159,11 @@ mod tests {
         let (base, _server) = hung_server();
         let (effects, _actions) = effects_against(&base);
 
-        effects.dispatch(Effect::SaveDraftNow { key: "k".to_owned(), text: "t".to_owned() });
+        effects.dispatch(Effect::SaveDraftNow {
+            key: "k".to_owned(),
+            text: "t".to_owned(),
+            recovery: None,
+        });
         let started = std::time::Instant::now();
         tokio::time::timeout(Duration::from_secs(10), effects.drain(Duration::from_millis(300)))
             .await
@@ -2127,6 +2199,7 @@ mod tests {
             Effect::LoadConversationPage {
                 session_id: "s".to_owned(),
                 kind: super::PageKind::Latest,
+                claim: None,
                 page: super::PageRequest { before: None, after: None, limit: None },
                 etag: None,
             },
@@ -2141,7 +2214,7 @@ mod tests {
     /// shared /tmp, so a crafted name could escape the directory.
     #[test]
     fn a_staged_name_is_one_harmless_path_component() {
-        use super::staged_file_name;
+        use crate::app::fileview::staged_file_name;
         for (given, want) in [
             ("report.pdf", "report.pdf"),
             ("../../etc/passwd", "passwd"),
@@ -2169,7 +2242,7 @@ mod tests {
 
         let dir = tempfile::Builder::new().prefix("cctui-").tempdir().expect("a dir");
         std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).expect("chmod");
-        let path = dir.path().join(super::staged_file_name("secret.bin"));
+        let path = dir.path().join(crate::app::fileview::staged_file_name("secret.bin"));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);

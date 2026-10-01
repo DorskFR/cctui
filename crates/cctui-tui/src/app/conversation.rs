@@ -6,6 +6,9 @@ pub enum ConversationAction {
     Loaded {
         session_id: String,
         kind: PageKind,
+        /// Which older-page request this answers; `None` for a page nothing
+        /// claimed (the newest page, a gap refetch).
+        claim: Option<u64>,
         rows: Vec<(i64, ConversationLine)>,
         etag: Option<String>,
         has_more: bool,
@@ -13,10 +16,12 @@ pub enum ConversationAction {
     NotModified {
         session_id: String,
         kind: PageKind,
+        claim: Option<u64>,
     },
     Failed {
         session_id: String,
         kind: PageKind,
+        claim: Option<u64>,
     },
     ToggleLineCursor,
     MoveCursor {
@@ -28,8 +33,9 @@ pub enum ConversationAction {
 
 pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
     match action {
-        ConversationAction::Loaded { session_id, kind, rows, etag, has_more } => {
-            let merge = app.conversation_mut(&session_id).merge_page(kind, rows, etag, has_more);
+        ConversationAction::Loaded { session_id, kind, claim, rows, etag, has_more } => {
+            let merge =
+                app.conversation_mut(&session_id).merge_page(kind, claim, rows, etag, has_more);
             // The cursor, the viewport and the anchor all belong to whatever is
             // on screen; a background session's page must not move them.
             let on_screen = app.subscribed.as_deref() == Some(session_id.as_str());
@@ -67,12 +73,12 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
             }
             Vec::new()
         }
-        ConversationAction::NotModified { session_id, kind } => {
-            app.conversation_mut(&session_id).page_not_modified(kind);
+        ConversationAction::NotModified { session_id, kind, claim } => {
+            app.conversation_mut(&session_id).page_not_modified(kind, claim);
             Vec::new()
         }
-        ConversationAction::Failed { session_id, kind } => {
-            app.conversation_mut(&session_id).page_failed(kind);
+        ConversationAction::Failed { session_id, kind, claim } => {
+            app.conversation_mut(&session_id).page_failed(kind, claim);
             super::pins::page_failed(app);
             Vec::new()
         }
@@ -103,6 +109,7 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
         Effect::LoadConversationPage {
             session_id: session_id.clone(),
             kind: PageKind::Latest,
+            claim: None,
             page,
             etag,
         },
@@ -136,7 +143,13 @@ pub fn reconnect(app: &mut App) -> Vec<Effect> {
     let page = app.conversation_mut(&session_id).gap_request();
     vec![
         Effect::Subscribe { session_id: session_id.clone() },
-        Effect::LoadConversationPage { session_id, kind: PageKind::Gap, page, etag: None },
+        Effect::LoadConversationPage {
+            session_id,
+            kind: PageKind::Gap,
+            claim: None,
+            page,
+            etag: None,
+        },
     ]
 }
 
@@ -145,8 +158,16 @@ pub fn load_older(app: &mut App) -> Vec<Effect> {
         return Vec::new();
     }
     let Some(session_id) = app.selected_session_id() else { return Vec::new() };
-    let Some(page) = app.conversation_mut(&session_id).begin_older() else { return Vec::new() };
-    vec![Effect::LoadConversationPage { session_id, kind: PageKind::Older, page, etag: None }]
+    let Some((page, claim)) = app.conversation_mut(&session_id).begin_older() else {
+        return Vec::new();
+    };
+    vec![Effect::LoadConversationPage {
+        session_id,
+        kind: PageKind::Older,
+        claim: Some(claim),
+        page,
+        etag: None,
+    }]
 }
 
 pub fn stream(app: &mut App, session_id: &str, seq: Option<i64>, line: ConversationLine) {
@@ -251,6 +272,16 @@ pub const fn line_select_active(app: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The claim the store is waiting on, which is what the reply to the live
+    /// request carries.
+    fn outstanding(app: &mut App, session_id: &str, kind: PageKind) -> Option<u64> {
+        if kind == PageKind::Older {
+            app.conversation_mut(session_id).outstanding_claim()
+        } else {
+            None
+        }
+    }
+
     use super::{ConversationAction, PageKind, load_older, open, reconnect};
     use crate::app::action::Effect;
     use crate::app::state::{App, ConversationLine, LineKind};
@@ -270,11 +301,13 @@ mod tests {
 
     fn page(app: &mut App, kind: PageKind, rows: &[(i64, &str)], has_more: bool) {
         let rows = rows.iter().map(|(seq, text)| (*seq, line(text))).collect();
+        let claim = outstanding(app, "s-a", kind);
         reduce(
             app,
             Action::Conversation(ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind,
+                claim,
                 rows,
                 etag: Some("etag-1".to_owned()),
                 has_more,
@@ -411,11 +444,13 @@ mod tests {
         app.follow_tail = false;
         assert!(!load_older(&mut app).is_empty());
 
+        let claim = outstanding(&mut app, "s-a", PageKind::Older);
         reduce(
             &mut app,
             Action::Conversation(ConversationAction::Failed {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Older,
+                claim,
             }),
         );
         assert!(!load_older(&mut app).is_empty(), "the failed page can be asked for again");
@@ -424,11 +459,13 @@ mod tests {
     /// A page for a session other than `s-a`, which the helper above hardcodes.
     fn page_for(app: &mut App, session_id: &str, kind: PageKind, rows: &[(i64, &str)]) {
         let rows = rows.iter().map(|(seq, text)| (*seq, line(text))).collect();
+        let claim = outstanding(app, session_id, kind);
         reduce(
             app,
             Action::Conversation(ConversationAction::Loaded {
                 session_id: session_id.to_owned(),
                 kind,
+                claim,
                 rows,
                 etag: None,
                 has_more: false,
@@ -628,6 +665,7 @@ mod tests {
             Action::Conversation(ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Latest,
+                claim: None,
                 rows,
                 etag: None,
                 has_more: false,
@@ -651,6 +689,7 @@ mod tests {
             Action::Conversation(ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Latest,
+                claim: None,
                 rows: vec![(
                     1,
                     ConversationLine::new(LineKind::Thinking { redacted: false }, "hmm", 0),
@@ -703,6 +742,7 @@ mod tests {
             Action::Conversation(ConversationAction::NotModified {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Latest,
+                claim: None,
             }),
         );
         assert_eq!(

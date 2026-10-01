@@ -1084,6 +1084,7 @@ fn launched(
     // The autosaved draft this dialog was holding is now a real session: leaving
     // the row would strand a copy of the spawn in everyone's list.
     let superseded = app.spawn_drafts.editing.take();
+    app.spawn_drafts.launched = Some(app.spawn_drafts.generation);
     let mut effects = super::deeplink::apply(
         app,
         super::deeplink::Startup { open: landing, ..Default::default() },
@@ -1104,6 +1105,7 @@ fn open(app: &mut super::state::App) -> Vec<Effect> {
     } else if app.view() != View::SessionList {
         return Vec::new();
     }
+    app.spawn_drafts.generation = app.spawn_drafts.generation.wrapping_add(1);
     let mut form = SpawnForm::new();
     // An `E`/`N`/macro open seeds the form from a stored request and keeps the
     // draft row it came from; any other open is a new draft, so it must not

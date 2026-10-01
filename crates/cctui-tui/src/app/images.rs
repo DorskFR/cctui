@@ -50,11 +50,6 @@ impl Support {
     }
 }
 
-/// A cell in pixels when nothing measured it. Only the sizing maths reads it,
-/// and every protocol here re-measures on resize, so a wrong guess costs a
-/// slightly-off aspect ratio rather than a broken picture.
-const ASSUMED_CELL: (u16, u16) = (8, 16);
-
 /// The protocol the environment announces, or `None` to stay in text.
 ///
 /// Deliberately not the crate's stdio query: that writes to the tty and waits
@@ -135,13 +130,13 @@ impl Images {
     /// keeps every snapshot on the text fallback.
     pub fn detect(&mut self) {
         if let Some(protocol) = graphics_from_env(&EnvProbe) {
-            let mut picker = Picker::from_fontsize(ASSUMED_CELL.into());
+            let mut picker = Picker::halfblocks();
             picker.set_protocol_type(protocol);
             self.support = support_of(protocol);
             self.picker = Some(picker);
             return;
         }
-        if !EnvProbe.var("CCTUI_GRAPHICS_QUERY").is_some_and(|v| v == "1") {
+        if EnvProbe.var("CCTUI_GRAPHICS_QUERY").is_none_or(|v| v != "1") {
             self.support = Support::Text;
             self.picker = None;
             return;

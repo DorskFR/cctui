@@ -214,6 +214,52 @@
         "adapter_id": "claude-code",
         "model": null
       }
+    },
+    {
+      "name": "every field at once, so no key drifts unasserted",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "  /work/app/  ",
+        "name": "  nightly sweep  ",
+        "prompt": "  look at the flaky test  ",
+        "adapter_id": "codex",
+        "permission_mode": "ask",
+        "model_claude": "opus",
+        "model_codex": "gpt-5.6-sol",
+        "model_account": "ignored-unless-compatible",
+        "effort_claude": "high",
+        "effort_codex": "medium",
+        "service_tier": "fast",
+        "account": "personal",
+        "account_provider": "openai",
+        "labels": ["l-urgent", "l-infra"],
+        "context_items": ["notes.md", "runbook.md"],
+        "context_auto": true
+      },
+      "provider": "openai",
+      "expect": {
+        "machine_id": "m-1",
+        "working_dir": "/work/app",
+        "adapter_id": "codex",
+        "name": "nightly sweep",
+        "prompt": "look at the flaky test",
+        "prompt_name": null,
+        "permission_mode": "ask",
+        "effort": "medium",
+        "service_tier": "fast",
+        "model": "gpt-5.6-sol",
+        "account": "personal",
+        "provider": "openai",
+        "no_account": false,
+        "auto_account": false,
+        "pool": null,
+        "save_draft": false,
+        "label_ids": ["l-urgent", "l-infra"],
+        "context": { "items": ["notes.md", "runbook.md"], "auto": true },
+        "profile_id": null,
+        "relation": null,
+        "parent_session_id": null
+      }
     }
   ]
 }

@@ -108,7 +108,10 @@ pub fn summary_spans(app: &App, width: usize) -> Vec<Span<'static>> {
             theme::dim(),
         ),
         Span::raw("  "),
-        Span::styled(format!("${:.2}{}", s.today_cost_usd, word("today")), theme::cost()),
+        Span::styled(
+            format!("{}{}", cctui_clientcore::usage::money(s.today_cost_usd), word("today")),
+            theme::cost(),
+        ),
     ];
     if s.unread > 0 {
         spans.push(Span::raw("  "));
@@ -149,6 +152,7 @@ mod tests {
     fn a_placeholder_keeps_its_number_once_the_labels_stop_fitting() {
         let mut app = app();
         app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+            user_id: None,
             role: "user".to_owned(),
             user_name: Some("tester".to_owned()),
             scopes: vec!["admin".to_owned()],

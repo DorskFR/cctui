@@ -44,9 +44,43 @@ pub fn classify(content_type: &str) -> FileKind {
 const MARKUP_AS_TEXT: [&str; 4] =
     ["text/html", "application/xhtml+xml", "image/svg+xml", "application/xml"];
 
-/// Types a handler would run rather than show. The bytes come from a session,
-/// so handing one to the desktop is handing it execution.
-const NEVER_EXTERNAL: [&str; 14] = [
+/// One path component, safe to join: no separators, no `..`, no leading dot, and
+/// nothing a shell or a handler reads as an option.
+///
+/// This is the name the OS will see, so it is also the name the open policy must
+/// judge. Keeping both in one function is what stops the two from disagreeing.
+#[must_use]
+pub fn staged_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let trimmed = cleaned.trim_start_matches('.').trim_matches('_');
+    if trimmed.is_empty() { "file".to_owned() } else { trimmed.chars().take(96).collect() }
+}
+
+/// Extensions cctui will hand to the desktop: documents and media a viewer
+/// displays or plays, never anything a handler executes or renders as markup.
+///
+/// An allow-list rather than a deny-list, because this is a security boundary
+/// and the unknown case has to be the safe one: a type nobody listed, or a name
+/// the sanitizer folded into something else, must not reach a handler.
+const SAFE_TO_OPEN: [&str; 54] = [
+    "pdf", // Raster images. `svg` is absent on purpose: it carries script.
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif", "ico",
+    // Office documents.
+    "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "epub",
+    // Text and data.
+    "txt", "text", "log", "md", "markdown", "csv", "tsv", "json", "yaml", "yml", "toml", "ini",
+    "conf", "cfg", "diff", "patch", // Media.
+    "mp3", "wav", "flac", "ogg", "oga", "opus", "m4a", "aac", "mp4", "m4v", "mkv", "webm", "mov",
+    "avi",
+];
+
+/// Served types that must never reach a handler whatever the name says, so a
+/// `report.pdf` served as `text/html` is still refused.
+const NEVER_EXTERNAL_TYPE: [&str; 14] = [
     "application/x-sh",
     "application/x-shellscript",
     "text/x-shellscript",
@@ -54,7 +88,6 @@ const NEVER_EXTERNAL: [&str; 14] = [
     "application/x-msdownload",
     "application/x-desktop",
     "application/vnd.microsoft.portable-executable",
-    // A browser runs script in these from a file:// origin.
     "text/html",
     "application/xhtml+xml",
     "image/svg+xml",
@@ -64,49 +97,40 @@ const NEVER_EXTERNAL: [&str; 14] = [
     "application/x-ms-shortcut",
 ];
 
-/// Extensions the type alone would not catch. A served `content_type` is the
-/// sender's claim; the name is what the handler will dispatch on.
-const NEVER_EXTERNAL_SUFFIX: [&str; 21] = [
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".desktop",
-    ".exe",
-    ".msi",
-    ".bat",
-    ".cmd",
-    ".command",
-    ".html",
-    ".htm",
-    ".xhtml",
-    ".svg",
-    ".jar",
-    ".py",
-    ".ps1",
-    ".appimage",
-    ".url",
-    ".webloc",
-    ".lnk",
-    ".scpt",
-];
+/// Extensions that mean markup, for the wording only: these are refused by the
+/// allow-list regardless, but saying "shows the source instead" is the honest
+/// reason when the pager is already showing it.
+const MARKUP_SUFFIX: [&str; 4] = ["html", "htm", "xhtml", "svg"];
 
-/// Names that mean markup whatever the served type claims.
-const MARKUP_SUFFIX: [&str; 4] = [".html", ".htm", ".xhtml", ".svg"];
+/// The staged name's extension, lowercased, or `None` when it has none.
+fn staged_extension(staged: &str) -> Option<String> {
+    let (stem, ext) = staged.rsplit_once('.')?;
+    (!stem.is_empty() && !ext.is_empty()).then(|| ext.to_ascii_lowercase())
+}
 
 /// Why this file must not be handed to the desktop, or `None` to allow it.
+///
+/// Judged on [`staged_file_name`], never on the name as displayed: the two can
+/// differ, and the handler only ever sees the staged one.
 #[must_use]
 pub fn refuse_external_open(name: &str, content_type: &str) -> Option<String> {
     let base = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
-    let lower = name.to_ascii_lowercase();
-    if !NEVER_EXTERNAL.contains(&base.as_str())
-        && !NEVER_EXTERNAL_SUFFIX.iter().any(|ext| lower.ends_with(ext))
-    {
-        return None;
-    }
-    if MARKUP_AS_TEXT.contains(&base.as_str()) || MARKUP_SUFFIX.iter().any(|e| lower.ends_with(e)) {
+    let staged = staged_file_name(name);
+    let ext = staged_extension(&staged);
+
+    let markup = ext.as_deref().is_some_and(|e| MARKUP_SUFFIX.contains(&e))
+        || MARKUP_AS_TEXT.contains(&base.as_str());
+    if markup {
         return Some(format!("{name} can run script in a browser — showing the source instead"));
     }
-    Some(format!("{name} is a program, not a document — refusing to open it"))
+    if NEVER_EXTERNAL_TYPE.contains(&base.as_str()) {
+        return Some(format!("{name} is a program, not a document — refusing to open it"));
+    }
+    match ext {
+        Some(ext) if SAFE_TO_OPEN.contains(&ext.as_str()) => None,
+        Some(ext) => Some(format!("{name} is a .{ext}, which cctui will not hand to the desktop")),
+        None => Some(format!("{name} has no type cctui recognises — refusing to open it")),
+    }
 }
 
 /// Which route a read came from. A blob is the server's own store and knows
@@ -288,7 +312,7 @@ mod tests {
 
     use super::{
         FileKind, FileSource, FileViewAction, classify, denied_roots, may_live_elsewhere,
-        refusal_message, refuse_external_open,
+        refusal_message, refuse_external_open, staged_file_name,
     };
     use crate::app::action::Effect;
     use crate::app::{Action, App, LineKind, reduce};
@@ -351,6 +375,102 @@ mod tests {
             let why = refuse_external_open(name, content_type)
                 .unwrap_or_else(|| panic!("{name} ({content_type}) must be refused"));
             assert!(why.contains("script"), "{name}: {why}");
+        }
+    }
+
+    /// must-fix 1: the refusal read the DISPLAYED name while the file was staged
+    /// under a sanitized one. `report.html_` passed the deny-list and was staged
+    /// as `report.html`, so the browser opened it from a file origin.
+    ///
+    /// Every case here is a name the sanitizer folds onto a dangerous one.
+    #[test]
+    fn a_name_the_sanitizer_folds_onto_markup_is_still_refused() {
+        for given in [
+            "report.html_",        // the reported case: the trailing _ is trimmed
+            "report.html__",       // more of it
+            "report.html ",        // trailing space -> _ -> trimmed
+            "report.html\t",       // any whitespace, same path
+            "report.html;",        // punctuation -> _ -> trimmed
+            "report.html\u{00a0}", // non-breaking space, folded like any non-ASCII
+            "report.html\u{200b}", // zero-width space: invisible in the UI
+            "report.html\u{2060}", // word joiner
+            "chart.svg_",          // the same hole for SVG
+            "chart.svg\u{200b}",
+            "page.xhtml_",
+            "x.htm_",
+            "REPORT.HTML_", // mixed case, and the fold still applies
+            "a.txt.html_",  // the last extension is what dispatches
+            "/home/dev/report.html_",
+            "../../report.html_",
+        ] {
+            let staged = staged_file_name(given);
+            let why = refuse_external_open(given, "application/octet-stream")
+                .unwrap_or_else(|| panic!("{given:?} staged as {staged:?} reached the desktop"));
+            assert!(why.contains("script"), "{given:?}: {why}");
+        }
+    }
+
+    /// The reported case, through the whole path: `o` on `report.html_` must
+    /// produce no open effect, and the name the staging would use is the one the
+    /// verdict was reached on.
+    #[test]
+    fn pressing_o_on_the_reported_case_reaches_no_handler() {
+        let mut app = App::new();
+        reduce(&mut app, Action::FileView(opened("report.html_", "application/octet-stream")));
+
+        let effects = reduce(&mut app, Action::FileView(FileViewAction::OpenInOsViewer));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::OpenInOsViewer { .. })),
+            "report.html_ was staged as report.html and handed to the browser"
+        );
+        assert_eq!(staged_file_name("report.html_"), "report.html", "the fold still happens");
+        let said = app.toasts.latest().expect("a toast").text.clone();
+        assert!(said.contains("script"), "{said}");
+    }
+
+    /// The property behind the bug, stated directly: the verdict is the staged
+    /// name's verdict, because that is the only name a handler ever sees.
+    #[test]
+    fn the_verdict_is_decided_on_the_staged_name() {
+        for given in [
+            "report.html_",
+            "report.html ",
+            "install.sh_",
+            "payload.desktop_",
+            "report.pdf",
+            "shot.png",
+            "a.bin",
+        ] {
+            let staged = staged_file_name(given);
+            assert_eq!(
+                refuse_external_open(given, "").is_none(),
+                refuse_external_open(&staged, "").is_none(),
+                "{given:?} and its staged name {staged:?} must get the same answer"
+            );
+        }
+    }
+
+    /// The same fold used to launder executables, not just markup.
+    #[test]
+    fn a_name_the_sanitizer_folds_onto_a_program_is_still_refused() {
+        for given in ["install.sh_", "run.bat ", "thing.exe\u{200b}", "payload.desktop_", "a.py_"] {
+            let staged = staged_file_name(given);
+            assert!(
+                refuse_external_open(given, "application/octet-stream").is_some(),
+                "{given:?} staged as {staged:?} reached the desktop"
+            );
+        }
+    }
+
+    /// A trailing dot is not trimmed, so the staged name has no extension at all
+    /// and the allow-list refuses it rather than letting a handler sniff.
+    #[test]
+    fn a_name_with_no_usable_extension_is_refused() {
+        for given in ["report.html.", "report.", "report"] {
+            assert!(
+                refuse_external_open(given, "application/octet-stream").is_some(),
+                "{given:?} must be refused"
+            );
         }
     }
 
@@ -546,7 +666,7 @@ mod tests {
     #[test]
     fn an_unknown_type_is_shown_not_launched() {
         let mut app = App::new();
-        let effects = reduce(&mut app, Action::FileView(opened("thing.bin", "application/pdf")));
+        let effects = reduce(&mut app, Action::FileView(opened("report.pdf", "application/pdf")));
         assert!(
             !effects.iter().any(|e| matches!(e, Effect::OpenInOsViewer { .. })),
             "opening a file must not hand it to the desktop on its own"
@@ -580,14 +700,40 @@ mod tests {
                 !effects.iter().any(|e| matches!(e, Effect::OpenInOsViewer { .. })),
                 "{name} reached the desktop anyway"
             );
-            assert!(app.toasts.latest().expect("a toast").text.contains("program"));
+            let said = app.toasts.latest().expect("a toast").text.clone();
+            assert!(said.contains(name), "the toast names the file: {said}");
         }
     }
 
     #[test]
     fn a_document_is_still_openable_on_request() {
-        for (name, content_type) in [("report.pdf", "application/pdf"), ("a.bin", "")] {
-            assert_eq!(refuse_external_open(name, content_type), None, "{name} is not a program");
+        for (name, content_type) in [
+            ("report.pdf", "application/pdf"),
+            ("shot.png", "image/png"),
+            ("notes.txt", "text/plain"),
+            ("sheet.xlsx", ""),
+            ("clip.mp4", "video/mp4"),
+            ("/home/dev/sub dir/report.pdf", "application/pdf"),
+        ] {
+            assert_eq!(refuse_external_open(name, content_type), None, "{name} is a document");
+        }
+    }
+
+    /// An allow-list means the unknown is refused, which is the point of having
+    /// one: a type nobody listed cannot be handed out by default.
+    #[test]
+    fn an_unlisted_type_is_refused_rather_than_guessed_at() {
+        for (name, content_type) in [
+            ("a.bin", ""),
+            ("thing.unknownext", "application/octet-stream"),
+            ("archive.zip", "application/zip"),
+            ("noextension", "application/octet-stream"),
+            ("", ""),
+        ] {
+            assert!(
+                refuse_external_open(name, content_type).is_some(),
+                "{name} is not a known-safe document and must be refused"
+            );
         }
     }
 }

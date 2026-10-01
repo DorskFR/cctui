@@ -852,6 +852,7 @@ mod tests {
             Action::Conversation(crate::app::conversation::ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind: crate::app::conversation_store::PageKind::Latest,
+                claim: None,
                 rows: vec![(
                     7,
                     crate::app::state::ConversationLine::new(

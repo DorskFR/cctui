@@ -299,12 +299,6 @@ async fn run(
     effects.dispatch(app::action::Effect::FetchIdentity);
     app.permissions.fetch_started();
     effects.dispatch(app::action::Effect::FetchPendingPermissions);
-    // Drafts a previous exit could not hand over. They go back before the server
-    // index lands; the index only fills gaps, so the newer local copy wins.
-    effects.dispatch_all(app::drafts::restore_recovered(&mut app, config::recovery::load()));
-    // The texts are in hand now; a quit that still cannot reach the server writes
-    // them again, so the file must not outlive this restore.
-    config::recovery::clear();
     effects.dispatch(app::action::Effect::LoadDraftIndex);
     effects.dispatch(app::action::Effect::FetchDispatchers);
     // The status line counts machines, so it cannot wait for the slice's visit.

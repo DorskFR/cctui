@@ -60,15 +60,21 @@ pub enum AttentionAction {
 /// card answered while a reconnect fetch is in flight, which is a handful.
 const RESOLVED_MEMORY: usize = 32;
 
+/// Fetches are issued on startup and on reconnect, so a handful can be out at
+/// once; past that the oldest bar is kept rather than tracking more.
+const MAX_OUTSTANDING_FETCHES: usize = 16;
+
 #[derive(Debug, Default)]
 pub struct PermissionInbox {
     items: Vec<PendingPermission>,
     /// Arrival stamp per item, same order as `items`.
     arrived: Vec<u64>,
     seq: u64,
-    /// The stamp the newest in-flight fetch was issued at. Anything stamped
-    /// above it the server's reply cannot know about yet.
-    fetched_at: u64,
+    /// The stamp each in-flight fetch was issued at, oldest first. One stamp is
+    /// not enough: a second fetch issued while the first is still out would
+    /// raise the bar for the first one's reply and drop the cards that arrived
+    /// between them.
+    outstanding: std::collections::VecDeque<u64>,
     resolved_since: Vec<(String, String, u64)>,
 }
 
@@ -84,8 +90,11 @@ impl PermissionInbox {
 
     /// Called when a pending-permissions fetch is issued, so its reply can tell
     /// what the server had yet to see.
-    pub const fn fetch_started(&mut self) {
-        self.fetched_at = self.seq;
+    pub fn fetch_started(&mut self) {
+        if self.outstanding.len() >= MAX_OUTSTANDING_FETCHES {
+            return;
+        }
+        self.outstanding.push_back(self.seq);
     }
 
     /// The server's list is authoritative for everything it could observe: it
@@ -94,10 +103,14 @@ impl PermissionInbox {
     /// so a card that arrived since survives, and one answered since stays gone
     /// rather than being resurrected by an older list.
     pub fn merge_fetched(&mut self, items: Vec<PendingPermission>) {
+        // A reply speaks for the state at the oldest issue time still out: with
+        // replies that cross, the lower bar only keeps a card a later fetch will
+        // clear, where the higher one would drop a live card for good.
+        let cutoff = self.outstanding.pop_front().unwrap_or(self.seq);
         let mut merged: Vec<PendingPermission> = Vec::with_capacity(items.len() + self.items.len());
         let mut stamps: Vec<u64> = Vec::with_capacity(merged.capacity());
         for req in items {
-            if self.resolved_after_fetch(&req.session_id, &req.request_id) {
+            if self.resolved_after(&req.session_id, &req.request_id, cutoff) {
                 continue;
             }
             let stamp =
@@ -106,7 +119,7 @@ impl PermissionInbox {
             stamps.push(stamp);
         }
         for (at, req) in self.items.iter().enumerate() {
-            if self.arrived[at] <= self.fetched_at {
+            if self.arrived[at] <= cutoff {
                 continue;
             }
             if merged
@@ -120,7 +133,10 @@ impl PermissionInbox {
         }
         self.items = merged;
         self.arrived = stamps;
-        self.resolved_since.retain(|(_, _, at)| *at > self.fetched_at);
+        // A resolution newer than the oldest fetch still out is still needed to
+        // stop that one's older list resurrecting the card.
+        let keep_from = self.outstanding.front().copied().unwrap_or(cutoff);
+        self.resolved_since.retain(|(_, _, at)| *at > keep_from);
     }
 
     pub fn resolve(&mut self, session_id: &str, request_id: &str) {
@@ -135,10 +151,10 @@ impl PermissionInbox {
         }
     }
 
-    fn resolved_after_fetch(&self, session_id: &str, request_id: &str) -> bool {
+    fn resolved_after(&self, session_id: &str, request_id: &str, cutoff: u64) -> bool {
         self.resolved_since
             .iter()
-            .any(|(s, r, at)| s == session_id && r == request_id && *at > self.fetched_at)
+            .any(|(s, r, at)| s == session_id && r == request_id && *at > cutoff)
     }
 
     fn position(&self, session_id: &str, request_id: &str) -> Option<usize> {
@@ -599,6 +615,59 @@ mod tests {
             app.permissions.head("s-a").map(|p| p.request_id.clone()),
             Some("live".to_owned())
         );
+    }
+
+    /// Two fetches out at once: the first reply must still be judged against the
+    /// moment *it* was issued, or the card that arrived between them is dropped.
+    #[test]
+    fn a_second_fetch_does_not_make_the_first_reply_drop_a_live_card() {
+        let mut app = app();
+        app.permissions.fetch_started();
+        attention(&mut app, AttentionAction::PermissionRequested(request("s-a", "live")));
+        app.permissions.fetch_started();
+
+        // The first reply: taken before "live" existed, so it does not list it.
+        attention(
+            &mut app,
+            AttentionAction::PendingPermissionsLoaded(vec![request("s-b", "older")]),
+        );
+        assert!(app.permissions.has("s-a"), "the card that arrived mid-flight must survive");
+        assert!(app.permissions.has("s-b"));
+
+        // The second reply knows about both.
+        attention(
+            &mut app,
+            AttentionAction::PendingPermissionsLoaded(vec![
+                request("s-a", "live"),
+                request("s-b", "older"),
+            ]),
+        );
+        assert!(app.permissions.has("s-a"));
+        assert!(app.permissions.has("s-b"));
+    }
+
+    /// A card answered while two fetches are out must not be resurrected by
+    /// either of their older lists.
+    #[test]
+    fn an_answer_outlives_every_fetch_that_was_already_out() {
+        let mut app = app();
+        attention(&mut app, AttentionAction::PermissionRequested(request("s-a", "r1")));
+        app.permissions.fetch_started();
+        app.permissions.fetch_started();
+        attention(
+            &mut app,
+            AttentionAction::PermissionResolved {
+                session_id: "s-a".to_owned(),
+                request_id: "r1".to_owned(),
+            },
+        );
+        for _ in 0..2 {
+            attention(
+                &mut app,
+                AttentionAction::PendingPermissionsLoaded(vec![request("s-a", "r1")]),
+            );
+            assert!(!app.permissions.has("s-a"), "the answered card must stay gone");
+        }
     }
 
     /// And one answered after the fetch was issued must not come back, because

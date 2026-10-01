@@ -1319,6 +1319,29 @@ fn session_info_popup_narrow() {
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }
 
+/// Every dollar on screen goes through the shared formatter, so a cost sitting
+/// exactly on a tie reads the same here as in the web UI. Rust's own `{:.2}`
+/// rounds 1.125 to even ("$1.12"); `toFixed` and therefore cctui round away
+/// from zero.
+#[test]
+fn a_cost_on_a_rounding_tie_reads_as_the_web_ui_reads_it() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    for row in &mut app.sessions {
+        row.token_usage.cost_usd = 1.125;
+    }
+    app.update_aggregates();
+    let list = render_screen(&mut app);
+    assert!(list.contains("$1.13"), "the list row must not round to even: {list}");
+    assert!(!list.contains("$1.12"), "{list}");
+
+    let id = selected(&app);
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    let conversation = render_screen(&mut app);
+    assert!(conversation.contains("$1.13"), "the header must agree: {conversation}");
+}
+
 #[test]
 fn session_list_secondary_badges() {
     let mut app = app_with_sessions();
@@ -1955,6 +1978,7 @@ fn app_with_dispatchers(scopes: &[&str]) -> crate::app::App {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
     app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        user_id: None,
         role: "user".to_owned(),
         user_name: Some("dev".to_owned()),
         scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
@@ -2560,6 +2584,7 @@ fn app_with_instance(role: &str, latest: Option<&str>, hook: bool, ready: bool) 
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
     app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        user_id: None,
         role: role.to_owned(),
         user_name: Some("dev".to_owned()),
         scopes: vec!["read".to_owned()],
@@ -2991,6 +3016,7 @@ fn app_in_access_slice(scopes: &[&str]) -> crate::app::App {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
     app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        user_id: None,
         role: "admin".to_owned(),
         user_name: Some("dorsk".to_owned()),
         scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),

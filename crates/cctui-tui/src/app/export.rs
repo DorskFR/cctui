@@ -289,9 +289,14 @@ fn markdown_block(
             .then(|| tool_body(tool, input, pretty_diff)),
         AgentEvent::ToolResult { tool, output_summary, error, .. } => {
             let category = if *error { Category::Error } else { Category::Result };
-            filter
-                .shows(category)
-                .then(|| format!("**Result · {tool}**\n\n{}", fenced(output_summary, "")))
+            // The served shape carries no tool name — it belongs to the call
+            // above — so the label is dropped rather than left dangling.
+            let head = if tool.is_empty() {
+                "**Result**".to_owned()
+            } else {
+                format!("**Result · {tool}**")
+            };
+            filter.shows(category).then(|| format!("{head}\n\n{}", fenced(output_summary, "")))
         }
         AgentEvent::ContextReset { .. } => filter
             .shows(Category::Reset)
@@ -541,6 +546,34 @@ mod tests {
         };
         let md = to_markdown(&meta(), &[call], &Filter::default());
         assert!(md.contains("```json\n{\n  \"pattern\": \"a\nb\"\n}\n```"), "{md}");
+    }
+
+    /// The served shape has no tool name, so the label must not be left hanging
+    /// after its separator.
+    #[test]
+    fn a_result_with_no_tool_name_drops_the_label_cleanly() {
+        let served = AgentEvent::ToolResult {
+            tool: String::new(),
+            output_summary: "ok".to_owned(),
+            kind: None,
+            error: false,
+            ts: 1,
+            seq: None,
+        };
+        let md = to_markdown(&meta(), &[served], &Filter::default());
+        assert!(md.contains("**Result**"), "{md}");
+        assert!(!md.contains("Result · "), "no dangling separator: {md}");
+
+        let named = AgentEvent::ToolResult {
+            tool: "Read".to_owned(),
+            output_summary: "ok".to_owned(),
+            kind: None,
+            error: false,
+            ts: 1,
+            seq: None,
+        };
+        let md = to_markdown(&meta(), &[named], &Filter::default());
+        assert!(md.contains("**Result · Read**"), "a name still shows: {md}");
     }
 
     #[test]

@@ -296,13 +296,19 @@ pub fn jump_to_seq(app: &mut App, seq: i64) -> Vec<Effect> {
         app.toast(Level::Warn, "gave up looking for that message");
         return Vec::new();
     }
-    let Some(page) = app.conversation_mut(&session_id).begin_older() else {
+    let Some((page, claim)) = app.conversation_mut(&session_id).begin_older() else {
         app.pins.pending_jump = None;
         app.toast(Level::Warn, "that message is no longer in the transcript");
         return Vec::new();
     };
     app.pins.pending_jump = Some(PendingJump { seq, steps: steps + 1 });
-    vec![Effect::LoadConversationPage { session_id, kind: PageKind::Older, page, etag: None }]
+    vec![Effect::LoadConversationPage {
+        session_id,
+        kind: PageKind::Older,
+        claim: Some(claim),
+        page,
+        etag: None,
+    }]
 }
 
 /// Arm a jump before the transcript is loaded: the first page that lands
@@ -362,11 +368,17 @@ mod tests {
             .iter()
             .map(|(seq, text)| (*seq, ConversationLine::new(LineKind::Assistant, *text, 0)))
             .collect();
+        // An older reply carries the claim of the request it answers, the way
+        // the effect does.
+        let claim = (kind == PageKind::Older)
+            .then(|| app.conversation_mut("s-a").outstanding_claim())
+            .flatten();
         reduce(
             app,
             Action::Conversation(ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind,
+                claim,
                 rows,
                 etag: None,
                 has_more,

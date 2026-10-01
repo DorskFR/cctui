@@ -35,6 +35,12 @@
       "ts": 4
     },
     {
+      "type": "tool_result",
+      "output_summary": "ok",
+      "error": false,
+      "ts": 4
+    },
+    {
       "type": "tool_call",
       "tool": "Edit",
       "input": {
@@ -93,5 +99,5 @@
     { "type": "turn_end", "ts": 16 },
     { "type": "text", "content": "   ", "ts": 17 }
   ],
-  "expected": "# cctui\n\nsession: `s-golden` · machine: orion · model: opus · cwd: `/home/dev/cctui`\n**User:**\n\nrefactor the parser\n\n**Thinking:**\n\nweighing two options\n\n**Tool · Bash**\n\n```sh\n# run the suite\ncargo test\n```\n\n**Result · Bash**\n\n```\nexit 101 · 3 failed\n```\n\n**Tool · Edit**\n\n```diff\nsrc/parser.rs\n- fn parse() {}\n+ fn parse() -> Ast {}\n```\n\n**Tool · Grep**\n\n```json\n{\n  \"pattern\": \"fn parse\"\n}\n```\n\n**Assistant:**\n\nthe parser is fixed\n\n_session hibernated_\n\n**Peer · lane-b:**\n\nrebase please\n\n**System:**\n\n<system-reminder>stay on task</system-reminder>\n\n**Poll:**\n\n# Autonomous loop\ncheck the queue\n\n---\n\n_⟳ context reset · /clear or /compact_\n\n---\n\n**Compacted context:**\n\nwe fixed the parser\n\n_Needs action: waiting on you_\n"
+  "expected": "# cctui\n\nsession: `s-golden` · machine: orion · model: opus · cwd: `/home/dev/cctui`\n**User:**\n\nrefactor the parser\n\n**Thinking:**\n\nweighing two options\n\n**Tool · Bash**\n\n```sh\n# run the suite\ncargo test\n```\n\n**Result · Bash**\n\n```\nexit 101 · 3 failed\n```\n\n**Result**\n\n```\nok\n```\n\n**Tool · Edit**\n\n```diff\nsrc/parser.rs\n- fn parse() {}\n+ fn parse() -> Ast {}\n```\n\n**Tool · Grep**\n\n```json\n{\n  \"pattern\": \"fn parse\"\n}\n```\n\n**Assistant:**\n\nthe parser is fixed\n\n_session hibernated_\n\n**Peer · lane-b:**\n\nrebase please\n\n**System:**\n\n<system-reminder>stay on task</system-reminder>\n\n**Poll:**\n\n# Autonomous loop\ncheck the queue\n\n---\n\n_⟳ context reset · /clear or /compact_\n\n---\n\n**Compacted context:**\n\nwe fixed the parser\n\n_Needs action: waiting on you_\n"
 }

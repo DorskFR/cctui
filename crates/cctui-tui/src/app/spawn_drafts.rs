@@ -58,6 +58,13 @@ pub struct SpawnDraftState {
     /// The draft row the open dialog is editing, so its autosave replaces that
     /// row instead of making another.
     pub editing: Option<String>,
+    /// Which dialog instance is open. Every save carries it and every reply is
+    /// matched against it: a create that lands after its own dialog closed must
+    /// not attach its row to the next one.
+    pub generation: u64,
+    /// A generation whose dialog launched while its create was still in flight.
+    /// The row that create mints is a duplicate of the session now running.
+    pub launched: Option<u64>,
 }
 
 impl SpawnDraftState {
@@ -111,6 +118,7 @@ fn autosave_with(app: &App, immediate: bool) -> Vec<Effect> {
         session_id: app.spawn_drafts.editing.clone(),
         request: Box::new(draft),
         immediate,
+        generation: app.spawn_drafts.generation,
     }]
 }
 
@@ -136,6 +144,7 @@ pub enum SpawnDraftAction {
     /// The row the first autosave minted, so later saves replace it.
     DraftCreated {
         session_id: String,
+        generation: u64,
     },
     /// `X` on a draft row, behind a confirm.
     Discard,
@@ -170,10 +179,17 @@ pub fn reduce_drafts(app: &mut App, action: SpawnDraftAction) -> Vec<Effect> {
             app.spawn_drafts.env_prompt = None;
             Vec::new()
         }
-        SpawnDraftAction::DraftCreated { session_id } => {
-            // A save that lands after the dialog closed has nothing to adopt it;
-            // the row stays a draft the list can edit or discard.
-            if app.spawn.is_none() {
+        SpawnDraftAction::DraftCreated { session_id, generation } => {
+            // The dialog that asked for this row launched in the meantime, so the
+            // row duplicates a live session.
+            if app.spawn_drafts.launched == Some(generation) {
+                app.spawn_drafts.launched = None;
+                return vec![Effect::DiscardDraftSession { session_id }];
+            }
+            // Anything from another dialog instance — or from one that is gone —
+            // is left as a draft row the list can edit or discard. Adopting it
+            // would point this dialog's saves at another spawn's row.
+            if app.spawn.is_none() || app.spawn_drafts.generation != generation {
                 return Vec::new();
             }
             if app.spawn_drafts.editing.is_none() {
@@ -378,6 +394,12 @@ mod tests {
         reduce(app, Action::SpawnDrafts(action))
     }
 
+    /// The reply the open dialog's own first autosave would produce.
+    fn created(app: &mut App, session_id: &str) -> Vec<Effect> {
+        let generation = app.spawn_drafts.generation;
+        act(app, SpawnDraftAction::DraftCreated { session_id: session_id.to_owned(), generation })
+    }
+
     #[test]
     fn typing_in_the_dialog_autosaves_it_as_a_draft_without_its_env() {
         let mut app = app_with(vec![session("s-a", "alpha", "active", "working")]);
@@ -397,7 +419,7 @@ mod tests {
         form.env = vec![("TOKEN".to_owned(), "secret".to_owned()), (" ".to_owned(), String::new())];
 
         match super::autosave(&app).as_slice() {
-            [Effect::AutosaveDraft { session_id, request, immediate }] => {
+            [Effect::AutosaveDraft { session_id, request, immediate, .. }] => {
                 assert!(session_id.is_none(), "the first save mints the row");
                 assert!(!immediate, "typing waits out the debounce");
                 assert!(request.save_draft, "it is a draft, not a launch");
@@ -440,7 +462,7 @@ mod tests {
         let mut app = app_with_open_dialog();
         assert_eq!(autosave_target(&app), None, "the first save has no row yet");
 
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-7".to_owned() });
+        created(&mut app, "d-7");
         assert_eq!(
             autosave_target(&app),
             Some("d-7".to_owned()),
@@ -449,14 +471,14 @@ mod tests {
 
         // A second reply (a save that was already in flight) must not move the
         // dialog onto a different row.
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-8".to_owned() });
+        created(&mut app, "d-8");
         assert_eq!(autosave_target(&app), Some("d-7".to_owned()));
     }
 
     #[test]
     fn escaping_the_dialog_leaves_its_draft_id_behind_so_the_next_spawn_is_its_own() {
         let mut app = app_with_open_dialog();
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-7".to_owned() });
+        created(&mut app, "d-7");
         assert_eq!(autosave_target(&app), Some("d-7".to_owned()));
 
         reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Close));
@@ -474,7 +496,7 @@ mod tests {
     #[test]
     fn launching_the_second_spawn_does_not_delete_the_first_ones_draft() {
         let mut app = app_with_open_dialog();
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-7".to_owned() });
+        created(&mut app, "d-7");
         reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Close));
 
         reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
@@ -540,10 +562,69 @@ mod tests {
     }
 
     #[test]
+    fn a_late_create_from_a_closed_dialog_is_not_adopted_by_the_next_one() {
+        let mut app = app_with_open_dialog();
+        let stale = app.spawn_drafts.generation;
+        reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Close));
+
+        // Dialog B opens while A's create is still in flight.
+        reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
+        let form = app.spawn.as_mut().expect("the dialog");
+        form.fields.machine_id = "m-1".to_owned();
+        form.fields.working_dir = "/w".to_owned();
+        form.fields.prompt = "b's plan".to_owned();
+        assert_ne!(app.spawn_drafts.generation, stale, "each dialog is its own instance");
+
+        // A's reply lands now. Adopting it would point B's saves at A's row.
+        act(
+            &mut app,
+            SpawnDraftAction::DraftCreated { session_id: "d-a".to_owned(), generation: stale },
+        );
+        assert_eq!(app.spawn_drafts.editing, None, "B does not inherit A's row");
+        assert_eq!(autosave_target(&app), None, "so B still mints its own");
+
+        // B's own reply is adopted as normal.
+        created(&mut app, "d-b");
+        assert_eq!(autosave_target(&app), Some("d-b".to_owned()));
+    }
+
+    #[test]
+    fn a_row_created_for_a_dialog_that_already_launched_is_discarded() {
+        let mut app = app_with_open_dialog();
+        let generation = app.spawn_drafts.generation;
+        let command_id = uuid::Uuid::new_v4();
+        app.spawn.as_mut().expect("the dialog").launching = Some(command_id);
+        reduce(
+            &mut app,
+            Action::Spawn(crate::app::spawn::SpawnAction::Launched {
+                command_id,
+                ok: true,
+                error: None,
+                session_id: Some("s-new".to_owned()),
+            }),
+        );
+
+        // The create was still in flight when the launch went through, so the row
+        // it mints duplicates the session that is now running.
+        let effects = act(
+            &mut app,
+            SpawnDraftAction::DraftCreated { session_id: "d-orphan".to_owned(), generation },
+        );
+        assert!(
+            effects.iter().any(|e| matches!(
+                e,
+                Effect::DiscardDraftSession { session_id } if session_id == "d-orphan"
+            )),
+            "a draft row for a launched spawn must not be left in the list"
+        );
+        assert_eq!(app.spawn_drafts.launched, None, "and it is only discarded once");
+    }
+
+    #[test]
     fn a_created_row_landing_after_the_dialog_closed_is_not_adopted() {
         let mut app = app_with_open_dialog();
         reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Close));
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-7".to_owned() });
+        created(&mut app, "d-7");
         assert_eq!(app.spawn_drafts.editing, None, "nothing is open to own that row");
     }
 
@@ -552,14 +633,14 @@ mod tests {
         let mut app = app_with(vec![draft_row("d-1", &json!({ "prompt": "half" }))]);
         act(&mut app, SpawnDraftAction::Edit);
         reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-9".to_owned() });
+        created(&mut app, "d-9");
         assert_eq!(app.spawn_drafts.editing.as_deref(), Some("d-1"));
     }
 
     #[test]
     fn launching_the_dialog_discards_the_draft_row_it_autosaved() {
         let mut app = app_with_open_dialog();
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-7".to_owned() });
+        created(&mut app, "d-7");
 
         let command_id = uuid::Uuid::new_v4();
         app.spawn.as_mut().expect("the dialog").launching = Some(command_id);
@@ -585,7 +666,7 @@ mod tests {
     #[test]
     fn a_failed_launch_keeps_the_draft_row() {
         let mut app = app_with_open_dialog();
-        act(&mut app, SpawnDraftAction::DraftCreated { session_id: "d-7".to_owned() });
+        created(&mut app, "d-7");
 
         let command_id = uuid::Uuid::new_v4();
         app.spawn.as_mut().expect("the dialog").launching = Some(command_id);

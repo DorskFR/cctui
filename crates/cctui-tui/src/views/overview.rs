@@ -42,7 +42,7 @@ fn tiles(app: &App) -> Vec<Tile> {
         });
     }
     out.push(Tile {
-        value: format!("${:.2}", s.today_cost_usd),
+        value: cctui_clientcore::usage::money(s.today_cost_usd),
         label: "cost of today's sessions",
         warn: false,
     });

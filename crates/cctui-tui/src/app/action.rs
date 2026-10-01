@@ -223,6 +223,9 @@ pub enum Effect {
     LoadConversationPage {
         session_id: String,
         kind: PageKind,
+        /// Identifies an older-page request so its reply can be told from the
+        /// reply to one the store has since abandoned.
+        claim: Option<u64>,
         page: PageRequest,
         etag: Option<String>,
     },
@@ -275,6 +278,9 @@ pub enum Effect {
         request: Box<cctui_proto::api::SpawnRequest>,
         /// Skip the typing debounce: quit cannot wait 700 ms for it.
         immediate: bool,
+        /// The dialog instance that asked, carried back on the reply so a late
+        /// create cannot be adopted by a different dialog.
+        generation: u64,
     },
     /// The spawn dialog closed or launched: stop the save it still owed, so a
     /// debounce that fires afterwards cannot mint an orphan draft row.
@@ -420,6 +426,9 @@ pub enum Effect {
     SaveDraftNow {
         key: String,
         text: String,
+        /// The local copy this save removes itself from once it lands. `None`
+        /// when there is no identity to scope a recovery file to.
+        recovery: Option<crate::config::recovery::Target>,
     },
     /// Signals once every effect queued before it has run, so quit can wait a
     /// bounded time for the writes it just asked for.

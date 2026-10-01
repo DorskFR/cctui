@@ -96,11 +96,13 @@ pub struct ConversationStore {
     loaded: bool,
     has_more_older: bool,
     loading_older: bool,
-    /// Bumped whenever held history is dropped. An older page claimed under an
-    /// earlier value is stale: its rows belong below a window that is gone.
-    reset_epoch: u64,
-    /// `reset_epoch` when the in-flight older page was claimed.
+    /// Token of the one older page whose reply is still welcome. `None` once
+    /// nothing is outstanding — including after a reset, which voids whatever
+    /// was in flight: its rows belong below a window that is gone.
     older_claim: Option<u64>,
+    /// Minted per claim, so a reply identifies the request it answers and not
+    /// merely the state the store was in when it was issued.
+    next_claim: u64,
     /// Value of the app's access counter when this store was last read or
     /// written: the eviction order.
     pub touched: u64,
@@ -159,6 +161,39 @@ impl ConversationStore {
         self.entries.is_empty()
     }
 
+    /// The claim the store is waiting on, for a test that has to answer it.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn outstanding_claim(&self) -> Option<u64> {
+        self.older_claim
+    }
+
+    /// Answer whatever older page is outstanding — what the production path
+    /// does, since the claim travels with the request.
+    #[cfg(test)]
+    fn merge(
+        &mut self,
+        kind: PageKind,
+        rows: Vec<(i64, ConversationLine)>,
+        etag: Option<String>,
+        has_more: bool,
+    ) -> Merge {
+        let claim = if kind == PageKind::Older { self.older_claim } else { None };
+        self.merge_page(kind, claim, rows, etag, has_more)
+    }
+
+    #[cfg(test)]
+    fn not_modified(&mut self, kind: PageKind) {
+        let claim = if kind == PageKind::Older { self.older_claim } else { None };
+        self.page_not_modified(kind, claim);
+    }
+
+    #[cfg(test)]
+    fn failed(&mut self, kind: PageKind) {
+        let claim = if kind == PageKind::Older { self.older_claim } else { None };
+        self.page_failed(kind, claim);
+    }
+
     #[must_use]
     pub fn etag(&self) -> Option<&str> {
         self.etag.as_deref()
@@ -200,14 +235,15 @@ impl ConversationStore {
     /// Claims the older-page fetch, returning the window to ask for. `None`
     /// when there is nothing older, a fetch is already in flight, or no page
     /// has landed yet — so holding the scroll at the top cannot stack requests.
-    pub fn begin_older(&mut self) -> Option<PageRequest> {
+    pub fn begin_older(&mut self) -> Option<(PageRequest, u64)> {
         if !self.loaded || self.loading_older || !self.has_more_older {
             return None;
         }
         let before = self.oldest_seq()?;
         self.loading_older = true;
-        self.older_claim = Some(self.reset_epoch);
-        Some(PageRequest::before(before, PAGE_LIMIT))
+        self.next_claim += 1;
+        self.older_claim = Some(self.next_claim);
+        Some((PageRequest::before(before, PAGE_LIMIT), self.next_claim))
     }
 
     /// Merges a fetched page. `rows` may arrive in any order and may overlap
@@ -215,12 +251,12 @@ impl ConversationStore {
     pub fn merge_page(
         &mut self,
         kind: PageKind,
+        claim: Option<u64>,
         rows: Vec<(i64, ConversationLine)>,
         etag: Option<String>,
         has_more: bool,
     ) -> Merge {
-        if kind == PageKind::Older && self.older_page_is_stale() {
-            self.finish_page(kind, etag, has_more);
+        if kind == PageKind::Older && self.older_page_is_stale(claim) {
             return Merge::default();
         }
         if kind == PageKind::Latest
@@ -267,18 +303,26 @@ impl ConversationStore {
         }
         self.epoch += 1;
         self.has_more_older = false;
-        // An older page claimed before this reset would land back under the new
-        // window and re-open the hole, so its claim is void.
-        self.reset_epoch += 1;
+        self.older_claim = None;
         self.loading_older = false;
     }
 
-    /// Whether the older page now arriving was claimed before history was
-    /// dropped. Its rows sit below a window that no longer exists, so merging
-    /// them would re-open the hole the drop closed. A page nothing claimed
-    /// (`None`) is merged: only a claim can go stale.
-    fn older_page_is_stale(&self) -> bool {
-        self.older_claim.is_some_and(|claimed| claimed != self.reset_epoch)
+    /// Whether the older page now arriving is not the one the store is waiting
+    /// for. Only the live claim's own reply may land: a reply whose claim was
+    /// voided by a reset — or superseded by a re-claim while it was still in
+    /// flight — carries rows below a window that no longer exists, and merging
+    /// them re-opens the hole the reset closed.
+    ///
+    /// Leaves the claim alone: refusing a reply must not retire the request
+    /// still outstanding, or the genuine reply would be refused in its turn.
+    const fn older_page_is_stale(&self, claim: Option<u64>) -> bool {
+        match (claim, self.older_claim) {
+            (Some(arriving), Some(outstanding)) => arriving != outstanding,
+            (None, None) => false,
+            // One side names a request the other does not: a reply to something
+            // abandoned, or a page nothing asked for.
+            _ => true,
+        }
     }
 
     /// Drop the oldest entries once the transcript is over `MAX_ENTRIES`,
@@ -302,14 +346,20 @@ impl ConversationStore {
     }
 
     /// A 304: the page is unchanged, so only the in-flight bookkeeping moves.
-    pub fn page_not_modified(&mut self, kind: PageKind) {
+    pub fn page_not_modified(&mut self, kind: PageKind, claim: Option<u64>) {
+        if kind == PageKind::Older && self.older_page_is_stale(claim) {
+            return;
+        }
         self.finish_page(kind, self.etag.clone(), self.has_more_older);
     }
 
-    /// A failed fetch releases the in-flight claim so a later scroll retries.
-    pub const fn page_failed(&mut self, kind: PageKind) {
-        if matches!(kind, PageKind::Older) {
+    /// A failed fetch releases the in-flight claim so a later scroll retries —
+    /// but only its own: a stale request's failure must not release the claim
+    /// of the one that replaced it.
+    pub const fn page_failed(&mut self, kind: PageKind, claim: Option<u64>) {
+        if matches!(kind, PageKind::Older) && !self.older_page_is_stale(claim) {
             self.loading_older = false;
+            self.older_claim = None;
         }
     }
 
@@ -458,11 +508,11 @@ mod tests {
         assert_eq!(store.oldest_seq(), Some(10));
 
         // Away long enough that the newest page starts far above seq 12.
-        store.merge_page(PageKind::Latest, rows(&[(501, "x"), (502, "y")]), None, true);
+        store.merge(PageKind::Latest, rows(&[(501, "x"), (502, "y")]), None, true);
 
         assert_eq!(texts(&store), ["x", "y"], "the stale half is dropped, not interleaved");
         assert_eq!(
-            store.begin_older(),
+            store.begin_older().map(|(page, _)| page),
             Some(PageRequest::before(501, PAGE_LIMIT)),
             "older paging walks back from the new page, so 13..500 is reachable"
         );
@@ -478,7 +528,7 @@ mod tests {
         store.push_live(Some(701), line("live while away"));
         assert_eq!(store.newest_seq(), Some(701));
 
-        store.merge_page(PageKind::Latest, rows(&[(521, "p1"), (522, "p2")]), None, true);
+        store.merge(PageKind::Latest, rows(&[(521, "p1"), (522, "p2")]), None, true);
 
         assert_eq!(
             texts(&store),
@@ -486,7 +536,7 @@ mod tests {
             "the unreachable history goes; the live row above the page stays"
         );
         assert_eq!(
-            store.begin_older(),
+            store.begin_older().map(|(page, _)| page),
             Some(PageRequest::before(521, PAGE_LIMIT)),
             "older paging now walks back from the page, so 13..520 is reachable"
         );
@@ -498,7 +548,7 @@ mod tests {
     fn a_live_row_does_not_trigger_a_reset_when_the_page_joins_the_history() {
         let mut store = loaded();
         store.push_live(Some(13), line("live"));
-        store.merge_page(PageKind::Latest, rows(&[(11, "b"), (12, "c"), (13, "live")]), None, true);
+        store.merge(PageKind::Latest, rows(&[(11, "b"), (12, "c"), (13, "live")]), None, true);
         assert_eq!(texts(&store), ["a", "b", "c", "live"], "nothing is dropped");
     }
 
@@ -507,34 +557,113 @@ mod tests {
     #[test]
     fn an_older_page_claimed_before_a_reset_is_dropped() {
         let mut store = loaded();
-        let claimed = store.begin_older().expect("a claim");
+        let (claimed, stale_claim) = store.begin_older().expect("a claim");
         assert_eq!(claimed, PageRequest::before(10, PAGE_LIMIT));
 
-        store.merge_page(PageKind::Latest, rows(&[(501, "x")]), None, true);
+        store.merge(PageKind::Latest, rows(&[(501, "x")]), None, true);
         // The reply to the pre-reset claim arrives now.
-        store.merge_page(PageKind::Older, rows(&[(8, "stale"), (9, "stale-2")]), None, true);
+        store.merge_page(
+            PageKind::Older,
+            Some(stale_claim),
+            rows(&[(8, "stale"), (9, "stale-2")]),
+            None,
+            true,
+        );
 
         assert_eq!(texts(&store), ["x"], "the stale rows are refused");
         assert_eq!(
-            store.begin_older(),
+            store.begin_older().map(|(page, _)| page),
             Some(PageRequest::before(501, PAGE_LIMIT)),
             "and the window is still the new one"
         );
     }
 
+    /// N5: the reply to a request the store abandoned must stay refused even
+    /// once a *new* older page is outstanding — the stamp identifies the
+    /// request, so a fresh claim cannot vouch for a stale reply.
+    #[test]
+    fn a_stale_older_reply_is_still_refused_after_a_re_claim() {
+        let mut store = loaded();
+        let (stale_request, stale_claim) = store.begin_older().expect("a claim");
+        assert_eq!(stale_request, PageRequest::before(10, PAGE_LIMIT));
+
+        // Leave and reopen: the newest page is far above, so history is reset.
+        store.merge(PageKind::Latest, rows(&[(301, "p1"), (302, "p2")]), None, true);
+        // The user scrolls to the top again before the slow reply returns.
+        let (fresh_request, fresh_claim) = store.begin_older().expect("a fresh claim");
+        assert_eq!(fresh_request, PageRequest::before(301, PAGE_LIMIT));
+        assert_ne!(stale_claim, fresh_claim, "each request has its own stamp");
+
+        // Now the pre-reset reply lands.
+        store.merge_page(
+            PageKind::Older,
+            Some(stale_claim),
+            rows(&[(8, "stale"), (9, "stale-2")]),
+            None,
+            true,
+        );
+
+        assert_eq!(texts(&store), ["p1", "p2"], "the abandoned window's rows are refused");
+        assert_eq!(store.oldest_seq(), Some(301), "so no hole opens below the new window");
+
+        // And the request that is genuinely outstanding still lands.
+        store.merge_page(
+            PageKind::Older,
+            Some(fresh_claim),
+            rows(&[(299, "real"), (300, "real-2")]),
+            None,
+            true,
+        );
+        assert_eq!(texts(&store), ["real", "real-2", "p1", "p2"]);
+    }
+
+    /// Same shape for the failure path: a stale request failing must not
+    /// release the claim of the one that replaced it.
+    #[test]
+    fn a_stale_older_failure_does_not_release_the_live_claim() {
+        let mut store = loaded();
+        let (_, stale_claim) = store.begin_older().expect("a claim");
+        store.merge(PageKind::Latest, rows(&[(301, "p1")]), None, true);
+        let (_, fresh_claim) = store.begin_older().expect("a fresh claim");
+
+        store.page_failed(PageKind::Older, Some(stale_claim));
+
+        assert!(
+            store.begin_older().is_none(),
+            "the live request is still in flight, so nothing may be claimed over it"
+        );
+        store.merge_page(PageKind::Older, Some(fresh_claim), rows(&[(300, "real")]), None, false);
+        assert_eq!(texts(&store), ["real", "p1"]);
+    }
+
+    /// A 304 for an abandoned request must not retire the live one either.
+    #[test]
+    fn a_stale_not_modified_leaves_the_live_claim_outstanding() {
+        let mut store = loaded();
+        let (_, stale_claim) = store.begin_older().expect("a claim");
+        store.merge(PageKind::Latest, rows(&[(301, "p1")]), None, true);
+        let (_, fresh_claim) = store.begin_older().expect("a fresh claim");
+
+        store.page_not_modified(PageKind::Older, Some(stale_claim));
+        assert!(store.begin_older().is_none(), "still in flight");
+
+        store.merge_page(PageKind::Older, Some(fresh_claim), rows(&[(300, "real")]), None, false);
+        assert_eq!(texts(&store), ["real", "p1"]);
+    }
+
     #[test]
     fn an_older_page_claimed_after_a_reset_still_lands() {
         let mut store = loaded();
-        store.merge_page(PageKind::Latest, rows(&[(501, "x")]), None, true);
+        store.merge(PageKind::Latest, rows(&[(501, "x")]), None, true);
         store.begin_older().expect("a fresh claim");
-        store.merge_page(PageKind::Older, rows(&[(499, "older"), (500, "older-2")]), None, false);
+        store.merge(PageKind::Older, rows(&[(499, "older"), (500, "older-2")]), None, false);
         assert_eq!(texts(&store), ["older", "older-2", "x"]);
     }
 
     #[test]
     fn a_transcript_is_capped_and_what_was_dropped_can_be_paged_back() {
         let mut store = ConversationStore::new();
-        store.merge_page(PageKind::Latest, rows(&[(1, "first")]), None, false);
+        store.merge(PageKind::Latest, rows(&[(1, "first")]), None, false);
         assert!(!store.has_more_older, "the whole conversation is held");
 
         let cap = i64::try_from(super::MAX_ENTRIES).expect("the cap fits");
@@ -551,7 +680,7 @@ mod tests {
         // The dropped seqs must not be deduped away when they are refetched.
         store.begin_older().expect("a claim");
         let merge =
-            store.merge_page(PageKind::Older, rows(&[(100, "back"), (101, "back-2")]), None, true);
+            store.merge(PageKind::Older, rows(&[(100, "back"), (101, "back-2")]), None, true);
         assert_eq!(merge.inserted, 2, "a refetched row is not mistaken for a duplicate");
         assert_eq!(store.oldest_seq(), Some(100));
     }
@@ -566,11 +695,11 @@ mod tests {
     #[test]
     fn a_latest_page_that_touches_what_is_held_merges_as_before() {
         let mut store = loaded();
-        store.merge_page(PageKind::Latest, rows(&[(13, "d"), (14, "e")]), None, true);
+        store.merge(PageKind::Latest, rows(&[(13, "d"), (14, "e")]), None, true);
         assert_eq!(texts(&store), ["a", "b", "c", "d", "e"], "contiguous pages still merge");
 
         let mut overlapping = loaded();
-        overlapping.merge_page(PageKind::Latest, rows(&[(12, "c"), (13, "d")]), None, true);
+        overlapping.merge(PageKind::Latest, rows(&[(12, "c"), (13, "d")]), None, true);
         assert_eq!(texts(&overlapping), ["a", "b", "c", "d"]);
     }
 
@@ -606,7 +735,7 @@ mod tests {
 
     fn loaded() -> ConversationStore {
         let mut store = ConversationStore::new();
-        store.merge_page(
+        store.merge(
             PageKind::Latest,
             rows(&[(10, "a"), (11, "b"), (12, "c")]),
             Some("etag-1".to_owned()),
@@ -618,12 +747,8 @@ mod tests {
     #[test]
     fn a_page_is_ordered_by_seq_however_it_arrives() {
         let mut store = ConversationStore::new();
-        let merge = store.merge_page(
-            PageKind::Latest,
-            rows(&[(12, "c"), (10, "a"), (11, "b")]),
-            None,
-            false,
-        );
+        let merge =
+            store.merge(PageKind::Latest, rows(&[(12, "c"), (10, "a"), (11, "b")]), None, false);
         assert_eq!(merge.inserted, 3);
         assert_eq!(texts(&store), ["a", "b", "c"]);
         assert_eq!(store.oldest_seq(), Some(10));
@@ -644,7 +769,7 @@ mod tests {
         assert!(!store.push_live(Some(11), line("b again")));
         assert_eq!(store.len(), 3);
 
-        let merge = store.merge_page(PageKind::Gap, rows(&[(11, "b"), (13, "d")]), None, false);
+        let merge = store.merge(PageKind::Gap, rows(&[(11, "b"), (13, "d")]), None, false);
         assert_eq!(merge.inserted, 1);
         assert_eq!(texts(&store), ["a", "b", "c", "d"]);
     }
@@ -667,7 +792,7 @@ mod tests {
         assert!(!store.loaded, "the history fetch must still go out");
         assert!(!store.is_empty());
 
-        store.merge_page(PageKind::Latest, rows(&[(4, "history")]), None, false);
+        store.merge(PageKind::Latest, rows(&[(4, "history")]), None, false);
         assert!(store.loaded);
         assert_eq!(texts(&store), ["history", "live"]);
     }
@@ -703,7 +828,7 @@ mod tests {
     fn a_gap_page_merges_without_disturbing_the_paging_cursor() {
         let mut store = loaded();
         assert!(store.has_more_older);
-        store.merge_page(PageKind::Gap, rows(&[(13, "d"), (14, "e")]), None, false);
+        store.merge(PageKind::Gap, rows(&[(13, "d"), (14, "e")]), None, false);
         assert!(store.has_more_older, "a gap page says nothing about older rows");
         assert_eq!(texts(&store), ["a", "b", "c", "d", "e"]);
     }
@@ -711,13 +836,13 @@ mod tests {
     #[test]
     fn older_paging_walks_back_and_stops_at_the_start() {
         let mut store = loaded();
-        let request = store.begin_older().expect("an older page is available");
+        let (request, _) = store.begin_older().expect("an older page is available");
         assert_eq!(request, PageRequest::before(10, PAGE_LIMIT));
 
         assert!(store.begin_older().is_none(), "a fetch is already in flight");
 
         let merge =
-            store.merge_page(PageKind::Older, rows(&[(8, "older-1"), (9, "older-2")]), None, false);
+            store.merge(PageKind::Older, rows(&[(8, "older-1"), (9, "older-2")]), None, false);
         assert_eq!(merge.inserted, 2);
         assert!(merge.reordered, "prepending invalidates the render cache");
         assert_eq!(texts(&store), ["older-1", "older-2", "a", "b", "c"]);
@@ -730,9 +855,12 @@ mod tests {
     fn an_older_page_that_fills_the_limit_leaves_more_to_load() {
         let mut store = loaded();
         store.begin_older().expect("a request");
-        store.merge_page(PageKind::Older, rows(&[(9, "older")]), None, true);
+        store.merge(PageKind::Older, rows(&[(9, "older")]), None, true);
         assert!(store.has_more_older);
-        assert_eq!(store.begin_older(), Some(PageRequest::before(9, PAGE_LIMIT)));
+        assert_eq!(
+            store.begin_older().map(|(page, _)| page),
+            Some(PageRequest::before(9, PAGE_LIMIT))
+        );
     }
 
     #[test]
@@ -746,20 +874,23 @@ mod tests {
     fn a_failed_older_page_can_be_retried() {
         let mut store = loaded();
         store.begin_older().expect("a request");
-        store.page_failed(PageKind::Older);
-        assert_eq!(store.begin_older(), Some(PageRequest::before(10, PAGE_LIMIT)));
+        store.failed(PageKind::Older);
+        assert_eq!(
+            store.begin_older().map(|(page, _)| page),
+            Some(PageRequest::before(10, PAGE_LIMIT))
+        );
     }
 
     #[test]
     fn not_modified_keeps_the_etag_and_the_entries() {
         let mut store = loaded();
-        store.page_not_modified(PageKind::Latest);
+        store.not_modified(PageKind::Latest);
         assert_eq!(store.etag(), Some("etag-1"));
         assert_eq!(texts(&store), ["a", "b", "c"]);
         assert!(store.loaded);
 
         store.begin_older().expect("a request");
-        store.page_not_modified(PageKind::Older);
+        store.not_modified(PageKind::Older);
         assert!(!store.loading_older);
         assert!(store.has_more_older, "a 304 must not claim the transcript ended");
     }
@@ -768,10 +899,10 @@ mod tests {
     fn a_refetched_latest_page_replaces_the_etag_and_keeps_the_history() {
         let mut store = loaded();
         store.begin_older().expect("a request");
-        store.merge_page(PageKind::Older, rows(&[(9, "older")]), None, false);
+        store.merge(PageKind::Older, rows(&[(9, "older")]), None, false);
         assert!(!store.has_more_older);
 
-        store.merge_page(
+        store.merge(
             PageKind::Latest,
             rows(&[(12, "c"), (13, "d")]),
             Some("etag-2".to_owned()),

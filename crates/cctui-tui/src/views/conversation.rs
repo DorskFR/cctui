@@ -38,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .filter(|m| !m.is_empty())
         .or_else(|| session.metadata.get("model").and_then(serde_json::Value::as_str))
         .unwrap_or("");
-    let cost = format!("${:.2}", session.token_usage.cost_usd);
+    let cost = cctui_clientcore::usage::money(session.token_usage.cost_usd);
     // The name as the info panel reads it: an id is the fallback, not the label.
     let machine = session
         .machine_name
