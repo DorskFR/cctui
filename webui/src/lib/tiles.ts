@@ -129,12 +129,13 @@ export function paneCapacity(viewport: Viewport): number {
 }
 
 /**
- * A pane's fixed chrome, measured in the browser at tile widths (header 122 +
- * filter row 33 + activity line 27 + composer 61, plus gaps) on a session
- * carrying labels, an activity line and todos. Re-measure with the `tiles`
- * Playwright project if the pane grows another row.
+ * A pane's fixed chrome at tile widths: the compact one-row header (~44), the
+ * activity line (27) and the folded one-line composer (~42), plus gaps and
+ * borders — no meta row, no label strip, no filter bar. An estimate from those
+ * parts, not a browser measurement; re-measure with the `tiles` Playwright
+ * project when the pane gains or loses a row.
  */
-export const MIN_PANE_CHROME = 254;
+export const MIN_PANE_CHROME = 140;
 /**
  * Transcript that must be left over, or the pane is all chrome and no content.
  * A few lines, not a comfortable read: a tile is glanceable and scrolls. Any

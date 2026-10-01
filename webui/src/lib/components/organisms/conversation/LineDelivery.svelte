@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Delivery state of a user line in the meta row: failed (+ retry/edit),
 	// sending, removed from queue, queued, or scheduled.
-	import { Button, Icon, IconButton, Text } from '@dorsk/tsumikit';
+	import { Button, Icon, IconButton, Text, formatTimestamp } from '@dorsk/tsumikit';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 
@@ -66,10 +66,7 @@
 		<Text tone="faint" size="xs" nowrap>{m.conversation_queued()}</Text>
 	</span>
 {:else if ln.scheduledAt !== undefined}
-	{@const time = new Date(ln.scheduledAt).toLocaleTimeString([], {
-		hour: '2-digit',
-		minute: '2-digit'
-	})}
+	{@const time = formatTimestamp(ln.scheduledAt, 'datetime')}
 	<span
 		class="meta-end scheduled-mark"
 		title={m.conversation_scheduled_for({ time })}

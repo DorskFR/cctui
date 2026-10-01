@@ -41,7 +41,8 @@
 <style>
 	.prev {
 		max-height: 8rem;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
@@ -52,7 +53,8 @@
 	}
 	.plan-body {
 		max-height: 12rem;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);

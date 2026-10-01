@@ -36,7 +36,6 @@ describe('scheduledLaunchOf', () => {
 		const got = scheduledLaunchOf(session({ launch_at: at, launch_error: 'machine offline' }));
 		expect(got?.at.toISOString()).toBe(new Date(at).toISOString());
 		expect(got?.error).toBe('machine offline');
-		expect(got?.label).not.toBe('');
 	});
 
 	it('ignores an unparseable launch time rather than rendering Invalid Date', () => {

@@ -215,6 +215,7 @@
 		flex-direction: column;
 		max-height: min(16rem, 40vh);
 		overflow-y: auto;
+		overflow-x: hidden;
 		padding: var(--sp-1);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);

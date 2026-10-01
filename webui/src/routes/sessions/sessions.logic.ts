@@ -7,7 +7,8 @@ import type { SpawnRequest } from '@bindings/SpawnRequest';
 import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '$lib/drafts';
 import { NO_ACCOUNT } from '$lib/components/organisms/spawn/options';
 import { SYSTEM_MACHINE_KINDS } from '$lib/queries';
-import { hashHue, relativeTime } from '$lib/format';
+import { relativeTime } from '@dorsk/tsumikit';
+import { hashHue } from '$lib/format';
 import { labelHue } from '$lib/labels';
 import { m } from '$lib/paraglide/messages';
 

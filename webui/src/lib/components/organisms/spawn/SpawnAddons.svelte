@@ -69,7 +69,7 @@
 			block
 			control
 			style="gap: var(--sp-2)"
-			panelStyle="max-height:calc(100dvh - 1rem);overflow-y:auto"
+			panelStyle="max-height:calc(100dvh - 1rem);overflow-y:auto;overflow-x:hidden"
 			onopen={() => panel?.focusSearch()}
 		>
 			{#snippet trigger()}

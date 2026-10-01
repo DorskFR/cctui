@@ -3,6 +3,7 @@
 	import { Badge, Icon, Popover } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import LabelMenu from './LabelMenu.svelte';
+	import { MENU_ROW, MENU_ROW_ICON } from './menuRow';
 
 	// One square toolbar button that opens a popover of label toggles; a session
 	// shows when it carries ANY selected label (OR semantics). The panel body is
@@ -57,18 +58,20 @@
 			block={menu}
 			tone={menu && selected.size > 0 ? 'accent' : 'none'}
 			count={menu ? undefined : selected.size}
-			style={menu ? 'justify-content:flex-start' : '--pop-box: var(--control-height)'}
+			style={menu ? MENU_ROW : '--pop-box: var(--control-height)'}
 			onopen={() => panel?.focusSearch()}
 		>
 			{#snippet trigger()}
-				<Icon name="tag" size={18} />
 				{#if menu}
+					<span style={MENU_ROW_ICON}><Icon name="tag" size={18} /></span>
 					<span>{m.sessions_filter_by_label()}</span>
 					{#if selected.size > 0}
 						<span class="menu-count">
 							<Badge size="xs" numeric tone="accent">{selected.size}</Badge>
 						</span>
 					{/if}
+				{:else}
+					<Icon name="tag" size={18} />
 				{/if}
 			{/snippet}
 			<LabelMenu

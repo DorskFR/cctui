@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
 import toolbar from './DrawerToolbar.svelte?raw';
+import keys from './headerKeys.ts?raw';
 import pane from '../ConversationPane.svelte?raw';
 
 const items = () => {
@@ -74,10 +75,11 @@ describe('drawer header ⋯ menu', () => {
 	});
 
 	it('binds ⌘F / Ctrl+F to the find bar and gives it first refusal on Escape', () => {
-		expect(header).toContain('isFindChord(e)');
+		expect(keys).toContain('isFindChord(e)');
+		expect(header).toContain("if (action === 'search')");
 		expect(header).toMatch(/if \(onescape\?\.\(\)\) \{/);
-		const esc = header.indexOf("e.key !== 'Escape'");
-		const close = header.indexOf('onclose?.()', esc);
+		const esc = header.indexOf("action !== 'escape'");
+		const close = header.indexOf('onclose)?.()', esc);
 		expect(close).toBeGreaterThan(-1);
 		expect(header.indexOf('onescape?.()', esc)).toBeLessThan(close);
 	});

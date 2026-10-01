@@ -102,7 +102,8 @@
 		background: var(--bg);
 		padding: var(--sp-3);
 		max-height: 480px;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 	}
 	.opts {
 		display: flex;

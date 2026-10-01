@@ -44,6 +44,7 @@
 		   scrollbar of its own riding alongside the transcript's. */
 		max-height: min(80vh, 40rem);
 		overflow-y: auto;
+		overflow-x: hidden;
 		scrollbar-gutter: stable;
 		padding: var(--sp-1);
 	}

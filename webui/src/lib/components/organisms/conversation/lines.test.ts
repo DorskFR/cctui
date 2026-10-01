@@ -1055,3 +1055,62 @@ describe('keep-alive ticks', () => {
 		expect(lines[2].text).toBe('working');
 	});
 });
+
+describe('a queued harness-injected turn is never a user bubble', () => {
+	const user = (body: string, ts: number, seq: number | null = null) =>
+		text(`▷ User: ${body}`, ts, null, seq);
+	const note = [
+		'<task-notification>',
+		'<task-id>bpo32ykle</task-id>',
+		'<output-file>/tmp/claude/tasks/bpo32ykle.output</output-file>',
+		'<status>completed</status>',
+		'<summary>Background command "Watch the release" completed (exit code 0)</summary>',
+		'</task-notification>'
+	].join('\n');
+
+	it('drops the queued placeholder instead of showing it as queued user text', () => {
+		expect(buildLines([queueOp('queued', note, 1, 5)], ctx())).toEqual([]);
+	});
+
+	it('renders only the delivered system card once the turn lands', () => {
+		const lines = buildLines([queueOp('queued', note, 1, 5), user(note, 3, 9)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['system']);
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].notification?.taskId).toBe('bpo32ykle');
+		expect(lines[0].text).not.toContain('<task-notification');
+		expect(lines[0].seq).toBe(9);
+	});
+
+	it('leaves no orphaned queued line when the close op arrives', () => {
+		const lines = buildLines(
+			[queueOp('queued', note, 1, 5), queueOp('dequeued', '', 2, 6), user(note, 3, 9)],
+			ctx()
+		);
+		expect(lines.map((l) => l.role)).toEqual(['system']);
+		expect(lines.some((l) => l.queued)).toBe(false);
+	});
+
+	it('still queues a human prompt that merely quotes a wrapper deep in its body', () => {
+		const quoted = ['hey', 'the other day', 'I saw', 'this:', note].join('\n');
+		const lines = buildLines([queueOp('queued', quoted, 1, 5)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['user']);
+		expect(lines[0].queued).toBe(true);
+	});
+
+	it('renders a delivered slash-command wrapper as a system command line', () => {
+		const body = [
+			'<command-name>/release</command-name>',
+			'<command-args>beta.18</command-args>',
+			'<local-command-stdout>tagged v0.23.0-beta.18</local-command-stdout>'
+		].join('\n');
+		const lines = buildLines([user(body, 1, 2)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['system']);
+		expect(lines[0].command?.name).toBe('release');
+		expect(lines[0].command?.stdout).toBe('tagged v0.23.0-beta.18');
+		expect(lines[0].text).not.toContain('<command-name');
+	});
+
+	it('hides a harness card when the system category is filtered out', () => {
+		expect(buildLines([user(note, 1, 2)], ctx({ system: false }))).toEqual([]);
+	});
+});

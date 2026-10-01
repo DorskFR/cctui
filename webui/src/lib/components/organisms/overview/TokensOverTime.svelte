@@ -1,9 +1,8 @@
 <script lang="ts">
 	import type { UsageBucket } from '@bindings/UsageBucket';
 	import { compact } from '$lib/format';
-	import { getLocale } from '$lib/paraglide/runtime';
 	import { m } from '$lib/paraglide/messages';
-	import { Text } from '@dorsk/tsumikit';
+	import { Text, Timestamp, formatTimestamp } from '@dorsk/tsumikit';
 	import {
 		bucketTotal,
 		fillBuckets,
@@ -30,10 +29,7 @@
 	const recent = $derived(recentFrom(filled.length));
 
 	const tickEvery = $derived(granularity === 'hour' ? 6 : days <= 7 ? 1 : 7);
-	const fmt = (ms: number) =>
-		new Date(ms).toLocaleString(getLocale(), {
-			...(granularity === 'hour' ? { hour: '2-digit' } : { month: 'short', day: 'numeric' })
-		});
+	const tick = (ms: number) => formatTimestamp(ms, granularity === 'hour' ? 'time' : 'short-iso');
 	const pct = (v: number) => `${(v / peakHeight) * 100}%`;
 </script>
 
@@ -44,7 +40,7 @@
 				class="col"
 				class:recent={i >= recent}
 				role="listitem"
-				title={`${fmt(b.ms)}\n↑${b.input}  ↓${b.output}  ⚡${b.cache_read}`}
+				title={`${formatTimestamp(b.ms, 'datetime')}\n↑${b.input}  ↓${b.output}  ⚡${b.cache_read}`}
 			>
 				<div class="bar" style={`height:${pct(bucketTotal(b))}`}></div>
 			</div>
@@ -54,14 +50,15 @@
 		{#each filled as b, i (b.ms)}
 			<div class="tick">
 				{#if isAxisTick(i, filled.length, tickEvery)}
-					<Text size="xs" tone="faint" numeric nowrap>{fmt(b.ms)}</Text>
+					<Text size="xs" tone="faint" numeric nowrap>{tick(b.ms)}</Text>
 				{/if}
 			</div>
 		{/each}
 	</div>
 	{#if peak}
 		<Text size="xs" tone="faint"
-			>{m.home_usage_peak({ n: compact(bucketTotal(peak)) })} · {fmt(peak.ms)}</Text
+			>{m.home_usage_peak({ n: compact(bucketTotal(peak)) })} ·
+			<Timestamp value={peak.ms} mode="datetime" tone="inherit" /></Text
 		>
 	{/if}
 </div>
