@@ -504,6 +504,22 @@ async fn run(
                 Vec::new()
             }
         },
+        Effect::FetchSpawnMemory => match server.spawn_memory().await {
+            Ok(payload) => {
+                vec![Action::Spawn(super::spawn::SpawnAction::MemoryLoaded(Box::new(payload)))]
+            }
+            Err(e) => {
+                tracing::debug!(%e, "no spawn memory");
+                Vec::new()
+            }
+        },
+        Effect::PutSpawnMemory { entries } => {
+            let payload = cctui_proto::drafts::SpawnMemoryPayload { entries };
+            if let Err(e) = server.put_spawn_memory(&payload).await {
+                tracing::warn!(%e, "cannot remember this spawn");
+            }
+            Vec::new()
+        }
         Effect::RefreshCodexModels { machine_id } => {
             if let Err(e) = server.refresh_codex_models(&machine_id).await {
                 tracing::warn!(%e, machine_id, "the codex catalog refresh failed");

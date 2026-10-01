@@ -13,6 +13,7 @@ pub mod cwd;
 
 use cctui_clientcore::spawn::SpawnFields;
 use cctui_proto::api::SpawnRequest;
+use cctui_proto::drafts::SPAWN_MEMORY_CAP;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
@@ -99,6 +100,8 @@ pub struct SpawnForm {
     pub launching: Option<uuid::Uuid>,
     /// Pre-minted by the server, so the jump knows where to land.
     pub session_id: Option<String>,
+    /// Memory that lands after the dialog opens only seeds an untouched form.
+    pub edited: bool,
     pub focus: Focus,
     /// Inline errors from the last submit, cleared on the next edit.
     pub errors: Vec<String>,
@@ -118,6 +121,7 @@ impl std::fmt::Debug for SpawnForm {
             .field("refreshing_models", &self.refreshing_models)
             .field("launching", &self.launching)
             .field("session_id", &self.session_id)
+            .field("edited", &self.edited)
             .field("errors", &self.errors)
             .field("submitting", &self.submitting)
             .field("sections", &self.sections.iter().map(|s| s.title()).collect::<Vec<_>>())
@@ -149,6 +153,7 @@ impl SpawnForm {
             refreshing_models: false,
             launching: None,
             session_id: None,
+            edited: false,
             focus: Focus::default(),
             errors: Vec::new(),
             submitting: false,
@@ -203,6 +208,7 @@ impl SpawnForm {
     /// Hands a key to the focused section, then applies any harness it implies.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         self.errors.clear();
+        self.edited = true;
         let before = self.list_key();
         let Focus { section, row } = self.focus;
         let Some(target) = self.sections.get_mut(section) else { return Vec::new() };
@@ -247,6 +253,52 @@ impl SpawnForm {
         if let Some(provider) = self.provider().map(str::to_owned) {
             self.fields.account_provider = provider;
         }
+    }
+
+    /// The target this form's configuration is remembered under.
+    #[must_use]
+    pub fn memory_key(&self) -> String {
+        cctui_proto::drafts::machine_memory_key(&self.fields.machine_id, &self.fields.working_dir)
+    }
+
+    /// What a later spawn on the same machine and directory starts from.
+    #[must_use]
+    pub fn memory_entry(&self, at: i64) -> cctui_proto::drafts::SpawnMemoryEntry {
+        cctui_proto::drafts::SpawnMemoryEntry {
+            adapter_id: self.fields.adapter_id.clone(),
+            model_claude: self.fields.model_claude.clone(),
+            model_codex: self.fields.model_codex.clone(),
+            model_account: self.fields.model_account.clone(),
+            effort_claude: self.fields.effort_claude.clone(),
+            effort_codex: self.fields.effort_codex.clone(),
+            account: self.fields.account.clone(),
+            account_provider: self.fields.account_provider.clone(),
+            permission_mode: self.fields.permission_mode.clone(),
+            name: self.fields.name.clone(),
+            labels: None,
+            profile_id: None,
+            at,
+        }
+    }
+
+    /// Seeds the form from a remembered spawn. The machine and directory are
+    /// what keyed it, so they are left alone.
+    pub fn apply_memory(&mut self, entry: &cctui_proto::drafts::SpawnMemoryEntry) {
+        let f = &mut self.fields;
+        if !entry.adapter_id.is_empty() {
+            f.adapter_id.clone_from(&entry.adapter_id);
+        }
+        f.model_claude.clone_from(&entry.model_claude);
+        f.model_codex.clone_from(&entry.model_codex);
+        f.model_account.clone_from(&entry.model_account);
+        f.effort_claude.clone_from(&entry.effort_claude);
+        f.effort_codex.clone_from(&entry.effort_codex);
+        f.account.clone_from(&entry.account);
+        f.account_provider.clone_from(&entry.account_provider);
+        f.permission_mode.clone_from(&entry.permission_mode);
+        f.name.clone_from(&entry.name);
+        self.sync_options();
+        self.settle_focus();
     }
 
     /// The model id the current harness uses.
@@ -614,6 +666,7 @@ pub enum SpawnAction {
     /// Enter on the dropdown.
     DirAccept,
     ModelsLoaded(Box<cctui_proto::harness_models::HarnessModels>),
+    MemoryLoaded(Box<cctui_proto::drafts::SpawnMemoryPayload>),
     /// The server took the spawn; the daemon has yet to report it.
     Accepted {
         command_id: uuid::Uuid,
@@ -704,6 +757,7 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             }
             Vec::new()
         }
+        SpawnAction::MemoryLoaded(payload) => memory_loaded(app, payload.entries),
         SpawnAction::RefreshModels => refresh_models(app),
         SpawnAction::ModelsRefreshed => {
             let Some(form) = app.spawn.as_mut() else { return Vec::new() };
@@ -729,6 +783,22 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             Vec::new()
         }
     }
+}
+
+fn memory_loaded(
+    app: &mut super::state::App,
+    entries: std::collections::BTreeMap<String, cctui_proto::drafts::SpawnMemoryEntry>,
+) -> Vec<Effect> {
+    app.spawn_memory = entries;
+    let remembered = app
+        .spawn
+        .as_ref()
+        .filter(|f| !f.edited)
+        .and_then(|f| app.spawn_memory.get(&f.memory_key()).cloned());
+    if let (Some(form), Some(entry)) = (app.spawn.as_mut(), remembered) {
+        form.apply_memory(&entry);
+    }
+    Vec::new()
 }
 
 /// Enter is the dialog's one Enter: with no dropdown under the Dir row it
@@ -781,7 +851,10 @@ fn open(app: &mut super::state::App) -> Vec<Effect> {
         form.fields.machine_id.clone_from(&session.machine_id);
         form.fields.working_dir.clone_from(&session.working_dir);
     }
-    let mut effects = vec![Effect::FetchRecentDirs];
+    if let Some(entry) = app.spawn_memory.get(&form.memory_key()) {
+        form.apply_memory(&entry.clone());
+    }
+    let mut effects = vec![Effect::FetchRecentDirs, Effect::FetchSpawnMemory];
     effects.extend(form.fetch_models());
     app.spawn = Some(form);
     app.router.push(View::Spawn);
@@ -843,7 +916,16 @@ fn submit(app: &mut super::state::App) -> Vec<Effect> {
     form.submitting = true;
     form.launching = None;
     form.session_id = None;
-    vec![Effect::SpawnSession { request: Box::new(form.request()) }]
+    let request = form.request();
+    // Remembered on submit rather than on a confirmed launch: a spawn that
+    // never lands still recorded what was asked for.
+    let (key, entry) = (form.memory_key(), form.memory_entry(app.clock_ms));
+    app.spawn_memory.insert(key, entry);
+    cctui_proto::drafts::evict_spawn_memory(&mut app.spawn_memory, SPAWN_MEMORY_CAP);
+    vec![
+        Effect::SpawnSession { request: Box::new(request) },
+        Effect::PutSpawnMemory { entries: app.spawn_memory.clone() },
+    ]
 }
 
 #[cfg(test)]
@@ -906,7 +988,7 @@ mod reduce_tests {
         let mut app = app();
         reduce(&mut app, SpawnAction::Open);
         match reduce(&mut app, SpawnAction::Submit).as_slice() {
-            [Effect::SpawnSession { request }] => {
+            [Effect::SpawnSession { request }, Effect::PutSpawnMemory { .. }] => {
                 assert_eq!(request.machine_id, "orion");
                 assert_eq!(request.working_dir, "/home/dev/alpha");
                 assert_eq!(request.adapter_id.as_deref(), Some("claude-code"));
@@ -1050,6 +1132,70 @@ mod reduce_tests {
         assert_eq!(app.spawn.as_ref().expect("a form").fields.prompt, "a\nb");
     }
 
+    fn memory(adapter: &str, at: i64) -> cctui_proto::drafts::SpawnMemoryEntry {
+        cctui_proto::drafts::SpawnMemoryEntry {
+            adapter_id: adapter.to_owned(),
+            model_claude: "opus".to_owned(),
+            effort_claude: "high".to_owned(),
+            permission_mode: "yolo".to_owned(),
+            name: "retry".to_owned(),
+            at,
+            ..cctui_proto::drafts::SpawnMemoryEntry::default()
+        }
+    }
+
+    #[test]
+    fn opening_seeds_the_form_from_the_last_spawn_on_that_target() {
+        let mut app = app();
+        let session = app.sessions[0].clone();
+        let key =
+            cctui_proto::drafts::machine_memory_key(&session.machine_id, &session.working_dir);
+        app.spawn_memory.insert(key, memory("codex", 1));
+        reduce(&mut app, SpawnAction::Open);
+        let form = app.spawn.as_ref().expect("a form");
+        assert_eq!(form.fields.adapter_id, "codex");
+        assert_eq!(form.fields.permission_mode, "yolo");
+        assert_eq!(form.fields.name, "retry");
+    }
+
+    #[test]
+    fn memory_that_lands_late_seeds_an_untouched_form_only() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let key = app.spawn.as_ref().expect("a form").memory_key();
+        let payload = cctui_proto::drafts::SpawnMemoryPayload {
+            entries: [(key, memory("codex", 1))].into_iter().collect(),
+        };
+        reduce(&mut app, SpawnAction::MemoryLoaded(Box::new(payload.clone())));
+        assert_eq!(app.spawn.as_ref().expect("a form").fields.adapter_id, "codex");
+
+        app.spawn.as_mut().expect("a form").fields.adapter_id = "claude-code".to_owned();
+        app.spawn.as_mut().expect("a form").edited = true;
+        reduce(&mut app, SpawnAction::MemoryLoaded(Box::new(payload)));
+        assert_eq!(
+            app.spawn.as_ref().expect("a form").fields.adapter_id,
+            "claude-code",
+            "a form the operator has touched is left alone"
+        );
+    }
+
+    #[test]
+    fn submitting_remembers_the_configuration_for_that_target() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        app.clock_ms = 4_200;
+        let key = app.spawn.as_ref().expect("a form").memory_key();
+        app.spawn.as_mut().expect("a form").fields.name = "parser".to_owned();
+        match reduce(&mut app, SpawnAction::Submit).as_slice() {
+            [Effect::SpawnSession { .. }, Effect::PutSpawnMemory { entries }] => {
+                let entry = entries.get(&key).expect("the target is remembered");
+                assert_eq!(entry.name, "parser");
+                assert_eq!(entry.at, 4_200);
+            }
+            other => panic!("expected a spawn and a remember, got {} effects", other.len()),
+        }
+    }
+
     #[test]
     fn a_launch_onto_an_offline_machine_reports_inline_instead_of_sending() {
         let mut app = app();
@@ -1118,13 +1264,14 @@ mod reduce_tests {
         match reduce(&mut app, SpawnAction::Open).as_slice() {
             [
                 Effect::FetchRecentDirs,
+                Effect::FetchSpawnMemory,
                 Effect::FetchHarnessModels { want, harness, machine_id, .. },
             ] => {
                 assert_eq!(*want, crate::app::action::ModelsFor::SpawnDialog);
                 assert_eq!(harness, "claude-code");
                 assert_eq!(machine_id, "orion");
             }
-            other => panic!("expected both fetches, got {} effects", other.len()),
+            other => panic!("expected the three fetches, got {} effects", other.len()),
         }
     }
 

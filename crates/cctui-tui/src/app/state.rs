@@ -285,6 +285,8 @@ pub struct App {
     pub clock_ms: i64,
     /// Live machine tiers from `machine_liveness`, keyed by machine id.
     pub machine_liveness: HashMap<String, cctui_proto::models::MachineLiveness>,
+    /// Spawn configurations remembered per target, as the server holds them.
+    pub spawn_memory: std::collections::BTreeMap<String, cctui_proto::drafts::SpawnMemoryEntry>,
     /// The socket is delivering events, so the REST poll can slow down.
     pub ws_healthy: bool,
     pub last_refresh_ms: i64,
@@ -425,6 +427,7 @@ impl App {
             file_view: None,
             clock_ms: 0,
             machine_liveness: HashMap::new(),
+            spawn_memory: std::collections::BTreeMap::new(),
             ws_healthy: false,
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),

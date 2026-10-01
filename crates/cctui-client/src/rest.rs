@@ -713,6 +713,24 @@ impl Client {
         self.json(route, &[], &[], Some(&body)).await
     }
 
+    /// Every remembered spawn configuration, keyed by target.
+    pub async fn spawn_memory(
+        &self,
+    ) -> Result<cctui_proto::drafts::SpawnMemoryPayload, ClientError> {
+        self.json(Self::route("get_spawn_memory")?, &[], &[], None).await
+    }
+
+    /// Replaces the whole map; the server caps it.
+    pub async fn put_spawn_memory(
+        &self,
+        payload: &cctui_proto::drafts::SpawnMemoryPayload,
+    ) -> Result<cctui_proto::drafts::SpawnMemoryPayload, ClientError> {
+        let route = Self::route("put_spawn_memory")?;
+        let body = serde_json::to_value(payload)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
         let route = Self::route("put_drafts_by_*key")?;
         let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
@@ -908,6 +926,8 @@ mod tests {
             "get_machines_by_machine_fs_gitinfo",
             "get_sessions_recent_dirs",
             "post_machines_by_machine_codex_models_refresh",
+            "get_spawn_memory",
+            "put_spawn_memory",
             "get_sessions_by_id",
             "get_sessions_stats",
             "get_sessions_by_id_conversation",

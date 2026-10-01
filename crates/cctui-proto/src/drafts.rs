@@ -96,7 +96,7 @@ pub struct PutDraftRequest {
 ///
 /// Mirrors the fields the spawn form recalls; `account_provider` is carried for
 /// display only, the form recomputes it from the account.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnMemoryEntry {
     #[serde(default)]

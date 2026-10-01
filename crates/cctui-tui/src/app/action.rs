@@ -376,6 +376,11 @@ pub enum Effect {
         path: String,
     },
     FetchRecentDirs,
+    FetchSpawnMemory,
+    /// The whole map; the server replaces what it holds with it.
+    PutSpawnMemory {
+        entries: std::collections::BTreeMap<String, cctui_proto::drafts::SpawnMemoryEntry>,
+    },
     /// Re-reads the machine's codex catalog upstream; refetch the lists after.
     RefreshCodexModels {
         machine_id: String,
