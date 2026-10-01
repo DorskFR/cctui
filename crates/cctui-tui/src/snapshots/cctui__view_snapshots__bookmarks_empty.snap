@@ -1,0 +1,17 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ Bookmarks   0
+ nothing saved yet — bookmark a message from the web UI
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────

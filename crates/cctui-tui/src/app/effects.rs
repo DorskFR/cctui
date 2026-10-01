@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use super::action::{Action, Effect};
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
+use super::bookmarks::BookmarkAction;
 use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
@@ -147,6 +148,39 @@ async fn run(
             Err(e) => {
                 tracing::warn!(%e, session_id, "pin list fetch failed");
                 Vec::new()
+            }
+        },
+        Effect::LoadBookmarks { q, before } => {
+            match server.list_bookmarks(&q, before, super::bookmarks::PAGE).await {
+                Ok(rows) => vec![Action::Bookmarks(BookmarkAction::Loaded {
+                    rows,
+                    append: before.is_some(),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "bookmark list fetch failed");
+                    vec![Action::Bookmarks(BookmarkAction::Failed)]
+                }
+            }
+        }
+        Effect::UpdateBookmark { id, title, note } => {
+            match server.update_bookmark(&id, &title, note.as_deref()).await {
+                Ok(bookmark) => {
+                    vec![Action::Bookmarks(BookmarkAction::Updated(Box::new(bookmark)))]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, id, "bookmark update failed");
+                    vec![Action::Toast(Level::Error, "could not save the bookmark".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteBookmark { id } => match server.delete_bookmark(&id).await {
+            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
+                |_| Vec::new(),
+                |id| vec![Action::Bookmarks(BookmarkAction::Deleted { id })],
+            ),
+            Err(e) => {
+                tracing::warn!(%e, id, "bookmark delete failed");
+                vec![Action::Toast(Level::Error, "could not delete the bookmark".to_owned())]
             }
         },
         Effect::PinMessage { session_id, seq } => pin(server, session_id, seq, true).await,

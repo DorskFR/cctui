@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ Bookmarks   1
+❯ ◈ Auth rollout checklist           cctui · 14d 0h     > auth, step by step
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+# Auth rollout checklist
+> auth, step by step
+
+## Auth rollout checklist
+
+The saved body, with a code span and a list:
+
+- one
+- two
+
+ search auth▏  Enter search · Esc cancel

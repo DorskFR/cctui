@@ -1,3 +1,4 @@
+use cctui_proto::api::bookmarks::Bookmark;
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
@@ -567,6 +568,39 @@ impl Client {
         self.unit(route, &[("id", session_id), ("seq", &seq.to_string())], None).await
     }
 
+    /// A page of the caller's bookmarks, newest first. `before` is the
+    /// `created_at` of the last row of the previous page.
+    pub async fn list_bookmarks(
+        &self,
+        q: &str,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+        limit: i64,
+    ) -> Result<Vec<Bookmark>, ClientError> {
+        let mut query = vec![("limit", limit.to_string())];
+        if !q.trim().is_empty() {
+            query.push(("q", q.to_owned()));
+        }
+        if let Some(before) = before {
+            query.push(("before", before.to_rfc3339()));
+        }
+        self.json(Self::route("get_bookmarks")?, &[], &query, None).await
+    }
+
+    /// Edit a bookmark's title and note; the snapshot itself is immutable.
+    pub async fn update_bookmark(
+        &self,
+        id: &str,
+        title: &str,
+        note: Option<&str>,
+    ) -> Result<Bookmark, ClientError> {
+        let body = serde_json::json!({ "title": title, "note": note });
+        self.json(Self::route("patch_bookmarks_by_id")?, &[("id", id)], &[], Some(&body)).await
+    }
+
+    pub async fn delete_bookmark(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_bookmarks_by_id")?, &[("id", id)], None).await
+    }
+
     /// Revoke the key this client authenticates with (`cctui logout --revoke`).
     pub async fn revoke_current_key(&self) -> Result<(), ClientError> {
         self.unit(Self::route("delete_me_key")?, &[], None).await
@@ -702,6 +736,9 @@ mod tests {
             "get_sessions_by_id_pins",
             "post_sessions_by_id_pins",
             "delete_sessions_by_id_pins_by_seq",
+            "get_bookmarks",
+            "patch_bookmarks_by_id",
+            "delete_bookmarks_by_id",
         ] {
             assert!(Client::route(id).is_ok(), "missing route id {id}");
         }

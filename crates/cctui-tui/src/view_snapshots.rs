@@ -2,6 +2,7 @@ use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::attach::AttachAction;
+use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::diagnose::DiagnoseAction;
@@ -56,6 +57,100 @@ fn app_in_conversation() -> crate::app::App {
     app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
     app
+}
+
+/// Dated fields are pinned to the test clock, so the ages do not drift.
+fn bookmark(
+    title: &str,
+    session: Option<&str>,
+    note: Option<&str>,
+    age_days: i64,
+) -> cctui_proto::api::bookmarks::Bookmark {
+    cctui_proto::api::bookmarks::Bookmark {
+        id: uuid::Uuid::from_u128(u128::try_from(age_days).unwrap_or(0) + 1),
+        session_id: session.map(str::to_owned),
+        seq: Some(4),
+        message_id: None,
+        title: title.to_owned(),
+        body: format!(
+            "## {title}\n\nThe saved body, with a `code` span and a list:\n\n- one\n- two"
+        ),
+        role: "assistant".to_owned(),
+        session_name: session.map(str::to_owned),
+        note: note.map(str::to_owned),
+        message_ts: crate::testsupport::ms_ago(age_days * 86_400_000),
+        created_at: crate::testsupport::ms_ago(age_days * 86_400_000),
+    }
+}
+
+fn app_with_bookmarks() -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = crate::testsupport::CLOCK_MS;
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::Open));
+    reduce(
+        &mut app,
+        Action::Bookmarks(BookmarkAction::Loaded {
+            rows: vec![
+                bookmark(
+                    "Gateway fix summary",
+                    Some("fix-auth"),
+                    Some("keep for release notes"),
+                    2,
+                ),
+                bookmark("Old plan", None, None, 9),
+                bookmark("Auth rollout checklist", Some("cctui"), Some("auth, step by step"), 14),
+            ],
+            append: false,
+        }),
+    );
+    app
+}
+
+#[test]
+fn bookmarks_list() {
+    let mut app = app_with_bookmarks();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The wave's row budget: a bookmark row has to stay readable at 80 columns.
+#[test]
+fn bookmarks_list_at_eighty_columns() {
+    let mut app = app_with_bookmarks();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn bookmarks_search_highlights_the_terms() {
+    let mut app = app_with_bookmarks();
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::SearchOpen));
+    for c in "auth".chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptKey(key)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn bookmarks_delete_confirm() {
+    let mut app = app_with_bookmarks();
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::DeleteAsk));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn bookmarks_edit_prompt() {
+    let mut app = app_with_bookmarks();
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::EditOpen));
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptSwitch));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn bookmarks_empty() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::Open));
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::Loaded { rows: Vec::new(), append: false }));
+    insta::assert_snapshot!(render_screen(&mut app));
 }
 
 #[test]
@@ -115,7 +210,7 @@ fn help_overlay_tall_enough_for_the_glyph_legend() {
     // Tall enough for the legend's last entry: the sheet is two columns, the
     // legend is the tail of the right one, and this case is where it is
     // reviewable in full.
-    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 96));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 108));
 }
 
 #[test]

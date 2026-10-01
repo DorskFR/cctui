@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Tab         Complete the path                Plan card — refine                             │
-▸ │Filter menu                                      Enter       Accept the text                  │
-  │  F / q / Esc Choose which lines to show         Esc         Discard the text                 │
-  │  a           Show every category              Row glyphs                                     │
-  │  r           Back to the default filter         ●           working                          │
-  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
-  │  j / ↓       Next category                      ○           idle                             │
-  │  k / ↑       Previous category                  ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │File viewer                                      ●N          unread messages                  │
-  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
-  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
-  │  PgDn        Page down                          ⚠           account traffic never seen       │
-  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
+  │  Ctrl+n / ↓  Next prompt                        Enter       Accept the text                  │
+▸ │  Ctrl+p / ↑  Previous prompt                    Esc         Discard the text                 │
+  │  Enter       Put this prompt in the composer  Row glyphs                                     │
+  │File viewer                                      ●           working                          │
+  │  j / ↓       Scroll down                        ◐           stale or asleep                  │
+  │  k / ↑       Scroll up                          ○           idle                             │
+  │  PgDn        Page down                          ☾           hibernated                       │
+  │  PgUp        Page up                            ↳           subagent                         │
+  │  g           Jump to the top                    ▸ / ▾       folded / open group              │
+  │  q / Esc     Close the file viewer              !           permission waiting on you        │
+  │  o           Open in the desktop viewer         ?           question waiting on you          │
+  │Pinned messages                                  P           plan waiting for approval        │
+  │  Esc         Close the pinned messages          ●N          unread messages                  │
+  │  Ctrl+n / ↓  Next pin                           ⚡           auto-approve on                  │
+  │  Ctrl+p / ↑  Previous pin                       ⏸           account soft-limited             │
+  │  Enter       Jump to the pinned message         ⚠           account traffic never seen       │
+  │  d / m       Unpin this message                 ❄           cache cold, next turn re-reads   │
+  │Macros                                           ✕reason     how it ended                     │
+  │  Esc         Close the macro list               ⚙N age      tool calls, age of the last      │
+  │  Ctrl+n / ↓  Next macro                                                                      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

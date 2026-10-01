@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         o           Open in the desktop viewer       │
-▸ │  ?           Toggle this cheat sheet          Pinned messages                                │
-  │  q           Quit cctui                         Esc         Close the pinned messages        │
-  │  /           Search the current view            Ctrl+n / ↓  Next pin                         │
-  │  n           Next search hit                    Ctrl+p / ↑  Previous pin                     │
-  │  N           Previous search hit                Enter       Jump to the pinned message       │
-  │  D           Diagnose the selected session      d / m       Unpin this message               │
-  │  i           Session info                     Macros                                         │
-  │  Ctrl+g      Jump to the next pending approv…   Esc         Close the macro list             │
-  │Session list                                     Ctrl+n / ↓  Next macro                       │
-  │  j / ↓       Next session                       Ctrl+p / ↑  Previous macro                   │
-  │  k / ↑       Previous session                   Enter       Put this prompt in the composer  │
-  │  g           First session                    Terminal pane                                  │
-  │  G           Last session                       T / q / Esc Close the terminal pane          │
-  │  Enter       Open the conversation              j / ↓       Scroll the terminal down         │
-  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll the terminal up           │
-  │  S           Fold or open the section         Help                                           │
-  │  Z           Fold or open everything            j / ↓       Scroll down                      │
-  │Conversation                                     k / ↑       Scroll up                        │
-  │  1-9         Jump to session by number          PgDn        Page down                        │
+  │Anywhere                                         Ctrl+p / ↑  Previous macro                   │
+▸ │  ?           Toggle this cheat sheet            Enter       Put this prompt in the composer  │
+  │  q           Quit cctui                       Bookmarks                                      │
+  │  /           Search the current view            q / Esc     Back to the session list         │
+  │  n           Next search hit                    j / ↓       Next bookmark                    │
+  │  N           Previous search hit                k / ↑       Previous bookmark                │
+  │  D           Diagnose the selected session      g           First bookmark                   │
+  │  i           Session info                       G           Last bookmark                    │
+  │  Ctrl+g      Jump to the next pending approv…   Ctrl+f / P… Scroll the preview down          │
+  │Session list                                     Ctrl+b / P… Scroll the preview up            │
+  │  j / ↓       Next session                       /           Search the bookmarks             │
+  │  k / ↑       Previous session                   Enter       Open the source message          │
+  │  g           First session                      y           Copy the bookmark as markdown    │
+  │  G           Last session                       e           Edit the title and note          │
+  │  Enter       Open the conversation              d           Delete the bookmark              │
+  │  z / Tab     Fold or open the subagent group  Bookmarks — search or edit                     │
+  │  S           Fold or open the section           Enter       Accept                           │
+  │  Z           Fold or open everything            Esc         Discard                          │
+  │  B           Browse your bookmarks              Tab         Switch between title and note    │
+  │Conversation                                   Bookmarks — confirm                            │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

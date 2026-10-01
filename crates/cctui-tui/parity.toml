@@ -811,8 +811,8 @@ ticket = "CCT-1273"
 [[route]]
 id = "get_bookmarks"
 # GET /bookmarks — List your saved messages, or save one.
-tui = "planned"
-ticket = "CCT-1252"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_bookmarks"
@@ -823,14 +823,14 @@ ticket = "CCT-1252"
 [[route]]
 id = "patch_bookmarks_by_id"
 # PATCH /bookmarks/{id} — Edit a bookmark's title/note, or delete it.
-tui = "planned"
-ticket = "CCT-1252"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_bookmarks_by_id"
 # DELETE /bookmarks/{id} — Edit a bookmark's title/note, or delete it.
-tui = "planned"
-ticket = "CCT-1252"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_prompts"

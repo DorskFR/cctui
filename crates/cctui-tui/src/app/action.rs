@@ -4,6 +4,7 @@ use crossterm::event::KeyEvent;
 
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
+use super::bookmarks::BookmarkAction;
 use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
@@ -100,6 +101,7 @@ pub enum Action {
     Auth(AuthAction),
     Drafts(DraftAction),
     Pins(PinAction),
+    Bookmarks(BookmarkAction),
     Macros(MacroAction),
     /// Take the highlighted `#session` completion. Carries the key so a
     /// composer with no popup open still types it.
@@ -172,6 +174,19 @@ pub enum Effect {
     },
     /// `GET /drafts`: every unsent draft, pulled once at startup.
     LoadDraftIndex,
+    /// `GET /bookmarks`: one page, newest first, filtered by `q`.
+    LoadBookmarks {
+        q: String,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    UpdateBookmark {
+        id: String,
+        title: String,
+        note: Option<String>,
+    },
+    DeleteBookmark {
+        id: String,
+    },
     /// `GET /sessions/{id}/pins`: the caller's pins in one session.
     LoadPins {
         session_id: String,

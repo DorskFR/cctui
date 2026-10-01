@@ -4,6 +4,7 @@ use crate::app::PromptFocus;
 use crate::app::action::{Action, CopyWhat};
 use crate::app::attach::AttachAction;
 use crate::app::attention::{AttentionAction, Decision};
+use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
@@ -83,6 +84,7 @@ pub const fn context_for(
     }
     match view {
         View::SessionList => Context::SessionList,
+        View::Bookmarks => Context::Bookmarks,
         View::Conversation => Context::Conversation,
         View::FileViewer => Context::FileViewer,
         View::Help => Context::Help,
@@ -159,6 +161,7 @@ pub fn map_input(
             Some(Action::FileView(FileViewAction::Scroll(3)))
         }
         InputEvent::ScrollUp => match view {
+            View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewUp)),
             View::Conversation | View::Sidebar => {
                 Some(Action::Scroll { lines: -3, release_follow: true })
             }
@@ -173,6 +176,7 @@ pub fn map_input(
             | View::ModelPicker => None,
         },
         InputEvent::ScrollDown => match view {
+            View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewDown)),
             View::Conversation | View::Sidebar => {
                 Some(Action::Scroll { lines: 3, release_follow: false })
             }
@@ -305,6 +309,25 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PinsJump => Action::Pins(PinAction::Jump),
         ActionId::PinsUnpin => Action::Pins(PinAction::UnpinSelected),
 
+        ActionId::BookmarksOpen => Action::Bookmarks(BookmarkAction::Open),
+        ActionId::BookmarksClose => Action::Bookmarks(BookmarkAction::Close),
+        ActionId::BookmarksSelectNext => Action::Bookmarks(BookmarkAction::SelectNext),
+        ActionId::BookmarksSelectPrev => Action::Bookmarks(BookmarkAction::SelectPrev),
+        ActionId::BookmarksSelectFirst => Action::Bookmarks(BookmarkAction::SelectFirst),
+        ActionId::BookmarksSelectLast => Action::Bookmarks(BookmarkAction::SelectLast),
+        ActionId::BookmarksPreviewDown => Action::Bookmarks(BookmarkAction::PreviewDown),
+        ActionId::BookmarksPreviewUp => Action::Bookmarks(BookmarkAction::PreviewUp),
+        ActionId::BookmarksSearch => Action::Bookmarks(BookmarkAction::SearchOpen),
+        ActionId::BookmarksOpenSource => Action::Bookmarks(BookmarkAction::OpenSource),
+        ActionId::BookmarksCopy => Action::Bookmarks(BookmarkAction::CopyMarkdown),
+        ActionId::BookmarksEdit => Action::Bookmarks(BookmarkAction::EditOpen),
+        ActionId::BookmarksDelete => Action::Bookmarks(BookmarkAction::DeleteAsk),
+        ActionId::BookmarksPromptCommit => Action::Bookmarks(BookmarkAction::PromptCommit),
+        ActionId::BookmarksPromptCancel => Action::Bookmarks(BookmarkAction::PromptCancel),
+        ActionId::BookmarksPromptSwitch => Action::Bookmarks(BookmarkAction::PromptSwitch),
+        ActionId::BookmarksDeleteConfirm => Action::Bookmarks(BookmarkAction::DeleteConfirm),
+        ActionId::BookmarksDeleteCancel => Action::Bookmarks(BookmarkAction::DeleteCancel),
+
         ActionId::MentionAccept => Action::AcceptMention(chord.event()),
         ActionId::MacrosOpen => Action::Macros(MacroAction::Open),
         ActionId::MacrosClose => Action::Macros(MacroAction::Close),
@@ -364,6 +387,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Composer => Some(Action::InputKey(key)),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
+        Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
         _ => None,
     }

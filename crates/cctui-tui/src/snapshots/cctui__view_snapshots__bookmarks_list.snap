@@ -1,0 +1,26 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ Bookmarks   3
+❯ ◈ Gateway fix summary              fix-auth · 2d 0h   > keep for release notes
+  ◈ (dead) Old plan                  — · 9d 0h
+  ◈ Auth rollout checklist           cctui · 14d 0h     > auth, step by step
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+# Gateway fix summary
+> keep for release notes
+
+## Gateway fix summary
+
+The saved body, with a code span and a list:
+
+- one
+- two

@@ -1,6 +1,7 @@
 pub mod action;
 pub mod attach;
 pub mod attention;
+pub mod bookmarks;
 pub mod cmdline;
 pub mod command;
 pub mod controls;

@@ -19,6 +19,9 @@ pub enum Context {
     FileViewer,
     Pins,
     Macros,
+    Bookmarks,
+    BookmarkPrompt,
+    BookmarkConfirm,
     Terminal,
     Help,
     ModelPicker,
@@ -42,6 +45,9 @@ pub const CONTEXTS: &[Context] = &[
     Context::FileViewer,
     Context::Pins,
     Context::Macros,
+    Context::Bookmarks,
+    Context::BookmarkPrompt,
+    Context::BookmarkConfirm,
     Context::Terminal,
     Context::Help,
     Context::ModelPicker,
@@ -67,6 +73,9 @@ impl Context {
             Self::FileViewer => "file-viewer",
             Self::Pins => "pins",
             Self::Macros => "macros",
+            Self::Bookmarks => "bookmarks",
+            Self::BookmarkPrompt => "bookmark-prompt",
+            Self::BookmarkConfirm => "bookmark-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
             Self::ModelPicker => "model-picker",
@@ -92,6 +101,9 @@ impl Context {
             Self::FileViewer => "File viewer",
             Self::Pins => "Pinned messages",
             Self::Macros => "Macros",
+            Self::Bookmarks => "Bookmarks",
+            Self::BookmarkPrompt => "Bookmarks — search or edit",
+            Self::BookmarkConfirm => "Bookmarks — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::ModelPicker => "Model picker",
@@ -247,6 +259,25 @@ actions! {
     PinsJump => "pins-jump", "Jump to the pinned message";
     PinsUnpin => "pins-unpin", "Unpin this message";
 
+    BookmarksOpen => "bookmarks-open", "Browse your bookmarks";
+    BookmarksClose => "bookmarks-close", "Back to the session list";
+    BookmarksSelectNext => "bookmarks-select-next", "Next bookmark";
+    BookmarksSelectPrev => "bookmarks-select-prev", "Previous bookmark";
+    BookmarksSelectFirst => "bookmarks-select-first", "First bookmark";
+    BookmarksSelectLast => "bookmarks-select-last", "Last bookmark";
+    BookmarksPreviewDown => "bookmarks-preview-down", "Scroll the preview down";
+    BookmarksPreviewUp => "bookmarks-preview-up", "Scroll the preview up";
+    BookmarksSearch => "bookmarks-search", "Search the bookmarks";
+    BookmarksOpenSource => "bookmarks-open-source", "Open the source message";
+    BookmarksCopy => "bookmarks-copy", "Copy the bookmark as markdown";
+    BookmarksEdit => "bookmarks-edit", "Edit the title and note";
+    BookmarksDelete => "bookmarks-delete", "Delete the bookmark";
+    BookmarksPromptCommit => "bookmarks-prompt-commit", "Accept";
+    BookmarksPromptCancel => "bookmarks-prompt-cancel", "Discard";
+    BookmarksPromptSwitch => "bookmarks-prompt-switch", "Switch between title and note";
+    BookmarksDeleteConfirm => "bookmarks-delete-confirm", "Delete it";
+    BookmarksDeleteCancel => "bookmarks-delete-cancel", "Keep it";
+
     MentionAccept => "mention-accept", "Take the session completion";
     MacrosOpen => "macros-open", "Insert a canned prompt";
     MacrosClose => "macros-close", "Close the macro list";
@@ -334,6 +365,35 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    spec(Context::SessionList, "B", ActionId::BookmarksOpen),
+];
+
+const BOOKMARKS: &[BindingSpec] = &[
+    spec(Context::Bookmarks, "esc, q", ActionId::BookmarksClose),
+    spec(Context::Bookmarks, "j, down", ActionId::BookmarksSelectNext),
+    spec(Context::Bookmarks, "k, up", ActionId::BookmarksSelectPrev),
+    spec(Context::Bookmarks, "g", ActionId::BookmarksSelectFirst),
+    spec(Context::Bookmarks, "G", ActionId::BookmarksSelectLast),
+    spec(Context::Bookmarks, "pagedown, ctrl+f", ActionId::BookmarksPreviewDown),
+    spec(Context::Bookmarks, "pageup, ctrl+b", ActionId::BookmarksPreviewUp),
+    spec(Context::Bookmarks, "/", ActionId::BookmarksSearch),
+    spec(Context::Bookmarks, "enter", ActionId::BookmarksOpenSource),
+    spec(Context::Bookmarks, "y", ActionId::BookmarksCopy),
+    spec(Context::Bookmarks, "e", ActionId::BookmarksEdit),
+    spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
+];
+
+/// One prompt serves the search and the edit: `Tab` is only meaningful for the
+/// edit, which types a title and a note.
+const BOOKMARK_PROMPT: &[BindingSpec] = &[
+    spec(Context::BookmarkPrompt, "enter", ActionId::BookmarksPromptCommit),
+    spec(Context::BookmarkPrompt, "esc", ActionId::BookmarksPromptCancel),
+    spec(Context::BookmarkPrompt, "tab", ActionId::BookmarksPromptSwitch),
+];
+
+const BOOKMARK_CONFIRM: &[BindingSpec] = &[
+    spec(Context::BookmarkConfirm, "y, enter", ActionId::BookmarksDeleteConfirm),
+    spec(Context::BookmarkConfirm, "n, esc, q", ActionId::BookmarksDeleteCancel),
 ];
 
 const CONVERSATION: &[BindingSpec] = &[
@@ -555,6 +615,9 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     HISTORY,
     PINS,
     MACROS,
+    BOOKMARKS,
+    BOOKMARK_PROMPT,
+    BOOKMARK_CONFIRM,
     TERMINAL,
     HELP,
     MODEL_PICKER,
@@ -693,9 +756,11 @@ impl Keymap {
             Context::Permission | Context::Sidebar => &[Context::Conversation, Context::Global],
             // The pager is a plain reader and keeps the globals; the attach
             // prompt swallows typed characters and falls through to nothing.
-            Context::SessionList | Context::Conversation | Context::FileViewer | Context::Help => {
-                &[Context::Global]
-            }
+            Context::SessionList
+            | Context::Bookmarks
+            | Context::Conversation
+            | Context::FileViewer
+            | Context::Help => &[Context::Global],
             _ => &[],
         }
     }

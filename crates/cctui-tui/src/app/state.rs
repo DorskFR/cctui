@@ -20,6 +20,7 @@ pub enum View {
     /// The overlay pager for an agent-linked local file.
     FileViewer,
     SessionList,
+    Bookmarks,
     Conversation,
     Help,
     HistoryPicker,
@@ -259,6 +260,7 @@ pub struct App {
     pub auth: AuthState,
     pub drafts: super::drafts::DraftState,
     pub pins: super::pins::PinState,
+    pub bookmarks: super::bookmarks::BookmarkState,
     pub mentions: super::mentions::MentionState,
     pub macros: super::macros::MacroState,
     /// Sends that have left the composer but are not confirmed delivered.
@@ -376,6 +378,7 @@ impl App {
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
             pins: super::pins::PinState::default(),
+            bookmarks: super::bookmarks::BookmarkState::default(),
             mentions: super::mentions::MentionState::default(),
             macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
@@ -431,6 +434,12 @@ impl App {
         }
         if self.filter_menu.is_some() {
             return Some(Context::FilterMenu);
+        }
+        if self.bookmarks.prompt.is_some() {
+            return Some(Context::BookmarkPrompt);
+        }
+        if self.bookmarks.confirm.is_some() {
+            return Some(Context::BookmarkConfirm);
         }
         None
     }

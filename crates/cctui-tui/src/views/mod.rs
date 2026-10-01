@@ -1,5 +1,6 @@
 pub mod attach;
 pub mod banner;
+pub mod bookmarks;
 pub mod cards;
 pub mod conversation;
 pub mod diagnose;
@@ -32,6 +33,7 @@ fn draw_below(frame: &mut Frame, app: &mut App) {
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view() {
         View::SessionList => sessions::draw(frame, app),
+        View::Bookmarks => bookmarks::draw(frame, app),
         // The sidebar is focus only: the conversation draws the panel itself,
         // so taking the keyboard never redraws the transcript differently.
         View::Conversation | View::Sidebar => conversation::draw(frame, app),
