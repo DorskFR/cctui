@@ -43,7 +43,8 @@
 		onNewFromScript,
 		onFork,
 		onResume,
-		onFollowup
+		onFollowup,
+		compact = false
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -58,7 +59,13 @@
 		onFork: () => void;
 		onResume: () => void;
 		onFollowup?: (instruction?: string) => void;
+		/** Tile chrome: one line of input until it takes focus. */
+		compact?: boolean;
 	} = $props();
+
+	let focused = $state(false);
+	// Folded: a tile's composer before it takes focus — the input line alone.
+	const folded = $derived(compact && !focused);
 
 	// `#` mention popover source: the shared (cached) session list.
 	const sessionsQuery = useSessions(() => false);
@@ -303,20 +310,27 @@
 	}
 </script>
 
-<div class="composer" data-journey="composer" class:dropping={att.dragActive}>
+<div
+	class="composer"
+	data-journey="composer"
+	class:dropping={att.dragActive}
+	class:compact
+	onfocusin={() => (focused = true)}
+	onfocusout={() => (focused = false)}
+>
 	{#if archived}
 		<ArchivedActions {onNewFromScript} {onFork} {onResume} />
 	{:else}
 		<!-- Failed sends surface inline on the message bubble itself (red +
 		     Retry), so there's no separate composer banner. -->
-		<div class="scheduled" bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
+		<div class="scheduled" class:hidden={folded} bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
 		<ImageCompressionStatus pending={att.images.pending} />
 		{#if supportsAttachments && att.files.length}
 			<div class="attachments">
 				<AttachmentList files={att.files} onremove={(name) => att.remove(name)} compact />
 			</div>
 		{/if}
-		{#if coldOffer}
+		{#if coldOffer && !folded}
 			<div class="cold-offer">
 				<Text tone="muted" size="sm">
 					{m.composer_followup_offer()}
@@ -343,7 +357,7 @@
 		{/snippet}
 		<!-- The `#` session-mention panel opens as a dropup above the field
 		     (the composer is pinned to the bottom of the drawer). -->
-		<InputGroup leading={supportsAttachments ? attach : undefined}>
+		<InputGroup leading={supportsAttachments && !folded ? attach : undefined}>
 			<SessionMention
 				bind:value={input}
 				el={scroll.textarea}
@@ -412,6 +426,14 @@
 		.composer {
 			padding: var(--sp-2) var(--sp-2) calc(var(--sp-2) + var(--safe-bottom));
 		}
+	}
+	/* A tile's composer is one line of chrome until the user means to type. */
+	.composer.compact {
+		gap: var(--sp-1);
+		padding: var(--sp-1) var(--sp-2) calc(var(--sp-1) + var(--safe-bottom));
+	}
+	.hidden {
+		display: none;
 	}
 	.scheduled:empty {
 		display: none;

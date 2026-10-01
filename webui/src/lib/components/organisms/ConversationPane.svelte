@@ -385,6 +385,7 @@
 				livenessClass={livenessClass(session)}
 				{showStatusBadge}
 				{maximized}
+				compact={chrome === 'tile'}
 				{onmaximize}
 				{onclose}
 				onrename={sa.rename}
@@ -415,18 +416,20 @@
 				onclearroom={clearRoom}
 			/>
 
-			<DrawerToolbar
-				bind:view
-				autoApprove={session.auto_approve}
-				ontoggleAuto={sa.toggleAutoApprove}
-				{terminalOpen}
-				ontoggleTerminal={() => (terminalOpen = !terminalOpen)}
-				plugins={plugins.buttons}
-				pins={pins.pins}
-				{lines}
-				onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}
-				onunpin={pins.unpinSeq}
-			/>
+			{#if chrome !== 'tile'}
+				<DrawerToolbar
+					bind:view
+					autoApprove={session.auto_approve}
+					ontoggleAuto={sa.toggleAutoApprove}
+					{terminalOpen}
+					ontoggleTerminal={() => (terminalOpen = !terminalOpen)}
+					plugins={plugins.buttons}
+					pins={pins.pins}
+					{lines}
+					onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}
+					onunpin={pins.unpinSeq}
+				/>
+			{/if}
 
 			{#if search.open}
 				<ConversationSearchBar {search} />
@@ -487,6 +490,7 @@
 				onFork={fork.openDialog}
 				onFollowup={onFollowup ? followup : undefined}
 				onResume={sa.resume}
+				compact={chrome === 'tile'}
 			/>
 			</Dropzone>
 		</div>
