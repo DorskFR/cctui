@@ -2,7 +2,7 @@ use super::action::{Action, Effect, HeartbeatUsage};
 use super::conversation::{self, ConversationAction};
 use super::state::{App, View};
 use super::toast::Level;
-use super::{send, terminal};
+use super::{row_actions, send, terminal};
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
@@ -16,6 +16,7 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::RowAction(action) => row_actions::reduce_row_actions(app, action),
         Action::Attach(action) => super::attach::reduce_attach(app, action),
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
@@ -41,6 +42,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         // One clock for the whole app: delivery deadlines move, and the session
         // list polls only when its own period has elapsed.
         Action::Tick => {
+            row_actions::prune(app);
             let mut effects = send::tick(app);
             effects.extend(super::session_live::poll_if_due(app));
             effects
@@ -223,6 +225,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::SessionsLoaded(sessions) => {
             app.sessions = sessions;
             app.update_aggregates();
+            row_actions::prune(app);
             super::controls::take_pending_jump(app)
         }
         Action::Conversation(action) => conversation::reduce(app, action),

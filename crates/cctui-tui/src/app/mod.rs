@@ -20,6 +20,7 @@ pub mod pins;
 pub mod prompt;
 pub mod reduce;
 pub mod router;
+pub mod row_actions;
 pub mod send;
 pub mod server_event;
 pub mod session_list;

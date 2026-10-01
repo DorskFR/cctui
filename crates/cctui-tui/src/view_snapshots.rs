@@ -250,6 +250,59 @@ fn session_list_rich_statuses() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+/// Select mode: the checkbox gutter, the picked rows and the strip that
+/// replaces the hotkey hints.
+#[test]
+fn session_list_select_mode() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ToggleSelect));
+    crate::app::reduce(&mut app, crate::app::Action::SelectNext);
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ToggleSelect));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_batch_archive_confirm() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::SelectAllVisible));
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ArchiveOrUnarchive));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_rename_field() {
+    use crate::app::row_actions::RowAction;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::RenameStart));
+    for c in "fix-auth".chars() {
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::RowAction(RowAction::RenameKey(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            ))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The checkbox gutter comes out of the same 80-column budget the rich row
+/// already fights over.
+#[test]
+fn session_list_select_mode_at_eighty_columns() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_rich_statuses();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::SelectAllVisible));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
 #[test]
 fn session_list_rich_statuses_at_eighty_columns() {
     let mut app = app_with_rich_statuses();

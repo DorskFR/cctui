@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         o           Open in the desktop viewer       │
-▸ │  ?           Toggle this cheat sheet          Pinned messages                                │
-  │  q           Quit cctui                         Esc         Close the pinned messages        │
-  │  /           Search the current view            Ctrl+n / ↓  Next pin                         │
-  │  n           Next search hit                    Ctrl+p / ↑  Previous pin                     │
-  │  N           Previous search hit                Enter       Jump to the pinned message       │
-  │  D           Diagnose the selected session      d / m       Unpin this message               │
-  │  i           Session info                     Macros                                         │
-  │  Ctrl+g      Jump to the next pending approv…   Esc         Close the macro list             │
-  │Session list                                     Ctrl+n / ↓  Next macro                       │
-  │  j / ↓       Next session                       Ctrl+p / ↑  Previous macro                   │
-  │  k / ↑       Previous session                   Enter       Put this prompt in the composer  │
-  │  g           First session                    Terminal pane                                  │
-  │  G           Last session                       T / q / Esc Close the terminal pane          │
-  │  Enter       Open the conversation              j / ↓       Scroll the terminal down         │
-  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll the terminal up           │
-  │  S           Fold or open the section         Help                                           │
-  │  Z           Fold or open everything            j / ↓       Scroll down                      │
-  │Conversation                                     k / ↑       Scroll up                        │
-  │  1-9         Jump to session by number          PgDn        Page down                        │
+  │Anywhere                                         Enter       Put this prompt in the composer  │
+▸ │  ?           Toggle this cheat sheet          File viewer                                    │
+  │  q           Quit cctui                         j / ↓       Scroll down                      │
+  │  /           Search the current view            k / ↑       Scroll up                        │
+  │  n           Next search hit                    PgDn        Page down                        │
+  │  N           Previous search hit                PgUp        Page up                          │
+  │  D           Diagnose the selected session      g           Jump to the top                  │
+  │  i           Session info                       q / Esc     Close the file viewer            │
+  │  Ctrl+g      Jump to the next pending approv…   o           Open in the desktop viewer       │
+  │Session list                                   Pinned messages                                │
+  │  j / ↓       Next session                       Esc         Close the pinned messages        │
+  │  k / ↑       Previous session                   Ctrl+n / ↓  Next pin                         │
+  │  g           First session                      Ctrl+p / ↑  Previous pin                     │
+  │  G           Last session                       Enter       Jump to the pinned message       │
+  │  Enter       Open the conversation              d / m       Unpin this message               │
+  │  z / Tab     Fold or open the subagent group  Macros                                         │
+  │  S           Fold or open the section           Esc         Close the macro list             │
+  │  Z           Fold or open everything            Ctrl+n / ↓  Next macro                       │
+  │  p           Pin or unpin the session           Ctrl+p / ↑  Previous macro                   │
+  │  x           Archive or unarchive the session   Enter       Put this prompt in the composer  │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Tab         Complete the path                Plan card — refine                             │
-▸ │Filter menu                                      Enter       Accept the text                  │
-  │  F / q / Esc Choose which lines to show         Esc         Discard the text                 │
-  │  a           Show every category              Row glyphs                                     │
-  │  r           Back to the default filter         ●           working                          │
-  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
-  │  j / ↓       Next category                      ○           idle                             │
-  │  k / ↑       Previous category                  ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │File viewer                                      ●N          unread messages                  │
-  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
-  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
-  │  PgDn        Page down                          ⚠           account traffic never seen       │
-  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
+  │  ↑           Recall an earlier prompt         Plan card — refine                             │
+▸ │  ↓           Recall a later prompt              Enter       Accept the text                  │
+  │  Ctrl+r      Search sent prompts                Esc         Discard the text                 │
+  │  Tab         Take the session completion      Row glyphs                                     │
+  │  Ctrl+t      Insert a canned prompt             ●           working                          │
+  │Search and commands                              ◐           stale or asleep                  │
+  │  Enter       Run it                             ○           idle                             │
+  │  Esc         Abandon it                         ☾           hibernated                       │
+  │  Tab         Complete the path                  ↳           subagent                         │
+  │Filter menu                                      ▸ / ▾       folded / open group              │
+  │  F / q / Esc Choose which lines to show         !           permission waiting on you        │
+  │  a           Show every category                ?           question waiting on you          │
+  │  r           Back to the default filter         P           plan waiting for approval        │
+  │  Space / En… Show or hide this category         ●N          unread messages                  │
+  │  j / ↓       Next category                      ⚡           auto-approve on                  │
+  │  k / ↑       Previous category                  ⏸           account soft-limited             │
+  │Prompt history                                   ⚠           account traffic never seen       │
+  │  Esc         Close the prompt list              ❄           cache cold, next turn re-reads   │
+  │  Ctrl+n / ↓  Next prompt                        ✕reason     how it ended                     │
+  │  Ctrl+p / ↑  Previous prompt                    ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

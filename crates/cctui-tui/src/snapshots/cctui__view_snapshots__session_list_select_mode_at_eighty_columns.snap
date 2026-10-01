@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: "render_screen_sized(&mut app, 80, 24)"
+---
+ cctui  v0.0.0-test  6 sessions  ● 4 active  ⚠ 1 approval pending — Ctrl+g to ju
+ Sessions
+   ▾ Needs input (1)
+▸    [x] ● [claude-code] deploy (main)  opus  0s  $1.25  ! ⚡
+   ▾ Working (3)
+     [x] ● [claude-code] cctui (main)  opus  0s  $1.25  ⚙14 8s  3/7 Running…  ●4
+     [x] ● [claude-code] web (main)  opus  0s  $1.25  ⚙2 3m  asleep  ?
+     [x] ◐ [claude-code] api (main)  opus  0s  $1.25  stale 42m
+   ▾ Completed (2)
+     [x] ☾ [claude-code] notes (main)  opus  0s  $1.25  hibernated
+     [x] ○ [claude-code] infra (main)  opus  0s  $1.25  ✕machine offline
+
+
+
+
+
+
+
+
+
+
+
+
+ -- SELECT (6) --  space toggle  V range  * all  x archive  esc cancel
