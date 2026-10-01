@@ -17,6 +17,15 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
         Action::Attach(action) => super::attach::reduce_attach(app, action),
+        Action::Labels(action) => super::labels::reduce_labels(app, action),
+        Action::CycleGrouping => {
+            app.grouping = match app.grouping {
+                super::session_list::Grouping::Status => super::session_list::Grouping::Machine,
+                super::session_list::Grouping::Machine => super::session_list::Grouping::Status,
+            };
+            app.toast(super::toast::Level::Info, format!("grouping by {}", app.grouping.label()));
+            Vec::new()
+        }
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
             app.pending_chord = Some(chord);

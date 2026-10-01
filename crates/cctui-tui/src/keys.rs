@@ -10,6 +10,7 @@ use crate::app::conversation::ConversationAction;
 use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::labels::LabelAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
@@ -85,6 +86,8 @@ pub const fn context_for(
         View::SessionList => Context::SessionList,
         View::Conversation => Context::Conversation,
         View::FileViewer => Context::FileViewer,
+        View::LabelPicker => Context::LabelPicker,
+        View::LabelFilter => Context::LabelFilter,
         View::Help => Context::Help,
         View::HistoryPicker => Context::History,
         View::Pins => Context::Pins,
@@ -108,6 +111,8 @@ const fn modal_context(view: View) -> Option<Context> {
         View::Diagnose => Some(Context::Diagnose),
         View::Terminal => Some(Context::Terminal),
         View::FileViewer => Some(Context::FileViewer),
+        View::LabelPicker => Some(Context::LabelPicker),
+        View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
         _ => None,
     }
@@ -170,7 +175,9 @@ pub fn map_input(
             | View::HistoryPicker
             | View::Pins
             | View::Macros
-            | View::ModelPicker => None,
+            | View::ModelPicker
+            | View::LabelPicker
+            | View::LabelFilter => None,
         },
         InputEvent::ScrollDown => match view {
             View::Conversation | View::Sidebar => {
@@ -184,7 +191,9 @@ pub fn map_input(
             | View::HistoryPicker
             | View::Pins
             | View::Macros
-            | View::ModelPicker => None,
+            | View::ModelPicker
+            | View::LabelPicker
+            | View::LabelFilter => None,
         },
     }
 }
@@ -222,6 +231,21 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ScrollToBottom => Action::ScrollToBottom,
         ActionId::ToggleTimestamps => Action::ToggleTimestamps,
         ActionId::LineCursor => Action::Conversation(ConversationAction::ToggleLineCursor),
+
+        ActionId::OpenLabels => Action::Labels(LabelAction::OpenPicker),
+        ActionId::OpenLabelFilter => Action::Labels(LabelAction::OpenFilter),
+        ActionId::LabelsClose => Action::Labels(LabelAction::CloseOrCancel),
+        ActionId::LabelsNext => Action::Labels(LabelAction::SelectNext),
+        ActionId::LabelsPrev => Action::Labels(LabelAction::SelectPrev),
+        ActionId::LabelsToggle => Action::Labels(LabelAction::ToggleOrSpace),
+        ActionId::LabelsCreate => Action::Labels(LabelAction::StartCreate),
+        ActionId::LabelsEdit => Action::Labels(LabelAction::StartRename),
+        ActionId::LabelsDelete => Action::Labels(LabelAction::StartDelete),
+        ActionId::LabelsCommit => Action::Labels(LabelAction::Commit),
+        ActionId::LabelsCancel => Action::Labels(LabelAction::Cancel),
+        ActionId::LabelFilterToggle => Action::Labels(LabelAction::FilterToggle),
+        ActionId::LabelFilterClear => Action::Labels(LabelAction::FilterClear),
+        ActionId::CycleGrouping => Action::CycleGrouping,
 
         // One command line: `Ctrl-O` is `:attach ` already typed for you.
         ActionId::AttachFile => {
@@ -362,6 +386,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
+        Context::LabelPicker => Some(Action::Labels(LabelAction::Key(key))),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),

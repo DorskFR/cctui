@@ -415,38 +415,38 @@ ticket = "CCT-1260"
 [[route]]
 id = "get_labels"
 # GET /labels — List label definitions, or create one.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_labels"
 # POST /labels — List label definitions, or create one.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "patch_labels_by_id"
 # PATCH /labels/{id} — Rename or delete a label definition.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_labels_by_id"
 # DELETE /labels/{id} — Rename or delete a label definition.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_labels"
 # POST /sessions/{id}/labels — Attach a label to a session.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_sessions_by_id_labels_by_label"
 # DELETE /sessions/{id}/labels/{label_id} — Detach a label from a session.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_machines_by_machine_commands_pending"

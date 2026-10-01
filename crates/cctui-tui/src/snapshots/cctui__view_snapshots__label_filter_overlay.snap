@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1139
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active  labels: docs
+ Sessions
+   ▾ Completed (1)
+▸    ○ [claude-code] notes (main)  opus  0s  $1.25 [docs] [infra] +2
+      ┌ Filter by label (any of) ────────────────────────────────────────────────────────────┐
+      │❯ [x] ■ docs                                                                          │
+      │  [ ] ■ infra                                                                         │
+      │  [ ] ■ urgent                                                                        │
+      │  [ ] ■ wave-5                                                                        │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │ space toggle  a show all  esc close                                                  │
+      └──────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -17,6 +17,7 @@ use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
 use super::identity::AuthAction;
+use super::labels::LabelAction;
 use super::line::agent_event_to_line;
 use super::pins::PinAction;
 use super::send::SendAction;
@@ -263,6 +264,71 @@ async fn run(
         Effect::OpenInOsViewer { name, bytes } => {
             open_in_os_viewer(&name, &bytes);
             Vec::new()
+        }
+        Effect::FetchLabels => match server.labels().await {
+            Ok(labels) => vec![Action::Labels(LabelAction::Loaded(labels))],
+            Err(e) => {
+                tracing::warn!(%e, "fetching labels failed");
+                Vec::new()
+            }
+        },
+        // Creating a label from a row means you wanted it on that row, so the
+        // attach happens here rather than asking the user for a second gesture.
+        Effect::CreateLabel { name, color, session_id } => {
+            let label = match server.create_label(&name, &color).await {
+                Ok(label) => label,
+                Err(e) => {
+                    tracing::warn!(%e, "creating a label failed");
+                    return vec![Action::Toast(Level::Error, format!("could not create {name}"))];
+                }
+            };
+            let mut actions = refetch_labels(server).await;
+            match server.attach_label(&session_id, &label.id).await {
+                Ok(()) => actions
+                    .push(Action::Labels(LabelAction::Attached { session_id, label_id: label.id })),
+                Err(e) => {
+                    tracing::warn!(%e, "attaching a fresh label failed");
+                    actions.push(Action::Toast(
+                        Level::Warn,
+                        format!("{name} was created but not attached"),
+                    ));
+                }
+            }
+            actions
+        }
+        Effect::UpdateLabel { id, name, color } => {
+            match server.update_label(&id, name, color).await {
+                Ok(_) => refetch_labels(server).await,
+                Err(e) => {
+                    tracing::warn!(%e, "editing a label failed");
+                    vec![Action::Toast(Level::Error, "could not edit the label".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteLabel { id } => match server.delete_label(&id).await {
+            Ok(()) => refetch_labels(server).await,
+            Err(e) => {
+                tracing::warn!(%e, "deleting a label failed");
+                vec![Action::Toast(Level::Error, "could not delete the label".to_owned())]
+            }
+        },
+        Effect::AttachLabel { session_id, label_id } => {
+            match server.attach_label(&session_id, &label_id).await {
+                Ok(()) => vec![Action::Labels(LabelAction::Attached { session_id, label_id })],
+                Err(e) => {
+                    tracing::warn!(%e, "attaching a label failed");
+                    vec![Action::Toast(Level::Error, "could not attach the label".to_owned())]
+                }
+            }
+        }
+        Effect::DetachLabel { session_id, label_id } => {
+            match server.detach_label(&session_id, &label_id).await {
+                Ok(()) => vec![Action::Labels(LabelAction::Detached { session_id, label_id })],
+                Err(e) => {
+                    tracing::warn!(%e, "detaching a label failed");
+                    vec![Action::Toast(Level::Error, "could not detach the label".to_owned())]
+                }
+            }
         }
         Effect::SaveUiState(state) => {
             crate::config::uistate::save(&state);
@@ -638,5 +704,17 @@ fn open_in_os_viewer(name: &str, bytes: &[u8]) {
         .spawn()
     {
         tracing::warn!(%e, opener, "cannot launch the OS viewer");
+    }
+}
+
+/// The catalogue after a change, so a rename or a delete shows everywhere at
+/// once rather than only where it was made.
+async fn refetch_labels(server: &Client) -> Vec<Action> {
+    match server.labels().await {
+        Ok(labels) => vec![Action::Labels(LabelAction::Loaded(labels))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching labels failed");
+            Vec::new()
+        }
     }
 }

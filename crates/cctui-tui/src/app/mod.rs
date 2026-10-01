@@ -13,6 +13,7 @@ pub mod effects;
 pub mod export;
 pub mod fileview;
 pub mod identity;
+pub mod labels;
 pub mod line;
 pub mod macros;
 pub mod mentions;

@@ -39,6 +39,10 @@ fn level_style(level: Level) -> ratatui::style::Style {
 /// count of anything the TUI had to drop. Empty when there is nothing to say.
 pub fn status_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    if let Some(text) = app.labels.filter_text() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(text, theme::branch()));
+    }
     if let Some(chip) = pending_chip(app) {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(chip, theme::cost()));

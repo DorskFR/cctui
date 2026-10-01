@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1177
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   ▾ Needs input (1)
+▸    ● [claude-code] infra (main) @cyberia-2 ▫  opus  0s  $1.25
+   ▾ Working (1)
+     ● [claude-code] cctui (main) @cyberia-1  opus  0s  $1.25
+     ▾ subagents (1/1 running)
+       ↳ ● [claude-code] cctui-sub (main) @cyberia-1  opus  0s  $1.25
+   ▾ Completed (1)
+     ○ [claude-code] notes (main) @orion ✗  opus  0s  $1.25
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

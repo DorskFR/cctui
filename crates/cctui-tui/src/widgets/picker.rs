@@ -21,8 +21,10 @@ impl PickerRow {
 
 pub struct Picker<'a> {
     pub title: &'a str,
-    /// `None` leaves the filter line out, for a list that is not filterable.
+    /// `None` leaves the input line out, for a list that is not filterable.
     pub filter: Option<&'a str>,
+    /// What the input line is for: a list narrows, a prompt names something.
+    pub prompt: &'a str,
     pub rows: &'a [PickerRow],
     pub selected: usize,
     pub empty: &'a str,
@@ -52,7 +54,7 @@ pub fn draw(frame: &mut Frame, picker: &Picker) {
     if let Some(filter) = picker.filter {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(" filter ", theme::dim()),
+                Span::styled(format!(" {} ", picker.prompt), theme::dim()),
                 Span::raw(filter.to_owned()),
                 Span::styled("▏", theme::border_focused()),
             ])),

@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1131
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   ▾ Needs input (1)
+▸    ● [claude-code] infra (main)  opus  0s  $1.25 [infra] [urgent]
+   ▾ W┌ Delete label ────────────────────────────────────────────────────────────────────────┐
+     ●│❯ delete "docs"? y to confirm, n to keep it                                           │
+     ▾│                                                                                      │
+      │                                                                                      │
+   ▾ C│                                                                                      │
+     ○│                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │ y delete  n keep                                                                     │
+      └──────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

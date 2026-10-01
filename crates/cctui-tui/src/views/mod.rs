@@ -7,6 +7,7 @@ pub mod fileview;
 pub mod filters;
 pub mod help;
 pub mod history;
+pub mod labels;
 pub mod macros;
 pub mod mentions;
 pub mod model_picker;
@@ -67,6 +68,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             if let Some(picker) = app.drafts.picker.as_ref() {
                 history::draw(frame, picker);
             }
+        }
+        View::LabelPicker => {
+            draw_below(frame, app);
+            labels::draw(frame, app);
+        }
+        View::LabelFilter => {
+            draw_below(frame, app);
+            labels::draw_filter(frame, app);
         }
         View::Pins => {
             draw_below(frame, app);

@@ -1,28 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 545
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         o           Open in the desktop viewer       │
-▸ │  ?           Toggle this cheat sheet          Pinned messages                                │
-  │  q           Quit cctui                         Esc         Close the pinned messages        │
-  │  /           Search the current view            Ctrl+n / ↓  Next pin                         │
-  │  n           Next search hit                    Ctrl+p / ↑  Previous pin                     │
-  │  N           Previous search hit                Enter       Jump to the pinned message       │
-  │  D           Diagnose the selected session      d / m       Unpin this message               │
-  │  i           Session info                     Macros                                         │
-  │  Ctrl+g      Jump to the next pending approv…   Esc         Close the macro list             │
-  │Session list                                     Ctrl+n / ↓  Next macro                       │
-  │  j / ↓       Next session                       Ctrl+p / ↑  Previous macro                   │
-  │  k / ↑       Previous session                   Enter       Put this prompt in the composer  │
-  │  g           First session                    Terminal pane                                  │
-  │  G           Last session                       T / q / Esc Close the terminal pane          │
-  │  Enter       Open the conversation              j / ↓       Scroll the terminal down         │
-  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll the terminal up           │
-  │  S           Fold or open the section         Help                                           │
-  │  Z           Fold or open everything            j / ↓       Scroll down                      │
-  │Conversation                                     k / ↑       Scroll up                        │
-  │  1-9         Jump to session by number          PgDn        Page down                        │
+  │Anywhere                                         Ctrl+d      Delete this label                │
+▸ │  ?           Toggle this cheat sheet            Enter       Confirm                          │
+  │  q           Quit cctui                       Label filter                                   │
+  │  /           Search the current view            Esc         Close the label list             │
+  │  n           Next search hit                    Ctrl+n / ↓  Next label                       │
+  │  N           Previous search hit                Ctrl+p / ↑  Previous label                   │
+  │  D           Diagnose the selected session      Space / En… Include or exclude this label    │
+  │  i           Session info                       a           Show every label again           │
+  │  Ctrl+g      Jump to the next pending approv… Pinned messages                                │
+  │Session list                                     Esc         Close the pinned messages        │
+  │  j / ↓       Next session                       Ctrl+n / ↓  Next pin                         │
+  │  k / ↑       Previous session                   Ctrl+p / ↑  Previous pin                     │
+  │  g           First session                      Enter       Jump to the pinned message       │
+  │  G           Last session                       d / m       Unpin this message               │
+  │  Enter       Open the conversation            Macros                                         │
+  │  z / Tab     Fold or open the subagent group    Esc         Close the macro list             │
+  │  S           Fold or open the section           Ctrl+n / ↓  Next macro                       │
+  │  Z           Fold or open everything            Ctrl+p / ↑  Previous macro                   │
+  │  l           Label this session                 Enter       Put this prompt in the composer  │
+  │  L           Filter by label                  Terminal pane                                  │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -11,6 +11,7 @@ use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
 use super::identity::AuthAction;
+use super::labels::LabelAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
 use super::prompt::PromptAction;
@@ -65,6 +66,9 @@ pub enum Action {
     },
 
     Attach(AttachAction),
+    Labels(LabelAction),
+    /// Step the group-by dimension.
+    CycleGrouping,
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
     /// A paste small enough to type straight into the composer.
@@ -270,6 +274,31 @@ pub enum Effect {
     /// `GET /sessions/{id}/diagnose`: everything the daemon and the server know.
     FetchDiagnose {
         session_id: String,
+    },
+    /// `GET /labels`: the whole catalogue.
+    FetchLabels,
+    CreateLabel {
+        name: String,
+        color: String,
+        /// Attach it to this session as soon as it exists — creating a label
+        /// from a row means you wanted it on that row.
+        session_id: String,
+    },
+    UpdateLabel {
+        id: String,
+        name: Option<String>,
+        color: Option<String>,
+    },
+    DeleteLabel {
+        id: String,
+    },
+    AttachLabel {
+        session_id: String,
+        label_id: String,
+    },
+    DetachLabel {
+        session_id: String,
+        label_id: String,
     },
     /// Persist the fold state to `tui-state.json`.
     SaveUiState(crate::config::uistate::UiState),

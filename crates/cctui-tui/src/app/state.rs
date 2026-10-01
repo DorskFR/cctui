@@ -17,6 +17,10 @@ pub use crate::config::uistate::UiState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    /// The `l` label picker for one session.
+    LabelPicker,
+    /// The `L` any-of label filter.
+    LabelFilter,
     /// The overlay pager for an agent-linked local file.
     FileViewer,
     SessionList,
@@ -280,6 +284,10 @@ pub struct App {
     pub refresh: RefreshCounters,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
+    /// The label catalogue, the `l` overlay and the `L` filter.
+    pub labels: super::labels::Labels,
+    /// How the list groups its rows; P1's cycle sets it.
+    pub grouping: super::session_list::Grouping,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -388,6 +396,8 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             ui: UiState::default(),
+            labels: super::labels::Labels::default(),
+            grouping: super::session_list::Grouping::default(),
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             terminal: None,
@@ -449,7 +459,9 @@ impl App {
     }
 
     pub fn list_rows(&self) -> Vec<super::session_list::Row<'_>> {
-        super::session_list::rows(&self.sessions, &self.ui)
+        let visible: Vec<&SessionListItem> =
+            self.sessions.iter().filter(|s| self.labels.passes(s)).collect();
+        super::session_list::rows_grouped(&visible, &self.ui, self.grouping)
     }
 
     pub fn flattened_sessions(&self) -> Vec<&SessionListItem> {

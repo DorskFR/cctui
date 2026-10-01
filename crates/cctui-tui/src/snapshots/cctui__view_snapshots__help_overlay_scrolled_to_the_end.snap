@@ -1,28 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 553
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Tab         Complete the path                Plan card — refine                             │
-▸ │Filter menu                                      Enter       Accept the text                  │
-  │  F / q / Esc Choose which lines to show         Esc         Discard the text                 │
-  │  a           Show every category              Row glyphs                                     │
-  │  r           Back to the default filter         ●           working                          │
-  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
-  │  j / ↓       Next category                      ○           idle                             │
-  │  k / ↑       Previous category                  ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │File viewer                                      ●N          unread messages                  │
-  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
-  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
-  │  PgDn        Page down                          ⚠           account traffic never seen       │
-  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
+  │Prompt history                                 Row glyphs                                     │
+▸ │  Esc         Close the prompt list              ●           working                          │
+  │  Ctrl+n / ↓  Next prompt                        ◐           stale or asleep                  │
+  │  Ctrl+p / ↑  Previous prompt                    ○           idle                             │
+  │  Enter       Put this prompt in the composer    ☾           hibernated                       │
+  │File viewer                                      ↳           subagent                         │
+  │  j / ↓       Scroll down                        ▸ / ▾       folded / open group              │
+  │  k / ↑       Scroll up                          [name]      a label, tinted by its hue       │
+  │  PgDn        Page down                          +N          more labels than fit             │
+  │  PgUp        Page up                            !           permission waiting on you        │
+  │  g           Jump to the top                    ?           question waiting on you          │
+  │  q / Esc     Close the file viewer              P           plan waiting for approval        │
+  │  o           Open in the desktop viewer         ●N          unread messages                  │
+  │Labels                                           ⚡           auto-approve on                  │
+  │  Esc         Close the label list               ⏸           account soft-limited             │
+  │  Ctrl+n / ↓  Next label                         ⚠           account traffic never seen       │
+  │  Ctrl+p / ↑  Previous label                     ❄           cache cold, next turn re-reads   │
+  │  Space       Attach or detach this label        ✕reason     how it ended                     │
+  │  Ctrl+c      Create a label                     ⚙N age      tool calls, age of the last      │
+  │  Ctrl+e      Rename or recolor                                                               │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1082
+expression: "render_screen_sized(&mut app, 80, 24)"
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   ▾ Needs input (1)
+▸    ● [claude-code] infra (main)  opus  0s  $1.25 [infra] [urgent]
+   ▾ Working (1)
+     ● [claude-code] cctui (main)  opus  0s  $1.25 [wave-5]
+     ▾ subagents (1/1 running)
+       ↳ ● [claude-code] cctui-sub (main)  opus  0s  $1.25
+   ▾ Completed (1)
+     ○ [claude-code] notes (main)  opus  0s  $1.25 [docs] [infra] +2
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -2,8 +2,9 @@ use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
-    AutoApproveRequest, ForkRequest, ForkResponse, SessionListItem, SessionListResponse,
-    SetModelRequest, StageFilesResponse,
+    AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, ForkRequest, ForkResponse, Label,
+    LabelListResponse, SessionListItem, SessionListResponse, SetModelRequest, StageFilesResponse,
+    UpdateLabelRequest,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -411,6 +412,57 @@ impl Client {
             .await
     }
 
+    /// Every label the caller owns.
+    pub async fn labels(&self) -> Result<Vec<Label>, ClientError> {
+        let resp: LabelListResponse = self.json(Self::route("get_labels")?, &[], &[], None).await?;
+        Ok(resp.labels)
+    }
+
+    /// Get-or-create by name: the server returns the existing label when the
+    /// name is taken, so a duplicate create is not an error.
+    pub async fn create_label(&self, name: &str, color: &str) -> Result<Label, ClientError> {
+        let route = Self::route("post_labels")?;
+        let body = serde_json::to_value(CreateLabelRequest {
+            name: name.to_owned(),
+            color: color.to_owned(),
+        })
+        .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Rename or recolor; an omitted field is left alone.
+    pub async fn update_label(
+        &self,
+        id: &str,
+        name: Option<String>,
+        color: Option<String>,
+    ) -> Result<Label, ClientError> {
+        let route = Self::route("patch_labels_by_id")?;
+        let body = serde_json::to_value(UpdateLabelRequest { name, color })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[("id", id)], &[], Some(&body)).await
+    }
+
+    pub async fn delete_label(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_labels_by_id")?, &[("id", id)], None).await
+    }
+
+    pub async fn attach_label(&self, session_id: &str, label_id: &str) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_by_id_labels")?;
+        let body = serde_json::to_value(AttachLabelRequest { label_id: label_id.to_owned() })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    pub async fn detach_label(&self, session_id: &str, label_id: &str) -> Result<(), ClientError> {
+        self.unit(
+            Self::route("delete_sessions_by_id_labels_by_label")?,
+            &[("id", session_id), ("label_id", label_id)],
+            None,
+        )
+        .await
+    }
+
     pub async fn set_auto_approve(
         &self,
         session_id: &str,
@@ -689,6 +741,12 @@ mod tests {
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
             "get_permissions_pending",
+            "get_labels",
+            "post_labels",
+            "patch_labels_by_id",
+            "delete_labels_by_id",
+            "post_sessions_by_id_labels",
+            "delete_sessions_by_id_labels_by_label",
             "post_sessions_by_id_files",
             "get_machines_by_machine_fs_file",
             "get_sessions_by_id_linked_file_owner",

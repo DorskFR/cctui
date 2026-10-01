@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1123
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active
+ Sessions
+   ▾ Needs input (1)
+▸    ● [claude-code] infra (main)  opus  0s  $1.25 [infra] [urgent]
+   ▾ W┌ Pick a hue ──────────────────────────────────────────────────────────────────────────┐
+     ●│❯ ■   0                                                                               │
+     ▾│  ■  30                                                                               │
+      │  ■  60                                                                               │
+   ▾ C│  ■  90                                                                               │
+     ○│  ■ 120                                                                               │
+      │  ■ 150                                                                               │
+      │  ■ 180                                                                               │
+      │  ■ 210                                                                               │
+      │  ■ 240                                                                               │
+      │  ■ 270                                                                               │
+      │  ■ 300                                                                               │
+      │  ■ 330                                                                               │
+      │    auto hue from the name                                                            │
+      │ ←/→ hue  enter save  esc back                                                        │
+      └──────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

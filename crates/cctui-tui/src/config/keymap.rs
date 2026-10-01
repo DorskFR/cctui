@@ -17,6 +17,8 @@ pub enum Context {
     FilterMenu,
     History,
     FileViewer,
+    LabelPicker,
+    LabelFilter,
     Pins,
     Macros,
     Terminal,
@@ -40,6 +42,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::FilterMenu,
     Context::History,
     Context::FileViewer,
+    Context::LabelPicker,
+    Context::LabelFilter,
     Context::Pins,
     Context::Macros,
     Context::Terminal,
@@ -65,6 +69,8 @@ impl Context {
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
+            Self::LabelPicker => "label-picker",
+            Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
             Self::Macros => "macros",
             Self::Terminal => "terminal",
@@ -90,6 +96,8 @@ impl Context {
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
+            Self::LabelPicker => "Labels",
+            Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
             Self::Macros => "Macros",
             Self::Terminal => "Terminal pane",
@@ -194,6 +202,20 @@ actions! {
     PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    OpenLabels => "open-labels", "Label this session";
+    OpenLabelFilter => "open-label-filter", "Filter by label";
+    LabelsClose => "labels-close", "Close the label list";
+    LabelsNext => "labels-next", "Next label";
+    LabelsPrev => "labels-prev", "Previous label";
+    LabelsToggle => "labels-toggle", "Attach or detach this label";
+    LabelsCreate => "labels-create", "Create a label";
+    LabelsEdit => "labels-edit", "Rename or recolor";
+    LabelsDelete => "labels-delete", "Delete this label";
+    LabelsCommit => "labels-commit", "Confirm";
+    LabelsCancel => "labels-cancel", "Back";
+    LabelFilterToggle => "label-filter-toggle", "Include or exclude this label";
+    LabelFilterClear => "label-filter-clear", "Show every label again";
+    CycleGrouping => "cycle-grouping", "Group the list by something else";
     AttachFile => "attach-file", "Attach a file";
     RemoveAttachment => "remove-attachment", "Remove the focused attachment";
     FocusAttachments => "focus-attachments", "Focus the attachment chips";
@@ -442,6 +464,26 @@ const FILE_VIEWER: &[BindingSpec] = &[
     spec(Context::FileViewer, "o", ActionId::FileViewerOsOpen),
 ];
 
+/// The picker is modal, so it claims plain letters: `space` toggles, and the
+/// manage verbs sit on the keys the webui's menu uses.
+const LABELS: &[BindingSpec] = &[
+    spec(Context::SessionList, "l", ActionId::OpenLabels),
+    spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
+    spec(Context::LabelPicker, "esc", ActionId::LabelsClose),
+    spec(Context::LabelPicker, "down, ctrl+n", ActionId::LabelsNext),
+    spec(Context::LabelPicker, "up, ctrl+p", ActionId::LabelsPrev),
+    spec(Context::LabelPicker, "space", ActionId::LabelsToggle),
+    spec(Context::LabelPicker, "ctrl+c", ActionId::LabelsCreate),
+    spec(Context::LabelPicker, "ctrl+e", ActionId::LabelsEdit),
+    spec(Context::LabelPicker, "ctrl+d", ActionId::LabelsDelete),
+    spec(Context::LabelPicker, "enter", ActionId::LabelsCommit),
+    spec(Context::LabelFilter, "esc", ActionId::LabelsClose),
+    spec(Context::LabelFilter, "down, ctrl+n", ActionId::LabelsNext),
+    spec(Context::LabelFilter, "up, ctrl+p", ActionId::LabelsPrev),
+    spec(Context::LabelFilter, "space, enter", ActionId::LabelFilterToggle),
+    spec(Context::LabelFilter, "a", ActionId::LabelFilterClear),
+];
+
 const PINS: &[BindingSpec] = &[
     spec(Context::Pins, "esc", ActionId::PinsClose),
     spec(Context::Pins, "down, ctrl+n", ActionId::PinsSelectNext),
@@ -553,6 +595,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    LABELS,
     PINS,
     MACROS,
     TERMINAL,

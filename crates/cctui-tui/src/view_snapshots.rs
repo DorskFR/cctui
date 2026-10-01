@@ -7,6 +7,7 @@ use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::diagnose::DiagnoseAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::labels::LabelAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
@@ -115,7 +116,7 @@ fn help_overlay_tall_enough_for_the_glyph_legend() {
     // Tall enough for the legend's last entry: the sheet is two columns, the
     // legend is the tail of the right one, and this case is where it is
     // reviewable in full.
-    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 96));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 120));
 }
 
 #[test]
@@ -1045,4 +1046,156 @@ fn conversation_sidebar_suppressed_when_narrow() {
     let mut app = app_with_a_subagent();
     reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+// --- Labels and machines ---
+
+fn label(id: &str, name: &str, color: &str) -> cctui_proto::api::Label {
+    cctui_proto::api::Label { id: id.to_owned(), name: name.to_owned(), color: color.to_owned() }
+}
+
+/// Rows carrying one, two and four labels, so the `+N` cut is visible.
+fn app_with_labels() -> crate::app::App {
+    let mut app = app_with_sessions();
+    let catalogue = vec![
+        label("l-5", "wave-5", "210"),
+        label("l-i", "infra", ""),
+        label("l-u", "urgent", "0"),
+        label("l-d", "docs", "120"),
+    ];
+    let _ = reduce(&mut app, Action::Labels(LabelAction::Loaded(catalogue.clone())));
+    session_mut(&mut app, "s-working").labels = vec![catalogue[0].clone()];
+    session_mut(&mut app, "s-blocked").labels = vec![catalogue[1].clone(), catalogue[2].clone()];
+    session_mut(&mut app, "s-done").labels = catalogue;
+    app
+}
+
+#[test]
+fn session_list_label_chips() {
+    let mut app = app_with_labels();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_label_chips_at_eighty_columns() {
+    let mut app = app_with_labels();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn label_picker() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_filtered() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    for c in "wa".chars() {
+        let _ = reduce(&mut app, Action::Labels(LabelAction::FilterKey(c)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_creating() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::StartCreate));
+    for c in "wave-7".chars() {
+        let _ = reduce(&mut app, Action::Labels(LabelAction::NameKey(c)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_hue_choice() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::StartCreate));
+    for c in "wave-7".chars() {
+        let _ = reduce(&mut app, Action::Labels(LabelAction::NameKey(c)));
+    }
+    let _ = reduce(&mut app, Action::Labels(LabelAction::Commit));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::HueNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_confirming_a_delete() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::StartDelete));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_filter_overlay() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenFilter));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::FilterToggle));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_narrowed_by_a_label_filter() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenFilter));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::FilterToggle));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::CloseFilter));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Three machines, one of each liveness tier, so the header dot is reviewable.
+fn app_with_machines() -> crate::app::App {
+    use cctui_proto::models::MachineLiveness;
+    let mut app = app_with_sessions();
+    for (id, name, hue) in [
+        ("s-working", "cyberia-1", 210_i16),
+        ("s-blocked", "cyberia-2", 30),
+        ("s-done", "orion", 120),
+    ] {
+        let s = session_mut(&mut app, id);
+        s.machine_id = name.to_owned();
+        s.machine_name = Some(name.to_owned());
+        s.machine_hue = Some(hue);
+    }
+    session_mut(&mut app, "s-child").machine_id = "cyberia-1".to_owned();
+    session_mut(&mut app, "s-child").machine_name = Some("cyberia-1".to_owned());
+    app.machine_liveness.insert("cyberia-1".to_owned(), MachineLiveness::Online);
+    app.machine_liveness.insert("cyberia-2".to_owned(), MachineLiveness::Stale);
+    app.machine_liveness.insert("orion".to_owned(), MachineLiveness::Offline);
+    app
+}
+
+#[test]
+fn session_list_machine_column() {
+    let mut app = app_with_machines();
+    app.config.prefs.machine_column = true;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_grouped_by_machine() {
+    let mut app = app_with_machines();
+    app.grouping = crate::app::session_list::Grouping::Machine;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_grouped_by_machine_after_one_goes_offline() {
+    use cctui_proto::models::MachineLiveness;
+    let mut app = app_with_machines();
+    app.grouping = crate::app::session_list::Grouping::Machine;
+    // The WS event is all it takes; no refetch stands between it and the header.
+    reduce(
+        &mut app,
+        Action::SessionLive(crate::app::session_live::SessionLiveAction::MachineLiveness {
+            machine_id: "cyberia-1".to_owned(),
+            liveness: MachineLiveness::Offline,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
 }
