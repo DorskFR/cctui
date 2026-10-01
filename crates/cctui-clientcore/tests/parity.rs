@@ -367,3 +367,103 @@ fn spawn_body_parity() {
         }
     }
 }
+
+#[test]
+fn spawn_accounts_parity() {
+    use cctui_clientcore::spawn_accounts::{
+        ALL_ADAPTERS, PoolMembers, UsageWindow, account_adapters, account_backs_adapter,
+        adapter_for_provider, compatible_pools, effective_adapter_for, env_key_valid, headline_pct,
+        provider_for_adapter, stale_account_pick,
+    };
+
+    let fx = fixture("spawnAccounts");
+    assert_eq!(strings(&fx["allAdapters"]), ALL_ADAPTERS);
+
+    for c in cases(&fx, "adapterForProvider") {
+        assert_eq!(adapter_for_provider(&s(c, "provider")), s(c, "out"), "adapter {c}");
+    }
+    for c in cases(&fx, "accountAdapters") {
+        let providers = strings(&c["providers"]);
+        assert_eq!(account_adapters(&providers), strings(&c["out"]), "accountAdapters {c}");
+    }
+    for c in cases(&fx, "accountBacksAdapter") {
+        let providers = c["providers"].as_array().map(|_| strings(&c["providers"]));
+        assert_eq!(
+            account_backs_adapter(providers.as_deref(), &s(c, "adapter")),
+            c["out"].as_bool().expect("a bool"),
+            "accountBacksAdapter {c}"
+        );
+    }
+    for c in cases(&fx, "effectiveAdapterFor") {
+        let providers = c["providers"].as_array().map(|_| strings(&c["providers"]));
+        assert_eq!(
+            effective_adapter_for(providers.as_deref(), &s(c, "adapter")),
+            s(c, "out"),
+            "effectiveAdapterFor {c}"
+        );
+    }
+    for c in cases(&fx, "providerForAdapter") {
+        let providers = strings(&c["providers"]);
+        assert_eq!(
+            provider_for_adapter(&providers, &s(c, "adapter")),
+            opt_s(c, "out").as_deref(),
+            "providerForAdapter {c}"
+        );
+    }
+    for c in cases(&fx, "staleAccountPick") {
+        assert_eq!(
+            stale_account_pick(&s(c, "value"), &strings(&c["names"])),
+            c["out"].as_bool().expect("a bool"),
+            "staleAccountPick {c}"
+        );
+    }
+    for c in cases(&fx, "envKeyValid") {
+        assert_eq!(
+            env_key_valid(&s(c, "key")),
+            c["out"].as_bool().expect("a bool"),
+            "envKeyValid {c}"
+        );
+    }
+    for c in cases(&fx, "headlinePct") {
+        let windows: Vec<UsageWindow> = c["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .map(|w| UsageWindow {
+                key: s(w, "key"),
+                utilization: w["utilization"].as_f64().expect("a number"),
+            })
+            .collect();
+        let want = c["out"].as_u64().map(|n| u32::try_from(n).expect("fits"));
+        assert_eq!(headline_pct(&windows), want, "headlinePct {c}");
+    }
+
+    let group = &fx["compatiblePools"];
+    let lookup = |key: &str| -> Option<Vec<String>> {
+        group["accounts"]
+            .as_array()
+            .expect("accounts")
+            .iter()
+            .find(|a| a["key"] == key)
+            .map(|a| strings(&a["providers"]))
+    };
+    for c in cases(group, "cases") {
+        let owned: Vec<Vec<String>> =
+            c["pools"].as_array().expect("pools").iter().map(strings).collect();
+        let pools: Vec<PoolMembers<'_>> = owned
+            .iter()
+            .map(|members| PoolMembers { members: members.iter().map(String::as_str).collect() })
+            .collect();
+        let want: Vec<usize> = c["out"]
+            .as_array()
+            .expect("out")
+            .iter()
+            .map(|v| usize::try_from(v.as_u64().expect("an index")).expect("fits"))
+            .collect();
+        assert_eq!(
+            compatible_pools(&pools, &lookup, &s(c, "harness")),
+            want,
+            "compatiblePools {c}"
+        );
+    }
+}

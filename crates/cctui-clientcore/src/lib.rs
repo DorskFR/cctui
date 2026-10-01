@@ -13,6 +13,7 @@ pub mod mention;
 pub mod search;
 pub mod session_failure;
 pub mod spawn;
+pub mod spawn_accounts;
 pub mod turnid;
 pub mod uploads;
 pub mod uri;

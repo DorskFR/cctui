@@ -516,16 +516,31 @@ impl Client {
 
     /// `POST /sessions/spawn`. The route is multipart so a spawn can carry file
     /// uploads; with none to send, the JSON body is the only part.
-    /// `POST /sessions/spawn`. The route is multipart so a spawn can carry file
-    /// uploads; with none to send, the JSON body is the only part.
+    /// `POST /sessions/spawn`. The route is `multipart/form-data`: the JSON
+    /// goes in a `request` part, and each attachment in a part of its own.
     pub async fn spawn_session(
         &self,
         request: &cctui_proto::api::SpawnRequest,
+        files: Vec<UploadFile>,
     ) -> Result<(), ClientError> {
         let route = Self::route("post_sessions_spawn")?;
-        let body = serde_json::to_value(request)
+        let json = serde_json::to_string(request)
             .map_err(|source| ClientError::Decode { route: route.id, source })?;
-        self.unit(route, &[], Some(&body)).await
+        let mut form = reqwest::multipart::Form::new().text("request", json);
+        for file in files {
+            let part = reqwest::multipart::Part::bytes(file.bytes).file_name(file.name);
+            form = form.part("files", part);
+        }
+        let resp = self
+            .http
+            .post(self.url_for(route, &[]))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|source| ClientError::Transport { route: route.id, source })?;
+        let _ = check_status(route.id, resp).await?;
+        Ok(())
     }
 
     /// The caller's accounts, as the spawn picker needs them.

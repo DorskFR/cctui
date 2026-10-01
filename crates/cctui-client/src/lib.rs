@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 pub use error::ClientError;
 pub use rest::{
-    Client, ConversationFetch, ConversationRow, FileRead, FileRefusal, LinkedFileOwner, Page,
-    PendingPermissionItem, UploadFile,
+    AccountPick, AccountUsagePick, Client, ConversationFetch, ConversationRow, FileRead,
+    FileRefusal, LinkedFileOwner, Page, PendingPermissionItem, PoolMemberPick, PoolPick,
+    ProviderPick, UploadFile, UsageWindowPick,
 };
 pub use ws::state::{Ack, AckHandle, AckRegistry, Health, SubscriptionState, Watchdog, backoff};
 pub use ws::transport::{Connector, Frame, HttpConnector, StreamTransport, Transport};

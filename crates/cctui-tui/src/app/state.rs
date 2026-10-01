@@ -293,6 +293,8 @@ pub struct App {
     pub row_actions: super::row_actions::RowActionState,
     /// The open spawn dialog, or `None`.
     pub spawn: Option<super::spawn::SpawnForm>,
+    /// Catalogs the spawn dialog reads; fetched once, kept across dialogs.
+    pub spawn_data: super::spawn::SpawnData,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
     /// Which top-level slice `1-9` last selected.
@@ -429,6 +431,7 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             row_actions: super::row_actions::RowActionState::default(),
+            spawn_data: super::spawn::SpawnData::default(),
             spawn: None,
             ui: UiState::default(),
             slice: Slice::Sessions,

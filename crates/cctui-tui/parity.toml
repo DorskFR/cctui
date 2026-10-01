@@ -37,8 +37,8 @@ ticket = "CCT-1272"
 [[route]]
 id = "get_accounts_usage"
 # GET /accounts/usage — Usage windows of every provider credential the caller owns, in one call.
-tui = "planned"
-ticket = "CCT-1271"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_accounts_by_id_usage"
@@ -79,8 +79,8 @@ ticket = "CCT-1272"
 [[route]]
 id = "get_accounts"
 # GET /accounts — List your accounts (identities + provider credentials), or create one.
-tui = "planned"
-ticket = "CCT-1272"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_accounts"
@@ -775,8 +775,8 @@ ticket = "CCT-1261"
 [[route]]
 id = "get_account_pools"
 # GET /account-pools — List the caller's account pools, or create one.
-tui = "planned"
-ticket = "CCT-1275"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_account_pools"

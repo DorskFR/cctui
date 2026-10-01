@@ -364,6 +364,8 @@ pub enum Effect {
     /// `POST /sessions/spawn`. The reply arrives as a `command_result`.
     SpawnSession {
         request: Box<cctui_proto::api::SpawnRequest>,
+        /// Attachments the dialog staged, sent as parts of the same request.
+        files: Vec<(String, Vec<u8>)>,
     },
     /// `PUT /settings` with the whole blob, patched: the route replaces.
     SaveSettings {
