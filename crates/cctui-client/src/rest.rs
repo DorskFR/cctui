@@ -706,11 +706,11 @@ impl Client {
     pub async fn spawn_session(
         &self,
         request: &cctui_proto::api::SpawnRequest,
-    ) -> Result<(), ClientError> {
+    ) -> Result<cctui_proto::api::SpawnResponse, ClientError> {
         let route = Self::route("post_sessions_spawn")?;
         let body = serde_json::to_value(request)
             .map_err(|source| ClientError::Decode { route: route.id, source })?;
-        self.unit(route, &[], Some(&body)).await
+        self.json(route, &[], &[], Some(&body)).await
     }
 
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {

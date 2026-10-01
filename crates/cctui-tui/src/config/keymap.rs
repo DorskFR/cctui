@@ -220,7 +220,7 @@ actions! {
     SpawnCancel => "spawn-cancel", "Close without launching";
     SpawnDirNext => "spawn-dir-next", "Next directory";
     SpawnDirPrev => "spawn-dir-prev", "Previous directory";
-    SpawnDirAccept => "spawn-dir-accept", "Use this directory";
+    SpawnDirAccept => "spawn-dir-accept", "Accept, or a prompt newline";
     SpawnRefreshModels => "spawn-refresh-models", "Re-read the model catalog";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";

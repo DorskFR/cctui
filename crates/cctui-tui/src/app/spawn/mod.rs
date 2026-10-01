@@ -13,7 +13,7 @@ pub mod cwd;
 
 use cctui_clientcore::spawn::SpawnFields;
 use cctui_proto::api::SpawnRequest;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
 use super::action::Effect;
@@ -95,6 +95,10 @@ pub struct SpawnForm {
     /// when the static lists stand in.
     pub models: Option<Box<cctui_proto::harness_models::HarnessModels>>,
     pub refreshing_models: bool,
+    /// The spawn the server accepted, waited on until its `command_result`.
+    pub launching: Option<uuid::Uuid>,
+    /// Pre-minted by the server, so the jump knows where to land.
+    pub session_id: Option<String>,
     pub focus: Focus,
     /// Inline errors from the last submit, cleared on the next edit.
     pub errors: Vec<String>,
@@ -112,6 +116,8 @@ impl std::fmt::Debug for SpawnForm {
             .field("cwd", &self.cwd)
             .field("models", &self.models.is_some())
             .field("refreshing_models", &self.refreshing_models)
+            .field("launching", &self.launching)
+            .field("session_id", &self.session_id)
             .field("errors", &self.errors)
             .field("submitting", &self.submitting)
             .field("sections", &self.sections.iter().map(|s| s.title()).collect::<Vec<_>>())
@@ -141,6 +147,8 @@ impl SpawnForm {
             cwd: cwd::CwdState::default(),
             models: None,
             refreshing_models: false,
+            launching: None,
+            session_id: None,
             focus: Focus::default(),
             errors: Vec::new(),
             submitting: false,
@@ -606,6 +614,18 @@ pub enum SpawnAction {
     /// Enter on the dropdown.
     DirAccept,
     ModelsLoaded(Box<cctui_proto::harness_models::HarnessModels>),
+    /// The server took the spawn; the daemon has yet to report it.
+    Accepted {
+        command_id: uuid::Uuid,
+        session_id: Option<String>,
+    },
+    /// A `command_result`, for this spawn or any other.
+    Launched {
+        command_id: uuid::Uuid,
+        ok: bool,
+        error: Option<String>,
+        session_id: Option<String>,
+    },
     /// `Ctrl+r` in the dialog.
     RefreshModels,
     ModelsRefreshed,
@@ -675,15 +695,7 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             }
             Vec::new()
         }
-        SpawnAction::DirAccept => {
-            let Some(form) = app.spawn.as_mut() else { return Vec::new() };
-            if let Some(pick) = form.cwd.selected().map(str::to_owned) {
-                form.fields.working_dir = pick;
-                form.cwd.close();
-                form.cwd.on_edit(app.clock_ms);
-            }
-            Vec::new()
-        }
+        SpawnAction::DirAccept => dir_accept(app),
         SpawnAction::ModelsLoaded(models) => {
             if let Some(form) = app.spawn.as_mut() {
                 form.models = Some(models);
@@ -699,6 +711,16 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             form.fetch_models().into_iter().collect()
         }
         SpawnAction::Submit => submit(app),
+        SpawnAction::Accepted { command_id, session_id } => {
+            if let Some(form) = app.spawn.as_mut() {
+                form.launching = Some(command_id);
+                form.session_id = session_id;
+            }
+            Vec::new()
+        }
+        SpawnAction::Launched { command_id, ok, error, session_id } => {
+            launched(app, command_id, ok, error.as_deref(), session_id.as_deref())
+        }
         SpawnAction::Failed(reason) => {
             if let Some(form) = app.spawn.as_mut() {
                 form.submitting = false;
@@ -707,6 +729,44 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             Vec::new()
         }
     }
+}
+
+/// Enter is the dialog's one Enter: with no dropdown under the Dir row it
+/// belongs to whatever row has focus, which is how the prompt gets newlines.
+fn dir_accept(app: &mut super::state::App) -> Vec<Effect> {
+    let Some(form) = app.spawn.as_mut() else { return Vec::new() };
+    if let Some(pick) = form.cwd.selected().map(str::to_owned) {
+        form.fields.working_dir = pick;
+        form.cwd.close();
+        form.cwd.on_edit(app.clock_ms);
+        return Vec::new();
+    }
+    form.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+}
+
+/// A failed launch keeps the form, so the operator fixes it and re-submits
+/// rather than retyping it.
+fn launched(
+    app: &mut super::state::App,
+    command_id: uuid::Uuid,
+    ok: bool,
+    error: Option<&str>,
+    session_id: Option<&str>,
+) -> Vec<Effect> {
+    let Some(form) = app.spawn.as_mut() else { return Vec::new() };
+    if form.launching != Some(command_id) {
+        return Vec::new();
+    }
+    form.launching = None;
+    form.submitting = false;
+    if !ok {
+        form.errors = vec![error.unwrap_or("the launch failed").to_owned()];
+        return Vec::new();
+    }
+    let landing = session_id.map(str::to_owned).or_else(|| form.session_id.clone());
+    app.spawn = None;
+    app.router.pop();
+    super::deeplink::apply(app, super::deeplink::Startup { open: landing, ..Default::default() })
 }
 
 fn open(app: &mut super::state::App) -> Vec<Effect> {
@@ -765,13 +825,24 @@ fn complete_dir(app: &mut super::state::App) -> Option<Vec<Effect>> {
 }
 
 fn submit(app: &mut super::state::App) -> Vec<Effect> {
+    let offline = app
+        .spawn
+        .as_ref()
+        .map(|f| f.fields.machine_id.clone())
+        .and_then(|id| app.machine_liveness.get(&id).copied())
+        .is_some_and(|tier| tier == cctui_proto::models::MachineLiveness::Offline);
     let Some(form) = app.spawn.as_mut() else { return Vec::new() };
-    let problems = form.problems();
+    let mut problems = form.problems();
+    if offline {
+        problems.push("that machine is offline".to_owned());
+    }
     if !problems.is_empty() {
         form.errors = problems;
         return Vec::new();
     }
     form.submitting = true;
+    form.launching = None;
+    form.session_id = None;
     vec![Effect::SpawnSession { request: Box::new(form.request()) }]
 }
 
@@ -952,6 +1023,93 @@ mod reduce_tests {
             ],
             efforts: vec![String::new(), "high".to_owned()],
         }
+    }
+
+    /// Submits the form and reports what the server answered.
+    fn accept(app: &mut App) -> uuid::Uuid {
+        let command_id = uuid::Uuid::new_v4();
+        reduce(app, SpawnAction::Submit);
+        reduce(app, SpawnAction::Accepted { command_id, session_id: Some("s-a".to_owned()) });
+        command_id
+    }
+
+    #[test]
+    fn enter_adds_a_line_to_the_prompt_when_no_dropdown_wants_it() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let form = app.spawn.as_mut().expect("a form");
+        let prompt_row = super::core_section::rows_for(&form.fields.adapter_id)
+            .iter()
+            .position(|r| *r == super::core_section::Row::Prompt)
+            .expect("a prompt row");
+        form.focus = super::Focus { section: 0, row: prompt_row };
+        let typed = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        form.handle_key(typed('a'));
+        reduce(&mut app, SpawnAction::DirAccept);
+        app.spawn.as_mut().expect("a form").handle_key(typed('b'));
+        assert_eq!(app.spawn.as_ref().expect("a form").fields.prompt, "a\nb");
+    }
+
+    #[test]
+    fn a_launch_onto_an_offline_machine_reports_inline_instead_of_sending() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let machine = app.spawn.as_ref().expect("a form").fields.machine_id.clone();
+        app.machine_liveness.insert(machine, cctui_proto::models::MachineLiveness::Offline);
+        assert!(reduce(&mut app, SpawnAction::Submit).is_empty());
+        let form = app.spawn.as_ref().expect("a form");
+        assert!(form.errors.iter().any(|e| e.contains("offline")));
+        assert!(!form.submitting);
+    }
+
+    #[test]
+    fn a_confirmed_launch_closes_the_dialog_and_lands_on_the_new_session() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let command_id = accept(&mut app);
+        reduce(
+            &mut app,
+            SpawnAction::Launched { command_id, ok: true, error: None, session_id: None },
+        );
+        assert!(app.spawn.is_none());
+        assert_eq!(app.view(), crate::app::View::Conversation);
+        assert_eq!(app.selected_session_id().as_deref(), Some("s-a"));
+    }
+
+    #[test]
+    fn a_rejected_launch_keeps_the_form_and_says_why() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let command_id = accept(&mut app);
+        reduce(
+            &mut app,
+            SpawnAction::Launched {
+                command_id,
+                ok: false,
+                error: Some("no account backs codex".to_owned()),
+                session_id: None,
+            },
+        );
+        let form = app.spawn.as_ref().expect("the form stays open");
+        assert_eq!(form.errors, ["no account backs codex"]);
+        assert!(!form.submitting, "re-submitting is allowed again");
+    }
+
+    #[test]
+    fn another_commands_result_is_not_this_dialogs() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        accept(&mut app);
+        reduce(
+            &mut app,
+            SpawnAction::Launched {
+                command_id: uuid::Uuid::new_v4(),
+                ok: true,
+                error: None,
+                session_id: None,
+            },
+        );
+        assert!(app.spawn.is_some(), "the dialog waits for its own result");
     }
 
     #[test]

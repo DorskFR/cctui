@@ -107,7 +107,7 @@ expression: "render_screen_sized(&mut app, 100, height)"
   │  Esc         Close without launching            Shift+Tab   Previous question                │
   │  ↓           Next directory                     o           Write a free-text answer         │
   │  ↑           Previous directory                 Enter       Send the answer                  │
-  │  Enter       Use this directory               Question card — free text                      │
+  │  Enter       Accept, or a prompt newline      Question card — free text                      │
   │  Ctrl+r      Re-read the model catalog          Enter       Accept the text                  │
   │Sections popup                                   Esc         Discard the text                 │
   │  f / q / Esc Choose which sections show       Plan card                                      │

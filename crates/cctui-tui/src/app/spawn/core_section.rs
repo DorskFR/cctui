@@ -112,6 +112,9 @@ impl SpawnSection for CoreSection {
                     .collect();
                 out.push(Line::from(Span::styled(hint, theme::dim())));
             }
+            if *row == Row::Prompt {
+                out.extend(prompt_tail(&fields.prompt, width));
+            }
         }
         out
     }
@@ -183,6 +186,27 @@ fn value(f: &SpawnFields, row: Row) -> String {
         }
         Row::Prompt => f.prompt.lines().next().unwrap_or_default().to_owned(),
     }
+}
+
+/// The prompt's remaining lines, capped so a long one cannot push the key
+/// hints off the dialog.
+fn prompt_tail(prompt: &str, width: u16) -> Vec<Line<'static>> {
+    const SHOWN: usize = 3;
+    let rest: Vec<&str> = prompt.lines().skip(1).collect();
+    let mut out: Vec<Line<'static>> = rest
+        .iter()
+        .take(SHOWN)
+        .map(|line| {
+            let text: String =
+                format!("           {line}").chars().take(usize::from(width)).collect();
+            Line::from(Span::styled(text, theme::dim()))
+        })
+        .collect();
+    if rest.len() > SHOWN {
+        let more = format!("           +{} more line(s)", rest.len() - SHOWN);
+        out.push(Line::from(Span::styled(more, theme::dim())));
+    }
+    out
 }
 
 fn row_line(f: &SpawnFields, row: Row, focused: bool, width: u16) -> Line<'static> {
@@ -261,6 +285,7 @@ fn edit(f: &mut SpawnFields, row: Row, key: KeyEvent, options: &Options) {
         Row::ServiceTier if delta != 0 => {
             f.service_tier = step_choice(&["", "fast"], &f.service_tier.clone(), delta);
         }
+        Row::Prompt if key.code == KeyCode::Enter => f.prompt.push('\n'),
         Row::Prompt => type_into(&mut f.prompt, key),
         Row::Harness | Row::Mode | Row::ServiceTier => {}
     }
@@ -416,6 +441,23 @@ mod tests {
             "the hint follows the row: {:?}",
             rendered[mode_at + 1]
         );
+    }
+
+    #[test]
+    fn a_multi_line_prompt_shows_its_first_lines_and_counts_the_rest() {
+        let s = CoreSection::default();
+        let mut f = fields();
+        f.prompt = (1..=6).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let rendered: Vec<String> = s
+            .lines(None, 60, &f)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect();
+        assert!(rendered.iter().any(|l| l.contains("Prompt") && l.contains("line 1")));
+        for n in 2..=4 {
+            assert!(rendered.iter().any(|l| l.trim() == format!("line {n}")), "line {n} is shown");
+        }
+        assert!(rendered.iter().any(|l| l.trim() == "+2 more line(s)"));
     }
 
     #[test]

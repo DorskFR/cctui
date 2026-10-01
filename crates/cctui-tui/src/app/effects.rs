@@ -511,7 +511,10 @@ async fn run(
             vec![Action::Spawn(super::spawn::SpawnAction::ModelsRefreshed)]
         }
         Effect::SpawnSession { request } => match server.spawn_session(&request).await {
-            Ok(()) => Vec::new(),
+            Ok(resp) => vec![Action::Spawn(super::spawn::SpawnAction::Accepted {
+                command_id: resp.command_id,
+                session_id: resp.session_id.map(|id| id.to_string()),
+            })],
             Err(e) => {
                 tracing::warn!(%e, "the spawn request failed");
                 vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
