@@ -72,10 +72,15 @@ fn toggle_fold(app: &mut App) -> Vec<Effect> {
 }
 
 fn toggle_section(app: &mut App) -> Vec<Effect> {
-    let grouping = app.grouping;
-    let Some(key) =
-        app.selected_session().map(|s| super::session_list::group_key_of(s, grouping).key)
-    else {
+    // Status buckets and dimension buckets fold through the same state, so the
+    // key has to come from whichever grouping is showing.
+    let by = app.list_shape.group_by;
+    let Some(key) = app.selected_session().map(|s| {
+        super::list_view::group_key_of(s, by).map_or_else(
+            || super::session_list::group_of(s).key().to_owned(),
+            |k| format!("dim:{k}"),
+        )
+    }) else {
         return Vec::new();
     };
     app.ui.toggle_section(&key);
@@ -84,11 +89,14 @@ fn toggle_section(app: &mut App) -> Vec<Effect> {
 
 fn toggle_fold_all(app: &mut App) -> Vec<Effect> {
     let probe = crate::config::uistate::UiState::probe();
-    let (groups, sections) = super::session_list::fold_targets(&super::session_list::rows_grouped(
-        &app.sessions.iter().collect::<Vec<_>>(),
+    let visible = super::list_view::visible_refs(&app.sessions, &app.list_shape);
+    let (groups, sections) = super::session_list::fold_targets(&super::session_list::rows_by(
+        &visible,
+        &app.sessions,
         &probe,
-        app.grouping,
+        app.list_shape.group_by,
     ));
+    let sections: Vec<&str> = sections.iter().map(String::as_str).collect();
     app.ui.fold_all(&groups, &sections);
     settle(app)
 }

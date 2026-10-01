@@ -8,9 +8,12 @@ use crate::app::diagnose::DiagnoseAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
 use crate::app::labels::LabelAction;
+use crate::app::list_search::ListSearchAction;
+use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
+use crate::app::unread::UnreadAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnosable_session,
@@ -115,8 +118,9 @@ fn help_overlay_tall_enough_for_the_glyph_legend() {
     app.router.push(View::Help);
     // Tall enough for the legend's last entry: the sheet is two columns, the
     // legend is the tail of the right one, and this case is where it is
-    // reviewable in full.
-    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 120));
+    // reviewable in full. A lane that adds bindings grows the left column and
+    // pushes the legend down, so this height has to grow with it.
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 160));
 }
 
 #[test]
@@ -130,6 +134,120 @@ fn session_list_shows_a_waiting_prompt_marker() {
 #[test]
 fn session_list() {
     let mut app = app_with_sessions();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_sections_popup() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListShape(ListShapeAction::ToggleSectionsMenu));
+    reduce(&mut app, Action::ListShape(ListShapeAction::SectionsNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_grouped_by_machine_with_accents() {
+    let mut app = app_with_sessions();
+    app.sessions[1].machine_id = "cyberia".to_owned();
+    app.sessions[1].machine_name = Some("cyberia".to_owned());
+    app.list_shape.group_by = crate::app::list_view::GroupBy::Machine;
+    app.list_shape.color_by = crate::app::list_view::ColorBy::Machine;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_sorted_by_name_ascending() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListShape(ListShapeAction::CycleSort));
+    reduce(&mut app, Action::ListShape(ListShapeAction::CycleSort));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_with_archived_shown() {
+    let mut app = app_with_sessions();
+    let mut old = crate::testsupport::session("s-arch", "retired", "archived", "done");
+    old.status = cctui_proto::models::SessionStatus::Archived;
+    app.sessions.push(old);
+    app.list_shape.sections.toggle(crate::app::list_view::Section::Archived);
+    app.update_aggregates();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn searching(query: &str) -> crate::app::App {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListSearch(ListSearchAction::Open));
+    for c in query.chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::ListSearch(ListSearchAction::Key(key)));
+    }
+    app
+}
+
+fn search_hit(
+    id: &str,
+    project: &str,
+    snippet: &str,
+    seq: i64,
+) -> cctui_proto::api::SessionListItem {
+    let mut s = crate::testsupport::session(id, project, "active", "working");
+    s.match_snippet = Some(snippet.to_owned());
+    s.match_seq = Some(seq);
+    s
+}
+
+#[test]
+fn session_list_search_prompt_before_any_reply() {
+    let mut app = searching("machine:cyberia auth");
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_results_with_highlighted_snippets() {
+    let mut app = searching("auth token");
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "auth token".to_owned(),
+            offset: 0,
+            sessions: vec![
+                search_hit("s-1", "gateway", "refresh the auth token before the gateway", 42),
+                search_hit("s-2", "api", "the auth token expired", 7),
+            ],
+            has_more: false,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_with_no_match() {
+    let mut app = searching("nothing matches this");
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "nothing matches this".to_owned(),
+            offset: 0,
+            sessions: vec![],
+            has_more: false,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_including_archived() {
+    let mut app = searching("auth");
+    reduce(&mut app, Action::ListSearch(ListSearchAction::ToggleArchived));
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "auth".to_owned(),
+            offset: 0,
+            sessions: vec![search_hit("s-1", "gateway", "the auth flow", 1)],
+            has_more: true,
+        }),
+    );
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -249,6 +367,67 @@ fn app_with_rich_statuses() -> crate::app::App {
 fn session_list_rich_statuses() {
     let mut app = app_with_rich_statuses();
     insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// `U`: only the rows with something new, and the header says the filter is on.
+#[test]
+fn session_list_unread_only() {
+    let mut app = app_with_rich_statuses();
+    reduce(&mut app, Action::Unread(UnreadAction::ToggleOnly));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Select mode: the checkbox gutter, the picked rows and the strip that
+/// replaces the hotkey hints.
+#[test]
+fn session_list_select_mode() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ToggleSelect));
+    crate::app::reduce(&mut app, crate::app::Action::SelectNext);
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ToggleSelect));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_batch_archive_confirm() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::SelectAllVisible));
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ArchiveOrUnarchive));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_rename_field() {
+    use crate::app::row_actions::RowAction;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::RenameStart));
+    for c in "fix-auth".chars() {
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::RowAction(RowAction::RenameKey(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            ))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The checkbox gutter comes out of the same 80-column budget the rich row
+/// already fights over.
+#[test]
+fn session_list_select_mode_at_eighty_columns() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_rich_statuses();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::SelectAllVisible));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
 }
 
 #[test]
@@ -1180,7 +1359,7 @@ fn session_list_machine_column() {
 #[test]
 fn session_list_grouped_by_machine() {
     let mut app = app_with_machines();
-    app.grouping = crate::app::session_list::Grouping::Machine;
+    app.list_shape.group_by = crate::app::list_view::GroupBy::Machine;
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -1188,7 +1367,7 @@ fn session_list_grouped_by_machine() {
 fn session_list_grouped_by_machine_after_one_goes_offline() {
     use cctui_proto::models::MachineLiveness;
     let mut app = app_with_machines();
-    app.grouping = crate::app::session_list::Grouping::Machine;
+    app.list_shape.group_by = crate::app::list_view::GroupBy::Machine;
     // The WS event is all it takes; no refetch stands between it and the header.
     reduce(
         &mut app,

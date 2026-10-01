@@ -26,6 +26,9 @@ use super::toast::Level;
 
 const QUEUE: usize = 256;
 
+/// Payload version sent with a settings write; the server migrates forward.
+const SETTINGS_VERSION: i32 = 1;
+
 /// Rows per page while walking a transcript for an export.
 const EXPORT_PAGE: i64 = 500;
 
@@ -208,6 +211,47 @@ async fn run(
                 })],
             }
         }
+        Effect::ArchiveSessions { ids, archived } => {
+            let verb = if archived { "archive" } else { "unarchive" };
+            match server.archive_sessions(&ids, archived).await {
+                Ok(()) => vec![Action::RefreshSessions],
+                Err(e) => {
+                    tracing::warn!(%e, verb, "batch archive failed");
+                    vec![Action::Toast(Level::Error, format!("{verb} failed: {e}"))]
+                }
+            }
+        }
+        Effect::PinSessions { ids, pinned } => {
+            let verb = if pinned { "pin" } else { "unpin" };
+            match server.pin_sessions(&ids, pinned).await {
+                Ok(()) => vec![Action::RefreshSessions],
+                Err(e) => {
+                    tracing::warn!(%e, verb, "pin toggle failed");
+                    vec![Action::Toast(Level::Error, format!("{verb} failed: {e}"))]
+                }
+            }
+        }
+        Effect::RenameSession { session_id, name } => {
+            match server.rename_session(&session_id, &name).await {
+                Ok(()) => vec![
+                    Action::Toast(Level::Info, format!("renamed to \"{name}\"")),
+                    Action::RefreshSessions,
+                ],
+                Err(e) => {
+                    tracing::warn!(%e, "rename failed");
+                    vec![Action::Toast(Level::Error, format!("rename failed: {e}"))]
+                }
+            }
+        }
+        Effect::KillSession { session_id } => match server.kill_session(&session_id).await {
+            Ok(()) => {
+                vec![Action::Toast(Level::Info, "killed".to_owned()), Action::RefreshSessions]
+            }
+            Err(e) => {
+                tracing::warn!(%e, "kill failed");
+                vec![Action::Toast(Level::Error, format!("kill failed: {e}"))]
+            }
+        },
         Effect::Interrupt { session_id } => {
             let error = server.interrupt(&session_id).await.err();
             if let Some(e) = error.as_ref() {
@@ -332,6 +376,52 @@ async fn run(
         }
         Effect::SaveUiState(state) => {
             crate::config::uistate::save(&state);
+            Vec::new()
+        }
+        Effect::SearchSessions { q, include_archived, offset } => {
+            let limit = super::list_search::LIMIT;
+            let at = i64::try_from(offset).unwrap_or(i64::MAX);
+            match server.search_sessions(&q, include_archived, limit, at).await {
+                Ok(resp) => {
+                    // A full page means there is probably another: the route
+                    // reports no total, so the page size is the only signal.
+                    let has_more = i64::try_from(resp.sessions.len()).unwrap_or(0) >= limit;
+                    vec![Action::ListSearch(super::list_search::ListSearchAction::Loaded {
+                        query: q,
+                        offset,
+                        sessions: resp.sessions,
+                        has_more,
+                    })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "the session search failed");
+                    vec![Action::ListSearch(super::list_search::ListSearchAction::Failed(
+                        "search failed".to_owned(),
+                    ))]
+                }
+            }
+        }
+        Effect::SearchValues { field, q } => match server.search_values(&field, &q).await {
+            Ok(values) => {
+                vec![Action::ListSearch(super::list_search::ListSearchAction::ValuesLoaded {
+                    values,
+                })]
+            }
+            Err(e) => {
+                tracing::warn!(%e, field, "the value autocomplete failed");
+                Vec::new()
+            }
+        },
+        Effect::SaveSettings { data } => {
+            // The version the server last reported travels with the blob; it
+            // migrates an older payload forward rather than rejecting it.
+            if let Err(e) = server.put_settings(SETTINGS_VERSION, data).await {
+                tracing::warn!(%e, "cannot save the list settings");
+                return vec![Action::Toast(
+                    Level::Warn,
+                    "could not save the list settings".to_owned(),
+                )];
+            }
             Vec::new()
         }
         Effect::RespondPermission { session_id, request_id, behavior } => {

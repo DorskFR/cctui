@@ -3,8 +3,8 @@ use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
     AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, ForkRequest, ForkResponse, Label,
-    LabelListResponse, SessionListItem, SessionListResponse, SetModelRequest, StageFilesResponse,
-    UpdateLabelRequest,
+    LabelListResponse, RenameRequest, SessionListItem, SessionListResponse, SetModelRequest,
+    StageFilesResponse, UpdateLabelRequest,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -474,6 +474,33 @@ impl Client {
         self.unit(route, &[("id", session_id)], Some(&body)).await
     }
 
+    pub async fn rename_session(&self, session_id: &str, name: &str) -> Result<(), ClientError> {
+        let route = Self::route("patch_sessions_by_id")?;
+        let body = serde_json::to_value(RenameRequest { name: name.to_owned() })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    pub async fn kill_session(&self, session_id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("post_sessions_by_id_kill")?, &[("id", session_id)], None).await
+    }
+
+    /// Archives or unarchives a batch of sessions in one request. The server
+    /// filters the ids to the ones the caller owns and is idempotent per id.
+    pub async fn archive_sessions(
+        &self,
+        ids: &[String],
+        archived: bool,
+    ) -> Result<(), ClientError> {
+        let id = if archived { "post_sessions_archive" } else { "post_sessions_unarchive" };
+        self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
+    }
+
+    pub async fn pin_sessions(&self, ids: &[String], pinned: bool) -> Result<(), ClientError> {
+        let id = if pinned { "post_sessions_pin" } else { "post_sessions_unpin" };
+        self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
+    }
+
     /// The caller's settings blob. The TUI reads it and never writes it back.
     pub async fn settings(&self) -> Result<SettingsPayload, ClientError> {
         self.json(Self::route("get_settings")?, &[], &[], None).await
@@ -591,6 +618,43 @@ impl Client {
     }
 
     /// Save a draft. Empty text deletes the row, as the route documents.
+    /// Replaces the settings blob. `PUT /settings` is a replace, so the caller
+    /// must send the whole blob it read, patched — never just its own keys.
+    pub async fn put_settings(
+        &self,
+        version: i32,
+        data: Value,
+    ) -> Result<SettingsPayload, ClientError> {
+        let route = Self::route("put_settings")?;
+        let body = serde_json::to_value(SettingsPayload { version, data })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Full-text session search. `q` is the raw query: the server parses it with
+    /// the same `cctui-query` grammar the TUI uses to complete it.
+    pub async fn search_sessions(
+        &self,
+        q: &str,
+        include_archived: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<SessionListResponse, ClientError> {
+        let query = vec![
+            ("q", q.to_owned()),
+            ("include_archived", include_archived.to_string()),
+            ("limit", limit.to_string()),
+            ("offset", offset.to_string()),
+        ];
+        self.json(Self::route("get_sessions_search")?, &[], &query, None).await
+    }
+
+    /// Autocomplete values for one search field.
+    pub async fn search_values(&self, field: &str, q: &str) -> Result<Vec<String>, ClientError> {
+        let query = vec![("field", field.to_owned()), ("q", q.to_owned())];
+        self.json(Self::route("get_sessions_search_values")?, &[], &query, None).await
+    }
+
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
         let route = Self::route("put_drafts_by_*key")?;
         let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
@@ -623,6 +687,11 @@ impl Client {
     pub async fn revoke_current_key(&self) -> Result<(), ClientError> {
         self.unit(Self::route("delete_me_key")?, &[], None).await
     }
+}
+
+/// The `{ids: [...]}` body every batch session route takes.
+fn batch_ids(ids: &[String]) -> Value {
+    serde_json::json!({ "ids": ids })
 }
 
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
@@ -731,6 +800,9 @@ mod tests {
     fn every_named_route_exists_in_the_table() {
         for id in [
             "get_sessions",
+            "get_sessions_search",
+            "get_sessions_search_values",
+            "put_settings",
             "get_sessions_by_id",
             "get_sessions_by_id_conversation",
             "get_sessions_by_id_diagnose",
@@ -757,6 +829,12 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "patch_sessions_by_id",
+            "post_sessions_by_id_kill",
+            "post_sessions_archive",
+            "post_sessions_unarchive",
+            "post_sessions_pin",
+            "post_sessions_unpin",
             "get_sessions_by_id_pins",
             "post_sessions_by_id_pins",
             "delete_sessions_by_id_pins_by_seq",

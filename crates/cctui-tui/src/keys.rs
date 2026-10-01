@@ -11,14 +11,18 @@ use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
 use crate::app::labels::LabelAction;
+use crate::app::list_search::ListSearchAction;
+use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
+use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
+use crate::app::unread::UnreadAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -222,6 +226,15 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleFoldSection => Action::SessionLive(SessionLiveAction::ToggleFoldSection),
         ActionId::ToggleFoldAll => Action::SessionLive(SessionLiveAction::ToggleFoldAll),
 
+        ActionId::ListSections => Action::ListShape(ListShapeAction::ToggleSectionsMenu),
+        ActionId::ListSortCycle => Action::ListShape(ListShapeAction::CycleSort),
+        ActionId::ListSortFlip => Action::ListShape(ListShapeAction::FlipSortDir),
+        ActionId::ListGroupCycle => Action::ListShape(ListShapeAction::CycleGroupBy),
+        ActionId::ListColorCycle => Action::ListShape(ListShapeAction::CycleColorBy),
+        ActionId::SectionsNext => Action::ListShape(ListShapeAction::SectionsNext),
+        ActionId::SectionsPrev => Action::ListShape(ListShapeAction::SectionsPrev),
+        ActionId::SectionsToggle => Action::ListShape(ListShapeAction::SectionsToggle),
+
         ActionId::LeaveConversation => Action::LeaveConversation,
         ActionId::ScrollDown => Action::Scroll { lines: 1, release_follow: true },
         ActionId::ScrollUp => Action::Scroll { lines: -1, release_follow: true },
@@ -245,7 +258,6 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::LabelsCancel => Action::Labels(LabelAction::Cancel),
         ActionId::LabelFilterToggle => Action::Labels(LabelAction::FilterToggle),
         ActionId::LabelFilterClear => Action::Labels(LabelAction::FilterClear),
-        ActionId::CycleGrouping => Action::CycleGrouping,
 
         // One command line: `Ctrl-O` is `:attach ` already typed for you.
         ActionId::AttachFile => {
@@ -276,6 +288,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         }
         ActionId::PickerApply => Action::Controls(ControlsAction::PickerApply),
 
+        ActionId::ToggleUnreadOnly => Action::Unread(UnreadAction::ToggleOnly),
         ActionId::ToggleSidebar => Action::Sidebar(SidebarAction::Toggle),
         ActionId::SidebarClose => Action::Sidebar(SidebarAction::Close),
         ActionId::SidebarNext => Action::Sidebar(SidebarAction::Move(1)),
@@ -292,12 +305,32 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
 
+        ActionId::TogglePin => Action::RowAction(RowAction::TogglePin),
+        ActionId::RenameSession => Action::RowAction(RowAction::RenameStart),
+        ActionId::RenameCommit => Action::RowAction(RowAction::RenameCommit),
+        ActionId::RenameCancel => Action::RowAction(RowAction::RenameCancel),
+        ActionId::Archive => Action::RowAction(RowAction::ArchiveOrUnarchive),
+        ActionId::ArchiveSection => Action::RowAction(RowAction::ArchiveSection),
+        ActionId::KillSession => Action::RowAction(RowAction::KillStart),
+        ActionId::UndoArchive => Action::RowAction(RowAction::Undo),
+        ActionId::SelectToggle => Action::RowAction(RowAction::ToggleSelect),
+        ActionId::SelectRange => Action::RowAction(RowAction::RangeToAnchor),
+        ActionId::SelectAll => Action::RowAction(RowAction::SelectAllVisible),
+        ActionId::SelectClear => Action::RowAction(RowAction::ClearSelection),
+        ActionId::ConfirmYes => Action::RowAction(RowAction::ConfirmYes),
+        ActionId::ConfirmNo => Action::RowAction(RowAction::ConfirmNo),
+
         ActionId::CopyMessage => Action::Copy(CopyWhat::Line),
         ActionId::CopyCodeBlock => Action::Copy(CopyWhat::CodeBlock),
         ActionId::CopySessionLink => Action::Copy(CopyWhat::SessionLink),
-        ActionId::Search => Action::CmdLine(CmdAction::Open(CmdMode::Search)),
-        ActionId::SearchNext => Action::CmdLine(CmdAction::NextHit),
-        ActionId::SearchPrev => Action::CmdLine(CmdAction::PrevHit),
+        ActionId::Search => Action::SearchCurrentView,
+        ActionId::SearchNext => Action::SearchHitNext,
+        ActionId::SearchPrev => Action::SearchHitPrev,
+        ActionId::ListSearchComplete => Action::ListSearch(ListSearchAction::Complete),
+        ActionId::ListSearchCommit => Action::ListSearch(ListSearchAction::Commit),
+        ActionId::ListSearchCancel => Action::ListSearch(ListSearchAction::Cancel),
+        ActionId::ListSearchArchived => Action::ListSearch(ListSearchAction::ToggleArchived),
+        ActionId::ListSearchMore => Action::ListSearch(ListSearchAction::LoadMore),
         ActionId::Command => Action::CmdLine(CmdAction::Open(CmdMode::Command)),
         ActionId::CmdLineCommit => Action::CmdLine(CmdAction::Commit),
         ActionId::CmdLineCancel => Action::CmdLine(CmdAction::Cancel),
@@ -341,7 +374,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PermissionAllowAlways => {
             Action::Attention(AttentionAction::Respond(Decision::AllowAlways))
         }
-        ActionId::JumpToPending => Action::Attention(AttentionAction::JumpToPending),
+        ActionId::JumpToAttention => Action::Attention(AttentionAction::JumpToAttention),
 
         ActionId::FocusPrompt => Action::Prompt(PromptAction::Focus),
         ActionId::PromptDefer => Action::Prompt(PromptAction::Defer),
@@ -384,6 +417,8 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
+        Context::ListSearch => Some(Action::ListSearch(ListSearchAction::Key(key))),
+        Context::Rename => Some(Action::RowAction(RowAction::RenameKey(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::LabelPicker => Some(Action::Labels(LabelAction::Key(key))),
@@ -400,12 +435,14 @@ mod tests {
 
     use super::{
         Action, AttentionAction, ControlsAction, Decision, DiagnoseAction, DiagnoseMode,
-        DraftAction, InputEvent, Keymap, PickerColumn, PromptFocus, View, map_input,
+        DraftAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus, View,
+        map_input,
     };
     use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
     use crate::app::prompt::PromptAction;
-    use crate::config::keymap::Context;
+    use crate::config::chord::Chord;
+    use crate::config::keymap::{ActionId, Context};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -519,11 +556,43 @@ mod tests {
             map(View::Conversation, false, KeyCode::Char('z')),
             Some(Action::Conversation(ConversationAction::ToggleExpandAll))
         ));
-        assert!(map(View::SessionList, false, KeyCode::Char('v')).is_none());
+        // `v`, `o` and `z` all mean something else in the list; the same letter
+        // reaching a different feature per context is the keymap doing its job.
+        assert!(matches!(
+            map(View::SessionList, false, KeyCode::Char('v')),
+            Some(Action::ListShape(ListShapeAction::CycleGroupBy))
+        ));
+        assert!(matches!(
+            map(View::SessionList, false, KeyCode::Char('o')),
+            Some(Action::ListShape(ListShapeAction::CycleSort))
+        ));
         assert!(matches!(
             map(View::Conversation, true, KeyCode::Char('v')),
             Some(Action::InputKey(_))
         ));
+    }
+
+    /// The list's own keys must not tread on the fold keys already bound there.
+    #[test]
+    fn the_list_shape_keys_leave_the_fold_keys_alone() {
+        for (code, expected) in [
+            (KeyCode::Char('z'), ActionId::ToggleFold),
+            (KeyCode::Tab, ActionId::ToggleFold),
+            (KeyCode::Char('S'), ActionId::ToggleFoldSection),
+            (KeyCode::Char('Z'), ActionId::ToggleFoldAll),
+            (KeyCode::Enter, ActionId::OpenConversation),
+            (KeyCode::Char('g'), ActionId::SelectFirst),
+            (KeyCode::Char('G'), ActionId::SelectLast),
+            (KeyCode::Char('j'), ActionId::SelectNext),
+            (KeyCode::Char('k'), ActionId::SelectPrev),
+        ] {
+            let chord = Chord::new(code, KeyModifiers::NONE);
+            assert_eq!(
+                Keymap::default().lookup(Context::SessionList, chord),
+                Some(expected),
+                "{code:?} was taken over"
+            );
+        }
     }
 
     #[test]
@@ -587,23 +656,19 @@ mod tests {
         assert!(map_panel(KeyCode::Char('z')).is_none());
     }
 
-    /// `/` and `n`/`N` are decision 7's globals, wired here rather than given a
-    /// second binding of their own.
+    /// Decision 7: one `/`, one `n`, one `N`, scoped to the view in front. The
+    /// key resolves to the same action in both views; the reducer is what sends
+    /// it to the transcript search or the list search.
     #[test]
-    fn the_global_search_keys_drive_the_transcript_search() {
-        use crate::app::cmdline::{CmdAction, Mode};
-        assert!(matches!(
-            map(View::Conversation, false, KeyCode::Char('/')),
-            Some(Action::CmdLine(CmdAction::Open(Mode::Search)))
-        ));
-        assert!(matches!(
-            map(View::Conversation, false, KeyCode::Char('n')),
-            Some(Action::CmdLine(CmdAction::NextHit))
-        ));
-        assert!(matches!(
-            map(View::Conversation, false, KeyCode::Char('N')),
-            Some(Action::CmdLine(CmdAction::PrevHit))
-        ));
+    fn the_global_search_keys_are_one_binding_scoped_by_view() {
+        for view in [View::Conversation, View::SessionList] {
+            assert!(matches!(
+                map(view, false, KeyCode::Char('/')),
+                Some(Action::SearchCurrentView)
+            ));
+            assert!(matches!(map(view, false, KeyCode::Char('n')), Some(Action::SearchHitNext)));
+            assert!(matches!(map(view, false, KeyCode::Char('N')), Some(Action::SearchHitPrev)));
+        }
     }
 
     #[test]
@@ -808,7 +873,7 @@ mod tests {
         for view in [View::SessionList, View::Conversation] {
             assert!(matches!(
                 map_event(view, false, ctrl('g')),
-                Some(Action::Attention(AttentionAction::JumpToPending))
+                Some(Action::Attention(AttentionAction::JumpToAttention))
             ));
         }
     }

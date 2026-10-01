@@ -2,12 +2,33 @@
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+use crate::termnotify::Mode;
+
+/// `notifications` takes `off` / `bell` / `osc`, and the booleans it used to
+/// take before it had modes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum NotifyPref {
+    Switch(bool),
+    Named(String),
+}
+
+impl NotifyPref {
+    fn mode(&self) -> Option<Mode> {
+        match self {
+            Self::Switch(true) => Some(Mode::Bell),
+            Self::Switch(false) => Some(Mode::Off),
+            Self::Named(text) => Mode::parse(text),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrefsFile {
     pub timestamps: Option<bool>,
     pub compact_rows: Option<bool>,
-    pub notifications: Option<bool>,
+    pub notifications: Option<NotifyPref>,
     pub ascii_glyphs: Option<bool>,
     pub machine_column: Option<bool>,
 }
@@ -15,30 +36,18 @@ pub struct PrefsFile {
 // The knobs are independent switches, not a state machine, so grouping them
 // into enums would only obscure what each one does.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Prefs {
     /// Conversation timestamps shown from the start (`t` still toggles).
     pub timestamps: bool,
     /// One line per session row instead of the roomy two-line row.
     pub compact_rows: bool,
-    /// Desktop/terminal notifications for sessions that want attention.
-    pub notifications: bool,
+    /// What the terminal is told when a session starts waiting.
+    pub notify: Mode,
     /// Plain ASCII instead of emoji, for a terminal or font without them.
     pub ascii_glyphs: bool,
     /// Show which machine each row runs on, tinted by the machine's hue.
     pub machine_column: bool,
-}
-
-impl Default for Prefs {
-    fn default() -> Self {
-        Self {
-            timestamps: false,
-            compact_rows: false,
-            notifications: true,
-            ascii_glyphs: false,
-            machine_column: false,
-        }
-    }
 }
 
 impl Prefs {
@@ -49,19 +58,19 @@ impl Prefs {
             self.compact_rows = v;
         }
         if let Some(v) = server.notifications {
-            self.notifications = v;
+            self.notify = if v { Mode::Bell } else { Mode::Off };
         }
     }
 
-    pub const fn apply_file(&mut self, file: PrefsFile) {
+    pub fn apply_file(&mut self, file: &PrefsFile) {
         if let Some(v) = file.timestamps {
             self.timestamps = v;
         }
         if let Some(v) = file.compact_rows {
             self.compact_rows = v;
         }
-        if let Some(v) = file.notifications {
-            self.notifications = v;
+        if let Some(mode) = file.notifications.as_ref().and_then(NotifyPref::mode) {
+            self.notify = mode;
         }
         if let Some(v) = file.ascii_glyphs {
             self.ascii_glyphs = v;
@@ -74,7 +83,11 @@ impl Prefs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Prefs, PrefsFile};
+    use super::{Mode, NotifyPref, Prefs, PrefsFile};
+
+    fn named(text: &str) -> NotifyPref {
+        NotifyPref::Named(text.to_owned())
+    }
 
     #[test]
     fn the_local_file_wins_over_the_server() {
@@ -85,17 +98,59 @@ mod tests {
         };
         let mut prefs = Prefs::default();
         prefs.apply_server(server);
-        prefs.apply_file(PrefsFile { notifications: Some(true), ..PrefsFile::default() });
+        assert_eq!(prefs.notify, Mode::Off);
+        prefs.apply_file(&PrefsFile {
+            notifications: Some(NotifyPref::Switch(true)),
+            ..PrefsFile::default()
+        });
         assert!(prefs.compact_rows);
-        assert!(prefs.notifications);
+        assert_eq!(prefs.notify, Mode::Bell);
     }
 
     #[test]
     fn an_absent_key_leaves_the_default_alone() {
         let mut prefs = Prefs::default();
-        prefs.apply_file(PrefsFile { compact_rows: Some(true), ..PrefsFile::default() });
+        prefs.apply_file(&PrefsFile { compact_rows: Some(true), ..PrefsFile::default() });
         assert!(prefs.compact_rows);
-        assert!(prefs.notifications);
+        assert_eq!(prefs.notify, Mode::Bell);
         assert!(!prefs.timestamps);
+    }
+
+    /// The knob used to be a bool, so both spellings have to keep working.
+    #[test]
+    fn the_notify_knob_takes_a_mode_name_or_the_old_boolean() {
+        for (pref, want) in [
+            (Some(named("off")), Mode::Off),
+            (Some(named("bell")), Mode::Bell),
+            (Some(named("osc")), Mode::Osc),
+            (Some(NotifyPref::Switch(false)), Mode::Off),
+            (Some(NotifyPref::Switch(true)), Mode::Bell),
+        ] {
+            let mut prefs = Prefs::default();
+            prefs.apply_file(&PrefsFile { notifications: pref.clone(), ..PrefsFile::default() });
+            assert_eq!(prefs.notify, want, "{pref:?}");
+        }
+    }
+
+    /// A typo must not silently turn notifications off.
+    #[test]
+    fn an_unknown_mode_name_leaves_the_previous_setting() {
+        let mut prefs = Prefs::default();
+        prefs.apply_file(&PrefsFile { notifications: Some(named("osc")), ..PrefsFile::default() });
+        prefs.apply_file(&PrefsFile {
+            notifications: Some(named("sparkles")),
+            ..PrefsFile::default()
+        });
+        assert_eq!(prefs.notify, Mode::Osc);
+    }
+
+    #[test]
+    fn the_toml_spelling_parses_both_ways() {
+        let from_bool: PrefsFile =
+            toml::from_str("notifications = false").expect("a boolean parses");
+        assert_eq!(from_bool.notifications, Some(NotifyPref::Switch(false)));
+        let from_name: PrefsFile =
+            toml::from_str("notifications = \"osc\"").expect("a name parses");
+        assert_eq!(from_name.notifications, Some(named("osc")));
     }
 }

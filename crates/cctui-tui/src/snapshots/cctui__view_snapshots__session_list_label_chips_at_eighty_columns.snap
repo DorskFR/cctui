@@ -1,10 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 1082
+assertion_line: 1261
 expression: "render_screen_sized(&mut app, 80, 24)"
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
- Sessions
+ cctui  v0.0.0-test  4 sessions  ● 3 active  ! 1 need input — Ctrl+g
+ Sessions  starred · live · dispatched  sort: activity ↓  group: status
    ▾ Needs input (1)
 ▸    ● [claude-code] infra (main)  opus  0s  $1.25 [infra] [urgent]
    ▾ Working (1)

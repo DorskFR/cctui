@@ -21,13 +21,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_status_bar(frame, app, status_area);
 
     // Title line
-    draw_title(frame, title_area);
+    draw_title(frame, app, title_area);
 
     // Session list
     draw_session_list(frame, app, list_area);
 
-    // Hotkeys
-    crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
+    // One bottom line, in the order the keyboard resolves: a row-action prompt
+    // is modal and owns it, then the search prompt, then the hotkeys.
+    if !super::row_actions::draw_strip(frame, app, hotkeys_area) {
+        if app.list_search.is_active() {
+            draw_search_prompt(frame, app, hotkeys_area);
+        } else {
+            crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
+        }
+    }
+
+    super::sections::draw(frame, app);
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -42,6 +51,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw("  "),
         Span::styled(format!("● {active} active"), theme::active()),
     ];
+    let unread = crate::app::unread::total(app);
+    if unread > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("●{unread} unread"), theme::unread()));
+    }
+    if app.ui.unread_only {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled("unread only", theme::cost()));
+    }
     if app.refresh.requested > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -53,12 +71,104 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_title(frame: &mut Frame, area: ratatui::layout::Rect) {
-    let line = Line::from(vec![Span::styled(" Sessions", theme::section_title())]);
-    frame.render_widget(Paragraph::new(line), area);
+fn draw_title(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let mut spans = vec![Span::styled(" Sessions", theme::section_title())];
+    let sections = crate::app::list_view::SECTIONS
+        .iter()
+        .filter(|s| app.list_shape.sections.has(**s))
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    spans.push(Span::styled(format!("  {sections}"), theme::dim()));
+    // On the title row, not the status bar: at 80 columns the status bar is
+    // already carrying the approval warning, which outranks a shape summary.
+    spans.push(Span::styled(format!("  {}", app.list_shape.summary()), theme::dim()));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// `/ machine:cyberia "auth token"        [archived: off] 12 hits`
+fn draw_search_prompt(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let search = &app.list_search;
+    let mut spans =
+        vec![Span::styled(" / ", theme::bold()), Span::styled(search.query.clone(), theme::bold())];
+    if search.open {
+        spans.push(Span::styled("▏", theme::border_focused()));
+    }
+    let archived = if search.include_archived { "on" } else { "off" };
+    spans.push(Span::styled(format!("   [archived: {archived}]"), theme::dim()));
+    if let Some(status) = search.status() {
+        spans.push(Span::styled(format!("  {status}"), theme::dim()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// A result row: the session line, then its snippet on a dim second line with
+/// the matched terms picked out.
+fn result_items(app: &App, width: u16) -> Vec<ListItem<'static>> {
+    let mut items = Vec::with_capacity(app.list_search.results.len() * 2);
+    for s in &app.list_search.results {
+        items.push(session_line(app, s, 0, width));
+        if let Some(snippet) = s.match_snippet.as_deref().filter(|t| !t.trim().is_empty()) {
+            items.push(ListItem::new(Line::from(snippet_spans(
+                snippet,
+                &app.list_search.terms,
+                usize::from(width),
+            ))));
+        }
+    }
+    items
+}
+
+/// Dim snippet with the free-text terms highlighted, using the matcher the web
+/// UI marks with so the two agree on what counts as a hit.
+fn snippet_spans(snippet: &str, terms: &[String], width: usize) -> Vec<Span<'static>> {
+    let flat = snippet.replace('\n', " ");
+    let body: String = flat.chars().take(width.saturating_sub(6)).collect();
+    let hits = cctui_clientcore::search::match_ranges(&body, terms);
+    let chars: Vec<char> = body.chars().collect();
+    let mut spans = vec![Span::styled("     …".to_owned(), theme::dim())];
+    let mut at = 0;
+    for (start, end) in hits {
+        if start > at {
+            spans.push(Span::styled(chars[at..start].iter().collect::<String>(), theme::dim()));
+        }
+        spans.push(Span::styled(chars[start..end].iter().collect::<String>(), theme::search_hit()));
+        at = end;
+    }
+    if at < chars.len() {
+        spans.push(Span::styled(chars[at..].iter().collect::<String>(), theme::dim()));
+    }
+    spans
 }
 
 fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if app.list_search.is_active() {
+        let items = result_items(app, content_width(area.width));
+        if items.is_empty() {
+            let text = app.list_search.status().unwrap_or_else(|| "type to search".to_owned());
+            frame.render_widget(
+                Paragraph::new(Span::styled(format!(" {text}"), theme::dim())),
+                area,
+            );
+            return;
+        }
+        // Two lines per hit when it carries a snippet, so the cursor has to be
+        // mapped onto the row the session itself drew.
+        let selected = app
+            .list_search
+            .results
+            .iter()
+            .take(app.selected_index)
+            .map(|s| {
+                if s.match_snippet.as_deref().is_some_and(|t| !t.trim().is_empty()) { 2 } else { 1 }
+            })
+            .sum::<usize>();
+        let offset = session_list::viewport_offset(items.len(), selected, area.height as usize);
+        let list = List::new(items).highlight_style(theme::selected()).highlight_symbol(CURSOR);
+        let mut state = ListState::default().with_offset(offset).with_selected(Some(selected));
+        frame.render_stateful_widget(list, area, &mut state);
+        return;
+    }
     let rows = app.list_rows();
     let visible = session_list::sessions_of(&rows);
     let selected_flat = if app.selected_index < visible.len() { app.selected_index } else { 0 };
@@ -68,8 +178,9 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     let items: Vec<ListItem> = rows
         .iter()
         .map(|row| match row {
-            session_list::Row::Header { group, total, open } => {
-                group_header(app, group, *total, *open)
+            session_list::Row::Header { group, total, open } => group_header(*group, *total, *open),
+            session_list::Row::DimHeader { key, total, open, machine_id } => {
+                dim_header(app, key, *total, *open, machine_id.as_deref())
             }
             session_list::Row::SubHeader { label, total, running, open, depth, .. } => {
                 sub_header(label, *total, *running, *open, *depth)
@@ -103,31 +214,24 @@ const fn arrow(open: bool) -> &'static str {
     if open { OPEN } else { FOLDED }
 }
 
-/// `▾ Working (4)`, or `▾ ● cyberia-1 (online) (3)` when grouping by machine:
-/// the dot is the machine's own liveness, not any session's.
-fn group_header(
-    app: &App,
-    group: &session_list::GroupKey,
-    total: usize,
-    open: bool,
-) -> ListItem<'static> {
-    let name_style = group.hue.map_or_else(theme::section_title, theme::hue_fg);
-    let mut spans = vec![Span::styled(format!(" {} ", arrow(open)), theme::section_title())];
+fn group_header(group: session_list::Group, total: usize, open: bool) -> ListItem<'static> {
+    ListItem::new(Line::from(vec![
+        Span::styled(format!(" {} {} ", arrow(open), group.label()), theme::section_title()),
+        Span::styled(format!("({total})"), theme::dim()),
+    ]))
+}
 
-    if let Some(machine_id) = &group.machine_id {
-        // One dot, coloured by tier, with the word after it: the colour is the
-        // fast read and the word is what a monochrome terminal has.
-        let tier = session_live::machine_dot(app, machine_id);
-        spans.push(Span::styled("● ", machine_style(tier)));
-    }
-    spans.push(Span::styled(format!("{} ", group.label), name_style));
-    if let Some(machine_id) = &group.machine_id
-        && let Some(tier) = session_live::machine_dot(app, machine_id)
-    {
-        spans.push(Span::styled(format!("({}) ", machine_word(tier)), theme::dim()));
-    }
-    spans.push(Span::styled(format!("({total})"), theme::dim()));
-    ListItem::new(Line::from(spans))
+/// A machine that is not online is the thing worth noticing, so only those two
+/// tiers get a loud colour.
+/// `@host`, tinted by the machine's own hue when it has one, else by its name.
+fn machine_seg(s: &SessionListItem) -> Seg {
+    let name =
+        s.machine_name.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| s.machine_id.clone());
+    let hue = s
+        .machine_hue
+        .and_then(|h| u32::try_from(h).ok())
+        .unwrap_or_else(|| cctui_clientcore::format::hash_hue(&name));
+    Seg::new(5, theme::hue_style(hue), format!(" @{name}"))
 }
 
 /// A machine that is not online is the thing worth noticing, so only those two
@@ -147,6 +251,50 @@ const fn machine_word(tier: cctui_proto::models::MachineLiveness) -> &'static st
         cctui_proto::models::MachineLiveness::Stale => "stale",
         cctui_proto::models::MachineLiveness::Offline => "offline",
     }
+}
+
+/// Hue tinting a row under the active colour dimension, or `None` when the
+/// dimension is off or the session carries nothing for it. A label uses the
+/// label's own stored hue; every other key hashes, as the web UI does.
+fn accent_hue(app: &App, s: &SessionListItem) -> Option<u32> {
+    use crate::app::list_view::ColorBy;
+    let key = app.list_shape.color_by.key_of(s)?;
+    if app.list_shape.color_by == ColorBy::Label {
+        let label = s.labels.first()?;
+        return Some(cctui_clientcore::labels::label_hue(&label.name, &label.color));
+    }
+    Some(cctui_clientcore::format::hash_hue(&key))
+}
+
+/// Header of a group-by bucket. Tinted by the bucket's own hue when the accent
+/// dimension matches the grouping, so the header and its rows read as one block.
+fn dim_header(
+    app: &App,
+    key: &str,
+    total: usize,
+    open: bool,
+    machine_id: Option<&str>,
+) -> ListItem<'static> {
+    let style = if app.list_shape.color_by == crate::app::list_view::ColorBy::None {
+        theme::section_title()
+    } else {
+        theme::hue_style(cctui_clientcore::format::hash_hue(key))
+    };
+    let mut spans = vec![Span::styled(format!(" {} ", arrow(open)), theme::section_title())];
+    if let Some(machine_id) = machine_id {
+        // The machine's own liveness, not any session's: one dot coloured by the
+        // tier, then the word, which is all a monochrome terminal has.
+        let tier = session_live::machine_dot(app, machine_id);
+        spans.push(Span::styled("● ", machine_style(tier)));
+        spans.push(Span::styled(format!("{key} "), style));
+        if let Some(tier) = tier {
+            spans.push(Span::styled(format!("({}) ", machine_word(tier)), theme::dim()));
+        }
+    } else {
+        spans.push(Span::styled(format!("{key} "), style));
+    }
+    spans.push(Span::styled(format!("({total})"), theme::dim()));
+    ListItem::new(Line::from(spans))
 }
 
 /// `▸ subagents (2)` / `▾ wf: release-wave (4/9 running)`.
@@ -212,6 +360,11 @@ fn spans_of(segs: Vec<Seg>) -> Vec<Span<'static>> {
     segs.into_iter().map(|s| Span::styled(s.text, s.style)).collect()
 }
 
+/// Empty outside select mode, so the row keeps its full width.
+fn checkbox(app: &App, session_id: &str) -> String {
+    super::row_actions::checkbox(app, session_id).unwrap_or_default().to_owned()
+}
+
 fn session_line(app: &App, s: &SessionListItem, depth: usize, width: u16) -> ListItem<'static> {
     ListItem::new(Line::from(session_line_spans(app, s, depth, width)))
 }
@@ -247,19 +400,24 @@ fn session_line_spans(
 
     let is_subagent = depth > 0;
     let lead = if is_subagent { format!("{}↳ ", indent(depth + 1)) } else { indent(depth) };
-    let mut segs = vec![
+    let mut segs = Vec::with_capacity(10);
+    // One column, ahead of everything: the accent is the row's identity under a
+    // colour dimension, so it sheds last.
+    if let Some(hue) = accent_hue(app, s) {
+        segs.push(Seg::new(KEEP, theme::hue_style(hue), "▏".to_owned()));
+    }
+    segs.extend([
         Seg::new(KEEP, theme::dim(), lead),
+        Seg::new(KEEP, theme::hotkey(), checkbox(app, &s.id)),
         Seg::new(KEEP, theme::liveness_style(liveness), format!("{} ", liveness.glyph())),
         Seg::new(5, theme::dim(), format!("[{adapter}] ")),
         Seg::new(KEEP, if is_subagent { theme::dim() } else { theme::bold() }, project.to_owned()),
-    ];
+    ]);
     if !branch.is_empty() {
         segs.push(Seg::new(6, theme::branch(), format!(" ({branch})")));
     }
     if app.config.prefs.machine_column {
-        let group = session_list::GroupKey::machine(s);
-        let tint = group.hue.map_or_else(theme::dim, theme::hue_fg);
-        segs.push(Seg::new(5, tint, format!(" @{}", group.label)));
+        segs.push(machine_seg(s));
     }
     // Only a machine that is not online earns a glyph; a dot on every row is
     // noise, and the row already says whether the session itself is live.
@@ -315,7 +473,7 @@ fn session_line_spans(
     let mut spans = spans_of(segs);
     for chip in &badges.labels {
         spans.push(Span::raw(" "));
-        let tint = chip.hue.map_or_else(theme::dim, theme::hue_fg);
+        let tint = chip.hue.map_or_else(theme::dim, theme::hue_style);
         spans.push(Span::styled(chip.text.clone(), tint));
     }
     if !badges.glyphs_empty() {
@@ -467,6 +625,65 @@ mod tests {
     }
 
     #[test]
+    fn a_snippet_picks_out_the_terms_and_leaves_the_rest_dim() {
+        let terms = vec!["auth".to_owned()];
+        let spans = super::snippet_spans("refresh the auth token", &terms, 80);
+        let hits: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style == theme::search_hit())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(hits, ["auth"]);
+        assert!(text(&spans).contains("refresh the auth token"));
+        assert!(text(&spans).starts_with("     …"), "the snippet is indented under its row");
+    }
+
+    #[test]
+    fn a_snippet_with_no_term_is_one_dim_run_and_is_clipped_to_the_row() {
+        let plain = super::snippet_spans("nothing to see", &[], 80);
+        assert!(plain.iter().all(|s| s.style != theme::search_hit()));
+
+        let long = "x".repeat(200);
+        let clipped = super::snippet_spans(&long, &[], 40);
+        assert!(cols(&clipped) <= 40, "a long snippet must not overflow the row");
+    }
+
+    #[test]
+    fn a_snippet_newline_does_not_break_the_row() {
+        let spans = super::snippet_spans("first line\nsecond line", &[], 80);
+        assert!(!text(&spans).contains('\n'));
+    }
+
+    #[test]
+    fn an_accented_row_still_fits_and_leads_with_its_tint() {
+        let mut s = session("s-long", "a-project-with-a-really-long-name", "active", "working");
+        s.activity_detail = Some("Running an extremely long tool description".to_owned());
+        s.tool_use_count = 140;
+        let mut app = app_with(s);
+        app.clock_ms = 600_000;
+        app.list_shape.color_by = crate::app::list_view::ColorBy::Machine;
+
+        for width in [40_u16, 60, 80, 100] {
+            let spans = session_line_spans(&app, &app.sessions[0], 0, width);
+            assert!(
+                cols(&spans) <= usize::from(width),
+                "{width} columns overflowed with an accent: {:?}",
+                text(&spans)
+            );
+        }
+        let spans = session_line_spans(&app, &app.sessions[0], 0, 100);
+        assert_eq!(spans[0].content.as_ref(), "▏", "the accent leads the row");
+        assert_ne!(spans[0].style, theme::dim(), "and carries the dimension's hue");
+    }
+
+    #[test]
+    fn no_accent_without_a_colour_dimension() {
+        let app = app_with(session("s-a", "alpha", "active", "working"));
+        let spans = session_line_spans(&app, &app.sessions[0], 0, 100);
+        assert_ne!(spans[0].content.as_ref(), "▏");
+    }
+
+    #[test]
     fn a_row_never_exceeds_eighty_columns() {
         let mut s = session("s-long", "a-project-with-a-really-long-name", "active", "working");
         s.metadata = serde_json::json!({
@@ -491,6 +708,29 @@ mod tests {
                 "{width} columns overflowed: {:?}",
                 text(&spans)
             );
+        }
+    }
+
+    #[test]
+    fn a_row_in_select_mode_still_fits_eighty_columns() {
+        let mut s = session("s-long", "a-project-with-a-really-long-name", "active", "working");
+        s.metadata = serde_json::json!({
+            "project_name": "a-project-with-a-really-long-name",
+            "git_branch": "feature/an-extremely-long-branch-name-that-keeps-going",
+            "model": "claude-opus-5-1m",
+        });
+        s.unread_count = 12;
+        let mut app = app_with(s);
+        app.clock_ms = 600_000;
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::RowAction(crate::app::row_actions::RowAction::ToggleSelect),
+        );
+
+        for width in [40_u16, 80] {
+            let spans = session_line_spans(&app, &app.sessions[0], 0, width);
+            assert!(cols(&spans) <= usize::from(width), "{width} overflowed: {:?}", text(&spans));
+            assert!(text(&spans).contains("[x] "), "the checkbox is part of the identity");
         }
     }
 
