@@ -104,12 +104,27 @@ async fn fetch_reset_status(
     resp.json().await.ok()
 }
 
-/// `User-Agent` the usage endpoint requires (`claude-code/<version>`). Without a
-/// claude-code UA the endpoint drops the caller into an aggressively rate-limited
-/// bucket (persistent 429s). Overridable so we can bump the version it expects
-/// without a code redeploy.
+/// The Claude Code release the Anthropic `User-Agent` claims. Release builds
+/// bake in upstream latest (`scripts/release-build-server.sh`); this is the
+/// fallback for builds that did not resolve it.
+const CLAUDE_CLI_VERSION: &str = match option_env!("CCTUI_BUILD_CLAUDE_CLI_VERSION") {
+    Some(v) => v,
+    None => "2.1.286",
+};
+
+/// The Claude Code CLI's own `User-Agent`. Upstream reads the caller surface from
+/// it: any other shape lands in an aggressively rate-limited bucket, and
+/// `cedar_ember` answers `ineligible_reason: "surface"` with no grants. A stale
+/// version is not eligible either.
+fn claude_cli_user_agent(version: &str) -> String {
+    format!("claude-cli/{version} (external, cli)")
+}
+
+/// `User-Agent` for the usage, reset-status and claim endpoints. Overridable so
+/// it can be changed without a code redeploy.
 pub fn anthropic_usage_user_agent() -> String {
-    std::env::var("CCTUI_ANTHROPIC_USAGE_USER_AGENT").unwrap_or_else(|_| "claude-code/2.1.0".into())
+    std::env::var("CCTUI_ANTHROPIC_USAGE_USER_AGENT")
+        .unwrap_or_else(|_| claude_cli_user_agent(CLAUDE_CLI_VERSION))
 }
 
 /// OpenAI/codex's real per-account usage endpoint. Returns the `ChatGPT`
@@ -888,5 +903,22 @@ pub async fn record_fireworks_usage(
         } else {
             tracing::warn!(session = %session_id, "fireworks usage record failed: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CLAUDE_CLI_VERSION, claude_cli_user_agent};
+
+    #[test]
+    fn user_agent_is_the_cli_surface() {
+        assert_eq!(claude_cli_user_agent("2.1.286"), "claude-cli/2.1.286 (external, cli)");
+    }
+
+    #[test]
+    fn baked_cli_version_is_semver() {
+        let parts: Vec<&str> = CLAUDE_CLI_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "{CLAUDE_CLI_VERSION}");
+        assert!(parts.iter().all(|n| n.parse::<u32>().is_ok()), "{CLAUDE_CLI_VERSION}");
     }
 }

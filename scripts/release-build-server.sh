@@ -7,6 +7,16 @@ set -euo pipefail
 
 glibc="${SERVER_GLIBC:-2.41}"
 
+# The Anthropic usage endpoints only serve limit resets to a current Claude Code
+# `User-Agent`, so every release bakes in upstream latest.
+if [ -z "${CCTUI_CLAUDE_CLI_VERSION:-}" ]; then
+  CCTUI_CLAUDE_CLI_VERSION="$(curl -fsSL https://downloads.claude.ai/claude-code-releases/latest)"
+fi
+echo "$CCTUI_CLAUDE_CLI_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || { echo "bad Claude Code version: '$CCTUI_CLAUDE_CLI_VERSION'" >&2; exit 1; }
+export CCTUI_CLAUDE_CLI_VERSION
+echo "Claude Code User-Agent version: $CCTUI_CLAUDE_CLI_VERSION"
+
 cargo build --release --locked -p cctui-server
 
 bin="target/release/cctui-server"
