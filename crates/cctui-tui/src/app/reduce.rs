@@ -31,7 +31,18 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Spend(action) => super::spend::reduce_spend(app, action),
         Action::Usage(action) => super::usage::reduce_usage(app, action),
         Action::SettingsSaved(blob) => {
+            app.list_shape = super::list_view::ListShape::from_settings(&blob);
             app.settings_blob = Some(*blob);
+            app.reshape();
+            Vec::new()
+        }
+        // The server kept its old value, so the shape shown has to go back to
+        // it; with no row ever read there is nothing truer to go back to.
+        Action::SettingsWriteFailed => {
+            if let Some(blob) = app.settings_blob.clone() {
+                app.list_shape = super::list_view::ListShape::from_settings(&blob);
+                app.reshape();
+            }
             Vec::new()
         }
         Action::Dispatchers(action) => super::dispatchers::reduce_dispatchers(app, action),

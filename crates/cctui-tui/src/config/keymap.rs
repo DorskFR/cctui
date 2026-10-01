@@ -1291,6 +1291,12 @@ impl Keymap {
             Context::Permission | Context::Sidebar => &[Context::Conversation, Context::Global],
             // The pager is a plain reader and keeps the globals; the attach
             // prompt swallows typed characters and falls through to nothing.
+            // Every slice root and read-only panel keeps the globals, so `1-9`,
+            // `?` and `q` work wherever the user has landed. A context that
+            // binds the same chord still wins, and the typing contexts
+            // (composer, prompts, forms) and the pty are left out on purpose:
+            // there an unclaimed key is text, not a command. So is the diagnose
+            // panel, which is modal and answers `q`/Esc instead.
             Context::SessionList
             | Context::Conversation
             | Context::FileViewer
@@ -1298,7 +1304,13 @@ impl Keymap {
             | Context::Bookmarks
             | Context::Overview
             | Context::Accounts
-            | Context::AccountPools => &[Context::Global],
+            | Context::AccountPools
+            | Context::Machines
+            | Context::Dispatchers
+            | Context::Access
+            | Context::Instance
+            | Context::Usage
+            | Context::Spend => &[Context::Global],
             _ => &[],
         }
     }
@@ -1334,6 +1346,24 @@ impl Keymap {
     }
 
     /// Bound actions of a context, in declaration order, each with its chords.
+    /// The contexts that bind `chord` to something else, so the cheat sheet can
+    /// name where a global key means a different thing instead of claiming it
+    /// works everywhere. Computed, because a hand-written note goes stale the
+    /// first time a feature claims the key for itself.
+    ///
+    /// A context that simply does not inherit the globals is not listed: there
+    /// the key is inert, which the context's own section already shows, and
+    /// naming every prompt would bury the one view that redefines the key.
+    #[must_use]
+    pub fn shadowed_in(&self, chord: Chord, action: ActionId) -> Vec<Context> {
+        CONTEXTS
+            .iter()
+            .copied()
+            .filter(|c| *c != Context::Global)
+            .filter(|c| self.bindings.get(&(*c, chord)).is_some_and(|bound| *bound != action))
+            .collect()
+    }
+
     pub fn entries(&self, context: Context) -> Vec<(ActionId, Vec<Chord>)> {
         ACTION_IDS
             .iter()
@@ -1426,5 +1456,64 @@ mod tests {
         let (first, chords) = &entries[0];
         assert_eq!(*first, ActionId::SelectNext);
         assert_eq!(chords.len(), 2);
+    }
+    /// A user who lands on a slice must be able to leave it the way the cheat
+    /// sheet says: by number, `?` or `q`.
+    #[test]
+    fn the_globals_reach_every_slice_root() {
+        let map = Keymap::default();
+        for context in [
+            Context::Machines,
+            Context::Dispatchers,
+            Context::Access,
+            Context::Instance,
+            Context::Usage,
+            Context::Spend,
+            Context::Accounts,
+            Context::Bookmarks,
+            Context::Overview,
+            Context::SessionList,
+        ] {
+            assert_eq!(
+                map.lookup(context, chord("3")),
+                Some(ActionId::SwitchView),
+                "digits must switch views in {context:?}"
+            );
+            assert_eq!(
+                map.lookup(context, chord("?")),
+                Some(ActionId::Help),
+                "help must open in {context:?}"
+            );
+        }
+    }
+
+    /// Typing contexts must keep swallowing unclaimed keys: a `3` in the
+    /// composer is a character, not a view switch.
+    #[test]
+    fn the_globals_do_not_reach_a_typing_context() {
+        let map = Keymap::default();
+        for context in [Context::Composer, Context::CmdLine, Context::Rename, Context::Terminal] {
+            assert_ne!(
+                map.lookup(context, chord("3")),
+                Some(ActionId::SwitchView),
+                "{context:?} must not switch views on a typed digit"
+            );
+        }
+    }
+
+    /// The cheat sheet's "Anywhere" has to be computed: `U` and `V` are listed
+    /// globally but the session list binds them to its own actions.
+    #[test]
+    fn a_shadowed_global_knows_where_it_does_not_work() {
+        let map = Keymap::default();
+        let shadowed = map.shadowed_in(chord("U"), ActionId::OpenAccess);
+        assert!(
+            shadowed.contains(&Context::SessionList),
+            "U is overridden in the session list: {shadowed:?}"
+        );
+        let v = map.shadowed_in(chord("V"), ActionId::OpenInstance);
+        assert!(v.contains(&Context::SessionList), "V is overridden in the session list: {v:?}");
+        // A global nothing overrides must not be slandered.
+        assert!(!map.shadowed_in(chord("?"), ActionId::Help).contains(&Context::Machines));
     }
 }

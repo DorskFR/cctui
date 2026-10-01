@@ -5,23 +5,24 @@ expression: "render_screen_sized(&mut app, 100, height)"
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys ────────────────────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         j / ↓       Next account                     │
-▸ │  ?           Toggle this cheat sheet            k / ↑       Previous account                 │
-  │  q           Quit cctui                         Enter       Show or hide the detail pane     │
-  │  1-9         Switch view                        Tab         Switch between the accounts and …│
-  │  /           Search the current view            e           Allow or withhold this account f…│
-  │  n           Next search hit                    +           Give this account more of a pool │
-  │  N           Previous search hit                -           Deprioritise this account in its…│
-  │  D           Diagnose the selected session      R           Claim a usage-limit reset        │
-  │  i           Session info                       x           Redirect launches elsewhere, or …│
+  │Anywhere                                       Accounts                                       │
+▸ │  @           Accounts and pools                 j / ↓       Next account                     │
+  │  Ctrl+u      Usage: pool and account windows    k / ↑       Previous account                 │
+  │  $           Spend: token windows and cost      Enter       Show or hide the detail pane     │
+  │  Ctrl+g      Jump to the next session needin…   Tab         Switch between the accounts and …│
+  │Anywhere a view does not rebind it               e           Allow or withhold this account f…│
+  │  ?           Toggle this cheat sheet            +           Give this account more of a pool │
+  │  q           Quit cctui                         -           Deprioritise this account in its…│
+  │  1-9         Switch view                        R           Claim a usage-limit reset        │
+  │  /           Search the current view            x           Redirect launches elsewhere, or …│
+  │  n           Next search hit                    r           Refresh the accounts and pools   │
+  │  N           Previous search hit                Esc         Back                             │
+  │  D           Diagnose the selected session    Accounts — pools pane                          │
+  │  i           Session info                       Tab         Switch between the accounts and …│
   │  M           Machines and daemons               r           Refresh the accounts and pools   │
-  │  @           Accounts and pools                 Esc         Back                             │
-  │  Ctrl+d      Dispatchers                      Accounts — pools pane                          │
-  │  U           Access: users, tokens, machines…   Tab         Switch between the accounts and …│
-  │  V           Instance status                    r           Refresh the accounts and pools   │
-  │  Ctrl+u      Usage: pool and account windows    Esc         Back                             │
-  │  $           Spend: token windows and cost      j / ↓       Next pool or member              │
-  │  Ctrl+g      Jump to the next session needin…   k / ↑       Previous pool or member          │
+  │  Ctrl+d      Dispatchers                        Esc         Back                             │
+  │  U           Access: users, tokens, machines…   j / ↓       Next pool or member              │
+  │  V           Instance status                    k / ↑       Previous pool or member          │
   │Session list                                     a           Add an account to this pool      │
   │  j / ↓       Next session                       d           Remove this member               │
   │  k / ↑       Previous session                   J           Move this member later in the el…│
@@ -208,6 +209,5 @@ expression: "render_screen_sized(&mut app, 100, height)"
   │  U           Update this server                 ⌂           a job cctui did not start        │
   │  Enter       Confirm                            ✕reason     how it ended                     │
   │  Esc         Back                               ⚙N age      tool calls, age of the last      │
-  │Accounts                                                                                      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

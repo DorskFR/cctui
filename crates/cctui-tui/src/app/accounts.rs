@@ -208,10 +208,7 @@ pub enum AccountAction {
 pub fn reduce_accounts(app: &mut App, action: AccountAction) -> Vec<Effect> {
     match action {
         AccountAction::Open => {
-            let mut effects = super::slice::go_to(app, super::slice::Slice::Accounts);
-            if !app.accounts.loaded {
-                effects.extend(refresh(app));
-            }
+            let effects = super::slice::go_to(app, super::slice::Slice::Accounts);
             aim_at_handoff(app);
             effects
         }
@@ -330,6 +327,11 @@ pub fn reduce_accounts(app: &mut App, action: AccountAction) -> Vec<Effect> {
 
 /// One gesture fills both panes: the pools pane is part of this slice, not a
 /// view of its own.
+/// Entering the slice: load once, whatever key or tab number got here.
+pub fn on_enter(app: &mut App) -> Vec<Effect> {
+    if app.accounts.loaded { Vec::new() } else { refresh(app) }
+}
+
 fn refresh(app: &mut App) -> Vec<Effect> {
     app.accounts.loading = true;
     app.pools.loading = true;

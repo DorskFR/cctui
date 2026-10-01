@@ -453,6 +453,10 @@ pub enum AgentEvent {
         seq: Option<i64>,
     },
     ToolResult {
+        /// Absent on the wire: a result's tool name lives on the `tool_call`
+        /// that opened it, and the canonical shape `normalize.rs` serves carries
+        /// only the summary.
+        #[serde(default)]
         tool: String,
         output_summary: String,
         /// `server_tool_result` for provider-executed tools.
@@ -896,6 +900,25 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"tool_call""#));
         assert!(json.contains(r#""tool":"Bash""#));
+    }
+
+    /// The shape the server actually serves for a persisted result, verbatim
+    /// from `GET /sessions/{id}/conversation` in production: no `tool` key.
+    #[test]
+    fn a_served_tool_result_decodes_without_a_tool_name() {
+        let wire = r#"{"error":false,"output_summary":"done\n\n/tmp/cctui-result.json","seq":198220567,"ts":1790839055775,"type":"tool_result"}"#;
+        let event: AgentEvent =
+            serde_json::from_str(wire).expect("a served tool_result must decode");
+        match event {
+            AgentEvent::ToolResult { tool, output_summary, error, ts, seq, .. } => {
+                assert!(tool.is_empty(), "no tool name on the wire");
+                assert!(output_summary.starts_with("done"));
+                assert!(!error);
+                assert_eq!(ts, 1_790_839_055_775);
+                assert_eq!(seq, Some(198_220_567));
+            }
+            other => panic!("decoded as {other:?}"),
+        }
     }
 
     #[test]

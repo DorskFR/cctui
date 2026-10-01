@@ -25,6 +25,11 @@ pub enum FileKind {
 #[must_use]
 pub fn classify(content_type: &str) -> FileKind {
     let base = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    // Markup that a browser would execute is shown as source, never rendered and
+    // never handed out: SVG carries script just as HTML does.
+    if MARKUP_AS_TEXT.contains(&base.as_str()) {
+        return FileKind::Text;
+    }
     if base.starts_with("image/") {
         return FileKind::Image;
     }
@@ -35,9 +40,13 @@ pub fn classify(content_type: &str) -> FileKind {
     }
 }
 
+/// Shown as source in the pager instead of being rendered or opened.
+const MARKUP_AS_TEXT: [&str; 4] =
+    ["text/html", "application/xhtml+xml", "image/svg+xml", "application/xml"];
+
 /// Types a handler would run rather than show. The bytes come from a session,
 /// so handing one to the desktop is handing it execution.
-const NEVER_EXTERNAL: [&str; 7] = [
+const NEVER_EXTERNAL: [&str; 14] = [
     "application/x-sh",
     "application/x-shellscript",
     "text/x-shellscript",
@@ -45,21 +54,59 @@ const NEVER_EXTERNAL: [&str; 7] = [
     "application/x-msdownload",
     "application/x-desktop",
     "application/vnd.microsoft.portable-executable",
+    // A browser runs script in these from a file:// origin.
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "application/java-archive",
+    "text/x-python",
+    "application/x-python-code",
+    "application/x-ms-shortcut",
 ];
 
 /// Extensions the type alone would not catch. A served `content_type` is the
 /// sender's claim; the name is what the handler will dispatch on.
-const NEVER_EXTERNAL_SUFFIX: [&str; 9] =
-    [".sh", ".bash", ".zsh", ".desktop", ".exe", ".msi", ".bat", ".cmd", ".command"];
+const NEVER_EXTERNAL_SUFFIX: [&str; 21] = [
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".desktop",
+    ".exe",
+    ".msi",
+    ".bat",
+    ".cmd",
+    ".command",
+    ".html",
+    ".htm",
+    ".xhtml",
+    ".svg",
+    ".jar",
+    ".py",
+    ".ps1",
+    ".appimage",
+    ".url",
+    ".webloc",
+    ".lnk",
+    ".scpt",
+];
+
+/// Names that mean markup whatever the served type claims.
+const MARKUP_SUFFIX: [&str; 4] = [".html", ".htm", ".xhtml", ".svg"];
 
 /// Why this file must not be handed to the desktop, or `None` to allow it.
 #[must_use]
 pub fn refuse_external_open(name: &str, content_type: &str) -> Option<String> {
     let base = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
     let lower = name.to_ascii_lowercase();
-    let runnable = NEVER_EXTERNAL.contains(&base.as_str())
-        || NEVER_EXTERNAL_SUFFIX.iter().any(|ext| lower.ends_with(ext));
-    runnable.then(|| format!("{name} is a program, not a document — refusing to open it"))
+    if !NEVER_EXTERNAL.contains(&base.as_str())
+        && !NEVER_EXTERNAL_SUFFIX.iter().any(|ext| lower.ends_with(ext))
+    {
+        return None;
+    }
+    if MARKUP_AS_TEXT.contains(&base.as_str()) || MARKUP_SUFFIX.iter().any(|e| lower.ends_with(e)) {
+        return Some(format!("{name} can run script in a browser — showing the source instead"));
+    }
+    Some(format!("{name} is a program, not a document — refusing to open it"))
 }
 
 /// Which route a read came from. A blob is the server's own store and knows
@@ -273,6 +320,48 @@ mod tests {
         assert_eq!(classify("application/json"), FileKind::Text);
         assert_eq!(classify("application/octet-stream"), FileKind::Download);
         assert_eq!(classify(""), FileKind::Download);
+    }
+
+    /// Markup a browser would execute is shown as source. SVG is `image/*` but
+    /// must not take the image path, or it renders as a broken picture and still
+    /// counts as something to hand out.
+    #[test]
+    fn markup_that_can_run_script_is_shown_as_source() {
+        assert_eq!(classify("text/html"), FileKind::Text);
+        assert_eq!(classify("text/html; charset=utf-8"), FileKind::Text);
+        assert_eq!(classify("application/xhtml+xml"), FileKind::Text);
+        assert_eq!(classify("image/svg+xml"), FileKind::Text);
+    }
+
+    /// The should-fix: `o` handed HTML and SVG to the browser, which runs their
+    /// script from a file:// origin.
+    #[test]
+    fn html_and_svg_are_never_handed_to_the_desktop() {
+        for (name, content_type) in [
+            ("report.html", "text/html"),
+            ("report.htm", "text/html"),
+            ("page.xhtml", "application/xhtml+xml"),
+            ("chart.svg", "image/svg+xml"),
+            // The served type is the sender's claim; the name is what a handler
+            // dispatches on, so either one alone is enough to refuse.
+            ("report.html", "application/octet-stream"),
+            ("chart.svg", "text/plain"),
+            ("x.bin", "text/html"),
+        ] {
+            let why = refuse_external_open(name, content_type)
+                .unwrap_or_else(|| panic!("{name} ({content_type}) must be refused"));
+            assert!(why.contains("script"), "{name}: {why}");
+        }
+    }
+
+    #[test]
+    fn the_other_runnable_types_are_refused_too() {
+        for name in ["app.jar", "run.py", "go.ps1", "tool.appimage", "link.url", "s.lnk"] {
+            assert!(
+                refuse_external_open(name, "application/octet-stream").is_some(),
+                "{name} must be refused"
+            );
+        }
     }
 
     #[test]

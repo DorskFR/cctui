@@ -210,7 +210,10 @@ pub fn go_to(app: &mut App, target: Slice) -> Vec<Effect> {
         Slice::Overview => vec![Effect::FetchSessionStats],
         Slice::Bookmarks => super::bookmarks::on_enter(app),
         Slice::Access => super::admin::on_enter(app),
-        Slice::Accounts | Slice::Machines | Slice::Sessions | Slice::Spend => Vec::new(),
+        Slice::Accounts => super::accounts::on_enter(app),
+        Slice::Machines => super::machines::on_enter(app),
+        Slice::Spend => super::spend::on_enter(app),
+        Slice::Sessions => Vec::new(),
     }
 }
 
@@ -295,6 +298,39 @@ mod tests {
         assert_eq!(app.view(), View::Bookmarks);
         dispatch(&mut app, SliceAction::Switch(1));
         assert_eq!(app.view(), View::SessionList);
+    }
+
+    /// A tab number is the same door as the slice's own key: both must load it,
+    /// or the view sits on "loading…" for ever.
+    #[test]
+    fn entering_a_slice_by_number_loads_it_like_its_own_key() {
+        for (number, slice) in [(4, Slice::Machines), (6, Slice::Accounts), (8, Slice::Spend)] {
+            let mut by_number = app();
+            let numbered = dispatch(&mut by_number, SliceAction::Switch(number));
+            assert_eq!(by_number.slice, slice, "tab {number} must reach {slice:?}");
+            assert!(
+                !numbered.is_empty(),
+                "tab {number} entered {slice:?} without asking for its data"
+            );
+
+            let mut by_key = app();
+            let keyed = super::go_to(&mut by_key, slice);
+            assert_eq!(
+                numbered.len(),
+                keyed.len(),
+                "tab {number} and {slice:?}'s own key must ask for the same work"
+            );
+        }
+    }
+
+    /// A second visit must not refetch what is already loaded.
+    #[test]
+    fn re_entering_a_loaded_slice_asks_for_nothing() {
+        let mut app = app();
+        assert!(!super::go_to(&mut app, Slice::Machines).is_empty());
+        app.machines.loaded = true;
+        super::go_to(&mut app, Slice::Sessions);
+        assert!(super::go_to(&mut app, Slice::Machines).is_empty());
     }
 
     #[test]

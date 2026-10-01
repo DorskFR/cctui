@@ -44,22 +44,62 @@ const HISTORY_BUDGET_BYTES: usize = 64 * 1024;
 /// remainder would render as the sender's own prose in the target's transcript.
 const ENVELOPE_CLOSE: &str = "</cross-session-message>";
 
-/// Sliding-window counter, one window per key.
+/// Sliding-window counter, one window per key. The second field counts admits
+/// so sweeps can be amortised over them.
 #[derive(Default)]
-pub struct Limiter(DashMap<String, VecDeque<Instant>>);
+pub struct Limiter(DashMap<String, VecDeque<Instant>>, std::sync::atomic::AtomicU64);
+
+/// Keys this map may hold before a sweep is forced. Device-login keys come from
+/// unauthenticated callers, so the key space is attacker-influenced and the map
+/// has to be bounded by something other than good behaviour.
+const MAX_KEYS: usize = 10_000;
+
+/// How many admits pass between opportunistic sweeps. There is no timer thread:
+/// the map only grows when it is used, so cleaning on use is enough.
+const SWEEP_EVERY: u64 = 256;
 
 impl Limiter {
     /// Record a call and report whether it is within `max` per [`WINDOW`].
     pub fn admit(&self, key: &str, max: usize, now: Instant) -> bool {
-        let mut hits = self.0.entry(key.to_owned()).or_default();
-        while hits.front().is_some_and(|t| now.duration_since(*t) >= WINDOW) {
-            hits.pop_front();
+        let admitted = {
+            let mut hits = self.0.entry(key.to_owned()).or_default();
+            while hits.front().is_some_and(|t| now.duration_since(*t) >= WINDOW) {
+                hits.pop_front();
+            }
+            if hits.len() >= max {
+                false
+            } else {
+                hits.push_back(now);
+                true
+            }
+        };
+        self.maybe_sweep(now);
+        admitted
+    }
+
+    /// Drop every key whose window has fully elapsed: an idle key carries no
+    /// information, so keeping it only leaks memory.
+    pub fn sweep(&self, now: Instant) {
+        self.0.retain(|_, hits| hits.back().is_some_and(|t| now.duration_since(*t) < WINDOW));
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn maybe_sweep(&self, now: Instant) {
+        let due =
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(SWEEP_EVERY);
+        if !due && self.0.len() <= MAX_KEYS {
+            return;
         }
-        if hits.len() >= max {
-            return false;
+        self.sweep(now);
+        // A flood inside one window can outrun the sweep; the counters are a
+        // throttle, not an audit, so dropping them beats unbounded growth.
+        if self.0.len() > MAX_KEYS {
+            self.0.clear();
         }
-        hits.push_back(now);
-        true
     }
 }
 

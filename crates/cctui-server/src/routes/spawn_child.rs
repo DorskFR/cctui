@@ -389,22 +389,31 @@ async fn child_account_env(
     };
 
     let mut first_error = None;
+    let mut elected_pool = None;
+    let mut election_refusal = None;
     for account in [Some(parent_account.clone()), None] {
-        let account = match account {
-            Some(a) => a,
-            // Second pass: the parent's own account could not serve the family.
-            None => match elect_family_account(state, parent, family, wanted.as_deref()).await {
+        // The second pass runs only when the parent's own account could not
+        // serve the family.
+        let account = if let Some(a) = account {
+            a
+        } else {
+            let (elected, pool, refusal) =
+                elect_family_account(state, parent, family, wanted.as_deref()).await;
+            election_refusal = refusal;
+            match elected {
                 Some(elected) if elected != parent_account => {
                     tracing::info!(
                         parent = %parent.session_id, child = %child_key,
                         from = %parent_account, to = %elected, family = family.label(),
+                        pool = ?pool,
                         "spawn-child: parent's account carries no credential in the child's \
                          family, electing one that does"
                     );
+                    elected_pool = pool;
                     elected
                 }
                 _ => break,
-            },
+            }
         };
 
         let mut model = wanted.clone();
@@ -428,7 +437,12 @@ async fn child_account_env(
         )
         .await
         {
-            Ok(env) => return Ok((env, model)),
+            Ok(env) => {
+                if let Some(pool_id) = elected_pool {
+                    crate::account_resolve::stamp_pool(state, child_key, pool_id).await;
+                }
+                return Ok((env, model));
+            }
             // Only a missing provider is worth a second account: a vanished
             // account or a DB fault would fail the same way on any of them.
             Err(e @ crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(_)) => {
@@ -445,11 +459,21 @@ async fn child_account_env(
         Some(crate::routes::gateway::MintSessionEnvError::NoAccount) => {
             "the parent's account no longer exists".to_owned()
         }
-        Some(crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f)) => format!(
-            "no account you can use carries a {} provider (the parent's does not, \
-             and no other candidate was found)",
-            f.label()
-        ),
+        // The election's own refusal is the useful one: "every candidate is out
+        // of allocation" sends the operator somewhere very different from
+        // "there is no such credential".
+        Some(crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f)) => {
+            election_refusal.map_or_else(
+                || {
+                    format!(
+                        "no account you own carries a {} provider (the parent's does not, \
+                         and no other candidate was found)",
+                        f.label()
+                    )
+                },
+                |why| format!("no {} account could be elected: {why}", f.label()),
+            )
+        }
         Some(crate::routes::gateway::MintSessionEnvError::Db(err)) => {
             tracing::error!(parent = %parent.session_id, "spawn-child mint failed: {err}");
             crate::error::DB_ERROR.to_owned()
@@ -471,16 +495,64 @@ async fn elect_family_account(
     parent: &Parent,
     family: crate::routes::gateway::Family,
     model: Option<&str>,
-) -> Option<String> {
-    crate::routes::spawn::auto_account_name(state, parent.user_id, family, model)
+) -> (Option<String>, Option<Uuid>, Option<String>) {
+    // A pool-bound parent never escapes its pool: the member set is the
+    // operator's explicit statement of what this tree may spend.
+    if let Some(pool_id) = parent_pool_id(state, &parent.session_id).await {
+        return match crate::account_resolve::resolve_pool_by_id(
+            state,
+            parent.user_id,
+            family,
+            model,
+            pool_id,
+        )
         .await
-        .unwrap_or_else(|(_, e)| {
+        {
+            Ok((account, pool)) => (Some(account), Some(pool), None),
+            Err(e) => {
+                let why = match e {
+                    crate::account_resolve::ResolveError::Rejected(reason) => reason,
+                    crate::account_resolve::ResolveError::Db => crate::error::DB_ERROR.to_owned(),
+                };
+                tracing::warn!(
+                    parent = %parent.session_id, family = family.label(), %pool_id,
+                    "spawn-child: the parent's pool has no account for this family: {why}"
+                );
+                (None, None, Some(why))
+            }
+        };
+    }
+
+    match crate::routes::spawn::auto_account_name_scoped(state, parent.user_id, family, model, true)
+        .await
+    {
+        Ok(elected) => (elected, None, None),
+        Err((_, e)) => {
+            let why = e.0.error;
             tracing::warn!(
                 parent = %parent.session_id, family = family.label(),
-                "spawn-child: no fallback account for this family: {}", e.0.error
+                "spawn-child: no fallback account for this family: {why}"
             );
-            None
-        })
+            (None, None, Some(why))
+        }
+    }
+}
+
+/// The pool the parent's live gateway binding was stamped with, if any.
+async fn parent_pool_id(state: &AppState, session_id: &str) -> Option<Uuid> {
+    let row: Option<(Option<Uuid>,)> = sqlx::query_as(
+        "SELECT pool_id FROM session_tokens \
+         WHERE session_id = $1 AND revoked_at IS NULL \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(%session_id, error = %e, "reading the parent's pool failed");
+        None
+    });
+    row.and_then(|r| r.0)
 }
 
 /// The caller's capability, from the in-memory cache or the durable table it
@@ -939,6 +1011,255 @@ mod tests {
                 .await
                 .expect("child token");
         assert_eq!(bound, anthropic_provider, "same-family child left its parent's account");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// Seeds a user plus one account per `(name, provider)`, returning the
+    /// account and provider ids in order.
+    #[cfg(test)]
+    async fn seed_accounts(
+        pool: &sqlx::PgPool,
+        uid: Uuid,
+        label: &str,
+        accounts: &[(&str, &str)],
+    ) -> Vec<(Uuid, Uuid)> {
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{label}-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        let mut out = Vec::new();
+        for (name, provider) in accounts {
+            let account = Uuid::new_v4();
+            sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+                .bind(account)
+                .bind(uid)
+                .bind(format!("{name}-{account}"))
+                .execute(pool)
+                .await
+                .expect("seed account");
+            let provider_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO account_providers \
+                   (id, user_id, account_id, provider, auth_scheme, encrypted_access_token) \
+                 VALUES ($1, $2, $3, $4, 'api_key', 'x')",
+            )
+            .bind(provider_id)
+            .bind(uid)
+            .bind(account)
+            .bind(provider)
+            .execute(pool)
+            .await
+            .expect("seed provider");
+            out.push((account, provider_id));
+        }
+        out
+    }
+
+    /// DB-gated R3: an election the operator never asked for must not reach a
+    /// colleague's account and spend their allocation, even though the parent's
+    /// owner may legitimately launch on it when they name it.
+    #[tokio::test]
+    async fn an_elected_child_never_binds_an_account_only_shared_with_the_owner() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "an_elected_child_never_binds_an_account_only_shared_with_the_owner",
+        ) else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = Uuid::new_v4();
+        let colleague = Uuid::new_v4();
+        let mine = seed_accounts(&pool, uid, "owner", &[("parent-claude", "anthropic")]).await;
+        let theirs =
+            seed_accounts(&pool, colleague, "colleague", &[("their-codex", "openai")]).await;
+
+        sqlx::query(
+            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+             VALUES ('account', $1, $2)",
+        )
+        .bind(theirs[0].0)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("share the colleague's account with the parent's owner");
+
+        let parent_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("th-{parent_id}"))
+        .bind(&parent_id)
+        .bind(mine[0].1)
+        .execute(&pool)
+        .await
+        .expect("bind parent");
+
+        let state = crate::state::AppState::for_test(pool.clone());
+        let parent = Parent {
+            session_id: parent_id.clone(),
+            machine_uuid: Uuid::new_v4(),
+            working_dir: None,
+            user_id: uid,
+            permission_mode: None,
+        };
+
+        let child_key = Uuid::new_v4().to_string();
+        let refused = child_account_env(
+            &state,
+            &parent,
+            crate::routes::gateway::Family::Openai,
+            None,
+            &child_key,
+        )
+        .await;
+        assert!(refused.is_err(), "the child was provisioned off a colleague's account");
+        let bound: Option<Uuid> =
+            sqlx::query_scalar("SELECT account_id FROM session_tokens WHERE session_id = $1")
+                .bind(&child_key)
+                .fetch_optional(&pool)
+                .await
+                .expect("query child token");
+        assert_eq!(bound, None, "a token was minted on someone else's credential");
+
+        // The same shape with an openai account the owner OWNS does provision,
+        // so the refusal above is about ownership and not about the wiring.
+        let own = seed_accounts(&pool, Uuid::new_v4(), "ignored", &[]).await;
+        drop(own);
+        let account = Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(account)
+            .bind(uid)
+            .bind(format!("my-codex-{account}"))
+            .execute(&pool)
+            .await
+            .expect("seed own openai account");
+        let own_openai = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO account_providers \
+               (id, user_id, account_id, provider, auth_scheme, encrypted_access_token) \
+             VALUES ($1, $2, $3, 'openai', 'api_key', 'x')",
+        )
+        .bind(own_openai)
+        .bind(uid)
+        .bind(account)
+        .execute(&pool)
+        .await
+        .expect("seed own provider");
+
+        let ok_key = Uuid::new_v4().to_string();
+        child_account_env(&state, &parent, crate::routes::gateway::Family::Openai, None, &ok_key)
+            .await
+            .expect("a child on the owner's own openai account");
+        let bound: Uuid =
+            sqlx::query_scalar("SELECT account_id FROM session_tokens WHERE session_id = $1")
+                .bind(&ok_key)
+                .fetch_one(&pool)
+                .await
+                .expect("child token");
+        assert_eq!(bound, own_openai, "the owner's own account should have been elected");
+
+        for u in [uid, colleague] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.ok();
+        }
+    }
+
+    /// DB-gated R3: a pool is an explicit statement of what the tree may spend,
+    /// so a child elected for another family stays inside it and is stamped
+    /// with it.
+    #[tokio::test]
+    async fn an_elected_child_stays_inside_the_parents_pool() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("an_elected_child_stays_inside_the_parents_pool")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = Uuid::new_v4();
+        let seeded = seed_accounts(
+            &pool,
+            uid,
+            "pooled",
+            &[
+                ("parent-claude", "anthropic"),
+                ("in-pool-codex", "openai"),
+                ("outside-codex", "openai"),
+            ],
+        )
+        .await;
+        let (parent_account, anthropic_provider) = seeded[0];
+        let (in_pool_account, in_pool_provider) = seeded[1];
+
+        let pool_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO account_pools (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(pool_id)
+            .bind(uid)
+            .bind(format!("team-{pool_id}"))
+            .execute(&pool)
+            .await
+            .expect("seed pool");
+        for account in [parent_account, in_pool_account] {
+            sqlx::query("INSERT INTO account_pool_members (pool_id, account_id) VALUES ($1, $2)")
+                .bind(pool_id)
+                .bind(account)
+                .execute(&pool)
+                .await
+                .expect("seed pool member");
+        }
+
+        let parent_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id, pool_id) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(format!("th-{parent_id}"))
+        .bind(&parent_id)
+        .bind(anthropic_provider)
+        .bind(pool_id)
+        .execute(&pool)
+        .await
+        .expect("bind parent to its pool");
+
+        let state = crate::state::AppState::for_test(pool.clone());
+        let parent = Parent {
+            session_id: parent_id.clone(),
+            machine_uuid: Uuid::new_v4(),
+            working_dir: None,
+            user_id: uid,
+            permission_mode: None,
+        };
+
+        let child_key = Uuid::new_v4().to_string();
+        child_account_env(
+            &state,
+            &parent,
+            crate::routes::gateway::Family::Openai,
+            None,
+            &child_key,
+        )
+        .await
+        .expect("a codex child from the pool");
+
+        let (bound, stamped): (Uuid, Option<Uuid>) =
+            sqlx::query_as("SELECT account_id, pool_id FROM session_tokens WHERE session_id = $1")
+                .bind(&child_key)
+                .fetch_one(&pool)
+                .await
+                .expect("child token");
+        assert_eq!(bound, in_pool_provider, "the child left its parent's pool");
+        assert_eq!(stamped, Some(pool_id), "the child was not stamped with the pool");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }

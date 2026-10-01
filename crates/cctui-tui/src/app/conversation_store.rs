@@ -16,6 +16,12 @@ pub const PAGE_LIMIT: i64 = 200;
 /// not recoverable.
 pub const MAX_STORES: usize = 24;
 
+/// How many entries one transcript keeps. The subscribed store grows for as
+/// long as the session streams, so the oldest rows are dropped once past this:
+/// they are refetchable by older paging, which is what the user scrolling up
+/// would do anyway.
+pub const MAX_ENTRIES: usize = 5_000;
+
 /// A `before`/`after`/`limit` window over one session's transcript.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PageRequest {
@@ -90,6 +96,11 @@ pub struct ConversationStore {
     loaded: bool,
     has_more_older: bool,
     loading_older: bool,
+    /// Bumped whenever held history is dropped. An older page claimed under an
+    /// earlier value is stale: its rows belong below a window that is gone.
+    reset_epoch: u64,
+    /// `reset_epoch` when the in-flight older page was claimed.
+    older_claim: Option<u64>,
     /// Value of the app's access counter when this store was last read or
     /// written: the eviction order.
     pub touched: u64,
@@ -195,6 +206,7 @@ impl ConversationStore {
         }
         let before = self.oldest_seq()?;
         self.loading_older = true;
+        self.older_claim = Some(self.reset_epoch);
         Some(PageRequest::before(before, PAGE_LIMIT))
     }
 
@@ -207,8 +219,15 @@ impl ConversationStore {
         etag: Option<String>,
         has_more: bool,
     ) -> Merge {
-        if kind == PageKind::Latest && self.disjoint_from_latest(&rows) {
-            self.drop_history();
+        if kind == PageKind::Older && self.older_page_is_stale() {
+            self.finish_page(kind, etag, has_more);
+            return Merge::default();
+        }
+        if kind == PageKind::Latest
+            && let Some(page_oldest) = rows.iter().map(|(seq, _)| *seq).min()
+            && !self.joins_onto_held_history(page_oldest)
+        {
+            self.drop_history_below(page_oldest);
         }
         let epoch_before = self.epoch;
         let mut inserted = 0;
@@ -221,22 +240,65 @@ impl ConversationStore {
         Merge { inserted, reordered: self.epoch != epoch_before }
     }
 
-    /// Whether a newest page starts above everything held, leaving seqs between
-    /// the two that no fetch would ever ask for: older paging walks back from
-    /// the *oldest* seq held, so a hole below it is unreachable.
-    fn disjoint_from_latest(&self, rows: &[(i64, ConversationLine)]) -> bool {
-        let Some(held_newest) = self.newest_seq() else { return false };
-        let Some(page_oldest) = rows.iter().map(|(seq, _)| *seq).min() else { return false };
-        page_oldest > held_newest + 1
+    /// The seq a newest page has to join onto: whether `page_oldest - 1` is
+    /// held decides it, because older paging walks back from the *oldest* seq
+    /// held and would step straight over anything missing above it.
+    ///
+    /// Judged against every held seq, not the newest: a live event above the
+    /// gap (a background session that kept streaming, one event landing between
+    /// the open and the page reply) says nothing about whether the history
+    /// below the page is contiguous.
+    fn joins_onto_held_history(&self, page_oldest: i64) -> bool {
+        self.seqs.contains(&(page_oldest - 1))
     }
 
-    /// Forget the buffered transcript, keeping the live-event bookkeeping. The
-    /// rows are all refetchable; a hole is not.
-    fn drop_history(&mut self) {
-        self.entries.clear();
-        self.seqs.clear();
+    /// Drop the held rows a newest page cannot be paged back to, keeping the
+    /// ones at or above its oldest seq — those are the live events that arrived
+    /// after the page was taken, and they are still reachable.
+    ///
+    /// The dropped rows are all refetchable, by exactly the older paging that
+    /// now starts at `floor`; a hole is not.
+    fn drop_history_below(&mut self, floor: i64) {
+        let before = self.entries.len();
+        self.entries.retain(|e| !e.sequenced || e.seq >= floor);
+        self.seqs.retain(|seq| *seq >= floor);
+        if self.entries.len() == before {
+            return;
+        }
         self.epoch += 1;
         self.has_more_older = false;
+        // An older page claimed before this reset would land back under the new
+        // window and re-open the hole, so its claim is void.
+        self.reset_epoch += 1;
+        self.loading_older = false;
+    }
+
+    /// Whether the older page now arriving was claimed before history was
+    /// dropped. Its rows sit below a window that no longer exists, so merging
+    /// them would re-open the hole the drop closed. A page nothing claimed
+    /// (`None`) is merged: only a claim can go stale.
+    fn older_page_is_stale(&self) -> bool {
+        self.older_claim.is_some_and(|claimed| claimed != self.reset_epoch)
+    }
+
+    /// Drop the oldest entries once the transcript is over `MAX_ENTRIES`,
+    /// returning how many went. The caller owns the viewport, so it has to
+    /// shift a cursor that addresses entries by index.
+    pub fn trim_to_cap(&mut self) -> usize {
+        if self.entries.len() <= MAX_ENTRIES {
+            return 0;
+        }
+        let over = self.entries.len() - MAX_ENTRIES;
+        for entry in self.entries.drain(..over) {
+            if entry.sequenced {
+                self.seqs.remove(&entry.seq);
+            }
+        }
+        self.epoch += 1;
+        // There is demonstrably more older than is held now, and paging back
+        // re-fetches exactly what was dropped.
+        self.has_more_older = true;
+        over
     }
 
     /// A 304: the page is unchanged, so only the in-flight bookkeeping moves.
@@ -262,6 +324,7 @@ impl ConversationStore {
             }
             PageKind::Older => {
                 self.loading_older = false;
+                self.older_claim = None;
                 self.has_more_older = has_more;
             }
             PageKind::Gap => self.loaded = true,
@@ -403,6 +466,101 @@ mod tests {
             Some(PageRequest::before(501, PAGE_LIMIT)),
             "older paging walks back from the new page, so 13..500 is reachable"
         );
+    }
+
+    /// R6: the busy session. A live event above the gap used to make the page
+    /// look contiguous, so the hole below it survived every refetch.
+    #[test]
+    fn a_live_row_above_the_gap_does_not_make_a_stale_page_look_contiguous() {
+        let mut store = loaded();
+        // The session kept streaming in the background and one event landed
+        // live, above everything the next page will return.
+        store.push_live(Some(701), line("live while away"));
+        assert_eq!(store.newest_seq(), Some(701));
+
+        store.merge_page(PageKind::Latest, rows(&[(521, "p1"), (522, "p2")]), None, true);
+
+        assert_eq!(
+            texts(&store),
+            ["p1", "p2", "live while away"],
+            "the unreachable history goes; the live row above the page stays"
+        );
+        assert_eq!(
+            store.begin_older(),
+            Some(PageRequest::before(521, PAGE_LIMIT)),
+            "older paging now walks back from the page, so 13..520 is reachable"
+        );
+    }
+
+    /// The same shape, with the live row arriving between the open and the page
+    /// reply on a conversation whose history is still contiguous with it.
+    #[test]
+    fn a_live_row_does_not_trigger_a_reset_when_the_page_joins_the_history() {
+        let mut store = loaded();
+        store.push_live(Some(13), line("live"));
+        store.merge_page(PageKind::Latest, rows(&[(11, "b"), (12, "c"), (13, "live")]), None, true);
+        assert_eq!(texts(&store), ["a", "b", "c", "live"], "nothing is dropped");
+    }
+
+    /// R6, second half: the older page claimed before the reset must not land
+    /// back under the new window.
+    #[test]
+    fn an_older_page_claimed_before_a_reset_is_dropped() {
+        let mut store = loaded();
+        let claimed = store.begin_older().expect("a claim");
+        assert_eq!(claimed, PageRequest::before(10, PAGE_LIMIT));
+
+        store.merge_page(PageKind::Latest, rows(&[(501, "x")]), None, true);
+        // The reply to the pre-reset claim arrives now.
+        store.merge_page(PageKind::Older, rows(&[(8, "stale"), (9, "stale-2")]), None, true);
+
+        assert_eq!(texts(&store), ["x"], "the stale rows are refused");
+        assert_eq!(
+            store.begin_older(),
+            Some(PageRequest::before(501, PAGE_LIMIT)),
+            "and the window is still the new one"
+        );
+    }
+
+    #[test]
+    fn an_older_page_claimed_after_a_reset_still_lands() {
+        let mut store = loaded();
+        store.merge_page(PageKind::Latest, rows(&[(501, "x")]), None, true);
+        store.begin_older().expect("a fresh claim");
+        store.merge_page(PageKind::Older, rows(&[(499, "older"), (500, "older-2")]), None, false);
+        assert_eq!(texts(&store), ["older", "older-2", "x"]);
+    }
+
+    #[test]
+    fn a_transcript_is_capped_and_what_was_dropped_can_be_paged_back() {
+        let mut store = ConversationStore::new();
+        store.merge_page(PageKind::Latest, rows(&[(1, "first")]), None, false);
+        assert!(!store.has_more_older, "the whole conversation is held");
+
+        let cap = i64::try_from(super::MAX_ENTRIES).expect("the cap fits");
+        for seq in 2..=(cap + 101) {
+            store.push_live(Some(seq), line("chatter"));
+        }
+        let trimmed = store.trim_to_cap();
+
+        assert_eq!(trimmed, 101, "only the overflow goes");
+        assert_eq!(store.len(), super::MAX_ENTRIES);
+        assert_eq!(store.oldest_seq(), Some(102), "the oldest rows were dropped");
+        assert!(store.has_more_older, "and paging back can fetch them again");
+
+        // The dropped seqs must not be deduped away when they are refetched.
+        store.begin_older().expect("a claim");
+        let merge =
+            store.merge_page(PageKind::Older, rows(&[(100, "back"), (101, "back-2")]), None, true);
+        assert_eq!(merge.inserted, 2, "a refetched row is not mistaken for a duplicate");
+        assert_eq!(store.oldest_seq(), Some(100));
+    }
+
+    #[test]
+    fn trimming_is_a_no_op_under_the_cap() {
+        let mut store = loaded();
+        assert_eq!(store.trim_to_cap(), 0);
+        assert_eq!(store.len(), 3);
     }
 
     #[test]

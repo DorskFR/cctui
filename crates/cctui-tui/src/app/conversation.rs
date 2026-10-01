@@ -116,10 +116,9 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
 /// Move the whole view to another session: leave whatever is subscribed, put
 /// the selection on the target and open it.
 pub fn switch_to(app: &mut App, session_id: String) -> Vec<Effect> {
-    let Some(index) = app.flattened_sessions().iter().position(|s| s.id == session_id) else {
+    if !app.select_session_id(&session_id) {
         return Vec::new();
-    };
-    app.selected_index = index;
+    }
     let mut effects = leave(app);
     effects.extend(open(app, session_id));
     effects
@@ -151,7 +150,19 @@ pub fn load_older(app: &mut App) -> Vec<Effect> {
 }
 
 pub fn stream(app: &mut App, session_id: &str, seq: Option<i64>, line: ConversationLine) {
-    app.conversation_mut(session_id).push_live(seq, line);
+    let trimmed = {
+        let store = app.conversation_mut(session_id);
+        store.push_live(seq, line);
+        store.trim_to_cap()
+    };
+    // Entries are addressed by index, so dropping the oldest moves the cursor
+    // of whatever is on screen the same way a prepend does, in reverse.
+    if trimmed > 0 && app.subscribed.as_deref() == Some(session_id) {
+        app.pending_prepend = true;
+        if let Some(cursor) = app.line_cursor.as_mut() {
+            *cursor = cursor.saturating_sub(trimmed);
+        }
+    }
     evict_cold_stores(app);
 }
 
@@ -476,6 +487,36 @@ mod tests {
 
         open(&mut app, "s-b".to_owned());
         assert!(app.pending_seq_anchor.is_none(), "an anchor for elsewhere must not fire here");
+    }
+
+    /// F12 residual: the subscribed store is capped too, and the cursor follows
+    /// the lines it pointed at rather than the indices they used to have.
+    #[test]
+    fn capping_the_open_transcript_carries_the_cursor_with_its_line() {
+        use super::super::conversation_store::MAX_ENTRIES;
+
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(1, "oldest")], false);
+        let cap = i64::try_from(MAX_ENTRIES).expect("the cap fits");
+        for seq in 2..=cap {
+            super::stream(&mut app, "s-a", Some(seq), line("chatter"));
+        }
+        line_select(&mut app);
+        let before = app.line_cursor.expect("a cursor");
+        assert_eq!(app.conversation_mut("s-a").entries().len(), MAX_ENTRIES);
+
+        super::stream(&mut app, "s-a", Some(cap + 1), line("one too many"));
+
+        let store = app.conversation_mut("s-a");
+        assert_eq!(store.entries().len(), MAX_ENTRIES, "the transcript is bounded");
+        assert_eq!(store.oldest_seq(), Some(2), "the oldest line went");
+        assert_eq!(
+            app.line_cursor,
+            Some(before - 1),
+            "the cursor moved down one with the line it was on"
+        );
+        assert!(app.pending_prepend, "and the viewport is re-anchored");
     }
 
     #[test]

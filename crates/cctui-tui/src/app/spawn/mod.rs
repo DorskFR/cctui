@@ -558,10 +558,6 @@ impl SpawnForm {
     /// Writes a request back onto the form, for a draft being edited, a session
     /// being cloned or a macro launched as a session. Fields the core does not
     /// know are left to whichever section owns them.
-    ///
-    /// Nothing drives this at runtime yet: the draft, profile and macro paths
-    /// stage a request in `spawn_drafts` without reopening the dialog from it.
-    #[allow(dead_code)]
     pub fn prefill(&mut self, request: &SpawnRequest) {
         let f = &mut self.fields;
         f.machine_id.clone_from(&request.machine_id);
@@ -593,26 +589,11 @@ impl SpawnForm {
     }
 }
 
-/// The request the open form would send. Q3's autosave reads this on a debounce.
-#[allow(dead_code)]
+/// The request the open form would send. The draft autosave reads it on a
+/// debounce.
 #[must_use]
 pub fn form_snapshot(app: &super::state::App) -> Option<SpawnRequest> {
     app.spawn.as_ref().map(SpawnForm::request)
-}
-
-/// Opens the dialog seeded from a request: a draft being edited, a session
-/// cloned, or a macro run as a session. Published for Q3.
-#[allow(dead_code)]
-pub fn open_prefilled(app: &mut super::state::App, request: &SpawnRequest) -> Vec<Effect> {
-    let mut form = SpawnForm::new();
-    form.prefill(request);
-    app.spawn = Some(form);
-    app.router.push(super::state::View::Spawn);
-    app.spawn
-        .as_mut()
-        .and_then(SpawnForm::profiles_mut)
-        .map(crate::app::profiles::ProfileSection::on_open)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -885,7 +866,10 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
         SpawnAction::Close => {
             app.spawn = None;
             app.router.pop();
-            Vec::new()
+            // The draft id belongs to the dialog instance: left behind, the next
+            // spawn would autosave over this one's row and then delete it.
+            app.spawn_drafts.editing = None;
+            vec![Effect::CancelSpawnAutosave]
         }
         SpawnAction::NextField => {
             // On the Dir row, Tab completes the path first and only moves on
@@ -1104,6 +1088,7 @@ fn launched(
         app,
         super::deeplink::Startup { open: landing, ..Default::default() },
     );
+    effects.push(Effect::CancelSpawnAutosave);
     if let Some(session_id) = superseded {
         effects.push(Effect::DiscardDraftSession { session_id });
     }
@@ -1112,22 +1097,34 @@ fn launched(
 
 fn open(app: &mut super::state::App) -> Vec<Effect> {
     use super::state::View;
-    if app.view() != View::SessionList {
+    // A prefilled open is a deliberate act from a row or the macro picker, so it
+    // comes back to the list first; a bare open only answers from the list.
+    if app.spawn_drafts.prefill.is_some() {
+        app.router.reset(View::SessionList);
+    } else if app.view() != View::SessionList {
         return Vec::new();
     }
     let mut form = SpawnForm::new();
-    // Seeded from the row in front of you: the machine and checkout you were
-    // just looking at are nearly always the ones you want.
-    if let Some(session) = app.selected_session() {
-        form.fields.machine_id.clone_from(&session.machine_id);
-        form.fields.working_dir.clone_from(&session.working_dir);
+    // An `E`/`N`/macro open seeds the form from a stored request and keeps the
+    // draft row it came from; any other open is a new draft, so it must not
+    // inherit the last dialog's row.
+    if let Some(request) = app.spawn_drafts.prefill.take() {
+        form.prefill(&request);
+    } else {
+        app.spawn_drafts.editing = None;
+        // Seeded from the row in front of you: the machine and checkout you
+        // were just looking at are nearly always the ones you want.
+        if let Some(session) = app.selected_session() {
+            form.fields.machine_id.clone_from(&session.machine_id);
+            form.fields.working_dir.clone_from(&session.working_dir);
+        }
+        if let Some(entry) = app.spawn_memory.get(&form.memory_key()) {
+            form.apply_memory(&entry.clone());
+        }
+        // The labels the last spawn carried; the labels section drops any
+        // the catalog has since lost.
+        form.fields.labels.clone_from(&app.ui.last_spawn_labels);
     }
-    if let Some(entry) = app.spawn_memory.get(&form.memory_key()) {
-        form.apply_memory(&entry.clone());
-    }
-    // The labels the last spawn carried; the labels section drops any the
-    // catalog has since lost.
-    form.fields.labels.clone_from(&app.ui.last_spawn_labels);
     app.spawn_data.labels.clone_from(&app.labels.all);
     for section in &mut form.sections {
         section.receive(&app.spawn_data);
@@ -1241,6 +1238,148 @@ mod reduce_tests {
         app.sessions = vec![session("s-a", "alpha", "active", "working")];
         app.update_aggregates();
         app
+    }
+
+    /// `E` on a draft, `N` on a session and a macro run all seed the dialog
+    /// through `spawn_drafts.prefill`; these pin that the dialog really is
+    /// filled, not merely that the request was stored.
+    mod seeded_entry_points {
+        use serde_json::json;
+
+        use super::{App, View, session};
+        use crate::app::spawn_drafts::SpawnDraftAction;
+
+        fn act(app: &mut App, action: SpawnDraftAction) -> Vec<crate::app::action::Effect> {
+            crate::app::reduce(app, crate::app::Action::SpawnDrafts(action))
+        }
+
+        fn drafts_app(rows: Vec<cctui_proto::api::SessionListItem>) -> App {
+            let mut app = App::new();
+            app.sessions = rows;
+            if !app.list_shape.sections.has(crate::app::list_view::Section::Drafts) {
+                app.list_shape.sections.toggle(crate::app::list_view::Section::Drafts);
+            }
+            app.update_aggregates();
+            app
+        }
+
+        fn draft_row(id: &str, draft: &serde_json::Value) -> cctui_proto::api::SessionListItem {
+            let mut row = session(id, "alpha", "draft", "working");
+            row.status = cctui_proto::models::SessionStatus::Draft;
+            row.metadata = json!({ "draft": draft });
+            row
+        }
+
+        #[test]
+        fn editing_a_draft_opens_the_dialog_filled_from_its_payload() {
+            let mut app = drafts_app(vec![draft_row(
+                "d-1",
+                &json!({
+                    "machine_id": "orion",
+                    "working_dir": "/work/app",
+                    "prompt": "finish the migration",
+                    "adapter_id": "codex",
+                    "model": "gpt-5.6-sol",
+                    "label_ids": ["infra"],
+                }),
+            )]);
+
+            act(&mut app, SpawnDraftAction::Edit);
+
+            assert_eq!(app.view(), View::Spawn, "edit opens the dialog");
+            let form = app.spawn.as_ref().expect("a form");
+            assert_eq!(form.fields.machine_id, "orion");
+            assert_eq!(form.fields.working_dir, "/work/app");
+            assert_eq!(form.fields.adapter_id, "codex");
+            assert_eq!(form.fields.model_codex, "gpt-5.6-sol");
+            assert_eq!(form.fields.prompt, "finish the migration");
+            assert_eq!(form.fields.labels, ["infra"]);
+            assert_eq!(
+                app.spawn_drafts.editing.as_deref(),
+                Some("d-1"),
+                "the dialog keeps the row it was opened from"
+            );
+        }
+
+        /// The draft the dialog adopted is the row the autosave writes back to,
+        /// so editing and relaunching replaces it instead of leaving two.
+        #[test]
+        fn editing_a_draft_then_saving_replaces_that_row() {
+            let mut app = drafts_app(vec![draft_row(
+                "d-1",
+                &json!({ "machine_id": "orion", "working_dir": "/work/app" }),
+            )]);
+
+            act(&mut app, SpawnDraftAction::Edit);
+            let saves = crate::app::spawn_drafts::autosave_now(&app);
+
+            match saves.as_slice() {
+                [crate::app::action::Effect::AutosaveDraft { session_id, .. }] => {
+                    assert_eq!(
+                        session_id.as_deref(),
+                        Some("d-1"),
+                        "the save replaces the edited draft rather than minting a second"
+                    );
+                }
+                other => panic!("expected one autosave, got {} effects", other.len()),
+            }
+        }
+
+        #[test]
+        fn a_new_spawn_from_a_session_opens_the_dialog_on_its_configuration() {
+            let mut app = App::new();
+            let mut row = session("s-a", "alpha", "active", "working");
+            row.machine_id = "orion".to_owned();
+            row.working_dir = "/work/app".to_owned();
+            app.sessions = vec![row];
+            app.update_aggregates();
+
+            act(&mut app, SpawnDraftAction::NewFromConfig);
+
+            assert_eq!(app.view(), View::Spawn);
+            let form = app.spawn.as_ref().expect("a form");
+            assert_eq!(form.fields.machine_id, "orion");
+            assert_eq!(form.fields.working_dir, "/work/app");
+            assert!(
+                form.fields.prompt.is_empty(),
+                "a clone takes the configuration, not the prompt"
+            );
+            assert!(app.spawn_drafts.editing.is_none(), "a clone is a new draft, not that row");
+        }
+
+        /// A macro runs from the picker, which is not the session list, so the
+        /// open has to come back to the list rather than refuse and drop the
+        /// request it was handed.
+        #[test]
+        fn running_a_macro_opens_the_dialog_filled_from_the_picker() {
+            let mut app = App::new();
+            app.sessions = vec![session("s-a", "alpha", "active", "working")];
+            app.update_aggregates();
+            app.macros.items = vec![crate::app::macros::Macro {
+                id: "m-1".to_owned(),
+                title: "nightly".to_owned(),
+                prompt: "run the suite".to_owned(),
+                adapter: "claude-code".to_owned(),
+                machine_id: Some("orion".to_owned()),
+                working_dir: Some("/work/app".to_owned()),
+                model: Some("opus".to_owned()),
+                effort: None,
+                pool_id: None,
+                permission_mode: None,
+                confirm: false,
+            }];
+            app.macros.picker = Some(crate::app::macros::MacrosPicker::default());
+            app.router.push(View::Macros);
+
+            act(&mut app, SpawnDraftAction::RunSelectedMacro);
+
+            assert_eq!(app.view(), View::Spawn, "the picker is left for the dialog");
+            let form = app.spawn.as_ref().expect("a form");
+            assert_eq!(form.fields.machine_id, "orion");
+            assert_eq!(form.fields.working_dir, "/work/app");
+            assert_eq!(form.fields.model_claude, "opus");
+            assert_eq!(form.fields.prompt, "run the suite");
+        }
     }
 
     #[test]
@@ -1701,7 +1840,7 @@ mod reduce_tests {
 /// The section seams, exercised here because nothing else pins their shape.
 #[cfg(test)]
 mod contract_tests {
-    use super::{SpawnForm, form_snapshot, open_prefilled};
+    use super::{SpawnForm, form_snapshot};
     use crate::app::state::{App, View};
     use crate::testsupport::session;
 
@@ -1765,12 +1904,16 @@ mod contract_tests {
         assert_eq!(snapshot.machine_id, "orion");
     }
 
+    /// A stored prefill is what `E`, `N` and a macro run leave behind; opening
+    /// the dialog is what consumes it.
     #[test]
-    fn open_prefilled_opens_the_dialog_seeded_from_a_request() {
+    fn opening_with_a_prefill_seeds_the_dialog_from_that_request() {
         let mut app = App::new();
         let original = request();
-        open_prefilled(&mut app, &original);
+        app.spawn_drafts.prefill = Some(Box::new(request()));
+        let _ = super::reduce(&mut app, super::SpawnAction::Open);
         assert_eq!(app.view(), View::Spawn);
+        assert!(app.spawn_drafts.prefill.is_none(), "it is consumed, not replayed");
         let form = app.spawn.as_ref().expect("a form");
         assert_eq!(form.fields.machine_id, "cyberia");
         assert_eq!(json(&form_snapshot(&app).expect("a snapshot")), json(&original));

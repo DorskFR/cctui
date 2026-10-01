@@ -375,6 +375,36 @@ pub fn sort_sessions(rows: &[SessionListItem], sort: Sort, dir: SortDir) -> Vec<
     refs.into_iter().cloned().collect()
 }
 
+/// A `sessionList` key this view owns, so a write can name just the one that
+/// changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeKey {
+    Section,
+    Sort,
+    SortDir,
+    GroupBy,
+    ColorBy,
+}
+
+impl ShapeKey {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Section => "section",
+            Self::Sort => "sort",
+            Self::SortDir => "sortDir",
+            Self::GroupBy => "groupBy",
+            Self::ColorBy => "colorBy",
+        }
+    }
+}
+
+/// Every key this view owns. Only a full round trip wants all of them: a
+/// write names the keys the user changed.
+#[cfg(test)]
+pub const SHAPE_KEYS: [ShapeKey; 5] =
+    [ShapeKey::Section, ShapeKey::Sort, ShapeKey::SortDir, ShapeKey::GroupBy, ShapeKey::ColorBy];
+
 /// Everything the list's shape is made of, restored from the server settings at
 /// startup and written back on every change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,17 +457,37 @@ impl ListShape {
         shape
     }
 
-    /// The `sessionList` patch to merge into the settings blob. Only the keys
-    /// this view owns: the blob also carries webui-only knobs.
+    /// This key's current value, as the `sessionList` blob stores it.
+    #[must_use]
+    pub fn key_value(&self, key: ShapeKey) -> serde_json::Value {
+        let text = match key {
+            ShapeKey::Section => self.sections.serialize(),
+            ShapeKey::Sort => self.sort.as_str().to_owned(),
+            ShapeKey::SortDir => self.sort_dir.as_str().to_owned(),
+            ShapeKey::GroupBy => self.group_by.as_str().to_owned(),
+            ShapeKey::ColorBy => self.color_by.as_str().to_owned(),
+        };
+        serde_json::Value::String(text)
+    }
+
+    /// The `sessionList` patch for exactly the keys that changed.
+    ///
+    /// A write must not name a key the user did not touch: the value here came
+    /// from a read taken at startup, so re-sending it would revert whatever the
+    /// web UI stored for that key since.
+    #[must_use]
+    pub fn settings_patch_for(&self, keys: &[ShapeKey]) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for key in keys {
+            map.insert(key.as_str().to_owned(), self.key_value(*key));
+        }
+        serde_json::Value::Object(map)
+    }
+
+    #[cfg(test)]
     #[must_use]
     pub fn settings_patch(&self) -> serde_json::Value {
-        serde_json::json!({
-            "section": self.sections.serialize(),
-            "sort": self.sort.as_str(),
-            "sortDir": self.sort_dir.as_str(),
-            "groupBy": self.group_by.as_str(),
-            "colorBy": self.color_by.as_str(),
-        })
+        self.settings_patch_for(&SHAPE_KEYS)
     }
 
     /// `sort: activity ↓  group: machine` for the status line.

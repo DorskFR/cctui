@@ -830,6 +830,37 @@ fn terminal_pane() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+/// The header names the machine and the project the way the info panel does:
+/// an id is a fallback, never the label.
+#[test]
+fn the_conversation_header_names_the_machine_not_its_id() {
+    let mut app = app_in_conversation();
+    let id = selected(&app);
+    let row = session_mut(&mut app, &id);
+    row.machine_id = "m-7f3a2b".to_owned();
+    row.machine_name = Some("orion".to_owned());
+    let screen = render_screen(&mut app);
+    let header = screen.lines().next().unwrap_or_default().to_owned();
+    assert!(header.contains("on orion"), "{header}");
+    assert!(!header.contains("m-7f3a2b"), "the raw id must not be the label: {header}");
+}
+
+/// A session whose metadata carries no project name still says where it works.
+#[test]
+fn the_conversation_header_falls_back_to_the_working_directory() {
+    let mut app = app_in_conversation();
+    let id = selected(&app);
+    let row = session_mut(&mut app, &id);
+    if let Some(map) = row.metadata.as_object_mut() {
+        map.remove("project_name");
+    }
+    row.working_dir = "/work/ledger-app".to_owned();
+    let screen = render_screen(&mut app);
+    let header = screen.lines().next().unwrap_or_default().to_owned();
+    assert!(header.contains("ledger-app"), "{header}");
+    assert!(!header.contains("unknown"), "{header}");
+}
+
 #[test]
 fn conversation() {
     let mut app = app_in_conversation();
