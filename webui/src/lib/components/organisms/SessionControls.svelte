@@ -211,11 +211,14 @@
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
 	}
-	/* Tiles: no bottom margin (the grid starts right below), but breathe under
-	   the app header instead of sitting flush against it. */
+	/* Tiles: the row's one unit of padding moves from under the title to above
+	   it, so the gap lands under the app header where it was asked for and the
+	   bar's height — the grid's height budget — is unchanged. The grid starts
+	   right below, so no bottom margin either. */
 	.bar.flush {
 		margin-bottom: 0;
 		padding-top: var(--sp-2);
+		padding-bottom: 0;
 	}
 	.bar {
 		margin-bottom: var(--sp-4);

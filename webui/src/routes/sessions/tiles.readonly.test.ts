@@ -92,6 +92,10 @@ describe('tiles view mode', () => {
 		const css = controls.slice(controls.indexOf('<style>'));
 		expect(css).toMatch(/\.bar\.flush \{[^}]*padding-top: var\(--sp-2\)/);
 		expect(css).toMatch(/\.bar\.flush \{[^}]*margin-bottom: 0/);
+		// Both halves matter: a net-taller bar costs the grid the height a 2x2
+		// needs at 1920x960 with the nav at the bottom.
+		expect(css).toMatch(/\.bar \{[^}]*padding: 0 0 var\(--sp-2\)/);
+		expect(css).toMatch(/\.bar\.flush \{[^}]*padding-bottom: 0/);
 	});
 
 	it('adds no :global override', () => {
