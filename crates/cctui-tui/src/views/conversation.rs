@@ -279,10 +279,11 @@ fn draw_input_row(
 ) {
     if session.end_reason.is_some() {
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                " this session has ended — nothing more can be sent",
-                theme::dim(),
-            )),
+            Paragraph::new(Line::from(vec![
+                Span::styled(" this session has ended — ", theme::dim()),
+                Span::styled("r", theme::hotkey()),
+                Span::styled(" resumes it", theme::dim()),
+            ])),
             input_area,
         );
         return;

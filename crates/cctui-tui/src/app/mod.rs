@@ -15,6 +15,7 @@ pub mod drafts;
 pub mod effects;
 pub mod export;
 pub mod fileview;
+pub mod forkform;
 pub mod identity;
 pub mod labels;
 pub mod line;

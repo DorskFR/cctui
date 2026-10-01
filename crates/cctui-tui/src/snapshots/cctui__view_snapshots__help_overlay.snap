@@ -5,25 +5,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Anywhere                                         Ctrl+p / ↑  Previous label                   │
-▸ │  ?           Toggle this cheat sheet            Space       Attach or detach this label      │
-  │  q           Quit cctui                         Ctrl+c      Create a label                   │
-  │  1-9         Switch view                        Ctrl+e      Rename or recolor                │
-  │  /           Search the current view            Ctrl+d      Delete this label                │
-  │  n           Next search hit                    Enter       Confirm                          │
-  │  N           Previous search hit              Label filter                                   │
-  │  D           Diagnose the selected session      Esc         Close the label list             │
-  │  i           Session info                       Ctrl+n / ↓  Next label                       │
-  │  Ctrl+g      Jump to the next session needin…   Ctrl+p / ↑  Previous label                   │
-  │Session list                                     Space / En… Include or exclude this label    │
-  │  j / ↓       Next session                       a           Show every label again           │
-  │  k / ↑       Previous session                 Pinned messages                                │
-  │  g           First session                      Esc         Close the pinned messages        │
-  │  G           Last session                       Ctrl+n / ↓  Next pin                         │
-  │  Enter       Open the conversation              Ctrl+p / ↑  Previous pin                     │
-  │  z / Tab     Fold or open the subagent group    Enter       Jump to the pinned message       │
-  │  S           Fold or open the section           d / m       Unpin this message               │
-  │  Z           Fold or open everything          Macros                                         │
-  │  f           Choose which sections show         Esc         Close the macro list             │
+  │Anywhere                                         Ctrl+e      Rename or recolor                │
+▸ │  ?           Toggle this cheat sheet            Ctrl+d      Delete this label                │
+  │  q           Quit cctui                         Enter       Confirm                          │
+  │  1-9         Switch view                      Label filter                                   │
+  │  /           Search the current view            Esc         Close the label list             │
+  │  n           Next search hit                    Ctrl+n / ↓  Next label                       │
+  │  N           Previous search hit                Ctrl+p / ↑  Previous label                   │
+  │  D           Diagnose the selected session      Space / En… Include or exclude this label    │
+  │  i           Session info                       a           Show every label again           │
+  │  Ctrl+g      Jump to the next session needin… Pinned messages                                │
+  │Session list                                     Esc         Close the pinned messages        │
+  │  j / ↓       Next session                       Ctrl+n / ↓  Next pin                         │
+  │  k / ↑       Previous session                   Ctrl+p / ↑  Previous pin                     │
+  │  g           First session                      Enter       Jump to the pinned message       │
+  │  G           Last session                       d / m       Unpin this message               │
+  │  Enter       Open the conversation            Macros                                         │
+  │  z / Tab     Fold or open the subagent group    Esc         Close the macro list             │
+  │  S           Fold or open the section           Ctrl+n / ↓  Next macro                       │
+  │  Z           Fold or open everything            Ctrl+p / ↑  Previous macro                   │
+  │  f           Choose which sections show         Enter       Put this prompt in the composer  │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -61,7 +61,9 @@ fn ended(badge: &EndBadge) -> Vec<Span<'static>> {
     if let Some(detail) = &badge.detail {
         spans.push(Span::styled(format!(" — {detail}"), theme::dim()));
     }
-    spans.push(Span::styled("  composer closed", theme::dim()));
+    // The action the ended state was always meant to offer.
+    spans.push(Span::styled("  r ", theme::hotkey()));
+    spans.push(Span::styled("resume", theme::hotkey_desc()));
     spans
 }
 
@@ -144,12 +146,12 @@ mod tests {
     }
 
     #[test]
-    fn an_ended_session_names_the_reason_and_closes_the_composer() {
+    fn an_ended_session_names_the_reason_and_offers_to_resume_it() {
         let mut app = app();
         app.sessions[0].end_reason = Some(SessionEndReason::Crashed);
         let text = rendered(&app);
         assert!(text.contains("ended · crashed"), "{text}");
-        assert!(text.contains("composer closed"), "{text}");
+        assert!(text.contains("r resume"), "the ended state offers its action: {text}");
     }
 
     #[test]

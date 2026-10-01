@@ -1223,14 +1223,6 @@ fn conversation_interrupt_in_flight() {
 }
 
 #[test]
-fn conversation_fork_armed_by_one_press() {
-    let mut app = app_on("s-working");
-    focus(&mut app, "s-working");
-    reduce(&mut app, Action::Controls(ControlsAction::Fork));
-    insta::assert_snapshot!(render_screen(&mut app));
-}
-
-#[test]
 fn model_picker_while_the_lists_load() {
     let mut app = codex_conversation();
     reduce(&mut app, Action::Controls(ControlsAction::OpenModelPicker));
@@ -1538,7 +1530,7 @@ fn overview_view_narrow() {
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }
 
-// -- the dispatch tab --
+// -- the dispatch tab and the fork/resume dialogs --
 
 fn app_with_dispatchers() -> crate::app::App {
     use crate::app::dispatch::{DispatchAction, Field};
@@ -1600,4 +1592,69 @@ fn dispatch_tab_codex_harness() {
 fn dispatch_tab_at_eighty_columns() {
     let mut app = app_with_dispatchers();
     insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+fn app_forking(codex: bool) -> crate::app::App {
+    use crate::app::forkform::ForkAction;
+    use cctui_proto::harness_models::{HarnessModels, ModelOption};
+    let mut app = app_on("s-working");
+    if codex {
+        session_mut(&mut app, "s-working").adapter_id =
+            Some(cctui_proto::adapter::AdapterId::new("codex"));
+    }
+    session_mut(&mut app, "s-working").model = Some("opus".to_owned());
+    session_mut(&mut app, "s-working").effort = Some("high".to_owned());
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Fork(ForkAction::Open));
+    reduce(
+        &mut app,
+        Action::Fork(ForkAction::ModelsLoaded(Box::new(HarnessModels {
+            harness: "claude-code".to_owned(),
+            models: vec![
+                ModelOption {
+                    v: String::new(),
+                    label: "Default".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+                ModelOption {
+                    v: "sonnet".to_owned(),
+                    label: "Sonnet".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+            ],
+            efforts: vec![String::new(), "low".to_owned(), "high".to_owned()],
+        }))),
+    );
+    app
+}
+
+#[test]
+fn fork_dialog() {
+    let mut app = app_forking(false);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Codex cannot fork a slice, so the row is not offered at all.
+#[test]
+fn fork_dialog_codex_hides_the_extract_row() {
+    let mut app = app_forking(true);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn fork_dialog_on_the_prompt_row() {
+    use crate::app::forkform::ForkAction;
+    let mut app = app_forking(false);
+    for _ in 0..4 {
+        reduce(&mut app, Action::Fork(ForkAction::FocusNext));
+    }
+    for c in "try the other approach".chars() {
+        reduce(
+            &mut app,
+            Action::Fork(ForkAction::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
 }

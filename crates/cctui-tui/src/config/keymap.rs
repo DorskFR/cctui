@@ -34,6 +34,7 @@ pub enum Context {
     Terminal,
     Help,
     Dispatch,
+    ForkDialog,
     ModelPicker,
     Sidebar,
     Permission,
@@ -68,6 +69,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Terminal,
     Context::Help,
     Context::Dispatch,
+    Context::ForkDialog,
     Context::ModelPicker,
     Context::Sidebar,
     Context::Permission,
@@ -104,6 +106,7 @@ impl Context {
             Self::Terminal => "terminal",
             Self::Help => "help",
             Self::Dispatch => "dispatch",
+            Self::ForkDialog => "fork-dialog",
             Self::ModelPicker => "model-picker",
             Self::Sidebar => "sidebar",
             Self::Permission => "permission",
@@ -140,6 +143,7 @@ impl Context {
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::Dispatch => "Dispatch a job",
+            Self::ForkDialog => "Fork a session",
             Self::ModelPicker => "Model picker",
             Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
@@ -230,7 +234,13 @@ actions! {
     NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
-    Resume => "resume", "Resume the session";
+    Resume => "resume", "Resume the ended session";
+    ForkSubmit => "fork-submit", "Fork with these options";
+    ForkCancel => "fork-cancel", "Abandon the fork";
+    ForkNextField => "fork-next-field", "Next field";
+    ForkPrevField => "fork-prev-field", "Previous field";
+    ForkCycleNext => "fork-cycle-next", "Next choice";
+    ForkCyclePrev => "fork-cycle-prev", "Previous choice";
     DispatchNextField => "dispatch-next-field", "Next dispatch field";
     DispatchPrevField => "dispatch-prev-field", "Previous dispatch field";
     DispatchAdapter => "dispatch-adapter", "Switch the dispatched harness";
@@ -512,6 +522,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, ">", ActionId::ToggleSidebar),
     spec(Context::Conversation, "u", ActionId::OpenParent),
     spec(Context::Conversation, "ctrl+f", ActionId::Fork),
+    spec(Context::Conversation, "r", ActionId::Resume),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
     spec(Context::Conversation, "y", ActionId::CopyMessage),
@@ -706,7 +717,7 @@ const SIDEBAR: &[BindingSpec] = &[
     spec(Context::Sidebar, "u", ActionId::OpenParent),
 ];
 
-/// Modal: the tab owns every key while it is up.
+/// Modal, like the fork dialog: the tab owns every key while it is up.
 const DISPATCH: &[BindingSpec] = &[
     spec(Context::Dispatch, "esc", ActionId::DispatchClose),
     spec(Context::Dispatch, "tab, down", ActionId::DispatchNextField),
@@ -714,6 +725,16 @@ const DISPATCH: &[BindingSpec] = &[
     spec(Context::Dispatch, "ctrl+d", ActionId::DispatchCycleTarget),
     spec(Context::Dispatch, "ctrl+h", ActionId::DispatchAdapter),
     spec(Context::Dispatch, "ctrl+s", ActionId::DispatchSubmit),
+];
+
+/// Modal: a stray key must not reach the composer behind it.
+const FORK_DIALOG: &[BindingSpec] = &[
+    spec(Context::ForkDialog, "esc", ActionId::ForkCancel),
+    spec(Context::ForkDialog, "ctrl+s", ActionId::ForkSubmit),
+    spec(Context::ForkDialog, "tab, down", ActionId::ForkNextField),
+    spec(Context::ForkDialog, "backtab, up", ActionId::ForkPrevField),
+    spec(Context::ForkDialog, "right", ActionId::ForkCycleNext),
+    spec(Context::ForkDialog, "left", ActionId::ForkCyclePrev),
 ];
 
 /// Modal over the conversation: everything it does not claim stays claimed,
@@ -791,6 +812,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     TERMINAL,
     HELP,
     DISPATCH,
+    FORK_DIALOG,
     MODEL_PICKER,
     SIDEBAR,
     PERMISSION,

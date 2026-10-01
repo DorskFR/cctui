@@ -12,6 +12,7 @@ use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
 use crate::app::dispatch::DispatchAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::forkform::ForkAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
@@ -103,6 +104,7 @@ pub const fn context_for(
         View::Diagnose => Context::Diagnose,
         View::Terminal => Context::Terminal,
         View::ModelPicker => Context::ModelPicker,
+        View::ForkDialog => Context::ForkDialog,
         View::Dispatch => Context::Dispatch,
         // Not modal: it takes the keyboard but leaves the strips, the composer
         // and the cards ahead of it, and falls through to the transcript.
@@ -124,6 +126,7 @@ const fn modal_context(view: View) -> Option<Context> {
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
+        View::ForkDialog => Some(Context::ForkDialog),
         View::Dispatch => Some(Context::Dispatch),
         _ => None,
     }
@@ -189,6 +192,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::ForkDialog
             | View::Dispatch
             | View::LabelPicker
             | View::LabelFilter => None,
@@ -208,6 +212,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::ForkDialog
             | View::Dispatch
             | View::LabelPicker
             | View::LabelFilter => None,
@@ -292,7 +297,21 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::Controls(ControlsAction::Interrupt),
-        ActionId::Fork => Action::Controls(ControlsAction::Fork),
+        ActionId::Fork => Action::Fork(ForkAction::Open),
+        ActionId::Resume => Action::Fork(ForkAction::Resume),
+        ActionId::ForkSubmit => Action::Fork(ForkAction::Submit),
+        ActionId::ForkCancel => Action::Fork(ForkAction::Close),
+        ActionId::ForkNextField => Action::Fork(ForkAction::FocusNext),
+        ActionId::ForkPrevField => Action::Fork(ForkAction::FocusPrev),
+        ActionId::ForkCycleNext => Action::Fork(ForkAction::Cycle(1)),
+        ActionId::ForkCyclePrev => Action::Fork(ForkAction::Cycle(-1)),
+
+        ActionId::DispatchNextField => Action::Dispatch(DispatchAction::FocusNext),
+        ActionId::DispatchPrevField => Action::Dispatch(DispatchAction::FocusPrev),
+        ActionId::DispatchAdapter => Action::Dispatch(DispatchAction::ToggleAdapter),
+        ActionId::DispatchCycleTarget => Action::Dispatch(DispatchAction::CycleDispatcher),
+        ActionId::DispatchSubmit => Action::Dispatch(DispatchAction::Submit),
+        ActionId::DispatchClose => Action::Dispatch(DispatchAction::Close),
         ActionId::ModelPicker => Action::Controls(ControlsAction::OpenModelPicker),
         ActionId::PickerClose => Action::Controls(ControlsAction::ClosePicker),
         ActionId::PickerNext => Action::Controls(ControlsAction::PickerMove(1)),
@@ -304,13 +323,6 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
             Action::Controls(ControlsAction::PickerColumn(PickerColumn::Effort))
         }
         ActionId::PickerApply => Action::Controls(ControlsAction::PickerApply),
-
-        ActionId::DispatchNextField => Action::Dispatch(DispatchAction::FocusNext),
-        ActionId::DispatchPrevField => Action::Dispatch(DispatchAction::FocusPrev),
-        ActionId::DispatchAdapter => Action::Dispatch(DispatchAction::ToggleAdapter),
-        ActionId::DispatchCycleTarget => Action::Dispatch(DispatchAction::CycleDispatcher),
-        ActionId::DispatchSubmit => Action::Dispatch(DispatchAction::Submit),
-        ActionId::DispatchClose => Action::Dispatch(DispatchAction::Close),
 
         ActionId::ToggleUnreadOnly => Action::Unread(UnreadAction::ToggleOnly),
         ActionId::ToggleSidebar => Action::Sidebar(SidebarAction::Toggle),
@@ -472,6 +484,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
+        Context::ForkDialog => Some(Action::Fork(ForkAction::Key(key))),
         Context::Dispatch => Some(Action::Dispatch(DispatchAction::Key(key))),
         _ => None,
     }
@@ -483,8 +496,8 @@ mod tests {
 
     use super::{
         Action, AttentionAction, ControlsAction, Decision, DiagnoseAction, DiagnoseMode,
-        DraftAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus, SliceAction,
-        View, map_input,
+        DraftAction, ForkAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus,
+        SliceAction, View, map_input,
     };
     use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
@@ -739,7 +752,11 @@ mod tests {
         ));
         assert!(matches!(
             map_event(View::Conversation, false, ctrl('f')),
-            Some(Action::Controls(ControlsAction::Fork))
+            Some(Action::Fork(ForkAction::Open))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('r')),
+            Some(Action::Fork(ForkAction::Resume))
         ));
     }
 

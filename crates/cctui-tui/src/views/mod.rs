@@ -7,6 +7,7 @@ pub mod diagnose;
 pub mod dispatch;
 pub mod fileview;
 pub mod filters;
+pub mod forkform;
 pub mod help;
 pub mod history;
 pub mod labels;
@@ -51,6 +52,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Dispatch => {
             draw_below(frame, app);
             dispatch::draw_panel(frame, app);
+        }
+        View::ForkDialog => {
+            conversation::draw(frame, app);
+            if let Some(form) = app.fork.as_ref() {
+                forkform::draw(frame, form);
+            }
         }
         View::ModelPicker => {
             conversation::draw(frame, app);

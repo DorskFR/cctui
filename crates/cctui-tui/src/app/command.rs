@@ -19,6 +19,8 @@ pub enum Command {
     },
     /// A whole-session fork: every dial inherited from the parent.
     Fork,
+    /// Resume an ended session.
+    Resume,
     /// The dispatch tab. Its own verb until the spawn dialog carries it.
     Dispatch,
 }
@@ -50,6 +52,12 @@ pub fn parse(input: &str) -> Result<Command, String> {
                 return Err("usage: :fork".to_owned());
             }
             Ok(Command::Fork)
+        }
+        "resume" => {
+            if words.next().is_some() {
+                return Err("usage: :resume".to_owned());
+            }
+            Ok(Command::Resume)
         }
         "dispatch" => {
             if words.next().is_some() {
@@ -83,6 +91,9 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
     };
     match command {
         Command::Fork => return super::controls::fork_now(app),
+        Command::Resume => {
+            return super::forkform::reduce_fork(app, super::forkform::ForkAction::Resume);
+        }
         Command::Dispatch => {
             return super::dispatch::reduce_dispatch(app, super::dispatch::DispatchAction::Open);
         }
@@ -90,7 +101,7 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
     }
     let Some(session) = app.selected_session().cloned() else { return Vec::new() };
     match command {
-        Command::Fork | Command::Dispatch => Vec::new(),
+        Command::Fork | Command::Resume | Command::Dispatch => Vec::new(),
         Command::Attach { path } => {
             let path = super::cmdline::expand_home(&path.to_string_lossy());
             vec![Effect::ReadAttachment { session_id: session.id, path }]
@@ -136,7 +147,7 @@ mod tests {
 
         let mut app = app();
         match run(&mut app, "fork").as_slice() {
-            [Effect::Fork { session_id }] => assert_eq!(session_id, "s-a"),
+            [Effect::Fork { session_id, .. }] => assert_eq!(session_id, "s-a"),
             other => panic!("expected one fork effect, got {} effects", other.len()),
         }
         assert!(app.controls.armed.is_none(), "the command line does not arm anything");

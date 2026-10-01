@@ -7,7 +7,7 @@ use cctui_proto::drafts::{composer_draft_key, session_history_key};
 use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
-use super::action::{Action, Effect};
+use super::action::{Action, Effect, ModelsFor};
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::bookmarks::BookmarkAction;
@@ -19,6 +19,7 @@ use super::diagnose::DiagnoseAction;
 use super::dispatch::DispatchAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
+use super::forkform::ForkAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
@@ -306,6 +307,13 @@ async fn run(
                 error: error.map(|e| e.to_string()),
             })]
         }
+        Effect::Resume { session_id } => {
+            let error = server.resume(&session_id).await.err();
+            if let Some(e) = error.as_ref() {
+                tracing::warn!(%e, "resume failed");
+            }
+            vec![Action::Fork(ForkAction::Resumed(error.map(|e| e.to_string())))]
+        }
         Effect::FetchDispatchers => match server.dispatchers().await {
             Ok(names) => vec![Action::Dispatch(DispatchAction::DispatchersLoaded(names))],
             Err(e) => {
@@ -325,18 +333,23 @@ async fn run(
                 vec![Action::Toast(Level::Error, format!("dispatch failed: {e}"))]
             }
         },
-        Effect::Fork { session_id } => match server.fork(&session_id).await {
+        Effect::Fork { session_id, request } => match server.fork(&session_id, &request).await {
             Ok(resp) => vec![Action::Controls(ControlsAction::Forked(resp.session_id))],
             Err(e) => {
                 tracing::warn!(%e, "fork failed");
                 vec![Action::Toast(Level::Error, format!("fork failed: {e}"))]
             }
         },
-        Effect::FetchHarnessModels { harness, machine_id, model } => {
+        Effect::FetchHarnessModels { harness, machine_id, model, want } => {
             match server.harness_models(&harness, Some(&machine_id), &model).await {
-                Ok(models) => {
-                    vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
-                }
+                Ok(models) => match want {
+                    ModelsFor::ModelPicker => {
+                        vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
+                    }
+                    ModelsFor::ForkDialog => {
+                        vec![Action::Fork(ForkAction::ModelsLoaded(Box::new(models)))]
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(%e, "harness model list fetch failed");
                     vec![Action::Toast(Level::Warn, "could not read the model list".to_owned())]

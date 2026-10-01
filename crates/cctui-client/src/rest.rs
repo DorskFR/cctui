@@ -386,13 +386,36 @@ impl Client {
         self.unit(route, &[("id", session_id)], Some(&body)).await
     }
 
-    /// Fork a whole session. Every field of [`ForkRequest`] is inherited, so
-    /// the fork needs no options.
-    pub async fn fork(&self, session_id: &str) -> Result<ForkResponse, ClientError> {
+    /// Fork a session. `ForkRequest::default()` inherits every dial, so a
+    /// whole-session fork needs no options; the dialog fills in what it was
+    /// given.
+    pub async fn fork(
+        &self,
+        session_id: &str,
+        request: &ForkRequest,
+    ) -> Result<ForkResponse, ClientError> {
         let route = Self::route("post_sessions_by_id_fork")?;
-        let body = serde_json::to_value(ForkRequest::default())
+        let body = serde_json::to_value(request)
             .map_err(|source| ClientError::Decode { route: route.id, source })?;
         self.json(route, &[("id", session_id)], &[], Some(&body)).await
+    }
+
+    /// The dispatch targets a spawn can pick, `GET /sessions/dispatchers`.
+    pub async fn dispatchers(&self) -> Result<Vec<String>, ClientError> {
+        self.json(Self::route("get_sessions_dispatchers")?, &[], &[], None).await
+    }
+
+    /// Hand a job to a dispatcher. The body is
+    /// `cctui_clientcore::dispatch::build_dispatch_body`, shared with the web
+    /// UI, so it is passed through as built.
+    pub async fn dispatch(&self, body: &Value) -> Result<DispatchResponse, ClientError> {
+        self.json(Self::route("post_sessions_dispatch")?, &[], &[], Some(body)).await
+    }
+
+    /// Resume an exited session. The server re-mints the gateway env, so the
+    /// request carries nothing.
+    pub async fn resume(&self, session_id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("post_sessions_by_id_resume")?, &[("id", session_id)], None).await
     }
 
     /// The model and effort lists a picker for `harness` should offer.
@@ -414,18 +437,6 @@ impl Client {
         }
         self.json(Self::route("get_models_by_harness")?, &[("harness", harness)], &query, None)
             .await
-    }
-
-    /// The dispatch targets a spawn can pick, `GET /sessions/dispatchers`.
-    pub async fn dispatchers(&self) -> Result<Vec<String>, ClientError> {
-        self.json(Self::route("get_sessions_dispatchers")?, &[], &[], None).await
-    }
-
-    /// Hand a job to a dispatcher. The body is
-    /// `cctui_clientcore::dispatch::build_dispatch_body`, shared with the web
-    /// UI, so it is passed through as built.
-    pub async fn dispatch(&self, body: &Value) -> Result<DispatchResponse, ClientError> {
-        self.json(Self::route("post_sessions_dispatch")?, &[], &[], Some(body)).await
     }
 
     pub async fn interrupt(&self, session_id: &str) -> Result<(), ClientError> {
@@ -877,6 +888,7 @@ mod tests {
             "post_sessions_by_id_interrupt",
             "post_sessions_by_id_set_model",
             "post_sessions_by_id_fork",
+            "post_sessions_by_id_resume",
             "get_sessions_dispatchers",
             "post_sessions_dispatch",
             "get_models_by_harness",

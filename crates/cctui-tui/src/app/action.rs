@@ -13,6 +13,7 @@ use super::diagnose::DiagnoseAction;
 use super::dispatch::DispatchAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
+use super::forkform::ForkAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::macros::MacroAction;
@@ -65,6 +66,7 @@ pub enum Action {
 
     Controls(ControlsAction),
     Dispatch(DispatchAction),
+    Fork(ForkAction),
     Sidebar(SidebarAction),
     Unread(UnreadAction),
     ToggleAutoApproveSelected,
@@ -138,6 +140,13 @@ pub enum Action {
     UndecodableWsMessage(String),
     /// Persisted agent events the TUI could not deserialize.
     UndecodableAgentEvents(usize),
+}
+
+/// Which dialog a model list was fetched for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelsFor {
+    ModelPicker,
+    ForkDialog,
 }
 
 /// What a copy key asks for.
@@ -277,18 +286,24 @@ pub enum Effect {
     },
     Fork {
         session_id: String,
+        request: Box<cctui_proto::api::ForkRequest>,
+    },
+    Resume {
+        session_id: String,
     },
     /// `GET /sessions/dispatchers`: the dispatch targets a spawn can pick.
     FetchDispatchers,
-    /// `POST /sessions/dispatch` with the shared body.
+    /// `POST /dispatch` with the shared body.
     Dispatch {
         body: Box<serde_json::Value>,
     },
-    /// `GET /models/{harness}`: the picker's model and effort lists.
+    /// `GET /models/{harness}`: the model and effort lists. Two dialogs ask
+    /// for them, so the asker rides along rather than being guessed at.
     FetchHarnessModels {
         harness: String,
         machine_id: String,
         model: String,
+        want: ModelsFor,
     },
     SetModel {
         session_id: String,
