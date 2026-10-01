@@ -1,3 +1,4 @@
+import { formatTimestamp } from '@dorsk/tsumikit';
 import type { EndTone } from '@bindings/EndTone';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
 import { endReasonInfo } from '$lib/domainTables';
@@ -76,7 +77,7 @@ export function sessionEnd(s: Pick<SessionListItem, 'end_reason' | 'end_detail' 
 
 /** Tooltip text: when it ended plus the adapter's diagnostic, if any. */
 export function sessionEndTitle(end: SessionEnd): string {
-	const at = end.endedAt ? new Date(end.endedAt).toLocaleString() : '—';
+	const at = end.endedAt ? formatTimestamp(end.endedAt, 'datetime') : '—';
 	const head = m.sessions_end_title({ at });
 	return end.detail ? `${head}\n${end.detail}` : head;
 }

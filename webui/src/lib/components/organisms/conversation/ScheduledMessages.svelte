@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Button, Cluster, Input, Text, Textarea } from '@dorsk/tsumikit';
+	import { Button, Cluster, Input, Text, Textarea, Timestamp } from '@dorsk/tsumikit';
 	import { errMessage } from '$lib/api';
 	import {
 		pendingScheduled,
@@ -21,16 +21,6 @@
 	let draftBody = $state('');
 	let draftAt = $state('');
 	let busy = $state<string | null>(null);
-
-	function formatWhen(iso: string): string {
-		return new Date(iso).toLocaleString([], {
-			weekday: 'short',
-			day: 'numeric',
-			month: 'short',
-			hour: '2-digit',
-			minute: '2-digit'
-		});
-	}
 
 	function startEdit(row: ScheduledMessage) {
 		editing = row.id;
@@ -95,7 +85,8 @@
 									reason: row.last_error ?? ''
 								})}
 							{:else}
-								{m.scheduled_pending_label({ when: formatWhen(row.deliver_at) })}
+								{m.scheduled_pending_label()}
+								<Timestamp value={row.deliver_at} mode="datetime" tone="inherit" />
 							{/if}
 						</Text>
 						{#if !archived}
@@ -138,6 +129,7 @@
 		gap: var(--sp-2);
 		max-height: 30vh;
 		overflow-y: auto;
+		overflow-x: hidden;
 	}
 	.pending {
 		display: flex;

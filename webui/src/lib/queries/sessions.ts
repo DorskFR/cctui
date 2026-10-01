@@ -1,3 +1,4 @@
+import { localTimeZone } from "@dorsk/tsumikit";
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
@@ -22,7 +23,7 @@ export const useSessions = (
 export const useSessionStats = () =>
   createQuery(() => ({
     queryKey: qk.sessionStats,
-    queryFn: () => endpoints.sessionStats(Intl.DateTimeFormat().resolvedOptions().timeZone),
+    queryFn: () => endpoints.sessionStats(localTimeZone()),
     refetchInterval: 15_000,
   }));
 

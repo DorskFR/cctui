@@ -3,10 +3,12 @@
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
 	import { Badge, Checkbox, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import HarnessCommandCard from './HarnessCommandCard.svelte';
 	import LineActions from './LineActions.svelte';
 	import LineDelivery from './LineDelivery.svelte';
 	import LineFooter from './LineFooter.svelte';
 	import MarkerBody from './MarkerBody.svelte';
+	import TaskNotificationCard from './TaskNotificationCard.svelte';
 	import ThinkingBubble from './ThinkingBubble.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
@@ -157,6 +159,10 @@
 		<ThinkingBubble html={ln.html} redacted={ln.redacted} />
 	{:else if ln.role === 'marker'}
 		<MarkerBody texts={ln.markerTexts ?? [ln.text ?? '']} />
+	{:else if ln.notification}
+		<TaskNotificationCard note={ln.notification} />
+	{:else if ln.command}
+		<HarnessCommandCard command={ln.command} />
 	{:else if ln.html}
 		<div class="bubble">{@html ln.html}</div>
 	{:else if ln.htmlCode}

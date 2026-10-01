@@ -245,6 +245,7 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
+		overflow-x: hidden;
 		padding: var(--sp-2) var(--sp-3) var(--sp-3);
 		display: flex;
 		flex-direction: column;

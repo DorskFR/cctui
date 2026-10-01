@@ -8,7 +8,7 @@
 	import type { Label } from '@bindings/Label';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
-	import { isArchiveChord, isFindChord } from '$lib/platform';
+	import { headerKeyAction } from './headerKeys';
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
@@ -30,6 +30,7 @@
 		livenessClass,
 		showStatusBadge,
 		maximized = false,
+		compact = false,
 		onmaximize,
 		onclose,
 		onrename,
@@ -39,6 +40,8 @@
 		onexport,
 		onsearch,
 		onescape,
+		onescapeaction,
+		shortcuts = true,
 		onfork,
 		onfollowup,
 		onforkselect,
@@ -69,6 +72,9 @@
 		showStatusBadge: boolean;
 		/** The maximize toggle appears only when the shell supplies `onmaximize`. */
 		maximized?: boolean;
+		/** Tile chrome: one row only — no meta row, no label strip, every action
+		 *  but maximize behind the ⋯ menu. */
+		compact?: boolean;
 		onmaximize?: () => void;
 		/** Omitted in a tile, which has nothing to close back to. */
 		onclose?: () => void;
@@ -82,6 +88,11 @@
 		/** First refusal on Escape: true when it was consumed (the find bar
 		 *  clears or closes) and the drawer must stay open. */
 		onescape?: () => boolean;
+		/** What an unconsumed Escape does instead of closing: a tile has nothing
+		 *  to close back to and interrupts its own session. */
+		onescapeaction?: () => void;
+		/** Whether this header owns the window chords. One tile at a time does. */
+		shortcuts?: boolean;
 		onfork: () => void;
 		onfollowup?: () => void;
 		// Toggle multi-select-to-fork mode; omitted → button hidden
@@ -140,7 +151,7 @@
 	// only while its inline button is hidden.
 	const COLLAPSE_BELOW = 640;
 	let barWidth = $state(Infinity);
-	const collapsed = $derived(barWidth < COLLAPSE_BELOW);
+	const collapsed = $derived(compact || barWidth < COLLAPSE_BELOW);
 
 	// One square per density for every control in the bar, so they share a
 	// height and a top edge whatever chrome or glyph they carry.
@@ -165,6 +176,17 @@
 								}
 							]
 						: [])
+				]
+			: []),
+		...(compact && !archived
+			? [
+					{
+						label: m.drawer_interrupt_label(),
+						icon: 'stop' as const,
+						attrs: { title: m.drawer_interrupt_title() },
+						onselect: oninterrupt
+					},
+					{ label: m.drawer_archive(), icon: 'archive' as const, onselect: onarchive }
 				]
 			: []),
 		{
@@ -229,36 +251,38 @@
 		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
+	// Window-level so the chords work wherever focus sits, including the
+	// composer. `shortcuts` is what keeps N tiles from firing N times.
 	function onWinKey(e: KeyboardEvent) {
-		// ⌘F / Ctrl+F opens the transcript's own find bar in place of the
-		// browser's, which can only see the paged window.
-		if (onsearch && !renaming && isFindChord(e)) {
+		const action = headerKeyAction(e, {
+			active: shortcuts,
+			renaming,
+			archived,
+			canSearch: !!onsearch,
+			archiveShortcut: settings.archiveShortcut
+		});
+		if (action === 'search') {
 			e.preventDefault();
-			onsearch();
+			onsearch?.();
 			return;
 		}
-		// Archive chord (⌘ E / Ctrl+E): interrupt any running turn and archive the
-		// session, which then dismisses the drawer. Opt-out via Settings. Skipped
-		// while renaming (so the chord can't fire mid-edit) and on already-archived
-		// sessions (nothing to archive). Window-level so it works regardless of
-		// whether focus is in the composer.
-		if (!archived && !renaming && settings.archiveShortcut && isArchiveChord(e)) {
+		if (action === 'archive') {
 			e.preventDefault();
 			onstoparchive();
 			return;
 		}
-		if (e.key !== 'Escape' || renaming) return;
+		if (action !== 'escape') return;
 		if (onescape?.()) {
 			e.preventDefault();
 			return;
 		}
-		onclose?.();
+		(onescapeaction ?? onclose)?.();
 	}
 </script>
 
 <svelte:window onkeydown={onWinKey} />
 
-<div class="dhead" data-journey="header">
+<div class="dhead" class:compact data-journey="header">
 	<div class="dbar" class:compact={collapsed} bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
 		{#if onclose}
@@ -302,7 +326,9 @@
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
-		<FontScalePicker {box} style={CHIP_CHROME} />
+		{#if !compact}
+			<FontScalePicker {box} style={CHIP_CHROME} />
+		{/if}
 		{#if renaming}
 			<IconButton data-overflow chip {box} variant="default" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}
@@ -339,7 +365,7 @@
 				onclick={onsearch}
 			/>
 		{/if}
-		{#if !archived}
+		{#if !archived && !compact}
 			<IconButton
 				chip
 				variant="default"
@@ -369,7 +395,7 @@
 		</Menu>
 	</Toolbar>
 	</div>
-	{#if session.labels.length > 0}
+	{#if session.labels.length > 0 && !compact}
 		<!-- Labels get their own full-width row in the header's column stack, so the
 		     strip can spread edge-to-edge and wrap freely instead of being boxed
 		     into the title row's leftover width (under the action buttons). The
@@ -388,7 +414,9 @@
 			/>
 		</div>
 	{/if}
-	<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {onsetmodel} {onfork} {detectedIssue} />
+	{#if !compact}
+		<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {onsetmodel} {onfork} {detectedIssue} />
+	{/if}
 </div>
 
 {#if keepaliveOpen}
@@ -435,6 +463,11 @@
 		background: var(--bg-elevated);
 		/* TokenUsage degrades its readout against this container. */
 		container: drawer-head / inline-size;
+	}
+	/* One row, tight: a tile's header may not eat the transcript. */
+	.dhead.compact {
+		gap: 0;
+		padding: var(--sp-1) var(--sp-2);
 	}
 	/* `chip` and `box` disagree in the kit: `.btn-chip:has(> svg:only-child)`
 	   takes its width from `--box-lg`, at a higher specificity than `.btn-box`

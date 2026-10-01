@@ -46,7 +46,7 @@ export default defineConfig({
 		},
 		{
 			name: 'drawer',
-			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts'],
+			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts'],
 			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
 		},
 		{

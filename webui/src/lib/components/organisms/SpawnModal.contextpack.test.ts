@@ -140,7 +140,9 @@ async function addEnvRow(key: string, value: string) {
   await tick();
 }
 async function submitDispatch() {
-  const btn = document.querySelector<HTMLButtonElement>(".foot-primary button");
+  const btn = document.querySelector<HTMLButtonElement>(
+    '.foot-row button[data-journey="submit"], .foot-row [data-journey="submit"] button',
+  );
   if (!btn) throw new Error("dispatch button not found");
   btn.click();
   await tick(60);

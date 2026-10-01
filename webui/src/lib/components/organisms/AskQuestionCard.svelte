@@ -262,7 +262,8 @@
 		background: var(--bg);
 		padding: var(--sp-2);
 		max-height: 320px;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 		font-family: var(--font-mono, monospace);
 		font-size: var(--fs-xs);
 	}

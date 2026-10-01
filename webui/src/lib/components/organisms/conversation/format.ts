@@ -103,6 +103,95 @@ export function parsePeerMessage(text: string): PeerMessage | null {
 	return { from: name || addr || null, room: room || undefined, body: tag[3].trim() };
 }
 
+const TASK_NOTIFICATION_RE = /<task-notification\b[^>]*>([\s\S]*?)(?:<\/task-notification>|$)/;
+// Head-anchored: a human quoting a wrapper mid-message stays a human turn.
+const COMMAND_HEAD_RE = /^<(?:command-(?:name|args|message)|local-command-(?:stdout|stderr))\b/;
+
+function tagText(body: string, tag: string): string | undefined {
+	const found = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`).exec(body);
+	const value = found?.[1].trim();
+	return value ? value : undefined;
+}
+
+export interface TaskNotification {
+	taskId?: string;
+	toolUseId?: string;
+	outputFile?: string;
+	status?: string;
+	summary?: string;
+}
+
+export type TaskTone = 'success' | 'danger' | 'neutral';
+
+export function parseTaskNotification(text: string): TaskNotification | null {
+	const block = TASK_NOTIFICATION_RE.exec(text);
+	if (!block) return null;
+	if (text.slice(0, block.index).trim() !== '') return null;
+	const body = block[1];
+	const note: TaskNotification = {
+		taskId: tagText(body, 'task-id'),
+		toolUseId: tagText(body, 'tool-use-id'),
+		outputFile: tagText(body, 'output-file'),
+		status: tagText(body, 'status'),
+		summary: tagText(body, 'summary')
+	};
+	return Object.values(note).some((v) => v !== undefined) ? note : null;
+}
+
+export function taskTone(status: string | undefined): TaskTone {
+	switch (status?.trim().toLowerCase()) {
+		case 'completed':
+		case 'success':
+		case 'succeeded':
+			return 'success';
+		case 'failed':
+		case 'killed':
+		case 'error':
+		case 'timeout':
+			return 'danger';
+		default:
+			return 'neutral';
+	}
+}
+
+export function taskNotificationText(note: TaskNotification): string {
+	return [note.summary, note.status, note.outputFile, note.taskId].filter(Boolean).join('\n');
+}
+
+export interface HarnessCommand {
+	/** Slash command, without its leading slash. */
+	name?: string;
+	args?: string;
+	message?: string;
+	stdout?: string;
+	stderr?: string;
+}
+
+export function parseHarnessCommand(text: string): HarnessCommand | null {
+	const head = text
+		.split('\n')
+		.map((l) => l.trim())
+		.find((l) => l !== '');
+	if (!head || !COMMAND_HEAD_RE.test(head)) return null;
+	const cmd: HarnessCommand = {
+		name: tagText(text, 'command-name')?.replace(/^\//, ''),
+		args: tagText(text, 'command-args'),
+		message: tagText(text, 'command-message'),
+		stdout: tagText(text, 'local-command-stdout'),
+		stderr: tagText(text, 'local-command-stderr')
+	};
+	return Object.values(cmd).some((v) => v !== undefined) ? cmd : null;
+}
+
+export function harnessCommandHead(cmd: HarnessCommand): string {
+	if (!cmd.name) return cmd.message ?? '';
+	return [`/${cmd.name}`, cmd.args].filter(Boolean).join(' ');
+}
+
+export function harnessCommandText(cmd: HarnessCommand): string {
+	return [harnessCommandHead(cmd), cmd.stdout, cmd.stderr].filter(Boolean).join('\n\n');
+}
+
 // Claude stores an attachment-carrying user turn as three separate
 // `stream_events` rows in three different encodings (composer prose + staged
 // paths, Claude's `[Image #N][name]`-prefixed copy, a synthetic `[Image: …]`

@@ -59,7 +59,8 @@
 		min-width: 16rem;
 		max-width: 26rem;
 		max-height: 50vh;
-		overflow: auto;
+		overflow-y: auto;
+		overflow-x: hidden;
 		padding: var(--sp-2);
 	}
 	.pin-row {

@@ -21,6 +21,8 @@ function render(entries: LimitResetEntry[]) {
 	return host;
 }
 
+const claimButtons = (el: HTMLElement) => [...el.querySelectorAll<HTMLButtonElement>('.row > button')];
+
 const entry = (extra: Partial<LimitResetEntry> = {}): LimitResetEntry => ({
 	kind: 'claude',
 	id: 'opus_55_explore',
@@ -40,9 +42,15 @@ describe('LimitResetsPage', () => {
 		expect(el.querySelectorAll('.row').length).toBe(2);
 		expect(el.textContent).toContain('explore Opus 5.5');
 		expect(el.textContent).toContain('Full reset');
-		expect(el.textContent).toMatch(/2026|23/);
+		expect(el.textContent).toContain('Expires');
 		expect(el.textContent).not.toContain('{');
-		expect(el.querySelectorAll('button').length).toBe(2);
+		expect(claimButtons(el).length).toBe(2);
+	});
+
+	it('renders the expiry as a machine-readable <time> rather than bare text', () => {
+		const el = render([entry()]);
+		const stamps = [...el.querySelectorAll('time')].map((t) => t.getAttribute('datetime'));
+		expect(stamps).toContain('2026-10-23T00:00:00.000Z');
 	});
 
 	it('shows the empty state and no rows when nothing is offered', () => {
@@ -61,8 +69,7 @@ describe('LimitResetsPage', () => {
 
 	it('disables the button on an unusable entry and says why', () => {
 		const el = render([entry({ usable: false, unusable_reason: 'paused' })]);
-		const button = el.querySelector('button');
-		expect(button?.disabled).toBe(true);
+		expect(claimButtons(el)[0]?.disabled).toBe(true);
 		expect(el.textContent).toContain('paused');
 	});
 

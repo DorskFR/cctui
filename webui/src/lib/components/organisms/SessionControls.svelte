@@ -9,6 +9,7 @@
 	import LabelFilter from '../molecules/LabelFilter.svelte';
 	import ViewPicker from '../molecules/ViewPicker.svelte';
 	import DimensionPicker from '../molecules/DimensionPicker.svelte';
+	import { MENU_ROW, MENU_ROW_ICON } from '../molecules/menuRow';
 	import MacrosMenu from './MacrosMenu.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
@@ -74,10 +75,6 @@
 
 	const searchId = $props.id();
 
-	// Button centres its content; a full-width menu row reads left-aligned like
-	// the picker rows beside it. No `align` prop on Button yet (OptionButton has one).
-	const MENU_ROW = 'justify-content:flex-start';
-
 	// Overflow menu: the toolbar grew too many buttons and squeezed the
 	// search bar. A ⋯ Popover collapses the secondary controls — the native
 	// popover gives light dismiss, Escape and focus return. On desktop it holds
@@ -123,7 +120,7 @@
 		<!-- Cancel selection. -->
 		{#if menu}
 			<Button variant="ghost" size="sm" block style={MENU_ROW} onclick={onCancelSelect}>
-				<Icon name="x" size={18} /><span>{m.sessions_cancel_selection()}</span>
+				<span style={MENU_ROW_ICON}><Icon name="x" size={18} /></span><span>{m.sessions_cancel_selection()}</span>
 			</Button>
 		{:else}
 			<Button class="ctl" square title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
@@ -132,7 +129,7 @@
 		{/if}
 	{:else if menu}
 		<Button variant="ghost" size="sm" block style={MENU_ROW} disabled={searching} onclick={onStartSelect}>
-			{@render listChecks()}<span>{m.sessions_select_multiple()}</span>
+			<span style={MENU_ROW_ICON}>{@render listChecks()}</span><span>{m.sessions_select_multiple()}</span>
 		</Button>
 	{:else}
 		<!-- "Select multiple" wants a checklist/multi-select glyph the registry
@@ -214,8 +211,14 @@
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
 	}
+	/* Tiles: the row's one unit of padding moves from under the title to above
+	   it, so the gap lands under the app header where it was asked for and the
+	   bar's height — the grid's height budget — is unchanged. The grid starts
+	   right below, so no bottom margin either. */
 	.bar.flush {
 		margin-bottom: 0;
+		padding-top: var(--sp-2);
+		padding-bottom: 0;
 	}
 	.bar {
 		margin-bottom: var(--sp-4);

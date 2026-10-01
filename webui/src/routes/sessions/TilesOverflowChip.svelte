@@ -44,6 +44,7 @@
 		gap: var(--sp-1);
 		max-height: 50vh;
 		overflow-y: auto;
+		overflow-x: hidden;
 		min-width: 16rem;
 	}
 </style>

@@ -57,6 +57,7 @@
 		onFollowup,
 		onNavigate,
 		chrome = 'drawer',
+		active = true,
 		maximized = false,
 		onmaximize
 	}: {
@@ -76,6 +77,9 @@
 		/** `drawer` keeps the back chevron and the document scroll lock; `tile`
 		 *  swaps in close/maximize and leaves the page scrollable. */
 		chrome?: ConversationChrome;
+		/** False for the tiles that are not the active one: only the active pane
+		 *  answers the window keyboard chords. */
+		active?: boolean;
 		maximized?: boolean;
 		onmaximize?: () => void;
 	} = $props();
@@ -381,6 +385,7 @@
 				livenessClass={livenessClass(session)}
 				{showStatusBadge}
 				{maximized}
+				compact={chrome === 'tile'}
 				{onmaximize}
 				{onclose}
 				onrename={sa.rename}
@@ -390,6 +395,8 @@
 				onexport={sa.export}
 				onsearch={() => search.openBar()}
 				onescape={search.escape}
+				onescapeaction={chrome === 'tile' && stream.working ? sa.interrupt : undefined}
+				shortcuts={active}
 				onfork={fork.openDialog}
 				onfollowup={onFollowup ? () => followup() : undefined}
 				onforkselect={forkable ? forkSelect.toggleMode : undefined}
@@ -409,18 +416,20 @@
 				onclearroom={clearRoom}
 			/>
 
-			<DrawerToolbar
-				bind:view
-				autoApprove={session.auto_approve}
-				ontoggleAuto={sa.toggleAutoApprove}
-				{terminalOpen}
-				ontoggleTerminal={() => (terminalOpen = !terminalOpen)}
-				plugins={plugins.buttons}
-				pins={pins.pins}
-				{lines}
-				onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}
-				onunpin={pins.unpinSeq}
-			/>
+			{#if chrome !== 'tile'}
+				<DrawerToolbar
+					bind:view
+					autoApprove={session.auto_approve}
+					ontoggleAuto={sa.toggleAutoApprove}
+					{terminalOpen}
+					ontoggleTerminal={() => (terminalOpen = !terminalOpen)}
+					plugins={plugins.buttons}
+					pins={pins.pins}
+					{lines}
+					onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}
+					onunpin={pins.unpinSeq}
+				/>
+			{/if}
 
 			{#if search.open}
 				<ConversationSearchBar {search} />
@@ -481,6 +490,7 @@
 				onFork={fork.openDialog}
 				onFollowup={onFollowup ? followup : undefined}
 				onResume={sa.resume}
+				compact={chrome === 'tile'}
 			/>
 			</Dropzone>
 		</div>

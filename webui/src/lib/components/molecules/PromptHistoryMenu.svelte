@@ -30,7 +30,7 @@
 	box="sm"
 	hitArea="compact"
 	{disabled}
-	panelStyle="width:min(26rem,calc(100vw - 5rem));max-height:18rem;overflow-y:auto"
+	panelStyle="width:min(26rem,calc(100vw - 5rem));max-height:18rem;overflow-y:auto;overflow-x:hidden"
 	onopen={() => (entries = promptHistory.get().slice().reverse())}
 >
 	{#snippet trigger()}

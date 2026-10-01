@@ -1,4 +1,4 @@
-import type { MenuItem } from '@dorsk/tsumikit';
+import { formatTimestamp, type MenuItem } from '@dorsk/tsumikit';
 import { schedulePresets } from './scheduleTimes';
 import { m } from '$lib/paraglide/messages';
 
@@ -12,7 +12,7 @@ export interface ScheduleMenuOpts {
 	onlist?: () => void;
 }
 
-const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const hhmm = (d: Date) => formatTimestamp(d, 'time');
 
 /** Items of a schedule split-button's menu: the presets, a custom time, and —
  *  when `onlist` is given — a jump to the pending list. */

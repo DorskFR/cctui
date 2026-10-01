@@ -1,10 +1,15 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { compressImage, needsImageCompression } from './compressImage';
-import { MAX_FILE_BYTES } from './attachments';
+import { DEFAULT_UPLOAD_CAPS, MAX_FILE_BYTES } from './attachments';
+import { setUploadCaps } from './uploadCaps.svelte';
 
 const large = (name = 'screen.png', type = 'image/png') => new File([new Uint8Array(MAX_FILE_BYTES + 1)], name, { type });
-afterEach(() => vi.restoreAllMocks());
+const sized = (bytes: number, name = 'screen.png') => new File([new Uint8Array(bytes)], name, { type: 'image/png' });
+afterEach(() => {
+	vi.restoreAllMocks();
+	setUploadCaps(DEFAULT_UPLOAD_CAPS);
+});
 
 describe('compressImage', () => {
 	it('preserves small images and oversized non-images', async () => {
@@ -46,5 +51,33 @@ describe('compressImage', () => {
 		const { revoke } = mockCanvas([], true);
 		await expect(compressImage(large())).rejects.toThrow('Unsupported image');
 		expect(revoke).toHaveBeenCalled();
+	});
+
+	describe('configured per-file cap', () => {
+		it('leaves an image under the served cap untouched', async () => {
+			const { encode } = mockCanvas([100]);
+			setUploadCaps({ ...DEFAULT_UPLOAD_CAPS, max_file_bytes: MAX_FILE_BYTES * 4 });
+			const file = sized(MAX_FILE_BYTES * 2);
+			expect(needsImageCompression(file)).toBe(false);
+			expect(await compressImage(file)).toBe(file);
+			expect(encode).not.toHaveBeenCalled();
+		});
+
+		it('compresses down to a lowered served cap', async () => {
+			const cap = 1024;
+			setUploadCaps({ ...DEFAULT_UPLOAD_CAPS, max_file_bytes: cap });
+			const { encode } = mockCanvas([cap + 1, cap]);
+			const file = sized(cap * 2);
+			expect(needsImageCompression(file)).toBe(true);
+			expect((await compressImage(file)).size).toBe(cap);
+			expect(encode.mock.calls.map((call) => call[2])).toEqual([0.92, 0.85]);
+		});
+
+		it('honours an explicitly injected cap over the served one', async () => {
+			setUploadCaps({ ...DEFAULT_UPLOAD_CAPS, max_file_bytes: 1 });
+			const file = sized(2048);
+			expect(needsImageCompression(file, 4096)).toBe(false);
+			expect(await compressImage(file, 4096)).toBe(file);
+		});
 	});
 });

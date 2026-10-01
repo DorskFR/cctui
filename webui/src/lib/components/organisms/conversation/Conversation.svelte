@@ -302,6 +302,7 @@
 	.conv {
 		flex: 1;
 		overflow-y: auto;
+		overflow-x: hidden;
 		/* Keep the chat's scroll inside the pane: without this, hitting
 		   the top/bottom of a long log chains the swipe to the page behind. */
 		overscroll-behavior: contain;
