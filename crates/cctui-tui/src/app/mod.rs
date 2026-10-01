@@ -37,6 +37,7 @@ pub mod session_live;
 pub mod session_status;
 pub mod sidebar;
 pub mod slice;
+pub mod spawn;
 pub mod state;
 pub mod terminal;
 pub mod toast;

@@ -1,0 +1,448 @@
+{
+  "allAdapters": [
+    "claude-code",
+    "codex"
+  ],
+  "adapterForProvider": [
+    {
+      "provider": "openai",
+      "out": "codex"
+    },
+    {
+      "provider": "openai-compatible",
+      "out": "codex"
+    },
+    {
+      "provider": "anthropic",
+      "out": "claude-code"
+    },
+    {
+      "provider": "anthropic-compatible",
+      "out": "claude-code"
+    },
+    {
+      "provider": "fireworks",
+      "out": "opencode"
+    },
+    {
+      "provider": "",
+      "out": "claude-code"
+    }
+  ],
+  "accountAdapters": [
+    {
+      "providers": [
+        "anthropic",
+        "openai"
+      ],
+      "out": [
+        "claude-code",
+        "codex"
+      ]
+    },
+    {
+      "providers": [
+        "openai",
+        "anthropic-compatible"
+      ],
+      "out": [
+        "claude-code",
+        "codex"
+      ]
+    },
+    {
+      "providers": [
+        "anthropic"
+      ],
+      "out": [
+        "claude-code"
+      ]
+    },
+    {
+      "providers": [
+        "openai-compatible"
+      ],
+      "out": [
+        "codex"
+      ]
+    },
+    {
+      "providers": [],
+      "out": []
+    },
+    {
+      "providers": [
+        "fireworks"
+      ],
+      "out": [
+        "opencode"
+      ]
+    },
+    {
+      "providers": [
+        "anthropic",
+        "fireworks"
+      ],
+      "out": [
+        "claude-code",
+        "opencode"
+      ]
+    }
+  ],
+  "accountBacksAdapter": [
+    {
+      "providers": null,
+      "adapter": "codex",
+      "out": true
+    },
+    {
+      "providers": null,
+      "adapter": "claude-code",
+      "out": true
+    },
+    {
+      "providers": [
+        "anthropic",
+        "openai"
+      ],
+      "adapter": "codex",
+      "out": true
+    },
+    {
+      "providers": [
+        "anthropic"
+      ],
+      "adapter": "claude-code",
+      "out": true
+    },
+    {
+      "providers": [
+        "anthropic"
+      ],
+      "adapter": "codex",
+      "out": false
+    },
+    {
+      "providers": [
+        "openai-compatible"
+      ],
+      "adapter": "claude-code",
+      "out": false
+    },
+    {
+      "providers": [
+        "fireworks"
+      ],
+      "adapter": "claude-code",
+      "out": false
+    },
+    {
+      "providers": [
+        "fireworks"
+      ],
+      "adapter": "codex",
+      "out": false
+    },
+    {
+      "providers": [
+        "fireworks"
+      ],
+      "adapter": "opencode",
+      "out": true
+    },
+    {
+      "providers": [],
+      "adapter": "claude-code",
+      "out": false
+    }
+  ],
+  "effectiveAdapterFor": [
+    {
+      "providers": null,
+      "adapter": "codex",
+      "out": "codex"
+    },
+    {
+      "providers": [
+        "anthropic",
+        "openai"
+      ],
+      "adapter": "codex",
+      "out": "codex"
+    },
+    {
+      "providers": [
+        "anthropic"
+      ],
+      "adapter": "codex",
+      "out": "claude-code"
+    },
+    {
+      "providers": [
+        "openai-compatible"
+      ],
+      "adapter": "claude-code",
+      "out": "codex"
+    },
+    {
+      "providers": [],
+      "adapter": "codex",
+      "out": "codex"
+    }
+  ],
+  "providerForAdapter": [
+    {
+      "providers": [
+        "anthropic",
+        "openai"
+      ],
+      "adapter": "claude-code",
+      "out": "anthropic"
+    },
+    {
+      "providers": [
+        "anthropic",
+        "openai"
+      ],
+      "adapter": "codex",
+      "out": "openai"
+    },
+    {
+      "providers": [
+        "anthropic"
+      ],
+      "adapter": "codex",
+      "out": null
+    },
+    {
+      "providers": [],
+      "adapter": "codex",
+      "out": null
+    }
+  ],
+  "staleAccountPick": [
+    {
+      "value": "",
+      "names": [
+        "work"
+      ],
+      "out": false
+    },
+    {
+      "value": "\u0000no-account",
+      "names": [
+        "work"
+      ],
+      "out": false
+    },
+    {
+      "value": "\u0000pool:personal",
+      "names": [
+        "work"
+      ],
+      "out": false
+    },
+    {
+      "value": "work",
+      "names": [
+        "work"
+      ],
+      "out": false
+    },
+    {
+      "value": "gone",
+      "names": [
+        "work"
+      ],
+      "out": true
+    },
+    {
+      "value": "work",
+      "names": [],
+      "out": true
+    }
+  ],
+  "compatiblePools": {
+    "accounts": [
+      {
+        "key": "claude",
+        "providers": [
+          "anthropic"
+        ]
+      },
+      {
+        "key": "spark",
+        "providers": [
+          "fireworks"
+        ]
+      },
+      {
+        "key": "gpt",
+        "providers": [
+          "openai"
+        ]
+      }
+    ],
+    "cases": [
+      {
+        "pools": [
+          [
+            "spark"
+          ],
+          [
+            "spark",
+            "claude"
+          ],
+          [
+            "gpt"
+          ]
+        ],
+        "harness": "claude-code",
+        "out": [
+          1
+        ]
+      },
+      {
+        "pools": [
+          [
+            "spark"
+          ],
+          [
+            "spark",
+            "claude"
+          ],
+          [
+            "gpt"
+          ]
+        ],
+        "harness": "codex",
+        "out": [
+          2
+        ]
+      },
+      {
+        "pools": [
+          [
+            "spark",
+            "someone-else"
+          ],
+          []
+        ],
+        "harness": "claude-code",
+        "out": [
+          0,
+          1
+        ]
+      }
+    ]
+  },
+  "envKeyValid": [
+    {
+      "key": "A",
+      "out": true
+    },
+    {
+      "key": "_",
+      "out": true
+    },
+    {
+      "key": "GH_TOKEN",
+      "out": true
+    },
+    {
+      "key": "A1",
+      "out": true
+    },
+    {
+      "key": "_A_1",
+      "out": true
+    },
+    {
+      "key": "",
+      "out": false
+    },
+    {
+      "key": "1A",
+      "out": false
+    },
+    {
+      "key": "a",
+      "out": false
+    },
+    {
+      "key": "gh_token",
+      "out": false
+    },
+    {
+      "key": "GH-TOKEN",
+      "out": false
+    },
+    {
+      "key": "GH TOKEN",
+      "out": false
+    },
+    {
+      "key": "GH.TOKEN",
+      "out": false
+    }
+  ],
+  "headlinePct": [
+    {
+      "windows": [
+        {
+          "key": "session",
+          "utilization": 62.4
+        },
+        {
+          "key": "week",
+          "utilization": 99.0
+        }
+      ],
+      "out": 62
+    },
+    {
+      "windows": [
+        {
+          "key": "week",
+          "utilization": 18.6
+        },
+        {
+          "key": "month",
+          "utilization": 40.2
+        }
+      ],
+      "out": 40
+    },
+    {
+      "windows": [],
+      "out": null
+    },
+    {
+      "windows": [
+        {
+          "key": "session",
+          "utilization": -5.0
+        }
+      ],
+      "out": 0
+    },
+    {
+      "windows": [
+        {
+          "key": "session",
+          "utilization": 140.0
+        }
+      ],
+      "out": 100
+    },
+    {
+      "windows": [
+        {
+          "key": "week",
+          "utilization": 12.5
+        }
+      ],
+      "out": 13
+    }
+  ]
+}

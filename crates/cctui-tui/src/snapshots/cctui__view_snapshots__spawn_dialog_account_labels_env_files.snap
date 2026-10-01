@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 575
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0┌ New session ─────────────────────────────────────────────────────────┐
+ 1 Sessions  2│  Machine  orion                                                      │
+   ▾ Needs inp│  Dir      /home/dev/infra                                            │
+▸    ● [claude│  Name     —                                                          │
+   ▾ Working (│  Harness  claude-code                                                │
+     ● [claude│  Model    —                                                          │
+     ▾ subagen│  Effort   —                                                          │
+       ↳ ● [cl│  Mode     default                                                    │
+   ▾ Completed│           the account's own setting                                  │
+     ○ [claude│  Prompt   —                                                          │
+              │ Account                                                              │
+              │   [personal-max  62% used]                                           │
+              │        pool: personal                                                │
+              │      • personal-max                 62%                              │
+              │        auto (most allocation left)                                   │
+              │        machine login (no account)                                    │
+              │ Labels                                                               │
+              │   [x] cct  [ ] infra                                                 │
+              │ Env                                                                  │
+              │   1 set  (a add · d delete)                                          │
+              │      GH_TOKEN                 = **********                           │
+              │ Files                                                                │
+              │ › 1 staged  (o add · d remove)                                       │
+ j/k:nav  Ente└──────────────────────────────────────────────────────────────────────┘

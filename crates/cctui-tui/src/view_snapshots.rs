@@ -477,6 +477,104 @@ fn session_list_unread_only() {
 
 /// Select mode: the checkbox gutter, the picked rows and the strip that
 /// replaces the hotkey hints.
+/// The spawn dialog with this lane's sections filled in, driven through the
+/// keyboard: the account picker open and filtered to the harness, a label on,
+/// an env secret masked, a file staged.
+#[test]
+fn spawn_dialog_account_labels_env_files() {
+    use crate::app::spawn::{SpawnAction, SpawnFetch};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let file = tmp.path().join("trace.log");
+    std::fs::write(&file, vec![b'x'; 12 * 1024]).expect("write");
+
+    let mut app = app_with_sessions();
+    app.labels.all = vec![
+        cctui_proto::api::Label { id: "l1".into(), name: "cct".into(), color: String::new() },
+        cctui_proto::api::Label { id: "l2".into(), name: "infra".into(), color: String::new() },
+    ];
+    crate::app::reduce(&mut app, crate::app::Action::Spawn(SpawnAction::Open));
+
+    for fetch in [
+        SpawnFetch::Accounts(
+            serde_json::from_value(serde_json::json!([
+                {"id": "a1", "name": "personal-max", "providers": [{"provider": "anthropic"}]},
+                {"id": "a2", "name": "work-team", "providers": [{"provider": "openai"}]},
+            ]))
+            .expect("accounts"),
+        ),
+        SpawnFetch::Pools(
+            serde_json::from_value(serde_json::json!([
+                {"id": "p1", "name": "personal", "members": [{"account_id": "a1"}]},
+            ]))
+            .expect("pools"),
+        ),
+        SpawnFetch::Usage(
+            serde_json::from_value(serde_json::json!([
+                {"account": "a1", "windows": [{"key": "session", "utilization": 62.0}]},
+            ]))
+            .expect("usage"),
+        ),
+    ] {
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::Spawn(SpawnAction::DataLoaded(Box::new(fetch))),
+        );
+    }
+
+    let press = |app: &mut crate::app::App, code: KeyCode| {
+        crate::app::reduce(
+            app,
+            crate::app::Action::Spawn(SpawnAction::Key(KeyEvent::new(code, KeyModifiers::NONE))),
+        );
+    };
+    let tab = |app: &mut crate::app::App| {
+        crate::app::reduce(app, crate::app::Action::Spawn(SpawnAction::NextField));
+    };
+    let type_text = |app: &mut crate::app::App, text: &str| {
+        for c in text.chars() {
+            crate::app::reduce(
+                app,
+                crate::app::Action::Spawn(SpawnAction::Key(KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                ))),
+            );
+        }
+    };
+
+    // Tab off the core rows onto the account picker, then pick the anthropic
+    // account; the openai one is filtered out under claude-code.
+    let core_rows = {
+        let form = app.spawn.as_ref().expect("the dialog is open");
+        form.sections[0].rows(&form.fields)
+    };
+    for _ in 0..core_rows {
+        tab(&mut app);
+    }
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char(' '));
+
+    tab(&mut app);
+    press(&mut app, KeyCode::Char(' '));
+
+    tab(&mut app);
+    press(&mut app, KeyCode::Char('a'));
+    type_text(&mut app, "gh_token");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "ghp_secret");
+
+    tab(&mut app);
+    press(&mut app, KeyCode::Char('o'));
+    type_text(&mut app, file.to_str().expect("utf8"));
+    press(&mut app, KeyCode::Enter);
+
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 #[test]
 fn session_list_select_mode() {
     use crate::app::row_actions::RowAction;

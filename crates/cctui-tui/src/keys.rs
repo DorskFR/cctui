@@ -25,6 +25,7 @@ use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::slice::SliceAction;
+use crate::app::spawn::SpawnAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
 use crate::app::unread::UnreadAction;
@@ -92,6 +93,7 @@ pub const fn context_for(
         };
     }
     match view {
+        View::Spawn => Context::Spawn,
         View::SessionList => Context::SessionList,
         View::Bookmarks => Context::Bookmarks,
         View::Conversation => Context::Conversation,
@@ -193,7 +195,8 @@ pub fn map_input(
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(-3))),
-            View::FileViewer
+            View::Spawn
+            | View::FileViewer
             | View::HarnessMode
             | View::Help
             | View::HistoryPicker
@@ -214,7 +217,8 @@ pub fn map_input(
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(-3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(3))),
-            View::FileViewer
+            View::Spawn
+            | View::FileViewer
             | View::HarnessMode
             | View::Help
             | View::HistoryPicker
@@ -257,6 +261,11 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleFoldSection => Action::SessionLive(SessionLiveAction::ToggleFoldSection),
         ActionId::ToggleFoldAll => Action::SessionLive(SessionLiveAction::ToggleFoldAll),
 
+        ActionId::SpawnOpen => Action::Spawn(SpawnAction::Open),
+        ActionId::SpawnNextField => Action::Spawn(SpawnAction::NextField),
+        ActionId::SpawnPrevField => Action::Spawn(SpawnAction::PrevField),
+        ActionId::SpawnSubmit => Action::Spawn(SpawnAction::Submit),
+        ActionId::SpawnCancel => Action::Spawn(SpawnAction::Close),
         ActionId::ListSections => Action::ListShape(ListShapeAction::ToggleSectionsMenu),
         ActionId::ListSortCycle => Action::ListShape(ListShapeAction::CycleSort),
         ActionId::ListSortFlip => Action::ListShape(ListShapeAction::FlipSortDir),
@@ -494,6 +503,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
         Context::ListSearch => Some(Action::ListSearch(ListSearchAction::Key(key))),
+        Context::Spawn => Some(Action::Spawn(SpawnAction::Key(key))),
         Context::Rename => Some(Action::RowAction(RowAction::RenameKey(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),

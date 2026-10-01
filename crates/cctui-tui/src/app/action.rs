@@ -89,6 +89,7 @@ pub enum Action {
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
     ListShape(super::list_shape_reduce::ListShapeAction),
+    Spawn(super::spawn::SpawnAction),
     ListSearch(super::list_search::ListSearchAction),
     /// `/` and `n`/`N`: decision 7 scopes them to the view in front.
     SearchCurrentView,
@@ -345,6 +346,9 @@ pub enum Effect {
     },
     /// `GET /labels`: the whole catalogue.
     FetchLabels,
+    FetchAccounts,
+    FetchAccountPools,
+    FetchAccountsUsage,
     CreateLabel {
         name: String,
         color: String,
@@ -378,6 +382,12 @@ pub enum Effect {
         seq: Option<i64>,
     },
     SaveUiState(crate::config::uistate::UiState),
+    /// `POST /sessions/spawn`. The reply arrives as a `command_result`.
+    SpawnSession {
+        request: Box<cctui_proto::api::SpawnRequest>,
+        /// Attachments the dialog staged, sent as parts of the same request.
+        files: Vec<(String, Vec<u8>)>,
+    },
     /// `PUT /settings` with the whole blob, patched: the route replaces.
     SaveSettings {
         data: serde_json::Value,

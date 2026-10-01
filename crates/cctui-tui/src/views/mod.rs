@@ -22,6 +22,7 @@ pub mod row_actions;
 pub mod sections;
 pub mod sessions;
 pub mod sidebar;
+pub mod spawn;
 pub mod terminal;
 
 use ratatui::Frame;
@@ -56,6 +57,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         // The sidebar is focus only: the conversation draws the panel itself,
         // so taking the keyboard never redraws the transcript differently.
         View::Conversation | View::Sidebar => conversation::draw(frame, app),
+        // The dialog is modal over the list it was opened from.
+        View::Spawn => {
+            sessions::draw(frame, app);
+            spawn::draw(frame, app);
+        }
         // Help always renders over the session list, whatever it was opened from.
         View::Help => {
             sessions::draw(frame, app);

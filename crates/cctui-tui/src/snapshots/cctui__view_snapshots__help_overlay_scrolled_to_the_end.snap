@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 830
+assertion_line: 928
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+p / ↑  Previous prompt                  Row glyphs                                     │
-▸ │  Enter       Put this prompt in the composer    ●           working                          │
-  │File viewer                                      ◐           stale or asleep                  │
-  │  j / ↓       Scroll down                        ○           idle                             │
-  │  k / ↑       Scroll up                          ☾           hibernated                       │
-  │  PgDn        Page down                          ↳           subagent                         │
-  │  PgUp        Page up                            ▸ / ▾       folded / open group              │
-  │  g           Jump to the top                    [name]      a label, tinted by its hue       │
-  │  q / Esc     Close the file viewer              +N          more labels than fit             │
-  │  o           Open in the desktop viewer         !           permission waiting on you        │
-  │Machines                                         ?           question waiting on you          │
-  │  j / ↓       Next machine                       P           plan waiting for approval        │
-  │  k / ↑       Previous machine                   ●N          unread messages                  │
-  │  r           Refresh the machine list           ⚡           auto-approve on                  │
-  │  Enter       Aim a spawn at this machine        ⏸           account soft-limited             │
-  │  Esc         Back to the sessions               ⚠           account traffic never seen       │
-  │Dispatchers                                      ❄           cache cold, next turn re-reads   │
-  │  Ctrl+n / ↓  Next dispatcher                    ⌂           a job cctui did not start        │
-  │  Ctrl+p / ↑  Previous dispatcher                ✕reason     how it ended                     │
-  │  Ctrl+a      Enroll a dispatcher                ⚙N age      tool calls, age of the last      │
+  │Prompt history                                 Row glyphs                                     │
+▸ │  Esc         Close the prompt list              ●           working                          │
+  │  Ctrl+n / ↓  Next prompt                        ◐           stale or asleep                  │
+  │  Ctrl+p / ↑  Previous prompt                    ○           idle                             │
+  │  Enter       Put this prompt in the composer    ☾           hibernated                       │
+  │File viewer                                      ↳           subagent                         │
+  │  j / ↓       Scroll down                        ▸ / ▾       folded / open group              │
+  │  k / ↑       Scroll up                          [name]      a label, tinted by its hue       │
+  │  PgDn        Page down                          +N          more labels than fit             │
+  │  PgUp        Page up                            !           permission waiting on you        │
+  │  g           Jump to the top                    ?           question waiting on you          │
+  │  q / Esc     Close the file viewer              P           plan waiting for approval        │
+  │  o           Open in the desktop viewer         ●N          unread messages                  │
+  │Machines                                         ⚡           auto-approve on                  │
+  │  j / ↓       Next machine                       ⏸           account soft-limited             │
+  │  k / ↑       Previous machine                   ⚠           account traffic never seen       │
+  │  r           Refresh the machine list           ❄           cache cold, next turn re-reads   │
+  │  Enter       Aim a spawn at this machine        ⌂           a job cctui did not start        │
+  │  Esc         Back to the sessions               ✕reason     how it ended                     │
+  │Dispatchers                                      ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

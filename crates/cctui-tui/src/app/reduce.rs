@@ -240,6 +240,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::Conversation(action) => conversation::reduce(app, action),
         Action::ListShape(action) => super::list_shape_reduce::reduce(app, action),
+        Action::Spawn(action) => super::spawn::reduce(app, action),
         Action::ListSearch(action) => super::list_search::reduce(app, action),
         // Decision 7: one key, scoped to whatever view is in front.
         Action::SearchCurrentView => match app.view() {

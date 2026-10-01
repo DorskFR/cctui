@@ -26,6 +26,7 @@ use super::machines::MachineAction;
 use super::pins::PinAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
+use super::spawn::{SpawnAction, SpawnFetch};
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -418,6 +419,27 @@ async fn run(
                 vec![Action::Toast(Level::Error, "could not remove the dispatcher".to_owned())]
             }
         },
+        Effect::FetchAccounts => match server.accounts().await {
+            Ok(accounts) => vec![spawn_data(SpawnFetch::Accounts(accounts))],
+            Err(e) => {
+                tracing::warn!(%e, "listing accounts failed");
+                vec![Action::Toast(Level::Warn, "could not list accounts".to_owned())]
+            }
+        },
+        Effect::FetchAccountPools => match server.account_pools().await {
+            Ok(pools) => vec![spawn_data(SpawnFetch::Pools(pools))],
+            Err(e) => {
+                tracing::warn!(%e, "listing account pools failed");
+                Vec::new()
+            }
+        },
+        Effect::FetchAccountsUsage => match server.accounts_usage().await {
+            Ok(usage) => vec![spawn_data(SpawnFetch::Usage(usage))],
+            Err(e) => {
+                tracing::warn!(%e, "reading account usage failed");
+                Vec::new()
+            }
+        },
         Effect::FetchLabels => match server.labels().await {
             Ok(labels) => vec![Action::Labels(LabelAction::Loaded(labels))],
             Err(e) => {
@@ -521,6 +543,19 @@ async fn run(
                 Vec::new()
             }
         },
+        Effect::SpawnSession { request, files } => {
+            let files = files
+                .into_iter()
+                .map(|(name, bytes)| cctui_client::UploadFile { name, bytes })
+                .collect();
+            match server.spawn_session(&request, files).await {
+                Ok(()) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!(%e, "the spawn request failed");
+                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+                }
+            }
+        }
         Effect::SaveSettings { data } => {
             // The version the server last reported travels with the blob; it
             // migrates an older payload forward rather than rejecting it.
@@ -620,6 +655,10 @@ async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
             Vec::new()
         }
     }
+}
+
+fn spawn_data(fetch: SpawnFetch) -> Action {
+    Action::Spawn(SpawnAction::DataLoaded(Box::new(fetch)))
 }
 
 async fn subscribe(ws: &WsClient, session_id: String) {
@@ -783,7 +822,7 @@ fn read_attachment(session_id: &str, path: &str) -> Vec<Action> {
 
 /// Extension-based content type; only the families the composer treats
 /// specially need naming, everything else is opaque bytes.
-fn guess_content_type(name: &str) -> String {
+pub fn guess_content_type(name: &str) -> String {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "png" => "image/png",

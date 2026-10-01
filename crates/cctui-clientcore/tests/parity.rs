@@ -310,3 +310,160 @@ fn attachment_caps_parity() {
     assert_eq!(uploads::MAX_TOTAL_BYTES, fx["MAX_TOTAL_BYTES"].as_u64().unwrap());
     assert_eq!(u64::from(uploads::MAX_FILES), fx["MAX_FILES"].as_u64().unwrap());
 }
+
+/// `fixtures/parity/spawnBody.json`, replayed by the web UI's own test against
+/// `buildSpawnBody`. Only the keys a case names are asserted, so a field a
+/// later lane adds cannot invalidate the file.
+#[test]
+fn spawn_body_parity() {
+    use cctui_clientcore::spawn::{SpawnFields, build_spawn_body};
+
+    let fx = fixture("spawnBody");
+    for case in cases(&fx, "cases") {
+        let name = s(case, "name");
+        let f = &case["fields"];
+        let text = |key: &str| f[key].as_str().unwrap_or_default().to_string();
+        let list = |key: &str| {
+            f[key]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(ToString::to_string)).collect())
+                .unwrap_or_default()
+        };
+        let fields = SpawnFields {
+            machine_id: text("machine_id"),
+            working_dir: text("working_dir"),
+            name: text("name"),
+            prompt: text("prompt"),
+            adapter_id: text("adapter_id"),
+            permission_mode: text("permission_mode"),
+            model_claude: text("model_claude"),
+            model_codex: text("model_codex"),
+            model_account: text("model_account"),
+            effort_claude: text("effort_claude"),
+            effort_codex: text("effort_codex"),
+            service_tier: text("service_tier"),
+            account: text("account"),
+            account_provider: text("account_provider"),
+            labels: list("labels"),
+            context_items: list("context_items"),
+            context_auto: f["context_auto"].as_bool().unwrap_or(false),
+        };
+        let provider = case["provider"].as_str();
+        let got =
+            build_spawn_body(&fields, provider, std::collections::BTreeMap::new(), None, None);
+        let got = serde_json::to_value(&got).unwrap_or_else(|e| panic!("{name}: {e}"));
+
+        let expect = case["expect"].as_object().unwrap_or_else(|| panic!("{name}: no expect"));
+        for (key, want) in expect {
+            // The wire omits a `false` flag and an empty list; the TypeScript
+            // object spells both out. Same meaning, so an absent key is read as
+            // whatever empty the expectation is shaped like.
+            let actual = got.get(key).cloned().unwrap_or_else(|| match want {
+                Value::Bool(_) => Value::Bool(false),
+                Value::Array(_) => Value::Array(Vec::new()),
+                _ => Value::Null,
+            });
+            assert_eq!(&actual, want, "{name}: {key}");
+        }
+    }
+}
+
+#[test]
+fn spawn_accounts_parity() {
+    use cctui_clientcore::spawn_accounts::{
+        ALL_ADAPTERS, PoolMembers, UsageWindow, account_adapters, account_backs_adapter,
+        adapter_for_provider, compatible_pools, effective_adapter_for, env_key_valid, headline_pct,
+        provider_for_adapter, stale_account_pick,
+    };
+
+    let fx = fixture("spawnAccounts");
+    assert_eq!(strings(&fx["allAdapters"]), ALL_ADAPTERS);
+
+    for c in cases(&fx, "adapterForProvider") {
+        assert_eq!(adapter_for_provider(&s(c, "provider")), s(c, "out"), "adapter {c}");
+    }
+    for c in cases(&fx, "accountAdapters") {
+        let providers = strings(&c["providers"]);
+        assert_eq!(account_adapters(&providers), strings(&c["out"]), "accountAdapters {c}");
+    }
+    for c in cases(&fx, "accountBacksAdapter") {
+        let providers = c["providers"].as_array().map(|_| strings(&c["providers"]));
+        assert_eq!(
+            account_backs_adapter(providers.as_deref(), &s(c, "adapter")),
+            c["out"].as_bool().expect("a bool"),
+            "accountBacksAdapter {c}"
+        );
+    }
+    for c in cases(&fx, "effectiveAdapterFor") {
+        let providers = c["providers"].as_array().map(|_| strings(&c["providers"]));
+        assert_eq!(
+            effective_adapter_for(providers.as_deref(), &s(c, "adapter")),
+            s(c, "out"),
+            "effectiveAdapterFor {c}"
+        );
+    }
+    for c in cases(&fx, "providerForAdapter") {
+        let providers = strings(&c["providers"]);
+        assert_eq!(
+            provider_for_adapter(&providers, &s(c, "adapter")),
+            opt_s(c, "out").as_deref(),
+            "providerForAdapter {c}"
+        );
+    }
+    for c in cases(&fx, "staleAccountPick") {
+        assert_eq!(
+            stale_account_pick(&s(c, "value"), &strings(&c["names"])),
+            c["out"].as_bool().expect("a bool"),
+            "staleAccountPick {c}"
+        );
+    }
+    for c in cases(&fx, "envKeyValid") {
+        assert_eq!(
+            env_key_valid(&s(c, "key")),
+            c["out"].as_bool().expect("a bool"),
+            "envKeyValid {c}"
+        );
+    }
+    for c in cases(&fx, "headlinePct") {
+        let windows: Vec<UsageWindow> = c["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .map(|w| UsageWindow {
+                key: s(w, "key"),
+                utilization: w["utilization"].as_f64().expect("a number"),
+            })
+            .collect();
+        let want = c["out"].as_u64().map(|n| u32::try_from(n).expect("fits"));
+        assert_eq!(headline_pct(&windows), want, "headlinePct {c}");
+    }
+
+    let group = &fx["compatiblePools"];
+    let lookup = |key: &str| -> Option<Vec<String>> {
+        group["accounts"]
+            .as_array()
+            .expect("accounts")
+            .iter()
+            .find(|a| a["key"] == key)
+            .map(|a| strings(&a["providers"]))
+    };
+    for c in cases(group, "cases") {
+        let owned: Vec<Vec<String>> =
+            c["pools"].as_array().expect("pools").iter().map(strings).collect();
+        let pools: Vec<PoolMembers<'_>> = owned
+            .iter()
+            .map(|members| PoolMembers { members: members.iter().map(String::as_str).collect() })
+            .collect();
+        let want: Vec<usize> = c["out"]
+            .as_array()
+            .expect("out")
+            .iter()
+            .map(|v| usize::try_from(v.as_u64().expect("an index")).expect("fits"))
+            .collect();
+        assert_eq!(
+            compatible_pools(&pools, &lookup, &s(c, "harness")),
+            want,
+            "compatiblePools {c}"
+        );
+    }
+}

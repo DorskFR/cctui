@@ -606,6 +606,50 @@ impl Client {
         self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
     }
 
+    /// `POST /sessions/spawn`. The route is multipart so a spawn can carry file
+    /// uploads; with none to send, the JSON body is the only part.
+    /// `POST /sessions/spawn`. The route is `multipart/form-data`: the JSON
+    /// goes in a `request` part, and each attachment in a part of its own.
+    pub async fn spawn_session(
+        &self,
+        request: &cctui_proto::api::SpawnRequest,
+        files: Vec<UploadFile>,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_spawn")?;
+        let json = serde_json::to_string(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        let mut form = reqwest::multipart::Form::new().text("request", json);
+        for file in files {
+            let part = reqwest::multipart::Part::bytes(file.bytes).file_name(file.name);
+            form = form.part("files", part);
+        }
+        let resp = self
+            .http
+            .post(self.url_for(route, &[]))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|source| ClientError::Transport { route: route.id, source })?;
+        let _ = check_status(route.id, resp).await?;
+        Ok(())
+    }
+
+    /// The caller's accounts, as the spawn picker needs them.
+    pub async fn accounts(&self) -> Result<Vec<AccountPick>, ClientError> {
+        self.json(Self::route("get_accounts")?, &[], &[], None).await
+    }
+
+    /// The caller's account pools with their membership.
+    pub async fn account_pools(&self) -> Result<Vec<PoolPick>, ClientError> {
+        self.json(Self::route("get_account_pools")?, &[], &[], None).await
+    }
+
+    /// Usage windows per provider credential, for the picker's percentages.
+    pub async fn accounts_usage(&self) -> Result<Vec<AccountUsagePick>, ClientError> {
+        self.json(Self::route("get_accounts_usage")?, &[], &[], None).await
+    }
+
     /// The caller's settings blob. The TUI reads it and never writes it back.
     pub async fn settings(&self) -> Result<SettingsPayload, ClientError> {
         self.json(Self::route("get_settings")?, &[], &[], None).await
@@ -841,6 +885,58 @@ fn batch_ids(ids: &[String]) -> Value {
     serde_json::json!({ "ids": ids })
 }
 
+/// An account as the spawn picker reads it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountPick {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(default)]
+    pub providers: Vec<ProviderPick>,
+}
+
+impl AccountPick {
+    /// Provider ids, in the order the server returned them.
+    #[must_use]
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.providers.iter().map(|p| p.provider.as_str()).collect()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderPick {
+    pub provider: String,
+}
+
+/// A pool and its membership.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolPick {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub members: Vec<PoolMemberPick>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolMemberPick {
+    pub account_id: String,
+}
+
+/// One credential's usage windows.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountUsagePick {
+    pub account: String,
+    #[serde(default)]
+    pub windows: Vec<UsageWindowPick>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsageWindowPick {
+    pub key: String,
+    pub utilization: f64,
+}
+
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
     resp.headers()
         .get(ETAG)
@@ -982,6 +1078,10 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "post_sessions_spawn",
+            "get_accounts",
+            "get_account_pools",
+            "get_accounts_usage",
             "patch_sessions_by_id",
             "post_sessions_by_id_kill",
             "post_sessions_archive",

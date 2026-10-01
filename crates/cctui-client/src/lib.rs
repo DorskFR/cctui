@@ -15,9 +15,10 @@ use std::sync::Arc;
 pub use cctui_proto::api::machine_resources::MachineResourcesRow;
 pub use error::ClientError;
 pub use rest::{
-    Client, ConversationFetch, ConversationRow, Dispatcher, EnrollDispatcher, EnrolledDispatcher,
-    FileRead, FileRefusal, LinkedFileOwner, Page, PendingPermissionItem, UpdateDispatcher,
-    UploadFile,
+    AccountPick, AccountUsagePick, Client, ConversationFetch, ConversationRow, Dispatcher,
+    EnrollDispatcher, EnrolledDispatcher, FileRead, FileRefusal, LinkedFileOwner, Page,
+    PendingPermissionItem, PoolMemberPick, PoolPick, ProviderPick, UpdateDispatcher, UploadFile,
+    UsageWindowPick,
 };
 pub use ws::state::{Ack, AckHandle, AckRegistry, Health, SubscriptionState, Watchdog, backoff};
 pub use ws::transport::{Connector, Frame, HttpConnector, StreamTransport, Transport};

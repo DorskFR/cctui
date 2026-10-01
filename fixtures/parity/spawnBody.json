@@ -1,0 +1,183 @@
+{
+  "_comment": "Golden for buildSpawnBody (webui spawn/spawnBody.ts) and clientcore::spawn::build_spawn_body. Each case is the form choices plus the request they must produce. `expect` lists only the keys that matter to the case: both sides assert on those, so a key a lane adds later does not invalidate the file. The account sentinels are written with \\u0000 because that is what the pickers put in the value space. `account` and `pool` are passed through verbatim: the server resolves both BY NAME (account_resolve::resolve_account_or_pool), so a picker must hold names, and these cases use names deliberately rather than ids.",
+  "cases": [
+    {
+      "name": "auto account, claude-code, nothing else filled",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui/",
+        "adapter_id": "claude-code"
+      },
+      "provider": null,
+      "expect": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "name": null,
+        "prompt": null,
+        "model": null,
+        "effort": null,
+        "service_tier": null,
+        "permission_mode": null,
+        "account": null,
+        "provider": null,
+        "no_account": false,
+        "auto_account": true,
+        "pool": null
+      }
+    },
+    {
+      "name": "claude-code with every core field set",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "name": "  fix the parser  ",
+        "prompt": "  look at the flaky test  ",
+        "adapter_id": "claude-code",
+        "permission_mode": "yolo",
+        "model_claude": "opus",
+        "model_codex": "gpt-5.6-sol",
+        "effort_claude": "high",
+        "effort_codex": "medium",
+        "service_tier": "fast"
+      },
+      "provider": null,
+      "expect": {
+        "name": "fix the parser",
+        "prompt": "look at the flaky test",
+        "permission_mode": "yolo",
+        "model": "opus",
+        "effort": "high",
+        "service_tier": null
+      }
+    },
+    {
+      "name": "codex takes its own model, effort and tier",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "codex",
+        "model_claude": "opus",
+        "model_codex": "gpt-5.6-sol",
+        "effort_claude": "high",
+        "effort_codex": "medium",
+        "service_tier": "fast"
+      },
+      "provider": null,
+      "expect": {
+        "adapter_id": "codex",
+        "model": "gpt-5.6-sol",
+        "effort": "medium",
+        "service_tier": "fast"
+      }
+    },
+    {
+      "name": "a compatible-endpoint account drives the model",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "account": "fw",
+        "model_claude": "opus",
+        "model_account": "llama-3.3-70b"
+      },
+      "provider": "fireworks-compatible",
+      "expect": {
+        "model": "llama-3.3-70b",
+        "account": "fw",
+        "provider": "fireworks-compatible",
+        "auto_account": false,
+        "no_account": false
+      }
+    },
+    {
+      "name": "a named account on a plain provider keeps the family model",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "account": "main",
+        "model_claude": "opus",
+        "model_account": "llama-3.3-70b"
+      },
+      "provider": "anthropic",
+      "expect": {
+        "model": "opus",
+        "account": "main",
+        "provider": "anthropic",
+        "auto_account": false
+      }
+    },
+    {
+      "name": "the no-account sentinel drops account and provider",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "account": "\u0000no-account"
+      },
+      "provider": "anthropic",
+      "expect": {
+        "account": null,
+        "provider": null,
+        "no_account": true,
+        "auto_account": false,
+        "pool": null
+      }
+    },
+    {
+      "name": "a pool pick is bounded auto",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "account": "\u0000pool:research"
+      },
+      "provider": "anthropic",
+      "expect": {
+        "pool": "research",
+        "account": null,
+        "provider": null,
+        "no_account": false,
+        "auto_account": false
+      }
+    },
+    {
+      "name": "labels and context travel as given",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "labels": ["l-1", "l-2"],
+        "context_items": ["notes", "runbook"],
+        "context_auto": true
+      },
+      "provider": null,
+      "expect": {
+        "label_ids": ["l-1", "l-2"],
+        "context": { "items": ["notes", "runbook"], "auto": true }
+      }
+    },
+    {
+      "name": "a bare root working dir keeps its slash",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "///",
+        "adapter_id": "claude-code"
+      },
+      "provider": null,
+      "expect": { "working_dir": "/" }
+    },
+    {
+      "name": "an unreadable permission mode leaves it to the server",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "permission_mode": "sideways"
+      },
+      "provider": null,
+      "expect": { "permission_mode": null }
+    }
+  ]
+}
