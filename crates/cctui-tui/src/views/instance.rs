@@ -84,9 +84,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Line::raw(""),
     ];
 
-    match instance.run_readout() {
-        Some((phase, tone)) => {
-            let run = instance.run.as_ref().expect("a readout implies a run");
+    match instance.run_readout().zip(instance.run.as_ref()) {
+        Some(((phase, tone), run)) => {
             lines.push(Line::from(Span::styled(" last update run", theme::section_title())));
             lines.push(row(
                 "phase",
