@@ -57,6 +57,7 @@
 		onFollowup,
 		onNavigate,
 		chrome = 'drawer',
+		active = true,
 		maximized = false,
 		onmaximize
 	}: {
@@ -76,6 +77,9 @@
 		/** `drawer` keeps the back chevron and the document scroll lock; `tile`
 		 *  swaps in close/maximize and leaves the page scrollable. */
 		chrome?: ConversationChrome;
+		/** False for the tiles that are not the active one: only the active pane
+		 *  answers the window keyboard chords. */
+		active?: boolean;
 		maximized?: boolean;
 		onmaximize?: () => void;
 	} = $props();
@@ -390,6 +394,8 @@
 				onexport={sa.export}
 				onsearch={() => search.openBar()}
 				onescape={search.escape}
+				onescapeaction={chrome === 'tile' && stream.working ? sa.interrupt : undefined}
+				shortcuts={active}
 				onfork={fork.openDialog}
 				onfollowup={onFollowup ? () => followup() : undefined}
 				onforkselect={forkable ? forkSelect.toggleMode : undefined}

@@ -8,7 +8,7 @@
 	import type { Label } from '@bindings/Label';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
-	import { isArchiveChord, isFindChord } from '$lib/platform';
+	import { headerKeyAction } from './headerKeys';
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
@@ -39,6 +39,8 @@
 		onexport,
 		onsearch,
 		onescape,
+		onescapeaction,
+		shortcuts = true,
 		onfork,
 		onfollowup,
 		onforkselect,
@@ -82,6 +84,11 @@
 		/** First refusal on Escape: true when it was consumed (the find bar
 		 *  clears or closes) and the drawer must stay open. */
 		onescape?: () => boolean;
+		/** What an unconsumed Escape does instead of closing: a tile has nothing
+		 *  to close back to and interrupts its own session. */
+		onescapeaction?: () => void;
+		/** Whether this header owns the window chords. One tile at a time does. */
+		shortcuts?: boolean;
 		onfork: () => void;
 		onfollowup?: () => void;
 		// Toggle multi-select-to-fork mode; omitted → button hidden
@@ -229,30 +236,32 @@
 		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
+	// Window-level so the chords work wherever focus sits, including the
+	// composer. `shortcuts` is what keeps N tiles from firing N times.
 	function onWinKey(e: KeyboardEvent) {
-		// ⌘F / Ctrl+F opens the transcript's own find bar in place of the
-		// browser's, which can only see the paged window.
-		if (onsearch && !renaming && isFindChord(e)) {
+		const action = headerKeyAction(e, {
+			active: shortcuts,
+			renaming,
+			archived,
+			canSearch: !!onsearch,
+			archiveShortcut: settings.archiveShortcut
+		});
+		if (action === 'search') {
 			e.preventDefault();
-			onsearch();
+			onsearch?.();
 			return;
 		}
-		// Archive chord (⌘ E / Ctrl+E): interrupt any running turn and archive the
-		// session, which then dismisses the drawer. Opt-out via Settings. Skipped
-		// while renaming (so the chord can't fire mid-edit) and on already-archived
-		// sessions (nothing to archive). Window-level so it works regardless of
-		// whether focus is in the composer.
-		if (!archived && !renaming && settings.archiveShortcut && isArchiveChord(e)) {
+		if (action === 'archive') {
 			e.preventDefault();
 			onstoparchive();
 			return;
 		}
-		if (e.key !== 'Escape' || renaming) return;
+		if (action !== 'escape') return;
 		if (onescape?.()) {
 			e.preventDefault();
 			return;
 		}
-		onclose?.();
+		(onescapeaction ?? onclose)?.();
 	}
 </script>
 
