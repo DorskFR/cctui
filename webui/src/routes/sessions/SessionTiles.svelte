@@ -19,6 +19,7 @@
 	} = $props();
 
 	let maximized = $state<string | null>(null);
+	let picked = $state<string | null>(null);
 	let width = $state(0);
 	let height = $state(0);
 
@@ -33,6 +34,11 @@
 	const panes = $derived(shown.slice(0, capacity));
 	const overflow = $derived(shown.slice(capacity));
 	const layout = $derived(tileLayout(panes.length, { width, height }));
+	// Exactly one tile holds the keyboard at a time: the one last clicked or
+	// focused into, else the first, so Escape can never hit every session.
+	const active = $derived(
+		picked && panes.some((p) => p.id === picked) ? picked : (panes[0]?.id ?? null)
+	);
 
 	$effect(() => {
 		onoverflow?.(overflow);
@@ -49,14 +55,20 @@
 >
 	{#each panes as s, i (s.id)}
 		{@const place = layout.placements[i]}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="tile"
+			class:active={active === s.id}
 			data-session-id={s.id}
+			data-active={active === s.id ? 'on' : undefined}
 			style:grid-column="{place?.start ?? 1} / span {place?.span ?? 1}"
 			style:grid-row={place?.row ?? 1}
+			onpointerdown={() => (picked = s.id)}
+			onfocusin={() => (picked = s.id)}
 		>
 			<ConversationPane
 				chrome="tile"
+				active={active === s.id}
 				session={s}
 				maximized={maximized === s.id}
 				onmaximize={() => (maximized = maximized === s.id ? null : s.id)}
@@ -92,6 +104,11 @@
 		overflow: hidden;
 		border-radius: 0;
 		background: var(--bg);
+	}
+	/* Inset so the ring reads as the tile's own edge inside the 1px grid gap. */
+	.tile.active {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
 	}
 	.empty {
 		grid-column: 1 / -1;
