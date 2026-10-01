@@ -12,6 +12,7 @@ use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
 use crate::app::dispatchers::DispatcherAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::harness_mode::HarnessModeAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
@@ -110,6 +111,7 @@ pub const fn context_for(
         // and the cards ahead of it, and falls through to the transcript.
         View::Sidebar => Context::Sidebar,
         View::Overview => Context::Overview,
+        View::HarnessMode => Context::HarnessMode,
     }
 }
 
@@ -192,6 +194,7 @@ pub fn map_input(
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(-3))),
             View::FileViewer
+            | View::HarnessMode
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -212,6 +215,7 @@ pub fn map_input(
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(3))),
             View::FileViewer
+            | View::HarnessMode
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -460,6 +464,11 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 
         ActionId::Diagnose => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Facts)),
         ActionId::Info => Action::Diagnose(DiagnoseAction::Open(DiagnoseMode::Info)),
+        ActionId::HarnessModeClose => Action::HarnessMode(HarnessModeAction::Close),
+        ActionId::HarnessModeNext => Action::HarnessMode(HarnessModeAction::SelectNext),
+        ActionId::HarnessModePrev => Action::HarnessMode(HarnessModeAction::SelectPrev),
+        ActionId::HarnessModeCommit => Action::HarnessMode(HarnessModeAction::Commit),
+
         ActionId::OverviewScrollDown => Action::Slice(SliceAction::OverviewScroll(1)),
         ActionId::OverviewScrollUp => Action::Slice(SliceAction::OverviewScroll(-1)),
         ActionId::OverviewRefresh => Action::Slice(SliceAction::Refresh),

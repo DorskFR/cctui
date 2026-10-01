@@ -535,8 +535,8 @@ module = "main.rs"
 [[route]]
 id = "put_settings"
 # PUT /settings — Replace your user settings.
-tui = "planned"
-ticket = "CCT-1277"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_settings_rescrub"

@@ -7,6 +7,7 @@ pub mod diagnose;
 pub mod dispatchers;
 pub mod fileview;
 pub mod filters;
+pub mod harness_mode;
 pub mod help;
 pub mod history;
 pub mod labels;
@@ -44,6 +45,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Dispatchers => {
             draw_below(frame, app);
             dispatchers::draw(frame, app);
+        }
+        View::HarnessMode => {
+            draw_below(frame, app);
+            if let Some(picker) = app.harness_picker.as_ref() {
+                harness_mode::draw(frame, picker);
+            }
         }
         View::Overview => overview::draw(frame, app),
         // The sidebar is focus only: the conversation draws the panel itself,

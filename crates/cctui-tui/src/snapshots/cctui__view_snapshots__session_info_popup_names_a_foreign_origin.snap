@@ -1,9 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 1041
+assertion_line: 1780
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $1.25 today  ! 1 need input — Ctrl+g
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1 Sessions  2  3  4   starred · live · dispatched  sort: activity ↓  group: status
    ┌ Session info ──────────────────────────────────────────────────────────────────────────────┐
    │s-working                                                                                   │
@@ -12,18 +12,18 @@ expression: render_screen(&mut app)
    │parent                             —                                                        │
    │machine                            orion                                                    │
    │adapter                            claude-code                                              │
-   │origin                             cctui                                                    │
-   │account                            main                                                     │
-   │model                              opus (high)                                              │
-   │permission mode                    yolo                                                     │
-   │registered                         1h ago                                                   │
-   │last heartbeat                     2s ago                                                   │
-   │last tool                          45s ago                                                  │
-   │server:                                                                                     │
-   │status                             active                                                   │
-   │account                            main                                                     │
-   │account bound                      true                                                     │
-   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close    16/30                           │
+   │origin                             foreign — cctui did not start it                         │
+   │account                            ambient                                                  │
+   │model                              —                                                        │
+   │permission mode                    —                                                        │
+   │registered                         —                                                        │
+   │last heartbeat                     —                                                        │
+   │last tool                          —                                                        │
+   │fetching…                                                                                   │
+   │                                                                                            │
+   │                                                                                            │
+   │                                                                                            │
+   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close                                    │
    └────────────────────────────────────────────────────────────────────────────────────────────┘
 
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

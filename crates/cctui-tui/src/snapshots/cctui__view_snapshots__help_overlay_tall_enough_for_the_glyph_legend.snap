@@ -1,149 +1,152 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 220
+assertion_line: 221
 expression: "render_screen_sized(&mut app, 100, height)"
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys ────────────────────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         Ctrl+n / ↓  Next dispatcher                  │
-▸ │  ?           Toggle this cheat sheet            Ctrl+p / ↑  Previous dispatcher              │
-  │  q           Quit cctui                         Ctrl+a      Enroll a dispatcher              │
-  │  1-9         Switch view                        Ctrl+e      Rename or rebind                 │
-  │  /           Search the current view            Ctrl+x      Remove this dispatcher           │
-  │  n           Next search hit                    Ctrl+r      Refresh the dispatcher list      │
-  │  N           Previous search hit                Tab         Next field, or cycle the kind    │
-  │  D           Diagnose the selected session      Enter       Confirm                          │
-  │  i           Session info                       Esc         Back                             │
-  │  M           Machines and daemons               Ctrl+y      Copy the new key                 │
-  │  Ctrl+d      Dispatchers                      Labels                                         │
-  │  Ctrl+g      Jump to the next session needin…   Esc         Close the label list             │
-  │Session list                                     Ctrl+n / ↓  Next label                       │
-  │  j / ↓       Next session                       Ctrl+p / ↑  Previous label                   │
-  │  k / ↑       Previous session                   Space       Attach or detach this label      │
-  │  g           First session                      Ctrl+c      Create a label                   │
-  │  G           Last session                       Ctrl+e      Rename or recolor                │
-  │  Enter       Open the conversation              Ctrl+d      Delete this label                │
-  │  z / Tab     Fold or open the subagent group    Enter       Confirm                          │
-  │  S           Fold or open the section         Label filter                                   │
-  │  Z           Fold or open everything            Esc         Close the label list             │
-  │  f           Choose which sections show         Ctrl+n / ↓  Next label                       │
-  │  o           Cycle the sort field               Ctrl+p / ↑  Previous label                   │
-  │  O           Flip the sort direction            Space / En… Include or exclude this label    │
-  │  v           Cycle what rows group by           a           Show every label again           │
-  │  c           Cycle the row accent dimension   Pinned messages                                │
-  │  U           Show only unread sessions          Esc         Close the pinned messages        │
-  │  p           Pin or unpin the session           Ctrl+n / ↓  Next pin                         │
-  │  x           Archive or unarchive the session   Ctrl+p / ↑  Previous pin                     │
-  │  l           Label this session                 Enter       Jump to the pinned message       │
-  │  L           Filter by label                    d / m       Unpin this message               │
-  │  r           Rename the session               Macros                                         │
-  │  A           Archive every session in the se…   Esc         Close the macro list             │
-  │  X           Kill the session                   Ctrl+n / ↓  Next macro                       │
-  │  u           Undo the last archive              Ctrl+p / ↑  Previous macro                   │
-  │  Space       Select or deselect the row         Enter       Put this prompt in the composer  │
-  │  V           Select up to the anchor          Bookmarks — search or edit                     │
-  │  *           Select every visible row           Enter       Accept                           │
-  │  Esc         Leave select mode                  Esc         Discard                          │
-  │Confirm prompt                                   Tab         Switch between title and note    │
-  │  Y / y       Yes                              Bookmarks — confirm                            │
-  │  N / n / q … No                                 y / Enter   Delete it                        │
-  │Rename a session                                 n / q / Esc Keep it                          │
-  │  Enter       Save the name                    Terminal pane                                  │
-  │  Esc         Discard the name                   T / q / Esc Close the terminal pane          │
-  │Conversation                                     j / ↓       Scroll the terminal down         │
-  │  1-9         Jump to session by number          k / ↑       Scroll the terminal up           │
-  │  Ctrl+f      Fork the session                 Help                                           │
-  │  q / Esc     Back to the session list           j / ↓       Scroll down                      │
-  │  j / ↓       Scroll down                        k / ↑       Scroll up                        │
-  │  k / ↑       Scroll up                          PgDn        Page down                        │
-  │  PgDn        Page down                          PgUp        Page up                          │
-  │  PgUp        Page up                            ? / q / Esc Close this cheat sheet           │
-  │  g           Jump to the top                  Model picker                                   │
-  │  G           Jump to the bottom                 q / Esc     Close the picker                 │
-  │  t           Show timestamps                    j / ↓       Next entry                       │
-  │  Ctrl+c      Interrupt the turn                 k / ↑       Previous entry                   │
-  │  M           Change model and effort            h / ←       Focus the model list             │
-  │  >           Todo and subagent sidebar          l / → / Tab Focus the effort list            │
-  │  u           Go to the parent session           Enter       Apply model and effort           │
-  │  Ctrl+a      Toggle auto-approve              Sidebar                                        │
-  │  v           Select transcript lines            j / ↓       Next subagent                    │
-  │  Ctrl+o      Attach a file                      k / ↑       Previous subagent                │
-  │  o           Expand the focused line            Enter       Open the subagent                │
-  │  z           Expand every thinking and resul…   > / Esc     Close the sidebar                │
-  │  R           Retry the undelivered message      u           Go to the parent session         │
-  │  e           Edit the undelivered message     Permission card                                │
-  │  x           Drop the undelivered message       y           Allow                            │
-  │  y           Copy the focused line as Markdo…   n           Deny                             │
-  │  Y           Copy the code under the cursor     A           Allow and auto-approve           │
-  │  Ctrl+y      Copy a link to this session      Diagnose / info                                │
-  │  :           Run a command (:export)            D           Diagnose the selected session    │
-  │  f           Cycle assistant / you / tools      i           Session info                     │
-  │  F           Choose which lines to show         q / Esc     Close the panel                  │
-  │  T           Watch the live terminal            j / ↓       Scroll the panel down            │
-  │  Ctrl+r      Search sent prompts                k / ↑       Scroll the panel up              │
-  │  m           Pin or unpin the focused line      PgDn        Page the panel down              │
-  │  '           Open the pinned messages           PgUp        Page the panel up                │
-  │  b           Save the focused message as a b…   g           Jump to the top of the panel     │
-  │  Ctrl+t      Insert a canned prompt             r           Refresh the report               │
-  │  Tab         Answer the waiting prompt          y           Copy the session id              │
-  │  g f         Open the file under the cursor   Bookmarks                                      │
-  │Composer                                         j / ↓       Next bookmark                    │
-  │  Ctrl+o      Attach a file                      k / ↑       Previous bookmark                │
-  │  Bksp        Remove the focused attachment      g           First bookmark                   │
-  │  Alt+Bksp    Focus the attachment chips         G           Last bookmark                    │
-  │  →           Next attachment chip               Ctrl+f / P… Scroll the preview down          │
-  │  ←           Previous attachment chip           Ctrl+b / P… Scroll the preview up            │
-  │  Esc         Close the composer                 /           Search the bookmarks             │
-  │  Enter       Send the message                   Enter       Open the source message          │
-  │  Ctrl+j / A… Insert a newline                   y           Copy the bookmark as markdown    │
-  │  ↑           Recall an earlier prompt           e           Edit the title and note          │
-  │  ↓           Recall a later prompt              d           Delete the bookmark              │
-  │  Ctrl+r      Search sent prompts              Overview                                       │
-  │  Tab         Take the session completion        j / ↓       Scroll the overview down         │
-  │  Ctrl+t      Insert a canned prompt             k / ↑       Scroll the overview up           │
-  │Sections popup                                   r           Refresh the counts               │
-  │  f / q / Esc Choose which sections show       Question card                                  │
-  │  j / ↓       Next section                       Esc         Answer later                     │
-  │  k / ↑       Previous section                   j / ↓       Next option                      │
-  │  Space / En… Show or hide this section          k / ↑       Previous option                  │
-  │List search                                      1-9         Pick an option by number         │
-  │  Ctrl+n      Next search hit                    Space       Toggle the focused option        │
-  │  Ctrl+p      Previous search hit                Tab         Next question                    │
-  │  Tab         Complete the field or value        Shift+Tab   Previous question                │
-  │  Enter       Open the result                    o           Write a free-text answer         │
-  │  Esc         Clear the search                   Enter       Send the answer                  │
-  │  Ctrl+a      Include archived sessions        Question card — free text                      │
-  │  Ctrl+m      Load more results                  Enter       Accept the text                  │
-  │Search and commands                              Esc         Discard the text                 │
-  │  Enter       Run it                           Plan card                                      │
-  │  Esc         Abandon it                         Esc         Answer later                     │
-  │  Tab         Complete the path                  1           Approve, auto-accept edits       │
-  │Filter menu                                      2           Approve, manually approve edits  │
-  │  F / q / Esc Choose which lines to show         3           Keep planning                    │
-  │  a           Show every category                r           Refine the plan                  │
-  │  r           Back to the default filter         j / ↓       Scroll the plan down             │
-  │  Space / En… Show or hide this category         k / ↑       Scroll the plan up               │
-  │  j / ↓       Next category                    Plan card — refine                             │
-  │  k / ↑       Previous category                  Enter       Accept the text                  │
-  │Prompt history                                   Esc         Discard the text                 │
-  │  Esc         Close the prompt list            Row glyphs                                     │
-  │  Ctrl+n / ↓  Next prompt                        ●           working                          │
-  │  Ctrl+p / ↑  Previous prompt                    ◐           stale or asleep                  │
-  │  Enter       Put this prompt in the composer    ○           idle                             │
-  │File viewer                                      ☾           hibernated                       │
-  │  j / ↓       Scroll down                        ↳           subagent                         │
-  │  k / ↑       Scroll up                          ▸ / ▾       folded / open group              │
-  │  PgDn        Page down                          [name]      a label, tinted by its hue       │
-  │  PgUp        Page up                            +N          more labels than fit             │
-  │  g           Jump to the top                    !           permission waiting on you        │
-  │  q / Esc     Close the file viewer              ?           question waiting on you          │
-  │  o           Open in the desktop viewer         P           plan waiting for approval        │
-  │Machines                                         ●N          unread messages                  │
-  │  j / ↓       Next machine                       ⚡           auto-approve on                  │
-  │  k / ↑       Previous machine                   ⏸           account soft-limited             │
-  │  r           Refresh the machine list           ⚠           account traffic never seen       │
-  │  Enter       Aim a spawn at this machine        ❄           cache cold, next turn re-reads   │
-  │  Esc         Back to the sessions               ✕reason     how it ended                     │
-  │Dispatchers                                      ⚙N age      tool calls, age of the last      │
+  │Anywhere                                         Ctrl+e      Rename or rebind                 │
+▸ │  ?           Toggle this cheat sheet            Ctrl+x      Remove this dispatcher           │
+  │  q           Quit cctui                         Ctrl+r      Refresh the dispatcher list      │
+  │  1-9         Switch view                        Tab         Next field, or cycle the kind    │
+  │  /           Search the current view            Enter       Confirm                          │
+  │  n           Next search hit                    Esc         Back                             │
+  │  N           Previous search hit                Ctrl+y      Copy the new key                 │
+  │  D           Diagnose the selected session    Labels                                         │
+  │  i           Session info                       Esc         Close the label list             │
+  │  M           Machines and daemons               Ctrl+n / ↓  Next label                       │
+  │  Ctrl+d      Dispatchers                        Ctrl+p / ↑  Previous label                   │
+  │  Ctrl+g      Jump to the next session needin…   Space       Attach or detach this label      │
+  │Session list                                     Ctrl+c      Create a label                   │
+  │  j / ↓       Next session                       Ctrl+e      Rename or recolor                │
+  │  k / ↑       Previous session                   Ctrl+d      Delete this label                │
+  │  g           First session                      Enter       Confirm                          │
+  │  G           Last session                     Label filter                                   │
+  │  Enter       Open the conversation              Esc         Close the label list             │
+  │  z / Tab     Fold or open the subagent group    Ctrl+n / ↓  Next label                       │
+  │  S           Fold or open the section           Ctrl+p / ↑  Previous label                   │
+  │  Z           Fold or open everything            Space / En… Include or exclude this label    │
+  │  f           Choose which sections show         a           Show every label again           │
+  │  o           Cycle the sort field             Pinned messages                                │
+  │  O           Flip the sort direction            Esc         Close the pinned messages        │
+  │  v           Cycle what rows group by           Ctrl+n / ↓  Next pin                         │
+  │  c           Cycle the row accent dimension     Ctrl+p / ↑  Previous pin                     │
+  │  U           Show only unread sessions          Enter       Jump to the pinned message       │
+  │  p           Pin or unpin the session           d / m       Unpin this message               │
+  │  x           Archive or unarchive the session Macros                                         │
+  │  l           Label this session                 Esc         Close the macro list             │
+  │  L           Filter by label                    Ctrl+n / ↓  Next macro                       │
+  │  r           Rename the session                 Ctrl+p / ↑  Previous macro                   │
+  │  A           Archive every session in the se…   Enter       Put this prompt in the composer  │
+  │  X           Kill the session                 Bookmarks — search or edit                     │
+  │  u           Undo the last archive              Enter       Accept                           │
+  │  Space       Select or deselect the row         Esc         Discard                          │
+  │  V           Select up to the anchor            Tab         Switch between title and note    │
+  │  *           Select every visible row         Bookmarks — confirm                            │
+  │  Esc         Leave select mode                  y / Enter   Delete it                        │
+  │Confirm prompt                                   n / q / Esc Keep it                          │
+  │  Y / y       Yes                              Terminal pane                                  │
+  │  N / n / q … No                                 T / q / Esc Close the terminal pane          │
+  │Rename a session                                 j / ↓       Scroll the terminal down         │
+  │  Enter       Save the name                      k / ↑       Scroll the terminal up           │
+  │  Esc         Discard the name                 Help                                           │
+  │Conversation                                     j / ↓       Scroll down                      │
+  │  1-9         Jump to session by number          k / ↑       Scroll up                        │
+  │  Ctrl+f      Fork the session                   PgDn        Page down                        │
+  │  q / Esc     Back to the session list           PgUp        Page up                          │
+  │  j / ↓       Scroll down                        ? / q / Esc Close this cheat sheet           │
+  │  k / ↑       Scroll up                        Model picker                                   │
+  │  PgDn        Page down                          q / Esc     Close the picker                 │
+  │  PgUp        Page up                            j / ↓       Next entry                       │
+  │  g           Jump to the top                    k / ↑       Previous entry                   │
+  │  G           Jump to the bottom                 h / ←       Focus the model list             │
+  │  t           Show timestamps                    l / → / Tab Focus the effort list            │
+  │  Ctrl+c      Interrupt the turn                 Enter       Apply model and effort           │
+  │  M           Change model and effort          Sidebar                                        │
+  │  >           Todo and subagent sidebar          j / ↓       Next subagent                    │
+  │  u           Go to the parent session           k / ↑       Previous subagent                │
+  │  Ctrl+a      Toggle auto-approve                Enter       Open the subagent                │
+  │  v           Select transcript lines            > / Esc     Close the sidebar                │
+  │  Ctrl+o      Attach a file                      u           Go to the parent session         │
+  │  o           Expand the focused line          Permission card                                │
+  │  z           Expand every thinking and resul…   y           Allow                            │
+  │  R           Retry the undelivered message      n           Deny                             │
+  │  e           Edit the undelivered message       A           Allow and auto-approve           │
+  │  x           Drop the undelivered message     Diagnose / info                                │
+  │  y           Copy the focused line as Markdo…   D           Diagnose the selected session    │
+  │  Y           Copy the code under the cursor     i           Session info                     │
+  │  Ctrl+y      Copy a link to this session        q / Esc     Close the panel                  │
+  │  :           Run a command (:export)            j / ↓       Scroll the panel down            │
+  │  f           Cycle assistant / you / tools      k / ↑       Scroll the panel up              │
+  │  F           Choose which lines to show         PgDn        Page the panel down              │
+  │  T           Watch the live terminal            PgUp        Page the panel up                │
+  │  Ctrl+r      Search sent prompts                g           Jump to the top of the panel     │
+  │  m           Pin or unpin the focused line      r           Refresh the report               │
+  │  '           Open the pinned messages           y           Copy the session id              │
+  │  b           Save the focused message as a b… Bookmarks                                      │
+  │  Ctrl+t      Insert a canned prompt             j / ↓       Next bookmark                    │
+  │  Tab         Answer the waiting prompt          k / ↑       Previous bookmark                │
+  │  g f         Open the file under the cursor     g           First bookmark                   │
+  │Composer                                         G           Last bookmark                    │
+  │  Ctrl+o      Attach a file                      Ctrl+f / P… Scroll the preview down          │
+  │  Bksp        Remove the focused attachment      Ctrl+b / P… Scroll the preview up            │
+  │  Alt+Bksp    Focus the attachment chips         /           Search the bookmarks             │
+  │  →           Next attachment chip               Enter       Open the source message          │
+  │  ←           Previous attachment chip           y           Copy the bookmark as markdown    │
+  │  Esc         Close the composer                 e           Edit the title and note          │
+  │  Enter       Send the message                   d           Delete the bookmark              │
+  │  Ctrl+j / A… Insert a newline                 Overview                                       │
+  │  ↑           Recall an earlier prompt           j / ↓       Scroll the overview down         │
+  │  ↓           Recall a later prompt              k / ↑       Scroll the overview up           │
+  │  Ctrl+r      Search sent prompts                r           Refresh the counts               │
+  │  Tab         Take the session completion      Harness mode                                   │
+  │  Ctrl+t      Insert a canned prompt             q / Esc     Close the harness picker         │
+  │Sections popup                                   Ctrl+n / j… Next mode                        │
+  │  f / q / Esc Choose which sections show         Ctrl+p / k… Previous mode                    │
+  │  j / ↓       Next section                       Enter       Apply this mode to every daemon  │
+  │  k / ↑       Previous section                 Question card                                  │
+  │  Space / En… Show or hide this section          Esc         Answer later                     │
+  │List search                                      j / ↓       Next option                      │
+  │  Ctrl+n      Next search hit                    k / ↑       Previous option                  │
+  │  Ctrl+p      Previous search hit                1-9         Pick an option by number         │
+  │  Tab         Complete the field or value        Space       Toggle the focused option        │
+  │  Enter       Open the result                    Tab         Next question                    │
+  │  Esc         Clear the search                   Shift+Tab   Previous question                │
+  │  Ctrl+a      Include archived sessions          o           Write a free-text answer         │
+  │  Ctrl+m      Load more results                  Enter       Send the answer                  │
+  │Search and commands                            Question card — free text                      │
+  │  Enter       Run it                             Enter       Accept the text                  │
+  │  Esc         Abandon it                         Esc         Discard the text                 │
+  │  Tab         Complete the path                Plan card                                      │
+  │Filter menu                                      Esc         Answer later                     │
+  │  F / q / Esc Choose which lines to show         1           Approve, auto-accept edits       │
+  │  a           Show every category                2           Approve, manually approve edits  │
+  │  r           Back to the default filter         3           Keep planning                    │
+  │  Space / En… Show or hide this category         r           Refine the plan                  │
+  │  j / ↓       Next category                      j / ↓       Scroll the plan down             │
+  │  k / ↑       Previous category                  k / ↑       Scroll the plan up               │
+  │Prompt history                                 Plan card — refine                             │
+  │  Esc         Close the prompt list              Enter       Accept the text                  │
+  │  Ctrl+n / ↓  Next prompt                        Esc         Discard the text                 │
+  │  Ctrl+p / ↑  Previous prompt                  Row glyphs                                     │
+  │  Enter       Put this prompt in the composer    ●           working                          │
+  │File viewer                                      ◐           stale or asleep                  │
+  │  j / ↓       Scroll down                        ○           idle                             │
+  │  k / ↑       Scroll up                          ☾           hibernated                       │
+  │  PgDn        Page down                          ↳           subagent                         │
+  │  PgUp        Page up                            ▸ / ▾       folded / open group              │
+  │  g           Jump to the top                    [name]      a label, tinted by its hue       │
+  │  q / Esc     Close the file viewer              +N          more labels than fit             │
+  │  o           Open in the desktop viewer         !           permission waiting on you        │
+  │Machines                                         ?           question waiting on you          │
+  │  j / ↓       Next machine                       P           plan waiting for approval        │
+  │  k / ↑       Previous machine                   ●N          unread messages                  │
+  │  r           Refresh the machine list           ⚡           auto-approve on                  │
+  │  Enter       Aim a spawn at this machine        ⏸           account soft-limited             │
+  │  Esc         Back to the sessions               ⚠           account traffic never seen       │
+  │Dispatchers                                      ❄           cache cold, next turn re-reads   │
+  │  Ctrl+n / ↓  Next dispatcher                    ⌂           a job cctui did not start        │
+  │  Ctrl+p / ↑  Previous dispatcher                ✕reason     how it ended                     │
+  │  Ctrl+a      Enroll a dispatcher                ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

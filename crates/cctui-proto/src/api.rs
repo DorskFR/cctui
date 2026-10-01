@@ -332,6 +332,47 @@ const fn default_bucket() -> Bucket {
     Bucket::Working
 }
 
+/// Who started a session's underlying job.
+///
+/// `Foreign` is a `claude --bg` (or shell) job the daemon discovered rather
+/// than launched: it is driveable like any other, but nothing automatic of
+/// ours may attach to, kill or `claude rm` it — only an explicit user removal.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum SessionOrigin {
+    /// Launched by cctui.
+    #[default]
+    Fleet,
+    Foreign,
+}
+
+impl SessionOrigin {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fleet => "fleet",
+            Self::Foreign => "foreign",
+        }
+    }
+
+    /// Reads the marker the daemon merges into `sessions.metadata`. An absent
+    /// or unknown value is [`Self::Fleet`]: a session cctui has no discovery
+    /// record for is one it started.
+    #[must_use]
+    pub fn from_metadata(metadata: &serde_json::Value) -> Self {
+        match metadata.get("origin").and_then(serde_json::Value::as_str) {
+            Some("foreign") => Self::Foreign,
+            _ => Self::Fleet,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_foreign(self) -> bool {
+        matches!(self, Self::Foreign)
+    }
+}
+
 // Public wire/data shape mirrored to TS bindings; the bool fields are independent
 // session flags, not a state machine, so refactoring them into enums would churn the API.
 #[allow(clippy::struct_excessive_bools)]
@@ -353,6 +394,9 @@ pub struct SessionListItem {
     pub metadata: serde_json::Value,
     #[serde(default)]
     pub adapter_id: Option<AdapterId>,
+    /// Who started the underlying job; `Fleet` unless the daemon discovered it.
+    #[serde(default)]
+    pub origin: SessionOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_name: Option<String>,
     /// 0–359. `None` = derived from the machine name.

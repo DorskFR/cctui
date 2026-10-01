@@ -7,6 +7,7 @@ use ratatui_textarea::TextArea;
 use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
 use super::diagnose::DiagnosePanel;
+use super::harness_mode::Picker as HarnessPicker;
 use super::identity::AuthState;
 use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
@@ -41,6 +42,7 @@ pub enum View {
     /// Slice roots: the switcher resets the router to one of these.
     Bookmarks,
     Overview,
+    HarnessMode,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -323,6 +325,8 @@ pub struct App {
     /// The settings blob as the server last gave it, so a write patches it
     /// instead of dropping the keys only the web UI uses.
     pub settings_blob: serde_json::Value,
+    /// The harness-mode picker, `None` when closed.
+    pub harness_picker: Option<HarnessPicker>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -450,6 +454,7 @@ impl App {
             list_search: super::list_search::ListSearch::default(),
             pending_seq_anchor: None,
             settings_blob: serde_json::Value::Null,
+            harness_picker: None,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
