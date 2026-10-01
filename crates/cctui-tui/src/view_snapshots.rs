@@ -6,11 +6,13 @@ use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::diagnose::DiagnoseAction;
+use crate::app::dispatchers::DispatcherAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
+use crate::app::machines::MachineAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
@@ -1536,4 +1538,203 @@ fn overview_view_narrow() {
     let mut app = app_with_stats();
     reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+// --- Machines and dispatchers ---
+
+fn machine_row(
+    id: &str,
+    name: &str,
+    tier: cctui_proto::models::MachineLiveness,
+    cpu: Option<f32>,
+) -> cctui_client::MachineResourcesRow {
+    cctui_client::MachineResourcesRow {
+        machine_id: uuid::Uuid::parse_str(id).expect("a uuid"),
+        name: name.to_owned(),
+        display_name: None,
+        hue: None,
+        liveness: tier,
+        last_seen_at: ms_ago(2_000),
+        resources: cpu.map(|cpu_pct| cctui_proto::resources::MachineResources {
+            cpu_pct,
+            mem_pct: 20.0,
+            mem_used_bytes: 12 << 30,
+            mem_total_bytes: 64 << 30,
+            disk_pct: 10.0,
+            disk_used_bytes: 0,
+            disk_total_bytes: 0,
+            disk_path: String::new(),
+            load1: None,
+        }),
+        updated_at: None,
+    }
+}
+
+const M_A: &str = "11111111-1111-4111-8111-111111111111";
+const M_B: &str = "22222222-2222-4222-8222-222222222222";
+const M_C: &str = "33333333-3333-4333-8333-333333333333";
+
+/// One machine of each tier, with a session running on the live one.
+fn app_in_machines_slice() -> crate::app::App {
+    use cctui_proto::models::MachineLiveness;
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    session_mut(&mut app, "s-working").machine_id = M_A.to_owned();
+    let _ = reduce(
+        &mut app,
+        Action::Machines(MachineAction::Loaded(vec![
+            machine_row(M_A, "cyberia-ws", MachineLiveness::Online, Some(31.4)),
+            machine_row(M_B, "macbook", MachineLiveness::Stale, None),
+            machine_row(M_C, "k3s-worker-2", MachineLiveness::Offline, None),
+        ])),
+    );
+    let _ = reduce(&mut app, Action::Machines(MachineAction::Open));
+    app
+}
+
+#[test]
+fn machines_table() {
+    let mut app = app_in_machines_slice();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn machines_table_at_eighty_columns() {
+    let mut app = app_in_machines_slice();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn machines_table_after_one_comes_online() {
+    use cctui_proto::models::MachineLiveness;
+    let mut app = app_in_machines_slice();
+    reduce(
+        &mut app,
+        Action::SessionLive(crate::app::session_live::SessionLiveAction::MachineLiveness {
+            machine_id: M_C.to_owned(),
+            liveness: MachineLiveness::Online,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn machines_table_when_the_key_may_not_list_them() {
+    let mut app = app_with_sessions();
+    let _ = reduce(&mut app, Action::Machines(MachineAction::Open));
+    let _ = reduce(
+        &mut app,
+        Action::Machines(MachineAction::Failed("this key may not list machines".to_owned())),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn dispatcher_row(
+    id: &str,
+    name: &str,
+    kind: &str,
+    connected: bool,
+    tier: cctui_proto::models::MachineLiveness,
+    pool: Option<&str>,
+    account: Option<&str>,
+) -> cctui_client::Dispatcher {
+    cctui_client::Dispatcher {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: kind.to_owned(),
+        liveness: tier,
+        connected,
+        last_seen_at: ms_ago(2_000),
+        default_account: account.map(str::to_owned),
+        default_pool: pool.map(str::to_owned),
+    }
+}
+
+fn app_with_dispatchers(scopes: &[&str]) -> crate::app::App {
+    use cctui_proto::models::MachineLiveness;
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        role: "user".to_owned(),
+        user_name: Some("dev".to_owned()),
+        scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
+        token_preview: "abcd".to_owned(),
+    });
+    let _ = reduce(&mut app, Action::Dispatchers(DispatcherAction::Open));
+    let _ = reduce(
+        &mut app,
+        Action::Dispatchers(DispatcherAction::Loaded(vec![
+            dispatcher_row(
+                "d-1",
+                "k8s-cyberia",
+                "kubernetes",
+                true,
+                MachineLiveness::Online,
+                Some("work"),
+                None,
+            ),
+            dispatcher_row(
+                "d-2",
+                "docker-mac",
+                "docker",
+                false,
+                MachineLiveness::Stale,
+                None,
+                Some("personal-max"),
+            ),
+        ])),
+    );
+    app
+}
+
+#[test]
+fn dispatchers_panel() {
+    let mut app = app_with_dispatchers(&["enroll"]);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn dispatchers_panel_read_only_without_the_enroll_scope() {
+    let mut app = app_with_dispatchers(&["sessions:write"]);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn dispatchers_enroll_form() {
+    let mut app = app_with_dispatchers(&["enroll"]);
+    let _ = reduce(&mut app, Action::Dispatchers(DispatcherAction::StartEnroll));
+    for c in "k8s-tokyo".chars() {
+        let _ = reduce(
+            &mut app,
+            Action::Dispatchers(DispatcherAction::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            ))),
+        );
+    }
+    let _ = reduce(&mut app, Action::Dispatchers(DispatcherAction::NextField));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn dispatchers_one_shot_key_dialog() {
+    let mut app = app_with_dispatchers(&["enroll"]);
+    let _ = reduce(
+        &mut app,
+        Action::Dispatchers(DispatcherAction::Enrolled {
+            name: "k8s-tokyo".to_owned(),
+            reply: Box::new(cctui_client::EnrolledDispatcher {
+                dispatcher_id: "d-9".to_owned(),
+                dispatcher_key: "cctui-disp-EXAMPLEKEY0123456789".to_owned(),
+            }),
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn dispatchers_delete_confirmation() {
+    let mut app = app_with_dispatchers(&["enroll"]);
+    let _ = reduce(&mut app, Action::Dispatchers(DispatcherAction::StartDelete));
+    insta::assert_snapshot!(render_screen(&mut app));
 }

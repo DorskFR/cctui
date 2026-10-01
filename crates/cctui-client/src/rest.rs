@@ -1,4 +1,5 @@
 use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
+use cctui_proto::api::machine_resources::MachineResourcesRow;
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
@@ -160,6 +161,57 @@ pub enum FileRead {
 pub struct LinkedFileOwner {
     pub session_id: String,
     pub machine_id: String,
+}
+
+/// One enrolled dispatcher, as `GET /dispatchers` reports it.
+///
+/// Mirrors `cctui-server`'s `DispatcherInfo`, which lives in the server crate:
+/// the TUI cannot depend on it, and a reader only needs these fields.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Dispatcher {
+    pub id: String,
+    pub name: String,
+    /// `kubernetes` | `docker` | `http`, as the binary reported at enroll.
+    pub kind: String,
+    pub liveness: cctui_proto::models::MachineLiveness,
+    /// A live socket is registered right now, which `liveness` alone cannot say.
+    pub connected: bool,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub default_pool: Option<String>,
+}
+
+/// What `POST /dispatcher/enroll` takes.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct EnrollDispatcher {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+}
+
+/// The one-shot reply to an enrollment.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnrolledDispatcher {
+    pub dispatcher_id: String,
+    /// Shown once and never persisted: the server keeps only a hash.
+    pub dispatcher_key: String,
+}
+
+/// A rename or a rebind; an omitted field is left alone.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateDispatcher {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 /// Typed REST client. Every URL is built from
@@ -423,6 +475,46 @@ impl Client {
     pub async fn diagnose(&self, session_id: &str) -> Result<SessionDiagnoseResponse, ClientError> {
         self.json(Self::route("get_sessions_by_id_diagnose")?, &[("id", session_id)], &[], None)
             .await
+    }
+
+    /// The caller's daemon machines with their last resource snapshot. Readable
+    /// without admin: the row set is already owner-filtered server-side, so a
+    /// single-user install sees its own machine and nothing 403s.
+    pub async fn machines(&self) -> Result<Vec<MachineResourcesRow>, ClientError> {
+        self.json(Self::route("get_machines_resources")?, &[], &[], None).await
+    }
+
+    /// Enrolled dispatchers with their liveness.
+    pub async fn dispatchers(&self) -> Result<Vec<Dispatcher>, ClientError> {
+        self.json(Self::route("get_dispatchers")?, &[], &[], None).await
+    }
+
+    /// Enroll a dispatcher. The reply carries the key ONCE; it is never stored
+    /// server-side beyond a hash, so a caller that loses it must re-enroll.
+    pub async fn enroll_dispatcher(
+        &self,
+        request: &EnrollDispatcher,
+    ) -> Result<EnrolledDispatcher, ClientError> {
+        let route = Self::route("post_dispatcher_enroll")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Rename a dispatcher or rebind its default account/pool.
+    pub async fn update_dispatcher(
+        &self,
+        id: &str,
+        request: &UpdateDispatcher,
+    ) -> Result<Dispatcher, ClientError> {
+        let route = Self::route("patch_dispatchers_by_id")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[("id", id)], &[], Some(&body)).await
+    }
+
+    pub async fn delete_dispatcher(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_dispatchers_by_id")?, &[("id", id)], None).await
     }
 
     /// Every label the caller owns.
@@ -870,6 +962,11 @@ mod tests {
             "post_sessions_by_id_seen",
             "get_permissions_pending",
             "get_labels",
+            "get_machines_resources",
+            "get_dispatchers",
+            "post_dispatcher_enroll",
+            "patch_dispatchers_by_id",
+            "delete_dispatchers_by_id",
             "post_labels",
             "patch_labels_by_id",
             "delete_labels_by_id",

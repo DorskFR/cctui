@@ -16,11 +16,13 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
 use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
+use super::machines::MachineAction;
 use super::pins::PinAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
@@ -370,6 +372,50 @@ async fn run(
             Err(e) => {
                 tracing::warn!(%e, session_id, "session fetch failed");
                 vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
+            }
+        },
+        Effect::FetchMachines => match server.machines().await {
+            Ok(rows) => vec![Action::Machines(MachineAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing machines failed");
+                vec![Action::Machines(MachineAction::Failed(machine_error(&e)))]
+            }
+        },
+        Effect::FetchDispatchers => match server.dispatchers().await {
+            Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing dispatchers failed");
+                vec![Action::Dispatchers(DispatcherAction::Failed(dispatcher_error(&e)))]
+            }
+        },
+        // The reply carries the key: it goes straight into the action and is
+        // never logged, because the log is not somewhere a secret may land.
+        Effect::EnrollDispatcher { name, request } => {
+            match server.enroll_dispatcher(&request).await {
+                Ok(reply) => vec![Action::Dispatchers(DispatcherAction::Enrolled {
+                    name,
+                    reply: Box::new(reply),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "enrolling a dispatcher failed");
+                    vec![Action::Toast(Level::Error, format!("could not enroll {name}"))]
+                }
+            }
+        }
+        Effect::UpdateDispatcher { id, request } => {
+            match server.update_dispatcher(&id, &request).await {
+                Ok(_) => refetch_dispatchers(server).await,
+                Err(e) => {
+                    tracing::warn!(%e, "editing a dispatcher failed");
+                    vec![Action::Toast(Level::Error, "could not edit the dispatcher".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteDispatcher { id } => match server.delete_dispatcher(&id).await {
+            Ok(()) => refetch_dispatchers(server).await,
+            Err(e) => {
+                tracing::warn!(%e, "removing a dispatcher failed");
+                vec![Action::Toast(Level::Error, "could not remove the dispatcher".to_owned())]
             }
         },
         Effect::FetchLabels => match server.labels().await {
@@ -869,5 +915,38 @@ async fn refetch_labels(server: &Client) -> Vec<Action> {
             tracing::warn!(%e, "refetching labels failed");
             Vec::new()
         }
+    }
+}
+
+/// Why the machines list is empty, in the words the view shows. A 403 is worth
+/// naming on its own: it means the key cannot enumerate machines, which is a
+/// different problem from having none.
+fn machine_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => "this key may not list machines".to_owned(),
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list machines: {other}"),
+    }
+}
+
+async fn refetch_dispatchers(server: &Client) -> Vec<Action> {
+    match server.dispatchers().await {
+        Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching dispatchers failed");
+            Vec::new()
+        }
+    }
+}
+
+/// A 403 here means the key may not even list them, which is worth saying apart
+/// from an install with none enrolled.
+fn dispatcher_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => {
+            "this key may not list dispatchers".to_owned()
+        }
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list dispatchers: {other}"),
     }
 }

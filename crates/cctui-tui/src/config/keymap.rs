@@ -25,6 +25,8 @@ pub enum Context {
     Rename,
     History,
     FileViewer,
+    Machines,
+    Dispatchers,
     LabelPicker,
     LabelFilter,
     Pins,
@@ -58,6 +60,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::FilterMenu,
     Context::History,
     Context::FileViewer,
+    Context::Machines,
+    Context::Dispatchers,
     Context::LabelPicker,
     Context::LabelFilter,
     Context::Pins,
@@ -93,6 +97,8 @@ impl Context {
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
+            Self::Machines => "machines",
+            Self::Dispatchers => "dispatchers",
             Self::LabelPicker => "label-picker",
             Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
@@ -128,6 +134,8 @@ impl Context {
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
+            Self::Machines => "Machines",
+            Self::Dispatchers => "Dispatchers",
             Self::LabelPicker => "Labels",
             Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
@@ -252,6 +260,23 @@ actions! {
     PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    OpenMachines => "open-machines", "Machines and daemons";
+    OpenDispatchers => "open-dispatchers", "Dispatchers";
+    DispatchersNext => "dispatchers-next", "Next dispatcher";
+    DispatchersPrev => "dispatchers-prev", "Previous dispatcher";
+    DispatchersEnroll => "dispatchers-enroll", "Enroll a dispatcher";
+    DispatchersEdit => "dispatchers-edit", "Rename or rebind";
+    DispatchersDelete => "dispatchers-delete", "Remove this dispatcher";
+    DispatchersRefresh => "dispatchers-refresh", "Refresh the dispatcher list";
+    DispatchersField => "dispatchers-field", "Next field, or cycle the kind";
+    DispatchersCommit => "dispatchers-commit", "Confirm";
+    DispatchersCancel => "dispatchers-cancel", "Back";
+    DispatchersCopyKey => "dispatchers-copy-key", "Copy the new key";
+    MachinesNext => "machines-next", "Next machine";
+    MachinesPrev => "machines-prev", "Previous machine";
+    MachinesRefresh => "machines-refresh", "Refresh the machine list";
+    MachinesSpawn => "machines-spawn", "Aim a spawn at this machine";
+    MachinesClose => "machines-close", "Back to the sessions";
     OpenLabels => "open-labels", "Label this session";
     OpenLabelFilter => "open-label-filter", "Filter by label";
     LabelsClose => "labels-close", "Close the label list";
@@ -608,6 +633,35 @@ const FILE_VIEWER: &[BindingSpec] = &[
 
 /// The picker is modal, so it claims plain letters: `space` toggles, and the
 /// manage verbs sit on the keys the webui's menu uses.
+/// The slice has its own context so `j`/`k` move its table rather than the
+/// session list underneath.
+const MACHINES: &[BindingSpec] = &[
+    spec(Context::Global, "M", ActionId::OpenMachines),
+    spec(Context::Machines, "j, down", ActionId::MachinesNext),
+    spec(Context::Machines, "k, up", ActionId::MachinesPrev),
+    spec(Context::Machines, "r", ActionId::MachinesRefresh),
+    spec(Context::Machines, "enter", ActionId::MachinesSpawn),
+    spec(Context::Machines, "esc", ActionId::MachinesClose),
+];
+
+/// `D` is the diagnose global (decision 7), so the panel takes `Ctrl+d`.
+///
+/// The verbs are Ctrl-modified because the enroll and edit forms need the plain
+/// letters to type a name — the same reason the label picker uses `Ctrl+c`.
+const DISPATCHERS: &[BindingSpec] = &[
+    spec(Context::Global, "ctrl+d", ActionId::OpenDispatchers),
+    spec(Context::Dispatchers, "down, ctrl+n", ActionId::DispatchersNext),
+    spec(Context::Dispatchers, "up, ctrl+p", ActionId::DispatchersPrev),
+    spec(Context::Dispatchers, "ctrl+a", ActionId::DispatchersEnroll),
+    spec(Context::Dispatchers, "ctrl+e", ActionId::DispatchersEdit),
+    spec(Context::Dispatchers, "ctrl+x", ActionId::DispatchersDelete),
+    spec(Context::Dispatchers, "ctrl+r", ActionId::DispatchersRefresh),
+    spec(Context::Dispatchers, "tab", ActionId::DispatchersField),
+    spec(Context::Dispatchers, "enter", ActionId::DispatchersCommit),
+    spec(Context::Dispatchers, "esc", ActionId::DispatchersCancel),
+    spec(Context::Dispatchers, "ctrl+y", ActionId::DispatchersCopyKey),
+];
+
 const LABELS: &[BindingSpec] = &[
     spec(Context::SessionList, "l", ActionId::OpenLabels),
     spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
@@ -763,6 +817,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    MACHINES,
+    DISPATCHERS,
     LABELS,
     PINS,
     MACROS,

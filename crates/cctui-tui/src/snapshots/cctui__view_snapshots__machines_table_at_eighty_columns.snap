@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1604
+expression: "render_screen_sized(&mut app, 80, 24)"
+---
+ Machines  1/3 online  ! 1 need input — Ctrl+g
+   NAME                    STATE   SEEN  SESS CPU  MEM
+▸  cyberia-ws              online  2s    1    31%  12G/64G
+   macbook                 stale   2s    -    -    -
+   k3s-worker-2            offline 2s    -    -    -
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:move  Enter:spawn here  r:refresh  Esc:back

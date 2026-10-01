@@ -10,10 +10,12 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
+use super::machines::MachineAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
 use super::prompt::PromptAction;
@@ -73,6 +75,8 @@ pub enum Action {
 
     Attach(AttachAction),
     Labels(LabelAction),
+    Machines(MachineAction),
+    Dispatchers(DispatcherAction),
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
     /// A paste small enough to type straight into the composer.
@@ -321,6 +325,21 @@ pub enum Effect {
     /// `GET /sessions/{id}/diagnose`: everything the daemon and the server know.
     FetchDiagnose {
         session_id: String,
+    },
+    /// `GET /machines/resources`: the caller's daemon machines.
+    FetchMachines,
+    /// `GET /dispatchers`: the enrolled executors.
+    FetchDispatchers,
+    EnrollDispatcher {
+        name: String,
+        request: Box<cctui_client::EnrollDispatcher>,
+    },
+    UpdateDispatcher {
+        id: String,
+        request: Box<cctui_client::UpdateDispatcher>,
+    },
+    DeleteDispatcher {
+        id: String,
     },
     /// `GET /labels`: the whole catalogue.
     FetchLabels,

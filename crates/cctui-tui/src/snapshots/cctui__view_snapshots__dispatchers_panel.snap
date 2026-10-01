@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1693
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g  @dev (user)
+ 1 Sessions  2  3  4   starred · live · dispatched  sort: activity ↓  group: status
+   ▾┌ Dispatchers ─────────────────────────────────────────────────────────────────────────────┐
+▸   │   NAME            KIND        STATE      DEFAULT                                         │
+   ▾│▸  k8s-cyberia     kubernetes  connected  pool:work                                       │
+    │   docker-mac      docker      stale      personal-max                                    │
+    │                                                                                          │
+    │                                                                                          │
+   ▾│                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │ ↑/↓:move  Ctrl+a:enroll  Ctrl+e:edit  Ctrl+x:remove  Ctrl+r:refresh  Esc:close           │
+    └──────────────────────────────────────────────────────────────────────────────────────────┘
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
