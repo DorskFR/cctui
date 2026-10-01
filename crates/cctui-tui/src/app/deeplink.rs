@@ -69,11 +69,10 @@ pub fn reduce_deeplink(app: &mut App, action: DeepLinkAction) -> Vec<Effect> {
 /// asked for. Selection comes first: the conversation view reads the selected
 /// row, so opening without it would land on whatever was selected before.
 fn land_on(app: &mut App, session_id: &str, seq: Option<i64>) -> Vec<Effect> {
-    let Some(index) = app.flattened_sessions().iter().position(|s| s.id == session_id) else {
+    if !app.select_session_id(session_id) {
         app.toast(Level::Warn, format!("{session_id} is not in the list"));
         return Vec::new();
-    };
-    app.selected_index = index;
+    }
     let mut effects = conversation::open(app, session_id.to_owned());
     if let Some(seq) = seq {
         effects.extend(super::pins::jump_to_seq(app, seq));

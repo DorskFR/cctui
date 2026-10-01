@@ -104,6 +104,8 @@ pub enum Action {
     Usage(super::usage::UsageAction),
     /// The row as the server stored it, so the next patch merges onto it.
     SettingsSaved(Box<serde_json::Value>),
+    /// Nothing was stored, so anything shown optimistically is a lie.
+    SettingsWriteFailed,
     Spend(super::spend::SpendAction),
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
@@ -271,7 +273,12 @@ pub enum Effect {
     AutosaveDraft {
         session_id: Option<String>,
         request: Box<cctui_proto::api::SpawnRequest>,
+        /// Skip the typing debounce: quit cannot wait 700 ms for it.
+        immediate: bool,
     },
+    /// The spawn dialog closed or launched: stop the save it still owed, so a
+    /// debounce that fires afterwards cannot mint an orphan draft row.
+    CancelSpawnAutosave,
     /// Launch a draft session. `env` is entered at launch, never stored.
     LaunchDraft {
         session_id: String,

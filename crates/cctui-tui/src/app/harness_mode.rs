@@ -134,11 +134,6 @@ fn set(app: &mut App, mode: HarnessMode) -> Vec<Effect> {
         app.toast(super::toast::Level::Info, format!("harness mode is already {}", mode.as_str()));
         return Vec::new();
     }
-    if let Some(blob) = app.settings_blob.as_mut()
-        && let Some(map) = blob.as_object_mut()
-    {
-        map.insert("harnessMode".to_owned(), serde_json::Value::String(mode.as_str().to_owned()));
-    }
     app.toast(
         super::toast::Level::Info,
         format!("harness mode {} — every connected daemon reconciles", mode.as_str()),
@@ -204,11 +199,36 @@ mod tests {
         let effects = dispatch(&mut app, HarnessModeAction::Set(HarnessMode::Sdk));
         assert_eq!(saved(&effects), json!({"harnessMode": "sdk"}));
         assert_eq!(
-            app.settings_blob.as_ref().expect("known")["theme"],
-            json!("dark"),
-            "the local copy keeps what it already knew"
+            app.settings_blob.as_ref().expect("known")["harnessMode"],
+            json!("bg"),
+            "the cached row still says what the server holds until it confirms"
         );
-        assert_eq!(app.settings_blob.as_ref().expect("known")["harnessMode"], json!("sdk"));
+    }
+
+    /// The picker reads the cached row, so showing the new mode before the
+    /// server stored it would survive a refused write as a lie.
+    #[test]
+    fn the_mode_shown_only_moves_once_the_server_confirms() {
+        let mut app = App::new();
+        app.settings_blob = Some(json!({"harnessMode": "bg", "theme": "dark"}));
+        dispatch(&mut app, HarnessModeAction::Set(HarnessMode::Sdk));
+
+        dispatch(&mut app, HarnessModeAction::Open);
+        assert_eq!(
+            app.harness_picker.expect("open").current,
+            HarnessMode::Bg,
+            "still bg: nothing was stored yet"
+        );
+        dispatch(&mut app, HarnessModeAction::Close);
+
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::SettingsSaved(Box::new(
+                json!({"harnessMode": "sdk", "theme": "dark"}),
+            )),
+        );
+        dispatch(&mut app, HarnessModeAction::Open);
+        assert_eq!(app.harness_picker.expect("open").current, HarnessMode::Sdk);
     }
 
     /// The F3 case: the startup read failed, so there is no row to merge onto.

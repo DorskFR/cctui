@@ -133,6 +133,7 @@ pub enum ControlsAction {
     ModelsLoaded(Box<HarnessModels>),
     PickerApply,
     ModelSet {
+        session_id: String,
         model: String,
         effort: String,
     },
@@ -164,8 +165,8 @@ pub fn reduce_controls(app: &mut App, action: ControlsAction) -> Vec<Effect> {
             Vec::new()
         }
         ControlsAction::PickerApply => apply_picker(app),
-        ControlsAction::ModelSet { model, effort } => {
-            model_set(app, &model, &effort);
+        ControlsAction::ModelSet { session_id, model, effort } => {
+            model_set(app, &session_id, &model, &effort);
             Vec::new()
         }
     }
@@ -318,10 +319,10 @@ fn apply_picker(app: &mut App) -> Vec<Effect> {
     vec![Effect::SetModel { session_id, model, effort }]
 }
 
-fn model_set(app: &mut App, model: &str, effort: &str) {
-    if let Some(session) =
-        app.selected_session_id().and_then(|id| app.sessions.iter_mut().find(|s| s.id == id))
-    {
+/// The reply lands after the round trip: it patches the session the request
+/// named, not whatever is selected by then.
+fn model_set(app: &mut App, session_id: &str, model: &str, effort: &str) {
+    if let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id) {
         session.model = (!model.is_empty()).then(|| model.to_owned());
         session.effort = (!effort.is_empty()).then(|| effort.to_owned());
     }
@@ -628,7 +629,11 @@ mod tests {
         let mut app = app();
         controls(
             &mut app,
-            ControlsAction::ModelSet { model: "gpt-6".to_owned(), effort: "high".to_owned() },
+            ControlsAction::ModelSet {
+                session_id: "s-a".to_owned(),
+                model: "gpt-6".to_owned(),
+                effort: "high".to_owned(),
+            },
         );
         assert_eq!(app.sessions[0].model.as_deref(), Some("gpt-6"));
         assert_eq!(app.sessions[0].effort.as_deref(), Some("high"));
@@ -636,7 +641,11 @@ mod tests {
 
         controls(
             &mut app,
-            ControlsAction::ModelSet { model: String::new(), effort: String::new() },
+            ControlsAction::ModelSet {
+                session_id: "s-a".to_owned(),
+                model: String::new(),
+                effort: String::new(),
+            },
         );
         assert!(app.sessions[0].model.is_none());
         assert!(app.toasts.latest().expect("a toast").text.contains("harness default"));
@@ -659,5 +668,53 @@ mod tests {
         }
         app.sessions[0].permission_mode = Some("nonsense".to_owned());
         assert_eq!(permission_badge(&app.sessions[0]), None);
+    }
+
+    /// R12: the reply lands after a round trip, by which time the operator may
+    /// have moved on to another conversation.
+    #[test]
+    fn a_model_reply_patches_the_session_it_was_asked_for() {
+        let mut app = app();
+        controls(
+            &mut app,
+            ControlsAction::ModelSet {
+                session_id: "s-b".to_owned(),
+                model: "opus".to_owned(),
+                effort: "high".to_owned(),
+            },
+        );
+        assert_eq!(app.sessions[1].model.as_deref(), Some("opus"));
+        assert_eq!(
+            app.sessions[0].model.as_deref(),
+            Some("gpt-5.6-sol"),
+            "the selected row is untouched"
+        );
+    }
+
+    /// R12: the fork lands in the same pass that adds it to the list. When it
+    /// sorts onto the row the cursor already sat on, the anchor must not read
+    /// that as "nothing moved" and pull the cursor back to the old session.
+    #[test]
+    fn jumping_to_a_fork_leaves_the_cursor_on_the_fork() {
+        let mut app = app();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        let parent = app.subscribed.clone().expect("a subscription");
+
+        app.controls.pending_jump = Some("s-b".to_owned());
+        let mut next = app.sessions.clone();
+        next.reverse();
+        reduce(&mut app, Action::SessionsLoaded(next));
+
+        assert_eq!(app.subscribed.as_deref(), Some("s-b"), "the fork was opened");
+        assert_eq!(
+            app.selected_session_id().as_deref(),
+            Some("s-b"),
+            "the cursor follows the fork, not {parent}"
+        );
+        assert_eq!(
+            app.flattened_sessions()[app.selected_index].id,
+            "s-b",
+            "the row under the cursor is the fork"
+        );
     }
 }

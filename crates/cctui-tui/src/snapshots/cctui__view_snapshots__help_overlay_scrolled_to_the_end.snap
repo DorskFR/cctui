@@ -1,12 +1,13 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 1029
+assertion_line: 1091
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  a           Show or hide revoked rows          ●           working                          │
-▸ │  n           Create a user, token or key        ◐           stale or asleep                  │
+  │  r           Refresh                          Row glyphs                                     │
+▸ │  a           Show or hide revoked rows          ●           working                          │
+  │  n           Create a user, token or key        ◐           stale or asleep                  │
   │  e           Rename or relabel                  ○           idle                             │
   │  d           Disable or enable this user        ☾           hibernated                       │
   │  x           Revoke this credential             ↳           subagent                         │
@@ -24,6 +25,5 @@ expression: render_screen(&mut app)
   │  U           Update this server                 ⌂           a job cctui did not start        │
   │  Enter       Confirm                            ✕reason     how it ended                     │
   │  Esc         Back                               ⚙N age      tool calls, age of the last      │
-  │Accounts                                                                                      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -164,24 +164,29 @@ async fn handle_message(
     // a hibernated worker revives it with a fresh valid token rather than empty
     // env. Ignored when the worker is already alive.
     let env = crate::routes::gateway::resume_env_for_session(state, &session_id).await;
-    // A reply is not idempotent, and a client that never saw its ack retries the
-    // same turn. Ack the repeat as delivered without dispatching it again: the
-    // first attempt is already on its way to the agent.
-    if let Some(turn_id) = turn_id
-        && !crate::state::claim_turn(&state.dispatched_turns, &session_id, turn_id)
-    {
-        tracing::debug!(%session_id, %turn_id, "dropping a resend of an already dispatched turn");
-        if let Some(client_msg_id) = client_msg_id {
-            let ack = ServerEvent::MessageAck {
-                session_id,
-                client_msg_id,
-                ok: true,
-                error: None,
-                command_id: None,
-            };
-            send_event(event_tx, &ack).await;
+    // A reply is not idempotent and a client that never saw its ack retries the
+    // same turn. The claim is only a reservation here — it is confirmed below
+    // if the dispatch succeeded and released if it did not, because a message
+    // the daemon refused has to be dispatchable by the retry.
+    let mut claimed = None;
+    if let Some(turn_id) = turn_id {
+        match crate::turn_dedupe::claim(&state.pool, &session_id, turn_id).await {
+            Ok(crate::turn_dedupe::Claim::Granted) => claimed = Some(turn_id),
+            Ok(crate::turn_dedupe::Claim::AlreadyDispatched { command_id }) => {
+                tracing::debug!(%session_id, %turn_id, "resend of an already dispatched turn");
+                ack_message(event_tx, session_id, client_msg_id, None, Some(command_id)).await;
+                return;
+            }
+            Ok(crate::turn_dedupe::Claim::InFlight) => {
+                tracing::debug!(%session_id, %turn_id, "turn is already being dispatched");
+                let reason = "that message is still being delivered".to_owned();
+                ack_message(event_tx, session_id, client_msg_id, Some(reason), None).await;
+                return;
+            }
+            // Dedupe is a guard against a second copy; losing it must not cost
+            // the user the message itself.
+            Err(e) => tracing::warn!(%e, %session_id, "claiming the turn failed"),
         }
-        return;
     }
     // A successful dispatch only means the frame was queued toward a daemon; the
     // adapter's `CommandResult` under this id is the delivery proof.
@@ -215,16 +220,36 @@ async fn handle_message(
         }
         err.to_string()
     });
-    if let Some(client_msg_id) = client_msg_id {
-        let ack = ServerEvent::MessageAck {
-            session_id,
-            client_msg_id,
-            ok: err_reason.is_none(),
-            error: err_reason,
-            command_id: Some(command_id),
-        };
-        send_event(event_tx, &ack).await;
+    if let Some(turn_id) = claimed {
+        if err_reason.is_none() {
+            let _ =
+                crate::turn_dedupe::confirm(&state.pool, &session_id, turn_id, command_id).await;
+        } else {
+            let _ = crate::turn_dedupe::release(&state.pool, &session_id, turn_id).await;
+        }
     }
+    ack_message(event_tx, session_id, client_msg_id, err_reason, Some(command_id)).await;
+}
+
+/// Reports the outcome of one `Message` frame, when the client asked to be told.
+/// `error` carries the refusal: an ack without one is the only thing a client
+/// may read as delivered.
+async fn ack_message(
+    event_tx: &FrameTx,
+    session_id: String,
+    client_msg_id: Option<String>,
+    error: Option<String>,
+    command_id: Option<uuid::Uuid>,
+) {
+    let Some(client_msg_id) = client_msg_id else { return };
+    let ack = ServerEvent::MessageAck {
+        session_id,
+        client_msg_id,
+        ok: error.is_none(),
+        error,
+        command_id,
+    };
+    send_event(event_tx, &ack).await;
 }
 
 async fn handle_subscribe(

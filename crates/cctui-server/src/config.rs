@@ -120,6 +120,21 @@ pub struct Config {
     /// Live daemon WS connections one machine key may hold at once
     /// (`CCTUI_MAX_DAEMON_WS_CONNS`). Per replica, not cluster-wide.
     pub max_daemon_ws_conns: usize,
+    /// How many proxies sit in front of this server
+    /// (`CCTUI_TRUSTED_PROXY_HOPS`), which is the only way to know how much of
+    /// `X-Forwarded-For` was written by someone we trust: a proxy *appends*, so
+    /// with `n` trusted hops the caller is the `n`-th entry from the right and
+    /// anything the client injected has been pushed further left.
+    ///
+    /// `0` (the default) trusts no hop and uses the connection's peer address,
+    /// because a header cannot be believed without knowing who wrote it. Behind
+    /// an ingress, leaving this at `0` makes every caller share one rate-limit
+    /// bucket — set it to the real hop count.
+    ///
+    /// Set it too *high* and a caller's own forged entry starts counting as a
+    /// trusted hop, which is the spoofable case this exists to prevent; too low
+    /// only collapses callers into fewer buckets. When in doubt, go lower.
+    pub trusted_proxy_hops: usize,
     /// Optional GitHub PAT (read access to the releases repo). When set, the
     /// daemon-binary manifest points clients at this server's proxy endpoint
     /// and the server streams the release asset itself (so a private releases
@@ -184,6 +199,12 @@ fn daemon_ws_cap(raw: Option<String>) -> usize {
     raw.and_then(|s| s.trim().parse::<usize>().ok())
         .filter(|n| *n > 0)
         .unwrap_or(DEFAULT_MAX_DAEMON_WS_CONNS)
+}
+
+/// Unparseable or unset means "trust no hop": believing a header without
+/// knowing who wrote it is what makes a throttle spoofable.
+fn trusted_hops(raw: Option<String>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0)
 }
 
 fn secs_from_hours(raw: Option<String>, default_hours: u64) -> u64 {
@@ -306,6 +327,7 @@ impl Config {
                 .unwrap_or(90),
             archive_after_secs: secs_from_hours(get("CCTUI_SESSION_ARCHIVE_TTL_HOURS"), 24),
             max_daemon_ws_conns: daemon_ws_cap(get("CCTUI_MAX_DAEMON_WS_CONNS")),
+            trusted_proxy_hops: trusted_hops(get("CCTUI_TRUSTED_PROXY_HOPS")),
             github_token: get("CCTUI_GITHUB_TOKEN")
                 .or_else(|| get("GH_TOKEN"))
                 .filter(|s| !s.trim().is_empty()),
@@ -387,6 +409,7 @@ impl Config {
             inactive_after_secs: 0,
             archive_after_secs: 0,
             max_daemon_ws_conns: DEFAULT_MAX_DAEMON_WS_CONNS,
+            trusted_proxy_hops: 0,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],
@@ -511,6 +534,7 @@ mod tests {
             inactive_after_secs: 0,
             archive_after_secs: 0,
             max_daemon_ws_conns: DEFAULT_MAX_DAEMON_WS_CONNS,
+            trusted_proxy_hops: 0,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],

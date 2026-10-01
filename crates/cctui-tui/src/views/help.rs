@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::chord::Chord;
-use crate::config::keymap::{CONTEXTS, Keymap};
+use crate::config::keymap::{ActionId, CONTEXTS, Context, Keymap};
 use crate::keys::is_wired;
 use crate::theme;
 
@@ -14,7 +14,7 @@ const KEYS_WIDTH: usize = 12;
 
 enum Row {
     Heading(&'static str),
-    Binding { keys: String, desc: &'static str },
+    Binding { keys: String, desc: std::borrow::Cow<'static, str> },
 }
 
 /// Consecutive single characters collapse to a range, so nine digit bindings
@@ -60,7 +60,14 @@ pub fn rows_per_column(keys: &Keymap) -> usize {
     rows(keys).len().div_ceil(2)
 }
 
-fn rows(keys: &Keymap) -> Vec<Row> {
+/// Whether any view binds one of `chords` to something other than `action`, so
+/// the sheet files the key under the heading that does not promise "Anywhere".
+fn is_rebound(action: ActionId, chords: &[Chord], map: &Keymap) -> bool {
+    chords.iter().any(|chord| !map.shadowed_in(*chord, action).is_empty())
+}
+
+fn rows(keys_map: &Keymap) -> Vec<Row> {
+    let keys = keys_map;
     let mut rows = Vec::new();
     for context in CONTEXTS {
         let entries: Vec<_> =
@@ -68,21 +75,50 @@ fn rows(keys: &Keymap) -> Vec<Row> {
         if entries.is_empty() {
             continue;
         }
+        // "Anywhere" has to earn the word: a global some view rebinds goes under
+        // its own heading rather than claiming to work everywhere.
+        if *context == Context::Global {
+            let (rebound, everywhere): (Vec<_>, Vec<_>) =
+                entries.iter().partition(|(action, chords)| is_rebound(*action, chords, keys_map));
+            rows.push(Row::Heading(context.title()));
+            for (action, chords) in &everywhere {
+                rows.push(Row::Binding {
+                    keys: keys_label(chords),
+                    desc: action.description().into(),
+                });
+            }
+            if !rebound.is_empty() {
+                rows.push(Row::Heading("Anywhere a view does not rebind it"));
+                for (action, chords) in &rebound {
+                    rows.push(Row::Binding {
+                        keys: keys_label(chords),
+                        desc: action.description().into(),
+                    });
+                }
+            }
+            continue;
+        }
         rows.push(Row::Heading(context.title()));
         for (action, chords) in entries {
-            rows.push(Row::Binding { keys: keys_label(&chords), desc: action.description() });
+            rows.push(Row::Binding {
+                keys: keys_label(&chords),
+                desc: action.description().into(),
+            });
         }
         // Sequences carry no single chord, so `entries` cannot report them.
         for action in crate::config::keymap::ACTION_IDS {
             let labels = keys.sequence_labels(*context, *action);
             if !labels.is_empty() && is_wired(*action) {
-                rows.push(Row::Binding { keys: labels.join(" / "), desc: action.description() });
+                rows.push(Row::Binding {
+                    keys: labels.join(" / "),
+                    desc: action.description().into(),
+                });
             }
         }
     }
     rows.push(Row::Heading("Row glyphs"));
     for &(glyph, desc) in crate::app::session_status::GLYPH_LEGEND {
-        rows.push(Row::Binding { keys: glyph.to_owned(), desc });
+        rows.push(Row::Binding { keys: glyph.to_owned(), desc: desc.into() });
     }
     rows
 }

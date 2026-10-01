@@ -79,13 +79,15 @@ impl Effects {
             let limit = Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
             while let Some(effect) = rx.recv().await {
                 if effect.runs_concurrently() {
-                    let Ok(permit) = Arc::clone(&limit).acquire_owned().await else { return };
                     let (server, ws, drafts) =
                         (Arc::clone(&server), Arc::clone(&ws), Arc::clone(&drafts));
                     let action_tx = action_tx.clone();
+                    let limit = Arc::clone(&limit);
                     tokio::spawn(async move {
-                        let _permit = permit;
-                        for action in run(&server, &ws, &drafts, effect).await {
+                        // Must stay inside the task: awaiting capacity on the lane
+                        // puts every ordered send behind these reads.
+                        let Ok(_permit) = limit.acquire_owned().await else { return };
+                        for action in run_guarded(server, ws, drafts, effect).await {
                             if action_tx.send(action).await.is_err() {
                                 return;
                             }
@@ -106,14 +108,23 @@ impl Effects {
 
     /// A dropped effect is a key press that did nothing, so the user is told
     /// rather than left guessing.
+    ///
+    /// A dropped send needs more than a toast: nothing else will ever report on
+    /// it, so it is failed here or it sits at "Sending" for good.
     pub fn dispatch(&self, effect: Effect) {
-        if self.tx.try_send(effect).is_err() {
-            tracing::warn!("the effect queue is full; dropping an effect");
-            let _ = self.notify.try_send(Action::Toast(
-                Level::Error,
-                "the server is not keeping up — that action was dropped".to_owned(),
-            ));
+        let Err(rejected) = self.tx.try_send(effect) else { return };
+        tracing::warn!("the effect queue is full; dropping an effect");
+        if let Effect::SendMessage { send_id, .. } = rejected.into_inner() {
+            let _ = self.notify.try_send(Action::Send(SendAction::DispatchFailed {
+                send_id,
+                reason: "the effect queue is full".to_owned(),
+            }));
+            return;
         }
+        let _ = self.notify.try_send(Action::Toast(
+            Level::Error,
+            "the server is not keeping up — that action was dropped".to_owned(),
+        ));
     }
 
     pub fn dispatch_all(&self, effects: Vec<Effect>) {
@@ -127,10 +138,14 @@ impl Effects {
     /// leave; a server that has stopped answering costs the budget, not the exit.
     pub async fn drain(&self, budget: std::time::Duration) {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        if self.tx.send(Effect::Barrier(tx)).await.is_err() {
-            return;
-        }
-        let _ = tokio::time::timeout(budget, rx).await;
+        // The send is inside the budget too: on a full queue it waits for room,
+        // which is exactly the case that used to hold quit for minutes.
+        let _ = tokio::time::timeout(budget, async {
+            if self.tx.send(Effect::Barrier(tx)).await.is_ok() {
+                let _ = rx.await;
+            }
+        })
+        .await;
     }
 }
 
@@ -165,12 +180,59 @@ impl Effect {
                 | Self::SearchValues { .. }
         )
     }
+
+    /// What to call this effect in a message to the user.
+    const fn label(&self) -> &'static str {
+        match self {
+            Self::LoadConversationPage { .. } => "loading the transcript",
+            Self::ExportConversation { .. } => "the export",
+            Self::OpenLinkedFile { .. } => "opening the file",
+            Self::ReadAttachment { .. } | Self::ReadSpawnFile { .. } => "reading the attachment",
+            Self::ReadClipboardImage => "reading the clipboard image",
+            Self::FetchSessionImage { .. } => "loading the image",
+            Self::FetchDiagnose { .. } => "the diagnose",
+            Self::FetchGitInfo { .. } => "reading the git info",
+            Self::FetchMachineDirs { .. } | Self::FetchRecentDirs { .. } => "listing directories",
+            Self::FetchSpawnMemory => "loading the spawn memory",
+            Self::FetchChangelog { .. } => "loading the changelog",
+            Self::FetchSelfUpdateRun => "checking the update",
+            Self::FetchHarnessModels { .. } => "loading the models",
+            Self::FetchSessionLangfuse { .. } => "loading the spend",
+            Self::SearchSessions { .. } | Self::SearchValues { .. } => "the search",
+            _ => "that request",
+        }
+    }
 }
 
 /// The row a `save_draft` spawn created. The draft route answers with the new
 /// row's id in `command_id` and no `session_id`, so that is what identifies it.
 fn created_draft_id(reply: &cctui_proto::api::SpawnResponse) -> Option<String> {
     (reply.status == "draft").then(|| reply.command_id.to_string())
+}
+
+/// Runs one effect, turning a panic into a toast.
+///
+/// A side task's panic must not reach the process hook: the hook tears the
+/// terminal down for a panic that ends the UI, and this one does not — the TUI
+/// is still drawing.
+async fn run_guarded(
+    server: Arc<Client>,
+    ws: Arc<WsClient>,
+    drafts: Arc<DraftSaver>,
+    effect: Effect,
+) -> Vec<Action> {
+    let label = effect.label();
+    // The inner task is what isolates the unwind: tokio reports it as a
+    // JoinError instead of letting it reach the process hook.
+    let work = tokio::spawn(async move { run(&server, &ws, &drafts, effect).await });
+    match work.await {
+        Ok(actions) => actions,
+        Err(e) if e.is_panic() => {
+            tracing::error!(effect = label, "an effect panicked");
+            vec![Action::Toast(Level::Error, format!("{label} failed unexpectedly"))]
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Per-key debounce for draft writes: a pending save is replaced, not queued,
@@ -181,11 +243,28 @@ struct DraftSaver {
     /// the reducer or every later save mints another row.
     actions: mpsc::Sender<Action>,
     pending: std::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// The spawn autosave keeps its own slot rather than a key in `pending`:
+    /// cancelling it has to be able to tell "still sleeping" from "already on
+    /// the wire", and the second case must be left alone.
+    spawn_save: std::sync::Mutex<Option<SpawnSave>>,
+}
+
+/// One in-progress spawn autosave.
+struct SpawnSave {
+    /// Raised once the request is actually out. Aborting after that loses the
+    /// draft id the reply carries.
+    committed: Arc<std::sync::atomic::AtomicBool>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 impl DraftSaver {
     fn new(server: Arc<Client>, actions: mpsc::Sender<Action>) -> Self {
-        Self { server, actions, pending: std::sync::Mutex::new(HashMap::new()) }
+        Self {
+            server,
+            actions,
+            pending: std::sync::Mutex::new(HashMap::new()),
+            spawn_save: std::sync::Mutex::new(None),
+        }
     }
 
     fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, tokio::task::JoinHandle<()>>> {
@@ -208,13 +287,32 @@ impl DraftSaver {
 
     /// One pending autosave at a time, keyed on the dialog rather than a
     /// draft id: the first save is what mints the id.
-    fn autosave(&self, session_id: Option<String>, request: Box<cctui_proto::api::SpawnRequest>) {
-        const KEY: &str = "\u{0}spawn-draft";
-        self.cancel(KEY);
+    ///
+    /// `immediate` skips the debounce, for the flush on quit.
+    fn autosave(
+        &self,
+        session_id: Option<String>,
+        request: Box<cctui_proto::api::SpawnRequest>,
+        immediate: bool,
+    ) {
+        // A create already on the wire owns the row this dialog is about to get.
+        // Replacing it would lose that id and mint a second row, so the save is
+        // skipped; the next keystroke saves against the adopted id.
+        if self.spawn_create_in_flight() {
+            return;
+        }
+        let committed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let creating = session_id.is_none();
         let server = Arc::clone(&self.server);
         let actions = self.actions.clone();
+        let flag = Arc::clone(&committed);
         let handle = tokio::spawn(async move {
-            tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            if !immediate {
+                tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            }
+            if creating {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
             let outcome = match session_id.as_deref() {
                 Some(id) => server.update_draft(id, &request).await.map(|_| None),
                 // An autosave stores names, never bytes: the files go up at launch.
@@ -233,7 +331,40 @@ impl DraftSaver {
                 Err(e) => tracing::warn!(%e, "autosaving the spawn draft failed"),
             }
         });
-        self.pending().insert(KEY.to_owned(), handle);
+        let previous = self.spawn_save().replace(SpawnSave { committed, handle });
+        if let Some(previous) = previous {
+            previous.handle.abort();
+        }
+    }
+
+    fn spawn_save(&self) -> std::sync::MutexGuard<'_, Option<SpawnSave>> {
+        self.spawn_save.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether a draft-creating save has passed the point where cancelling it
+    /// would throw the new row's id away.
+    fn spawn_create_in_flight(&self) -> bool {
+        let mut slot = self.spawn_save();
+        let Some(save) = slot.as_ref() else { return false };
+        let running =
+            save.committed.load(std::sync::atomic::Ordering::Acquire) && !save.handle.is_finished();
+        if !running && save.handle.is_finished() {
+            *slot = None;
+        }
+        running
+    }
+
+    /// The dialog is gone: stop the save it still owed. A create already on the
+    /// wire is left to land, so the row it mints is still reported and can be
+    /// discarded by id rather than stranded.
+    fn cancel_spawn_autosave(&self) {
+        if self.spawn_create_in_flight() {
+            return;
+        }
+        let save = self.spawn_save().take();
+        if let Some(save) = save {
+            save.handle.abort();
+        }
     }
 
     fn cancel(&self, key: &str) {
@@ -339,8 +470,12 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
                 vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
             }
         },
-        Effect::AutosaveDraft { session_id, request } => {
-            drafts.autosave(session_id, request);
+        Effect::AutosaveDraft { session_id, request, immediate } => {
+            drafts.autosave(session_id, request, immediate);
+            Vec::new()
+        }
+        Effect::CancelSpawnAutosave => {
+            drafts.cancel_spawn_autosave();
             Vec::new()
         }
         Effect::LaunchDraft { session_id, env } => {
@@ -554,7 +689,9 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
         }
         Effect::SetModel { session_id, model, effort } => {
             match server.set_model(&session_id, Some(&model), Some(&effort)).await {
-                Ok(()) => vec![Action::Controls(ControlsAction::ModelSet { model, effort })],
+                Ok(()) => {
+                    vec![Action::Controls(ControlsAction::ModelSet { session_id, model, effort })]
+                }
                 Err(e) => {
                     tracing::warn!(%e, "set-model failed");
                     vec![Action::Toast(Level::Error, format!("set-model failed: {e}"))]
@@ -574,7 +711,10 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
         Effect::ReadSpawnFile { path } => read_spawn_file(&path).await,
         Effect::SaveDraftNow { key, text } => {
             if let Err(e) = server.put_draft(&key, &text).await {
-                tracing::warn!(%e, "flushing a draft on quit failed");
+                // The process is on its way out and this is the only copy, so it
+                // goes to disk rather than into the log.
+                tracing::warn!(%e, "flushing a draft on quit failed; keeping it locally");
+                crate::config::recovery::record(&key, &text);
             }
             Vec::new()
         }
@@ -1522,27 +1662,34 @@ async fn refetch_labels(server: &Client) -> Vec<Action> {
 /// so a key the web UI changed meanwhile is not reverted, and a read that fails
 /// cancels the write instead of replacing the row from the patch alone.
 async fn save_settings(server: &Client, patch: serde_json::Value) -> Vec<Action> {
-    let fresh = match server.settings().await {
-        Ok(payload) => Some(payload.data),
+    // The version travels with the body from the same read the body is merged
+    // into, so a server that has moved its settings version on is handed its
+    // own number back rather than a stale constant.
+    let (fresh, version) = match server.settings().await {
+        Ok(payload) => (Some(payload.data), payload.version),
         Err(e) => {
             tracing::warn!(%e, "cannot read the settings to merge into");
-            None
+            (None, SETTINGS_VERSION)
         }
     };
     let body = match crate::app::settings_write::plan(fresh, patch) {
         crate::app::settings_write::WritePlan::Put(body) => body,
         crate::app::settings_write::WritePlan::Refuse => {
-            return vec![Action::Toast(
-                Level::Warn,
-                "could not read your settings — nothing was saved".to_owned(),
-            )];
+            return vec![
+                Action::SettingsWriteFailed,
+                Action::Toast(
+                    Level::Warn,
+                    "could not read your settings — nothing was saved".to_owned(),
+                ),
+            ];
         }
     };
-    // The version the server last reported travels with the body; it migrates
-    // an older payload forward rather than rejecting it.
-    if let Err(e) = server.put_settings(SETTINGS_VERSION, body.clone()).await {
+    if let Err(e) = server.put_settings(version, body.clone()).await {
         tracing::warn!(%e, "cannot save the settings");
-        return vec![Action::Toast(Level::Warn, "could not save your settings".to_owned())];
+        return vec![
+            Action::SettingsWriteFailed,
+            Action::Toast(Level::Warn, "could not save your settings".to_owned()),
+        ];
     }
     vec![Action::SettingsSaved(Box::new(body))]
 }
@@ -1745,7 +1892,7 @@ fn read_clipboard_image() -> Action {
 mod tests {
     use std::time::Duration;
 
-    use super::{Effect, Effects};
+    use super::{CONCURRENCY, Effect, Effects};
     use crate::app::Action;
 
     /// Accepts the connection and then answers nothing, standing in for a daemon
@@ -1802,6 +1949,58 @@ mod tests {
         }
     }
 
+    /// The permit must be taken inside the side task. One slow read fits under
+    /// the cap and proves nothing; a full cap is what used to stall the lane.
+    #[tokio::test]
+    async fn a_saturated_side_lane_does_not_delay_a_send() {
+        let (base, _server) = hung_server();
+        let (effects, mut actions) = effects_against(&base);
+
+        for i in 0..=CONCURRENCY {
+            effects.dispatch(Effect::FetchDiagnose { session_id: format!("s-hangs-{i}") });
+        }
+        // Ordered and local: only a blocked lane can make this late.
+        effects.dispatch(Effect::Copy { text: "hi".to_owned(), label: "answer" });
+
+        let action = tokio::time::timeout(Duration::from_secs(5), actions.recv())
+            .await
+            .expect("a full side lane blocked the ordered lane")
+            .expect("an action");
+        match action {
+            Action::Toast(_, text) => assert!(text.contains("answer"), "got {text:?}"),
+            _ => panic!("expected the ordered effect's toast"),
+        }
+    }
+
+    /// N1: a send dropped on a full queue had no deadline, so it sat at "Sending"
+    /// with nothing left to report on it.
+    #[tokio::test]
+    async fn a_send_dropped_on_a_full_queue_is_failed_not_forgotten() {
+        let (tx, _held) = tokio::sync::mpsc::channel::<Effect>(1);
+        let (notify, mut actions) = tokio::sync::mpsc::channel::<Action>(4);
+        let effects = Effects { tx, notify };
+
+        let send = || Effect::SendMessage {
+            send_id: 7,
+            session_id: "s".to_owned(),
+            content: "hello".to_owned(),
+            ask_picks: None,
+            turn_id: None,
+            client_msg_id: None,
+        };
+        // Fills the one slot, then overflows: nothing drains this queue.
+        effects.dispatch(send());
+        effects.dispatch(send());
+
+        match actions.try_recv() {
+            Ok(Action::Send(crate::app::send::SendAction::DispatchFailed { send_id, .. })) => {
+                assert_eq!(send_id, 7, "the dropped send is the one failed");
+            }
+            Ok(_) => panic!("a dropped send got a bare toast and no failure path"),
+            Err(e) => panic!("a dropped send said nothing: {e:?}"),
+        }
+    }
+
     /// F24: quit queues the draft writes and then has to wait for them, or the
     /// process goes before they leave.
     #[tokio::test]
@@ -1820,6 +2019,70 @@ mod tests {
             Action::Toast(_, text) => assert!(text.contains("flushed"), "got {text:?}"),
             _ => panic!("expected the copy's toast"),
         }
+    }
+
+    /// R10 residual: cancelling a create that is already on the wire would throw
+    /// away the row id it is about to report, and the next save would mint a
+    /// second row.
+    #[tokio::test]
+    async fn an_autosave_already_on_the_wire_is_not_cancelled() {
+        let (base, _server) = hung_server();
+        let (_effects, action_rx) = effects_against(&base);
+        drop(action_rx);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let client = std::sync::Arc::new(cctui_client::Client::with_timeouts(
+            &base,
+            "tok",
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+        ));
+        let saver = super::DraftSaver::new(client, tx);
+        let request = || {
+            let mut form = crate::app::spawn::SpawnForm::new();
+            form.fields.machine_id = "m-1".to_owned();
+            form.fields.working_dir = "/w".to_owned();
+            Box::new(form.request())
+        };
+
+        saver.autosave(None, request(), true);
+        // `immediate` means the request is already going out; give it the tick it
+        // needs to reach the hung server and raise its flag.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(saver.spawn_create_in_flight(), "the create is past the point of no return");
+
+        saver.cancel_spawn_autosave();
+        assert!(saver.spawn_create_in_flight(), "it is let go of, not aborted");
+
+        // And a save that arrives while it is in flight does not mint a rival row.
+        saver.autosave(None, request(), true);
+        assert!(
+            saver.spawn_create_in_flight(),
+            "the second save is skipped until the first one's id lands"
+        );
+    }
+
+    /// R13: the whole point of the flush is the case where the server is gone,
+    /// so the text has to land somewhere the next start can find it.
+    #[tokio::test]
+    async fn a_draft_the_server_refuses_is_kept_on_disk() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("recovery.json");
+        crate::config::recovery::set_path_for_tests(&path);
+
+        // Nothing listening at all, so the PUT fails rather than hanging.
+        let (effects, _actions) = effects_against("http://127.0.0.1:1");
+        effects.dispatch(Effect::SaveDraftNow {
+            key: "draft:s-a".to_owned(),
+            text: "the text the server never took".to_owned(),
+        });
+        effects.drain(Duration::from_secs(10)).await;
+
+        let held = crate::config::recovery::load_from(&path);
+        assert_eq!(
+            held.drafts.get("draft:s-a").map(String::as_str),
+            Some("the text the server never took"),
+            "a failed flush must not be only a log line"
+        );
     }
 
     /// A server that stopped answering costs the budget, not the exit.

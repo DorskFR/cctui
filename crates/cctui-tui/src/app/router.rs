@@ -16,6 +16,12 @@ impl Router {
         self.stack.last().copied().unwrap_or(View::SessionList)
     }
 
+    /// Whether `view` is anywhere in the stack, not just on top: an overlay
+    /// pushed over a conversation still acts on that conversation.
+    pub fn contains(&self, view: View) -> bool {
+        self.stack.contains(&view)
+    }
+
     pub fn below(&self) -> Option<View> {
         self.stack.len().checked_sub(2).and_then(|i| self.stack.get(i).copied())
     }

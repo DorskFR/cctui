@@ -56,6 +56,7 @@ mod spawn_labels;
 mod state;
 mod store;
 mod transcript_md;
+mod turn_dedupe;
 mod update_check;
 mod uploads;
 mod usage_history;
@@ -214,7 +215,6 @@ async fn build_state(
         provider_status: provider_status::ProviderStatusCache::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
-        dispatched_turns: Arc::new(dashmap::DashMap::new()),
     })
 }
 
@@ -469,6 +469,13 @@ fn spawn_sweeps(state: AppState) {
             }
         }
     });
+    spawn_periodic(REAPER_PERIOD, {
+        let pool = state.pool.clone();
+        move || {
+            let pool = pool.clone();
+            async move { turn_dedupe::sweep(&pool).await }
+        }
+    });
     spawn_periodic(PLUGIN_SYNC_PERIOD, {
         let state = state.clone();
         move || {
@@ -482,7 +489,10 @@ fn spawn_sweeps(state: AppState) {
 async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!("listening on {}", config.bind_addr());
-    axum::serve(listener, app).await?;
+    // With connect info, so a handler that must identify its caller can use the
+    // peer address rather than believing a header.
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await?;
     Ok(())
 }
 

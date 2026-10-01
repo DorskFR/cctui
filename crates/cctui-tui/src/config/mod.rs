@@ -3,6 +3,7 @@
 pub mod chord;
 pub mod keymap;
 pub mod prefs;
+pub mod recovery;
 pub mod server;
 pub mod uistate;
 

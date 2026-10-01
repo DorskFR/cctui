@@ -560,4 +560,33 @@ mod tests {
         assert_eq!(cut.chars().count(), 90);
         assert!(cut.ends_with('…'));
     }
+
+    /// R12: the pins overlay sits over the conversation, so the cursor may
+    /// address a different row than the session being read.
+    #[test]
+    fn unpinning_from_the_overlay_targets_the_open_conversation_not_the_cursor() {
+        let mut app = App::new();
+        app.sessions = vec![
+            session("s-a", "alpha", "active", "working"),
+            session("s-b", "beta", "active", "working"),
+        ];
+        app.update_aggregates();
+        reduce(&mut app, Action::OpenSelectedConversation);
+        let opened = app.subscribed.clone().expect("a subscription");
+
+        page(&mut app, PageKind::Latest, &[(4, "a")], false);
+        pins(&mut app, &[4]);
+        reduce(&mut app, Action::Pins(PinAction::OpenList));
+        assert_eq!(app.view(), View::Pins, "the overlay is on top");
+
+        app.selected_index = 1;
+
+        let effects = reduce(&mut app, Action::Pins(PinAction::UnpinSelected));
+        match effects.as_slice() {
+            [Effect::UnpinMessage { session_id, seq: 4 }] => {
+                assert_eq!(*session_id, opened);
+            }
+            _ => panic!("expected one unpin for the open conversation"),
+        }
+    }
 }

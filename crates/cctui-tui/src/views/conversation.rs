@@ -25,6 +25,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .metadata
         .get("project_name")
         .and_then(serde_json::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .or_else(|| session.working_dir.rsplit('/').find(|part| !part.is_empty()))
         .unwrap_or("unknown");
     let branch =
         session.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
@@ -37,7 +39,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .or_else(|| session.metadata.get("model").and_then(serde_json::Value::as_str))
         .unwrap_or("");
     let cost = format!("${:.2}", session.token_usage.cost_usd);
-    let machine = &session.machine_id;
+    // The name as the info panel reads it: an id is the fallback, not the label.
+    let machine = session
+        .machine_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&session.machine_id);
 
     // The sidebar takes a column off the right and the vertical layout below
     // runs on what is left, so nothing else moves when it opens.
