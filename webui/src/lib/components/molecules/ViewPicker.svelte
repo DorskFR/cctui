@@ -5,6 +5,7 @@
 	import { Button, Icon, SegmentedControl, type IconName } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { ViewMode } from '$lib/sessionsView.svelte';
+	import { MENU_ROW, MENU_ROW_ICON } from './menuRow';
 
 	let {
 		view = $bindable(),
@@ -41,12 +42,12 @@
 		variant="ghost"
 		size="sm"
 		block
-		style="justify-content:flex-start"
+		style={MENU_ROW}
 		data-journey="view"
 		title={target}
 		onclick={() => (view = next)}
 	>
-		<Icon name={ICONS[next]} size={18} />
+		<span style={MENU_ROW_ICON}><Icon name={ICONS[next]} size={18} /></span>
 		<span>{target}</span>
 	</Button>
 {:else}

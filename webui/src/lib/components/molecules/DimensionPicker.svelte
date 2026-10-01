@@ -6,6 +6,7 @@
 		GROUP_DIMENSIONS,
 		type Dimension
 	} from '../../../routes/sessions/sessions.logic';
+	import { MENU_ROW, MENU_ROW_ICON } from './menuRow';
 
 	// Toolbar picker for a session-list dimension (color · group), mirroring
 	// ViewPicker: a native <select> overlaid on a styled square trigger.
@@ -33,6 +34,7 @@
 </script>
 
 {#snippet content()}
+	<span style={MENU_ROW_ICON}>
 	{#if kind === 'color'}
 		<Icon size={18}>
 			<circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
@@ -47,6 +49,7 @@
 			<rect x="3" y="13" width="18" height="5" rx="1" />
 		</Icon>
 	{/if}
+	</span>
 	<Select
 		variant="ghost"
 		aria-label={m.misc_dimension_sessions_by({ noun })}
@@ -60,7 +63,15 @@
 {/snippet}
 
 {#if menu}
-	<div class="dim-picker menu-row" class:active {title} aria-label={title} data-journey="dimension" data-journey-key={kind}>
+	<div
+		class="dim-picker menu-row"
+		class:active
+		style={MENU_ROW}
+		{title}
+		aria-label={title}
+		data-journey="dimension"
+		data-journey-key={kind}
+	>
 		{@render content()}
 	</div>
 {:else}
@@ -88,19 +99,8 @@
 	.dim-picker.active {
 		color: var(--accent);
 	}
-	/* Overflow-menu row: full-width, left-aligned icon + label (the aria-label,
-	   e.g. "Group sessions by: Machine"), matching the drawer's ⋯ flyout rows.
-	   The ghost <Select> still fills the row (inset:0), so the whole row opens the
-	   native picker. */
-	.dim-picker.menu-row {
-		width: 100%;
-		justify-content: flex-start;
-		gap: var(--sp-2);
-		min-height: 2.25rem;
-		padding: var(--sp-1) var(--sp-2);
-		border-radius: var(--r-sm);
-		font-size: var(--fs-sm);
-	}
+	/* The row's chrome is MENU_ROW; the ghost <Select> fills it (inset:0), so the
+	   whole row opens the native picker and the label is the aria-label. */
 	.dim-picker.menu-row:hover {
 		background: var(--bg-elevated-3, var(--bg-elevated-2));
 	}

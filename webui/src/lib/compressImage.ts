@@ -1,13 +1,15 @@
-import { MAX_FILE_BYTES } from './attachments';
+import { uploadCaps } from './uploadCaps.svelte';
 
-export function needsImageCompression(file: File): boolean {
-	return file.size > MAX_FILE_BYTES && (file.type.startsWith('image/') ||
+const perFileCap = () => uploadCaps.max_file_bytes;
+
+export function needsImageCompression(file: File, limit = perFileCap()): boolean {
+	return file.size > limit && (file.type.startsWith('image/') ||
 		(!file.type && /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|tiff?)$/i.test(file.name)));
 }
 
 /** Browser-only conversion. Keep detail before trading resolution for size. */
-export async function compressImage(file: File): Promise<File> {
-	if (!needsImageCompression(file)) return file;
+export async function compressImage(file: File, limit = perFileCap()): Promise<File> {
+	if (!needsImageCompression(file, limit)) return file;
 	const url = URL.createObjectURL(file);
 	const canvas = document.createElement('canvas');
 	try {
@@ -30,7 +32,7 @@ export async function compressImage(file: File): Promise<File> {
 					canvas.toBlob((result) => result ? resolve(result) : reject(new Error('JPEG encoding failed')), 'image/jpeg', quality);
 				});
 				if (blob.type !== 'image/jpeg') throw new Error('JPEG encoding unavailable');
-				if (blob.size <= MAX_FILE_BYTES) {
+				if (blob.size <= limit) {
 					return new File([blob], `${file.name.replace(/\.[^.]+$/, '') || 'image'}.jpg`, {
 						type: 'image/jpeg', lastModified: file.lastModified
 					});
