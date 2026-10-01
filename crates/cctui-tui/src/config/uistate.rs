@@ -20,10 +20,14 @@ pub struct UiState {
     pub folded_sections: BTreeSet<String>,
     /// Whether the conversation's todo/subagent sidebar is showing.
     pub sidebar_open: bool,
+    /// `U`: show only the sessions with something unread.
+    pub unread_only: bool,
     /// The transcript quick filter (`f`) by name; empty means the default.
     pub transcript_quick: String,
     /// Categories the `F` menu is holding back.
     pub transcript_hidden: BTreeSet<String>,
+    /// `L`'s any-of label filter, by label id. Pruned when a label is deleted.
+    pub label_filter: BTreeSet<String>,
     /// A probe state that reports everything open, so a caller can enumerate the
     /// groups a fully-unfolded list would show. Never persisted.
     #[serde(skip)]
@@ -68,9 +72,9 @@ impl UiState {
 
     /// Fold every group and section that is currently open, or — when nothing is
     /// open — unfold the lot. `groups` is every `(id, total)` on screen.
-    pub fn fold_all(&mut self, groups: &[(String, usize)], sections: &[&str]) {
+    pub fn fold_all<S: AsRef<str>>(&mut self, groups: &[(String, usize)], sections: &[S]) {
         let anything_open = groups.iter().any(|(id, total)| self.group_open(id, *total))
-            || sections.iter().any(|key| self.section_open(key));
+            || sections.iter().any(|key| self.section_open(key.as_ref()));
         self.toggled_groups.clear();
         self.folded_sections.clear();
         // Both directions override a default, so which groups get a key flips
@@ -85,7 +89,7 @@ impl UiState {
             return;
         }
         for key in sections {
-            self.folded_sections.insert((*key).to_owned());
+            self.folded_sections.insert(key.as_ref().to_owned());
         }
     }
 }

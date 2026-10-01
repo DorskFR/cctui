@@ -1,9 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 546
+assertion_line: 632
 expression: render_screen(&mut app)
 ---
- cctui (main) on orion ── opus ── $1.25
+ cctui (main) on orion ── opus ── $1.25  ! 2 need input — Ctrl+g
                                                                                                    ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕

@@ -12,9 +12,11 @@ use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
 use super::identity::AuthAction;
+use super::labels::LabelAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
 use super::prompt::PromptAction;
+use super::row_actions::RowAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::sidebar::SidebarAction;
@@ -22,6 +24,7 @@ use super::slice::SliceAction;
 use super::state::ConversationLine;
 use super::terminal::TerminalAction;
 use super::toast::Level;
+use super::unread::UnreadAction;
 
 /// Everything that can change the app. Key handlers, the websocket and
 /// completed effects all funnel through this one vocabulary.
@@ -60,6 +63,7 @@ pub enum Action {
 
     Controls(ControlsAction),
     Sidebar(SidebarAction),
+    Unread(UnreadAction),
     ToggleAutoApproveSelected,
     AutoApproveSet {
         session_id: String,
@@ -67,6 +71,7 @@ pub enum Action {
     },
 
     Attach(AttachAction),
+    Labels(LabelAction),
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
     /// A paste small enough to type straight into the composer.
@@ -77,6 +82,12 @@ pub enum Action {
     RefreshSessions,
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
+    ListShape(super::list_shape_reduce::ListShapeAction),
+    ListSearch(super::list_search::ListSearchAction),
+    /// `/` and `n`/`N`: decision 7 scopes them to the view in front.
+    SearchCurrentView,
+    SearchHitNext,
+    SearchHitPrev,
     CmdLine(super::cmdline::CmdAction),
     /// `y` / `Y` / the link key, all resolved against the focused line.
     Copy(CopyWhat),
@@ -109,6 +120,7 @@ pub enum Action {
     /// composer with no popup open still types it.
     AcceptMention(KeyEvent),
     Send(SendAction),
+    RowAction(RowAction),
     Terminal(TerminalAction),
     SessionLive(SessionLiveAction),
 
@@ -226,6 +238,23 @@ pub enum Effect {
     Interrupt {
         session_id: String,
     },
+    /// One request for the whole batch; the server filters it to what the
+    /// caller owns.
+    ArchiveSessions {
+        ids: Vec<String>,
+        archived: bool,
+    },
+    PinSessions {
+        ids: Vec<String>,
+        pinned: bool,
+    },
+    RenameSession {
+        session_id: String,
+        name: String,
+    },
+    KillSession {
+        session_id: String,
+    },
     Fork {
         session_id: String,
     },
@@ -275,6 +304,31 @@ pub enum Effect {
     FetchDiagnose {
         session_id: String,
     },
+    /// `GET /labels`: the whole catalogue.
+    FetchLabels,
+    CreateLabel {
+        name: String,
+        color: String,
+        /// Attach it to this session as soon as it exists — creating a label
+        /// from a row means you wanted it on that row.
+        session_id: String,
+    },
+    UpdateLabel {
+        id: String,
+        name: Option<String>,
+        color: Option<String>,
+    },
+    DeleteLabel {
+        id: String,
+    },
+    AttachLabel {
+        session_id: String,
+        label_id: String,
+    },
+    DetachLabel {
+        session_id: String,
+        label_id: String,
+    },
     /// Persist the fold state to `tui-state.json`.
     /// `GET /sessions/stats`: the counts the summary line and Overview show.
     FetchSessionStats,
@@ -285,4 +339,17 @@ pub enum Effect {
         seq: Option<i64>,
     },
     SaveUiState(crate::config::uistate::UiState),
+    /// `PUT /settings` with the whole blob, patched: the route replaces.
+    SaveSettings {
+        data: serde_json::Value,
+    },
+    SearchSessions {
+        q: String,
+        include_archived: bool,
+        offset: usize,
+    },
+    SearchValues {
+        field: String,
+        q: String,
+    },
 }

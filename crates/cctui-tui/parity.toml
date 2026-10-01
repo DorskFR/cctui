@@ -415,38 +415,38 @@ ticket = "CCT-1260"
 [[route]]
 id = "get_labels"
 # GET /labels — List label definitions, or create one.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_labels"
 # POST /labels — List label definitions, or create one.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "patch_labels_by_id"
 # PATCH /labels/{id} — Rename or delete a label definition.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_labels_by_id"
 # DELETE /labels/{id} — Rename or delete a label definition.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_labels"
 # POST /sessions/{id}/labels — Attach a label to a session.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_sessions_by_id_labels_by_label"
 # DELETE /sessions/{id}/labels/{label_id} — Detach a label from a session.
-tui = "planned"
-ticket = "CCT-1247"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_machines_by_machine_commands_pending"
@@ -901,26 +901,26 @@ reason = "the TUI session list does not group by room"
 [[route]]
 id = "post_sessions_archive"
 # POST /sessions/archive — Archive a batch of sessions by id.
-tui = "planned"
-ticket = "CCT-1246"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_unarchive"
 # POST /sessions/unarchive — Unarchive a batch of sessions by id.
-tui = "planned"
-ticket = "CCT-1246"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_pin"
 # POST /sessions/pin — Pin a batch of sessions by id.
-tui = "planned"
-ticket = "CCT-1246"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_unpin"
 # POST /sessions/unpin — Unpin a batch of sessions by id.
-tui = "planned"
-ticket = "CCT-1246"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_launch"
@@ -1087,8 +1087,8 @@ ticket = "CCT-1224"
 [[route]]
 id = "post_sessions_by_id_kill"
 # POST /sessions/{id}/kill — Kill a session's underlying process.
-tui = "planned"
-ticket = "CCT-1245"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_by_id_pins"
@@ -1111,8 +1111,8 @@ module = "app/effects.rs"
 [[route]]
 id = "post_sessions_by_id_seen"
 # POST /sessions/{id}/seen — Mark this session's messages seen for the caller.
-tui = "planned"
-ticket = "CCT-1248"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_by_id_brief"
@@ -1183,8 +1183,8 @@ module = "app/effects.rs"
 [[route]]
 id = "patch_sessions_by_id"
 # PATCH /sessions/{id} — Rename a session.
-tui = "planned"
-ticket = "CCT-1245"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_by_id_conversation"

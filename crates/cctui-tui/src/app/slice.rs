@@ -6,7 +6,7 @@
 //! never spans two of them.
 
 use cctui_proto::api::SessionStats;
-use cctui_proto::models::{Attention, MachineLiveness};
+use cctui_proto::models::MachineLiveness;
 
 use super::action::Effect;
 use super::state::{App, View};
@@ -60,27 +60,20 @@ pub struct Cursor {
     pub scroll_offset: usize,
 }
 
-/// The four figures the summary line carries, mirroring the web UI's overview
-/// tiles.
+/// The figures the summary line carries, mirroring the web UI's overview tiles.
+///
+/// `needs_input` is read by the Overview tile only: on the status line the
+/// count belongs to the attention chip, which also carries the jump key.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Summary {
     pub live: i64,
     pub needs_input: i64,
+    pub unread: u32,
     pub machines_online: usize,
     pub machines_total: usize,
     pub today_cost_usd: f64,
     /// No stats reply yet: the counts are the locally derived fallback.
     pub pending: bool,
-}
-
-/// Sessions the server says are waiting on the operator.
-///
-/// The richer needs-input set belongs to the notifications work; until that
-/// lands this is the list's own attention flag, which the server derives.
-#[must_use]
-pub fn needs_input_count(app: &App) -> i64 {
-    let count = app.sessions.iter().filter(|s| s.attention == Some(Attention::NeedsInput)).count();
-    i64::try_from(count).unwrap_or(i64::MAX)
 }
 
 /// Online over non-revoked, from the liveness the socket reports.
@@ -124,24 +117,19 @@ fn local_midnight_ms(now_ms: i64) -> Option<i64> {
 #[must_use]
 pub fn summary(app: &App) -> Summary {
     let (machines_online, machines_total) = machines(app);
-    let (online, total) = (machines_online, machines_total);
+    let waiting = i64::try_from(super::attention::waiting_count(app)).unwrap_or(i64::MAX);
+    let shared = Summary {
+        live: 0,
+        needs_input: waiting,
+        unread: super::unread::total(app),
+        machines_online,
+        machines_total,
+        today_cost_usd: today_cost_usd(app),
+        pending: true,
+    };
     app.stats.as_ref().map_or_else(
-        || Summary {
-            live: i64::try_from(app.active_count).unwrap_or(i64::MAX),
-            needs_input: needs_input_count(app),
-            machines_online: online,
-            machines_total: total,
-            today_cost_usd: today_cost_usd(app),
-            pending: true,
-        },
-        |stats| Summary {
-            live: stats.live,
-            needs_input: stats.needs_input,
-            machines_online: online,
-            machines_total: total,
-            today_cost_usd: today_cost_usd(app),
-            pending: false,
-        },
+        || Summary { live: i64::try_from(app.active_count).unwrap_or(i64::MAX), ..shared },
+        |stats| Summary { live: stats.live, pending: false, ..shared },
     )
 }
 
@@ -226,8 +214,8 @@ mod tests {
     use cctui_proto::models::{Attention, MachineLiveness};
 
     use super::{
-        Slice, SliceAction, TABS, local_midnight_ms, machines, needs_input_count, summary,
-        today_cost_usd, zone_from_path,
+        Slice, SliceAction, TABS, local_midnight_ms, machines, summary, today_cost_usd,
+        zone_from_path,
     };
     use crate::app::action::Effect;
     use crate::app::state::{App, View};
@@ -341,13 +329,12 @@ mod tests {
         let local = summary(&app);
         assert!(local.pending, "no reply yet");
         assert_eq!(local.live, 2, "the local fallback is the active count");
-        assert_eq!(local.needs_input, 1);
 
         dispatch(&mut app, SliceAction::StatsLoaded(Box::new(stats())));
         let served = summary(&app);
         assert!(!served.pending);
         assert_eq!(served.live, 3);
-        assert_eq!(served.needs_input, 2);
+        assert_eq!(served.needs_input, local.needs_input, "the count stays the client's own");
     }
 
     #[test]
@@ -360,12 +347,24 @@ mod tests {
     }
 
     #[test]
-    fn needs_input_counts_the_servers_own_attention_flag() {
+    fn needs_input_is_whatever_the_attention_module_counts() {
         let mut app = app();
-        assert_eq!(needs_input_count(&app), 0);
+        let delegated =
+            |app: &App| i64::try_from(crate::app::attention::waiting_count(app)).expect("fits");
+        assert_eq!(summary(&app).needs_input, delegated(&app));
         app.sessions[0].attention = Some(Attention::NeedsInput);
         app.sessions[1].attention = Some(Attention::NeedsInput);
-        assert_eq!(needs_input_count(&app), 2);
+        assert_eq!(summary(&app).needs_input, delegated(&app));
+        assert!(summary(&app).needs_input > 0, "the fixture does have waiting sessions");
+    }
+
+    #[test]
+    fn the_summary_carries_the_unread_total() {
+        let mut app = app();
+        assert_eq!(summary(&app).unread, 0);
+        app.sessions[0].unread_count = 3;
+        app.sessions[1].unread_count = 4;
+        assert_eq!(summary(&app).unread, crate::app::unread::total(&app));
     }
 
     #[test]

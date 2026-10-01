@@ -19,6 +19,7 @@ pub fn draw(frame: &mut Frame, list: &PinsList) {
         frame,
         &Picker {
             title: "Pinned messages",
+            prompt: "filter",
             filter: None,
             rows: &rows,
             selected: list.selected,

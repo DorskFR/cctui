@@ -2,27 +2,27 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  ● ~3 live  ⚠ ~0 need you  ▪ 0/0 machines  $0.00 today
- 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         Esc         Close the pinned messages        │
-▸ │  ?           Toggle this cheat sheet            Ctrl+n / ↓  Next pin                         │
-  │  q           Quit cctui                         Ctrl+p / ↑  Previous pin                     │
-  │  1-9         Switch view                        Enter       Jump to the pinned message       │
-  │  /           Search the current view            d / m       Unpin this message               │
-  │  n           Next search hit                  Macros                                         │
-  │  N           Previous search hit                Esc         Close the macro list             │
-  │  D           Diagnose the selected session      Ctrl+n / ↓  Next macro                       │
-  │  i           Session info                       Ctrl+p / ↑  Previous macro                   │
-  │  Ctrl+g      Jump to the next pending approv…   Enter       Put this prompt in the composer  │
-  │Session list                                   Terminal pane                                  │
-  │  j / ↓       Next session                       T / q / Esc Close the terminal pane          │
-  │  k / ↑       Previous session                   j / ↓       Scroll the terminal down         │
-  │  g           First session                      k / ↑       Scroll the terminal up           │
-  │  G           Last session                     Help                                           │
-  │  Enter       Open the conversation              j / ↓       Scroll down                      │
-  │  z / Tab     Fold or open the subagent group    k / ↑       Scroll up                        │
-  │  S           Fold or open the section           PgDn        Page down                        │
-  │  Z           Fold or open everything            PgUp        Page up                          │
-  │Conversation                                     ? / q / Esc Close this cheat sheet           │
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
+  │Anywhere                                         Enter       Put this prompt in the composer  │
+▸ │  ?           Toggle this cheat sheet          File viewer                                    │
+  │  q           Quit cctui                         j / ↓       Scroll down                      │
+  │  1-9         Switch view                        k / ↑       Scroll up                        │
+  │  /           Search the current view            PgDn        Page down                        │
+  │  n           Next search hit                    PgUp        Page up                          │
+  │  N           Previous search hit                g           Jump to the top                  │
+  │  D           Diagnose the selected session      q / Esc     Close the file viewer            │
+  │  i           Session info                       o           Open in the desktop viewer       │
+  │  Ctrl+g      Jump to the next session needin… Labels                                         │
+  │Session list                                     Esc         Close the label list             │
+  │  j / ↓       Next session                       Ctrl+n / ↓  Next label                       │
+  │  k / ↑       Previous session                   Ctrl+p / ↑  Previous label                   │
+  │  g           First session                      Space       Attach or detach this label      │
+  │  G           Last session                       Ctrl+c      Create a label                   │
+  │  Enter       Open the conversation              Ctrl+e      Rename or recolor                │
+  │  z / Tab     Fold or open the subagent group    Ctrl+d      Delete this label                │
+  │  S           Fold or open the section           Enter       Confirm                          │
+  │  Z           Fold or open everything          Label filter                                   │
+  │  f           Choose which sections show         Esc         Close the label list             │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

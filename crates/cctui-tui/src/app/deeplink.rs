@@ -38,7 +38,7 @@ pub enum DeepLinkAction {
 pub fn apply(app: &mut App, startup: Startup) -> Vec<Effect> {
     let Startup { open, seq, filter } = startup;
     if let Some(filter) = filter {
-        app.startup_filter = Some(filter);
+        super::list_search::start_with(app, filter);
     }
     let Some(session_id) = open else { return Vec::new() };
     if app.sessions.iter().any(|s| s.id == session_id) {
@@ -110,7 +110,7 @@ mod tests {
         let mut app = app();
         assert!(apply(&mut app, Startup::default()).is_empty());
         assert_eq!(app.view(), View::SessionList);
-        assert!(app.startup_filter.is_none());
+        assert!(!app.list_search.is_active());
     }
 
     #[test]
@@ -218,10 +218,20 @@ mod tests {
     }
 
     #[test]
-    fn a_startup_filter_is_parked_for_the_search_to_pick_up() {
+    fn a_startup_filter_starts_the_list_search_on_it() {
         let mut app = app();
+        app.clock_ms = 1_000;
         apply(&mut app, Startup { filter: Some("tag:wave-5".to_owned()), ..Startup::default() });
-        assert_eq!(app.startup_filter.as_deref(), Some("tag:wave-5"));
+        assert_eq!(app.list_search.query, "tag:wave-5");
+        assert!(app.list_search.is_active(), "the list shows results, not just a chip");
+        assert!(!app.list_search.open, "the prompt is not left waiting for a keystroke");
         assert_eq!(app.view(), View::SessionList, "a filter alone opens nothing");
+
+        app.clock_ms += crate::app::list_search::DEBOUNCE_MS;
+        let effects = crate::app::list_search::on_tick(&mut app);
+        assert!(
+            matches!(effects.as_slice(), [Effect::SearchSessions { q, offset: 0, .. }] if q == "tag:wave-5"),
+            "the next tick sends it"
+        );
     }
 }

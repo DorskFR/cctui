@@ -142,6 +142,9 @@ pub fn end_badge(s: &SessionListItem) -> Option<String> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct RowBadges {
+    /// Label chips, cut to [`MAX_LABEL_CHIPS`] with a `+N` tail. Each carries its
+    /// own hue, so the row renders one segment per chip rather than one string.
+    pub labels: Vec<LabelChip>,
     /// `?` an unanswered question, `P` a plan waiting for approval.
     pub prompt: Option<&'static str>,
     /// A permission card is up and nobody has answered it.
@@ -167,6 +170,7 @@ impl RowBadges {
         soft_limited: bool,
     ) -> Self {
         Self {
+            labels: label_chips(&s.labels),
             prompt,
             pending,
             unread: s.unread_count,
@@ -179,7 +183,14 @@ impl RowBadges {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.glyphs_empty()
+    }
+
+    /// Whether the glyph cluster — everything but the label chips — says nothing.
+    #[must_use]
+    pub const fn glyphs_empty(&self) -> bool {
         self.prompt.is_none()
             && !self.pending
             && self.unread == 0
@@ -226,6 +237,38 @@ impl RowBadges {
         }
         parts.join(" ")
     }
+}
+
+/// At most this many label chips before the rest collapse into `+N`: a row with
+/// eight labels would otherwise have no room left for what it is doing.
+pub const MAX_LABEL_CHIPS: usize = 2;
+
+/// One label as the row shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelChip {
+    pub text: String,
+    /// `None` for the `+N` overflow chip, which belongs to no single label.
+    pub hue: Option<u32>,
+}
+
+/// `[wave-5] [infra] +2` — the first [`MAX_LABEL_CHIPS`] by name, then a count.
+#[must_use]
+pub fn label_chips(labels: &[cctui_proto::api::Label]) -> Vec<LabelChip> {
+    let mut shown: Vec<&cctui_proto::api::Label> = labels.iter().collect();
+    shown.sort_by(|a, b| a.name.cmp(&b.name));
+    let overflow = shown.len().saturating_sub(MAX_LABEL_CHIPS);
+    let mut out: Vec<LabelChip> = shown
+        .into_iter()
+        .take(MAX_LABEL_CHIPS)
+        .map(|l| LabelChip {
+            text: format!("[{}]", l.name),
+            hue: Some(cctui_clientcore::labels::label_hue(&l.name, &l.color)),
+        })
+        .collect();
+    if overflow > 0 {
+        out.push(LabelChip { text: format!("+{overflow}"), hue: None });
+    }
+    out
 }
 
 /// The dim trailing column: why this row looks the way it does, in one phrase.
@@ -283,6 +326,8 @@ pub const GLYPH_LEGEND: &[(&str, &str)] = &[
     ("☾", "hibernated"),
     ("↳", "subagent"),
     ("▸ / ▾", "folded / open group"),
+    ("[name]", "a label, tinted by its hue"),
+    ("+N", "more labels than fit"),
     ("!", "permission waiting on you"),
     ("?", "question waiting on you"),
     ("P", "plan waiting for approval"),

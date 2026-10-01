@@ -9,6 +9,7 @@ mod parity;
 mod selfupdate;
 #[cfg(test)]
 mod server_event_contract;
+mod termnotify;
 #[cfg(test)]
 mod testsupport;
 mod theme;
@@ -264,6 +265,11 @@ async fn run(
         app.toasts.prune(app.clock_ms);
         update_scroll_metrics(&mut app);
         terminal.draw(|f| views::render(f, &mut app))?;
+        // The one safe point for an escape sequence: the frame is on screen and
+        // nothing else is mid-write.
+        if let Err(e) = termnotify::emit(&app.watch.take_pending()) {
+            tracing::warn!(%e, "cannot write the terminal attention sequences");
+        }
 
         let actions: Vec<Action> = tokio::select! {
             biased;
@@ -344,6 +350,10 @@ async fn apply_server_settings(server: &Client, app: &mut App) {
     if let Ok(payload) = server.settings().await {
         app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
         app.macros = app::macros::from_settings(&payload.data);
+        app.list_shape = app::list_view::ListShape::from_settings(&payload.data);
+        // Kept whole: a settings write is a replace, so a patch needs the rest.
+        app.settings_blob = payload.data;
+        app.reshape();
     }
     app.show_timestamps = app.config.prefs.timestamps;
 }

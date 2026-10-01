@@ -16,6 +16,7 @@ pub fn draw(frame: &mut Frame, macros: &MacroState) {
         frame,
         &Picker {
             title: "Macros",
+            prompt: "filter",
             filter: Some(&picker.filter),
             rows: &rows,
             selected: picker.selected,

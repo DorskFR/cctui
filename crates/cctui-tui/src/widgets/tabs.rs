@@ -3,15 +3,28 @@
 use ratatui::text::{Line, Span};
 
 use crate::app::App;
-use crate::app::slice::{self, TABS};
+use crate::app::slice::{self, TABS, Tab};
 use crate::theme;
 
 /// `1 Sessions  2 Bookmarks  3 Overview  …`, the current one highlighted and
 /// the ones the TUI has not built yet dimmed but still numbered.
+///
+/// `reserve` is what the caller still has to fit on the row: the unbuilt tabs
+/// are the first thing dropped, being the only ones that lead nowhere.
 #[must_use]
-pub fn tab_spans(app: &App) -> Vec<Span<'static>> {
+pub fn tab_spans(app: &App, width: usize, reserve: usize) -> Vec<Span<'static>> {
+    let cost = |t: &Tab| t.label.chars().count() + 4;
+    let all: usize = TABS.iter().map(cost).sum();
+    let built: usize = TABS.iter().filter(|t| t.slice.is_some()).map(cost).sum();
+    // Degrade in order: everything, then the tabs that lead nowhere, then the
+    // labels of the slices you are not on — a bare number still teaches the key.
+    let show_unbuilt = all + reserve <= width;
+    let show_labels = built + reserve <= width;
     let mut spans = Vec::with_capacity(TABS.len() * 3);
     for (index, tab) in TABS.iter().enumerate() {
+        if tab.slice.is_none() && !show_unbuilt {
+            continue;
+        }
         let number = index + 1;
         let current = tab.slice == Some(app.slice);
         let (key_style, label_style) = if current {
@@ -22,7 +35,9 @@ pub fn tab_spans(app: &App) -> Vec<Span<'static>> {
             (theme::border_dim(), theme::border_dim())
         };
         spans.push(Span::styled(format!(" {number}"), key_style));
-        spans.push(Span::styled(format!(" {}", tab.label), label_style));
+        if current || show_labels {
+            spans.push(Span::styled(format!(" {}", tab.label), label_style));
+        }
         spans.push(Span::raw(" "));
     }
     spans
@@ -38,12 +53,9 @@ const COMPACT_UNDER: usize = 100;
 pub fn summary_spans(app: &App, width: usize) -> Vec<Span<'static>> {
     let s = slice::summary(app);
     let mark = if s.pending { "~" } else { "" };
-    let needs_style = if s.needs_input > 0 { theme::attention() } else { theme::dim() };
     let word = |w: &str| if width < COMPACT_UNDER { String::new() } else { format!(" {w}") };
-    vec![
+    let mut spans = vec![
         Span::styled(format!("● {mark}{}{}", s.live, word("live")), theme::active()),
-        Span::raw("  "),
-        Span::styled(format!("⚠ {mark}{}{}", s.needs_input, word("need you")), needs_style),
         Span::raw("  "),
         Span::styled(
             format!("▪ {}/{}{}", s.machines_online, s.machines_total, word("machines")),
@@ -51,12 +63,17 @@ pub fn summary_spans(app: &App, width: usize) -> Vec<Span<'static>> {
         ),
         Span::raw("  "),
         Span::styled(format!("${:.2}{}", s.today_cost_usd, word("today")), theme::cost()),
-    ]
+    ];
+    if s.unread > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("●{}{}", s.unread, word("unread")), theme::unread()));
+    }
+    spans
 }
 
 #[must_use]
-pub fn tab_line(app: &App) -> Line<'static> {
-    Line::from(tab_spans(app))
+pub fn tab_line(app: &App, width: usize) -> Line<'static> {
+    Line::from(tab_spans(app, width, 0))
 }
 
 #[cfg(test)]
@@ -83,9 +100,40 @@ mod tests {
     fn every_tab_is_numbered_in_order() {
         let app = app();
         assert_eq!(
-            text(&tab_spans(&app)),
+            text(&tab_spans(&app, 120, 0)),
             " 1 Sessions  2 Bookmarks  3 Overview  4 Access  5 Accounts  6 Settings "
         );
+    }
+
+    #[test]
+    fn a_row_with_other_work_on_it_sheds_the_tabs_that_lead_nowhere_first() {
+        let app = app();
+        assert_eq!(text(&tab_spans(&app, 120, 60)), " 1 Sessions  2 Bookmarks  3 Overview ");
+        assert_eq!(text(&tab_spans(&app, 60, 0)), " 1 Sessions  2 Bookmarks  3 Overview ");
+    }
+
+    #[test]
+    fn a_very_tight_row_keeps_the_numbers_and_the_slice_you_are_on() {
+        let app = app();
+        let bare = text(&tab_spans(&app, 80, 61));
+        assert_eq!(bare, " 1 Sessions  2  3 ");
+        assert!(bare.chars().count() + 61 <= 80, "it has to actually fit: {bare:?}");
+    }
+
+    #[test]
+    fn the_summary_leaves_the_needs_input_count_to_the_attention_chip() {
+        let mut app = app();
+        app.sessions[0].attention = Some(cctui_proto::models::Attention::NeedsInput);
+        let line = text(&summary_spans(&app, 120));
+        assert!(!line.contains("need"), "one count, one place: {line}");
+    }
+
+    #[test]
+    fn unread_shows_only_when_there_is_some() {
+        let mut app = app();
+        assert!(!text(&summary_spans(&app, 120)).contains("unread"));
+        app.sessions[0].unread_count = 5;
+        assert!(text(&summary_spans(&app, 120)).contains("●5 unread"));
     }
 
     #[test]
@@ -93,7 +141,7 @@ mod tests {
         let mut app = app();
         reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
         assert_eq!(app.slice, Slice::Overview);
-        let spans = tab_spans(&app);
+        let spans = tab_spans(&app, 120, 0);
         let overview = spans
             .iter()
             .position(|s| s.content.as_ref() == " Overview")
@@ -128,7 +176,6 @@ mod tests {
         );
         let served = text(&summary_spans(&app, 120));
         assert!(served.contains("● 4 live"), "{served}");
-        assert!(served.contains("⚠ 1 need you"), "{served}");
         assert!(!served.contains('~'), "{served}");
     }
 }

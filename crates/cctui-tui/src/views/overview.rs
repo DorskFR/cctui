@@ -85,7 +85,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     status.extend(crate::widgets::status::status_spans(app));
     frame.render_widget(Paragraph::new(Line::from(status)), status_area);
 
-    frame.render_widget(Paragraph::new(crate::widgets::tabs::tab_line(app)), tabs_area);
+    frame.render_widget(
+        Paragraph::new(crate::widgets::tabs::tab_line(app, usize::from(tabs_area.width))),
+        tabs_area,
+    );
 
     draw_tiles(frame, app, body_area);
 
