@@ -218,6 +218,12 @@ pub enum Effect {
     ReorderProfiles {
         ids: Vec<uuid::Uuid>,
     },
+    /// Save the open dialog as a draft after a quiet period: a `PUT` when it
+    /// already has a row, else a `save_draft` spawn that makes one.
+    AutosaveDraft {
+        session_id: Option<String>,
+        request: Box<cctui_proto::api::SpawnRequest>,
+    },
     /// Launch a draft session. `env` is entered at launch, never stored.
     LaunchDraft {
         session_id: String,

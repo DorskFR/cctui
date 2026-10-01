@@ -107,6 +107,29 @@ impl DraftSaver {
         self.pending.insert(key, handle);
     }
 
+    /// One pending autosave at a time, keyed on the dialog rather than a
+    /// draft id: the first save is what mints the id.
+    fn autosave(
+        &mut self,
+        session_id: Option<String>,
+        request: Box<cctui_proto::api::SpawnRequest>,
+    ) {
+        const KEY: &str = "\u{0}spawn-draft";
+        self.cancel(KEY);
+        let server = Arc::clone(&self.server);
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            let outcome = match session_id.as_deref() {
+                Some(id) => server.update_draft(id, &request).await.map(|_| ()),
+                None => server.spawn_session(&request).await,
+            };
+            if let Err(e) = outcome {
+                tracing::warn!(%e, "autosaving the spawn draft failed");
+            }
+        });
+        self.pending.insert(KEY.to_owned(), handle);
+    }
+
     fn cancel(&mut self, key: &str) {
         if let Some(handle) = self.pending.remove(key) {
             handle.abort();
@@ -214,6 +237,10 @@ async fn run(
                 vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
             }
         },
+        Effect::AutosaveDraft { session_id, request } => {
+            drafts.autosave(session_id, request);
+            Vec::new()
+        }
         Effect::LaunchDraft { session_id, env } => {
             match server.launch_draft(&session_id, &env).await {
                 Ok(_) => vec![Action::SpawnDrafts(SpawnDraftAction::Launched { session_id })],

@@ -616,8 +616,9 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
         }
         SpawnAction::Key(key) => {
             let mut form = app.spawn.take();
-            let effects = form.as_mut().map_or_else(Vec::new, |f| f.handle_key(key));
+            let mut effects = form.as_mut().map_or_else(Vec::new, |f| f.handle_key(key));
             app.spawn = form;
+            effects.extend(crate::app::spawn_drafts::autosave(app));
             effects
         }
         SpawnAction::Submit => submit(app),

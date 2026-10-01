@@ -77,6 +77,33 @@ impl SpawnDraftState {
     }
 }
 
+/// Keep the open dialog as a draft: the effects worker holds the request for
+/// a quiet period, so a burst of typing is one save. Nothing is saved until
+/// the spawn is addressable — a draft needs the machine and directory it would
+/// run in.
+pub fn autosave(app: &App) -> Vec<Effect> {
+    let Some(request) = super::spawn::form_snapshot(app) else { return Vec::new() };
+    if request.machine_id.is_empty() || request.working_dir.is_empty() {
+        return Vec::new();
+    }
+    let env_keys = app
+        .spawn
+        .as_ref()
+        .map(|form| {
+            form.env
+                .iter()
+                .filter(|(k, _)| !k.trim().is_empty())
+                .map(|(k, _)| k.trim().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let draft = cctui_clientcore::spawn::draft_body(&request, env_keys, Vec::new());
+    vec![Effect::AutosaveDraft {
+        session_id: app.spawn_drafts.editing.clone(),
+        request: Box::new(draft),
+    }]
+}
+
 #[must_use]
 pub fn is_draft(session: &SessionListItem) -> bool {
     session.status == SessionStatus::Draft
@@ -324,6 +351,44 @@ mod tests {
 
     fn act(app: &mut App, action: SpawnDraftAction) -> Vec<Effect> {
         reduce(app, Action::SpawnDrafts(action))
+    }
+
+    #[test]
+    fn typing_in_the_dialog_autosaves_it_as_a_draft_without_its_env() {
+        let mut app = app_with(vec![session("s-a", "alpha", "active", "working")]);
+        reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
+        let form = app.spawn.as_mut().expect("the dialog");
+        form.fields.machine_id.clear();
+        form.fields.working_dir.clear();
+        assert!(
+            super::autosave(&app).is_empty(),
+            "a spawn with nowhere to run is not a draft worth keeping"
+        );
+
+        let form = app.spawn.as_mut().expect("the dialog");
+        form.fields.machine_id = "m-1".to_owned();
+        form.fields.working_dir = "/w".to_owned();
+        form.fields.prompt = "half a plan".to_owned();
+        form.env = vec![("TOKEN".to_owned(), "secret".to_owned()), (" ".to_owned(), String::new())];
+
+        match super::autosave(&app).as_slice() {
+            [Effect::AutosaveDraft { session_id, request }] => {
+                assert!(session_id.is_none(), "the first save mints the row");
+                assert!(request.save_draft, "it is a draft, not a launch");
+                assert_eq!(request.prompt.as_deref(), Some("half a plan"));
+                assert!(request.env.is_empty(), "env values are never stored");
+                assert_eq!(request.env_keys, vec!["TOKEN".to_owned()], "only their names");
+            }
+            _ => panic!("expected an autosave"),
+        }
+
+        app.spawn_drafts.editing = Some("d-9".to_owned());
+        match super::autosave(&app).as_slice() {
+            [Effect::AutosaveDraft { session_id, .. }] => {
+                assert_eq!(session_id.as_deref(), Some("d-9"), "later saves replace that row");
+            }
+            _ => panic!("expected an autosave"),
+        }
     }
 
     #[test]

@@ -949,8 +949,8 @@ ticket = "CCT-1262"
 [[route]]
 id = "put_sessions_by_id_draft"
 # PUT /sessions/{id}/draft — Replace a draft session's stored spawn payload in place.
-tui = "planned"
-ticket = "CCT-1262"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_interrupt"
