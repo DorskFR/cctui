@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden for buildSpawnBody (webui spawn/spawnBody.ts) and clientcore::spawn::build_spawn_body. Each case is the form choices plus the request they must produce. `expect` lists only the keys that matter to the case: both sides assert on those, so a key a lane adds later does not invalidate the file. The account sentinels are written with \\u0000 because that is what the pickers put in the value space. `account` and `pool` are passed through verbatim: the server resolves both BY NAME (account_resolve::resolve_account_or_pool), so a picker must hold names, and these cases use names deliberately rather than ids.",
+  "_comment": "Golden for buildSpawnBody (webui spawn/spawnBody.ts) and clientcore::spawn::build_spawn_body. Each case is the form choices plus the request they must produce. `expect` lists only the keys that matter to the case: both sides assert on those, so a key added later does not invalidate the file. The account sentinels are written with \\u0000 because that is what the pickers put in the value space. `account` and `pool` are passed through verbatim: the server resolves both BY NAME (account_resolve::resolve_account_or_pool), so a picker must hold names, and these cases use names deliberately rather than ids.",
   "cases": [
     {
       "name": "auto account, claude-code, nothing else filled",

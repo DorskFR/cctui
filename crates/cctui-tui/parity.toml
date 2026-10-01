@@ -457,14 +457,14 @@ reason = "the daemon calls this, not a human client"
 [[route]]
 id = "get_machines_by_machine_fs_dirs"
 # GET /machines/{machine_id}/fs/dirs — List directories on a machine (spawn dir picker).
-tui = "planned"
-ticket = "CCT-1257"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_machines_by_machine_fs_gitinfo"
 # GET /machines/{machine_id}/fs/gitinfo — Git branch / detached HEAD of a directory on a machine (spawn dir badge).
-tui = "planned"
-ticket = "CCT-1257"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_machines_by_machine_fs_file"
@@ -481,8 +481,8 @@ ticket = "CCT-1258"
 [[route]]
 id = "post_machines_by_machine_codex_models_refresh"
 # POST /machines/{machine_id}/codex-models/refresh — Re-read every OpenAI account's codex model catalog from upstream.
-tui = "planned"
-ticket = "CCT-1258"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_models_codex_catalog"
@@ -997,8 +997,8 @@ reason = "the daemon calls this, not a human client"
 [[route]]
 id = "post_sessions_spawn"
 # POST /sessions/spawn — Spawn a new session on a machine, with optional file uploads.
-tui = "planned"
-ticket = "CCT-1256"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_files"
@@ -1039,20 +1039,20 @@ module = "app/effects.rs"
 [[route]]
 id = "get_sessions_search"
 # GET /sessions/search — Full-text search across your sessions.
-tui = "planned"
-ticket = "CCT-1242"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_search_values"
 # GET /sessions/search/values — Autocomplete values for a search field.
-tui = "planned"
-ticket = "CCT-1242"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_recent_dirs"
 # GET /sessions/recent-dirs — List recently used working directories.
-tui = "planned"
-ticket = "CCT-1257"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_message"
@@ -1333,14 +1333,14 @@ module = "app/effects.rs"
 [[route]]
 id = "get_spawn_memory"
 # GET /spawn-memory — Get or replace your remembered spawn configuration per target.
-tui = "planned"
-ticket = "CCT-1256"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "put_spawn_memory"
 # PUT /spawn-memory — Get or replace your remembered spawn configuration per target.
-tui = "planned"
-ticket = "CCT-1256"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_users_by_id_tokens"
