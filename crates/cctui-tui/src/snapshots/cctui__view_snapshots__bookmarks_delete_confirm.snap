@@ -1,10 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 144
+assertion_line: 149
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
- 1 Sessions  2 Bookmarks  3 Overview  4 Machines  5 Access  6 Accounts  7 Settings
+ 1 Sessions  2 Bookmarks  3 Overview  4 Machines  5 Access  6 Accounts  7 Settings  8 Spend
  3 saved
 ❯ ◈ Gateway fix summary              fix-auth · 2d 0h   > keep for release notes
   ◈ (dead) Old plan                  — · 9d 0h

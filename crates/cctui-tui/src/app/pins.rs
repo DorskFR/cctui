@@ -202,11 +202,10 @@ pub fn excerpt(text: &str) -> String {
 pub const fn role_of(kind: LineKind) -> &'static str {
     match kind {
         LineKind::User => "user",
-        LineKind::Assistant => "assistant",
+        LineKind::Assistant | LineKind::Image => "assistant",
         LineKind::Thinking { .. } => "thinking",
         LineKind::Tool { .. } | LineKind::Result { .. } => "tool",
         LineKind::Peer => "peer",
-        LineKind::Image => "assistant",
         LineKind::System | LineKind::Marker | LineKind::Reply => "system",
         LineKind::Reset | LineKind::Compact | LineKind::Summary => "boundary",
     }

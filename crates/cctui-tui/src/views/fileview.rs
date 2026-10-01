@@ -63,4 +63,3 @@ fn highlighted(view: &FileView, width: usize) -> Vec<Line<'static>> {
         })
         .collect()
 }
-

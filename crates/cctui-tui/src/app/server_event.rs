@@ -7,6 +7,7 @@ use super::line::agent_event_to_line;
 use super::prompt::PromptAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
+use super::spawn::SpawnAction;
 use super::state::PendingPermission;
 use super::terminal::TerminalAction;
 use super::toast::Level;
@@ -17,6 +18,21 @@ use super::toast::Level;
 // Waived variants keep one arm each even where the reason repeats: the list is
 // meant to be read per variant in review.
 #[allow(clippy::match_same_arms)]
+/// A delivery ack that the spawn dialog also waits on.
+fn command_result(
+    command_id: &str,
+    ok: bool,
+    error: Option<String>,
+    session_id: Option<String>,
+) -> Vec<Action> {
+    uuid::Uuid::parse_str(command_id).ok().map_or_else(Vec::new, |command_id| {
+        vec![
+            Action::Send(SendAction::DeliveryResult { command_id, ok, error: error.clone() }),
+            Action::Spawn(SpawnAction::Launched { command_id, ok, error, session_id }),
+        ]
+    })
+}
+
 pub fn to_actions(event: ServerEvent) -> Vec<Action> {
     match event {
         ServerEvent::PermissionRequest {
@@ -76,11 +92,9 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::Resync { .. } => vec![Action::RefreshSessions],
 
         ServerEvent::ArchiveManifest { .. } => waived("the TUI has no archive browser"),
-        ServerEvent::ArchiveUploaded { .. } => waived("the TUI has no archive browser"),
-        ServerEvent::CommandResult { command_id, ok, error, .. } => {
-            uuid::Uuid::parse_str(&command_id).ok().map_or_else(Vec::new, |command_id| {
-                vec![Action::Send(SendAction::DeliveryResult { command_id, ok, error })]
-            })
+        ServerEvent::ArchiveUploaded { .. } => waived("the TUI does not browse archives"),
+        ServerEvent::CommandResult { command_id, ok, error, session_id } => {
+            command_result(&command_id, ok, error, session_id)
         }
         ServerEvent::MessageAck { client_msg_id, ok, error, command_id, .. } => {
             vec![Action::Send(SendAction::Acked { client_msg_id, ok, error, command_id })]

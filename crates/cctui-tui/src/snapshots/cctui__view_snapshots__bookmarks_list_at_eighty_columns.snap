@@ -1,10 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 126
+assertion_line: 131
 expression: "render_screen_sized(&mut app, 80, 24)"
 ---
  cctui  v0.0.0-test  ● ~3  ▪ 0/0  $0.00  ! 1 need input — Ctrl+g
- 1 Sessions  2 Bookmarks  3 Overview  4 Machines
+ 1 Sessions  2 Bookmarks  3 Overview  4 Machines  6 Accounts  8 Spend
  3 saved
 ❯ ◈ Gateway fix summary              fix-auth · 2d 0h   > keep for release notes
   ◈ (dead) Old plan                  — · 9d 0h

@@ -355,14 +355,14 @@ reason = "the daemon calls this, not a human client"
 [[route]]
 id = "post_sessions_dispatch"
 # POST /sessions/dispatch — Dispatch a session to an enrolled executor (remote runner).
-tui = "planned"
-ticket = "CCT-1263"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_sessions_dispatchers"
 # GET /sessions/dispatchers — List dispatch targets available for a spawn.
-tui = "planned"
-ticket = "CCT-1263"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_dispatchers"
@@ -745,32 +745,32 @@ reason = "web previews are browser iframes"
 [[route]]
 id = "get_profiles"
 # GET /profiles — List the caller's spawn profiles, or create one.
-tui = "planned"
-ticket = "CCT-1261"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_profiles"
 # POST /profiles — List the caller's spawn profiles, or create one.
-tui = "planned"
-ticket = "CCT-1261"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "put_profiles_order"
 # PUT /profiles/order — Persist the caller's profile order.
-tui = "planned"
-ticket = "CCT-1261"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "patch_profiles_by_id"
 # PATCH /profiles/{id} — Rename, adjust or delete a spawn profile.
-tui = "planned"
-ticket = "CCT-1261"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "delete_profiles_by_id"
 # DELETE /profiles/{id} — Rename, adjust or delete a spawn profile.
-tui = "planned"
-ticket = "CCT-1261"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "get_account_pools"
@@ -925,14 +925,14 @@ module = "app/effects.rs"
 [[route]]
 id = "post_sessions_by_id_launch"
 # POST /sessions/{id}/launch — Launch a draft session into a live spawn.
-tui = "planned"
-ticket = "CCT-1262"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_discard"
 # POST /sessions/{id}/discard — Discard a draft session.
-tui = "planned"
-ticket = "CCT-1262"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_schedule_launch"
@@ -949,8 +949,8 @@ ticket = "CCT-1262"
 [[route]]
 id = "put_sessions_by_id_draft"
 # PUT /sessions/{id}/draft — Replace a draft session's stored spawn payload in place.
-tui = "planned"
-ticket = "CCT-1262"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_interrupt"
@@ -961,8 +961,8 @@ module = "app/effects.rs"
 [[route]]
 id = "post_sessions_by_id_resume"
 # POST /sessions/{id}/resume — Resume an exited session.
-tui = "planned"
-ticket = "CCT-1264"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "post_sessions_by_id_set_model"

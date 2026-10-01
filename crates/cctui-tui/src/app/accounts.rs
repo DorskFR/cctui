@@ -12,7 +12,7 @@
 use cctui_client::{Account, AccountRedirect};
 use cctui_clientcore::accounts::{AccountRef, RedirectChip, RedirectRef, redirect_chips};
 
-use super::action::Effect;
+use super::action::{AccountsFor, Effect};
 use super::state::App;
 use super::toast::Level;
 
@@ -333,7 +333,11 @@ pub fn reduce_accounts(app: &mut App, action: AccountAction) -> Vec<Effect> {
 fn refresh(app: &mut App) -> Vec<Effect> {
     app.accounts.loading = true;
     app.pools.loading = true;
-    vec![Effect::FetchAccounts, Effect::FetchRedirects, Effect::FetchAccountPools]
+    vec![
+        Effect::FetchAccounts { want: AccountsFor::Slice },
+        Effect::FetchRedirects,
+        Effect::FetchAccountPools { want: AccountsFor::Slice },
+    ]
 }
 
 /// `Enter` on a row of the usage panel asks for that account: take the cursor
@@ -597,10 +601,10 @@ pub mod tests {
     fn opening_fetches_the_list_and_the_rules_once() {
         let mut app = App::new();
         let effects = act(&mut app, AccountAction::Open);
-        assert!(effects.iter().any(|e| matches!(e, Effect::FetchAccounts)));
+        assert!(effects.iter().any(|e| matches!(e, Effect::FetchAccounts { .. })));
         assert!(effects.iter().any(|e| matches!(e, Effect::FetchRedirects)));
         assert!(
-            effects.iter().any(|e| matches!(e, Effect::FetchAccountPools)),
+            effects.iter().any(|e| matches!(e, Effect::FetchAccountPools { .. })),
             "the pools pane is part of this slice"
         );
         assert_eq!(app.slice, crate::app::slice::Slice::Accounts);
@@ -742,7 +746,10 @@ pub mod tests {
             })),
         );
         assert!(app.toasts.latest().expect("a toast").text.contains("reset claimed on c-7"));
-        assert!(effects.iter().any(|e| matches!(e, Effect::FetchAccounts)), "the list refreshes");
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::FetchAccounts { .. })),
+            "the list refreshes"
+        );
     }
 
     #[test]

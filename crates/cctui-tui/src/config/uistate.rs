@@ -28,6 +28,10 @@ pub struct UiState {
     pub transcript_hidden: BTreeSet<String>,
     /// `L`'s any-of label filter, by label id. Pruned when a label is deleted.
     pub label_filter: BTreeSet<String>,
+    /// Labels the last spawn carried, by id, so the next one starts there.
+    /// Ids only: nothing a spawn types is persisted.
+    #[serde(default)]
+    pub last_spawn_labels: Vec<String>,
     /// A probe state that reports everything open, so a caller can enumerate the
     /// groups a fully-unfolded list would show. Never persisted.
     #[serde(skip)]

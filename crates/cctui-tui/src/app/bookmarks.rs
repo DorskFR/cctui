@@ -289,7 +289,7 @@ pub fn reduce_bookmarks(app: &mut App, action: BookmarkAction) -> Vec<Effect> {
 const fn role_of(kind: LineKind) -> &'static str {
     match kind {
         LineKind::User => "user",
-        LineKind::Assistant => "assistant",
+        LineKind::Assistant | LineKind::Image => "assistant",
         LineKind::Thinking { .. } => "thinking",
         LineKind::Tool { .. } => "tool",
         LineKind::Result { .. } => "result",
@@ -298,7 +298,6 @@ const fn role_of(kind: LineKind) -> &'static str {
         LineKind::Reset => "reset",
         LineKind::Compact => "compact",
         LineKind::Summary => "summary",
-        LineKind::Image => "assistant",
         LineKind::System | LineKind::Reply => "system",
     }
 }

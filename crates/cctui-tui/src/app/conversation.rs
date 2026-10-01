@@ -250,6 +250,7 @@ mod tests {
                 Effect::LoadConversationPage { kind: PageKind::Latest, etag: None, .. },
                 Effect::Subscribe { .. },
                 Effect::LoadPins { .. },
+                Effect::FetchSessionLangfuse { .. },
                 Effect::MarkSeen { .. },
             ]
         ));

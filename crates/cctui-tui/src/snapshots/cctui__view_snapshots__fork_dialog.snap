@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1636
+expression: render_screen(&mut app)
+---
+ cctui (main) on orion ── opus·high ── $1.25  ! 1 need input — Ctrl+g
+                                                                                                   ▕
+∴ thinking (2 lines)  (2 more · o)                                                                 ▕
+ Read  crates/cctui-tui/src/main.rs  read                                                          ▕
+└ 984 li┌ Fork ────────────────────────────────────────────────────────────────────────────┐       ▕
+ Bash  c│ ▸ Model   ◂ opus (parent) ▸                                                      │       ▐
+└ ✗ exit│   Effort  ◂ high ▸                                                               │       ▐
+        │   From    ◂ full history ▸  (no line cursor)                                     │       ▐
+● Assist│   Name    [cctui (fork)                                                      ]   │       ▐
+Looking │   Prompt  [                                                                  ]   │       ▐
+        │                                                                                  │       ▐
+- one   │  Tab field  ←→ choose  Ctrl+s fork  Esc cancel                                   │       ▐
+- two   │                                                                                  │       ▐
+⏱ 12.4k │                                                                                  │       ▐
+⏱ 38s   │                                                                                  │       ▐
+        │                                                                                  │       ▐
+◆ lane-b│                                                                                  │       ▐
+the pars│                                                                                  │       ▐
+⟳ contex│                                                                                  │       ▐
+        └──────────────────────────────────────────────────────────────────────────────────┘       ▐
+◁ Reply done                                                                                       ▐
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⠋ working
+❯  Type a message...

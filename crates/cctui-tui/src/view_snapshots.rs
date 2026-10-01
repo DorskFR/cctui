@@ -2,12 +2,12 @@ use crate::app::harness_mode::HarnessModeAction;
 use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::admin::AccessAction;
 use crate::app::attach::AttachAction;
 use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::diagnose::DiagnoseAction;
-use crate::app::admin::AccessAction;
 use crate::app::dispatchers::DispatcherAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
@@ -19,8 +19,8 @@ use crate::app::machines::MachineAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
-use crate::app::spend::SpendAction;
 use crate::app::slice::SliceAction;
+use crate::app::spend::SpendAction;
 use crate::app::unread::UnreadAction;
 use crate::app::usage::UsageAction;
 use crate::app::{Action, View, reduce};
@@ -353,6 +353,92 @@ fn session_list_search_including_archived() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+fn spawn_dialog() -> crate::app::App {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
+    app
+}
+
+#[test]
+fn spawn_dialog_core_fields() {
+    let mut app = spawn_dialog();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dialog_with_a_git_badge_and_the_recent_dirs_open() {
+    use crate::app::spawn::SpawnAction;
+
+    let mut app = spawn_dialog();
+    reduce(
+        &mut app,
+        Action::Spawn(SpawnAction::RecentDirsLoaded(vec![
+            "/home/dev/cctui".to_owned(),
+            "/home/dev/cctui-wt/cct-1101".to_owned(),
+        ])),
+    );
+    let info = cctui_proto::git::GitInfo {
+        is_repo: true,
+        branch: Some("main".to_owned()),
+        is_worktree: true,
+        ..cctui_proto::git::GitInfo::default()
+    };
+    app.spawn.as_mut().expect("a form").cwd.asked =
+        Some(("orion".to_owned(), "/home/dev/alpha".to_owned()));
+    reduce(
+        &mut app,
+        Action::Spawn(SpawnAction::GitInfo {
+            machine_id: "orion".to_owned(),
+            path: "/home/dev/alpha".to_owned(),
+            info: Some(Box::new(info)),
+        }),
+    );
+    reduce(&mut app, Action::Spawn(SpawnAction::NextField));
+    reduce(&mut app, Action::Spawn(SpawnAction::DirPick(1)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dialog_codex_shows_the_service_tier_and_a_mode_hint() {
+    let mut app = spawn_dialog();
+    let form = app.spawn.as_mut().expect("a form");
+    form.fields.adapter_id = "codex".to_owned();
+    form.fields.permission_mode = "yolo".to_owned();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dialog_annotates_a_model_its_codex_is_too_old_for() {
+    use cctui_proto::harness_models::{HarnessModels, ModelHint, ModelOption};
+
+    let mut app = spawn_dialog();
+    let form = app.spawn.as_mut().expect("a form");
+    form.fields.adapter_id = "codex".to_owned();
+    form.fields.model_codex = "gpt-6-preview".to_owned();
+    form.models = Some(Box::new(HarnessModels {
+        harness: "codex".to_owned(),
+        models: vec![ModelOption {
+            v: "gpt-6-preview".to_owned(),
+            label: "GPT-6 preview".to_owned(),
+            hint: Some(ModelHint::Gated {
+                version: "0.200.0".to_owned(),
+                current: "0.150.0".to_owned(),
+            }),
+            disabled: true,
+        }],
+        efforts: vec![String::new(), "high".to_owned()],
+    }));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dialog_reports_a_failed_launch_inline() {
+    let mut app = spawn_dialog();
+    app.spawn.as_mut().expect("a form").fields.working_dir.clear();
+    reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Submit));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 fn app_with_many_sessions() -> crate::app::App {
     let mut app = app_with_sessions();
     for i in 0..30 {
@@ -481,6 +567,146 @@ fn session_list_unread_only() {
 
 /// Select mode: the checkbox gutter, the picked rows and the strip that
 /// replaces the hotkey hints.
+/// The spawn dialog with this lane's sections filled in, driven through the
+/// keyboard: the account picker open and filtered to the harness, a label on,
+/// an env secret masked, a file staged.
+/// The account, pool and usage payloads the spawn picker reads, as the server
+/// sends them.
+fn spawn_catalogs() -> Vec<crate::app::spawn::SpawnFetch> {
+    use crate::app::spawn::SpawnFetch;
+    vec![
+        SpawnFetch::Accounts(
+            serde_json::from_value(serde_json::json!([
+                {
+                    "id": U_ALICE, "name": "personal-max", "user_id": U_POOL,
+                    "providers": [{
+                        "id": "cred-a", "provider": "anthropic", "family": "anthropic",
+                        "managed": false, "needs_reauth": false,
+                    }],
+                    "pool_eligible": true, "pool_weight": 1.0,
+                },
+                {
+                    "id": U_BOB, "name": "work-team", "user_id": U_POOL,
+                    "providers": [{
+                        "id": "cred-b", "provider": "openai", "family": "openai",
+                        "managed": false, "needs_reauth": false,
+                    }],
+                    "pool_eligible": true, "pool_weight": 1.0,
+                },
+            ]))
+            .expect("accounts"),
+        ),
+        SpawnFetch::Pools(
+            serde_json::from_value(serde_json::json!([
+                {
+                    "id": "p1", "user_id": U_POOL, "name": "personal",
+                    "strategy": "ordered", "failover": true,
+                    "members": [{
+                        "account_id": U_ALICE, "name": "personal-max",
+                        "position": 0, "owned": true, "pool_eligible": true,
+                    }],
+                },
+            ]))
+            .expect("pools"),
+        ),
+        SpawnFetch::Usage(
+            serde_json::from_value(serde_json::json!([
+                {
+                    "account_id": U_ALICE, "account": U_ALICE,
+                    "windows": [{"key": "session", "utilization": 62.0}],
+                },
+            ]))
+            .expect("usage"),
+        ),
+    ]
+}
+
+#[test]
+fn spawn_dialog_account_labels_env_files() {
+    use crate::app::spawn::SpawnAction;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let file = tmp.path().join("trace.log");
+    std::fs::write(&file, vec![b'x'; 12 * 1024]).expect("write");
+
+    let mut app = app_with_sessions();
+    app.labels.all = vec![
+        cctui_proto::api::Label { id: "l1".into(), name: "cct".into(), color: String::new() },
+        cctui_proto::api::Label { id: "l2".into(), name: "infra".into(), color: String::new() },
+    ];
+    crate::app::reduce(&mut app, crate::app::Action::Spawn(SpawnAction::Open));
+
+    for fetch in spawn_catalogs() {
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::Spawn(SpawnAction::DataLoaded(Box::new(fetch))),
+        );
+    }
+
+    let press = |app: &mut crate::app::App, code: KeyCode| {
+        crate::app::reduce(
+            app,
+            crate::app::Action::Spawn(SpawnAction::Key(KeyEvent::new(code, KeyModifiers::NONE))),
+        );
+    };
+    let tab = |app: &mut crate::app::App| {
+        crate::app::reduce(app, crate::app::Action::Spawn(SpawnAction::NextField));
+    };
+    let type_text = |app: &mut crate::app::App, text: &str| {
+        for c in text.chars() {
+            crate::app::reduce(
+                app,
+                crate::app::Action::Spawn(SpawnAction::Key(KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                ))),
+            );
+        }
+    };
+
+    // Tab off the rows before the account picker, then pick the anthropic
+    // account; the openai one is filtered out under claude-code.
+    // Nothing the Dir row can complete, so Tab walks past it rather than
+    // asking the machine again.
+    app.spawn.as_mut().expect("the dialog is open").cwd.completions = vec!["/nowhere".to_owned()];
+    let account = {
+        let form = app.spawn.as_ref().expect("the dialog is open");
+        form.sections.iter().position(|s| s.title() == "Account").expect("an account section")
+    };
+    for _ in 0..64 {
+        if app.spawn.as_ref().expect("the dialog is open").focus.section == account {
+            break;
+        }
+        tab(&mut app);
+    }
+    assert_eq!(
+        app.spawn.as_ref().expect("the dialog is open").focus.section,
+        account,
+        "Tab reaches the account picker"
+    );
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char(' '));
+
+    tab(&mut app);
+    press(&mut app, KeyCode::Char(' '));
+
+    tab(&mut app);
+    press(&mut app, KeyCode::Char('a'));
+    type_text(&mut app, "gh_token");
+    press(&mut app, KeyCode::Tab);
+    type_text(&mut app, "ghp_secret");
+
+    tab(&mut app);
+    press(&mut app, KeyCode::Char('o'));
+    type_text(&mut app, file.to_str().expect("utf8"));
+    press(&mut app, KeyCode::Enter);
+
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 #[test]
 fn session_list_select_mode() {
     use crate::app::row_actions::RowAction;
@@ -1213,8 +1439,8 @@ fn tiny_png() -> Vec<u8> {
 
 #[test]
 fn conversation_image_lines() {
-    use crate::app::line::agent_event_to_line;
     use crate::app::ConversationStore;
+    use crate::app::line::agent_event_to_line;
 
     let mut app = app_with_sessions();
     let id = app.selected_session().expect("a selected session").id.clone();
@@ -1272,14 +1498,6 @@ fn conversation_interrupt_in_flight() {
     focus(&mut app, "s-working");
     reduce(&mut app, Action::Controls(ControlsAction::Interrupt));
     reduce(&mut app, Action::Controls(ControlsAction::Interrupt));
-    insta::assert_snapshot!(render_screen(&mut app));
-}
-
-#[test]
-fn conversation_fork_armed_by_one_press() {
-    let mut app = app_on("s-working");
-    focus(&mut app, "s-working");
-    reduce(&mut app, Action::Controls(ControlsAction::Fork));
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -1987,18 +2205,21 @@ fn app_in_usage_panel() -> crate::app::App {
     let _ = reduce(
         &mut app,
         Action::Usage(UsageAction::AccountsLoaded(vec![
-            usage_entry(U_ALICE, "alice", "anthropic", vec![
-                usage_window("session", "5h", Some(91.0), None, Some(22 * 60_000), Some(1.8)),
-                usage_window("weekly_all", "7d", None, None, None, None),
-            ]),
-            usage_entry(U_BOB, "bob", "openai", vec![usage_window(
-                "usd_5h",
-                "$",
-                None,
-                Some(12.4),
-                None,
-                None,
-            )]),
+            usage_entry(
+                U_ALICE,
+                "alice",
+                "anthropic",
+                vec![
+                    usage_window("session", "5h", Some(91.0), None, Some(22 * 60_000), Some(1.8)),
+                    usage_window("weekly_all", "7d", None, None, None, None),
+                ],
+            ),
+            usage_entry(
+                U_BOB,
+                "bob",
+                "openai",
+                vec![usage_window("usd_5h", "$", None, Some(12.4), None, None)],
+            ),
         ])),
     );
     app
@@ -2041,8 +2262,8 @@ fn the_status_line_carries_the_worst_window_of_each_family() {
 }
 
 fn app_with_account_picker() -> crate::app::state::App {
-    use cctui_clientcore::account_switch::{Binding, Credential, Window};
     use crate::app::account_switch::AccountSwitchAction;
+    use cctui_clientcore::account_switch::{Binding, Credential, Window};
 
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
@@ -2193,6 +2414,62 @@ fn spend_panel() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+// -- the dispatch tab, as a section of the spawn dialog --
+
+/// The dialog open on the Dispatch tab with a job filled in. The dispatcher
+/// names arrive the way every catalog does: through `SpawnData`.
+fn app_dispatching() -> crate::app::App {
+    use crate::app::dispatch::Field;
+    use crate::app::spawn::{SpawnAction, SpawnFetch, SpawnTarget};
+
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Spawn(SpawnAction::Open));
+    reduce(
+        &mut app,
+        Action::Spawn(SpawnAction::DataLoaded(Box::new(SpawnFetch::Dispatchers(vec![
+            "k8s-cyberia".to_owned(),
+            "docker-local".to_owned(),
+        ])))),
+    );
+    if let Some(form) = app.spawn.as_mut() {
+        form.target = SpawnTarget::Dispatch;
+    }
+    for (field, text) in [
+        (Field::Repo, "cctui"),
+        (Field::Ticket, "CCT-1102"),
+        (Field::Timeout, "60"),
+        (Field::PackUrl, "https://git.example/packs.git"),
+        (Field::PackRef, "main"),
+        (Field::PackSubdir, "packs/cctui"),
+        (Field::PackToken, "hunter2"),
+    ] {
+        let row = Field::ORDER.iter().position(|f| *f == field).expect("a field");
+        for c in text.chars() {
+            dispatch_key(&mut app, row, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+    app
+}
+
+/// A key straight at the section, so the fixture does not depend on where the
+/// dialog's global focus happens to sit.
+fn dispatch_key(app: &mut crate::app::App, row: usize, key: KeyEvent) {
+    let Some(form) = app.spawn.as_mut() else { return };
+    let mut fields = form.fields.clone();
+    for section in &mut form.sections {
+        if section.title() == "Dispatch" {
+            let _ = section.handle(row, key, &mut fields);
+        }
+    }
+    form.fields = fields;
+}
+
+#[test]
+fn spawn_dispatch_tab() {
+    let mut app = app_dispatching();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 #[test]
 fn spend_panel_at_eighty_columns() {
     let mut app = app_in_spend_slice();
@@ -2248,12 +2525,7 @@ fn conversation_header_without_langfuse_is_unchanged() {
 
 // --- Instance status and the server's self-update ---
 
-fn app_with_instance(
-    role: &str,
-    latest: Option<&str>,
-    hook: bool,
-    ready: bool,
-) -> crate::app::App {
+fn app_with_instance(role: &str, latest: Option<&str>, hook: bool, ready: bool) -> crate::app::App {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
     app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
@@ -2466,21 +2738,92 @@ fn app_in_accounts_slice() -> crate::app::App {
             },
         ])),
     );
-    app.usage.accounts = vec![usage_entry(U_ALICE, "alice@max", "anthropic", vec![usage_window(
-        "five_hour",
-        "5h",
-        Some(91.0),
-        None,
-        Some(22 * 60 * 1000),
-        None,
-    )])];
+    app.usage.accounts = vec![usage_entry(
+        U_ALICE,
+        "alice@max",
+        "anthropic",
+        vec![usage_window("five_hour", "5h", Some(91.0), None, Some(22 * 60 * 1000), None)],
+    )];
     let _ = reduce(&mut app, Action::Accounts(AccountAction::Open));
+    app
+}
+
+#[test]
+fn spawn_dispatch_tab_codex_harness() {
+    let mut app = app_dispatching();
+    dispatch_key(&mut app, 0, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dispatch_tab_at_eighty_columns() {
+    let mut app = app_dispatching();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+/// No dispatcher enrolled: the section takes no rows and draws nothing.
+#[test]
+fn spawn_dispatch_section_hidden_without_a_dispatcher() {
+    use crate::app::spawn::SpawnAction;
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Spawn(SpawnAction::Open));
+    let rendered = render_screen(&mut app);
+    assert!(!rendered.contains("Dispatcher"), "{rendered}");
+    insta::assert_snapshot!(rendered);
+}
+
+fn app_forking(codex: bool) -> crate::app::App {
+    use crate::app::forkform::ForkAction;
+    use cctui_proto::harness_models::{HarnessModels, ModelOption};
+    let mut app = app_on("s-working");
+    if codex {
+        session_mut(&mut app, "s-working").adapter_id =
+            Some(cctui_proto::adapter::AdapterId::new("codex"));
+    }
+    session_mut(&mut app, "s-working").model = Some("opus".to_owned());
+    session_mut(&mut app, "s-working").effort = Some("high".to_owned());
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::Fork(ForkAction::Open));
+    reduce(
+        &mut app,
+        Action::Fork(ForkAction::ModelsLoaded(Box::new(HarnessModels {
+            harness: "claude-code".to_owned(),
+            models: vec![
+                ModelOption {
+                    v: String::new(),
+                    label: "Default".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+                ModelOption {
+                    v: "sonnet".to_owned(),
+                    label: "Sonnet".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+            ],
+            efforts: vec![String::new(), "low".to_owned(), "high".to_owned()],
+        }))),
+    );
     app
 }
 
 #[test]
 fn accounts_table() {
     let mut app = app_in_accounts_slice();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn fork_dialog() {
+    let mut app = app_forking(false);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Codex cannot fork a slice, so the row is not offered at all.
+#[test]
+fn fork_dialog_codex_hides_the_extract_row() {
+    let mut app = app_forking(true);
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -2511,14 +2854,12 @@ fn accounts_pools_pane_focused() {
 fn accounts_reset_confirm_names_the_credit() {
     use crate::app::accounts::AccountAction;
     let mut app = app_in_accounts_slice();
-    let mut entry = usage_entry(U_ALICE, "alice@max", "anthropic", vec![usage_window(
-        "five_hour",
-        "5h",
-        Some(100.0),
-        None,
-        Some(3 * 60 * 1000),
-        None,
-    )]);
+    let mut entry = usage_entry(
+        U_ALICE,
+        "alice@max",
+        "anthropic",
+        vec![usage_window("five_hour", "5h", Some(100.0), None, Some(3 * 60 * 1000), None)],
+    );
     entry.limit_reset = Some(cctui_client::LimitResetStatusView {
         kind: "claude".to_owned(),
         available: true,
@@ -2553,6 +2894,22 @@ fn accounts_new_pool_form() {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             ))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn fork_dialog_on_the_prompt_row() {
+    use crate::app::forkform::ForkAction;
+    let mut app = app_forking(false);
+    for _ in 0..4 {
+        reduce(&mut app, Action::Fork(ForkAction::FocusNext));
+    }
+    for c in "try the other approach".chars() {
+        reduce(
+            &mut app,
+            Action::Fork(ForkAction::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))),
         );
     }
     insta::assert_snapshot!(render_screen(&mut app));
@@ -2616,38 +2973,41 @@ fn app_in_access_slice(scopes: &[&str]) -> crate::app::App {
             access_user("u-2", "nanachi", true),
         ])),
     );
-    let _ = reduce(&mut app, Action::Access(AccessAction::DetailLoaded {
-        tokens: vec![cctui_client::UserToken {
-            id: "t-1".to_owned(),
-            label: Some("laptop".to_owned()),
-            created_at: ms_ago(80_000),
-            expires_at: None,
-            revoked_at: None,
-            token_preview: Some("cctui_u_ab12…ef34".to_owned()),
-        }],
-        machines: vec![cctui_client::UserMachine {
-            id: "m-1".to_owned(),
-            name: "cyberia-ws".to_owned(),
-            display_name: None,
-            last_seen_at: ms_ago(2_000),
-            revoked_at: None,
-            kind: "persistent".to_owned(),
-            key_preview: Some("cctui_m_cd34…ab12".to_owned()),
-            liveness: cctui_proto::models::MachineLiveness::Online,
-        }],
-        keys: vec![cctui_client::ApiKey {
-            id: "k-1".to_owned(),
-            label: Some("ci".to_owned()),
-            key_preview: Some("cctui_k_ef56…7890".to_owned()),
-            kind: "user".to_owned(),
-            created_at: ms_ago(70_000),
-            expires_at: None,
-            revoked_at: None,
-            last_used_at: Some(ms_ago(1_000)),
-            scopes: vec!["read".to_owned()],
-        }],
-        ceiling: vec!["read".to_owned(), "dispatch".to_owned()],
-    }));
+    let _ = reduce(
+        &mut app,
+        Action::Access(AccessAction::DetailLoaded {
+            tokens: vec![cctui_client::UserToken {
+                id: "t-1".to_owned(),
+                label: Some("laptop".to_owned()),
+                created_at: ms_ago(80_000),
+                expires_at: None,
+                revoked_at: None,
+                token_preview: Some("cctui_u_ab12…ef34".to_owned()),
+            }],
+            machines: vec![cctui_client::UserMachine {
+                id: "m-1".to_owned(),
+                name: "cyberia-ws".to_owned(),
+                display_name: None,
+                last_seen_at: ms_ago(2_000),
+                revoked_at: None,
+                kind: "persistent".to_owned(),
+                key_preview: Some("cctui_m_cd34…ab12".to_owned()),
+                liveness: cctui_proto::models::MachineLiveness::Online,
+            }],
+            keys: vec![cctui_client::ApiKey {
+                id: "k-1".to_owned(),
+                label: Some("ci".to_owned()),
+                key_preview: Some("cctui_k_ef56…7890".to_owned()),
+                kind: "user".to_owned(),
+                created_at: ms_ago(70_000),
+                expires_at: None,
+                revoked_at: None,
+                last_used_at: Some(ms_ago(1_000)),
+                scopes: vec!["read".to_owned()],
+            }],
+            ceiling: vec!["read".to_owned(), "dispatch".to_owned()],
+        }),
+    );
     app
 }
 
@@ -2718,10 +3078,13 @@ fn access_revoke_asks_first() {
 #[test]
 fn access_shows_a_new_secret_once() {
     let mut app = app_in_access_slice(&["admin"]);
-    let _ = reduce(&mut app, Action::Access(AccessAction::Secret {
-        what: "api key",
-        secret: "<the-new-key>".to_owned(),
-    }));
+    let _ = reduce(
+        &mut app,
+        Action::Access(AccessAction::Secret {
+            what: "api key",
+            secret: "<the-new-key>".to_owned(),
+        }),
+    );
     insta::assert_snapshot!(render_screen(&mut app));
 }
 

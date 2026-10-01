@@ -1,23 +1,24 @@
+pub mod account_switch;
+pub mod accounts;
+pub mod admin;
 pub mod attach;
 pub mod banner;
 pub mod bookmarks;
 pub mod cards;
 pub mod conversation;
 pub mod diagnose;
-pub mod admin;
+pub mod dispatch;
 pub mod dispatchers;
 pub mod fileview;
 pub mod filters;
-pub mod account_switch;
+pub mod forkform;
 pub mod harness_mode;
 pub mod help;
-pub mod instance;
 pub mod history;
 pub mod images;
+pub mod instance;
 pub mod labels;
-pub mod accounts;
 pub mod machines;
-pub mod spend;
 pub mod macros;
 pub mod mentions;
 pub mod model_picker;
@@ -28,6 +29,8 @@ pub mod row_actions;
 pub mod sections;
 pub mod sessions;
 pub mod sidebar;
+pub mod spawn;
+pub mod spend;
 pub mod terminal;
 pub mod usage;
 
@@ -80,10 +83,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         // The sidebar is focus only: the conversation draws the panel itself,
         // so taking the keyboard never redraws the transcript differently.
         View::Conversation | View::Sidebar => conversation::draw(frame, app),
+        // The dialog is modal over the list it was opened from.
+        View::Spawn => {
+            sessions::draw(frame, app);
+            spawn::draw(frame, app);
+        }
         // Help always renders over the session list, whatever it was opened from.
         View::Help => {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
+        }
+        View::ForkDialog => {
+            conversation::draw(frame, app);
+            if let Some(form) = app.fork.as_ref() {
+                forkform::draw(frame, form);
+            }
         }
         View::ModelPicker => {
             conversation::draw(frame, app);

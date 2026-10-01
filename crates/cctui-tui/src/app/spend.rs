@@ -18,6 +18,8 @@ use super::state::App;
 /// Days of daily buckets the sparkline draws, and the range the model table
 /// calls "30d".
 pub const RANGE_DAYS: u32 = 30;
+
+const DAY: i64 = 86_400_000;
 /// Days of cache-loss attribution, matching the webui card's own window.
 pub const CACHE_LOSS_DAYS: u32 = 7;
 
@@ -145,7 +147,6 @@ pub fn cache_loss(app: &App) -> CacheLossTotals {
 /// Local midnight, 7 days back and 30 days back, in unix ms.
 fn windows_for(now_ms: i64) -> Option<Windows> {
     let today_ms = local_midnight_ms(now_ms)?;
-    const DAY: i64 = 86_400_000;
     Some(Windows {
         today_ms,
         week_ms: today_ms - 6 * DAY,

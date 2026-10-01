@@ -11,6 +11,8 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The new-session dialog.
+    Spawn,
     /// The `f` sections popup over the list.
     Sections,
     /// The `/` prompt over the list.
@@ -40,8 +42,13 @@ pub enum Context {
     Macros,
     BookmarkPrompt,
     BookmarkConfirm,
+    DraftEnv,
+    DraftConfirm,
+    SpawnProfileName,
+    SpawnProfileConfirm,
     Terminal,
     Help,
+    ForkDialog,
     ModelPicker,
     Sidebar,
     Permission,
@@ -63,6 +70,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Rename,
     Context::Conversation,
     Context::Composer,
+    Context::Spawn,
     Context::Sections,
     Context::ListSearch,
     Context::CmdLine,
@@ -84,8 +92,13 @@ pub const CONTEXTS: &[Context] = &[
     Context::Macros,
     Context::BookmarkPrompt,
     Context::BookmarkConfirm,
+    Context::DraftEnv,
+    Context::DraftConfirm,
+    Context::SpawnProfileName,
+    Context::SpawnProfileConfirm,
     Context::Terminal,
     Context::Help,
+    Context::ForkDialog,
     Context::ModelPicker,
     Context::Sidebar,
     Context::Permission,
@@ -107,6 +120,7 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::Spawn => "spawn",
             Self::Sections => "sections",
             Self::ListSearch => "list-search",
             Self::CmdLine => "cmdline",
@@ -130,8 +144,13 @@ impl Context {
             Self::Macros => "macros",
             Self::BookmarkPrompt => "bookmark-prompt",
             Self::BookmarkConfirm => "bookmark-confirm",
+            Self::DraftEnv => "draft-env",
+            Self::DraftConfirm => "draft-confirm",
+            Self::SpawnProfileName => "spawn-profile-name",
+            Self::SpawnProfileConfirm => "spawn-profile-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
+            Self::ForkDialog => "fork-dialog",
             Self::ModelPicker => "model-picker",
             Self::Sidebar => "sidebar",
             Self::Permission => "permission",
@@ -153,6 +172,7 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::Spawn => "New session",
             Self::Sections => "Sections popup",
             Self::ListSearch => "List search",
             Self::CmdLine => "Search and commands",
@@ -176,8 +196,13 @@ impl Context {
             Self::Macros => "Macros",
             Self::BookmarkPrompt => "Bookmarks — search or edit",
             Self::BookmarkConfirm => "Bookmarks — confirm",
+            Self::DraftEnv => "Draft launch — env",
+            Self::DraftConfirm => "Draft — confirm",
+            Self::SpawnProfileName => "Profile — name",
+            Self::SpawnProfileConfirm => "Profile — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
+            Self::ForkDialog => "Fork a session",
             Self::ModelPicker => "Model picker",
             Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
@@ -252,6 +277,16 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
+    SpawnOpen => "spawn-open", "Start a new session";
+    SpawnNextField => "spawn-next-field", "Next field";
+    SpawnPrevField => "spawn-prev-field", "Previous field";
+    SpawnSubmit => "spawn-submit", "Launch";
+    SpawnCancel => "spawn-cancel", "Close without launching";
+    SpawnDirNext => "spawn-dir-next", "Next directory";
+    SpawnDirPrev => "spawn-dir-prev", "Previous directory";
+    SpawnDirAccept => "spawn-dir-accept", "Accept, or a prompt newline";
+    SpawnRefreshModels => "spawn-refresh-models", "Re-read the model catalog";
+    SpawnToggleTarget => "spawn-toggle-target", "Machine or dispatch";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -270,7 +305,13 @@ actions! {
     NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
-    Resume => "resume", "Resume the session";
+    Resume => "resume", "Resume the ended session";
+    ForkSubmit => "fork-submit", "Fork with these options";
+    ForkCancel => "fork-cancel", "Abandon the fork";
+    ForkNextField => "fork-next-field", "Next field";
+    ForkPrevField => "fork-prev-field", "Previous field";
+    ForkCycleNext => "fork-cycle-next", "Next choice";
+    ForkCyclePrev => "fork-cycle-prev", "Previous choice";
 
     LeaveConversation => "leave-conversation", "Back to the session list";
     ScrollDown => "scroll-down", "Scroll down";
@@ -416,7 +457,7 @@ actions! {
     CmdLineCommit => "cmdline-commit", "Run it";
     CmdLineCancel => "cmdline-cancel", "Abandon it";
     CmdLineComplete => "cmdline-complete", "Complete the path";
-    OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    OpenInEditor => "open-in-editor", "Edit the text in $EDITOR";
     RenameSession => "rename-session", "Rename the session";
     ArchiveSection => "archive-section", "Archive every session in the section";
     KillSession => "kill-session", "Kill the session";
@@ -462,6 +503,19 @@ actions! {
     BookmarksPreviewDown => "bookmarks-preview-down", "Scroll the preview down";
     BookmarksPreviewUp => "bookmarks-preview-up", "Scroll the preview up";
     BookmarksSearch => "bookmarks-search", "Search the bookmarks";
+    DraftLaunch => "draft-launch", "Launch the draft";
+    DraftEdit => "draft-edit", "Edit the draft";
+    DraftDiscard => "draft-discard", "Discard the draft";
+    SpawnFromConfig => "spawn-from-config", "New session from this configuration";
+    ProfileNameCommit => "profile-name-commit", "Save the profile";
+    ProfileNameCancel => "profile-name-cancel", "Do not save";
+    ProfileDeleteConfirm => "profile-delete-confirm", "Delete the profile";
+    ProfileDeleteCancel => "profile-delete-cancel", "Keep the profile";
+    DraftEnvNext => "draft-env-next", "Next variable";
+    DraftEnvCommit => "draft-env-commit", "Launch with these values";
+    DraftEnvCancel => "draft-env-cancel", "Do not launch";
+    DraftDiscardConfirm => "draft-discard-confirm", "Discard it";
+    DraftDiscardCancel => "draft-discard-cancel", "Keep it";
     BookmarksOpenSource => "bookmarks-open-source", "Open the source message";
     BookmarksCopy => "bookmarks-copy", "Copy the bookmark as markdown";
     BookmarksEdit => "bookmarks-edit", "Edit the title and note";
@@ -478,6 +532,7 @@ actions! {
     MacrosSelectNext => "macros-select-next", "Next macro";
     MacrosSelectPrev => "macros-select-prev", "Previous macro";
     MacrosInsert => "macros-insert", "Put this prompt in the composer";
+    MacrosRun => "macros-run", "Run this macro as a new session";
 
     CloseHelp => "close-help", "Close this cheat sheet";
 
@@ -574,6 +629,9 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    // The ticket asks for `n`, but decision 7 makes `n` next-search-hit
+    // everywhere and a context binding would silently shadow it.
+    spec(Context::SessionList, "ctrl+n", ActionId::SpawnOpen),
     spec(Context::SessionList, "f", ActionId::ListSections),
     spec(Context::SessionList, "o", ActionId::ListSortCycle),
     spec(Context::SessionList, "O", ActionId::ListSortFlip),
@@ -637,6 +695,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, ">", ActionId::ToggleSidebar),
     spec(Context::Conversation, "u", ActionId::OpenParent),
     spec(Context::Conversation, "ctrl+f", ActionId::Fork),
+    spec(Context::Conversation, "r", ActionId::Resume),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
     spec(Context::Conversation, "y", ActionId::CopyMessage),
@@ -650,6 +709,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "m", ActionId::PinToggle),
     spec(Context::Conversation, "'", ActionId::PinsOpen),
     spec(Context::Conversation, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Conversation, "ctrl+e", ActionId::OpenInEditor),
     spec(Context::Conversation, "T", ActionId::TerminalOpen),
 ];
 
@@ -686,6 +746,20 @@ const FILTER_MENU: &[BindingSpec] = &[
     spec(Context::FilterMenu, "space, enter", ActionId::FilterMenuToggle),
     spec(Context::FilterMenu, "a", ActionId::FilterShowAll),
     spec(Context::FilterMenu, "r", ActionId::FilterReset),
+];
+
+/// Typed characters reach the focused field through the unbound fall-through.
+const SPAWN: &[BindingSpec] = &[
+    spec(Context::Spawn, "tab", ActionId::SpawnNextField),
+    spec(Context::Spawn, "backtab, shift+tab", ActionId::SpawnPrevField),
+    spec(Context::Spawn, "ctrl+s", ActionId::SpawnSubmit),
+    spec(Context::Spawn, "esc", ActionId::SpawnCancel),
+    spec(Context::Spawn, "down", ActionId::SpawnDirNext),
+    spec(Context::Spawn, "up", ActionId::SpawnDirPrev),
+    spec(Context::Spawn, "enter", ActionId::SpawnDirAccept),
+    spec(Context::Spawn, "ctrl+r", ActionId::SpawnRefreshModels),
+    spec(Context::Spawn, "ctrl+e", ActionId::OpenInEditor),
+    spec(Context::Spawn, "ctrl+d", ActionId::SpawnToggleTarget),
 ];
 
 const SECTIONS_POPUP: &[BindingSpec] = &[
@@ -854,6 +928,10 @@ const INSTANCE: &[BindingSpec] = &[
 ];
 
 const LABELS: &[BindingSpec] = &[
+    spec(Context::SessionList, "s", ActionId::DraftLaunch),
+    spec(Context::SessionList, "E", ActionId::DraftEdit),
+    spec(Context::SessionList, "d", ActionId::DraftDiscard),
+    spec(Context::SessionList, "C", ActionId::SpawnFromConfig),
     spec(Context::SessionList, "l", ActionId::OpenLabels),
     spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
     spec(Context::LabelPicker, "esc", ActionId::LabelsClose),
@@ -884,6 +962,7 @@ const MACROS: &[BindingSpec] = &[
     spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
     spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
     spec(Context::Macros, "enter", ActionId::MacrosInsert),
+    spec(Context::Macros, "R", ActionId::MacrosRun),
 ];
 
 /// Slice roots, not overlays: each falls through to the globals, so `1-9`,
@@ -941,6 +1020,27 @@ const DIAGNOSE: &[BindingSpec] = &[
     spec(Context::Diagnose, "i", ActionId::Info),
 ];
 
+const SPAWN_PROFILE_NAME: &[BindingSpec] = &[
+    spec(Context::SpawnProfileName, "enter", ActionId::ProfileNameCommit),
+    spec(Context::SpawnProfileName, "esc", ActionId::ProfileNameCancel),
+];
+
+const SPAWN_PROFILE_CONFIRM: &[BindingSpec] = &[
+    spec(Context::SpawnProfileConfirm, "y, enter", ActionId::ProfileDeleteConfirm),
+    spec(Context::SpawnProfileConfirm, "n, esc, q", ActionId::ProfileDeleteCancel),
+];
+
+const DRAFT_ENV: &[BindingSpec] = &[
+    spec(Context::DraftEnv, "tab", ActionId::DraftEnvNext),
+    spec(Context::DraftEnv, "enter", ActionId::DraftEnvCommit),
+    spec(Context::DraftEnv, "esc", ActionId::DraftEnvCancel),
+];
+
+const DRAFT_CONFIRM: &[BindingSpec] = &[
+    spec(Context::DraftConfirm, "y, enter", ActionId::DraftDiscardConfirm),
+    spec(Context::DraftConfirm, "n, esc, q", ActionId::DraftDiscardCancel),
+];
+
 const HELP: &[BindingSpec] = &[
     spec(Context::Help, "esc, q, ?", ActionId::CloseHelp),
     spec(Context::Help, "j, down", ActionId::ScrollDown),
@@ -957,6 +1057,16 @@ const SIDEBAR: &[BindingSpec] = &[
     spec(Context::Sidebar, "k, up", ActionId::SidebarPrev),
     spec(Context::Sidebar, "enter", ActionId::SidebarOpen),
     spec(Context::Sidebar, "u", ActionId::OpenParent),
+];
+
+/// Modal: a stray key must not reach the composer behind it.
+const FORK_DIALOG: &[BindingSpec] = &[
+    spec(Context::ForkDialog, "esc", ActionId::ForkCancel),
+    spec(Context::ForkDialog, "ctrl+s", ActionId::ForkSubmit),
+    spec(Context::ForkDialog, "tab, down", ActionId::ForkNextField),
+    spec(Context::ForkDialog, "backtab, up", ActionId::ForkPrevField),
+    spec(Context::ForkDialog, "right", ActionId::ForkCycleNext),
+    spec(Context::ForkDialog, "left", ActionId::ForkCyclePrev),
 ];
 
 /// Modal over the conversation: everything it does not claim stays claimed,
@@ -1014,6 +1124,7 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    SPAWN,
     SECTIONS_POPUP,
     LIST_SEARCH,
     CONFIRM,
@@ -1036,8 +1147,13 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     MACROS,
     BOOKMARK_PROMPT,
     BOOKMARK_CONFIRM,
+    DRAFT_ENV,
+    DRAFT_CONFIRM,
+    SPAWN_PROFILE_NAME,
+    SPAWN_PROFILE_CONFIRM,
     TERMINAL,
     HELP,
+    FORK_DIALOG,
     MODEL_PICKER,
     SIDEBAR,
     PERMISSION,

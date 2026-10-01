@@ -3,12 +3,16 @@ use cctui_proto::api::cache_loss::DailyCacheLoss;
 use cctui_proto::api::langfuse::LangfuseSessionUsage;
 use cctui_proto::api::machine_resources::MachineResourcesRow;
 use cctui_proto::api::me::MeResponse;
+use cctui_proto::api::profiles::{
+    CreateProfileRequest, ReorderProfilesRequest, SessionProfile, UpdateProfileRequest,
+};
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
-    AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, ForkRequest, ForkResponse, Label,
-    LabelListResponse, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
-    SetModelRequest, StageFilesResponse, TokenUsageWindows, UpdateLabelRequest, UsageAnalytics,
+    AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, DispatchResponse, ForkRequest,
+    ForkResponse, Label, LabelListResponse, RenameRequest, SessionListItem, SessionListResponse,
+    SessionStats, SetModelRequest, SpawnRequest, SpawnResponse, StageFilesResponse,
+    TokenUsageWindows, UpdateLabelRequest, UsageAnalytics,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -441,13 +445,36 @@ impl Client {
         self.unit(route, &[("id", session_id)], Some(&body)).await
     }
 
-    /// Fork a whole session. Every field of [`ForkRequest`] is inherited, so
-    /// the fork needs no options.
-    pub async fn fork(&self, session_id: &str) -> Result<ForkResponse, ClientError> {
+    /// Fork a session. `ForkRequest::default()` inherits every dial, so a
+    /// whole-session fork needs no options; the dialog fills in what it was
+    /// given.
+    pub async fn fork(
+        &self,
+        session_id: &str,
+        request: &ForkRequest,
+    ) -> Result<ForkResponse, ClientError> {
         let route = Self::route("post_sessions_by_id_fork")?;
-        let body = serde_json::to_value(ForkRequest::default())
+        let body = serde_json::to_value(request)
             .map_err(|source| ClientError::Decode { route: route.id, source })?;
         self.json(route, &[("id", session_id)], &[], Some(&body)).await
+    }
+
+    /// The dispatch targets a spawn can pick, `GET /sessions/dispatchers`.
+    pub async fn spawn_dispatchers(&self) -> Result<Vec<String>, ClientError> {
+        self.json(Self::route("get_sessions_dispatchers")?, &[], &[], None).await
+    }
+
+    /// Hand a job to a dispatcher. The body is
+    /// `cctui_clientcore::dispatch::build_dispatch_body`, shared with the web
+    /// UI, so it is passed through as built.
+    pub async fn dispatch(&self, body: &Value) -> Result<DispatchResponse, ClientError> {
+        self.json(Self::route("post_sessions_dispatch")?, &[], &[], Some(body)).await
+    }
+
+    /// Resume an exited session. The server re-mints the gateway env, so the
+    /// request carries nothing.
+    pub async fn resume(&self, session_id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("post_sessions_by_id_resume")?, &[("id", session_id)], None).await
     }
 
     /// The model and effort lists a picker for `harness` should offer.
@@ -816,6 +843,32 @@ impl Client {
         self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
     }
 
+    /// `POST /sessions/spawn`. The route is `multipart/form-data`: the JSON
+    /// goes in a `request` part, and each attachment in a part of its own.
+    pub async fn spawn_session(
+        &self,
+        request: &cctui_proto::api::SpawnRequest,
+        files: Vec<UploadFile>,
+    ) -> Result<cctui_proto::api::SpawnResponse, ClientError> {
+        let route = Self::route("post_sessions_spawn")?;
+        let json = serde_json::to_string(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        let mut form = reqwest::multipart::Form::new().text("request", json);
+        for file in files {
+            let part = reqwest::multipart::Part::bytes(file.bytes).file_name(file.name);
+            form = form.part("files", part);
+        }
+        let resp = self
+            .http
+            .post(self.url_for(route, &[]))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|source| ClientError::Transport { route: route.id, source })?;
+        decode_body(route.id, check_status(route.id, resp).await?).await
+    }
+
     /// The caller's settings blob. The TUI reads it and never writes it back.
     pub async fn settings(&self) -> Result<SettingsPayload, ClientError> {
         self.json(Self::route("get_settings")?, &[], &[], None).await
@@ -904,8 +957,7 @@ impl Client {
         fallback_type: &str,
     ) -> Result<FileRead, ClientError> {
         let route = Self::route(route_id)?;
-        let resp =
-            self.http.get(self.url_for(route, params)).bearer_auth(&self.token).send().await;
+        let resp = self.http.get(self.url_for(route, params)).bearer_auth(&self.token).send().await;
         let Ok(resp) = resp else { return Ok(FileRead::Refused(FileRefusal::network())) };
         let status = resp.status();
         if !status.is_success() {
@@ -1002,6 +1054,57 @@ impl Client {
         self.json(Self::route("get_sessions_search_values")?, &[], &query, None).await
     }
 
+    /// Directories under `path` on a machine, for the spawn dir picker.
+    pub async fn machine_dirs(
+        &self,
+        machine_id: &str,
+        path: &str,
+    ) -> Result<Vec<String>, ClientError> {
+        let route = Self::route("get_machines_by_machine_fs_dirs")?;
+        let query = vec![("path", path.to_owned())];
+        self.json(route, &[("machine_id", machine_id)], &query, None).await
+    }
+
+    /// Branch / detached HEAD / worktree of a directory on a machine.
+    pub async fn machine_git_info(
+        &self,
+        machine_id: &str,
+        path: &str,
+    ) -> Result<cctui_proto::git::GitInfo, ClientError> {
+        let route = Self::route("get_machines_by_machine_fs_gitinfo")?;
+        let query = vec![("path", path.to_owned())];
+        self.json(route, &[("machine_id", machine_id)], &query, None).await
+    }
+
+    /// Re-reads every `OpenAI` account's catalog from upstream.
+    pub async fn refresh_codex_models(&self, machine_id: &str) -> Result<(), ClientError> {
+        let route = Self::route("post_machines_by_machine_codex_models_refresh")?;
+        self.unit(route, &[("machine_id", machine_id)], None).await
+    }
+
+    /// Working dirs the caller spawned into recently.
+    pub async fn recent_dirs(&self) -> Result<Vec<String>, ClientError> {
+        self.json(Self::route("get_sessions_recent_dirs")?, &[], &[], None).await
+    }
+
+    /// Every remembered spawn configuration, keyed by target.
+    pub async fn spawn_memory(
+        &self,
+    ) -> Result<cctui_proto::drafts::SpawnMemoryPayload, ClientError> {
+        self.json(Self::route("get_spawn_memory")?, &[], &[], None).await
+    }
+
+    /// Replaces the whole map; the server caps it.
+    pub async fn put_spawn_memory(
+        &self,
+        payload: &cctui_proto::drafts::SpawnMemoryPayload,
+    ) -> Result<cctui_proto::drafts::SpawnMemoryPayload, ClientError> {
+        let route = Self::route("put_spawn_memory")?;
+        let body = serde_json::to_value(payload)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
         let route = Self::route("put_drafts_by_*key")?;
         let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
@@ -1072,6 +1175,68 @@ impl Client {
         self.unit(Self::route("delete_bookmarks_by_id")?, &[("id", id)], None).await
     }
 
+    /// The caller's spawn profiles, in their stored order.
+    pub async fn profiles(&self) -> Result<Vec<SessionProfile>, ClientError> {
+        self.json(Self::route("get_profiles")?, &[], &[], None).await
+    }
+
+    pub async fn create_profile(
+        &self,
+        body: &CreateProfileRequest,
+    ) -> Result<SessionProfile, ClientError> {
+        let route = Self::route("post_profiles")?;
+        self.json(route, &[], &[], Some(&to_value(route.id, body)?)).await
+    }
+
+    pub async fn update_profile(
+        &self,
+        id: &str,
+        body: &UpdateProfileRequest,
+    ) -> Result<SessionProfile, ClientError> {
+        let route = Self::route("patch_profiles_by_id")?;
+        self.json(route, &[("id", id)], &[], Some(&to_value(route.id, body)?)).await
+    }
+
+    pub async fn delete_profile(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_profiles_by_id")?, &[("id", id)], None).await
+    }
+
+    /// Store a new order; the server answers with the reordered list.
+    pub async fn reorder_profiles(
+        &self,
+        ids: Vec<uuid::Uuid>,
+    ) -> Result<Vec<SessionProfile>, ClientError> {
+        let route = Self::route("put_profiles_order")?;
+        let body = to_value(route.id, &ReorderProfilesRequest { ids })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Replace a draft session's stored payload — the autosave and the edit.
+    pub async fn update_draft(
+        &self,
+        session_id: &str,
+        body: &SpawnRequest,
+    ) -> Result<SpawnResponse, ClientError> {
+        let route = Self::route("put_sessions_by_id_draft")?;
+        self.json(route, &[("id", session_id)], &[], Some(&to_value(route.id, body)?)).await
+    }
+
+    /// Launch a draft. `env` is entered at launch and never stored in the draft.
+    pub async fn launch_draft(
+        &self,
+        session_id: &str,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<SpawnResponse, ClientError> {
+        let route = Self::route("post_sessions_by_id_launch")?;
+        let body = serde_json::json!({ "env": env });
+        self.json(route, &[("id", session_id)], &[], Some(&body)).await
+    }
+
+    pub async fn discard_draft(&self, session_id: &str) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_by_id_discard")?;
+        self.unit(route, &[("id", session_id)], Some(&serde_json::json!({}))).await
+    }
+
     /// Revoke the key this client authenticates with (`cctui logout --revoke`).
     pub async fn revoke_current_key(&self) -> Result<(), ClientError> {
         self.unit(Self::route("delete_me_key")?, &[], None).await
@@ -1081,6 +1246,11 @@ impl Client {
 /// The `{ids: [...]}` body every batch session route takes.
 fn batch_ids(ids: &[String]) -> Value {
     serde_json::json!({ "ids": ids })
+}
+
+/// A typed request body as JSON, with the route named in the error.
+fn to_value<B: Serialize>(route: &'static str, body: &B) -> Result<Value, ClientError> {
+    serde_json::to_value(body).map_err(|source| ClientError::Decode { route, source })
 }
 
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
@@ -1194,6 +1364,13 @@ mod tests {
             "get_sessions_search",
             "get_sessions_search_values",
             "put_settings",
+            "post_sessions_spawn",
+            "get_machines_by_machine_fs_dirs",
+            "get_machines_by_machine_fs_gitinfo",
+            "get_sessions_recent_dirs",
+            "post_machines_by_machine_codex_models_refresh",
+            "get_spawn_memory",
+            "put_spawn_memory",
             "get_sessions_by_id",
             "get_sessions_stats",
             "get_sessions_by_id_conversation",
@@ -1201,6 +1378,9 @@ mod tests {
             "post_sessions_by_id_interrupt",
             "post_sessions_by_id_set_model",
             "post_sessions_by_id_fork",
+            "post_sessions_by_id_resume",
+            "get_sessions_dispatchers",
+            "post_sessions_dispatch",
             "get_models_by_harness",
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
@@ -1232,6 +1412,8 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "get_accounts",
+            "get_account_pools",
             "patch_sessions_by_id",
             "post_sessions_by_id_kill",
             "post_sessions_archive",
@@ -1243,6 +1425,14 @@ mod tests {
             "delete_sessions_by_id_pins_by_seq",
             "get_bookmarks",
             "post_bookmarks",
+            "get_profiles",
+            "post_profiles",
+            "patch_profiles_by_id",
+            "delete_profiles_by_id",
+            "put_profiles_order",
+            "put_sessions_by_id_draft",
+            "post_sessions_by_id_launch",
+            "post_sessions_by_id_discard",
             "patch_bookmarks_by_id",
             "delete_bookmarks_by_id",
         ] {

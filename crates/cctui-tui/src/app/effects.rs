@@ -7,8 +7,9 @@ use cctui_proto::drafts::{composer_draft_key, session_history_key};
 use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
-use super::action::{Action, Effect};
 use super::account_switch::AccountSwitchAction;
+use super::accounts::AccountAction;
+use super::action::{AccountsFor, Action, Effect, ModelsFor};
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::bookmarks::BookmarkAction;
@@ -17,21 +18,25 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatch::DispatchAction;
 use super::dispatchers::DispatcherAction;
-use super::instance::InstanceAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
-use super::images::ImagesAction;
+use super::forkform::ForkAction;
 use super::identity::AuthAction;
+use super::images::ImagesAction;
+use super::instance::InstanceAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
-use super::accounts::AccountAction;
 use super::machines::MachineAction;
-use super::pools::PoolAction;
-use super::spend::SpendAction;
 use super::pins::PinAction;
+use super::pools::PoolAction;
+use super::profiles::ProfileAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
+use super::spawn::{SpawnAction, SpawnFetch};
+use super::spawn_drafts::SpawnDraftAction;
+use super::spend::SpendAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -113,6 +118,30 @@ impl DraftSaver {
         self.pending.insert(key, handle);
     }
 
+    /// One pending autosave at a time, keyed on the dialog rather than a
+    /// draft id: the first save is what mints the id.
+    fn autosave(
+        &mut self,
+        session_id: Option<String>,
+        request: Box<cctui_proto::api::SpawnRequest>,
+    ) {
+        const KEY: &str = "\u{0}spawn-draft";
+        self.cancel(KEY);
+        let server = Arc::clone(&self.server);
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            let outcome = match session_id.as_deref() {
+                Some(id) => server.update_draft(id, &request).await.map(|_| ()),
+                // An autosave stores names, never bytes: the files go up at launch.
+                None => server.spawn_session(&request, Vec::new()).await.map(|_| ()),
+            };
+            if let Err(e) = outcome {
+                tracing::warn!(%e, "autosaving the spawn draft failed");
+            }
+        });
+        self.pending.insert(KEY.to_owned(), handle);
+    }
+
     fn cancel(&mut self, key: &str) {
         if let Some(handle) = self.pending.remove(key) {
             handle.abort();
@@ -173,6 +202,72 @@ async fn run(
                 Err(e) => {
                     tracing::warn!(%e, "bookmark list fetch failed");
                     vec![Action::Bookmarks(BookmarkAction::Failed)]
+                }
+            }
+        }
+        Effect::LoadProfiles => match server.profiles().await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Loaded(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile list fetch failed");
+                vec![Action::Profiles(ProfileAction::Failed)]
+            }
+        },
+        Effect::CreateProfile { name, spec } => {
+            let body = cctui_proto::api::profiles::CreateProfileRequest { name, spec: *spec };
+            match server.create_profile(&body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, "profile create failed");
+                    vec![Action::Toast(Level::Error, "could not create the profile".to_owned())]
+                }
+            }
+        }
+        Effect::UpdateProfile { id, name, spec } => {
+            let body = cctui_proto::api::profiles::UpdateProfileRequest { name, spec: Some(*spec) };
+            match server.update_profile(&id, &body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, id, "profile update failed");
+                    vec![Action::Toast(Level::Error, "could not save the profile".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteProfile { id } => match server.delete_profile(&id).await {
+            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
+                |_| Vec::new(),
+                |id| vec![Action::Profiles(ProfileAction::Deleted(id))],
+            ),
+            Err(e) => {
+                tracing::warn!(%e, id, "profile delete failed");
+                vec![Action::Toast(Level::Error, "could not delete the profile".to_owned())]
+            }
+        },
+        Effect::ReorderProfiles { ids } => match server.reorder_profiles(ids).await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Reordered(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile reorder failed");
+                vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
+            }
+        },
+        Effect::AutosaveDraft { session_id, request } => {
+            drafts.autosave(session_id, request);
+            Vec::new()
+        }
+        Effect::LaunchDraft { session_id, env } => {
+            match server.launch_draft(&session_id, &env).await {
+                Ok(_) => vec![Action::SpawnDrafts(SpawnDraftAction::Launched { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft launch failed");
+                    vec![Action::Toast(Level::Error, "could not launch the draft".to_owned())]
+                }
+            }
+        }
+        Effect::DiscardDraftSession { session_id } => {
+            match server.discard_draft(&session_id).await {
+                Ok(()) => vec![Action::SpawnDrafts(SpawnDraftAction::Discarded { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft discard failed");
+                    vec![Action::Toast(Level::Error, "could not discard the draft".to_owned())]
                 }
             }
         }
@@ -313,18 +408,54 @@ async fn run(
                 error: error.map(|e| e.to_string()),
             })]
         }
-        Effect::Fork { session_id } => match server.fork(&session_id).await {
+        Effect::Resume { session_id } => {
+            let error = server.resume(&session_id).await.err();
+            if let Some(e) = error.as_ref() {
+                tracing::warn!(%e, "resume failed");
+            }
+            vec![Action::Fork(ForkAction::Resumed(error.map(|e| e.to_string())))]
+        }
+        Effect::FetchSpawnDispatchers => match server.spawn_dispatchers().await {
+            Ok(names) => vec![spawn_data(SpawnFetch::Dispatchers(names))],
+            Err(e) => {
+                tracing::warn!(%e, "spawn dispatcher list fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::Dispatch { body } => match server.dispatch(&body).await {
+            Ok(resp) => vec![Action::Dispatch(DispatchAction::Submitted {
+                session_id: resp.session_id,
+                // `deduplicated` is the idempotency key landing on the job that
+                // is already running.
+                existing: resp.status == "deduplicated",
+            })],
+            Err(e) => {
+                tracing::warn!(%e, "dispatch failed");
+                vec![Action::Toast(Level::Error, format!("dispatch failed: {e}"))]
+            }
+        },
+        Effect::Fork { session_id, request } => match server.fork(&session_id, &request).await {
             Ok(resp) => vec![Action::Controls(ControlsAction::Forked(resp.session_id))],
             Err(e) => {
                 tracing::warn!(%e, "fork failed");
                 vec![Action::Toast(Level::Error, format!("fork failed: {e}"))]
             }
         },
-        Effect::FetchHarnessModels { harness, machine_id, model } => {
+        Effect::FetchHarnessModels { want, harness, machine_id, model } => {
             match server.harness_models(&harness, Some(&machine_id), &model).await {
-                Ok(models) => {
-                    vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
-                }
+                Ok(models) => match want {
+                    ModelsFor::RunningSession => {
+                        vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
+                    }
+                    ModelsFor::SpawnDialog => {
+                        vec![Action::Spawn(super::spawn::SpawnAction::ModelsLoaded(Box::new(
+                            models,
+                        )))]
+                    }
+                    ModelsFor::ForkDialog => {
+                        vec![Action::Fork(ForkAction::ModelsLoaded(Box::new(models)))]
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(%e, "harness model list fetch failed");
                     vec![Action::Toast(Level::Warn, "could not read the model list".to_owned())]
@@ -403,11 +534,75 @@ async fn run(
                 vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
             }
         },
-        Effect::FetchAccounts => match server.accounts().await {
-            Ok(rows) => vec![Action::Accounts(AccountAction::Loaded(rows))],
+        // The accounts, usage and spend arms live in their own runner: one
+        // function holding every arm builds a future too large for the stack.
+        rest @ (Effect::FetchAccounts { .. }
+        | Effect::FetchRedirects
+        | Effect::FetchAccountPools { .. }
+        | Effect::UpdateAccount { .. }
+        | Effect::ClaimLimitReset { .. }
+        | Effect::PutRedirect { .. }
+        | Effect::DeleteRedirect { .. }
+        | Effect::CreatePool { .. }
+        | Effect::UpdatePool { .. }
+        | Effect::DeletePool { .. }
+        | Effect::FetchMachines
+        | Effect::FetchUsage
+        | Effect::FetchSpend { .. }
+        | Effect::FetchSessionLangfuse { .. }
+        | Effect::FetchAccountSwitch { .. }
+        | Effect::SwitchSessionAccount { .. }
+        | Effect::FetchVersion
+        | Effect::RefreshVersion
+        | Effect::FetchSelfUpdateRun
+        | Effect::FetchChangelog
+        | Effect::LaunchSelfUpdate
+        | Effect::Access(..)
+        | Effect::FetchDispatchers
+        | Effect::EnrollDispatcher { .. }
+        | Effect::UpdateDispatcher { .. }
+        | Effect::DeleteDispatcher { .. }
+        | Effect::FetchAccountsUsage
+        | Effect::FetchLabels
+        | Effect::CreateLabel { .. }
+        | Effect::UpdateLabel { .. }
+        | Effect::DeleteLabel { .. }
+        | Effect::AttachLabel { .. }
+        | Effect::DetachLabel { .. }
+        | Effect::SaveUiState(..)
+        | Effect::SearchSessions { .. }
+        | Effect::SearchValues { .. }
+        | Effect::FetchGitInfo { .. }
+        | Effect::FetchMachineDirs { .. }
+        | Effect::FetchRecentDirs
+        | Effect::FetchSpawnMemory
+        | Effect::PutSpawnMemory { .. }
+        | Effect::RefreshCodexModels { .. }
+        | Effect::SpawnSession { .. }
+        | Effect::SaveSettings { .. }
+        | Effect::RespondPermission { .. }
+        | Effect::FetchDiagnose { .. }) => run_accounts(server, ws, rest).await,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_accounts(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
+    match effect {
+        Effect::FetchAccounts { want } => match server.accounts().await {
+            Ok(rows) => match want {
+                AccountsFor::Slice => vec![Action::Accounts(AccountAction::Loaded(rows))],
+                AccountsFor::SpawnDialog => vec![spawn_data(SpawnFetch::Accounts(rows))],
+            },
             Err(e) => {
                 tracing::warn!(%e, "listing accounts failed");
-                vec![Action::Accounts(AccountAction::Failed(account_error(&e)))]
+                match want {
+                    AccountsFor::Slice => {
+                        vec![Action::Accounts(AccountAction::Failed(account_error(&e)))]
+                    }
+                    AccountsFor::SpawnDialog => {
+                        vec![Action::Toast(Level::Warn, "could not list accounts".to_owned())]
+                    }
+                }
             }
         },
         Effect::FetchRedirects => match server.redirects().await {
@@ -417,19 +612,25 @@ async fn run(
                 Vec::new()
             }
         },
-        Effect::FetchAccountPools => match server.account_pools().await {
-            Ok(rows) => vec![Action::Pools(PoolAction::Loaded(rows))],
+        Effect::FetchAccountPools { want } => match server.account_pools().await {
+            Ok(rows) => match want {
+                AccountsFor::Slice => vec![Action::Pools(PoolAction::Loaded(rows))],
+                AccountsFor::SpawnDialog => vec![spawn_data(SpawnFetch::Pools(rows))],
+            },
             Err(e) => {
                 tracing::warn!(%e, "listing account pools failed");
-                vec![Action::Pools(PoolAction::Failed(account_error(&e)))]
+                match want {
+                    AccountsFor::Slice => {
+                        vec![Action::Pools(PoolAction::Failed(account_error(&e)))]
+                    }
+                    AccountsFor::SpawnDialog => Vec::new(),
+                }
             }
         },
-        Effect::UpdateAccount { id, request } => {
-            match server.update_account(&id, &request).await {
-                Ok(()) => refetch_accounts(server).await,
-                Err(e) => vec![account_refusal(&e, "could not edit the account")],
-            }
-        }
+        Effect::UpdateAccount { id, request } => match server.update_account(&id, &request).await {
+            Ok(()) => refetch_accounts(server).await,
+            Err(e) => vec![account_refusal(&e, "could not edit the account")],
+        },
         Effect::ClaimLimitReset { provider_id, credit_id } => {
             let request = cctui_client::LimitResetRequest { credit_id };
             match server.limit_reset(&provider_id, &request).await {
@@ -487,7 +688,10 @@ async fn run(
         Effect::FetchAccountSwitch { session_id } => {
             match super::account_switch::load(server, &session_id).await {
                 Ok((bindings, credentials)) => {
-                    vec![Action::AccountSwitch(AccountSwitchAction::Loaded { bindings, credentials })]
+                    vec![Action::AccountSwitch(AccountSwitchAction::Loaded {
+                        bindings,
+                        credentials,
+                    })]
                 }
                 Err(e) => {
                     tracing::warn!(%e, "loading the account picker failed");
@@ -498,7 +702,10 @@ async fn run(
         Effect::SwitchSessionAccount { session_id, account, account_name, family } => {
             match server.switch_session_account(&session_id, &account, &family).await {
                 Ok(()) => {
-                    vec![Action::AccountSwitch(AccountSwitchAction::Switched { account_name, family })]
+                    vec![Action::AccountSwitch(AccountSwitchAction::Switched {
+                        account_name,
+                        family,
+                    })]
                 }
                 Err(e) => {
                     tracing::warn!(%e, "switching the session account failed");
@@ -583,6 +790,13 @@ async fn run(
             Err(e) => {
                 tracing::warn!(%e, "removing a dispatcher failed");
                 vec![Action::Toast(Level::Error, "could not remove the dispatcher".to_owned())]
+            }
+        },
+        Effect::FetchAccountsUsage => match server.accounts_usage().await {
+            Ok(usage) => vec![spawn_data(SpawnFetch::Usage(usage))],
+            Err(e) => {
+                tracing::warn!(%e, "reading account usage failed");
+                Vec::new()
             }
         },
         Effect::FetchLabels => match server.labels().await {
@@ -688,6 +902,66 @@ async fn run(
                 Vec::new()
             }
         },
+        Effect::FetchGitInfo { machine_id, path } => {
+            // A failure is the answer, not an error: an unreadable path is how
+            // the badge learns to say "not a directory".
+            let info = server.machine_git_info(&machine_id, &path).await.ok().map(Box::new);
+            vec![Action::Spawn(super::spawn::SpawnAction::GitInfo { machine_id, path, info })]
+        }
+        Effect::FetchMachineDirs { machine_id, path } => {
+            match server.machine_dirs(&machine_id, &path).await {
+                Ok(dirs) => vec![Action::Spawn(super::spawn::SpawnAction::DirsLoaded(dirs))],
+                Err(e) => {
+                    tracing::warn!(%e, machine_id, "cannot list directories");
+                    Vec::new()
+                }
+            }
+        }
+        Effect::FetchRecentDirs => match server.recent_dirs().await {
+            Ok(dirs) => vec![Action::Spawn(super::spawn::SpawnAction::RecentDirsLoaded(dirs))],
+            Err(e) => {
+                tracing::warn!(%e, "cannot read the recent directories");
+                Vec::new()
+            }
+        },
+        Effect::FetchSpawnMemory => match server.spawn_memory().await {
+            Ok(payload) => {
+                vec![Action::Spawn(super::spawn::SpawnAction::MemoryLoaded(Box::new(payload)))]
+            }
+            Err(e) => {
+                tracing::debug!(%e, "no spawn memory");
+                Vec::new()
+            }
+        },
+        Effect::PutSpawnMemory { entries } => {
+            let payload = cctui_proto::drafts::SpawnMemoryPayload { entries };
+            if let Err(e) = server.put_spawn_memory(&payload).await {
+                tracing::warn!(%e, "cannot remember this spawn");
+            }
+            Vec::new()
+        }
+        Effect::RefreshCodexModels { machine_id } => {
+            if let Err(e) = server.refresh_codex_models(&machine_id).await {
+                tracing::warn!(%e, machine_id, "the codex catalog refresh failed");
+            }
+            vec![Action::Spawn(super::spawn::SpawnAction::ModelsRefreshed)]
+        }
+        Effect::SpawnSession { request, files } => {
+            let files = files
+                .into_iter()
+                .map(|(name, bytes)| cctui_client::UploadFile { name, bytes })
+                .collect();
+            match server.spawn_session(&request, files).await {
+                Ok(resp) => vec![Action::Spawn(super::spawn::SpawnAction::Accepted {
+                    command_id: resp.command_id,
+                    session_id: resp.session_id.map(|id| id.to_string()),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "the spawn request failed");
+                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+                }
+            }
+        }
         Effect::SaveSettings { data } => {
             // The version the server last reported travels with the blob; it
             // migrates an older payload forward rather than rejecting it.
@@ -720,6 +994,8 @@ async fn run(
                 vec![Action::Diagnose(DiagnoseAction::Failed { session_id, error: e.to_string() })]
             }
         },
+        // Everything else is the first runner's.
+        _ => Vec::new(),
     }
 }
 
@@ -787,6 +1063,10 @@ async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
             Vec::new()
         }
     }
+}
+
+fn spawn_data(fetch: SpawnFetch) -> Action {
+    Action::Spawn(SpawnAction::DataLoaded(Box::new(fetch)))
 }
 
 async fn subscribe(ws: &WsClient, session_id: String) {
@@ -950,7 +1230,7 @@ fn read_attachment(session_id: &str, path: &str) -> Vec<Action> {
 
 /// Extension-based content type; only the families the composer treats
 /// specially need naming, everything else is opaque bytes.
-fn guess_content_type(name: &str) -> String {
+pub fn guess_content_type(name: &str) -> String {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "png" => "image/png",
@@ -1266,14 +1546,12 @@ fn read_clipboard_image() -> Action {
         }
     };
     let (width, height) = (image.width as u32, image.height as u32);
-    let Some(buffer) =
-        image::RgbaImage::from_raw(width, height, image.bytes.into_owned())
-    else {
+    let Some(buffer) = image::RgbaImage::from_raw(width, height, image.bytes.into_owned()) else {
         return Action::Images(ImagesAction::NoImage);
     };
     let mut png = std::io::Cursor::new(Vec::new());
-    if let Err(e) = image::DynamicImage::ImageRgba8(buffer)
-        .write_to(&mut png, image::ImageFormat::Png)
+    if let Err(e) =
+        image::DynamicImage::ImageRgba8(buffer).write_to(&mut png, image::ImageFormat::Png)
     {
         tracing::warn!(%e, "cannot encode the pasted image");
         return Action::Images(ImagesAction::NoImage);

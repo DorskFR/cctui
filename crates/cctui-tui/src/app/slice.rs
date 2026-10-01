@@ -234,10 +234,7 @@ mod tests {
     use cctui_proto::api::SessionStats;
     use cctui_proto::models::{Attention, MachineLiveness};
 
-    use super::{
-        Slice, SliceAction, TABS, machines, summary, today_cost_usd,
-        zone_from_path,
-    };
+    use super::{Slice, SliceAction, TABS, machines, summary, today_cost_usd, zone_from_path};
     use crate::app::action::Effect;
     use crate::app::spend::local_midnight_ms;
     use crate::app::state::{App, View};

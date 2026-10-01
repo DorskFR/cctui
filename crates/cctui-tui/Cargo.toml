@@ -52,9 +52,9 @@ ratatui-image = { version = "11", default-features = false, features = ["crosste
 tui-term = "0.3.4"
 vt100 = "0.16.2"
 base64.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 insta = "1"
 pretty_assertions = "1.4.1"
-tempfile.workspace = true
 uuid.workspace = true

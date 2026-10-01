@@ -46,6 +46,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
         Action::Pins(pins) => super::pins::reduce_pins(app, pins),
         Action::Bookmarks(action) => super::bookmarks::reduce_bookmarks(app, action),
+        Action::SpawnDrafts(action) => super::spawn_drafts::reduce_drafts(app, action),
+        Action::Profiles(action) => super::profiles::reduce_profiles(app, action),
         Action::Macros(action) => super::macros::reduce_macros(app, action),
         Action::AcceptMention(key) => super::mentions::accept(app).unwrap_or_else(|| {
             app.message_input.input(key);
@@ -53,6 +55,14 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }),
         Action::Send(action) => send::reduce_send(app, action),
         Action::SessionLive(action) => super::session_live::reduce_session_live(app, action),
+        Action::OpenInEditor => {
+            app.editor = editor_request(app);
+            Vec::new()
+        }
+        Action::EditorFinished { target, text } => {
+            editor_finished(app, target, &text);
+            Vec::new()
+        }
         // One clock for the whole app: delivery deadlines move, and the session
         // list polls only when its own period has elapsed.
         Action::Tick => {
@@ -60,6 +70,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             let mut effects = send::tick(app);
             effects.extend(super::session_live::poll_if_due(app));
             effects.extend(super::list_search::on_tick(app));
+            effects.extend(super::spawn::reduce(app, super::spawn::SpawnAction::Tick));
             effects.extend(super::unread::tick(app));
             effects.extend(super::usage::on_tick(app));
             effects.extend(super::instance::on_tick(app));
@@ -226,6 +237,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
 
         Action::Controls(action) => super::controls::reduce_controls(app, action),
+        Action::Dispatch(action) => super::dispatch::reduce_dispatch(app, action),
+        Action::Fork(action) => super::forkform::reduce_fork(app, action),
         Action::Sidebar(action) => super::sidebar::reduce_sidebar(app, action),
         Action::Unread(action) => super::unread::reduce_unread(app, action),
         Action::ToggleAutoApproveSelected => app
@@ -249,6 +262,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::Conversation(action) => conversation::reduce(app, action),
         Action::ListShape(action) => super::list_shape_reduce::reduce(app, action),
+        Action::Spawn(action) => super::spawn::reduce(app, action),
         Action::ListSearch(action) => super::list_search::reduce(app, action),
         // Decision 7: one key, scoped to whatever view is in front.
         Action::SearchCurrentView => match app.view() {
@@ -339,6 +353,41 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
 
 /// Resolves a copy key against the focused line. Without one there is nothing
 /// to copy, so it says so rather than copying something arbitrary.
+/// Which text the editor would open, from where focus is. `None` when no text
+/// field has it.
+fn editor_request(app: &App) -> Option<crate::editor::EditorRequest> {
+    use crate::editor::{EditorRequest, EditorTarget};
+
+    if let Some(form) = app.spawn.as_ref().filter(|_| app.view() == View::Spawn) {
+        return Some(EditorRequest {
+            target: EditorTarget::SpawnPrompt,
+            text: form.fields.prompt.clone(),
+        });
+    }
+    if app.view() == View::Conversation {
+        return Some(EditorRequest {
+            target: EditorTarget::Composer,
+            text: app.message_input.lines().join("\n"),
+        });
+    }
+    None
+}
+
+fn editor_finished(app: &mut App, target: crate::editor::EditorTarget, text: &str) {
+    match target {
+        crate::editor::EditorTarget::Composer => {
+            app.set_input_text(text);
+            app.input_active = true;
+        }
+        crate::editor::EditorTarget::SpawnPrompt => {
+            if let Some(form) = app.spawn.as_mut() {
+                text.clone_into(&mut form.fields.prompt);
+                form.edited = true;
+            }
+        }
+    }
+}
+
 fn copy(app: &mut App, what: super::action::CopyWhat) -> Vec<Effect> {
     use super::action::CopyWhat;
 
@@ -486,6 +535,60 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_opens_the_composer_and_takes_its_text_back() {
+        use crate::editor::EditorTarget;
+
+        let mut app = app();
+        app.set_input_text("half a\nthought");
+        app.router.push(View::Conversation);
+
+        reduce(&mut app, Action::OpenInEditor);
+        let request = app.editor.take().expect("the loop is asked to hand over");
+        assert_eq!(request.target, EditorTarget::Composer);
+        assert_eq!(request.text, "half a\nthought");
+
+        reduce(
+            &mut app,
+            Action::EditorFinished {
+                target: EditorTarget::Composer,
+                text: "a whole thought".to_owned(),
+            },
+        );
+        assert_eq!(app.message_input.lines().join("\n"), "a whole thought");
+        assert!(app.input_active, "typing carries on where the editor left off");
+    }
+
+    #[test]
+    fn the_editor_opens_the_spawn_prompt_when_the_dialog_is_up() {
+        use crate::editor::EditorTarget;
+
+        let mut app = app();
+        reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
+        app.spawn.as_mut().expect("a form").fields.prompt = "fix the".to_owned();
+
+        reduce(&mut app, Action::OpenInEditor);
+        let request = app.editor.take().expect("the loop is asked to hand over");
+        assert_eq!(request.target, EditorTarget::SpawnPrompt);
+        assert_eq!(request.text, "fix the");
+
+        reduce(
+            &mut app,
+            Action::EditorFinished {
+                target: EditorTarget::SpawnPrompt,
+                text: "fix the flaky test".to_owned(),
+            },
+        );
+        assert_eq!(app.spawn.as_ref().expect("a form").fields.prompt, "fix the flaky test");
+    }
+
+    #[test]
+    fn the_editor_has_nothing_to_open_from_the_list() {
+        let mut app = app();
+        assert!(reduce(&mut app, Action::OpenInEditor).is_empty());
+        assert!(app.editor.is_none());
+    }
+
+    #[test]
     fn quit_sets_the_flag_and_needs_no_effect() {
         let mut app = app();
         assert!(reduce(&mut app, Action::Quit).is_empty());
@@ -525,6 +628,7 @@ mod tests {
                 Effect::LoadConversationPage { session_id, .. },
                 Effect::Subscribe { .. },
                 Effect::LoadPins { .. },
+                Effect::FetchSessionLangfuse { .. },
                 Effect::MarkSeen { .. },
             ] => assert_eq!(session_id, "s-a"),
             _ => panic!("expected a load, a subscribe, a pin read and a seen mark"),

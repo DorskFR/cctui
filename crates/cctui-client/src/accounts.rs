@@ -42,6 +42,14 @@ pub struct Account {
     pub pool_weight: f32,
 }
 
+impl Account {
+    /// Provider ids, in the order the server returned them.
+    #[must_use]
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.providers.iter().map(|p| p.provider.as_str()).collect()
+    }
+}
+
 /// `PATCH /accounts/{id}`. An absent field is left alone server-side.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct UpdateAccount {

@@ -180,8 +180,8 @@ fn client_methods_for(route_id: &str) -> Vec<String> {
     let dir = src_dir().join("../../cctui-client/src");
     let quoted = format!("\"{route_id}\"");
     let mut methods = Vec::new();
-    let entries = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    let entries =
+        std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
     for entry in entries {
         let path = entry.expect("a dir entry").path();
         if path.extension().is_none_or(|ext| ext != "rs") {

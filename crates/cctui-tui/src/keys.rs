@@ -1,41 +1,45 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PromptFocus;
+use crate::app::account_switch::AccountSwitchAction;
+use crate::app::accounts::AccountAction;
 use crate::app::action::{Action, CopyWhat};
+use crate::app::admin::AccessAction;
 use crate::app::attach::AttachAction;
-use crate::app::images::ImagesAction;
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
 use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
-use crate::app::admin::AccessAction;
 use crate::app::dispatchers::DispatcherAction;
-use crate::app::instance::InstanceAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
-use crate::app::account_switch::AccountSwitchAction;
+use crate::app::forkform::ForkAction;
 use crate::app::harness_mode::HarnessModeAction;
+use crate::app::images::ImagesAction;
+use crate::app::instance::InstanceAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
-use crate::app::accounts::AccountAction;
 use crate::app::machines::MachineAction;
-use crate::app::pools::PoolAction;
-use crate::app::spend::SpendAction;
-use crate::app::usage::UsageAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
+use crate::app::pools::PoolAction;
+use crate::app::profiles::ProfileAction;
 use crate::app::prompt::PromptAction;
 use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::slice::SliceAction;
+use crate::app::spawn::SpawnAction;
+use crate::app::spawn_drafts::SpawnDraftAction;
+use crate::app::spend::SpendAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
 use crate::app::unread::UnreadAction;
+use crate::app::usage::UsageAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -100,6 +104,7 @@ pub const fn context_for(
         };
     }
     match view {
+        View::Spawn => Context::Spawn,
         View::SessionList => Context::SessionList,
         View::Bookmarks => Context::Bookmarks,
         View::Conversation => Context::Conversation,
@@ -120,6 +125,7 @@ pub const fn context_for(
         View::Diagnose => Context::Diagnose,
         View::Terminal => Context::Terminal,
         View::ModelPicker => Context::ModelPicker,
+        View::ForkDialog => Context::ForkDialog,
         // Not modal: it takes the keyboard but leaves the strips, the composer
         // and the cards ahead of it, and falls through to the transcript.
         View::Sidebar => Context::Sidebar,
@@ -146,6 +152,7 @@ const fn modal_context(view: View) -> Option<Context> {
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
+        View::ForkDialog => Some(Context::ForkDialog),
         _ => None,
     }
 }
@@ -208,9 +215,7 @@ pub fn map_input(
         InputEvent::ScrollDown if view == View::Accounts => {
             Some(Action::Accounts(AccountAction::SelectNext))
         }
-        InputEvent::ScrollUp if view == View::Usage => {
-            Some(Action::Usage(UsageAction::SelectPrev))
-        }
+        InputEvent::ScrollUp if view == View::Usage => Some(Action::Usage(UsageAction::SelectPrev)),
         InputEvent::ScrollDown if view == View::Usage => {
             Some(Action::Usage(UsageAction::SelectNext))
         }
@@ -223,7 +228,8 @@ pub fn map_input(
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(-3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(-3))),
-            View::FileViewer
+            View::Spawn
+            | View::FileViewer
             | View::HarnessMode
             | View::AccountSwitch
             | View::Help
@@ -231,6 +237,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::ForkDialog
             | View::LabelPicker
             | View::LabelFilter
             | View::Machines
@@ -250,7 +257,8 @@ pub fn map_input(
             View::Terminal => Some(Action::Terminal(TerminalAction::Scroll(-3))),
             View::Diagnose => Some(Action::Diagnose(DiagnoseAction::Scroll(3))),
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(3))),
-            View::FileViewer
+            View::Spawn
+            | View::FileViewer
             | View::HarnessMode
             | View::AccountSwitch
             | View::Help
@@ -258,6 +266,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::ForkDialog
             | View::LabelPicker
             | View::LabelFilter
             | View::Machines
@@ -299,6 +308,17 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleFoldSection => Action::SessionLive(SessionLiveAction::ToggleFoldSection),
         ActionId::ToggleFoldAll => Action::SessionLive(SessionLiveAction::ToggleFoldAll),
 
+        ActionId::SpawnOpen => Action::Spawn(SpawnAction::Open),
+        ActionId::SpawnNextField => Action::Spawn(SpawnAction::NextField),
+        ActionId::SpawnPrevField => Action::Spawn(SpawnAction::PrevField),
+        ActionId::SpawnSubmit => Action::Spawn(SpawnAction::Submit),
+        ActionId::SpawnCancel => Action::Spawn(SpawnAction::Close),
+        ActionId::SpawnDirNext => Action::Spawn(SpawnAction::DirPick(1)),
+        ActionId::SpawnDirPrev => Action::Spawn(SpawnAction::DirPick(-1)),
+        ActionId::SpawnDirAccept => Action::Spawn(SpawnAction::DirAccept),
+        ActionId::SpawnRefreshModels => Action::Spawn(SpawnAction::RefreshModels),
+        ActionId::SpawnToggleTarget => Action::Spawn(SpawnAction::ToggleTarget),
+        ActionId::OpenInEditor => Action::OpenInEditor,
         ActionId::ListSections => Action::ListShape(ListShapeAction::ToggleSectionsMenu),
         ActionId::ListSortCycle => Action::ListShape(ListShapeAction::CycleSort),
         ActionId::ListSortFlip => Action::ListShape(ListShapeAction::FlipSortDir),
@@ -431,7 +451,15 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::Controls(ControlsAction::Interrupt),
-        ActionId::Fork => Action::Controls(ControlsAction::Fork),
+        ActionId::Fork => Action::Fork(ForkAction::Open),
+        ActionId::Resume => Action::Fork(ForkAction::Resume),
+        ActionId::ForkSubmit => Action::Fork(ForkAction::Submit),
+        ActionId::ForkCancel => Action::Fork(ForkAction::Close),
+        ActionId::ForkNextField => Action::Fork(ForkAction::FocusNext),
+        ActionId::ForkPrevField => Action::Fork(ForkAction::FocusPrev),
+        ActionId::ForkCycleNext => Action::Fork(ForkAction::Cycle(1)),
+        ActionId::ForkCyclePrev => Action::Fork(ForkAction::Cycle(-1)),
+
         ActionId::ModelPicker => Action::Controls(ControlsAction::OpenModelPicker),
         ActionId::PickerClose => Action::Controls(ControlsAction::ClosePicker),
         ActionId::PickerNext => Action::Controls(ControlsAction::PickerMove(1)),
@@ -526,6 +554,19 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::BookmarksPreviewDown => Action::Bookmarks(BookmarkAction::PreviewDown),
         ActionId::BookmarksPreviewUp => Action::Bookmarks(BookmarkAction::PreviewUp),
         ActionId::BookmarksSearch => Action::Bookmarks(BookmarkAction::SearchOpen),
+        ActionId::DraftLaunch => Action::SpawnDrafts(SpawnDraftAction::Launch),
+        ActionId::DraftEdit => Action::SpawnDrafts(SpawnDraftAction::Edit),
+        ActionId::DraftDiscard => Action::SpawnDrafts(SpawnDraftAction::Discard),
+        ActionId::SpawnFromConfig => Action::SpawnDrafts(SpawnDraftAction::NewFromConfig),
+        ActionId::ProfileNameCommit => Action::Profiles(ProfileAction::PromptCommit),
+        ActionId::ProfileNameCancel => Action::Profiles(ProfileAction::PromptCancel),
+        ActionId::ProfileDeleteConfirm => Action::Profiles(ProfileAction::DeleteConfirm),
+        ActionId::ProfileDeleteCancel => Action::Profiles(ProfileAction::DeleteCancel),
+        ActionId::DraftEnvNext => Action::SpawnDrafts(SpawnDraftAction::EnvNext),
+        ActionId::DraftEnvCommit => Action::SpawnDrafts(SpawnDraftAction::EnvCommit),
+        ActionId::DraftEnvCancel => Action::SpawnDrafts(SpawnDraftAction::EnvCancel),
+        ActionId::DraftDiscardConfirm => Action::SpawnDrafts(SpawnDraftAction::DiscardConfirm),
+        ActionId::DraftDiscardCancel => Action::SpawnDrafts(SpawnDraftAction::DiscardCancel),
         ActionId::BookmarksOpenSource => Action::Bookmarks(BookmarkAction::OpenSource),
         ActionId::BookmarksCopy => Action::Bookmarks(BookmarkAction::CopyMarkdown),
         ActionId::BookmarksEdit => Action::Bookmarks(BookmarkAction::EditOpen),
@@ -542,6 +583,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::MacrosSelectNext => Action::Macros(MacroAction::SelectNext),
         ActionId::MacrosSelectPrev => Action::Macros(MacroAction::SelectPrev),
         ActionId::MacrosInsert => Action::Macros(MacroAction::Insert),
+        ActionId::MacrosRun => Action::SpawnDrafts(SpawnDraftAction::RunSelectedMacro),
 
         ActionId::PermissionAllow => Action::Attention(AttentionAction::Respond(Decision::Allow)),
         ActionId::PermissionDeny => Action::Attention(AttentionAction::Respond(Decision::Deny)),
@@ -607,6 +649,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
         Context::ListSearch => Some(Action::ListSearch(ListSearchAction::Key(key))),
+        Context::Spawn => Some(Action::Spawn(SpawnAction::Key(key))),
         Context::Rename => Some(Action::RowAction(RowAction::RenameKey(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
@@ -617,7 +660,10 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
+        Context::DraftEnv => Some(Action::SpawnDrafts(SpawnDraftAction::EnvKey(key))),
+        Context::SpawnProfileName => Some(Action::Profiles(ProfileAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
+        Context::ForkDialog => Some(Action::Fork(ForkAction::Key(key))),
         _ => None,
     }
 }
@@ -628,8 +674,8 @@ mod tests {
 
     use super::{
         Action, AttentionAction, ControlsAction, Decision, DiagnoseAction, DiagnoseMode,
-        DraftAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus, SliceAction,
-        View, map_input,
+        DraftAction, ForkAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus,
+        SliceAction, View, map_input,
     };
     use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
@@ -884,7 +930,11 @@ mod tests {
         ));
         assert!(matches!(
             map_event(View::Conversation, false, ctrl('f')),
-            Some(Action::Controls(ControlsAction::Fork))
+            Some(Action::Fork(ForkAction::Open))
+        ));
+        assert!(matches!(
+            map(View::Conversation, false, KeyCode::Char('r')),
+            Some(Action::Fork(ForkAction::Resume))
         ));
     }
 

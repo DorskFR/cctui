@@ -2,6 +2,8 @@ use cctui_proto::api::SessionListItem;
 use cctui_proto::models::SessionStatus;
 use crossterm::event::KeyEvent;
 
+use super::account_switch::AccountSwitchAction;
+use super::accounts::AccountAction;
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::bookmarks::BookmarkAction;
@@ -10,25 +12,27 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatch::DispatchAction;
 use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
-use super::account_switch::AccountSwitchAction;
+use super::forkform::ForkAction;
 use super::harness_mode::HarnessModeAction;
 use super::identity::AuthAction;
 use super::images::ImagesAction;
 use super::labels::LabelAction;
-use super::accounts::AccountAction;
 use super::machines::MachineAction;
-use super::pools::PoolAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
+use super::pools::PoolAction;
+use super::profiles::ProfileAction;
 use super::prompt::PromptAction;
 use super::row_actions::RowAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::sidebar::SidebarAction;
 use super::slice::SliceAction;
+use super::spawn_drafts::SpawnDraftAction;
 use super::state::ConversationLine;
 use super::terminal::TerminalAction;
 use super::toast::Level;
@@ -38,6 +42,14 @@ use super::unread::UnreadAction;
 /// completed effects all funnel through this one vocabulary.
 pub enum Action {
     Quit,
+
+    /// Hand the focused text to `$EDITOR`; the main loop does the handoff.
+    OpenInEditor,
+    /// What came back from it.
+    EditorFinished {
+        target: crate::editor::EditorTarget,
+        text: String,
+    },
 
     SelectNext,
     SelectPrev,
@@ -70,6 +82,8 @@ pub enum Action {
     SubmitInput,
 
     Controls(ControlsAction),
+    Dispatch(DispatchAction),
+    Fork(ForkAction),
     Sidebar(SidebarAction),
     Unread(UnreadAction),
     ToggleAutoApproveSelected,
@@ -100,6 +114,7 @@ pub enum Action {
     SessionsLoaded(Vec<SessionListItem>),
     Conversation(ConversationAction),
     ListShape(super::list_shape_reduce::ListShapeAction),
+    Spawn(super::spawn::SpawnAction),
     ListSearch(super::list_search::ListSearchAction),
     /// `/` and `n`/`N`: decision 7 scopes them to the view in front.
     SearchCurrentView,
@@ -135,6 +150,8 @@ pub enum Action {
     Drafts(DraftAction),
     Pins(PinAction),
     Bookmarks(BookmarkAction),
+    SpawnDrafts(SpawnDraftAction),
+    Profiles(ProfileAction),
     Macros(MacroAction),
     /// Take the highlighted `#session` completion. Carries the key so a
     /// composer with no popup open still types it.
@@ -172,6 +189,22 @@ pub struct HeartbeatUsage {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub cost_usd: f64,
+}
+
+/// Which view an account catalog is for, so the reply reaches it: the slice
+/// and the spawn dialog read the same routes but keep their own state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountsFor {
+    Slice,
+    SpawnDialog,
+}
+
+/// Which picker a model list is for, so the reply reaches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelsFor {
+    RunningSession,
+    SpawnDialog,
+    ForkDialog,
 }
 
 /// The only way the reducer reaches the network. Nothing here runs on the
@@ -212,6 +245,38 @@ pub enum Effect {
     LoadBookmarks {
         q: String,
         before: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// `GET /profiles`: the caller's spawn profiles.
+    LoadProfiles,
+    CreateProfile {
+        name: String,
+        spec: Box<cctui_proto::api::profiles::ProfileSpec>,
+    },
+    UpdateProfile {
+        id: String,
+        /// `None` keeps the stored name.
+        name: Option<String>,
+        spec: Box<cctui_proto::api::profiles::ProfileSpec>,
+    },
+    DeleteProfile {
+        id: String,
+    },
+    ReorderProfiles {
+        ids: Vec<uuid::Uuid>,
+    },
+    /// Save the open dialog as a draft after a quiet period: a `PUT` when it
+    /// already has a row, else a `save_draft` spawn that makes one.
+    AutosaveDraft {
+        session_id: Option<String>,
+        request: Box<cctui_proto::api::SpawnRequest>,
+    },
+    /// Launch a draft session. `env` is entered at launch, never stored.
+    LaunchDraft {
+        session_id: String,
+        env: std::collections::BTreeMap<String, String>,
+    },
+    DiscardDraftSession {
+        session_id: String,
     },
     CreateBookmark {
         draft: Box<cctui_proto::api::bookmarks::CreateBookmark>,
@@ -293,9 +358,23 @@ pub enum Effect {
     },
     Fork {
         session_id: String,
+        request: Box<cctui_proto::api::ForkRequest>,
     },
-    /// `GET /models/{harness}`: the picker's model and effort lists.
+    Resume {
+        session_id: String,
+    },
+    /// `GET /sessions/dispatchers`: the dispatch targets a spawn can pick.
+    /// Not the admin `FetchDispatchers`: that one is the enrolled rows with
+    /// liveness and misses the env-configured registry this picker needs.
+    FetchSpawnDispatchers,
+    /// `POST /sessions/dispatch` with the shared body.
+    Dispatch {
+        body: Box<serde_json::Value>,
+    },
+    /// `GET /models/{harness}`: the model and effort lists. Two dialogs ask
+    /// for them, so the asker rides along rather than being guessed at.
     FetchHarnessModels {
+        want: ModelsFor,
         harness: String,
         machine_id: String,
         model: String,
@@ -360,11 +439,15 @@ pub enum Effect {
     /// `POST /version/self-update`: deploy the newer release (admin).
     LaunchSelfUpdate,
     /// `GET /accounts`: the caller's account identities.
-    FetchAccounts,
+    FetchAccounts {
+        want: AccountsFor,
+    },
     /// `GET /redirects`: the live launch-time redirect rules.
     FetchRedirects,
     /// `GET /account-pools`: the pools with their membership.
-    FetchAccountPools,
+    FetchAccountPools {
+        want: AccountsFor,
+    },
     UpdateAccount {
         id: String,
         request: Box<cctui_client::UpdateAccount>,
@@ -432,6 +515,9 @@ pub enum Effect {
     },
     /// `GET /labels`: the whole catalogue.
     FetchLabels,
+    /// The spawn picker's percentages. The usage view has its own
+    /// [`Effect::FetchUsage`], which reads pools in the same pass.
+    FetchAccountsUsage,
     CreateLabel {
         name: String,
         color: String,
@@ -465,6 +551,31 @@ pub enum Effect {
         seq: Option<i64>,
     },
     SaveUiState(crate::config::uistate::UiState),
+    /// Debounced per keystroke: only the latest `(machine, path)` is asked for.
+    FetchGitInfo {
+        machine_id: String,
+        path: String,
+    },
+    FetchMachineDirs {
+        machine_id: String,
+        path: String,
+    },
+    FetchRecentDirs,
+    FetchSpawnMemory,
+    /// The whole map; the server replaces what it holds with it.
+    PutSpawnMemory {
+        entries: std::collections::BTreeMap<String, cctui_proto::drafts::SpawnMemoryEntry>,
+    },
+    /// Re-reads the machine's codex catalog upstream; refetch the lists after.
+    RefreshCodexModels {
+        machine_id: String,
+    },
+    /// `POST /sessions/spawn`. The reply arrives as a `command_result`.
+    SpawnSession {
+        request: Box<cctui_proto::api::SpawnRequest>,
+        /// Attachments the dialog staged, sent as parts of the same request.
+        files: Vec<(String, Vec<u8>)>,
+    },
     /// `PUT /settings` with the whole blob, patched: the route replaces.
     SaveSettings {
         data: serde_json::Value,

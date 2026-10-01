@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 830
+assertion_line: 1029
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+p / ↑  Previous prompt                  Row glyphs                                     │
-▸ │  Enter       Put this prompt in the composer    ●           working                          │
-  │File viewer                                      ◐           stale or asleep                  │
-  │  j / ↓       Scroll down                        ○           idle                             │
-  │  k / ↑       Scroll up                          ☾           hibernated                       │
-  │  PgDn        Page down                          ↳           subagent                         │
-  │  PgUp        Page up                            ▸ / ▾       folded / open group              │
-  │  g           Jump to the top                    [name]      a label, tinted by its hue       │
-  │  q / Esc     Close the file viewer              +N          more labels than fit             │
-  │  o           Open in the desktop viewer         !           permission waiting on you        │
-  │Machines                                         ?           question waiting on you          │
-  │  j / ↓       Next machine                       P           plan waiting for approval        │
-  │  k / ↑       Previous machine                   ●N          unread messages                  │
-  │  r           Refresh the machine list           ⚡           auto-approve on                  │
-  │  Enter       Aim a spawn at this machine        ⏸           account soft-limited             │
-  │  Esc         Back to the sessions               ⚠           account traffic never seen       │
-  │Dispatchers                                      ❄           cache cold, next turn re-reads   │
-  │  Ctrl+n / ↓  Next dispatcher                    ⌂           a job cctui did not start        │
-  │  Ctrl+p / ↑  Previous dispatcher                ✕reason     how it ended                     │
-  │  Ctrl+a      Enroll a dispatcher                ⚙N age      tool calls, age of the last      │
+  │  a           Show or hide revoked rows          ●           working                          │
+▸ │  n           Create a user, token or key        ◐           stale or asleep                  │
+  │  e           Rename or relabel                  ○           idle                             │
+  │  d           Disable or enable this user        ☾           hibernated                       │
+  │  x           Revoke this credential             ↳           subagent                         │
+  │  R           Rotate this machine's key          ▸ / ▾       folded / open group              │
+  │  P           Hard-delete, typing the name       [name]      a label, tinted by its hue       │
+  │  Space       Grant or drop the scope            +N          more labels than fit             │
+  │  s           Re-grant this key's scopes         !           permission waiting on you        │
+  │  G           The dispatchers panel              ?           question waiting on you          │
+  │  Enter       Confirm                            P           plan waiting for approval        │
+  │  Esc         Back                               ●N          unread messages                  │
+  │  y           Copy the new secret                ⚡           auto-approve on                  │
+  │Instance                                         ⏸           account soft-limited             │
+  │  Ctrl+r      Refresh the instance status        ⚠           account traffic never seen       │
+  │  p           Check upstream for a release       ❄           cache cold, next turn re-reads   │
+  │  U           Update this server                 ⌂           a job cctui did not start        │
+  │  Enter       Confirm                            ✕reason     how it ended                     │
+  │  Esc         Back                               ⚙N age      tool calls, age of the last      │
+  │Accounts                                                                                      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

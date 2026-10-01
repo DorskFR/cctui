@@ -4,10 +4,10 @@ use cctui_proto::api::SessionListItem;
 use ratatui::style::{Color, Style};
 use ratatui_textarea::TextArea;
 
+use super::account_switch::Picker as AccountSwitchPicker;
 use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
 use super::diagnose::DiagnosePanel;
-use super::account_switch::Picker as AccountSwitchPicker;
 use super::harness_mode::Picker as HarnessPicker;
 use super::identity::AuthState;
 use super::prompt::{AskCard, PlanCard};
@@ -49,7 +49,10 @@ pub enum View {
     Diagnose,
     Terminal,
     ModelPicker,
+    ForkDialog,
     Sidebar,
+    /// The new-session dialog.
+    Spawn,
     /// Slice roots: the switcher resets the router to one of these.
     Bookmarks,
     Overview,
@@ -228,6 +231,9 @@ pub struct App {
     pub subscribed: Option<String>,
     pub message_input: TextArea<'static>,
     pub input_active: bool,
+    /// Set by the open-in-editor action; the main loop takes it, because only
+    /// it owns the terminal.
+    pub editor: Option<crate::editor::EditorRequest>,
     pub should_quit: bool,
     /// Pending permission requests for every session, rendered as a card in
     /// the session they belong to.
@@ -290,6 +296,7 @@ pub struct App {
     pub drafts: super::drafts::DraftState,
     pub pins: super::pins::PinState,
     pub bookmarks: super::bookmarks::BookmarkState,
+    pub spawn_drafts: super::spawn_drafts::SpawnDraftState,
     pub mentions: super::mentions::MentionState,
     pub macros: super::macros::MacroState,
     /// Sends that have left the composer but are not confirmed delivered.
@@ -306,12 +313,18 @@ pub struct App {
     pub clock_ms: i64,
     /// Live machine tiers from `machine_liveness`, keyed by machine id.
     pub machine_liveness: HashMap<String, cctui_proto::models::MachineLiveness>,
+    /// Spawn configurations remembered per target, as the server holds them.
+    pub spawn_memory: std::collections::BTreeMap<String, cctui_proto::drafts::SpawnMemoryEntry>,
     /// The socket is delivering events, so the REST poll can slow down.
     pub ws_healthy: bool,
     pub last_refresh_ms: i64,
     pub refresh: RefreshCounters,
     /// Selection and the pending prompts of the list's row actions.
     pub row_actions: super::row_actions::RowActionState,
+    /// The open spawn dialog, or `None`.
+    pub spawn: Option<super::spawn::SpawnForm>,
+    /// Catalogs the spawn dialog reads; fetched once, kept across dialogs.
+    pub spawn_data: super::spawn::SpawnData,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
     /// Which top-level slice `1-9` last selected.
@@ -360,6 +373,8 @@ pub struct App {
     pub account_switch: Option<AccountSwitchPicker>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
+    /// The open fork dialog, if one is.
+    pub fork: Option<super::forkform::ForkForm>,
     /// Cursor state of the todo/subagent sidebar.
     pub sidebar: super::sidebar::Sidebar,
     /// Mark-seen debounce state; the counts themselves live on the rows.
@@ -424,6 +439,7 @@ impl App {
             subscribed: None,
             message_input: Self::new_input_textarea(),
             input_active: false,
+            editor: None,
             should_quit: false,
             permissions: PermissionInbox::default(),
             asks: HashMap::new(),
@@ -459,6 +475,7 @@ impl App {
             drafts: super::drafts::DraftState::default(),
             pins: super::pins::PinState::default(),
             bookmarks: super::bookmarks::BookmarkState::default(),
+            spawn_drafts: super::spawn_drafts::SpawnDraftState::default(),
             mentions: super::mentions::MentionState::default(),
             macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
@@ -468,10 +485,13 @@ impl App {
             file_view: None,
             clock_ms: 0,
             machine_liveness: HashMap::new(),
+            spawn_memory: std::collections::BTreeMap::new(),
             ws_healthy: false,
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             row_actions: super::row_actions::RowActionState::default(),
+            spawn_data: super::spawn::SpawnData::default(),
+            spawn: None,
             ui: UiState::default(),
             slice: Slice::Sessions,
             slice_cursors: HashMap::new(),
@@ -495,6 +515,7 @@ impl App {
             harness_picker: None,
             account_switch: None,
             controls: super::controls::Controls::default(),
+            fork: None,
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
             watch: super::attention::Watch::default(),
@@ -532,7 +553,7 @@ impl App {
     /// The modal strip or panel holding the keyboard, if any. A feature with
     /// its own context adds an arm here.
     #[must_use]
-    pub const fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
+    pub fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
         use crate::config::keymap::Context;
         // A row-action prompt is modal over the list: it answers one key and
         // closes, so it outranks the strips that stay open while you work.
@@ -556,6 +577,20 @@ impl App {
         }
         // Last: every strip above belongs to the sessions slice, these two to
         // the bookmarks slice, so no pair of them is ever open together.
+        if let Some(form) = self.spawn.as_ref().and_then(super::spawn::SpawnForm::profiles) {
+            if form.prompt.is_some() {
+                return Some(Context::SpawnProfileName);
+            }
+            if form.confirm.is_some() {
+                return Some(Context::SpawnProfileConfirm);
+            }
+        }
+        if self.spawn_drafts.env_prompt.is_some() {
+            return Some(Context::DraftEnv);
+        }
+        if self.spawn_drafts.confirm.is_some() {
+            return Some(Context::DraftConfirm);
+        }
         if self.bookmarks.prompt.is_some() {
             return Some(Context::BookmarkPrompt);
         }
