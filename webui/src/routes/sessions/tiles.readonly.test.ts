@@ -4,6 +4,7 @@ import tiles from './SessionTiles.svelte?raw';
 import page from './+page.svelte?raw';
 import layout from '../+layout.svelte?raw';
 import spawnDock from '../../lib/spawnDock.svelte.ts?raw';
+import controls from '../../lib/components/organisms/SessionControls.svelte?raw';
 
 const appCss = readFileSync('src/lib/styles/app.css', 'utf8');
 
@@ -84,6 +85,13 @@ describe('tiles view mode', () => {
 		expect(layout).toMatch(/\.app\.tiles \{[^}]*height: 100dvh/);
 		expect(layout).toMatch(/\.app\.tiles \{[^}]*overflow: clip/);
 		expect(appCss).toMatch(/:root\[data-tiles="on"\][\s\S]*?overflow: clip/);
+	});
+
+	it('breathes between the app header and the Sessions search row', () => {
+		expect(page).toContain('flush={sp.tiles}');
+		const css = controls.slice(controls.indexOf('<style>'));
+		expect(css).toMatch(/\.bar\.flush \{[^}]*padding-top: var\(--sp-2\)/);
+		expect(css).toMatch(/\.bar\.flush \{[^}]*margin-bottom: 0/);
 	});
 
 	it('adds no :global override', () => {

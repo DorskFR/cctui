@@ -214,8 +214,11 @@
 		top: calc(var(--header-h) + var(--safe-top));
 		z-index: 6;
 	}
+	/* Tiles: no bottom margin (the grid starts right below), but breathe under
+	   the app header instead of sitting flush against it. */
 	.bar.flush {
 		margin-bottom: 0;
+		padding-top: var(--sp-2);
 	}
 	.bar {
 		margin-bottom: var(--sp-4);
