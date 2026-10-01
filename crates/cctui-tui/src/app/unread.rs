@@ -304,6 +304,25 @@ mod tests {
         assert_eq!(app.toasts.latest().expect("a toast").text, "nothing unread");
     }
 
+    /// Row actions enumerate the list through `list_rows`, the same entry point
+    /// the filter lives in, so a batch cannot reach a row the filter hides.
+    #[test]
+    fn a_batch_selection_cannot_reach_a_hidden_row() {
+        use crate::app::row_actions::RowAction;
+
+        let mut app = app();
+        app.sessions[1].unread_count = 2;
+        reduce(&mut app, Action::Unread(UnreadAction::ToggleOnly));
+        reduce(&mut app, Action::RowAction(RowAction::SelectAllVisible));
+        let picked: Vec<&str> = app
+            .sessions
+            .iter()
+            .filter(|s| app.row_actions.selected.contains(&s.id))
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(picked, vec!["s-b"], "only the unread row was selectable");
+    }
+
     /// A parent with nothing new still shows while it holds an unread child.
     #[test]
     fn a_parent_is_kept_for_an_unread_child() {

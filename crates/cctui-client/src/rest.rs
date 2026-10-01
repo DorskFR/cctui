@@ -2,8 +2,8 @@ use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
-    AutoApproveRequest, ForkRequest, ForkResponse, SessionListItem, SessionListResponse,
-    SetModelRequest, StageFilesResponse,
+    AutoApproveRequest, ForkRequest, ForkResponse, RenameRequest, SessionListItem,
+    SessionListResponse, SetModelRequest, StageFilesResponse,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -422,6 +422,33 @@ impl Client {
         self.unit(route, &[("id", session_id)], Some(&body)).await
     }
 
+    pub async fn rename_session(&self, session_id: &str, name: &str) -> Result<(), ClientError> {
+        let route = Self::route("patch_sessions_by_id")?;
+        let body = serde_json::to_value(RenameRequest { name: name.to_owned() })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    pub async fn kill_session(&self, session_id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("post_sessions_by_id_kill")?, &[("id", session_id)], None).await
+    }
+
+    /// Archives or unarchives a batch of sessions in one request. The server
+    /// filters the ids to the ones the caller owns and is idempotent per id.
+    pub async fn archive_sessions(
+        &self,
+        ids: &[String],
+        archived: bool,
+    ) -> Result<(), ClientError> {
+        let id = if archived { "post_sessions_archive" } else { "post_sessions_unarchive" };
+        self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
+    }
+
+    pub async fn pin_sessions(&self, ids: &[String], pinned: bool) -> Result<(), ClientError> {
+        let id = if pinned { "post_sessions_pin" } else { "post_sessions_unpin" };
+        self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
+    }
+
     /// The caller's settings blob. The TUI reads it and never writes it back.
     pub async fn settings(&self) -> Result<SettingsPayload, ClientError> {
         self.json(Self::route("get_settings")?, &[], &[], None).await
@@ -573,6 +600,11 @@ impl Client {
     }
 }
 
+/// The `{ids: [...]}` body every batch session route takes.
+fn batch_ids(ids: &[String]) -> Value {
+    serde_json::json!({ "ids": ids })
+}
+
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
     resp.headers()
         .get(ETAG)
@@ -699,6 +731,12 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "patch_sessions_by_id",
+            "post_sessions_by_id_kill",
+            "post_sessions_archive",
+            "post_sessions_unarchive",
+            "post_sessions_pin",
+            "post_sessions_unpin",
             "get_sessions_by_id_pins",
             "post_sessions_by_id_pins",
             "delete_sessions_by_id_pins_by_seq",

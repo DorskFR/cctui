@@ -14,6 +14,7 @@ use super::identity::AuthAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
 use super::prompt::PromptAction;
+use super::row_actions::RowAction;
 use super::send::SendAction;
 use super::session_live::SessionLiveAction;
 use super::sidebar::SidebarAction;
@@ -107,6 +108,7 @@ pub enum Action {
     /// composer with no popup open still types it.
     AcceptMention(KeyEvent),
     Send(SendAction),
+    RowAction(RowAction),
     Terminal(TerminalAction),
     SessionLive(SessionLiveAction),
 
@@ -222,6 +224,23 @@ pub enum Effect {
         turn_id: Option<uuid::Uuid>,
     },
     Interrupt {
+        session_id: String,
+    },
+    /// One request for the whole batch; the server filters it to what the
+    /// caller owns.
+    ArchiveSessions {
+        ids: Vec<String>,
+        archived: bool,
+    },
+    PinSessions {
+        ids: Vec<String>,
+        pinned: bool,
+    },
+    RenameSession {
+        session_id: String,
+        name: String,
+    },
+    KillSession {
         session_id: String,
     },
     Fork {

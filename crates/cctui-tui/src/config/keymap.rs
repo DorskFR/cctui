@@ -15,6 +15,10 @@ pub enum Context {
     CmdLine,
     /// The `F` category menu.
     FilterMenu,
+    /// A y/N prompt over the list: kill, or a batch archive.
+    Confirm,
+    /// The inline rename field on a list row.
+    Rename,
     History,
     FileViewer,
     Pins,
@@ -34,6 +38,8 @@ pub enum Context {
 pub const CONTEXTS: &[Context] = &[
     Context::Global,
     Context::SessionList,
+    Context::Confirm,
+    Context::Rename,
     Context::Conversation,
     Context::Composer,
     Context::CmdLine,
@@ -62,6 +68,8 @@ impl Context {
             Self::Conversation => "conversation",
             Self::Composer => "composer",
             Self::CmdLine => "cmdline",
+            Self::Confirm => "confirm",
+            Self::Rename => "rename",
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
@@ -87,6 +95,8 @@ impl Context {
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
             Self::CmdLine => "Search and commands",
+            Self::Confirm => "Confirm prompt",
+            Self::Rename => "Rename a session",
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
@@ -165,9 +175,9 @@ actions! {
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
     ToggleUnreadOnly => "toggle-unread-only", "Show only unread sessions";
-    TogglePin => "toggle-pin", "Pin the selected session";
+    TogglePin => "toggle-pin", "Pin or unpin the session";
     NewSession => "new-session", "Spawn a session";
-    Archive => "archive", "Archive the selected session";
+    Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
     Resume => "resume", "Resume the session";
 
@@ -223,6 +233,18 @@ actions! {
     CmdLineCancel => "cmdline-cancel", "Abandon it";
     CmdLineComplete => "cmdline-complete", "Complete the path";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    RenameSession => "rename-session", "Rename the session";
+    ArchiveSection => "archive-section", "Archive every session in the section";
+    KillSession => "kill-session", "Kill the session";
+    UndoArchive => "undo-archive", "Undo the last archive";
+    SelectToggle => "select-toggle", "Select or deselect the row";
+    SelectRange => "select-range", "Select up to the anchor";
+    SelectAll => "select-all", "Select every visible row";
+    SelectClear => "select-clear", "Leave select mode";
+    ConfirmYes => "confirm-yes", "Yes";
+    ConfirmNo => "confirm-no", "No";
+    RenameCommit => "rename-commit", "Save the name";
+    RenameCancel => "rename-cancel", "Discard the name";
     TerminalOpen => "terminal-open", "Watch the live terminal";
     TerminalClose => "terminal-close", "Close the terminal pane";
     TerminalScrollDown => "terminal-scroll-down", "Scroll the terminal down";
@@ -336,6 +358,26 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
     spec(Context::SessionList, "U", ActionId::ToggleUnreadOnly),
+    spec(Context::SessionList, "p", ActionId::TogglePin),
+    spec(Context::SessionList, "r", ActionId::RenameSession),
+    spec(Context::SessionList, "x", ActionId::Archive),
+    spec(Context::SessionList, "X", ActionId::KillSession),
+    spec(Context::SessionList, "A", ActionId::ArchiveSection),
+    spec(Context::SessionList, "u", ActionId::UndoArchive),
+    spec(Context::SessionList, "space", ActionId::SelectToggle),
+    spec(Context::SessionList, "V", ActionId::SelectRange),
+    spec(Context::SessionList, "*", ActionId::SelectAll),
+    spec(Context::SessionList, "esc", ActionId::SelectClear),
+];
+
+const CONFIRM: &[BindingSpec] = &[
+    spec(Context::Confirm, "y, Y", ActionId::ConfirmYes),
+    spec(Context::Confirm, "n, N, esc, q", ActionId::ConfirmNo),
+];
+
+const RENAME: &[BindingSpec] = &[
+    spec(Context::Rename, "enter", ActionId::RenameCommit),
+    spec(Context::Rename, "esc", ActionId::RenameCancel),
 ];
 
 const CONVERSATION: &[BindingSpec] = &[
@@ -547,6 +589,8 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    CONFIRM,
+    RENAME,
     CONVERSATION,
     COMPOSER,
     ATTACH,

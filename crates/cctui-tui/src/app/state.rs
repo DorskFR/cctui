@@ -278,6 +278,8 @@ pub struct App {
     pub ws_healthy: bool,
     pub last_refresh_ms: i64,
     pub refresh: RefreshCounters,
+    /// Selection and the pending prompts of the list's row actions.
+    pub row_actions: super::row_actions::RowActionState,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
     /// Interrupt/fork confirmations and the model picker.
@@ -391,6 +393,7 @@ impl App {
             ws_healthy: false,
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
+            row_actions: super::row_actions::RowActionState::default(),
             ui: UiState::default(),
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
@@ -432,6 +435,14 @@ impl App {
     #[must_use]
     pub const fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
         use crate::config::keymap::Context;
+        // A row-action prompt is modal over the list: it answers one key and
+        // closes, so it outranks the strips that stay open while you work.
+        if self.row_actions.confirm.is_some() {
+            return Some(Context::Confirm);
+        }
+        if self.row_actions.rename.is_some() {
+            return Some(Context::Rename);
+        }
         if self.cmdline.open.is_some() {
             return Some(Context::CmdLine);
         }

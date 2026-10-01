@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 273
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  4 sessions  ● 3 active  ! 1 need input — Ctrl+g
+ Sessions
+   ▾ Needs input (1)
+     [x] ● [claude-code] infra (main)  opus  0s  $1.25
+   ▾ Working (1)
+▸    [x] ● [claude-code] cctui (main)  opus  0s  $1.25
+     ▾ subagents (1/1 running)
+       ↳ [ ] ● [claude-code] cctui-sub (main)  opus  0s  $1.25
+   ▾ Completed (1)
+     [ ] ○ [claude-code] notes (main)  opus  0s  $1.25
+
+
+
+
+
+
+
+
+
+
+
+
+
+ -- SELECT (2) --  space toggle  V range  * all  x archive  esc cancel
