@@ -1,28 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 827
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Filter menu                                    Row glyphs                                     │
-▸ │  F / q / Esc Choose which lines to show         ●           working                          │
-  │  a           Show every category                ◐           stale or asleep                  │
-  │  r           Back to the default filter         ○           idle                             │
-  │  Space / En… Show or hide this category         ☾           hibernated                       │
-  │  j / ↓       Next category                      ↳           subagent                         │
-  │  k / ↑       Previous category                  ▸ / ▾       folded / open group              │
-  │Prompt history                                   [name]      a label, tinted by its hue       │
-  │  Esc         Close the prompt list              +N          more labels than fit             │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │File viewer                                      ●N          unread messages                  │
-  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
-  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
-  │  PgDn        Page down                          ⚠           account traffic never seen       │
-  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
-  │  o           Open in the desktop viewer                                                      │
+  │  Enter       Run it                           Row glyphs                                     │
+▸ │  Esc         Abandon it                         ●           working                          │
+  │  Tab         Complete the path                  ◐           stale or asleep                  │
+  │Filter menu                                      ○           idle                             │
+  │  F / q / Esc Choose which lines to show         ☾           hibernated                       │
+  │  a           Show every category                ↳           subagent                         │
+  │  r           Back to the default filter         ▸ / ▾       folded / open group              │
+  │  Space / En… Show or hide this category         [name]      a label, tinted by its hue       │
+  │  j / ↓       Next category                      +N          more labels than fit             │
+  │  k / ↑       Previous category                  !           permission waiting on you        │
+  │Prompt history                                   ?           question waiting on you          │
+  │  Esc         Close the prompt list              P           plan waiting for approval        │
+  │  Ctrl+n / ↓  Next prompt                        ●N          unread messages                  │
+  │  Ctrl+p / ↑  Previous prompt                    ⚡           auto-approve on                  │
+  │  Enter       Put this prompt in the composer    ⏸           account soft-limited             │
+  │File viewer                                      ⚠           account traffic never seen       │
+  │  j / ↓       Scroll down                        ❄           cache cold, next turn re-reads   │
+  │  k / ↑       Scroll up                          ✕reason     how it ended                     │
+  │  PgDn        Page down                          ⚙N age      tool calls, age of the last      │
+  │  PgUp        Page up                                                                         │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

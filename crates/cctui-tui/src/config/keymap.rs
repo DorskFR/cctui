@@ -11,6 +11,8 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The new-session dialog.
+    Spawn,
     /// The `f` sections popup over the list.
     Sections,
     /// The `/` prompt over the list.
@@ -52,6 +54,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Rename,
     Context::Conversation,
     Context::Composer,
+    Context::Spawn,
     Context::Sections,
     Context::ListSearch,
     Context::CmdLine,
@@ -85,6 +88,7 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::Spawn => "spawn",
             Self::Sections => "sections",
             Self::ListSearch => "list-search",
             Self::CmdLine => "cmdline",
@@ -120,6 +124,7 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::Spawn => "New session",
             Self::Sections => "Sections popup",
             Self::ListSearch => "List search",
             Self::CmdLine => "Search and commands",
@@ -208,6 +213,11 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
+    SpawnOpen => "spawn-open", "Start a new session";
+    SpawnNextField => "spawn-next-field", "Next field";
+    SpawnPrevField => "spawn-prev-field", "Previous field";
+    SpawnSubmit => "spawn-submit", "Launch";
+    SpawnCancel => "spawn-cancel", "Close without launching";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -439,6 +449,9 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    // The ticket asks for `n`, but decision 7 makes `n` next-search-hit
+    // everywhere and a context binding would silently shadow it.
+    spec(Context::SessionList, "ctrl+n", ActionId::SpawnOpen),
     spec(Context::SessionList, "f", ActionId::ListSections),
     spec(Context::SessionList, "o", ActionId::ListSortCycle),
     spec(Context::SessionList, "O", ActionId::ListSortFlip),
@@ -551,6 +564,14 @@ const FILTER_MENU: &[BindingSpec] = &[
     spec(Context::FilterMenu, "space, enter", ActionId::FilterMenuToggle),
     spec(Context::FilterMenu, "a", ActionId::FilterShowAll),
     spec(Context::FilterMenu, "r", ActionId::FilterReset),
+];
+
+/// Typed characters reach the focused field through the unbound fall-through.
+const SPAWN: &[BindingSpec] = &[
+    spec(Context::Spawn, "tab", ActionId::SpawnNextField),
+    spec(Context::Spawn, "backtab, shift+tab", ActionId::SpawnPrevField),
+    spec(Context::Spawn, "ctrl+s", ActionId::SpawnSubmit),
+    spec(Context::Spawn, "esc", ActionId::SpawnCancel),
 ];
 
 const SECTIONS_POPUP: &[BindingSpec] = &[
@@ -751,6 +772,7 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    SPAWN,
     SECTIONS_POPUP,
     LIST_SEARCH,
     CONFIRM,

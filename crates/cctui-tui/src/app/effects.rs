@@ -475,6 +475,13 @@ async fn run(
                 Vec::new()
             }
         },
+        Effect::SpawnSession { request } => match server.spawn_session(&request).await {
+            Ok(()) => Vec::new(),
+            Err(e) => {
+                tracing::warn!(%e, "the spawn request failed");
+                vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+            }
+        },
         Effect::SaveSettings { data } => {
             // The version the server last reported travels with the blob; it
             // migrates an older payload forward rather than rejecting it.
