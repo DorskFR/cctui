@@ -11,14 +11,14 @@ expression: "render_screen_sized(&mut app, 60, 20)"
    │parent                     —                        │
    │machine                    orion                    │5
    │adapter                    claude-code              │
+   │origin                     cctui                    │
    │account                    main                     │
    │model                      opus (high)              │
    │permission mode            yolo                     │
    │registered                 1h ago                   │
    │last heartbeat             2s ago                   │
    │last tool                  45s ago                  │
-   │server:                                             │
-   │ j/k r y D/i Esc   12/29                            │
+   │ j/k r y D/i Esc   12/30                            │
    └────────────────────────────────────────────────────┘
 
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

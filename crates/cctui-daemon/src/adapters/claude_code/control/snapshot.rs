@@ -96,6 +96,10 @@ impl Driver {
         let mut extra = json!({
             "short": job.short,
             "relation": relation,
+            // Published every rediscovery, so a job that was someone's
+            // `claude --bg` never loses the marker that keeps our automatic
+            // paths off it.
+            "origin": if job.is_foreign() { "foreign" } else { "fleet" },
         });
         // The server merges metadata with jsonb `||`, where an explicit
         // null overwrites. Omit what this poll could not read so a

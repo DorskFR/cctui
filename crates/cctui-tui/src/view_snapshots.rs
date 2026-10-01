@@ -1537,3 +1537,43 @@ fn overview_view_narrow() {
     reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }
+
+// --- Foreign jobs and the harness mode ---
+
+fn app_with_a_foreign_job() -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    session_mut(&mut app, "s-working").origin = cctui_proto::api::SessionOrigin::Foreign;
+    app
+}
+
+#[test]
+fn session_list_marks_a_job_cctui_did_not_start() {
+    let mut app = app_with_a_foreign_job();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_marks_a_foreign_job_at_eighty_columns() {
+    let mut app = app_with_a_foreign_job();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn foreign_job_archive_asks_before_removing_it_on_the_machine() {
+    let mut app = app_with_a_foreign_job();
+    focus(&mut app, "s-working");
+    reduce(&mut app, Action::RowAction(crate::app::row_actions::RowAction::ArchiveOrUnarchive));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_info_popup_names_a_foreign_origin() {
+    let mut app = app_with_a_foreign_job();
+    focus(&mut app, "s-working");
+    reduce(
+        &mut app,
+        Action::Diagnose(DiagnoseAction::Open(crate::app::diagnose::DiagnoseMode::Info)),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}

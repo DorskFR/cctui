@@ -21,8 +21,8 @@ expression: render_screen(&mut app)
   │  k / ↑       Scroll up                          ⏸           account soft-limited             │
   │  PgDn        Page down                          ⚠           account traffic never seen       │
   │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
-  │  o           Open in the desktop viewer                                                      │
+  │  g           Jump to the top                    ⌂           a job cctui did not start        │
+  │  q / Esc     Close the file viewer              ✕reason     how it ended                     │
+  │  o           Open in the desktop viewer         ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
