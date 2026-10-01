@@ -1,4 +1,6 @@
 use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
+use cctui_proto::api::cache_loss::DailyCacheLoss;
+use cctui_proto::api::langfuse::LangfuseSessionUsage;
 use cctui_proto::api::machine_resources::MachineResourcesRow;
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
@@ -6,7 +8,7 @@ use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
     AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, ForkRequest, ForkResponse, Label,
     LabelListResponse, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
-    SetModelRequest, StageFilesResponse, UpdateLabelRequest,
+    SetModelRequest, StageFilesResponse, TokenUsageWindows, UpdateLabelRequest, UsageAnalytics,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -19,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::ClientError;
+use crate::usage::{AccountUsageEntry, PoolUsageView};
 
 /// Envoy strips `ETag` off responses it compresses; the server mirrors it here.
 const ETAG_MIRROR: &str = "x-etag";
@@ -484,6 +487,99 @@ impl Client {
         self.json(Self::route("get_machines_resources")?, &[], &[], None).await
     }
 
+    /// Token totals across the rolling windows. `tz_offset` is the caller's
+    /// `Date.getTimezoneOffset()` equivalent — minutes to subtract from UTC —
+    /// which anchors `today` to the local calendar day.
+    pub async fn session_token_stats(
+        &self,
+        tz_offset: i32,
+    ) -> Result<TokenUsageWindows, ClientError> {
+        self.json(
+            Self::route("get_sessions_stats_tokens")?,
+            &[],
+            &[("tz_offset", tz_offset.to_string())],
+            None,
+        )
+        .await
+    }
+
+    /// Tokens over time, per model and per hour-of-week, over the last `days`.
+    pub async fn session_usage_analytics(
+        &self,
+        days: u32,
+        tz_offset: i32,
+    ) -> Result<UsageAnalytics, ClientError> {
+        self.json(
+            Self::route("get_sessions_stats_usage")?,
+            &[],
+            &[("days", days.to_string()), ("tz_offset", tz_offset.to_string())],
+            None,
+        )
+        .await
+    }
+
+    /// Dollars and tokens lost to prompt-cache busts, per local day.
+    pub async fn cache_loss(
+        &self,
+        days: u32,
+        tz_offset: i32,
+    ) -> Result<Vec<DailyCacheLoss>, ClientError> {
+        self.json(
+            Self::route("get_sessions_stats_cache_busts")?,
+            &[],
+            &[("days", days.to_string()), ("tz_offset", tz_offset.to_string())],
+            None,
+        )
+        .await
+    }
+
+    /// The session's Langfuse cost rollup. Errors when the sink is
+    /// unconfigured, so the caller hides the cost line rather than showing a
+    /// zero.
+    pub async fn session_langfuse(
+        &self,
+        session_id: &str,
+    ) -> Result<LangfuseSessionUsage, ClientError> {
+        self.json(Self::route("get_sessions_by_id_langfuse")?, &[("id", session_id)], &[], None)
+            .await
+    }
+
+    /// Usage windows of every provider credential the caller owns, in one call.
+    pub async fn accounts_usage(&self) -> Result<Vec<AccountUsageEntry>, ClientError> {
+        self.json(Self::route("get_accounts_usage")?, &[], &[], None).await
+    }
+
+    /// Every pool's windows aggregated per provider family.
+    pub async fn account_pools_usage(&self) -> Result<Vec<PoolUsageView>, ClientError> {
+        self.json(Self::route("get_account_pools_usage")?, &[], &[], None).await
+    }
+
+    /// A session's per-family account bindings.
+    pub async fn session_bindings(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::session_bindings::SessionBinding>, ClientError> {
+        self.json(Self::route("get_sessions_by_id_bindings")?, &[("id", session_id)], &[], None)
+            .await
+    }
+
+    /// Rebind the session's credential in `family` to `account` (a name, an
+    /// identity id, or a credential id, which names its own family).
+    pub async fn switch_session_account(
+        &self,
+        session_id: &str,
+        account: &str,
+        family: &str,
+    ) -> Result<(), ClientError> {
+        let body = serde_json::json!({ "account": account, "family": family });
+        self.unit(
+            Self::route("post_sessions_by_id_switch_account")?,
+            &[("id", session_id)],
+            Some(&body),
+        )
+        .await
+    }
+
     /// Enrolled dispatchers with their liveness.
     pub async fn dispatchers(&self) -> Result<Vec<Dispatcher>, ClientError> {
         self.json(Self::route("get_dispatchers")?, &[], &[], None).await
@@ -515,6 +611,120 @@ impl Client {
 
     pub async fn delete_dispatcher(&self, id: &str) -> Result<(), ClientError> {
         self.unit(Self::route("delete_dispatchers_by_id")?, &[("id", id)], None).await
+    }
+
+    // --- instance status and the server's own self-update ---
+
+    /// Server version, build and deployment state. The deployment fields are
+    /// only filled in for an authenticated caller.
+    pub async fn version(&self) -> Result<crate::instance::VersionInfo, ClientError> {
+        self.json(Self::route("get_version")?, &[], &[], None).await
+    }
+
+    /// Release notes of every upstream release newer than this server.
+    pub async fn version_changelog(&self) -> Result<crate::instance::Changelog, ClientError> {
+        self.json(Self::route("get_version_changelog")?, &[], &[], None).await
+    }
+
+    /// Probe upstream now instead of waiting out the background interval.
+    pub async fn refresh_version(&self) -> Result<(), ClientError> {
+        self.unit(Self::route("post_version_refresh")?, &[], None).await
+    }
+
+    /// Launch the deployment's self-update. Admin-scoped server-side.
+    pub async fn self_update(&self) -> Result<crate::instance::SelfUpdateLaunch, ClientError> {
+        self.json(Self::route("post_version_self_update")?, &[], &[], None).await
+    }
+
+    /// The most recent update-hook run, or `None` when the deployment has never
+    /// run one.
+    pub async fn self_update_status(
+        &self,
+    ) -> Result<Option<crate::instance::SelfUpdateRun>, ClientError> {
+        self.json(Self::route("get_version_self_update")?, &[], &[], None).await
+    }
+
+    // --- accounts, pools and redirects ---
+
+    /// The caller's account identities with their provider credentials.
+    pub async fn accounts(&self) -> Result<Vec<crate::accounts::Account>, ClientError> {
+        self.json(Self::route("get_accounts")?, &[], &[], None).await
+    }
+
+    /// Rename, re-glyph, or change an account's pool eligibility/weight.
+    pub async fn update_account(
+        &self,
+        id: &str,
+        request: &crate::accounts::UpdateAccount,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("patch_accounts_by_id")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", id)], Some(&body)).await
+    }
+
+    /// Claim a usage-limit reset. `provider_id` is the provider-row id, not the
+    /// account's.
+    pub async fn limit_reset(
+        &self,
+        provider_id: &str,
+        request: &crate::accounts::LimitResetRequest,
+    ) -> Result<crate::accounts::LimitResetOutcome, ClientError> {
+        let route = Self::route("post_accounts_by_id_limit_reset")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[("id", provider_id)], &[], Some(&body)).await
+    }
+
+    /// The caller's live redirect rules.
+    pub async fn redirects(&self) -> Result<Vec<crate::accounts::AccountRedirect>, ClientError> {
+        self.json(Self::route("get_redirects")?, &[], &[], None).await
+    }
+
+    /// Point this account's launches at another account for one family.
+    pub async fn put_account_redirect(
+        &self,
+        id: &str,
+        request: &crate::accounts::PutRedirect,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("put_accounts_by_id_redirect")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", id)], Some(&body)).await
+    }
+
+    pub async fn delete_redirect(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_redirects_by_id")?, &[("id", id)], None).await
+    }
+
+    /// The caller's account pools with their membership.
+    pub async fn account_pools(&self) -> Result<Vec<crate::accounts::AccountPool>, ClientError> {
+        self.json(Self::route("get_account_pools")?, &[], &[], None).await
+    }
+
+    pub async fn create_account_pool(
+        &self,
+        request: &crate::accounts::CreatePool,
+    ) -> Result<crate::accounts::AccountPool, ClientError> {
+        let route = Self::route("post_account_pools")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    pub async fn update_account_pool(
+        &self,
+        id: &str,
+        request: &crate::accounts::UpdatePool,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("patch_account_pools_by_id")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", id)], Some(&body)).await
+    }
+
+    pub async fn delete_account_pool(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_account_pools_by_id")?, &[("id", id)], None).await
     }
 
     /// Every label the caller owns.
@@ -675,6 +885,38 @@ impl Client {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
+            .to_owned();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|source| ClientError::Transport { route: route.id, source })?
+            .to_vec();
+        Ok(FileRead::Ok { content_type, bytes })
+    }
+
+    /// Any route that answers with a binary body. Refusals come back as data,
+    /// like `read_machine_file`: a viewer words a missing blob and a dead
+    /// network differently.
+    pub async fn get_blob(
+        &self,
+        route_id: &str,
+        params: &[(&str, &str)],
+        fallback_type: &str,
+    ) -> Result<FileRead, ClientError> {
+        let route = Self::route(route_id)?;
+        let resp =
+            self.http.get(self.url_for(route, params)).bearer_auth(&self.token).send().await;
+        let Ok(resp) = resp else { return Ok(FileRead::Refused(FileRefusal::network())) };
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Ok(FileRead::Refused(FileRefusal::parse(status.as_u16(), &body)));
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(fallback_type)
             .to_owned();
         let bytes = resp
             .bytes()
@@ -947,6 +1189,8 @@ mod tests {
     fn every_named_route_exists_in_the_table() {
         for id in [
             "get_sessions",
+            "get_sessions_by_id_bindings",
+            "post_sessions_by_id_switch_account",
             "get_sessions_search",
             "get_sessions_search_values",
             "put_settings",
@@ -963,6 +1207,12 @@ mod tests {
             "get_permissions_pending",
             "get_labels",
             "get_machines_resources",
+            "get_sessions_stats_tokens",
+            "get_sessions_stats_usage",
+            "get_sessions_stats_cache_busts",
+            "get_sessions_by_id_langfuse",
+            "get_accounts_usage",
+            "get_account_pools_usage",
             "get_dispatchers",
             "post_dispatcher_enroll",
             "patch_dispatchers_by_id",

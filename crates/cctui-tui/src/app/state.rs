@@ -7,6 +7,7 @@ use ratatui_textarea::TextArea;
 use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
 use super::diagnose::DiagnosePanel;
+use super::account_switch::Picker as AccountSwitchPicker;
 use super::harness_mode::Picker as HarnessPicker;
 use super::identity::AuthState;
 use super::prompt::{AskCard, PlanCard};
@@ -21,8 +22,18 @@ pub use crate::config::uistate::UiState;
 pub enum View {
     /// The machines slice's table.
     Machines,
+    /// The accounts slice: identities, their providers and the pools pane.
+    Accounts,
     /// The dispatchers admin panel.
     Dispatchers,
+    /// The admin Access slice's table.
+    Access,
+    /// The instance panel: server version and its own self-update.
+    Instance,
+    /// The usage panel: pool and credential quota windows.
+    Usage,
+    /// The spend panel: token windows, per-model dollars, daily sparkline.
+    Spend,
     /// The `l` label picker for one session.
     LabelPicker,
     /// The `L` any-of label filter.
@@ -43,6 +54,7 @@ pub enum View {
     Bookmarks,
     Overview,
     HarnessMode,
+    AccountSwitch,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -130,6 +142,8 @@ pub struct ConversationLine {
     pub footer: Option<TurnFooter>,
     /// Delivery or queue state; `None` is a settled line.
     pub status: Option<LineStatus>,
+    /// Blob ids of the `cctui-img://` markers the body carried, in order.
+    pub image_ids: Vec<String>,
 }
 
 /// What a line is still waiting for: delivery of the user's own send, or the
@@ -195,6 +209,8 @@ pub enum LineKind {
     Summary,
     System,
     Reply,
+    /// A message that is nothing but agent-posted images.
+    Image,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -280,6 +296,7 @@ pub struct App {
     pub outbox: super::send::Outbox,
     /// Files staged for the composer, uploaded on send.
     pub attachments: super::attach::Attachments,
+    pub images: super::images::Images,
     /// A held lead chord (the `g` of `gf`), cleared by the next key.
     pub pending_chord: Option<crate::config::chord::Chord>,
     /// The file the viewer is showing, while it is open.
@@ -301,8 +318,21 @@ pub struct App {
     pub slice: Slice,
     /// The machines slice's table and cursor.
     pub machines: super::machines::Machines,
+    /// The admin Access slice: users, tokens, machines and keys.
+    pub access: super::admin::Access,
+    /// The instance panel's version reply and hook run.
+    pub instance: super::instance::Instance,
+    /// The accounts slice's list, detail and modals.
+    pub accounts: super::accounts::Accounts,
+    /// The pools pane inside the accounts slice.
+    pub pools: super::pools::Pools,
+
+    /// The spend panel's windows, model dollars and sparkline series.
+    pub spend: super::spend::Spend,
     /// The dispatchers panel, open only while it is.
     pub dispatchers: super::dispatchers::Dispatchers,
+    /// The usage panel's two panes, their cursors and its poll clock.
+    pub usage: super::usage::Usage,
     /// The machine a spawn should aim at, set by `Enter` in the machines table.
     /// The spawn dialog reads it; nothing else does.
     pub spawn_target: Option<String>,
@@ -327,6 +357,7 @@ pub struct App {
     pub settings_blob: serde_json::Value,
     /// The harness-mode picker, `None` when closed.
     pub harness_picker: Option<HarnessPicker>,
+    pub account_switch: Option<AccountSwitchPicker>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -432,6 +463,7 @@ impl App {
             macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
             attachments: super::attach::Attachments::new(),
+            images: super::images::Images::default(),
             pending_chord: None,
             file_view: None,
             clock_ms: 0,
@@ -444,7 +476,13 @@ impl App {
             slice: Slice::Sessions,
             slice_cursors: HashMap::new(),
             machines: super::machines::Machines::default(),
+            access: super::admin::Access::default(),
+            accounts: super::accounts::Accounts::default(),
+            pools: super::pools::Pools::default(),
+            spend: super::spend::Spend::default(),
             dispatchers: super::dispatchers::Dispatchers::default(),
+            instance: super::instance::Instance::default(),
+            usage: super::usage::Usage::default(),
             spawn_target: None,
             stats: None,
             overview_scroll: 0,
@@ -455,6 +493,7 @@ impl App {
             pending_seq_anchor: None,
             settings_blob: serde_json::Value::Null,
             harness_picker: None,
+            account_switch: None,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
@@ -522,6 +561,9 @@ impl App {
         }
         if self.bookmarks.confirm.is_some() {
             return Some(Context::BookmarkConfirm);
+        }
+        if let Some(context) = super::accounts::key_context(self) {
+            return Some(context);
         }
         None
     }

@@ -1,0 +1,57 @@
+{
+  "scan": [
+    {
+      "text": "before ![shot.png](cctui-img://ab-12) after",
+      "out": [{ "alt": "shot.png", "id": "ab-12" }]
+    },
+    {
+      "text": "![a.png](cctui-img://1)\n![b.png](cctui-img://2)",
+      "out": [{ "alt": "a.png", "id": "1" }, { "alt": "b.png", "id": "2" }]
+    },
+    {
+      "text": "![](cctui-img://c0ffee)",
+      "out": [{ "alt": "", "id": "c0ffee" }]
+    },
+    { "text": "![x](https://evil.example/x.png)", "out": [] },
+    { "text": "![x](cctui-img://bad id)", "out": [] },
+    { "text": "![x](cctui-img://)", "out": [] },
+    { "text": "![x](cctui-img://a_b)", "out": [] },
+    { "text": "plain prose with no image", "out": [] }
+  ],
+  "placeholderLabel": [
+    {
+      "name": "shot.png",
+      "dimensions": null,
+      "bytes": null,
+      "out": "image: shot.png"
+    },
+    {
+      "name": "shot.png",
+      "dimensions": [1280, 720],
+      "bytes": 348160,
+      "out": "image: shot.png 1280x720 340 KB"
+    },
+    {
+      "name": "a.png",
+      "dimensions": null,
+      "bytes": 12,
+      "out": "image: a.png 12 B"
+    },
+    { "name": "  ", "dimensions": null, "bytes": 12, "out": "image 12 B" },
+    { "name": "", "dimensions": [8, 8], "bytes": null, "out": "image 8x8" }
+  ],
+  "substitute": [
+    {
+      "text": "see ![a.png](cctui-img://1) and ![](cctui-img://2)",
+      "out": "see [image: a.png] and [image]"
+    },
+    { "text": "no images", "out": "no images" },
+    { "text": "![a.png](cctui-img://1)", "out": "[image: a.png]" }
+  ],
+  "isOnlyImages": [
+    { "text": "![a.png](cctui-img://1)\n![b.png](cctui-img://2)", "out": true },
+    { "text": "  ![a.png](cctui-img://1) ", "out": true },
+    { "text": "here it is ![a.png](cctui-img://1)", "out": false },
+    { "text": "plain", "out": false }
+  ]
+}

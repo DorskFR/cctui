@@ -21,9 +21,16 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
         Action::RowAction(action) => row_actions::reduce_row_actions(app, action),
         Action::Attach(action) => super::attach::reduce_attach(app, action),
+        Action::Images(action) => super::images::reduce_images(app, action),
         Action::Labels(action) => super::labels::reduce_labels(app, action),
         Action::Machines(action) => super::machines::reduce_machines(app, action),
+        Action::Accounts(action) => super::accounts::reduce_accounts(app, action),
+        Action::Pools(action) => super::pools::reduce_pools(app, action),
+        Action::Spend(action) => super::spend::reduce_spend(app, action),
+        Action::Usage(action) => super::usage::reduce_usage(app, action),
         Action::Dispatchers(action) => super::dispatchers::reduce_dispatchers(app, action),
+        Action::Access(action) => super::admin::reduce_access(app, action),
+        Action::Instance(action) => super::instance::reduce_instance(app, action),
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
             app.pending_chord = Some(chord);
@@ -54,6 +61,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             effects.extend(super::session_live::poll_if_due(app));
             effects.extend(super::list_search::on_tick(app));
             effects.extend(super::unread::tick(app));
+            effects.extend(super::usage::on_tick(app));
+            effects.extend(super::instance::on_tick(app));
             effects
         }
 
@@ -269,6 +278,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Diagnose(action) => super::diagnose::reduce_diagnose(app, action),
         Action::Slice(action) => super::slice::reduce_slice(app, action),
         Action::HarnessMode(action) => super::harness_mode::reduce_harness_mode(app, action),
+        Action::AccountSwitch(action) => super::account_switch::reduce_account_switch(app, action),
         Action::DeepLink(action) => super::deeplink::reduce_deeplink(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {

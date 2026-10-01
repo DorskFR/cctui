@@ -31,6 +31,7 @@ pub struct PrefsFile {
     pub notifications: Option<NotifyPref>,
     pub ascii_glyphs: Option<bool>,
     pub machine_column: Option<bool>,
+    pub inline_images: Option<bool>,
 }
 
 // The knobs are independent switches, not a state machine, so grouping them
@@ -48,6 +49,9 @@ pub struct Prefs {
     pub ascii_glyphs: bool,
     /// Show which machine each row runs on, tinted by the machine's hue.
     pub machine_column: bool,
+    /// Draw images in the pager. Unset is auto: on where the terminal answered
+    /// a graphics query.
+    pub inline_images: Option<bool>,
 }
 
 impl Prefs {
@@ -77,6 +81,9 @@ impl Prefs {
         }
         if let Some(v) = file.machine_column {
             self.machine_column = v;
+        }
+        if let Some(v) = file.inline_images {
+            self.inline_images = Some(v);
         }
     }
 }

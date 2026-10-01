@@ -15,7 +15,11 @@ use crate::theme;
 pub fn tab_spans(app: &App, width: usize, reserve: usize) -> Vec<Span<'static>> {
     let cost = |t: &Tab| t.label.chars().count() + 4;
     let all: usize = TABS.iter().map(cost).sum();
-    let built: usize = TABS.iter().filter(|t| t.slice.is_some()).map(cost).sum();
+    let built: usize = TABS
+        .iter()
+        .filter(|t| t.slice.is_some_and(|slice| slice::permitted(app, slice)))
+        .map(cost)
+        .sum();
     // Degrade in order: everything, then the tabs that lead nowhere, then the
     // labels of the slices you are not on — a bare number still teaches the key.
     // Bare numbers still have a width, so the last rung drops whole tabs.
@@ -24,14 +28,17 @@ pub fn tab_spans(app: &App, width: usize, reserve: usize) -> Vec<Span<'static>> 
 
     let mut groups: Vec<(bool, Vec<Span<'static>>)> = Vec::with_capacity(TABS.len());
     for (index, tab) in TABS.iter().enumerate() {
-        if tab.slice.is_none() && !show_unbuilt {
+        // A slice this key may not enter reads as one the TUI has not built:
+        // same dimmed number, so the built tabs never renumber under the user.
+        let reachable = tab.slice.is_some_and(|slice| slice::permitted(app, slice));
+        if !reachable && !show_unbuilt {
             continue;
         }
         let number = index + 1;
         let current = tab.slice == Some(app.slice);
         let (key_style, label_style) = if current {
             (theme::hotkey(), theme::bold())
-        } else if tab.slice.is_some() {
+        } else if reachable {
             (theme::hotkey(), theme::dim())
         } else {
             (theme::border_dim(), theme::border_dim())
@@ -134,20 +141,22 @@ mod tests {
         let app = app();
         assert_eq!(
             text(&tab_spans(&app, 120, 0)),
-            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines  5 Access  6 Accounts  7 Settings "
+            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines  5 Access  6 Accounts  7 Settings  8 Spend "
         );
     }
 
     #[test]
     fn a_row_with_other_work_on_it_sheds_the_tabs_that_lead_nowhere_first() {
         let app = app();
+        // This key is no admin, so Access sheds with the unbuilt tabs; the
+        // slices it may enter keep their labels.
         assert_eq!(
             text(&tab_spans(&app, 120, 48)),
-            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines "
+            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines  6 Accounts  8 Spend "
         );
         assert_eq!(
-            text(&tab_spans(&app, 60, 0)),
-            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines "
+            text(&tab_spans(&app, 70, 0)),
+            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines  6 Accounts  8 Spend "
         );
     }
 

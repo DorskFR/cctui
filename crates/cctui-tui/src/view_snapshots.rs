@@ -7,9 +7,11 @@ use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::diagnose::DiagnoseAction;
+use crate::app::admin::AccessAction;
 use crate::app::dispatchers::DispatcherAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::instance::InstanceAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
@@ -17,8 +19,10 @@ use crate::app::machines::MachineAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
+use crate::app::spend::SpendAction;
 use crate::app::slice::SliceAction;
 use crate::app::unread::UnreadAction;
+use crate::app::usage::UsageAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnosable_session,
@@ -1191,6 +1195,52 @@ fn file_viewer_image_placeholder() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+#[test]
+fn file_viewer_image_placeholder_with_dimensions() {
+    let mut app = app_viewing("shot.png", "image/png", &tiny_png());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// A real 8x8 PNG, so the chip shows measured dimensions. The snapshot is the
+/// text fallback: no graphics protocol was ever queried.
+fn tiny_png() -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+        .write_to(&mut out, image::ImageFormat::Png)
+        .expect("a png");
+    out.into_inner()
+}
+
+#[test]
+fn conversation_image_lines() {
+    use crate::app::line::agent_event_to_line;
+    use crate::app::ConversationStore;
+
+    let mut app = app_with_sessions();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    let mut store = ConversationStore::new();
+    for (seq, body) in [
+        (1, "▷ User: look at ![shot.png](cctui-img://img-1)"),
+        (2, "![diagram.png](cctui-img://img-2)"),
+    ] {
+        let event = cctui_proto::ws::AgentEvent::Text {
+            content: body.to_owned(),
+            meta: false,
+            kind: None,
+            operation: None,
+            ts: 0,
+            message_id: None,
+            usage: None,
+            seq: Some(seq),
+            turn_id: None,
+        };
+        store.push_live(Some(seq), agent_event_to_line(&event).expect("a line"));
+    }
+    app.conversations.insert(id, store);
+    app.router.push(View::Conversation);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 fn codex_conversation() -> crate::app::App {
     let mut app = app_on("s-working");
     let s = session_mut(&mut app, "s-working");
@@ -1805,4 +1855,882 @@ fn harness_mode_picker_narrow() {
     app.clock_ms = CLOCK_MS;
     reduce(&mut app, Action::HarnessMode(HarnessModeAction::Open));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+// --- Usage ---
+
+const U_ALICE: &str = "aaaaaaaa-1111-4111-8111-111111111111";
+const U_BOB: &str = "bbbbbbbb-2222-4222-8222-222222222222";
+const U_POOL: &str = "cccccccc-3333-4333-8333-333333333333";
+
+fn usage_window(
+    key: &str,
+    label: &str,
+    utilization: Option<f64>,
+    amount_usd: Option<f64>,
+    resets_in_ms: Option<i64>,
+    ratio: Option<f64>,
+) -> cctui_client::UsageWindowView {
+    cctui_client::UsageWindowView {
+        key: key.to_owned(),
+        kind: key.to_owned(),
+        label: label.to_owned(),
+        utilization,
+        amount_usd,
+        resets_at: resets_in_ms.map(|ms| ms_ago(-ms)),
+        model_id: None,
+        model_display_name: None,
+        pace: ratio.map(|ratio| cctui_client::UsagePace {
+            elapsed_fraction: 0.5,
+            expected_pct: 50.0,
+            ratio,
+            projected_wall_at: None,
+            slope_hours: None,
+        }),
+    }
+}
+
+fn usage_entry(
+    account: &str,
+    name: &str,
+    provider: &str,
+    windows: Vec<cctui_client::UsageWindowView>,
+) -> cctui_client::AccountUsageEntry {
+    cctui_client::AccountUsageEntry {
+        account_id: uuid::Uuid::parse_str(account).expect("a uuid"),
+        provider: provider.to_owned(),
+        windows,
+        age_secs: 0,
+        account: uuid::Uuid::parse_str(account).expect("a uuid"),
+        account_name: name.to_owned(),
+        account_emoji: None,
+        header_pin: true,
+        ..cctui_client::AccountUsageEntry::default()
+    }
+}
+
+/// A percent window burning hot, a dollar window and an unreported one — the
+/// three readouts the panel has to tell apart.
+fn app_in_usage_panel() -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    let _ = reduce(&mut app, Action::Usage(UsageAction::Open));
+    let _ = reduce(
+        &mut app,
+        Action::Usage(UsageAction::PoolsLoaded(vec![cctui_client::PoolUsageView {
+            pool_id: uuid::Uuid::parse_str(U_POOL).expect("a uuid"),
+            name: "default".to_owned(),
+            strategy: "headroom".to_owned(),
+            failover: true,
+            families: vec![
+                cctui_client::PoolFamilyUsage {
+                    family: "anthropic".to_owned(),
+                    members: vec![cctui_client::PoolUsageMember {
+                        account_id: uuid::Uuid::parse_str(U_ALICE).expect("a uuid"),
+                        name: "alice".to_owned(),
+                        emoji: None,
+                        weight: 1.0,
+                        usage_known: true,
+                    }],
+                    windows: vec![
+                        cctui_client::PoolUsageWindow {
+                            key: "session".to_owned(),
+                            kind: "session".to_owned(),
+                            label: "5h".to_owned(),
+                            model_display_name: None,
+                            level_pct: Some(78.0),
+                            expected_pct: 55.0,
+                            ratio: Some(1.4),
+                            next_reset_at: Some(ms_ago(-72 * 60_000)),
+                            projection: None,
+                            projection_unavailable: None,
+                        },
+                        cctui_client::PoolUsageWindow {
+                            key: "weekly_all".to_owned(),
+                            kind: "weekly_all".to_owned(),
+                            label: "7d".to_owned(),
+                            model_display_name: None,
+                            level_pct: Some(31.0),
+                            expected_pct: 40.0,
+                            ratio: None,
+                            next_reset_at: Some(ms_ago(-3 * 24 * 3_600_000)),
+                            projection: None,
+                            projection_unavailable: None,
+                        },
+                    ],
+                },
+                cctui_client::PoolFamilyUsage {
+                    family: "openai".to_owned(),
+                    members: vec![cctui_client::PoolUsageMember {
+                        account_id: uuid::Uuid::parse_str(U_BOB).expect("a uuid"),
+                        name: "bob".to_owned(),
+                        emoji: None,
+                        weight: 1.0,
+                        usage_known: false,
+                    }],
+                    windows: vec![cctui_client::PoolUsageWindow {
+                        key: "session".to_owned(),
+                        kind: "session".to_owned(),
+                        label: "5h".to_owned(),
+                        model_display_name: None,
+                        level_pct: None,
+                        expected_pct: 0.0,
+                        ratio: None,
+                        next_reset_at: None,
+                        projection: None,
+                        projection_unavailable: Some("too young to rate".to_owned()),
+                    }],
+                },
+            ],
+        }])),
+    );
+    let _ = reduce(
+        &mut app,
+        Action::Usage(UsageAction::AccountsLoaded(vec![
+            usage_entry(U_ALICE, "alice", "anthropic", vec![
+                usage_window("session", "5h", Some(91.0), None, Some(22 * 60_000), Some(1.8)),
+                usage_window("weekly_all", "7d", None, None, None, None),
+            ]),
+            usage_entry(U_BOB, "bob", "openai", vec![usage_window(
+                "usd_5h",
+                "$",
+                None,
+                Some(12.4),
+                None,
+                None,
+            )]),
+        ])),
+    );
+    app
+}
+
+#[test]
+fn usage_panel_percent_dollar_and_unreported_windows() {
+    let mut app = app_in_usage_panel();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn usage_panel_at_eighty_columns() {
+    let mut app = app_in_usage_panel();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn usage_panel_with_the_accounts_pane_focused() {
+    let mut app = app_in_usage_panel();
+    reduce(&mut app, Action::Usage(UsageAction::SwitchPane));
+    reduce(&mut app, Action::Usage(UsageAction::SelectNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn usage_panel_when_the_key_may_not_read_usage() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    reduce(&mut app, Action::Usage(UsageAction::Open));
+    reduce(&mut app, Action::Usage(UsageAction::Failed("this key may not read usage".to_owned())));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn the_status_line_carries_the_worst_window_of_each_family() {
+    let mut app = app_in_usage_panel();
+    reduce(&mut app, Action::Usage(UsageAction::Close));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 12));
+}
+
+fn app_with_account_picker() -> crate::app::state::App {
+    use cctui_clientcore::account_switch::{Binding, Credential, Window};
+    use crate::app::account_switch::AccountSwitchAction;
+
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    reduce(&mut app, Action::AccountSwitch(AccountSwitchAction::Open));
+    let cred = |name: &str, provider: &str, pct: f64, resets: i64| Credential {
+        account_id: format!("{name}-id"),
+        account_name: name.to_owned(),
+        provider: provider.to_owned(),
+        windows: vec![Window { pct, resets_in_secs: Some(resets) }],
+    };
+    reduce(
+        &mut app,
+        Action::AccountSwitch(AccountSwitchAction::Loaded {
+            bindings: vec![
+                Binding {
+                    family: "anthropic".to_owned(),
+                    account_id: "alice@max-id".to_owned(),
+                    account_name: "alice@max".to_owned(),
+                },
+                Binding {
+                    family: "openai".to_owned(),
+                    account_id: "oai-id".to_owned(),
+                    account_name: "oai".to_owned(),
+                },
+            ],
+            credentials: vec![
+                cred("alice@max", "anthropic", 91.0, 18_000),
+                cred("bob@max", "anthropic", 99.0, 900),
+                cred("carol@max", "anthropic", 12.0, 18_000),
+                cred("oai", "openai", 5.0, 600),
+                cred("oai-spare", "openai", 7.0, 600),
+            ],
+        }),
+    );
+    app
+}
+
+#[test]
+fn account_switch_picker() {
+    let mut app = app_with_account_picker();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn account_switch_picker_on_the_other_family() {
+    use crate::app::account_switch::AccountSwitchAction;
+    let mut app = app_with_account_picker();
+    reduce(&mut app, Action::AccountSwitch(AccountSwitchAction::NextBinding));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn account_switch_picker_while_loading() {
+    use crate::app::account_switch::AccountSwitchAction;
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    reduce(&mut app, Action::AccountSwitch(AccountSwitchAction::Open));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn account_switch_picker_narrow() {
+    let mut app = app_with_account_picker();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+// --- Spend ---
+
+/// Dollars, token windows and a sparkline, all anchored to the test clock's own
+/// local midnight so the bars land on the same slots in every timezone.
+fn app_in_spend_slice() -> crate::app::App {
+    use cctui_proto::api::{TokenUsageWindows, UsageAnalytics, UsageBucket, WindowTokenUsage};
+
+    const fn window(input: u64, output: u64, cache_read: u64) -> WindowTokenUsage {
+        WindowTokenUsage { input, output, cache_read }
+    }
+
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+
+    let today = session_mut(&mut app, "s-working");
+    today.model = Some("claude-opus-5-20260101".to_owned());
+    today.registered_at = Some(chrono::DateTime::from_timestamp_millis(CLOCK_MS).expect("a stamp"));
+    today.token_usage.cost_usd = 4.10;
+
+    let older = session_mut(&mut app, "s-done");
+    older.model = Some("claude-sonnet-5".to_owned());
+    older.registered_at = Some(ms_ago(10 * 86_400_000));
+    older.token_usage.cost_usd = 22.40;
+
+    let midnight = crate::app::spend::local_midnight_ms(CLOCK_MS).expect("a local midnight");
+    let day = |back: i64| {
+        chrono::DateTime::from_timestamp_millis(midnight - back * 86_400_000)
+            .expect("a stamp")
+            .to_rfc3339()
+    };
+    let bucket = |back: i64, output: u64| UsageBucket {
+        bucket: day(back),
+        input: output / 2,
+        output,
+        cache_read: 0,
+        cache_creation: 0,
+    };
+
+    let _ = reduce(
+        &mut app,
+        Action::Spend(SpendAction::Loaded(Box::new(crate::app::spend::SpendData {
+            windows: TokenUsageWindows {
+                hour: window(12_000, 3_400, 180_000),
+                today: window(210_000, 48_000, 1_900_000),
+                day: window(480_000, 96_000, 4_200_000),
+                week: window(3_100_000, 640_000, 29_000_000),
+                month: window(12_400_000, 2_600_000, 118_000_000),
+            },
+            analytics: UsageAnalytics {
+                granularity: "day".to_owned(),
+                buckets: vec![
+                    bucket(6, 900_000),
+                    bucket(4, 2_400_000),
+                    bucket(2, 1_300_000),
+                    bucket(1, 3_800_000),
+                    bucket(0, 1_700_000),
+                ],
+                models: Vec::new(),
+                heatmap: Vec::new(),
+            },
+            cache_loss: vec![cctui_proto::api::cache_loss::DailyCacheLoss {
+                day: "2023-11-13".to_owned(),
+                ttl_expired: 1.25,
+                gateway_rewrote_body: 0.4,
+                unknown: 0.0,
+                total: 1.65,
+                ttl_expired_tokens: 820_000,
+                gateway_rewrote_body_tokens: 260_000,
+                unknown_tokens: 0,
+                lost_tokens: 1_080_000,
+                busts: 4,
+            }],
+        }))),
+    );
+    let _ = reduce(&mut app, Action::Spend(SpendAction::Open));
+    app
+}
+
+#[test]
+fn spend_panel() {
+    let mut app = app_in_spend_slice();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spend_panel_at_eighty_columns() {
+    let mut app = app_in_spend_slice();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn spend_panel_when_the_key_may_not_read_stats() {
+    let mut app = app_with_sessions();
+    let _ = reduce(&mut app, Action::Spend(SpendAction::Open));
+    let _ = reduce(
+        &mut app,
+        Action::Spend(SpendAction::Failed("this key may not read usage stats".to_owned())),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// No priced session in the range: the table says so rather than showing zeroes.
+#[test]
+fn spend_panel_without_priced_sessions() {
+    let mut app = app_in_spend_slice();
+    for s in &mut app.sessions {
+        s.token_usage.cost_usd = 0.0;
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn conversation_header_carries_the_langfuse_cost() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    reduce(
+        &mut app,
+        Action::Spend(SpendAction::Langfuse {
+            session_id: id,
+            usage: Some(cctui_clientcore::spend::LangfuseSpend {
+                cost_usd: 0.734,
+                trace_count: 12,
+            }),
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// A deployment with no Langfuse sink answers nothing: the header is unchanged.
+#[test]
+fn conversation_header_without_langfuse_is_unchanged() {
+    let mut app = app_in_conversation();
+    let id = app.selected_session().expect("a selected session").id.clone();
+    reduce(&mut app, Action::Spend(SpendAction::Langfuse { session_id: id, usage: None }));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+// --- Instance status and the server's self-update ---
+
+fn app_with_instance(
+    role: &str,
+    latest: Option<&str>,
+    hook: bool,
+    ready: bool,
+) -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        role: role.to_owned(),
+        user_name: Some("dev".to_owned()),
+        scopes: vec!["read".to_owned()],
+        token_preview: "abcd".to_owned(),
+    });
+    let _ = reduce(&mut app, Action::Instance(InstanceAction::Open));
+    let _ = reduce(
+        &mut app,
+        Action::Instance(InstanceAction::Loaded(Box::new(cctui_client::VersionInfo {
+            version: "0.23.0".to_owned(),
+            git_hash: "deadbeef".to_owned(),
+            commit_url: "https://example.invalid/commit/deadbeef".to_owned(),
+            latest_version: latest.map(str::to_owned),
+            latest_url: latest.map(|_| "https://example.invalid/release".to_owned()),
+            instance_name: Some("cyberia".to_owned()),
+            self_update_ready: ready,
+            self_update_hook: hook,
+        }))),
+    );
+    let _ = reduce(&mut app, Action::Instance(InstanceAction::RunLoaded(None)));
+    app
+}
+
+fn hook_run(
+    phase: cctui_proto::updatehook::UpdateHookPhase,
+    done: bool,
+    tail: Option<&str>,
+) -> cctui_client::SelfUpdateRun {
+    cctui_client::SelfUpdateRun {
+        id: uuid::Uuid::nil(),
+        version: "0.23.1".to_owned(),
+        from_version: "0.23.0".to_owned(),
+        phase,
+        done,
+        exit_code: if done { Some(i32::from(!phase.is_success())) } else { None },
+        detail: "kubectl rollout restart deploy/cctui".to_owned(),
+        output_tail: tail.map(str::to_owned),
+        started_at: ms_ago(90_000),
+        updated_at: ms_ago(2_000),
+    }
+}
+
+#[test]
+fn instance_panel_up_to_date() {
+    let mut app = app_with_instance("admin", None, true, true);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn instance_panel_with_an_update_and_release_notes() {
+    let mut app = app_with_instance("admin", Some("0.23.1"), true, true);
+    let _ = reduce(
+        &mut app,
+        Action::Instance(InstanceAction::ChangelogLoaded(vec![cctui_client::ReleaseNote {
+            version: "0.23.1".to_owned(),
+            url: "https://example.invalid/release".to_owned(),
+            body: "- fixed the reconnect watchdog\n- faster list paging".to_owned(),
+            published_at: None,
+        }])),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn instance_panel_without_a_configured_self_update_machine() {
+    let mut app = app_with_instance("admin", Some("0.23.1"), false, false);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn instance_update_confirm_names_the_mechanism() {
+    let mut app = app_with_instance("admin", Some("0.23.1"), true, true);
+    let _ = reduce(&mut app, Action::Instance(InstanceAction::StartUpdate));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn instance_update_confirm_warns_when_an_agent_will_do_it() {
+    let mut app = app_with_instance("admin", Some("0.23.1"), false, true);
+    let _ = reduce(&mut app, Action::Instance(InstanceAction::StartUpdate));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn instance_panel_follows_a_hook_run() {
+    let mut app = app_with_instance("admin", Some("0.23.1"), true, true);
+    let _ = reduce(
+        &mut app,
+        Action::Instance(InstanceAction::RunLoaded(Some(Box::new(hook_run(
+            cctui_proto::updatehook::UpdateHookPhase::Verifying,
+            false,
+            Some("deployment.apps/cctui restarted\nwaiting for rollout"),
+        ))))),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn instance_panel_shows_a_rolled_back_run() {
+    let mut app = app_with_instance("admin", Some("0.23.1"), true, true);
+    let _ = reduce(
+        &mut app,
+        Action::Instance(InstanceAction::RunLoaded(Some(Box::new(hook_run(
+            cctui_proto::updatehook::UpdateHookPhase::RolledBack,
+            true,
+            Some("health check never reported 0.23.1"),
+        ))))),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+// --- Accounts and pools ---
+
+fn account(id: &str, name: &str, families: &[&str]) -> cctui_client::Account {
+    cctui_client::Account {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        emoji: None,
+        user_id: "u1".to_owned(),
+        user_name: None,
+        providers: families
+            .iter()
+            .enumerate()
+            .map(|(i, family)| cctui_client::AccountProvider {
+                id: format!("{id}-p{i}"),
+                provider: (*family).to_owned(),
+                family: (*family).to_owned(),
+                managed: false,
+                needs_reauth: false,
+                last_auth_error: None,
+                est_cost_usd: 12.5,
+                total_tokens: 931_000,
+                last_used_at: None,
+                header_pin: false,
+            })
+            .collect(),
+        pool_eligible: true,
+        pool_weight: 1.0,
+    }
+}
+
+fn pool_member(id: &str, name: &str, position: i32) -> cctui_client::AccountPoolMember {
+    cctui_client::AccountPoolMember {
+        account_id: id.to_owned(),
+        name: name.to_owned(),
+        position,
+        owned: true,
+        pool_eligible: true,
+    }
+}
+
+/// The usage reading is keyed on the account identity, so these rows carry real
+/// uuids. `U_ALICE` / `U_BOB` are the usage fixture's own, reused so one usage
+/// row describes the same account in both.
+const ACCT_C: &str = "dddddddd-4444-4444-8444-444444444444";
+
+fn app_in_accounts_slice() -> crate::app::App {
+    use crate::app::accounts::AccountAction;
+    use crate::app::pools::PoolAction;
+
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    let mut withheld = account(U_BOB, "bob@max", &["anthropic"]);
+    withheld.pool_eligible = false;
+    withheld.pool_weight = 0.5;
+    let _ = reduce(
+        &mut app,
+        Action::Accounts(AccountAction::Loaded(vec![
+            account(U_ALICE, "alice@max", &["anthropic"]),
+            withheld,
+            account(ACCT_C, "ops-codex", &["openai"]),
+        ])),
+    );
+    let _ = reduce(
+        &mut app,
+        Action::Accounts(AccountAction::RedirectsLoaded(vec![cctui_client::AccountRedirect {
+            id: "r1".to_owned(),
+            from_account: U_BOB.to_owned(),
+            to_account: Some(U_ALICE.to_owned()),
+            family: "anthropic".to_owned(),
+            to_model: None,
+            expires_at: None,
+            reason: None,
+        }])),
+    );
+    let _ = reduce(
+        &mut app,
+        Action::Pools(PoolAction::Loaded(vec![
+            cctui_client::AccountPool {
+                id: "p1".to_owned(),
+                user_id: "u1".to_owned(),
+                name: "default".to_owned(),
+                strategy: "ordered".to_owned(),
+                failover: true,
+                members: vec![
+                    pool_member(U_BOB, "bob@max", 1),
+                    pool_member(U_ALICE, "alice@max", 0),
+                ],
+            },
+            cctui_client::AccountPool {
+                id: "p2".to_owned(),
+                user_id: "u1".to_owned(),
+                name: "codex".to_owned(),
+                strategy: "headroom".to_owned(),
+                failover: false,
+                members: vec![pool_member(ACCT_C, "ops-codex", 0)],
+            },
+        ])),
+    );
+    app.usage.accounts = vec![usage_entry(U_ALICE, "alice@max", "anthropic", vec![usage_window(
+        "five_hour",
+        "5h",
+        Some(91.0),
+        None,
+        Some(22 * 60 * 1000),
+        None,
+    )])];
+    let _ = reduce(&mut app, Action::Accounts(AccountAction::Open));
+    app
+}
+
+#[test]
+fn accounts_table() {
+    let mut app = app_in_accounts_slice();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn accounts_table_at_eighty_columns() {
+    let mut app = app_in_accounts_slice();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn accounts_detail_pane() {
+    use crate::app::accounts::AccountAction;
+    let mut app = app_in_accounts_slice();
+    reduce(&mut app, Action::Accounts(AccountAction::ToggleDetail));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn accounts_pools_pane_focused() {
+    use crate::app::accounts::AccountAction;
+    let mut app = app_in_accounts_slice();
+    reduce(&mut app, Action::Accounts(AccountAction::ToggleFocus));
+    reduce(&mut app, Action::Pools(crate::app::pools::PoolAction::SelectNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn accounts_reset_confirm_names_the_credit() {
+    use crate::app::accounts::AccountAction;
+    let mut app = app_in_accounts_slice();
+    let mut entry = usage_entry(U_ALICE, "alice@max", "anthropic", vec![usage_window(
+        "five_hour",
+        "5h",
+        Some(100.0),
+        None,
+        Some(3 * 60 * 1000),
+        None,
+    )]);
+    entry.limit_reset = Some(cctui_client::LimitResetStatusView {
+        kind: "claude".to_owned(),
+        available: true,
+        title: Some("Full reset (Weekly + 5 hr)".to_owned()),
+        credit_id: Some("c-7".to_owned()),
+        ineligible_reason: None,
+        next_available_at: None,
+    });
+    app.usage.accounts = vec![entry];
+    reduce(&mut app, Action::Accounts(AccountAction::StartReset));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn accounts_redirect_picker() {
+    use crate::app::accounts::AccountAction;
+    let mut app = app_in_accounts_slice();
+    reduce(&mut app, Action::Accounts(AccountAction::StartRedirect));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn accounts_new_pool_form() {
+    use crate::app::pools::PoolAction;
+    let mut app = app_in_accounts_slice();
+    reduce(&mut app, Action::Accounts(crate::app::accounts::AccountAction::ToggleFocus));
+    reduce(&mut app, Action::Pools(PoolAction::StartNew));
+    for c in "overflow".chars() {
+        reduce(
+            &mut app,
+            Action::Pools(PoolAction::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn accounts_pool_delete_needs_the_name_typed() {
+    use crate::app::pools::PoolAction;
+    let mut app = app_in_accounts_slice();
+    reduce(&mut app, Action::Accounts(crate::app::accounts::AccountAction::ToggleFocus));
+    reduce(&mut app, Action::Pools(PoolAction::StartDelete));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn accounts_when_the_key_may_not_list_them() {
+    use crate::app::accounts::AccountAction;
+    let mut app = app_with_sessions();
+    let _ = reduce(&mut app, Action::Accounts(AccountAction::Open));
+    let _ = reduce(
+        &mut app,
+        Action::Accounts(AccountAction::Failed("this key may not list accounts".to_owned())),
+    );
+    let _ = reduce(
+        &mut app,
+        Action::Pools(crate::app::pools::PoolAction::Failed(
+            "this key may not list accounts".to_owned(),
+        )),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+// --- Access (admin) ---
+
+fn access_user(id: &str, name: &str, disabled: bool) -> cctui_client::User {
+    cctui_client::User {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        created_at: ms_ago(90_000),
+        revoked_at: None,
+        disabled_at: disabled.then(|| ms_ago(5_000)),
+        can_dispatch: !disabled,
+        last_seen_at: Some(ms_ago(2_000)),
+    }
+}
+
+fn app_in_access_slice(scopes: &[&str]) -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        role: "admin".to_owned(),
+        user_name: Some("dorsk".to_owned()),
+        scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
+        token_preview: "cctui_u_ab12…ef34".to_owned(),
+    });
+    let _ = reduce(&mut app, Action::Access(AccessAction::Open));
+    let _ = reduce(
+        &mut app,
+        Action::Access(AccessAction::UsersLoaded(vec![
+            access_user("u-1", "dorsk", false),
+            access_user("u-2", "nanachi", true),
+        ])),
+    );
+    let _ = reduce(&mut app, Action::Access(AccessAction::DetailLoaded {
+        tokens: vec![cctui_client::UserToken {
+            id: "t-1".to_owned(),
+            label: Some("laptop".to_owned()),
+            created_at: ms_ago(80_000),
+            expires_at: None,
+            revoked_at: None,
+            token_preview: Some("cctui_u_ab12…ef34".to_owned()),
+        }],
+        machines: vec![cctui_client::UserMachine {
+            id: "m-1".to_owned(),
+            name: "cyberia-ws".to_owned(),
+            display_name: None,
+            last_seen_at: ms_ago(2_000),
+            revoked_at: None,
+            kind: "persistent".to_owned(),
+            key_preview: Some("cctui_m_cd34…ab12".to_owned()),
+            liveness: cctui_proto::models::MachineLiveness::Online,
+        }],
+        keys: vec![cctui_client::ApiKey {
+            id: "k-1".to_owned(),
+            label: Some("ci".to_owned()),
+            key_preview: Some("cctui_k_ef56…7890".to_owned()),
+            kind: "user".to_owned(),
+            created_at: ms_ago(70_000),
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: Some(ms_ago(1_000)),
+            scopes: vec!["read".to_owned()],
+        }],
+        ceiling: vec!["read".to_owned(), "dispatch".to_owned()],
+    }));
+    app
+}
+
+#[test]
+fn access_user_list() {
+    let mut app = app_in_access_slice(&["admin"]);
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn access_user_list_at_eighty_columns() {
+    let mut app = app_in_access_slice(&["admin"]);
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn access_tokens_tab() {
+    let mut app = app_in_access_slice(&["admin"]);
+    let _ = reduce(&mut app, Action::Access(AccessAction::NextTab));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn access_machines_tab() {
+    let mut app = app_in_access_slice(&["admin"]);
+    for _ in 0..2 {
+        let _ = reduce(&mut app, Action::Access(AccessAction::NextTab));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn access_keys_tab() {
+    let mut app = app_in_access_slice(&["admin"]);
+    for _ in 0..3 {
+        let _ = reduce(&mut app, Action::Access(AccessAction::NextTab));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn access_mint_key_dialog_marks_the_scopes_outside_the_ceiling() {
+    let mut app = app_in_access_slice(&["admin"]);
+    for _ in 0..3 {
+        let _ = reduce(&mut app, Action::Access(AccessAction::NextTab));
+    }
+    let _ = reduce(&mut app, Action::Access(AccessAction::StartNew));
+    let _ = reduce(&mut app, Action::Access(AccessAction::ToggleScope));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn access_purge_asks_for_the_name_to_be_typed() {
+    let mut app = app_in_access_slice(&["admin"]);
+    let _ = reduce(&mut app, Action::Access(AccessAction::StartPurge));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn access_revoke_asks_first() {
+    let mut app = app_in_access_slice(&["admin"]);
+    let _ = reduce(&mut app, Action::Access(AccessAction::StartRevoke));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// A placeholder stands in for the secret so the snapshot file never holds a
+/// credential-shaped string.
+#[test]
+fn access_shows_a_new_secret_once() {
+    let mut app = app_in_access_slice(&["admin"]);
+    let _ = reduce(&mut app, Action::Access(AccessAction::Secret {
+        what: "api key",
+        secret: "<the-new-key>".to_owned(),
+    }));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn access_re_grant_dialog_prefills_what_the_key_already_holds() {
+    let mut app = app_in_access_slice(&["admin"]);
+    for _ in 0..3 {
+        let _ = reduce(&mut app, Action::Access(AccessAction::NextTab));
+    }
+    let _ = reduce(&mut app, Action::Access(AccessAction::StartKeyScopes));
+    insta::assert_snapshot!(render_screen(&mut app));
 }

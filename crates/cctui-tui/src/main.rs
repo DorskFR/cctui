@@ -3,6 +3,8 @@ mod auth;
 mod clipboard;
 mod config;
 mod install;
+#[cfg(test)]
+mod journeys;
 mod keys;
 #[cfg(test)]
 mod parity;
@@ -236,6 +238,10 @@ async fn run(
     let mut app = App::new();
     app.server_url = base_url.clone();
     apply_config(&mut app);
+    // The graphics query writes to and reads from the tty, so it runs before
+    // the first frame is drawn over it.
+    app.images.detect();
+    app.images.inline_pref = app.config.prefs.inline_images;
     apply_server_settings(&server, &mut app).await;
     theme::init(app.config.theme);
 

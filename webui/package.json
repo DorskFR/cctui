@@ -21,6 +21,7 @@
     "lint": "biome lint .",
     "plugins:local": "vite build --config ../deploy/local/plugins/pagedemo/vite.config.ts",
     "journey:compile": "journey compile --public -o src/lib/journeys.generated.json",
+    "journey:ir": "node scripts/journey-ir.mjs",
     "journey:seed": "bash ../deploy/local/fixture/seed.sh",
     "journey:auth": "node scripts/journey-auth.mjs",
     "journey:changed": "node scripts/journeys-for-changes.mjs",

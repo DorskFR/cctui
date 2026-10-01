@@ -298,6 +298,7 @@ const fn role_of(kind: LineKind) -> &'static str {
         LineKind::Reset => "reset",
         LineKind::Compact => "compact",
         LineKind::Summary => "summary",
+        LineKind::Image => "assistant",
         LineKind::System | LineKind::Reply => "system",
     }
 }

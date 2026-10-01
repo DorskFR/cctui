@@ -1,0 +1,22 @@
+---
+source: crates/cctui-tui/src/journeys.rs
+assertion_line: 492
+expression: "replay(\"sessions-list\")"
+---
+journey sessions-list v1
+route /sessions -> SessionList
+step list
+  visible session-list
+  visible search
+step anatomy
+step sections
+  visible sections
+step options
+  visible options
+step view WAIVED: list/grid/tiles is a web layout switch; the TUI has one list layout, and the dimensions that menu also carries (sort, group, colour) are the `options` step.
+step density-mobile SKIPPED: mobile variant
+step search
+  fill label:Search sessions@search with "infra"
+step clear
+  fill label:Search sessions@search with ""
+  visible session-list

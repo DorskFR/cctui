@@ -13,10 +13,14 @@ use super::diagnose::DiagnoseAction;
 use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
+use super::account_switch::AccountSwitchAction;
 use super::harness_mode::HarnessModeAction;
 use super::identity::AuthAction;
+use super::images::ImagesAction;
 use super::labels::LabelAction;
+use super::accounts::AccountAction;
 use super::machines::MachineAction;
+use super::pools::PoolAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
 use super::prompt::PromptAction;
@@ -75,9 +79,16 @@ pub enum Action {
     },
 
     Attach(AttachAction),
+    Images(ImagesAction),
+    Access(super::admin::AccessAction),
+    Instance(super::instance::InstanceAction),
     Labels(LabelAction),
     Machines(MachineAction),
+    Accounts(AccountAction),
+    Pools(PoolAction),
     Dispatchers(DispatcherAction),
+    Usage(super::usage::UsageAction),
+    Spend(super::spend::SpendAction),
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
     /// A paste small enough to type straight into the composer.
@@ -101,6 +112,7 @@ pub enum Action {
     Diagnose(DiagnoseAction),
     Slice(SliceAction),
     HarnessMode(HarnessModeAction),
+    AccountSwitch(AccountSwitchAction),
     DeepLink(DeepLinkAction),
 
     StreamLine {
@@ -319,6 +331,13 @@ pub enum Effect {
         machine_id: String,
         path: String,
     },
+    /// Read an image off the clipboard: a bracketed paste cannot carry one.
+    ReadClipboardImage,
+    /// Fetch an agent-posted image blob for the pager.
+    FetchSessionImage {
+        session_id: String,
+        image_id: String,
+    },
     /// Hand a staged attachment to the OS viewer.
     OpenInOsViewer {
         name: String,
@@ -330,8 +349,76 @@ pub enum Effect {
     },
     /// `GET /machines/resources`: the caller's daemon machines.
     FetchMachines,
+    /// `GET /version`: what this deployment runs and what is available.
+    FetchVersion,
+    /// `POST /version/refresh`: probe upstream now.
+    RefreshVersion,
+    /// `GET /version/self-update`: the most recent update-hook run.
+    FetchSelfUpdateRun,
+    /// `GET /version/changelog`: notes for every release newer than this build.
+    FetchChangelog,
+    /// `POST /version/self-update`: deploy the newer release (admin).
+    LaunchSelfUpdate,
+    /// `GET /accounts`: the caller's account identities.
+    FetchAccounts,
+    /// `GET /redirects`: the live launch-time redirect rules.
+    FetchRedirects,
+    /// `GET /account-pools`: the pools with their membership.
+    FetchAccountPools,
+    UpdateAccount {
+        id: String,
+        request: Box<cctui_client::UpdateAccount>,
+    },
+    /// `POST /accounts/{provider_id}/limit-reset`.
+    ClaimLimitReset {
+        provider_id: String,
+        credit_id: Option<String>,
+    },
+    PutRedirect {
+        account_id: String,
+        to_account: String,
+        family: String,
+    },
+    DeleteRedirect {
+        id: String,
+    },
+    CreatePool {
+        request: Box<cctui_client::CreatePool>,
+    },
+    UpdatePool {
+        id: String,
+        request: Box<cctui_client::UpdatePool>,
+    },
+    DeletePool {
+        id: String,
+    },
     /// `GET /dispatchers`: the enrolled executors.
     FetchDispatchers,
+    /// One admin read or mutation for the Access slice.
+    Access(Box<super::admin::AccessEffect>),
+    /// A session's bindings and the caller's credential usage, for the account picker.
+    FetchAccountSwitch {
+        session_id: String,
+    },
+    SwitchSessionAccount {
+        session_id: String,
+        /// The identity id; `family` says which binding it rebinds.
+        account: String,
+        account_name: String,
+        family: String,
+    },
+    /// `GET /account-pools/usage` and `GET /accounts/usage`, as one refresh.
+    FetchUsage,
+    /// The three spend reads — token windows, usage analytics, cache busts —
+    /// as one refresh, so a partial reply cannot leave half a table.
+    FetchSpend {
+        /// Minutes to subtract from UTC for local time.
+        tz_offset: i32,
+    },
+    /// `GET /sessions/{id}/langfuse`: the cost line of one conversation.
+    FetchSessionLangfuse {
+        session_id: String,
+    },
     EnrollDispatcher {
         name: String,
         request: Box<cctui_client::EnrollDispatcher>,

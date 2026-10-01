@@ -27,6 +27,13 @@ pub enum Context {
     FileViewer,
     Machines,
     Dispatchers,
+    Access,
+    Instance,
+    Accounts,
+    AccountPools,
+    AccountsForm,
+    Usage,
+    Spend,
     LabelPicker,
     LabelFilter,
     Pins,
@@ -42,6 +49,7 @@ pub enum Context {
     Bookmarks,
     Overview,
     HarnessMode,
+    AccountSwitch,
     Ask,
     AskText,
     Plan,
@@ -63,6 +71,13 @@ pub const CONTEXTS: &[Context] = &[
     Context::FileViewer,
     Context::Machines,
     Context::Dispatchers,
+    Context::Access,
+    Context::Instance,
+    Context::Accounts,
+    Context::AccountPools,
+    Context::AccountsForm,
+    Context::Usage,
+    Context::Spend,
     Context::LabelPicker,
     Context::LabelFilter,
     Context::Pins,
@@ -78,6 +93,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Bookmarks,
     Context::Overview,
     Context::HarnessMode,
+    Context::AccountSwitch,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -101,6 +117,13 @@ impl Context {
             Self::FileViewer => "file-viewer",
             Self::Machines => "machines",
             Self::Dispatchers => "dispatchers",
+            Self::Access => "access",
+            Self::Instance => "instance",
+            Self::Accounts => "accounts",
+            Self::AccountPools => "account-pools",
+            Self::AccountsForm => "accounts-form",
+            Self::Usage => "usage",
+            Self::Spend => "spend",
             Self::LabelPicker => "label-picker",
             Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
@@ -116,6 +139,7 @@ impl Context {
             Self::Bookmarks => "bookmarks",
             Self::Overview => "overview",
             Self::HarnessMode => "harness-mode",
+            Self::AccountSwitch => "account-switch",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -139,6 +163,13 @@ impl Context {
             Self::FileViewer => "File viewer",
             Self::Machines => "Machines",
             Self::Dispatchers => "Dispatchers",
+            Self::Access => "Access",
+            Self::Instance => "Instance",
+            Self::Accounts => "Accounts",
+            Self::AccountPools => "Accounts — pools pane",
+            Self::AccountsForm => "Accounts — form",
+            Self::Usage => "Usage",
+            Self::Spend => "Spend",
             Self::LabelPicker => "Labels",
             Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
@@ -154,6 +185,7 @@ impl Context {
             Self::Bookmarks => "Bookmarks",
             Self::Overview => "Overview",
             Self::HarnessMode => "Harness mode",
+            Self::AccountSwitch => "Switch account",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -265,6 +297,31 @@ actions! {
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
     OpenMachines => "open-machines", "Machines and daemons";
+    OpenAccounts => "open-accounts", "Accounts and pools";
+    AccountsNext => "accounts-next", "Next account";
+    AccountsPrev => "accounts-prev", "Previous account";
+    AccountsDetail => "accounts-detail", "Show or hide the detail pane";
+    AccountsFocus => "accounts-focus", "Switch between the accounts and pools panes";
+    AccountsEligible => "accounts-eligible", "Allow or withhold this account from pools";
+    AccountsWeightUp => "accounts-weight-up", "Give this account more of a pool";
+    AccountsWeightDown => "accounts-weight-down", "Deprioritise this account in its pool";
+    AccountsReset => "accounts-reset", "Claim a usage-limit reset";
+    AccountsRedirect => "accounts-redirect", "Redirect launches elsewhere, or clear it";
+    AccountsRefresh => "accounts-refresh", "Refresh the accounts and pools";
+    AccountsClose => "accounts-close", "Back";
+    AccountsCommit => "accounts-commit", "Confirm";
+    AccountsCancel => "accounts-cancel", "Back out of the form";
+    AccountsField => "accounts-field", "Next field, or cycle the value";
+    AccountsPickNext => "accounts-pick-next", "Next choice";
+    AccountsPickPrev => "accounts-pick-prev", "Previous choice";
+    PoolsNext => "pools-next", "Next pool or member";
+    PoolsPrev => "pools-prev", "Previous pool or member";
+    PoolsAddMember => "pools-add-member", "Add an account to this pool";
+    PoolsRemoveMember => "pools-remove-member", "Remove this member";
+    PoolsMoveDown => "pools-move-down", "Move this member later in the election order";
+    PoolsMoveUp => "pools-move-up", "Move this member earlier in the election order";
+    PoolsNew => "pools-new", "New pool";
+    PoolsDelete => "pools-delete", "Delete this pool";
     OpenDispatchers => "open-dispatchers", "Dispatchers";
     DispatchersNext => "dispatchers-next", "Next dispatcher";
     DispatchersPrev => "dispatchers-prev", "Previous dispatcher";
@@ -276,11 +333,46 @@ actions! {
     DispatchersCommit => "dispatchers-commit", "Confirm";
     DispatchersCancel => "dispatchers-cancel", "Back";
     DispatchersCopyKey => "dispatchers-copy-key", "Copy the new key";
+    OpenAccess => "open-access", "Access: users, tokens, machines, keys";
+    AccessNext => "access-next", "Next row";
+    AccessPrev => "access-prev", "Previous row";
+    AccessNextTab => "access-next-tab", "Next tab";
+    AccessPrevTab => "access-prev-tab", "Previous tab";
+    AccessRefresh => "access-refresh", "Refresh";
+    AccessRevealRevoked => "access-reveal-revoked", "Show or hide revoked rows";
+    AccessNew => "access-new", "Create a user, token or key";
+    AccessRename => "access-rename", "Rename or relabel";
+    AccessDisable => "access-disable", "Disable or enable this user";
+    AccessRevoke => "access-revoke", "Revoke this credential";
+    AccessRotate => "access-rotate", "Rotate this machine's key";
+    AccessPurge => "access-purge", "Hard-delete, typing the name";
+    AccessScope => "access-scope", "Grant or drop the scope";
+    AccessKeyScopes => "access-key-scopes", "Re-grant this key's scopes";
+    AccessDispatchers => "access-dispatchers", "The dispatchers panel";
+    AccessCommit => "access-commit", "Confirm";
+    AccessCancel => "access-cancel", "Back";
+    AccessCopySecret => "access-copy-secret", "Copy the new secret";
+    OpenInstance => "open-instance", "Instance status";
+    InstanceRefresh => "instance-refresh", "Refresh the instance status";
+    InstanceProbe => "instance-probe", "Check upstream for a release";
+    InstanceUpdate => "instance-update", "Update this server";
+    InstanceConfirm => "instance-confirm", "Confirm";
+    InstanceCancel => "instance-cancel", "Back";
     MachinesNext => "machines-next", "Next machine";
     MachinesPrev => "machines-prev", "Previous machine";
     MachinesRefresh => "machines-refresh", "Refresh the machine list";
     MachinesSpawn => "machines-spawn", "Aim a spawn at this machine";
     MachinesClose => "machines-close", "Back to the sessions";
+    OpenUsage => "open-usage", "Usage: pool and account windows";
+    UsageNext => "usage-next", "Next window";
+    UsagePrev => "usage-prev", "Previous window";
+    UsagePane => "usage-pane", "Switch between pools and accounts";
+    UsageRefresh => "usage-refresh", "Refresh the usage windows";
+    UsageOpenAccount => "usage-open-account", "Open this account";
+    UsageClose => "usage-close", "Back";
+    OpenSpend => "open-spend", "Spend: token windows and cost";
+    SpendRefresh => "spend-refresh", "Refresh the spend figures";
+    SpendClose => "spend-close", "Back";
     OpenLabels => "open-labels", "Label this session";
     OpenLabelFilter => "open-label-filter", "Filter by label";
     LabelsClose => "labels-close", "Close the label list";
@@ -299,6 +391,9 @@ actions! {
     FocusAttachments => "focus-attachments", "Focus the attachment chips";
     AttachmentNext => "attachment-next", "Next attachment chip";
     AttachmentPrev => "attachment-prev", "Previous attachment chip";
+    PasteImage => "paste-image", "Paste an image from the clipboard";
+    OpenImage => "open-image", "Open the image on this line";
+    ToggleInlineImages => "toggle-inline-images", "Draw images inline, or describe them";
     OpenLinkedFile => "open-linked-file", "Open the file under the cursor";
     FileViewerClose => "file-viewer-close", "Close the file viewer";
     FileViewerOsOpen => "file-viewer-os-open", "Open in the desktop viewer";
@@ -390,6 +485,12 @@ actions! {
     HarnessModeNext => "harness-mode-next", "Next mode";
     HarnessModePrev => "harness-mode-prev", "Previous mode";
     HarnessModeCommit => "harness-mode-commit", "Apply this mode to every daemon";
+    AccountSwitchOpen => "account-switch-open", "Switch this session's account";
+    AccountSwitchClose => "account-switch-close", "Close the account picker";
+    AccountSwitchNext => "account-switch-next", "Next account";
+    AccountSwitchPrev => "account-switch-prev", "Previous account";
+    AccountSwitchBinding => "account-switch-binding", "Next provider family";
+    AccountSwitchCommit => "account-switch-commit", "Switch to this account";
 
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
@@ -629,6 +730,15 @@ const CHIPS: &[BindingSpec] = &[
     spec(Context::Composer, "right", ActionId::AttachmentNext),
 ];
 
+/// A bracketed paste cannot carry a picture, so `Ctrl-V` reads the clipboard
+/// itself rather than waiting for a paste event that will never hold one.
+const IMAGES: &[BindingSpec] = &[
+    spec(Context::Composer, "ctrl+v", ActionId::PasteImage),
+    spec(Context::Conversation, "ctrl+v", ActionId::PasteImage),
+    spec(Context::Conversation, "g i", ActionId::OpenImage),
+    spec(Context::FileViewer, "i", ActionId::ToggleInlineImages),
+];
+
 const FILE_VIEWER: &[BindingSpec] = &[
     spec(Context::Conversation, "g f", ActionId::OpenLinkedFile),
     spec(Context::FileViewer, "esc, q", ActionId::FileViewerClose),
@@ -646,11 +756,55 @@ const FILE_VIEWER: &[BindingSpec] = &[
 /// session list underneath.
 const MACHINES: &[BindingSpec] = &[
     spec(Context::Global, "M", ActionId::OpenMachines),
+    spec(Context::Global, "@", ActionId::OpenAccounts),
+    spec(Context::Accounts, "j, down", ActionId::AccountsNext),
+    spec(Context::Accounts, "k, up", ActionId::AccountsPrev),
+    spec(Context::Accounts, "enter", ActionId::AccountsDetail),
+    spec(Context::Accounts, "tab", ActionId::AccountsFocus),
+    spec(Context::Accounts, "e", ActionId::AccountsEligible),
+    spec(Context::Accounts, "+", ActionId::AccountsWeightUp),
+    spec(Context::Accounts, "-", ActionId::AccountsWeightDown),
+    spec(Context::Accounts, "R", ActionId::AccountsReset),
+    spec(Context::Accounts, "x", ActionId::AccountsRedirect),
+    spec(Context::Accounts, "r", ActionId::AccountsRefresh),
+    spec(Context::Accounts, "esc", ActionId::AccountsClose),
+    spec(Context::AccountPools, "j, down", ActionId::PoolsNext),
+    spec(Context::AccountPools, "k, up", ActionId::PoolsPrev),
+    spec(Context::AccountPools, "tab", ActionId::AccountsFocus),
+    spec(Context::AccountPools, "a", ActionId::PoolsAddMember),
+    spec(Context::AccountPools, "d", ActionId::PoolsRemoveMember),
+    spec(Context::AccountPools, "J", ActionId::PoolsMoveDown),
+    spec(Context::AccountPools, "K", ActionId::PoolsMoveUp),
+    spec(Context::AccountPools, "n", ActionId::PoolsNew),
+    spec(Context::AccountPools, "D", ActionId::PoolsDelete),
+    spec(Context::AccountPools, "r", ActionId::AccountsRefresh),
+    spec(Context::AccountPools, "esc", ActionId::AccountsClose),
+    spec(Context::AccountsForm, "enter", ActionId::AccountsCommit),
+    spec(Context::AccountsForm, "esc", ActionId::AccountsCancel),
+    spec(Context::AccountsForm, "tab", ActionId::AccountsField),
+    spec(Context::AccountsForm, "down, ctrl+n", ActionId::AccountsPickNext),
+    spec(Context::AccountsForm, "up, ctrl+p", ActionId::AccountsPickPrev),
     spec(Context::Machines, "j, down", ActionId::MachinesNext),
     spec(Context::Machines, "k, up", ActionId::MachinesPrev),
     spec(Context::Machines, "r", ActionId::MachinesRefresh),
     spec(Context::Machines, "enter", ActionId::MachinesSpawn),
     spec(Context::Machines, "esc", ActionId::MachinesClose),
+];
+
+/// The ticket asks for `u`, which is already the undo-archive key on the list
+/// and open-parent in the conversation; a global `u` would be shadowed almost
+/// everywhere it matters, so the panel opens on `Ctrl+u`.
+const USAGE: &[BindingSpec] = &[
+    spec(Context::Global, "ctrl+u", ActionId::OpenUsage),
+    spec(Context::Usage, "j, down", ActionId::UsageNext),
+    spec(Context::Usage, "k, up", ActionId::UsagePrev),
+    spec(Context::Usage, "tab", ActionId::UsagePane),
+    spec(Context::Usage, "r", ActionId::UsageRefresh),
+    spec(Context::Usage, "enter", ActionId::UsageOpenAccount),
+    spec(Context::Usage, "esc", ActionId::UsageClose),
+    spec(Context::Global, "$", ActionId::OpenSpend),
+    spec(Context::Spend, "r", ActionId::SpendRefresh),
+    spec(Context::Spend, "esc", ActionId::SpendClose),
 ];
 
 /// `D` is the diagnose global (decision 7), so the panel takes `Ctrl+d`.
@@ -668,7 +822,35 @@ const DISPATCHERS: &[BindingSpec] = &[
     spec(Context::Dispatchers, "tab", ActionId::DispatchersField),
     spec(Context::Dispatchers, "enter", ActionId::DispatchersCommit),
     spec(Context::Dispatchers, "esc", ActionId::DispatchersCancel),
+    spec(Context::Global, "U", ActionId::OpenAccess),
+    spec(Context::Access, "j, down", ActionId::AccessNext),
+    spec(Context::Access, "k, up", ActionId::AccessPrev),
+    spec(Context::Access, "tab", ActionId::AccessNextTab),
+    spec(Context::Access, "backtab", ActionId::AccessPrevTab),
+    spec(Context::Access, "r", ActionId::AccessRefresh),
+    spec(Context::Access, "a", ActionId::AccessRevealRevoked),
+    spec(Context::Access, "n", ActionId::AccessNew),
+    spec(Context::Access, "e", ActionId::AccessRename),
+    spec(Context::Access, "d", ActionId::AccessDisable),
+    spec(Context::Access, "x", ActionId::AccessRevoke),
+    spec(Context::Access, "R", ActionId::AccessRotate),
+    spec(Context::Access, "P", ActionId::AccessPurge),
+    spec(Context::Access, "space", ActionId::AccessScope),
+    spec(Context::Access, "s", ActionId::AccessKeyScopes),
+    spec(Context::Access, "G", ActionId::AccessDispatchers),
+    spec(Context::Access, "y", ActionId::AccessCopySecret),
+    spec(Context::Access, "enter", ActionId::AccessCommit),
+    spec(Context::Access, "esc", ActionId::AccessCancel),
     spec(Context::Dispatchers, "ctrl+y", ActionId::DispatchersCopyKey),
+];
+
+const INSTANCE: &[BindingSpec] = &[
+    spec(Context::Global, "V", ActionId::OpenInstance),
+    spec(Context::Instance, "ctrl+r", ActionId::InstanceRefresh),
+    spec(Context::Instance, "p", ActionId::InstanceProbe),
+    spec(Context::Instance, "U", ActionId::InstanceUpdate),
+    spec(Context::Instance, "enter", ActionId::InstanceConfirm),
+    spec(Context::Instance, "esc", ActionId::InstanceCancel),
 ];
 
 const LABELS: &[BindingSpec] = &[
@@ -721,6 +903,16 @@ const BOOKMARKS: &[BindingSpec] = &[
 ];
 
 /// Modal: a settings write is not something to trigger by a fall-through.
+const ACCOUNT_SWITCH: &[BindingSpec] = &[
+    spec(Context::Conversation, "A", ActionId::AccountSwitchOpen),
+    spec(Context::Diagnose, "A", ActionId::AccountSwitchOpen),
+    spec(Context::AccountSwitch, "esc, q", ActionId::AccountSwitchClose),
+    spec(Context::AccountSwitch, "down, ctrl+n, j", ActionId::AccountSwitchNext),
+    spec(Context::AccountSwitch, "up, ctrl+p, k", ActionId::AccountSwitchPrev),
+    spec(Context::AccountSwitch, "tab", ActionId::AccountSwitchBinding),
+    spec(Context::AccountSwitch, "enter", ActionId::AccountSwitchCommit),
+];
+
 const HARNESS_MODE: &[BindingSpec] = &[
     spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
     spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
@@ -830,12 +1022,15 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     COMPOSER,
     ATTACH,
     CHIPS,
+    IMAGES,
     FILE_VIEWER,
     CMDLINE,
     FILTER_MENU,
     HISTORY,
     MACHINES,
     DISPATCHERS,
+    INSTANCE,
+    USAGE,
     LABELS,
     PINS,
     MACROS,
@@ -850,6 +1045,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     BOOKMARKS,
     OVERVIEW,
     HARNESS_MODE,
+    ACCOUNT_SWITCH,
     ASK,
     ASK_TEXT,
     PLAN,
@@ -987,7 +1183,9 @@ impl Keymap {
             | Context::FileViewer
             | Context::Help
             | Context::Bookmarks
-            | Context::Overview => &[Context::Global],
+            | Context::Overview
+            | Context::Accounts
+            | Context::AccountPools => &[Context::Global],
             _ => &[],
         }
     }

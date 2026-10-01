@@ -1,0 +1,150 @@
+{
+  "spendSince": [
+    {
+      "sessions": [
+        {
+          "model": "claude-opus-5",
+          "registeredAtMs": 100,
+          "costUsd": 1.0,
+          "tokens": 10
+        },
+        {
+          "model": "claude-opus-5",
+          "registeredAtMs": 99,
+          "costUsd": 2.0,
+          "tokens": 20
+        },
+        { "model": null, "registeredAtMs": null, "costUsd": 4.0, "tokens": 40 }
+      ],
+      "cutoffMs": 100,
+      "out": 1.0
+    },
+    { "sessions": [], "cutoffMs": 0, "out": 0.0 },
+    {
+      "sessions": [
+        { "model": "x", "registeredAtMs": 5, "costUsd": 0.0, "tokens": 0 }
+      ],
+      "cutoffMs": 0,
+      "out": 0.0
+    }
+  ],
+  "modelSpend": [
+    {
+      "sessions": [
+        {
+          "model": "claude-opus-5-20260101",
+          "registeredAtMs": 2592000000,
+          "costUsd": 4.1,
+          "tokens": 0
+        },
+        {
+          "model": "claude-opus-5[1m]",
+          "registeredAtMs": 2160000000,
+          "costUsd": 1.0,
+          "tokens": 0
+        },
+        {
+          "model": "claude-sonnet-5",
+          "registeredAtMs": 86400000,
+          "costUsd": 9.0,
+          "tokens": 0
+        },
+        {
+          "model": "   ",
+          "registeredAtMs": 2592000000,
+          "costUsd": 0.5,
+          "tokens": 0
+        },
+        {
+          "model": "gpt-5.6-sol",
+          "registeredAtMs": -86400000,
+          "costUsd": 100.0,
+          "tokens": 0
+        }
+      ],
+      "windows": { "todayMs": 2592000000, "weekMs": 2073600000, "monthMs": 0 },
+      "out": [
+        { "model": "sonnet", "today": 0.0, "week": 0.0, "month": 9.0 },
+        { "model": "opus", "today": 4.1, "week": 5.1, "month": 5.1 },
+        { "model": "unknown", "today": 0.5, "week": 0.5, "month": 0.5 }
+      ],
+      "totals": { "model": "total", "today": 4.6, "week": 5.6, "month": 14.6 }
+    },
+    {
+      "sessions": [
+        {
+          "model": "claude-haiku-4-5",
+          "registeredAtMs": 1000,
+          "costUsd": 0.0,
+          "tokens": 5
+        }
+      ],
+      "windows": { "todayMs": 0, "weekMs": 0, "monthMs": 0 },
+      "out": [],
+      "totals": { "model": "total", "today": 0.0, "week": 0.0, "month": 0.0 }
+    }
+  ],
+  "fillDaily": [
+    {
+      "points": [
+        { "dayMs": 864000000, "tokens": 7 },
+        { "dayMs": 691200000, "tokens": 3 }
+      ],
+      "days": 4,
+      "endDayMs": 864000000,
+      "out": [0, 3, 0, 7]
+    },
+    { "points": [], "days": 3, "endDayMs": 0, "out": [0, 0, 0] },
+    {
+      "points": [{ "dayMs": 0, "tokens": 9 }],
+      "days": 0,
+      "endDayMs": 0,
+      "out": []
+    }
+  ],
+  "cacheLossTotals": [
+    {
+      "days": [
+        {
+          "day": "2026-09-29",
+          "ttl_expired": 1.5,
+          "gateway_rewrote_body": 0.25,
+          "unknown": 0.0,
+          "total": 1.75,
+          "ttl_expired_tokens": 1000,
+          "gateway_rewrote_body_tokens": 200,
+          "unknown_tokens": 0,
+          "lost_tokens": 1200,
+          "busts": 3
+        },
+        {
+          "day": "2026-09-30",
+          "ttl_expired": 0.5,
+          "gateway_rewrote_body": 0.0,
+          "unknown": 0.1,
+          "total": 0.6,
+          "ttl_expired_tokens": 400,
+          "gateway_rewrote_body_tokens": 0,
+          "unknown_tokens": 80,
+          "lost_tokens": 480,
+          "busts": 2
+        }
+      ],
+      "out": { "usd": 2.35, "tokens": 1680, "busts": 5 }
+    },
+    { "days": [], "out": { "usd": 0.0, "tokens": 0, "busts": 0 } }
+  ],
+  "langfuseCostLabel": [
+    { "costUsd": 0.0234, "out": "$0.023" },
+    { "costUsd": 0.0, "out": "$0.000" },
+    { "costUsd": 0.9999, "out": "$1.000" },
+    { "costUsd": 1.0, "out": "$1.00" },
+    { "costUsd": 1.5, "out": "$1.50" },
+    { "costUsd": 123.456, "out": "$123.46" }
+  ],
+  "hasLangfuseCost": [
+    { "usage": null, "out": false },
+    { "usage": { "cost_usd": 0.0, "trace_count": 0 }, "out": false },
+    { "usage": { "cost_usd": 0.0, "trace_count": 2 }, "out": true }
+  ]
+}

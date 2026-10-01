@@ -114,6 +114,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         )
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
+    if let Some(cost) = super::spend::langfuse_span(app, &session.id) {
+        header_spans.push(cost);
+    }
     if let Some(filter) = app.filter.summary() {
         header_spans.push(Span::styled(format!(" ── ⛛ {filter}"), theme::dim()));
     }
@@ -570,6 +573,7 @@ fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> 
         LineKind::Tool { category } => render_tool(line, ts, category),
         LineKind::Result { error } => render_result(line, ts, error, opts.expanded),
         LineKind::Peer => render_peer(line, ts),
+        LineKind::Image => super::images::transcript_lines(line, &ts),
         LineKind::Marker => {
             vec![Line::from(vec![
                 Span::raw(ts),

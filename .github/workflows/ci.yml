@@ -42,6 +42,7 @@ jobs:
             rust:
               - *ci
               - crates/**
+              - docs/journeys/**
               - migrations/**
               - Cargo.toml
               - Cargo.lock
@@ -308,6 +309,16 @@ jobs:
       - name: Build
         working-directory: webui
         run: npm run build
+
+      # The TUI replays the exported IR, which cargo cannot compile from the specs.
+      - name: Journey IR is in step with the specs
+        working-directory: webui
+        run: |
+          npm run journey:ir
+          git diff --exit-code -- ../docs/journeys || {
+            echo "docs/journeys/*/ir.json is stale: run 'npm run journey:ir' in webui and commit it" >&2
+            exit 1
+          }
 
   audit:
     name: audit

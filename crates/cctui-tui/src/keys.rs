@@ -3,20 +3,28 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::PromptFocus;
 use crate::app::action::{Action, CopyWhat};
 use crate::app::attach::AttachAction;
+use crate::app::images::ImagesAction;
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
 use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
+use crate::app::admin::AccessAction;
 use crate::app::dispatchers::DispatcherAction;
+use crate::app::instance::InstanceAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::account_switch::AccountSwitchAction;
 use crate::app::harness_mode::HarnessModeAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
+use crate::app::accounts::AccountAction;
 use crate::app::machines::MachineAction;
+use crate::app::pools::PoolAction;
+use crate::app::spend::SpendAction;
+use crate::app::usage::UsageAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
@@ -97,7 +105,12 @@ pub const fn context_for(
         View::Conversation => Context::Conversation,
         View::FileViewer => Context::FileViewer,
         View::Machines => Context::Machines,
+        View::Accounts => Context::Accounts,
         View::Dispatchers => Context::Dispatchers,
+        View::Access => Context::Access,
+        View::Instance => Context::Instance,
+        View::Usage => Context::Usage,
+        View::Spend => Context::Spend,
         View::LabelPicker => Context::LabelPicker,
         View::LabelFilter => Context::LabelFilter,
         View::Help => Context::Help,
@@ -112,6 +125,7 @@ pub const fn context_for(
         View::Sidebar => Context::Sidebar,
         View::Overview => Context::Overview,
         View::HarnessMode => Context::HarnessMode,
+        View::AccountSwitch => Context::AccountSwitch,
     }
 }
 
@@ -126,6 +140,9 @@ const fn modal_context(view: View) -> Option<Context> {
         View::Terminal => Some(Context::Terminal),
         View::FileViewer => Some(Context::FileViewer),
         View::Dispatchers => Some(Context::Dispatchers),
+        View::Access => Some(Context::Access),
+        View::Instance => Some(Context::Instance),
+        View::Usage => Some(Context::Usage),
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
@@ -135,6 +152,7 @@ const fn modal_context(view: View) -> Option<Context> {
 
 /// Pure: terminal input in, at most one [`Action`] out. Every binding resolves
 /// through the keymap, so a user override needs no code change here.
+#[allow(clippy::too_many_lines)]
 pub fn map_input(
     keys: &Keymap,
     view: View,
@@ -184,6 +202,18 @@ pub fn map_input(
         InputEvent::ScrollDown if view == View::Machines => {
             Some(Action::Machines(MachineAction::SelectNext))
         }
+        InputEvent::ScrollUp if view == View::Accounts => {
+            Some(Action::Accounts(AccountAction::SelectPrev))
+        }
+        InputEvent::ScrollDown if view == View::Accounts => {
+            Some(Action::Accounts(AccountAction::SelectNext))
+        }
+        InputEvent::ScrollUp if view == View::Usage => {
+            Some(Action::Usage(UsageAction::SelectPrev))
+        }
+        InputEvent::ScrollDown if view == View::Usage => {
+            Some(Action::Usage(UsageAction::SelectNext))
+        }
         InputEvent::ScrollUp => match view {
             View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewUp)),
             View::Conversation | View::Sidebar => {
@@ -195,6 +225,7 @@ pub fn map_input(
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(-3))),
             View::FileViewer
             | View::HarnessMode
+            | View::AccountSwitch
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -203,7 +234,12 @@ pub fn map_input(
             | View::LabelPicker
             | View::LabelFilter
             | View::Machines
-            | View::Dispatchers => None,
+            | View::Accounts
+            | View::Dispatchers
+            | View::Access
+            | View::Instance
+            | View::Usage
+            | View::Spend => None,
         },
         InputEvent::ScrollDown => match view {
             View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewDown)),
@@ -216,6 +252,7 @@ pub fn map_input(
             View::Overview => Some(Action::Slice(SliceAction::OverviewScroll(3))),
             View::FileViewer
             | View::HarnessMode
+            | View::AccountSwitch
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -224,7 +261,12 @@ pub fn map_input(
             | View::LabelPicker
             | View::LabelFilter
             | View::Machines
-            | View::Dispatchers => None,
+            | View::Accounts
+            | View::Dispatchers
+            | View::Access
+            | View::Instance
+            | View::Usage
+            | View::Spend => None,
         },
     }
 }
@@ -277,6 +319,34 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::LineCursor => Action::Conversation(ConversationAction::ToggleLineCursor),
 
         ActionId::OpenMachines => Action::Machines(MachineAction::Open),
+        ActionId::OpenAccounts => Action::Accounts(AccountAction::Open),
+        ActionId::AccountsNext => Action::Accounts(AccountAction::SelectNext),
+        ActionId::AccountsPrev => Action::Accounts(AccountAction::SelectPrev),
+        ActionId::AccountsDetail => Action::Accounts(AccountAction::ToggleDetail),
+        ActionId::AccountsFocus => Action::Accounts(AccountAction::ToggleFocus),
+        ActionId::AccountsEligible => Action::Accounts(AccountAction::ToggleEligible),
+        ActionId::AccountsWeightUp => Action::Accounts(AccountAction::Weight { up: true }),
+        ActionId::AccountsWeightDown => Action::Accounts(AccountAction::Weight { up: false }),
+        ActionId::AccountsReset => Action::Accounts(AccountAction::StartReset),
+        ActionId::AccountsRedirect => Action::Accounts(AccountAction::StartRedirect),
+        ActionId::AccountsRefresh => Action::Accounts(AccountAction::Refresh),
+        ActionId::AccountsClose => Action::Accounts(AccountAction::Close),
+        ActionId::AccountsCommit => Action::Accounts(AccountAction::Commit),
+        ActionId::AccountsCancel => Action::Accounts(AccountAction::Cancel),
+        ActionId::AccountsField => Action::Pools(PoolAction::NextField),
+        ActionId::AccountsPickNext => Action::Accounts(AccountAction::PickNext),
+        ActionId::AccountsPickPrev => Action::Accounts(AccountAction::PickPrev),
+        ActionId::PoolsNext => Action::Pools(PoolAction::SelectNext),
+        ActionId::PoolsPrev => Action::Pools(PoolAction::SelectPrev),
+        ActionId::PoolsAddMember => Action::Pools(PoolAction::StartAddMember),
+        ActionId::PoolsRemoveMember => Action::Pools(PoolAction::RemoveMember),
+        ActionId::PoolsMoveDown => Action::Pools(PoolAction::Move { down: true }),
+        ActionId::PoolsMoveUp => Action::Pools(PoolAction::Move { down: false }),
+        ActionId::PoolsNew => Action::Pools(PoolAction::StartNew),
+        ActionId::PoolsDelete => Action::Pools(PoolAction::StartDelete),
+        ActionId::OpenSpend => Action::Spend(SpendAction::Open),
+        ActionId::SpendRefresh => Action::Spend(SpendAction::Refresh),
+        ActionId::SpendClose => Action::Spend(SpendAction::Close),
         ActionId::OpenDispatchers => Action::Dispatchers(DispatcherAction::Open),
         ActionId::DispatchersNext => Action::Dispatchers(DispatcherAction::SelectNext),
         ActionId::DispatchersPrev => Action::Dispatchers(DispatcherAction::SelectPrev),
@@ -288,11 +358,44 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DispatchersCommit => Action::Dispatchers(DispatcherAction::Commit),
         ActionId::DispatchersCancel => Action::Dispatchers(DispatcherAction::Cancel),
         ActionId::DispatchersCopyKey => Action::Dispatchers(DispatcherAction::CopyKey),
+
+        ActionId::OpenAccess => Action::Access(AccessAction::Open),
+        ActionId::AccessNext => Action::Access(AccessAction::SelectNext),
+        ActionId::AccessPrev => Action::Access(AccessAction::SelectPrev),
+        ActionId::AccessNextTab => Action::Access(AccessAction::NextTab),
+        ActionId::AccessPrevTab => Action::Access(AccessAction::PrevTab),
+        ActionId::AccessRefresh => Action::Access(AccessAction::Refresh),
+        ActionId::AccessRevealRevoked => Action::Access(AccessAction::ToggleRevoked),
+        ActionId::AccessNew => Action::Access(AccessAction::StartNew),
+        ActionId::AccessRename => Action::Access(AccessAction::StartRename),
+        ActionId::AccessDisable => Action::Access(AccessAction::ToggleDisable),
+        ActionId::AccessRevoke => Action::Access(AccessAction::StartRevoke),
+        ActionId::AccessRotate => Action::Access(AccessAction::StartRotate),
+        ActionId::AccessPurge => Action::Access(AccessAction::StartPurge),
+        ActionId::AccessScope => Action::Access(AccessAction::ToggleScope),
+        ActionId::AccessKeyScopes => Action::Access(AccessAction::StartKeyScopes),
+        ActionId::AccessDispatchers => Action::Access(AccessAction::OpenDispatchers),
+        ActionId::AccessCommit => Action::Access(AccessAction::Commit),
+        ActionId::AccessCancel => Action::Access(AccessAction::Cancel),
+        ActionId::AccessCopySecret => Action::Access(AccessAction::CopySecret),
+        ActionId::OpenInstance => Action::Instance(InstanceAction::Open),
+        ActionId::InstanceRefresh => Action::Instance(InstanceAction::Refresh),
+        ActionId::InstanceProbe => Action::Instance(InstanceAction::Probe),
+        ActionId::InstanceUpdate => Action::Instance(InstanceAction::StartUpdate),
+        ActionId::InstanceConfirm => Action::Instance(InstanceAction::Confirm),
+        ActionId::InstanceCancel => Action::Instance(InstanceAction::Cancel),
         ActionId::MachinesNext => Action::Machines(MachineAction::SelectNext),
         ActionId::MachinesPrev => Action::Machines(MachineAction::SelectPrev),
         ActionId::MachinesRefresh => Action::Machines(MachineAction::Refresh),
         ActionId::MachinesSpawn => Action::Machines(MachineAction::SpawnHere),
         ActionId::MachinesClose => Action::Machines(MachineAction::Close),
+        ActionId::OpenUsage => Action::Usage(UsageAction::Open),
+        ActionId::UsageNext => Action::Usage(UsageAction::SelectNext),
+        ActionId::UsagePrev => Action::Usage(UsageAction::SelectPrev),
+        ActionId::UsagePane => Action::Usage(UsageAction::SwitchPane),
+        ActionId::UsageRefresh => Action::Usage(UsageAction::Refresh),
+        ActionId::UsageOpenAccount => Action::Usage(UsageAction::OpenAccount),
+        ActionId::UsageClose => Action::Usage(UsageAction::Close),
 
         ActionId::OpenLabels => Action::Labels(LabelAction::OpenPicker),
         ActionId::OpenLabelFilter => Action::Labels(LabelAction::OpenFilter),
@@ -317,6 +420,10 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::AttachmentNext => Action::Attach(AttachAction::MoveChip(1)),
         ActionId::AttachmentPrev => Action::Attach(AttachAction::MoveChip(-1)),
         ActionId::RemoveAttachment => Action::Attach(AttachAction::BackspaceOrChip),
+
+        ActionId::PasteImage => Action::Images(ImagesAction::PasteClipboard),
+        ActionId::OpenImage => Action::Images(ImagesAction::OpenUnderCursor),
+        ActionId::ToggleInlineImages => Action::Images(ImagesAction::ToggleInline),
 
         ActionId::OpenLinkedFile => Action::FileView(FileViewAction::OpenUnderCursor),
         ActionId::FileViewerClose => Action::FileView(FileViewAction::Close),
@@ -468,6 +575,12 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::HarnessModeNext => Action::HarnessMode(HarnessModeAction::SelectNext),
         ActionId::HarnessModePrev => Action::HarnessMode(HarnessModeAction::SelectPrev),
         ActionId::HarnessModeCommit => Action::HarnessMode(HarnessModeAction::Commit),
+        ActionId::AccountSwitchOpen => Action::AccountSwitch(AccountSwitchAction::Open),
+        ActionId::AccountSwitchClose => Action::AccountSwitch(AccountSwitchAction::Close),
+        ActionId::AccountSwitchNext => Action::AccountSwitch(AccountSwitchAction::SelectNext),
+        ActionId::AccountSwitchPrev => Action::AccountSwitch(AccountSwitchAction::SelectPrev),
+        ActionId::AccountSwitchBinding => Action::AccountSwitch(AccountSwitchAction::NextBinding),
+        ActionId::AccountSwitchCommit => Action::AccountSwitch(AccountSwitchAction::Commit),
 
         ActionId::OverviewScrollDown => Action::Slice(SliceAction::OverviewScroll(1)),
         ActionId::OverviewScrollUp => Action::Slice(SliceAction::OverviewScroll(-1)),
@@ -499,6 +612,8 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Composer => Some(Action::InputKey(key)),
         Context::LabelPicker => Some(Action::Labels(LabelAction::Key(key))),
         Context::Dispatchers => Some(Action::Dispatchers(DispatcherAction::Key(key))),
+        Context::Access => Some(Action::Access(AccessAction::Key(key))),
+        Context::AccountsForm => Some(Action::Pools(PoolAction::Key(key))),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),

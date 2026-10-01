@@ -8,6 +8,7 @@ use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::action::{Action, Effect};
+use super::account_switch::AccountSwitchAction;
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::bookmarks::BookmarkAction;
@@ -17,12 +18,17 @@ use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
 use super::dispatchers::DispatcherAction;
+use super::instance::InstanceAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
+use super::images::ImagesAction;
 use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
+use super::accounts::AccountAction;
 use super::machines::MachineAction;
+use super::pools::PoolAction;
+use super::spend::SpendAction;
 use super::pins::PinAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
@@ -350,6 +356,29 @@ async fn run(
         Effect::OpenLinkedFile { session_id, machine_id, path } => {
             open_linked_file(server, &session_id, &machine_id, &path).await
         }
+        Effect::ReadClipboardImage => vec![read_clipboard_image()],
+        Effect::FetchSessionImage { session_id, image_id } => {
+            match server.session_image(&session_id, &image_id).await {
+                Ok(cctui_client::FileRead::Ok { content_type, bytes }) => {
+                    vec![Action::Images(ImagesAction::Fetched {
+                        name: format!("{image_id}.{}", image_extension(&content_type)),
+                        content_type,
+                        bytes,
+                    })]
+                }
+                Ok(cctui_client::FileRead::Refused(refusal)) => {
+                    vec![Action::FileView(FileViewAction::Refused {
+                        name: "the image".to_owned(),
+                        refusal: Box::new(refusal),
+                        source: fileview::FileSource::Blob,
+                    })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "image fetch failed");
+                    vec![Action::Toast(Level::Error, "could not fetch the image".to_owned())]
+                }
+            }
+        }
         Effect::OpenInOsViewer { name, bytes } => {
             open_in_os_viewer(&name, &bytes);
             Vec::new()
@@ -374,6 +403,69 @@ async fn run(
                 vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
             }
         },
+        Effect::FetchAccounts => match server.accounts().await {
+            Ok(rows) => vec![Action::Accounts(AccountAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing accounts failed");
+                vec![Action::Accounts(AccountAction::Failed(account_error(&e)))]
+            }
+        },
+        Effect::FetchRedirects => match server.redirects().await {
+            Ok(rules) => vec![Action::Accounts(AccountAction::RedirectsLoaded(rules))],
+            Err(e) => {
+                tracing::warn!(%e, "listing redirect rules failed");
+                Vec::new()
+            }
+        },
+        Effect::FetchAccountPools => match server.account_pools().await {
+            Ok(rows) => vec![Action::Pools(PoolAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing account pools failed");
+                vec![Action::Pools(PoolAction::Failed(account_error(&e)))]
+            }
+        },
+        Effect::UpdateAccount { id, request } => {
+            match server.update_account(&id, &request).await {
+                Ok(()) => refetch_accounts(server).await,
+                Err(e) => vec![account_refusal(&e, "could not edit the account")],
+            }
+        }
+        Effect::ClaimLimitReset { provider_id, credit_id } => {
+            let request = cctui_client::LimitResetRequest { credit_id };
+            match server.limit_reset(&provider_id, &request).await {
+                Ok(outcome) => vec![Action::Accounts(AccountAction::ResetDone(Box::new(outcome)))],
+                Err(e) => vec![account_refusal(&e, "could not claim the reset")],
+            }
+        }
+        Effect::PutRedirect { account_id, to_account, family } => {
+            let request = cctui_client::PutRedirect {
+                to_account: Some(to_account),
+                family,
+                ..Default::default()
+            };
+            match server.put_account_redirect(&account_id, &request).await {
+                Ok(()) => refetch_accounts(server).await,
+                Err(e) => vec![account_refusal(&e, "could not set the redirect")],
+            }
+        }
+        Effect::DeleteRedirect { id } => match server.delete_redirect(&id).await {
+            Ok(()) => refetch_accounts(server).await,
+            Err(e) => vec![account_refusal(&e, "could not clear the redirect")],
+        },
+        Effect::CreatePool { request } => match server.create_account_pool(&request).await {
+            Ok(_) => refetch_pools(server).await,
+            Err(e) => vec![pool_refusal(&e, "could not create the pool")],
+        },
+        Effect::UpdatePool { id, request } => {
+            match server.update_account_pool(&id, &request).await {
+                Ok(()) => refetch_pools(server).await,
+                Err(e) => vec![pool_refusal(&e, "could not edit the pool")],
+            }
+        }
+        Effect::DeletePool { id } => match server.delete_account_pool(&id).await {
+            Ok(()) => refetch_pools(server).await,
+            Err(e) => vec![pool_refusal(&e, "could not delete the pool")],
+        },
         Effect::FetchMachines => match server.machines().await {
             Ok(rows) => vec![Action::Machines(MachineAction::Loaded(rows))],
             Err(e) => {
@@ -381,6 +473,81 @@ async fn run(
                 vec![Action::Machines(MachineAction::Failed(machine_error(&e)))]
             }
         },
+        Effect::FetchUsage => fetch_usage(server).await,
+        Effect::FetchSpend { tz_offset } => fetch_spend(server, tz_offset).await,
+        Effect::FetchSessionLangfuse { session_id } => {
+            let usage = server.session_langfuse(&session_id).await.ok().map(|u| {
+                cctui_clientcore::spend::LangfuseSpend {
+                    cost_usd: u.cost_usd,
+                    trace_count: u.trace_count,
+                }
+            });
+            vec![Action::Spend(SpendAction::Langfuse { session_id, usage })]
+        }
+        Effect::FetchAccountSwitch { session_id } => {
+            match super::account_switch::load(server, &session_id).await {
+                Ok((bindings, credentials)) => {
+                    vec![Action::AccountSwitch(AccountSwitchAction::Loaded { bindings, credentials })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "loading the account picker failed");
+                    vec![Action::AccountSwitch(AccountSwitchAction::Failed(e.to_string()))]
+                }
+            }
+        }
+        Effect::SwitchSessionAccount { session_id, account, account_name, family } => {
+            match server.switch_session_account(&session_id, &account, &family).await {
+                Ok(()) => {
+                    vec![Action::AccountSwitch(AccountSwitchAction::Switched { account_name, family })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "switching the session account failed");
+                    vec![Action::AccountSwitch(AccountSwitchAction::SwitchFailed(e.to_string()))]
+                }
+            }
+        }
+        Effect::FetchVersion => match server.version().await {
+            Ok(info) => vec![Action::Instance(InstanceAction::Loaded(Box::new(info)))],
+            Err(cctui_client::ClientError::Forbidden { .. }) => {
+                vec![Action::Instance(InstanceAction::Forbidden)]
+            }
+            Err(e) => {
+                tracing::warn!(%e, "reading the server version failed");
+                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
+            }
+        },
+        Effect::RefreshVersion => match server.refresh_version().await {
+            Ok(()) => vec![Action::Instance(InstanceAction::Refresh)],
+            Err(e) => {
+                tracing::warn!(%e, "probing upstream failed");
+                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
+            }
+        },
+        Effect::FetchSelfUpdateRun => match server.self_update_status().await {
+            Ok(run) => vec![Action::Instance(InstanceAction::RunLoaded(run.map(Box::new)))],
+            Err(cctui_client::ClientError::Forbidden { .. }) => {
+                vec![Action::Instance(InstanceAction::Forbidden)]
+            }
+            Err(e) => {
+                tracing::warn!(%e, "reading the self-update run failed");
+                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
+            }
+        },
+        Effect::FetchChangelog => match server.version_changelog().await {
+            Ok(log) => vec![Action::Instance(InstanceAction::ChangelogLoaded(log.releases))],
+            Err(e) => {
+                tracing::warn!(%e, "reading the changelog failed");
+                Vec::new()
+            }
+        },
+        Effect::LaunchSelfUpdate => match server.self_update().await {
+            Ok(launch) => vec![Action::Instance(InstanceAction::Launched(Box::new(launch)))],
+            Err(e) => {
+                tracing::warn!(%e, "launching the self-update failed");
+                vec![Action::Instance(InstanceAction::LaunchFailed(e.to_string()))]
+            }
+        },
+        Effect::Access(effect) => super::admin::run(*effect, server).await,
         Effect::FetchDispatchers => match server.dispatchers().await {
             Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
             Err(e) => {
@@ -918,6 +1085,45 @@ async fn refetch_labels(server: &Client) -> Vec<Action> {
     }
 }
 
+/// Both halves of the usage panel, in one round trip each. A half that fails is
+/// reported on its own: pools and credentials are read by different scopes, so
+/// losing one must not blank the other.
+async fn fetch_usage(server: &Client) -> Vec<Action> {
+    use crate::app::usage::UsageAction;
+
+    let (pools, accounts) = tokio::join!(server.account_pools_usage(), server.accounts_usage());
+    let mut out = Vec::new();
+    let mut failure = None;
+    match pools {
+        Ok(rows) => out.push(Action::Usage(UsageAction::PoolsLoaded(rows))),
+        Err(e) => {
+            tracing::warn!(%e, "reading pool usage failed");
+            failure = Some(usage_error(&e));
+        }
+    }
+    match accounts {
+        Ok(rows) => out.push(Action::Usage(UsageAction::AccountsLoaded(rows))),
+        Err(e) => {
+            tracing::warn!(%e, "reading account usage failed");
+            failure = Some(usage_error(&e));
+        }
+    }
+    if out.is_empty() {
+        return vec![Action::Usage(UsageAction::Failed(
+            failure.unwrap_or_else(|| "could not read usage".to_owned()),
+        ))];
+    }
+    out
+}
+
+fn usage_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => "this key may not read usage".to_owned(),
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not read usage: {other}"),
+    }
+}
+
 /// Why the machines list is empty, in the words the view shows. A 403 is worth
 /// naming on its own: it means the key cannot enumerate machines, which is a
 /// different problem from having none.
@@ -927,6 +1133,63 @@ fn machine_error(e: &cctui_client::ClientError) -> String {
         cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
         other => format!("could not list machines: {other}"),
     }
+}
+
+/// A 403 here means the key may not read them at all, which the view says
+/// rather than looking like an install with no accounts.
+fn account_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => "this key may not list accounts".to_owned(),
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list accounts: {other}"),
+    }
+}
+
+/// A refused write turns the slice read-only; anything else is a one-off toast
+/// that leaves the editing keys live.
+fn account_refusal(e: &cctui_client::ClientError, what: &str) -> Action {
+    tracing::warn!(%e, "{what}");
+    if matches!(e, cctui_client::ClientError::Forbidden { .. }) {
+        return Action::Accounts(AccountAction::Refused(format!("{what}: not allowed")));
+    }
+    Action::Toast(Level::Error, format!("{what}: {e}"))
+}
+
+fn pool_refusal(e: &cctui_client::ClientError, what: &str) -> Action {
+    tracing::warn!(%e, "{what}");
+    if matches!(e, cctui_client::ClientError::Forbidden { .. }) {
+        return Action::Pools(PoolAction::Refused(format!("{what}: not allowed")));
+    }
+    Action::Toast(Level::Error, format!("{what}: {e}"))
+}
+
+/// Every account write refreshes the list and the rules: a redirect changes
+/// what a row says about itself, not just the rule store.
+async fn refetch_accounts(server: &Client) -> Vec<Action> {
+    let mut out = match server.accounts().await {
+        Ok(rows) => vec![Action::Accounts(AccountAction::Loaded(rows))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching accounts failed");
+            Vec::new()
+        }
+    };
+    if let Ok(rules) = server.redirects().await {
+        out.push(Action::Accounts(AccountAction::RedirectsLoaded(rules)));
+    }
+    out
+}
+
+/// A membership change moves accounts between pools, so both panes are refetched.
+async fn refetch_pools(server: &Client) -> Vec<Action> {
+    let mut out = match server.account_pools().await {
+        Ok(rows) => vec![Action::Pools(PoolAction::Loaded(rows))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching account pools failed");
+            Vec::new()
+        }
+    };
+    out.extend(refetch_accounts(server).await);
+    out
 }
 
 async fn refetch_dispatchers(server: &Client) -> Vec<Action> {
@@ -949,4 +1212,71 @@ fn dispatcher_error(e: &cctui_client::ClientError) -> String {
         cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
         other => format!("could not list dispatchers: {other}"),
     }
+}
+
+/// The three spend reads in one round trip. The token windows and the analytics
+/// are both load-bearing, so either failing fails the panel; cache-loss is a
+/// footnote and degrades to empty.
+async fn fetch_spend(server: &Client, tz_offset: i32) -> Vec<Action> {
+    use crate::app::spend::{CACHE_LOSS_DAYS, RANGE_DAYS, SpendData};
+
+    let (windows, analytics, cache_loss) = tokio::join!(
+        server.session_token_stats(tz_offset),
+        server.session_usage_analytics(RANGE_DAYS, tz_offset),
+        server.cache_loss(CACHE_LOSS_DAYS, tz_offset),
+    );
+    let (windows, analytics) = match (windows, analytics) {
+        (Ok(windows), Ok(analytics)) => (windows, analytics),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(%e, "reading spend failed");
+            return vec![Action::Spend(SpendAction::Failed(spend_error(&e)))];
+        }
+    };
+    if let Err(e) = &cache_loss {
+        tracing::warn!(%e, "reading cache-bust loss failed");
+    }
+    vec![Action::Spend(SpendAction::Loaded(Box::new(SpendData {
+        windows,
+        analytics,
+        cache_loss: cache_loss.unwrap_or_default(),
+    })))]
+}
+
+fn spend_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => {
+            "this key may not read usage stats".to_owned()
+        }
+        other => format!("could not read spend: {other}"),
+    }
+}
+
+fn image_extension(content_type: &str) -> String {
+    cctui_clientcore::uploads::ext_for_type(content_type)
+}
+
+/// Read a picture off the clipboard. `arboard` hands over raw RGBA, which is
+/// re-encoded as PNG so the staged attachment is a real image file.
+fn read_clipboard_image() -> Action {
+    let image = match arboard::Clipboard::new().and_then(|mut c| c.get_image()) {
+        Ok(image) => image,
+        Err(e) => {
+            tracing::debug!(%e, "no image on the clipboard");
+            return Action::Images(ImagesAction::NoImage);
+        }
+    };
+    let (width, height) = (image.width as u32, image.height as u32);
+    let Some(buffer) =
+        image::RgbaImage::from_raw(width, height, image.bytes.into_owned())
+    else {
+        return Action::Images(ImagesAction::NoImage);
+    };
+    let mut png = std::io::Cursor::new(Vec::new());
+    if let Err(e) = image::DynamicImage::ImageRgba8(buffer)
+        .write_to(&mut png, image::ImageFormat::Png)
+    {
+        tracing::warn!(%e, "cannot encode the pasted image");
+        return Action::Images(ImagesAction::NoImage);
+    }
+    Action::Images(ImagesAction::Pasted { png: png.into_inner(), width, height })
 }

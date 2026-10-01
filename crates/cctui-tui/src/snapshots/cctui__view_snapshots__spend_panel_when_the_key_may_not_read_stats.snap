@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2163
+expression: render_screen(&mut app)
+---
+ Spend  $0.00 today  $0.00 30d  ! 1 need input — Ctrl+g
+ this key may not read usage stats
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ r:refresh  Esc:back

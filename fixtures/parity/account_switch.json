@@ -1,0 +1,343 @@
+{
+  "switchOptions": [
+    {
+      "name": "the ticket mockup: current pinned, best candidate, spent last",
+      "binding": {
+        "family": "anthropic",
+        "accountId": "alice",
+        "accountName": "alice"
+      },
+      "credentials": [
+        {
+          "accountId": "bob",
+          "accountName": "bob",
+          "provider": "anthropic",
+          "windows": [{ "pct": 99, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "alice",
+          "accountName": "alice",
+          "provider": "anthropic",
+          "windows": [{ "pct": 91, "resetsInSecs": 300 }]
+        },
+        {
+          "accountId": "carol",
+          "accountName": "carol",
+          "provider": "anthropic",
+          "windows": [{ "pct": 12, "resetsInSecs": 300 }]
+        }
+      ],
+      "out": [
+        {
+          "accountName": "alice",
+          "pct": 91,
+          "resetsInSecs": 300,
+          "current": true,
+          "limited": false
+        },
+        {
+          "accountName": "carol",
+          "pct": 12,
+          "resetsInSecs": 300,
+          "current": false,
+          "limited": false
+        },
+        {
+          "accountName": "bob",
+          "pct": 99,
+          "resetsInSecs": 60,
+          "current": false,
+          "limited": true
+        }
+      ],
+      "recommended": 1
+    },
+    {
+      "name": "only the binding's family is offered",
+      "binding": {
+        "family": "anthropic",
+        "accountId": "alice",
+        "accountName": "alice"
+      },
+      "credentials": [
+        {
+          "accountId": "alice",
+          "accountName": "alice",
+          "provider": "anthropic",
+          "windows": [{ "pct": 10, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "oai",
+          "accountName": "oai",
+          "provider": "openai",
+          "windows": [{ "pct": 1, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "oaic",
+          "accountName": "oaic",
+          "provider": "openai-compatible",
+          "windows": [{ "pct": 2, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "fw",
+          "accountName": "fw",
+          "provider": "fireworks",
+          "windows": [{ "pct": 3, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "compat",
+          "accountName": "compat",
+          "provider": "anthropic-compatible",
+          "windows": [{ "pct": 4, "resetsInSecs": 60 }]
+        }
+      ],
+      "out": [
+        {
+          "accountName": "alice",
+          "pct": 10,
+          "resetsInSecs": 60,
+          "current": true,
+          "limited": false
+        },
+        {
+          "accountName": "compat",
+          "pct": 4,
+          "resetsInSecs": 60,
+          "current": false,
+          "limited": false
+        }
+      ],
+      "recommended": 1
+    },
+    {
+      "name": "an openai binding sees only the openai family",
+      "binding": {
+        "family": "openai",
+        "accountId": "oai",
+        "accountName": "oai"
+      },
+      "credentials": [
+        {
+          "accountId": "alice",
+          "accountName": "alice",
+          "provider": "anthropic",
+          "windows": [{ "pct": 10, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "oai",
+          "accountName": "oai",
+          "provider": "openai",
+          "windows": [{ "pct": 1, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "oaic",
+          "accountName": "oaic",
+          "provider": "openai-compatible",
+          "windows": [{ "pct": 2, "resetsInSecs": 60 }]
+        }
+      ],
+      "out": [
+        {
+          "accountName": "oai",
+          "pct": 1,
+          "resetsInSecs": 60,
+          "current": true,
+          "limited": false
+        },
+        {
+          "accountName": "oaic",
+          "pct": 2,
+          "resetsInSecs": 60,
+          "current": false,
+          "limited": false
+        }
+      ],
+      "recommended": 1
+    },
+    {
+      "name": "equal utilization breaks on the soonest reset",
+      "binding": {
+        "family": "anthropic",
+        "accountId": "me",
+        "accountName": "me"
+      },
+      "credentials": [
+        {
+          "accountId": "me",
+          "accountName": "me",
+          "provider": "anthropic",
+          "windows": [{ "pct": 80, "resetsInSecs": 10 }]
+        },
+        {
+          "accountId": "late",
+          "accountName": "late",
+          "provider": "anthropic",
+          "windows": [{ "pct": 20, "resetsInSecs": 9000 }]
+        },
+        {
+          "accountId": "soon",
+          "accountName": "soon",
+          "provider": "anthropic",
+          "windows": [{ "pct": 20, "resetsInSecs": 60 }]
+        }
+      ],
+      "out": [
+        {
+          "accountName": "me",
+          "pct": 80,
+          "resetsInSecs": 10,
+          "current": true,
+          "limited": false
+        },
+        {
+          "accountName": "soon",
+          "pct": 20,
+          "resetsInSecs": 60,
+          "current": false,
+          "limited": false
+        },
+        {
+          "accountName": "late",
+          "pct": 20,
+          "resetsInSecs": 9000,
+          "current": false,
+          "limited": false
+        }
+      ],
+      "recommended": 1
+    },
+    {
+      "name": "the worst window decides, and an unknown reset sorts last",
+      "binding": {
+        "family": "anthropic",
+        "accountId": "me",
+        "accountName": "me"
+      },
+      "credentials": [
+        {
+          "accountId": "me",
+          "accountName": "me",
+          "provider": "anthropic",
+          "windows": [{ "pct": 50, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "mixed",
+          "accountName": "mixed",
+          "provider": "anthropic",
+          "windows": [
+            { "pct": 3, "resetsInSecs": 10 },
+            { "pct": 97, "resetsInSecs": 9000 }
+          ]
+        },
+        {
+          "accountId": "quiet",
+          "accountName": "quiet",
+          "provider": "anthropic",
+          "windows": []
+        },
+        {
+          "accountId": "unknown-reset",
+          "accountName": "unknown-reset",
+          "provider": "anthropic",
+          "windows": [{ "pct": 50, "resetsInSecs": null }]
+        }
+      ],
+      "out": [
+        {
+          "accountName": "me",
+          "pct": 50,
+          "resetsInSecs": 60,
+          "current": true,
+          "limited": false
+        },
+        {
+          "accountName": "unknown-reset",
+          "pct": 50,
+          "resetsInSecs": null,
+          "current": false,
+          "limited": false
+        },
+        {
+          "accountName": "quiet",
+          "pct": null,
+          "resetsInSecs": null,
+          "current": false,
+          "limited": false
+        },
+        {
+          "accountName": "mixed",
+          "pct": 97,
+          "resetsInSecs": 9000,
+          "current": false,
+          "limited": true
+        }
+      ],
+      "recommended": 1
+    },
+    {
+      "name": "with everything spent the recommendation is still a switch",
+      "binding": {
+        "family": "anthropic",
+        "accountId": "me",
+        "accountName": "me"
+      },
+      "credentials": [
+        {
+          "accountId": "me",
+          "accountName": "me",
+          "provider": "anthropic",
+          "windows": [{ "pct": 99, "resetsInSecs": 60 }]
+        },
+        {
+          "accountId": "other",
+          "accountName": "other",
+          "provider": "anthropic",
+          "windows": [{ "pct": 99, "resetsInSecs": 60 }]
+        }
+      ],
+      "out": [
+        {
+          "accountName": "me",
+          "pct": 99,
+          "resetsInSecs": 60,
+          "current": true,
+          "limited": true
+        },
+        {
+          "accountName": "other",
+          "pct": 99,
+          "resetsInSecs": 60,
+          "current": false,
+          "limited": true
+        }
+      ],
+      "recommended": 1
+    },
+    {
+      "name": "a lone credential has nowhere to go",
+      "binding": {
+        "family": "anthropic",
+        "accountId": "me",
+        "accountName": "me"
+      },
+      "credentials": [
+        {
+          "accountId": "me",
+          "accountName": "me",
+          "provider": "anthropic",
+          "windows": [{ "pct": 99, "resetsInSecs": 60 }]
+        }
+      ],
+      "out": [
+        {
+          "accountName": "me",
+          "pct": 99,
+          "resetsInSecs": 60,
+          "current": true,
+          "limited": true
+        }
+      ],
+      "recommended": null
+    }
+  ]
+}

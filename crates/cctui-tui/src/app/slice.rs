@@ -18,6 +18,9 @@ pub enum Slice {
     Bookmarks,
     Overview,
     Machines,
+    Spend,
+    Accounts,
+    Access,
 }
 
 impl Slice {
@@ -28,6 +31,9 @@ impl Slice {
             Self::Bookmarks => View::Bookmarks,
             Self::Overview => View::Overview,
             Self::Machines => View::Machines,
+            Self::Accounts => View::Accounts,
+            Self::Spend => View::Spend,
+            Self::Access => View::Access,
         }
     }
 }
@@ -51,9 +57,10 @@ pub const TABS: &[Tab] = &[
     tab("Bookmarks", Some(Slice::Bookmarks)),
     tab("Overview", Some(Slice::Overview)),
     tab("Machines", Some(Slice::Machines)),
-    tab("Access", None),
-    tab("Accounts", None),
+    tab("Access", Some(Slice::Access)),
+    tab("Accounts", Some(Slice::Accounts)),
     tab("Settings", None),
+    tab("Spend", Some(Slice::Spend)),
 ];
 
 /// Where a slice's cursor was when it was last left.
@@ -96,26 +103,10 @@ pub fn machines(app: &App) -> (usize, usize) {
 ///
 /// No endpoint reports spend per day, so this is what the session list can
 /// answer: the lifetime cost of today's sessions, not spend incurred today on
-/// older ones.
+/// older ones. The Spend panel's `today` column is the same figure.
 #[must_use]
 pub fn today_cost_usd(app: &App) -> f64 {
-    let Some(midnight) = local_midnight_ms(app.clock_ms) else { return 0.0 };
-    let total: f64 = app
-        .sessions
-        .iter()
-        .filter(|s| s.registered_at.is_some_and(|at| at.timestamp_millis() >= midnight))
-        .map(|s| s.token_usage.cost_usd)
-        .sum();
-    // `Sum for f64` folds from -0.0, which formats as "-0.00".
-    total + 0.0
-}
-
-/// Local midnight preceding `now_ms`, in unix ms.
-fn local_midnight_ms(now_ms: i64) -> Option<i64> {
-    use chrono::TimeZone;
-    let now = chrono::DateTime::from_timestamp_millis(now_ms)?.with_timezone(&chrono::Local);
-    let date = now.date_naive().and_hms_opt(0, 0, 0)?;
-    chrono::Local.from_local_datetime(&date).single().map(|dt| dt.timestamp_millis())
+    super::spend::today_cost_usd(app)
 }
 
 #[must_use]
@@ -193,7 +184,7 @@ pub fn reduce_slice(app: &mut App, action: SliceAction) -> Vec<Effect> {
 
 fn switch(app: &mut App, number: usize) -> Vec<Effect> {
     let Some(tab) = number.checked_sub(1).and_then(|i| TABS.get(i)) else { return Vec::new() };
-    let Some(target) = tab.slice else {
+    let Some(target) = tab.slice.filter(|slice| permitted(app, *slice)) else {
         app.toast(super::toast::Level::Info, format!("{} is not in the TUI yet", tab.label));
         return Vec::new();
     };
@@ -218,7 +209,23 @@ pub fn go_to(app: &mut App, target: Slice) -> Vec<Effect> {
     match target {
         Slice::Overview => vec![Effect::FetchSessionStats],
         Slice::Bookmarks => super::bookmarks::on_enter(app),
-        Slice::Machines | Slice::Sessions => Vec::new(),
+        Slice::Access => super::admin::on_enter(app),
+        Slice::Accounts | Slice::Machines | Slice::Sessions | Slice::Spend => Vec::new(),
+    }
+}
+
+/// Whether the key may enter a slice at all. The admin surfaces gate on the
+/// same `/me` scope the server checks, so a non-admin is never shown one.
+#[must_use]
+pub fn permitted(app: &App, slice: Slice) -> bool {
+    match slice {
+        Slice::Access => super::admin::is_admin(app),
+        Slice::Sessions
+        | Slice::Bookmarks
+        | Slice::Overview
+        | Slice::Machines
+        | Slice::Spend
+        | Slice::Accounts => true,
     }
 }
 
@@ -228,10 +235,11 @@ mod tests {
     use cctui_proto::models::{Attention, MachineLiveness};
 
     use super::{
-        Slice, SliceAction, TABS, local_midnight_ms, machines, summary, today_cost_usd,
+        Slice, SliceAction, TABS, machines, summary, today_cost_usd,
         zone_from_path,
     };
     use crate::app::action::Effect;
+    use crate::app::spend::local_midnight_ms;
     use crate::app::state::{App, View};
     use crate::app::{Action, reduce};
     use crate::testsupport::{CLOCK_MS, ms_ago, session};
@@ -270,7 +278,10 @@ mod tests {
         assert_eq!(TABS[1].slice, Some(Slice::Bookmarks));
         assert_eq!(TABS[2].slice, Some(Slice::Overview));
         assert_eq!(TABS[3].slice, Some(Slice::Machines));
-        assert!(TABS[4..].iter().all(|t| t.slice.is_none()), "only the built slices are keyed");
+        assert_eq!(TABS[4].slice, Some(Slice::Access));
+        assert_eq!(TABS[5].slice, Some(Slice::Accounts));
+        assert_eq!(TABS[6].slice, None, "Settings is not in the TUI yet and holds its number");
+        assert_eq!(TABS[7].slice, Some(Slice::Spend));
     }
 
     #[test]
@@ -324,8 +335,8 @@ mod tests {
     #[test]
     fn an_unbuilt_tab_says_so_instead_of_switching() {
         let mut app = app();
-        // 5 is Access: the built slices lead the bar, the unbuilt ones trail it.
-        assert!(dispatch(&mut app, SliceAction::Switch(5)).is_empty());
+        // 7 is Settings: the built slices lead the bar, the unbuilt ones trail it.
+        assert!(dispatch(&mut app, SliceAction::Switch(7)).is_empty());
         assert_eq!(app.slice, Slice::Sessions);
         assert!(app.toasts.latest().is_some());
     }

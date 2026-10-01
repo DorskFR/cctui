@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2640
+expression: render_screen(&mut app)
+---
+ Access [Users]  Tokens  Machines  Keys
+   NAME                STATE      DISPATCH
+▸  dorsk               active     yes
+   nanachi             disabled   no
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:move  Tab:tab  n:new  e:rename  d:disable  x:revoke  P:purge  G:disp

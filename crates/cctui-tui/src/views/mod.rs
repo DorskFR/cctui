@@ -4,14 +4,20 @@ pub mod bookmarks;
 pub mod cards;
 pub mod conversation;
 pub mod diagnose;
+pub mod admin;
 pub mod dispatchers;
 pub mod fileview;
 pub mod filters;
+pub mod account_switch;
 pub mod harness_mode;
 pub mod help;
+pub mod instance;
 pub mod history;
+pub mod images;
 pub mod labels;
+pub mod accounts;
 pub mod machines;
+pub mod spend;
 pub mod macros;
 pub mod mentions;
 pub mod model_picker;
@@ -23,6 +29,7 @@ pub mod sections;
 pub mod sessions;
 pub mod sidebar;
 pub mod terminal;
+pub mod usage;
 
 use ratatui::Frame;
 
@@ -42,14 +49,31 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SessionList => sessions::draw(frame, app),
         View::Bookmarks => bookmarks::draw(frame, app),
         View::Machines => machines::draw(frame, app),
+        View::Accounts => accounts::draw(frame, app),
+        View::Spend => spend::draw(frame, app),
+        View::Access => admin::draw(frame, app),
         View::Dispatchers => {
             draw_below(frame, app);
             dispatchers::draw(frame, app);
+        }
+        View::Instance => {
+            draw_below(frame, app);
+            instance::draw(frame, app);
+        }
+        View::Usage => {
+            draw_below(frame, app);
+            usage::draw(frame, app);
         }
         View::HarnessMode => {
             draw_below(frame, app);
             if let Some(picker) = app.harness_picker.as_ref() {
                 harness_mode::draw(frame, picker);
+            }
+        }
+        View::AccountSwitch => {
+            draw_below(frame, app);
+            if let Some(picker) = app.account_switch.as_ref() {
+                account_switch::draw(frame, picker);
             }
         }
         View::Overview => overview::draw(frame, app),
@@ -72,7 +96,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             if let Some(view) = app.file_view.as_ref() {
                 // Full width: a pager showing source wants every column, and a
                 // margin would leave the conversation showing at the edges.
-                fileview::draw(frame, view, frame.area());
+                fileview::draw(frame, view, frame.area(), &app.images);
             }
         }
         View::Diagnose => {

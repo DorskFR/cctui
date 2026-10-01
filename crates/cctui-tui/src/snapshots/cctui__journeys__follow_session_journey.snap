@@ -1,0 +1,35 @@
+---
+source: crates/cctui-tui/src/journeys.rs
+assertion_line: 497
+expression: "replay(\"follow-session\")"
+---
+journey follow-session v1
+route /sessions -> SessionList
+step open
+  click css:[data-journey="session"] [data-journey="title"]#0 via ["enter"]
+  visible conversation
+  visible composer
+step header
+  visible conversation/header
+step meta
+  visible conversation/head-meta
+step details
+  visible conversation/head-details
+step activity
+  visible activity
+step actions WAIVED: a more-actions menu; every action behind it is a key in the TUI, enumerated by the `?` help overlay rather than a widget on the conversation.
+step kinds
+  visible css:[data-journey="conversation"] [data-journey="line"]#0
+step line-actions WAIVED: per-line buttons appear on hover; the TUI acts on the focused line through keys (`m` pin, `y` copy, `b` bookmark), so there is no per-line widget to point at.
+step filters
+  visible filters/quick[assistant]
+step filter-menu
+  visible filters/filter-menu
+step tools-only
+  click filters/quick[assistant] via ["F", "space", "esc"]
+  hidden conversation/line[assistant]
+step tools-restore
+  click filters/quick[assistant] via ["F", "space", "esc"]
+  visible conversation/line[assistant]
+step reply
+  visible composer/message

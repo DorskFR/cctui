@@ -99,6 +99,7 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
         },
         Effect::Subscribe { session_id: session_id.clone() },
         super::pins::on_open(&session_id),
+        super::spend::on_conversation_open(&session_id),
         Effect::MarkSeen { session_id },
     ]
 }

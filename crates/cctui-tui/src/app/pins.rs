@@ -206,6 +206,7 @@ pub const fn role_of(kind: LineKind) -> &'static str {
         LineKind::Thinking { .. } => "thinking",
         LineKind::Tool { .. } | LineKind::Result { .. } => "tool",
         LineKind::Peer => "peer",
+        LineKind::Image => "assistant",
         LineKind::System | LineKind::Marker | LineKind::Reply => "system",
         LineKind::Reset | LineKind::Compact | LineKind::Summary => "boundary",
     }

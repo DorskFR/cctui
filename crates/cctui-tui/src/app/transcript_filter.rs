@@ -117,6 +117,7 @@ pub const fn category_of(line: &ConversationLine) -> Category {
         LineKind::Marker => Category::Marker,
         LineKind::Summary => Category::Summary,
         LineKind::Compact => Category::Compact,
+        LineKind::Image => Category::Assistant,
         LineKind::Reset => Category::Reset,
     }
 }

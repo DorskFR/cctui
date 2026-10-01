@@ -1,0 +1,67 @@
+{
+  "updateAvailable": [
+    { "version": "1.2.3", "latest": null, "out": false },
+    { "version": "1.2.3", "latest": "", "out": false },
+    { "version": "1.2.3", "latest": "1.2.3", "out": false },
+    { "version": "1.2.3", "latest": "1.2.4", "out": true },
+    { "version": "1.2.3-beta.1", "latest": "1.2.3-beta.2", "out": true }
+  ],
+  "phaseTone": [
+    { "phase": null, "out": "danger" },
+    { "phase": "running", "out": "faint" },
+    { "phase": "verifying", "out": "faint" },
+    { "phase": "succeeded", "out": "success" },
+    { "phase": "rolling_back", "out": "danger" },
+    { "phase": "rolled_back", "out": "danger" },
+    { "phase": "failed", "out": "danger" }
+  ],
+  "phaseMessage": [
+    { "phase": "running", "out": "update_run_phase_running" },
+    { "phase": "verifying", "out": "update_run_phase_verifying" },
+    { "phase": "succeeded", "out": "update_run_phase_succeeded" },
+    { "phase": "rolling_back", "out": "update_run_phase_rolling_back" },
+    { "phase": "rolled_back", "out": "update_run_phase_rolled_back" },
+    { "phase": "failed", "out": "update_run_phase_failed" }
+  ],
+  "hintMessage": [
+    {
+      "isAdmin": false,
+      "ready": true,
+      "hook": true,
+      "out": "update_ask_admin"
+    },
+    {
+      "isAdmin": false,
+      "ready": false,
+      "hook": false,
+      "out": "update_ask_admin"
+    },
+    {
+      "isAdmin": true,
+      "ready": false,
+      "hook": true,
+      "out": "update_no_target_hint"
+    },
+    { "isAdmin": true, "ready": true, "hook": true, "out": "update_hook_hint" },
+    {
+      "isAdmin": true,
+      "ready": true,
+      "hook": false,
+      "out": "update_agent_hint"
+    }
+  ],
+  "confirmMessage": [
+    { "hook": true, "out": "update_confirm_body_hook" },
+    { "hook": false, "out": "update_confirm_body" }
+  ],
+  "badgeMessage": [
+    { "hook": true, "out": "update_hook_badge" },
+    { "hook": false, "out": "update_agent_badge" }
+  ],
+  "canLaunch": [
+    { "isAdmin": true, "ready": true, "available": true, "out": true },
+    { "isAdmin": false, "ready": true, "available": true, "out": false },
+    { "isAdmin": true, "ready": false, "available": true, "out": false },
+    { "isAdmin": true, "ready": true, "available": false, "out": false }
+  ]
+}

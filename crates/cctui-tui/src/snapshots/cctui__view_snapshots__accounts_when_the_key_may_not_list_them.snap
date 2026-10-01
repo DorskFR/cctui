@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2521
+expression: render_screen(&mut app)
+---
+ Accounts  0/0 poolable  ! 1 need input — Ctrl+g
+    NAME                  PROVIDERS     POOL          USAGE
+ this key may not list accounts
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Pools  0
+ this key may not list accounts
+
+
+
+
+
+ j/k:move  Enter:detail  e:poolable  +/-:weight  R:reset  x:redirect  Tab:pools
