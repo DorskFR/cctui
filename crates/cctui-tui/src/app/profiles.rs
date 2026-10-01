@@ -53,7 +53,7 @@ pub struct ProfileSection {
     pub loaded: bool,
     /// The machine's last-used profile, as spawn memory remembers it.
     pub last_used: Option<String>,
-    /// Names the chain line resolves against; the accounts lane fills these,
+    /// Names the chain line resolves against; the accounts view fills these,
     /// and an empty list simply reads as Auto.
     pub accounts: Vec<AccountRef>,
     pub pools: Vec<PoolRef>,

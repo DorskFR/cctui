@@ -290,7 +290,7 @@ pub fn reduce_accounts(app: &mut App, action: AccountAction) -> Vec<Effect> {
                 format!("upstream said {} ({credit})", outcome.outcome)
             };
             app.toast(if outcome.reset() { Level::Info } else { Level::Warn }, text);
-            // The windows may have moved, so the usage lane must re-read them
+            // The windows may have moved, so the usage view must re-read them
             // rather than serve what it already has.
             let mut effects = refresh(app);
             effects.extend(super::usage::reduce_usage(app, super::usage::UsageAction::Refresh));
@@ -561,7 +561,7 @@ pub mod tests {
     }
 
     /// One `GET /accounts/usage` row for `account`, offering a reset on its own
-    /// provider row — the shape the usage lane holds.
+    /// provider row — the shape the usage view holds.
     fn usage_row(
         account: &str,
         provider_row: &str,

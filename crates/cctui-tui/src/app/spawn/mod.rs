@@ -1,7 +1,7 @@
 //! The spawn dialog: one form, a list of sections, one request.
 //!
-//! A lane adds a feature by writing a struct, implementing [`SpawnSection`] and
-//! registering it in [`SpawnForm::sections`] — one line.
+//! A feature is a struct implementing [`SpawnSection`], registered in
+//! [`SpawnForm::sections`].
 //!
 //! The request is built once, from [`SpawnForm::fields`], by
 //! `cctui_clientcore::spawn::build_spawn_body`. [`SpawnSection::apply`] runs
@@ -165,7 +165,7 @@ pub struct SpawnData {
 }
 
 /// Which tab the dialog is on. The toggle belongs to the dialog; a tab's own
-/// fields belong to whichever lane owns it.
+/// fields belong to its section.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SpawnTarget {
     #[default]
@@ -205,7 +205,7 @@ pub struct SpawnForm {
     /// Inline errors from the last submit, cleared on the next edit.
     pub errors: Vec<String>,
     pub submitting: bool,
-    /// Registered sections, in display and Tab order. A lane appends one line.
+    /// Registered sections, in display and Tab order.
     pub sections: Vec<Box<dyn SpawnSection>>,
 }
 
@@ -559,8 +559,8 @@ impl SpawnForm {
     /// being cloned or a macro launched as a session. Fields the core does not
     /// know are left to whichever section owns them.
     ///
-    /// Published for Q3 (drafts, profiles, macro-as-session); nothing in this
-    /// lane calls it yet.
+    /// Nothing drives this at runtime yet: the draft, profile and macro paths
+    /// stage a request in `spawn_drafts` without reopening the dialog from it.
     #[allow(dead_code)]
     pub fn prefill(&mut self, request: &SpawnRequest) {
         let f = &mut self.fields;
@@ -1698,8 +1698,7 @@ mod reduce_tests {
     }
 }
 
-/// The seams Q2–Q4 build against. These are the published contract, so they are
-/// exercised here rather than waiting for the lane that consumes them.
+/// The section seams, exercised here because nothing else pins their shape.
 #[cfg(test)]
 mod contract_tests {
     use super::{SpawnForm, form_snapshot, open_prefilled};

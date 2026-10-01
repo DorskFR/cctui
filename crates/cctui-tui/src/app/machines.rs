@@ -204,7 +204,7 @@ fn clamp(app: &mut App) {
     app.machines.selected = if len == 0 { 0 } else { app.machines.selected.min(len - 1) };
 }
 
-/// Aiming the spawn dialog is all this lane can do: the dialog itself belongs to
+/// Aiming the spawn dialog is all this view does: the dialog itself belongs to
 /// the spawn lane, which reads `spawn_target`.
 fn spawn_here(app: &mut App) -> Vec<Effect> {
     let Some(row) = app.machines.selected_row() else { return Vec::new() };
