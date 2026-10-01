@@ -7,6 +7,7 @@ use super::attention::AttentionAction;
 use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
@@ -82,6 +83,7 @@ pub enum Action {
     Prompt(PromptAction),
     Diagnose(DiagnoseAction),
     Slice(SliceAction),
+    DeepLink(DeepLinkAction),
 
     StreamLine {
         session_id: String,
@@ -276,5 +278,11 @@ pub enum Effect {
     /// Persist the fold state to `tui-state.json`.
     /// `GET /sessions/stats`: the counts the summary line and Overview show.
     FetchSessionStats,
+    /// `GET /sessions/{id}`: a session the list does not carry, e.g. archived.
+    FetchSession {
+        session_id: String,
+        /// Transcript position to land on once it opens.
+        seq: Option<i64>,
+    },
     SaveUiState(crate::config::uistate::UiState),
 }

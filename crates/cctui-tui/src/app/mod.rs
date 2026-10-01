@@ -7,6 +7,7 @@ pub mod controls;
 pub mod conversation;
 pub mod conversation_store;
 pub mod copy;
+pub mod deeplink;
 pub mod diagnose;
 pub mod drafts;
 pub mod effects;

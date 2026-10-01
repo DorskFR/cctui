@@ -291,6 +291,8 @@ pub struct App {
     /// `GET /sessions/stats`, `None` until the first reply.
     pub stats: Option<cctui_proto::api::SessionStats>,
     pub overview_scroll: usize,
+    /// `--filter` from the command line, for the list search to adopt.
+    pub startup_filter: Option<String>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -403,6 +405,7 @@ impl App {
             slice_cursors: HashMap::new(),
             stats: None,
             overview_scroll: 0,
+            startup_filter: None,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             terminal: None,

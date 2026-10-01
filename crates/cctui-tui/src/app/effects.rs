@@ -13,6 +13,7 @@ use super::attention::AttentionAction;
 use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
@@ -275,6 +276,16 @@ async fn run(
                 }
             }
         }
+        Effect::FetchSession { session_id, seq } => match server.get_session(&session_id).await {
+            Ok(session) => {
+                vec![Action::DeepLink(DeepLinkAction::Fetched { session: Box::new(session), seq })]
+            }
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, session_id, "session fetch failed");
+                vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
+            }
+        },
         Effect::SaveUiState(state) => {
             crate::config::uistate::save(&state);
             Vec::new()

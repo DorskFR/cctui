@@ -1083,6 +1083,13 @@ fn session_list_summary_before_the_stats_land() {
 }
 
 #[test]
+fn session_list_with_a_startup_filter() {
+    let mut app = app_with_stats();
+    app.startup_filter = Some("tag:wave-5".to_owned());
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn overview_view() {
     let mut app = app_with_stats();
     reduce(&mut app, Action::Slice(SliceAction::Switch(3)));

@@ -1177,8 +1177,8 @@ reason = "plugin panes and their backends are webui iframes"
 [[route]]
 id = "get_sessions_by_id"
 # GET /sessions/{id} — Get one session's details.
-tui = "planned"
-ticket = "CCT-1254"
+tui = "handled"
+module = "app/effects.rs"
 
 [[route]]
 id = "patch_sessions_by_id"

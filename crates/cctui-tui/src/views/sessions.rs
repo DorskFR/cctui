@@ -38,6 +38,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw("  "),
     ];
     spans.extend(crate::widgets::tabs::summary_spans(app, usize::from(area.width)));
+    if let Some(filter) = app.startup_filter.as_deref() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("filter {filter}"), theme::branch()));
+    }
     if app.refresh.requested > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
