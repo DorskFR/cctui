@@ -231,8 +231,8 @@ impl fmt::Display for Context {
 
 macro_rules! actions {
     ($($variant:ident => $name:literal, $desc:literal;)*) => {
-        /// Every nameable binding target. Variants without a key in
-        /// [`DEFAULT_BINDINGS`] are reserved for later waves.
+        /// Every nameable binding target: what a `tui.toml` entry may name,
+        /// whether or not the built-in table binds a key to it.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum ActionId {
             $($variant,)*
@@ -265,7 +265,6 @@ actions! {
     SearchPrev => "search-prev", "Previous search hit";
     Diagnose => "diagnose", "Diagnose the selected session";
     Info => "info", "Session info";
-    Refresh => "refresh", "Refresh from the server";
 
     SelectNext => "select-next", "Next session";
     SelectPrev => "select-prev", "Previous session";
@@ -273,7 +272,6 @@ actions! {
     SelectLast => "select-last", "Last session";
     SelectIndex => "select-index", "Jump to session by number";
     OpenConversation => "open-conversation", "Open the conversation";
-    ToggleCompactRows => "toggle-compact-rows", "Compact session rows";
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
@@ -302,7 +300,6 @@ actions! {
     ListSearchMore => "list-search-more", "Load more results";
     ToggleUnreadOnly => "toggle-unread-only", "Show only unread sessions";
     TogglePin => "toggle-pin", "Pin or unpin the session";
-    NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
     Resume => "resume", "Resume the ended session";
