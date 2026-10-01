@@ -7,7 +7,9 @@ use cctui_proto::drafts::{composer_draft_key, session_history_key};
 use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
-use super::action::{Action, Effect};
+use super::account_switch::AccountSwitchAction;
+use super::accounts::AccountAction;
+use super::action::{AccountsFor, Action, Effect, ModelsFor};
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
 use super::bookmarks::BookmarkAction;
@@ -16,18 +18,33 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatch::DispatchAction;
+use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
+use super::forkform::ForkAction;
 use super::identity::AuthAction;
+use super::images::ImagesAction;
+use super::instance::InstanceAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
+use super::machines::MachineAction;
 use super::pins::PinAction;
+use super::pools::PoolAction;
+use super::profiles::ProfileAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
+use super::spawn::{SpawnAction, SpawnFetch};
+use super::spawn_drafts::SpawnDraftAction;
+use super::spend::SpendAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
 const QUEUE: usize = 256;
+
+/// How many independent effects may be in flight beside the ordered lane. The
+/// bound is what keeps a burst of reads from opening a connection each.
+const CONCURRENCY: usize = 8;
 
 /// Payload version sent with a settings write; the server migrates forward.
 const SETTINGS_VERSION: i32 = 1;
@@ -43,19 +60,40 @@ const DRAFT_DEBOUNCE: Duration = Duration::from_millis(700);
 /// key-handling path never blocks on HTTP or the websocket.
 pub struct Effects {
     tx: mpsc::Sender<Effect>,
+    /// The action channel, so a dropped effect can still say so.
+    notify: mpsc::Sender<Action>,
 }
 
 impl Effects {
-    /// Effects are executed one at a time: two messages typed in quick
-    /// succession must reach the server in the order they were sent.
+    /// Ordered effects are executed one at a time: two messages typed in quick
+    /// succession must reach the server in the order they were sent. Effects
+    /// that answer only to themselves ([`Effect::runs_concurrently`]) go to
+    /// bounded side tasks, so one slow read cannot hold the lane.
     pub fn start(server: Arc<Client>, ws: Arc<WsClient>) -> (Self, mpsc::Receiver<Action>) {
         let (tx, mut rx) = mpsc::channel::<Effect>(QUEUE);
         let (action_tx, action_rx) = mpsc::channel::<Action>(QUEUE);
+        let notify = action_tx.clone();
 
         tokio::spawn(async move {
-            let mut drafts = DraftSaver::new(Arc::clone(&server));
+            let drafts = Arc::new(DraftSaver::new(Arc::clone(&server), action_tx.clone()));
+            let limit = Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
             while let Some(effect) = rx.recv().await {
-                for action in run(&server, &ws, &mut drafts, effect).await {
+                if effect.runs_concurrently() {
+                    let Ok(permit) = Arc::clone(&limit).acquire_owned().await else { return };
+                    let (server, ws, drafts) =
+                        (Arc::clone(&server), Arc::clone(&ws), Arc::clone(&drafts));
+                    let action_tx = action_tx.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        for action in run(&server, &ws, &drafts, effect).await {
+                            if action_tx.send(action).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                    continue;
+                }
+                for action in run(&server, &ws, &drafts, effect).await {
                     if action_tx.send(action).await.is_err() {
                         return;
                     }
@@ -63,12 +101,18 @@ impl Effects {
             }
         });
 
-        (Self { tx }, action_rx)
+        (Self { tx, notify }, action_rx)
     }
 
+    /// A dropped effect is a key press that did nothing, so the user is told
+    /// rather than left guessing.
     pub fn dispatch(&self, effect: Effect) {
         if self.tx.try_send(effect).is_err() {
-            tracing::warn!("effect queue full; dropping effect");
+            tracing::warn!("the effect queue is full; dropping an effect");
+            let _ = self.notify.try_send(Action::Toast(
+                Level::Error,
+                "the server is not keeping up — that action was dropped".to_owned(),
+            ));
         }
     }
 
@@ -77,22 +121,79 @@ impl Effects {
             self.dispatch(effect);
         }
     }
+
+    /// Wait, at most `budget`, for everything already queued on the ordered lane
+    /// to finish. Quit calls this so the draft writes it just asked for actually
+    /// leave; a server that has stopped answering costs the budget, not the exit.
+    pub async fn drain(&self, budget: std::time::Duration) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(Effect::Barrier(tx)).await.is_err() {
+            return;
+        }
+        let _ = tokio::time::timeout(budget, rx).await;
+    }
+}
+
+impl Effect {
+    /// Whether this effect may run beside the ordered lane.
+    ///
+    /// The lane exists so that two sends keep their order, and so that a read
+    /// issued after a mutation sees it. Only effects that are both read-only and
+    /// not a refetch of something just mutated are listed here — the ones that
+    /// page a whole transcript or relay through a machine, which are exactly the
+    /// ones that can block for a long time.
+    const fn runs_concurrently(&self) -> bool {
+        matches!(
+            self,
+            Self::LoadConversationPage { .. }
+                | Self::ExportConversation { .. }
+                | Self::OpenLinkedFile { .. }
+                | Self::ReadAttachment { .. }
+                | Self::ReadSpawnFile { .. }
+                | Self::ReadClipboardImage
+                | Self::FetchSessionImage { .. }
+                | Self::FetchDiagnose { .. }
+                | Self::FetchGitInfo { .. }
+                | Self::FetchMachineDirs { .. }
+                | Self::FetchRecentDirs { .. }
+                | Self::FetchSpawnMemory
+                | Self::FetchChangelog { .. }
+                | Self::FetchSelfUpdateRun
+                | Self::FetchHarnessModels { .. }
+                | Self::FetchSessionLangfuse { .. }
+                | Self::SearchSessions { .. }
+                | Self::SearchValues { .. }
+        )
+    }
+}
+
+/// The row a `save_draft` spawn created. The draft route answers with the new
+/// row's id in `command_id` and no `session_id`, so that is what identifies it.
+fn created_draft_id(reply: &cctui_proto::api::SpawnResponse) -> Option<String> {
+    (reply.status == "draft").then(|| reply.command_id.to_string())
 }
 
 /// Per-key debounce for draft writes: a pending save is replaced, not queued,
 /// and the request is off the effect queue so typing never waits on it.
 struct DraftSaver {
     server: Arc<Client>,
-    pending: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// The first spawn autosave is what mints the draft row; its id has to reach
+    /// the reducer or every later save mints another row.
+    actions: mpsc::Sender<Action>,
+    pending: std::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl DraftSaver {
-    fn new(server: Arc<Client>) -> Self {
-        Self { server, pending: HashMap::new() }
+    fn new(server: Arc<Client>, actions: mpsc::Sender<Action>) -> Self {
+        Self { server, actions, pending: std::sync::Mutex::new(HashMap::new()) }
     }
 
-    fn save(&mut self, key: String, text: String) {
-        self.pending.retain(|_, handle| !handle.is_finished());
+    fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, tokio::task::JoinHandle<()>>> {
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn save(&self, key: String, text: String) {
+        self.pending().retain(|_, handle| !handle.is_finished());
         self.cancel(&key);
         let server = Arc::clone(&self.server);
         let target = key.clone();
@@ -102,23 +203,49 @@ impl DraftSaver {
                 tracing::warn!(%e, "draft save failed");
             }
         });
-        self.pending.insert(key, handle);
+        self.pending().insert(key, handle);
     }
 
-    fn cancel(&mut self, key: &str) {
-        if let Some(handle) = self.pending.remove(key) {
+    /// One pending autosave at a time, keyed on the dialog rather than a
+    /// draft id: the first save is what mints the id.
+    fn autosave(&self, session_id: Option<String>, request: Box<cctui_proto::api::SpawnRequest>) {
+        const KEY: &str = "\u{0}spawn-draft";
+        self.cancel(KEY);
+        let server = Arc::clone(&self.server);
+        let actions = self.actions.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DRAFT_DEBOUNCE).await;
+            let outcome = match session_id.as_deref() {
+                Some(id) => server.update_draft(id, &request).await.map(|_| None),
+                // An autosave stores names, never bytes: the files go up at launch.
+                None => server
+                    .spawn_session(&request, Vec::new())
+                    .await
+                    .map(|reply| created_draft_id(&reply)),
+            };
+            match outcome {
+                Ok(Some(session_id)) => {
+                    let _ = actions
+                        .send(Action::SpawnDrafts(SpawnDraftAction::DraftCreated { session_id }))
+                        .await;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(%e, "autosaving the spawn draft failed"),
+            }
+        });
+        self.pending().insert(KEY.to_owned(), handle);
+    }
+
+    fn cancel(&self, key: &str) {
+        let removed = self.pending().remove(key);
+        if let Some(handle) = removed {
             handle.abort();
         }
     }
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run(
-    server: &Client,
-    ws: &WsClient,
-    drafts: &mut DraftSaver,
-    effect: Effect,
-) -> Vec<Action> {
+async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect) -> Vec<Action> {
     match effect {
         Effect::RefreshSessions => match server.list_sessions().await {
             Ok(resp) => vec![Action::SessionsLoaded(resp.sessions)],
@@ -165,6 +292,72 @@ async fn run(
                 Err(e) => {
                     tracing::warn!(%e, "bookmark list fetch failed");
                     vec![Action::Bookmarks(BookmarkAction::Failed)]
+                }
+            }
+        }
+        Effect::LoadProfiles => match server.profiles().await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Loaded(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile list fetch failed");
+                vec![Action::Profiles(ProfileAction::Failed)]
+            }
+        },
+        Effect::CreateProfile { name, spec } => {
+            let body = cctui_proto::api::profiles::CreateProfileRequest { name, spec: *spec };
+            match server.create_profile(&body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, "profile create failed");
+                    vec![Action::Toast(Level::Error, "could not create the profile".to_owned())]
+                }
+            }
+        }
+        Effect::UpdateProfile { id, name, spec } => {
+            let body = cctui_proto::api::profiles::UpdateProfileRequest { name, spec: Some(*spec) };
+            match server.update_profile(&id, &body).await {
+                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
+                Err(e) => {
+                    tracing::warn!(%e, id, "profile update failed");
+                    vec![Action::Toast(Level::Error, "could not save the profile".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteProfile { id } => match server.delete_profile(&id).await {
+            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
+                |_| Vec::new(),
+                |id| vec![Action::Profiles(ProfileAction::Deleted(id))],
+            ),
+            Err(e) => {
+                tracing::warn!(%e, id, "profile delete failed");
+                vec![Action::Toast(Level::Error, "could not delete the profile".to_owned())]
+            }
+        },
+        Effect::ReorderProfiles { ids } => match server.reorder_profiles(ids).await {
+            Ok(list) => vec![Action::Profiles(ProfileAction::Reordered(list))],
+            Err(e) => {
+                tracing::warn!(%e, "profile reorder failed");
+                vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
+            }
+        },
+        Effect::AutosaveDraft { session_id, request } => {
+            drafts.autosave(session_id, request);
+            Vec::new()
+        }
+        Effect::LaunchDraft { session_id, env } => {
+            match server.launch_draft(&session_id, &env).await {
+                Ok(_) => vec![Action::SpawnDrafts(SpawnDraftAction::Launched { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft launch failed");
+                    vec![Action::Toast(Level::Error, "could not launch the draft".to_owned())]
+                }
+            }
+        }
+        Effect::DiscardDraftSession { session_id } => {
+            match server.discard_draft(&session_id).await {
+                Ok(()) => vec![Action::SpawnDrafts(SpawnDraftAction::Discarded { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft discard failed");
+                    vec![Action::Toast(Level::Error, "could not discard the draft".to_owned())]
                 }
             }
         }
@@ -232,8 +425,8 @@ async fn run(
             }
             Vec::new()
         }
-        Effect::SendMessage { send_id, session_id, content, ask_picks, turn_id } => {
-            let client_msg_id = uuid::Uuid::new_v4().to_string();
+        Effect::SendMessage { send_id, session_id, content, ask_picks, turn_id, client_msg_id } => {
+            let client_msg_id = client_msg_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let turn_id = turn_id.unwrap_or_else(uuid::Uuid::new_v4);
             match ws
                 .send_message_as(
@@ -305,18 +498,54 @@ async fn run(
                 error: error.map(|e| e.to_string()),
             })]
         }
-        Effect::Fork { session_id } => match server.fork(&session_id).await {
+        Effect::Resume { session_id } => {
+            let error = server.resume(&session_id).await.err();
+            if let Some(e) = error.as_ref() {
+                tracing::warn!(%e, "resume failed");
+            }
+            vec![Action::Fork(ForkAction::Resumed(error.map(|e| e.to_string())))]
+        }
+        Effect::FetchSpawnDispatchers => match server.spawn_dispatchers().await {
+            Ok(names) => vec![spawn_data(SpawnFetch::Dispatchers(names))],
+            Err(e) => {
+                tracing::warn!(%e, "spawn dispatcher list fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::Dispatch { body } => match server.dispatch(&body).await {
+            Ok(resp) => vec![Action::Dispatch(DispatchAction::Submitted {
+                session_id: resp.session_id,
+                // `deduplicated` is the idempotency key landing on the job that
+                // is already running.
+                existing: resp.status == "deduplicated",
+            })],
+            Err(e) => {
+                tracing::warn!(%e, "dispatch failed");
+                vec![Action::Toast(Level::Error, format!("dispatch failed: {e}"))]
+            }
+        },
+        Effect::Fork { session_id, request } => match server.fork(&session_id, &request).await {
             Ok(resp) => vec![Action::Controls(ControlsAction::Forked(resp.session_id))],
             Err(e) => {
                 tracing::warn!(%e, "fork failed");
                 vec![Action::Toast(Level::Error, format!("fork failed: {e}"))]
             }
         },
-        Effect::FetchHarnessModels { harness, machine_id, model } => {
+        Effect::FetchHarnessModels { want, harness, machine_id, model } => {
             match server.harness_models(&harness, Some(&machine_id), &model).await {
-                Ok(models) => {
-                    vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
-                }
+                Ok(models) => match want {
+                    ModelsFor::RunningSession => {
+                        vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
+                    }
+                    ModelsFor::SpawnDialog => {
+                        vec![Action::Spawn(super::spawn::SpawnAction::ModelsLoaded(Box::new(
+                            models,
+                        )))]
+                    }
+                    ModelsFor::ForkDialog => {
+                        vec![Action::Fork(ForkAction::ModelsLoaded(Box::new(models)))]
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(%e, "harness model list fetch failed");
                     vec![Action::Toast(Level::Warn, "could not read the model list".to_owned())]
@@ -341,12 +570,46 @@ async fn run(
                 }
             }
         }
-        Effect::ReadAttachment { session_id, path } => read_attachment(&session_id, &path),
+        Effect::ReadAttachment { session_id, path } => read_attachment(&session_id, &path).await,
+        Effect::ReadSpawnFile { path } => read_spawn_file(&path).await,
+        Effect::SaveDraftNow { key, text } => {
+            if let Err(e) = server.put_draft(&key, &text).await {
+                tracing::warn!(%e, "flushing a draft on quit failed");
+            }
+            Vec::new()
+        }
+        Effect::Barrier(done) => {
+            let _ = done.send(());
+            Vec::new()
+        }
         Effect::UploadAttachments { session_id, content, files } => {
             upload_attachments(server, session_id, content, files).await
         }
         Effect::OpenLinkedFile { session_id, machine_id, path } => {
             open_linked_file(server, &session_id, &machine_id, &path).await
+        }
+        Effect::ReadClipboardImage => vec![read_clipboard_image()],
+        Effect::FetchSessionImage { session_id, image_id } => {
+            match server.session_image(&session_id, &image_id).await {
+                Ok(cctui_client::FileRead::Ok { content_type, bytes }) => {
+                    vec![Action::Images(ImagesAction::Fetched {
+                        name: format!("{image_id}.{}", image_extension(&content_type)),
+                        content_type,
+                        bytes,
+                    })]
+                }
+                Ok(cctui_client::FileRead::Refused(refusal)) => {
+                    vec![Action::FileView(FileViewAction::Refused {
+                        name: "the image".to_owned(),
+                        refusal: Box::new(refusal),
+                        source: fileview::FileSource::Blob,
+                    })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "image fetch failed");
+                    vec![Action::Toast(Level::Error, "could not fetch the image".to_owned())]
+                }
+            }
         }
         Effect::OpenInOsViewer { name, bytes } => {
             open_in_os_viewer(&name, &bytes);
@@ -370,6 +633,271 @@ async fn run(
             Err(e) => {
                 tracing::warn!(%e, session_id, "session fetch failed");
                 vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
+            }
+        },
+        // The accounts, usage and spend arms live in their own runner: one
+        // function holding every arm builds a future too large for the stack.
+        rest @ (Effect::FetchAccounts { .. }
+        | Effect::FetchRedirects
+        | Effect::FetchAccountPools { .. }
+        | Effect::UpdateAccount { .. }
+        | Effect::ClaimLimitReset { .. }
+        | Effect::PutRedirect { .. }
+        | Effect::DeleteRedirect { .. }
+        | Effect::CreatePool { .. }
+        | Effect::UpdatePool { .. }
+        | Effect::DeletePool { .. }
+        | Effect::FetchMachines
+        | Effect::FetchUsage
+        | Effect::FetchSpend { .. }
+        | Effect::FetchSessionLangfuse { .. }
+        | Effect::FetchAccountSwitch { .. }
+        | Effect::SwitchSessionAccount { .. }
+        | Effect::FetchVersion
+        | Effect::RefreshVersion
+        | Effect::FetchSelfUpdateRun
+        | Effect::FetchChangelog
+        | Effect::LaunchSelfUpdate
+        | Effect::Access(..)
+        | Effect::FetchDispatchers
+        | Effect::EnrollDispatcher { .. }
+        | Effect::UpdateDispatcher { .. }
+        | Effect::DeleteDispatcher { .. }
+        | Effect::FetchAccountsUsage
+        | Effect::FetchLabels
+        | Effect::CreateLabel { .. }
+        | Effect::UpdateLabel { .. }
+        | Effect::DeleteLabel { .. }
+        | Effect::AttachLabel { .. }
+        | Effect::DetachLabel { .. }
+        | Effect::SaveUiState(..)
+        | Effect::SearchSessions { .. }
+        | Effect::SearchValues { .. }
+        | Effect::FetchGitInfo { .. }
+        | Effect::FetchMachineDirs { .. }
+        | Effect::FetchRecentDirs
+        | Effect::FetchSpawnMemory
+        | Effect::PutSpawnMemory { .. }
+        | Effect::RefreshCodexModels { .. }
+        | Effect::SpawnSession { .. }
+        | Effect::SaveSettings { .. }
+        | Effect::RespondPermission { .. }
+        | Effect::FetchDiagnose { .. }) => run_accounts(server, ws, rest).await,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_accounts(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
+    match effect {
+        Effect::FetchAccounts { want } => match server.accounts().await {
+            Ok(rows) => match want {
+                AccountsFor::Slice => vec![Action::Accounts(AccountAction::Loaded(rows))],
+                AccountsFor::SpawnDialog => vec![spawn_data(SpawnFetch::Accounts(rows))],
+            },
+            Err(e) => {
+                tracing::warn!(%e, "listing accounts failed");
+                match want {
+                    AccountsFor::Slice => {
+                        vec![Action::Accounts(AccountAction::Failed(account_error(&e)))]
+                    }
+                    AccountsFor::SpawnDialog => {
+                        vec![Action::Toast(Level::Warn, "could not list accounts".to_owned())]
+                    }
+                }
+            }
+        },
+        Effect::FetchRedirects => match server.redirects().await {
+            Ok(rules) => vec![Action::Accounts(AccountAction::RedirectsLoaded(rules))],
+            Err(e) => {
+                tracing::warn!(%e, "listing redirect rules failed");
+                Vec::new()
+            }
+        },
+        Effect::FetchAccountPools { want } => match server.account_pools().await {
+            Ok(rows) => match want {
+                AccountsFor::Slice => vec![Action::Pools(PoolAction::Loaded(rows))],
+                AccountsFor::SpawnDialog => vec![spawn_data(SpawnFetch::Pools(rows))],
+            },
+            Err(e) => {
+                tracing::warn!(%e, "listing account pools failed");
+                match want {
+                    AccountsFor::Slice => {
+                        vec![Action::Pools(PoolAction::Failed(account_error(&e)))]
+                    }
+                    AccountsFor::SpawnDialog => Vec::new(),
+                }
+            }
+        },
+        Effect::UpdateAccount { id, request } => match server.update_account(&id, &request).await {
+            Ok(()) => refetch_accounts(server).await,
+            Err(e) => vec![account_refusal(&e, "could not edit the account")],
+        },
+        Effect::ClaimLimitReset { provider_id, credit_id } => {
+            let request = cctui_client::LimitResetRequest { credit_id };
+            match server.limit_reset(&provider_id, &request).await {
+                Ok(outcome) => vec![Action::Accounts(AccountAction::ResetDone(Box::new(outcome)))],
+                Err(e) => vec![account_refusal(&e, "could not claim the reset")],
+            }
+        }
+        Effect::PutRedirect { account_id, to_account, family } => {
+            let request = cctui_client::PutRedirect {
+                to_account: Some(to_account),
+                family,
+                ..Default::default()
+            };
+            match server.put_account_redirect(&account_id, &request).await {
+                Ok(()) => refetch_accounts(server).await,
+                Err(e) => vec![account_refusal(&e, "could not set the redirect")],
+            }
+        }
+        Effect::DeleteRedirect { id } => match server.delete_redirect(&id).await {
+            Ok(()) => refetch_accounts(server).await,
+            Err(e) => vec![account_refusal(&e, "could not clear the redirect")],
+        },
+        Effect::CreatePool { request } => match server.create_account_pool(&request).await {
+            Ok(_) => refetch_pools(server).await,
+            Err(e) => vec![pool_refusal(&e, "could not create the pool")],
+        },
+        Effect::UpdatePool { id, request } => {
+            match server.update_account_pool(&id, &request).await {
+                Ok(()) => refetch_pools(server).await,
+                Err(e) => vec![pool_refusal(&e, "could not edit the pool")],
+            }
+        }
+        Effect::DeletePool { id } => match server.delete_account_pool(&id).await {
+            Ok(()) => refetch_pools(server).await,
+            Err(e) => vec![pool_refusal(&e, "could not delete the pool")],
+        },
+        Effect::FetchMachines => match server.machines().await {
+            Ok(rows) => vec![Action::Machines(MachineAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing machines failed");
+                vec![Action::Machines(MachineAction::Failed(machine_error(&e)))]
+            }
+        },
+        Effect::FetchUsage => fetch_usage(server).await,
+        Effect::FetchSpend { tz_offset } => fetch_spend(server, tz_offset).await,
+        Effect::FetchSessionLangfuse { session_id } => {
+            let usage = server.session_langfuse(&session_id).await.ok().map(|u| {
+                cctui_clientcore::spend::LangfuseSpend {
+                    cost_usd: u.cost_usd,
+                    trace_count: u.trace_count,
+                }
+            });
+            vec![Action::Spend(SpendAction::Langfuse { session_id, usage })]
+        }
+        Effect::FetchAccountSwitch { session_id } => {
+            match super::account_switch::load(server, &session_id).await {
+                Ok((bindings, credentials)) => {
+                    vec![Action::AccountSwitch(AccountSwitchAction::Loaded {
+                        bindings,
+                        credentials,
+                    })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "loading the account picker failed");
+                    vec![Action::AccountSwitch(AccountSwitchAction::Failed(e.to_string()))]
+                }
+            }
+        }
+        Effect::SwitchSessionAccount { session_id, account, account_name, family } => {
+            match server.switch_session_account(&session_id, &account, &family).await {
+                Ok(()) => {
+                    vec![Action::AccountSwitch(AccountSwitchAction::Switched {
+                        account_name,
+                        family,
+                    })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "switching the session account failed");
+                    vec![Action::AccountSwitch(AccountSwitchAction::SwitchFailed(e.to_string()))]
+                }
+            }
+        }
+        Effect::FetchVersion => match server.version().await {
+            Ok(info) => vec![Action::Instance(InstanceAction::Loaded(Box::new(info)))],
+            Err(cctui_client::ClientError::Forbidden { .. }) => {
+                vec![Action::Instance(InstanceAction::Forbidden)]
+            }
+            Err(e) => {
+                tracing::warn!(%e, "reading the server version failed");
+                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
+            }
+        },
+        Effect::RefreshVersion => match server.refresh_version().await {
+            Ok(()) => vec![Action::Instance(InstanceAction::Refresh)],
+            Err(e) => {
+                tracing::warn!(%e, "probing upstream failed");
+                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
+            }
+        },
+        Effect::FetchSelfUpdateRun => match server.self_update_status().await {
+            Ok(run) => vec![Action::Instance(InstanceAction::RunLoaded(run.map(Box::new)))],
+            Err(cctui_client::ClientError::Forbidden { .. }) => {
+                vec![Action::Instance(InstanceAction::Forbidden)]
+            }
+            Err(e) => {
+                tracing::warn!(%e, "reading the self-update run failed");
+                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
+            }
+        },
+        Effect::FetchChangelog => match server.version_changelog().await {
+            Ok(log) => vec![Action::Instance(InstanceAction::ChangelogLoaded(log.releases))],
+            Err(e) => {
+                tracing::warn!(%e, "reading the changelog failed");
+                Vec::new()
+            }
+        },
+        Effect::LaunchSelfUpdate => match server.self_update().await {
+            Ok(launch) => vec![Action::Instance(InstanceAction::Launched(Box::new(launch)))],
+            Err(e) => {
+                tracing::warn!(%e, "launching the self-update failed");
+                vec![Action::Instance(InstanceAction::LaunchFailed(e.to_string()))]
+            }
+        },
+        Effect::Access(effect) => super::admin::run(*effect, server).await,
+        Effect::FetchDispatchers => match server.dispatchers().await {
+            Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
+            Err(e) => {
+                tracing::warn!(%e, "listing dispatchers failed");
+                vec![Action::Dispatchers(DispatcherAction::Failed(dispatcher_error(&e)))]
+            }
+        },
+        // The reply carries the key: it goes straight into the action and is
+        // never logged, because the log is not somewhere a secret may land.
+        Effect::EnrollDispatcher { name, request } => {
+            match server.enroll_dispatcher(&request).await {
+                Ok(reply) => vec![Action::Dispatchers(DispatcherAction::Enrolled {
+                    name,
+                    reply: Box::new(reply),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "enrolling a dispatcher failed");
+                    vec![Action::Toast(Level::Error, format!("could not enroll {name}"))]
+                }
+            }
+        }
+        Effect::UpdateDispatcher { id, request } => {
+            match server.update_dispatcher(&id, &request).await {
+                Ok(_) => refetch_dispatchers(server).await,
+                Err(e) => {
+                    tracing::warn!(%e, "editing a dispatcher failed");
+                    vec![Action::Toast(Level::Error, "could not edit the dispatcher".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteDispatcher { id } => match server.delete_dispatcher(&id).await {
+            Ok(()) => refetch_dispatchers(server).await,
+            Err(e) => {
+                tracing::warn!(%e, "removing a dispatcher failed");
+                vec![Action::Toast(Level::Error, "could not remove the dispatcher".to_owned())]
+            }
+        },
+        Effect::FetchAccountsUsage => match server.accounts_usage().await {
+            Ok(usage) => vec![spawn_data(SpawnFetch::Usage(usage))],
+            Err(e) => {
+                tracing::warn!(%e, "reading account usage failed");
+                Vec::new()
             }
         },
         Effect::FetchLabels => match server.labels().await {
@@ -475,18 +1003,67 @@ async fn run(
                 Vec::new()
             }
         },
-        Effect::SaveSettings { data } => {
-            // The version the server last reported travels with the blob; it
-            // migrates an older payload forward rather than rejecting it.
-            if let Err(e) = server.put_settings(SETTINGS_VERSION, data).await {
-                tracing::warn!(%e, "cannot save the list settings");
-                return vec![Action::Toast(
-                    Level::Warn,
-                    "could not save the list settings".to_owned(),
-                )];
+        Effect::FetchGitInfo { machine_id, path } => {
+            // A failure is the answer, not an error: an unreadable path is how
+            // the badge learns to say "not a directory".
+            let info = server.machine_git_info(&machine_id, &path).await.ok().map(Box::new);
+            vec![Action::Spawn(super::spawn::SpawnAction::GitInfo { machine_id, path, info })]
+        }
+        Effect::FetchMachineDirs { machine_id, path } => {
+            match server.machine_dirs(&machine_id, &path).await {
+                Ok(dirs) => vec![Action::Spawn(super::spawn::SpawnAction::DirsLoaded(dirs))],
+                Err(e) => {
+                    tracing::warn!(%e, machine_id, "cannot list directories");
+                    Vec::new()
+                }
+            }
+        }
+        Effect::FetchRecentDirs => match server.recent_dirs().await {
+            Ok(dirs) => vec![Action::Spawn(super::spawn::SpawnAction::RecentDirsLoaded(dirs))],
+            Err(e) => {
+                tracing::warn!(%e, "cannot read the recent directories");
+                Vec::new()
+            }
+        },
+        Effect::FetchSpawnMemory => match server.spawn_memory().await {
+            Ok(payload) => {
+                vec![Action::Spawn(super::spawn::SpawnAction::MemoryLoaded(Box::new(payload)))]
+            }
+            Err(e) => {
+                tracing::debug!(%e, "no spawn memory");
+                Vec::new()
+            }
+        },
+        Effect::PutSpawnMemory { entries } => {
+            let payload = cctui_proto::drafts::SpawnMemoryPayload { entries };
+            if let Err(e) = server.put_spawn_memory(&payload).await {
+                tracing::warn!(%e, "cannot remember this spawn");
             }
             Vec::new()
         }
+        Effect::RefreshCodexModels { machine_id } => {
+            if let Err(e) = server.refresh_codex_models(&machine_id).await {
+                tracing::warn!(%e, machine_id, "the codex catalog refresh failed");
+            }
+            vec![Action::Spawn(super::spawn::SpawnAction::ModelsRefreshed)]
+        }
+        Effect::SpawnSession { request, files } => {
+            let files = files
+                .into_iter()
+                .map(|(name, bytes)| cctui_client::UploadFile { name, bytes })
+                .collect();
+            match server.spawn_session(&request, files).await {
+                Ok(resp) => vec![Action::Spawn(super::spawn::SpawnAction::Accepted {
+                    command_id: resp.command_id,
+                    session_id: resp.session_id.map(|id| id.to_string()),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "the spawn request failed");
+                    vec![Action::Spawn(super::spawn::SpawnAction::Failed(e.to_string()))]
+                }
+            }
+        }
+        Effect::SaveSettings { patch } => save_settings(server, patch).await,
         Effect::RespondPermission { session_id, request_id, behavior } => {
             if let Err(e) = ws.respond_permission(session_id, request_id, behavior.to_owned()).await
             {
@@ -507,6 +1084,8 @@ async fn run(
                 vec![Action::Diagnose(DiagnoseAction::Failed { session_id, error: e.to_string() })]
             }
         },
+        // Everything else is the first runner's.
+        _ => Vec::new(),
     }
 }
 
@@ -574,6 +1153,10 @@ async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
             Vec::new()
         }
     }
+}
+
+fn spawn_data(fetch: SpawnFetch) -> Action {
+    Action::Spawn(SpawnAction::DataLoaded(Box::new(fetch)))
 }
 
 async fn subscribe(ws: &WsClient, session_id: String) {
@@ -711,19 +1294,16 @@ async fn load_conversation_page(
 
 /// Read one path off the local disk into a composer attachment. The name is the
 /// basename, and an image's pixel size is measured here so the chip can show it.
-fn read_attachment(session_id: &str, path: &str) -> Vec<Action> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return vec![Action::Attach(AttachAction::ReadFailed(format!(
-                "cannot read {path}: {e}"
-            )))];
-        }
-    };
+async fn read_attachment(session_id: &str, path: &str) -> Vec<Action> {
+    let failed = |message: String| vec![Action::Attach(AttachAction::ReadFailed(message))];
     let name = path.rsplit('/').next().unwrap_or(path).to_owned();
     if name.is_empty() {
-        return vec![Action::Attach(AttachAction::ReadFailed(format!("{path} is not a file")))];
+        return failed(format!("{path} is not a file"));
     }
+    let bytes = match read_capped(path, &name).await {
+        Ok(bytes) => bytes,
+        Err(message) => return failed(message),
+    };
     let content_type = guess_content_type(&name);
     let dimensions = image_dimensions(&bytes);
     vec![Action::Attach(AttachAction::Read {
@@ -735,9 +1315,34 @@ fn read_attachment(session_id: &str, path: &str) -> Vec<Action> {
     })]
 }
 
+/// The spawn dialog's files section, gated exactly like the composer's.
+async fn read_spawn_file(path: &str) -> Vec<Action> {
+    let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+    let outcome = if name.is_empty() {
+        Err(format!("{path} is not a file"))
+    } else {
+        read_capped(path, &name).await
+    };
+    vec![Action::Spawn(crate::app::spawn::SpawnAction::FileRead {
+        path: path.to_owned(),
+        outcome: outcome.map(|bytes| (bytes, guess_content_type(&name))),
+    })]
+}
+
+/// Stat, gate, then read — never the other way round, so an unbounded or
+/// unreadable path costs a `stat` instead of the process.
+async fn read_capped(path: &str, name: &str) -> Result<Vec<u8>, String> {
+    let meta = tokio::fs::metadata(path).await.map_err(|e| format!("cannot read {path}: {e}"))?;
+    if let Some(refusal) = crate::app::attach::path_refusal(name, &meta, crate::app::attach::caps())
+    {
+        return Err(refusal);
+    }
+    tokio::fs::read(path).await.map_err(|e| format!("cannot read {path}: {e}"))
+}
+
 /// Extension-based content type; only the families the composer treats
 /// specially need naming, everything else is opaque bytes.
-fn guess_content_type(name: &str) -> String {
+pub fn guess_content_type(name: &str) -> String {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "png" => "image/png",
@@ -843,9 +1448,48 @@ fn refused(name: String, refusal: cctui_client::FileRefusal) -> Action {
 
 /// Write the bytes to a temp file and hand it to the desktop's opener. A
 /// terminal that cannot draw images still gets the user to the picture.
+/// One path component, safe to join: no separators, no `..`, no leading dot, and
+/// nothing a shell or a handler reads as an option.
+fn staged_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let trimmed = cleaned.trim_start_matches('.').trim_matches('_');
+    if trimmed.is_empty() { "file".to_owned() } else { trimmed.chars().take(96).collect() }
+}
+
+/// Stages the bytes somewhere only this user can read and hands the path over.
+///
+/// The directory is created fresh with 0700 and the file written 0600, so the
+/// path cannot be guessed or pre-planted as a symlink by another local user. It
+/// is deliberately leaked: the handler opens it after this returns.
 fn open_in_os_viewer(name: &str, bytes: &[u8]) {
-    let path = std::env::temp_dir().join(format!("cctui-{name}"));
-    if let Err(e) = std::fs::write(&path, bytes) {
+    let dir = match tempfile::Builder::new().prefix("cctui-").tempdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!(%e, "cannot make a private directory for the OS viewer");
+            return;
+        }
+    };
+    // tempdir takes its mode from the umask, which is usually world-readable.
+    #[cfg(unix)]
+    if let Err(e) =
+        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700))
+    {
+        tracing::warn!(%e, "cannot make the staging directory private");
+        return;
+    }
+    let path = dir.path().join(staged_file_name(name));
+    let written = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options.open(&path).and_then(|mut file| std::io::Write::write_all(&mut file, bytes))
+    };
+    if let Err(e) = written {
         tracing::warn!(%e, "cannot stage a file for the OS viewer");
         return;
     }
@@ -858,6 +1502,8 @@ fn open_in_os_viewer(name: &str, bytes: &[u8]) {
     {
         tracing::warn!(%e, opener, "cannot launch the OS viewer");
     }
+    // The handler reads the file after this returns, so the directory outlives us.
+    std::mem::forget(dir);
 }
 
 /// The catalogue after a change, so a rename or a delete shows everywhere at
@@ -868,6 +1514,436 @@ async fn refetch_labels(server: &Client) -> Vec<Action> {
         Err(e) => {
             tracing::warn!(%e, "refetching labels failed");
             Vec::new()
+        }
+    }
+}
+
+/// Read, merge, write. The read is taken here rather than reused from startup
+/// so a key the web UI changed meanwhile is not reverted, and a read that fails
+/// cancels the write instead of replacing the row from the patch alone.
+async fn save_settings(server: &Client, patch: serde_json::Value) -> Vec<Action> {
+    let fresh = match server.settings().await {
+        Ok(payload) => Some(payload.data),
+        Err(e) => {
+            tracing::warn!(%e, "cannot read the settings to merge into");
+            None
+        }
+    };
+    let body = match crate::app::settings_write::plan(fresh, patch) {
+        crate::app::settings_write::WritePlan::Put(body) => body,
+        crate::app::settings_write::WritePlan::Refuse => {
+            return vec![Action::Toast(
+                Level::Warn,
+                "could not read your settings — nothing was saved".to_owned(),
+            )];
+        }
+    };
+    // The version the server last reported travels with the body; it migrates
+    // an older payload forward rather than rejecting it.
+    if let Err(e) = server.put_settings(SETTINGS_VERSION, body.clone()).await {
+        tracing::warn!(%e, "cannot save the settings");
+        return vec![Action::Toast(Level::Warn, "could not save your settings".to_owned())];
+    }
+    vec![Action::SettingsSaved(Box::new(body))]
+}
+
+/// Both halves of the usage panel, in one round trip each. A half that fails is
+/// reported on its own: pools and credentials are read by different scopes, so
+/// losing one must not blank the other.
+async fn fetch_usage(server: &Client) -> Vec<Action> {
+    use crate::app::usage::UsageAction;
+
+    let (pools, accounts) = tokio::join!(server.account_pools_usage(), server.accounts_usage());
+    let mut out = Vec::new();
+    let mut failure = None;
+    match pools {
+        Ok(rows) => out.push(Action::Usage(UsageAction::PoolsLoaded(rows))),
+        Err(e) => {
+            tracing::warn!(%e, "reading pool usage failed");
+            failure = Some(usage_error(&e));
+        }
+    }
+    match accounts {
+        Ok(rows) => out.push(Action::Usage(UsageAction::AccountsLoaded(rows))),
+        Err(e) => {
+            tracing::warn!(%e, "reading account usage failed");
+            failure = Some(usage_error(&e));
+        }
+    }
+    if out.is_empty() {
+        return vec![Action::Usage(UsageAction::Failed(
+            failure.unwrap_or_else(|| "could not read usage".to_owned()),
+        ))];
+    }
+    out
+}
+
+fn usage_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => "this key may not read usage".to_owned(),
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not read usage: {other}"),
+    }
+}
+
+/// Why the machines list is empty, in the words the view shows. A 403 is worth
+/// naming on its own: it means the key cannot enumerate machines, which is a
+/// different problem from having none.
+fn machine_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => "this key may not list machines".to_owned(),
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list machines: {other}"),
+    }
+}
+
+/// A 403 here means the key may not read them at all, which the view says
+/// rather than looking like an install with no accounts.
+fn account_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => "this key may not list accounts".to_owned(),
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list accounts: {other}"),
+    }
+}
+
+/// A refused write turns the slice read-only; anything else is a one-off toast
+/// that leaves the editing keys live.
+fn account_refusal(e: &cctui_client::ClientError, what: &str) -> Action {
+    tracing::warn!(%e, "{what}");
+    if matches!(e, cctui_client::ClientError::Forbidden { .. }) {
+        return Action::Accounts(AccountAction::Refused(format!("{what}: not allowed")));
+    }
+    Action::Toast(Level::Error, format!("{what}: {e}"))
+}
+
+fn pool_refusal(e: &cctui_client::ClientError, what: &str) -> Action {
+    tracing::warn!(%e, "{what}");
+    if matches!(e, cctui_client::ClientError::Forbidden { .. }) {
+        return Action::Pools(PoolAction::Refused(format!("{what}: not allowed")));
+    }
+    Action::Toast(Level::Error, format!("{what}: {e}"))
+}
+
+/// Every account write refreshes the list and the rules: a redirect changes
+/// what a row says about itself, not just the rule store.
+async fn refetch_accounts(server: &Client) -> Vec<Action> {
+    let mut out = match server.accounts().await {
+        Ok(rows) => vec![Action::Accounts(AccountAction::Loaded(rows))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching accounts failed");
+            Vec::new()
+        }
+    };
+    if let Ok(rules) = server.redirects().await {
+        out.push(Action::Accounts(AccountAction::RedirectsLoaded(rules)));
+    }
+    out
+}
+
+/// A membership change moves accounts between pools, so both panes are refetched.
+async fn refetch_pools(server: &Client) -> Vec<Action> {
+    let mut out = match server.account_pools().await {
+        Ok(rows) => vec![Action::Pools(PoolAction::Loaded(rows))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching account pools failed");
+            Vec::new()
+        }
+    };
+    out.extend(refetch_accounts(server).await);
+    out
+}
+
+async fn refetch_dispatchers(server: &Client) -> Vec<Action> {
+    match server.dispatchers().await {
+        Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching dispatchers failed");
+            Vec::new()
+        }
+    }
+}
+
+/// A 403 here means the key may not even list them, which is worth saying apart
+/// from an install with none enrolled.
+fn dispatcher_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => {
+            "this key may not list dispatchers".to_owned()
+        }
+        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
+        other => format!("could not list dispatchers: {other}"),
+    }
+}
+
+/// The three spend reads in one round trip. The token windows and the analytics
+/// are both load-bearing, so either failing fails the panel; cache-loss is a
+/// footnote and degrades to empty.
+async fn fetch_spend(server: &Client, tz_offset: i32) -> Vec<Action> {
+    use crate::app::spend::{CACHE_LOSS_DAYS, RANGE_DAYS, SpendData};
+
+    let (windows, analytics, cache_loss) = tokio::join!(
+        server.session_token_stats(tz_offset),
+        server.session_usage_analytics(RANGE_DAYS, tz_offset),
+        server.cache_loss(CACHE_LOSS_DAYS, tz_offset),
+    );
+    let (windows, analytics) = match (windows, analytics) {
+        (Ok(windows), Ok(analytics)) => (windows, analytics),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(%e, "reading spend failed");
+            return vec![Action::Spend(SpendAction::Failed(spend_error(&e)))];
+        }
+    };
+    if let Err(e) = &cache_loss {
+        tracing::warn!(%e, "reading cache-bust loss failed");
+    }
+    vec![Action::Spend(SpendAction::Loaded(Box::new(SpendData {
+        windows,
+        analytics,
+        cache_loss: cache_loss.unwrap_or_default(),
+    })))]
+}
+
+fn spend_error(e: &cctui_client::ClientError) -> String {
+    match e {
+        cctui_client::ClientError::Forbidden { .. } => {
+            "this key may not read usage stats".to_owned()
+        }
+        other => format!("could not read spend: {other}"),
+    }
+}
+
+fn image_extension(content_type: &str) -> String {
+    cctui_clientcore::uploads::ext_for_type(content_type)
+}
+
+/// Read a picture off the clipboard. `arboard` hands over raw RGBA, which is
+/// re-encoded as PNG so the staged attachment is a real image file.
+fn read_clipboard_image() -> Action {
+    let image = match arboard::Clipboard::new().and_then(|mut c| c.get_image()) {
+        Ok(image) => image,
+        Err(e) => {
+            tracing::debug!(%e, "no image on the clipboard");
+            return Action::Images(ImagesAction::NoImage);
+        }
+    };
+    let (width, height) = (image.width as u32, image.height as u32);
+    let Some(buffer) = image::RgbaImage::from_raw(width, height, image.bytes.into_owned()) else {
+        return Action::Images(ImagesAction::NoImage);
+    };
+    let mut png = std::io::Cursor::new(Vec::new());
+    if let Err(e) =
+        image::DynamicImage::ImageRgba8(buffer).write_to(&mut png, image::ImageFormat::Png)
+    {
+        tracing::warn!(%e, "cannot encode the pasted image");
+        return Action::Images(ImagesAction::NoImage);
+    }
+    Action::Images(ImagesAction::Pasted { png: png.into_inner(), width, height })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{Effect, Effects};
+    use crate::app::Action;
+
+    /// Accepts the connection and then answers nothing, standing in for a daemon
+    /// that has stopped responding while its socket stays up.
+    fn hung_server() -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        let handle = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept() {
+                held.push(stream);
+                if held.len() > 16 {
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_secs(20));
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
+    fn effects_against(base: &str) -> (Effects, tokio::sync::mpsc::Receiver<Action>) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // A request budget far longer than the test, so the read really does hang
+        // rather than being rescued by its own timeout.
+        let client = std::sync::Arc::new(cctui_client::Client::with_timeouts(
+            base,
+            "tok",
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+        ));
+        let ws = std::sync::Arc::new(cctui_client::WsClient::start(client.ws_connector()).0);
+        Effects::start(client, ws)
+    }
+
+    /// F8: a read that never comes back used to sit on the one lane and hold
+    /// every later effect behind it.
+    #[tokio::test]
+    async fn a_hung_read_does_not_hold_up_a_later_effect() {
+        let (base, _server) = hung_server();
+        let (effects, mut actions) = effects_against(&base);
+
+        effects.dispatch(Effect::FetchDiagnose { session_id: "s-hangs".to_owned() });
+        // Local and ordered: it needs no server, so it can only be late if the
+        // hung read is in front of it.
+        effects.dispatch(Effect::Copy { text: "hi".to_owned(), label: "thing" });
+
+        let action = tokio::time::timeout(Duration::from_secs(5), actions.recv())
+            .await
+            .expect("the ordered lane was still blocked by the hung read")
+            .expect("an action");
+        match action {
+            Action::Toast(_, text) => assert!(text.contains("thing"), "got {text:?}"),
+            _ => panic!("expected the copy's toast"),
+        }
+    }
+
+    /// F24: quit queues the draft writes and then has to wait for them, or the
+    /// process goes before they leave.
+    #[tokio::test]
+    async fn drain_waits_for_what_is_already_queued() {
+        let (base, _server) = hung_server();
+        let (effects, mut actions) = effects_against(&base);
+
+        effects.dispatch(Effect::Copy { text: "hi".to_owned(), label: "flushed" });
+        tokio::time::timeout(Duration::from_secs(5), effects.drain(Duration::from_secs(5)))
+            .await
+            .expect("the barrier never came back");
+
+        // The copy ran before the barrier did, so its action is already waiting.
+        let action = actions.try_recv().expect("the queued effect ran before the drain returned");
+        match action {
+            Action::Toast(_, text) => assert!(text.contains("flushed"), "got {text:?}"),
+            _ => panic!("expected the copy's toast"),
+        }
+    }
+
+    /// A server that stopped answering costs the budget, not the exit.
+    #[tokio::test]
+    async fn drain_gives_up_after_its_budget() {
+        let (base, _server) = hung_server();
+        let (effects, _actions) = effects_against(&base);
+
+        effects.dispatch(Effect::SaveDraftNow { key: "k".to_owned(), text: "t".to_owned() });
+        let started = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), effects.drain(Duration::from_millis(300)))
+            .await
+            .expect("drain must return on its own");
+        assert!(started.elapsed() < Duration::from_secs(5), "it waited past its budget");
+    }
+
+    /// Anything that changes server state, or reads back something just changed,
+    /// stays on the ordered lane.
+    #[test]
+    fn only_self_contained_reads_leave_the_ordered_lane() {
+        for ordered in [
+            Effect::SendMessage {
+                send_id: 1,
+                session_id: "s".to_owned(),
+                content: "a".to_owned(),
+                ask_picks: None,
+                turn_id: None,
+                client_msg_id: None,
+            },
+            Effect::Interrupt { session_id: "s".to_owned() },
+            Effect::RenameSession { session_id: "s".to_owned(), name: "n".to_owned() },
+            Effect::SaveDraft { key: "k".to_owned(), text: "t".to_owned() },
+            Effect::RefreshSessions,
+            Effect::MarkSeen { session_id: "s".to_owned() },
+            Effect::Subscribe { session_id: "s".to_owned() },
+        ] {
+            assert!(!ordered.runs_concurrently(), "this effect must keep its order");
+        }
+
+        for independent in [
+            Effect::FetchDiagnose { session_id: "s".to_owned() },
+            Effect::LoadConversationPage {
+                session_id: "s".to_owned(),
+                kind: super::PageKind::Latest,
+                page: super::PageRequest { before: None, after: None, limit: None },
+                etag: None,
+            },
+            Effect::FetchSelfUpdateRun,
+            Effect::FetchRecentDirs,
+        ] {
+            assert!(independent.runs_concurrently(), "this effect can run beside the lane");
+        }
+    }
+
+    /// F9: the staged name used to be interpolated straight into a path under a
+    /// shared /tmp, so a crafted name could escape the directory.
+    #[test]
+    fn a_staged_name_is_one_harmless_path_component() {
+        use super::staged_file_name;
+        for (given, want) in [
+            ("report.pdf", "report.pdf"),
+            ("../../etc/passwd", "passwd"),
+            ("/etc/shadow", "shadow"),
+            ("..", "file"),
+            ("", "file"),
+            (".bashrc", "bashrc"),
+            ("a b;rm -rf x.txt", "a_b_rm_-rf_x.txt"),
+            ("x/y\\z.bin", "z.bin"),
+        ] {
+            let got = staged_file_name(given);
+            assert_eq!(got, want, "{given:?}");
+            assert!(!got.contains('/') && !got.contains('\\'), "{given:?} -> {got:?}");
+            assert!(got != ".." && !got.starts_with('.'), "{given:?} -> {got:?}");
+        }
+        assert!(staged_file_name(&"n".repeat(500)).len() <= 96, "a name cannot be unbounded");
+    }
+
+    /// F9: a predictable path on a shared /tmp could be pre-planted as a symlink,
+    /// and `fs::write` would follow it.
+    #[cfg(unix)]
+    #[test]
+    fn staged_bytes_are_private_to_this_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::Builder::new().prefix("cctui-").tempdir().expect("a dir");
+        std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).expect("chmod");
+        let path = dir.path().join(super::staged_file_name("secret.bin"));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&path).expect("a fresh file");
+        std::io::Write::write_all(&mut file, b"x").expect("write");
+
+        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "nobody else may read a staged session file");
+        let dir_mode =
+            std::fs::metadata(dir.path()).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "the directory is private too");
+
+        // create_new is what refuses a pre-planted path rather than following it.
+        let mut again = std::fs::OpenOptions::new();
+        again.write(true).create_new(true);
+        assert!(again.open(&path).is_err(), "staging must never write through an existing path");
+    }
+
+    /// F8: a full queue used to drop the effect with only a log line, so a key
+    /// press simply did nothing.
+    #[tokio::test]
+    async fn a_dropped_effect_is_reported_instead_of_vanishing() {
+        let (tx, _held) = tokio::sync::mpsc::channel::<Effect>(1);
+        let (notify, mut actions) = tokio::sync::mpsc::channel::<Action>(4);
+        let effects = Effects { tx, notify };
+
+        // Fills the one slot, then overflows: nothing is draining this queue.
+        effects.dispatch(Effect::RefreshSessions);
+        effects.dispatch(Effect::RefreshSessions);
+
+        match actions.try_recv() {
+            Ok(Action::Toast(level, text)) => {
+                assert_eq!(level, crate::app::toast::Level::Error);
+                assert!(text.contains("dropped"), "got {text:?}");
+            }
+            Ok(_) => panic!("a dropped effect produced some other action"),
+            Err(e) => panic!("a dropped effect said nothing: {e:?}"),
         }
     }
 }

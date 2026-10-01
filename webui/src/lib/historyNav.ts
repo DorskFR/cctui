@@ -45,13 +45,18 @@ export class HistoryNav {
 	forward() {
 		const list = this.#host.list();
 		if (this.#index === -1) return;
-		const next = this.#index - 1;
-		if (next < 0) {
+		// The list can shrink under a browsing index (a shorter history arrives
+		// from the server), so re-anchor against the list in hand before
+		// stepping: `length - 1 - index` would otherwise run off the front.
+		const current = Math.min(this.#index, list.length - 1);
+		const next = current - 1;
+		const entry = next < 0 ? undefined : list[list.length - 1 - next];
+		if (entry === undefined) {
 			this.#index = -1;
 			this.#host.setValue(this.#stash);
 		} else {
 			this.#index = next;
-			this.#host.setValue(list[list.length - 1 - next]);
+			this.#host.setValue(entry);
 		}
 	}
 

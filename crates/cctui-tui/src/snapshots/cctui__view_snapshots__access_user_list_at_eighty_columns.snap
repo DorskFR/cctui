@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2646
+expression: "render_screen_sized(&mut app, 80, 24)"
+---
+ Access [Users]  Tokens  Machines  Keys
+   NAME                STATE      DISPATCH
+▸  dorsk               active     yes
+   nanachi             disabled   no
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:move  Tab:tab  n:new  e:rename  d:disable  x:revoke  P:purge  G:disp

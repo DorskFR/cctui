@@ -24,6 +24,7 @@ function optimisticDispatchCard(
     id,
     parent_id: null,
     machine_id: "dispatch",
+    origin: "fleet",
     // Real cwd is unknown until the worker registers; show the target repo if
     // the payload carries one, else nothing (no `dispatch:<origin>` noise).
     working_dir: p.repo ?? "",

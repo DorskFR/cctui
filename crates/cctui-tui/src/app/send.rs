@@ -56,7 +56,9 @@ pub struct TrackedSend {
     /// Carried on every attempt so a retried answer still drives the agent's
     /// own form rather than dismissing it.
     pub ask_picks: Option<Vec<Vec<usize>>>,
-    /// Correlation id of the current attempt; rotates on every dispatch.
+    /// Correlation id of this message, minted on the first dispatch and kept
+    /// for every retry: the server dedupes on it, and a late ack for an
+    /// earlier attempt still resolves the send instead of being orphaned.
     pub client_msg_id: Option<String>,
     pub command_id: Option<Uuid>,
     pub attempt: u32,
@@ -98,6 +100,14 @@ pub struct Outbox {
     next_id: u64,
     /// Acks that beat their own dispatch report home.
     orphans: Vec<Orphan>,
+    /// Delivery results that beat the ack carrying their own `command_id`.
+    early_results: Vec<EarlyResult>,
+}
+
+struct EarlyResult {
+    command_id: Uuid,
+    ok: bool,
+    error: Option<String>,
 }
 
 struct Orphan {
@@ -108,6 +118,7 @@ struct Orphan {
 }
 
 const MAX_ORPHANS: usize = 8;
+const MAX_EARLY_RESULTS: usize = 8;
 
 impl Outbox {
     pub fn tracked(&self) -> impl Iterator<Item = &TrackedSend> {
@@ -143,19 +154,34 @@ impl Outbox {
     }
 }
 
-fn dispatch(send: &mut TrackedSend, now: i64) -> Effect {
+/// Emits one attempt. The ack clock does not start here: the effect worker is
+/// serial, so the frame may be written seconds after this returns. `Dispatched`
+/// is what the frame actually reaching the socket looks like, and that is where
+/// the deadline is set.
+fn dispatch(send: &mut TrackedSend, _now: i64) -> Effect {
     send.attempt = send.attempt.saturating_add(1);
     send.phase = Phase::Pending;
     send.reason = None;
-    send.client_msg_id = None;
     send.command_id = None;
-    send.deadline_ms = now + ACK_TIMEOUT_MS;
+    send.deadline_ms = i64::MAX;
     Effect::SendMessage {
         send_id: send.id,
         session_id: send.session_id.clone(),
         content: send.content.clone(),
         ask_picks: send.ask_picks.clone(),
         turn_id: send.turn_id,
+        client_msg_id: send.client_msg_id.clone(),
+    }
+}
+
+impl TrackedSend {
+    /// Whether this message never reached the server, so quitting would lose it.
+    #[must_use]
+    pub const fn undelivered(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Pending | Phase::AwaitingDelivery | Phase::Backoff | Phase::Failed
+        )
     }
 }
 
@@ -190,9 +216,10 @@ pub fn submit(
     content: String,
     ask_picks: Option<Vec<Vec<usize>>>,
 ) -> Vec<Effect> {
-    // Every send funnels through here — typed, ask answer, plan refine — so
-    // this is the one place the spent draft and the prompt history change.
-    let mut effects = super::drafts::on_send(app, &session_id, &content);
+    // Every send funnels through here — typed, ask answer, plan refine — so the
+    // composer's draft and history are NOT touched here: only the composer path
+    // spends a draft (`SubmitInput`), or a card answer would delete it.
+    let mut effects = Vec::new();
     app.outbox.next_id += 1;
     let mut send = TrackedSend {
         id: app.outbox.next_id,
@@ -261,6 +288,27 @@ pub fn tick(app: &mut App) -> Vec<Effect> {
     effects
 }
 
+/// A session that ended will never deliver what is still in flight for it:
+/// those sends fail now rather than spending four more attempts on a dead
+/// agent. A delivered one keeps its mark.
+pub fn session_ended(app: &mut App, session_id: &str) {
+    for send in &mut app.outbox.sends {
+        if send.session_id != session_id {
+            continue;
+        }
+        if matches!(send.phase, Phase::Pending | Phase::AwaitingDelivery | Phase::Backoff) {
+            send.attempt = MAX_ATTEMPTS;
+            attempt_failed(send, "session ended".to_owned(), app.clock_ms);
+        }
+    }
+}
+
+/// A deregistered session has no transcript left to carry a failed line, so its
+/// sends leave with it.
+pub fn session_deregistered(app: &mut App, session_id: &str) {
+    app.outbox.sends.retain(|s| s.session_id != session_id);
+}
+
 /// A fresh socket re-attempts everything parked on the old one at once.
 pub fn redispatch_parked(app: &mut App) -> Vec<Effect> {
     let now = app.clock_ms;
@@ -326,6 +374,9 @@ pub fn reduce_send(app: &mut App, action: SendAction) -> Vec<Effect> {
             let Some(send) = app.outbox.find_mut(send_id) else { return Vec::new() };
             send.client_msg_id = Some(client_msg_id.clone());
             send.turn_id = Some(turn_id);
+            if send.phase == Phase::Pending {
+                send.deadline_ms = now + ACK_TIMEOUT_MS;
+            }
             let at = app.outbox.orphans.iter().position(|o| o.client_msg_id == client_msg_id);
             let Some(at) = at else { return Vec::new() };
             let orphan = app.outbox.orphans.remove(at);
@@ -352,13 +403,11 @@ pub fn reduce_send(app: &mut App, action: SendAction) -> Vec<Effect> {
             Vec::new()
         }
         SendAction::DeliveryResult { command_id, ok, error } => {
-            let Some(send) = app.outbox.by_command_id(command_id) else { return Vec::new() };
-            if ok {
-                delivered(send, now);
-            } else {
-                let reason =
-                    error.unwrap_or_else(|| "the agent did not accept the message".to_owned());
-                attempt_failed(send, reason, now);
+            if !apply_delivery(app, command_id, ok, error.clone(), now) {
+                if app.outbox.early_results.len() >= MAX_EARLY_RESULTS {
+                    app.outbox.early_results.remove(0);
+                }
+                app.outbox.early_results.push(EarlyResult { command_id, ok, error });
             }
             Vec::new()
         }
@@ -384,6 +433,32 @@ fn apply_ack(app: &mut App, ack: &Orphan, now: i64) {
     send.phase = Phase::AwaitingDelivery;
     send.reason = None;
     send.deadline_ms = now + DELIVERY_TIMEOUT_MS;
+
+    let at = app.outbox.early_results.iter().position(|r| r.command_id == command_id);
+    if let Some(at) = at {
+        let early = app.outbox.early_results.remove(at);
+        apply_delivery(app, command_id, early.ok, early.error, now);
+    }
+}
+
+/// A delivery result can beat the ack that names its `command_id`. Buffering it
+/// is what keeps a rejection from reading as a success once the 20s
+/// unconfirmed window lapses.
+fn apply_delivery(
+    app: &mut App,
+    command_id: Uuid,
+    ok: bool,
+    error: Option<String>,
+    now: i64,
+) -> bool {
+    let Some(send) = app.outbox.by_command_id(command_id) else { return false };
+    if ok {
+        delivered(send, now);
+    } else {
+        let reason = error.unwrap_or_else(|| "the agent did not accept the message".to_owned());
+        attempt_failed(send, reason, now);
+    }
+    true
 }
 
 /// The failed send of the selected session, or `None` when the key should just
@@ -703,5 +778,108 @@ mod tests {
     fn redispatching_nothing_is_free() {
         let mut app = app();
         assert!(redispatch_parked(&mut app).is_empty());
+    }
+
+    /// F20: a retry must reuse the correlation id, so the server can recognise
+    /// the resend and a late ack for the first attempt still lands.
+    #[test]
+    fn a_retry_replays_the_same_client_msg_id() {
+        let mut app = app();
+        let id = send_one(&mut app);
+        dispatched(&mut app, id, "cid-1");
+
+        app.clock_ms += ACK_TIMEOUT_MS;
+        tick(&mut app);
+        app.clock_ms += backoff_ms(1);
+        let effects = tick(&mut app);
+
+        let replayed = effects
+            .iter()
+            .find_map(|e| match e {
+                crate::app::action::Effect::SendMessage { client_msg_id, .. } => {
+                    Some(client_msg_id.clone())
+                }
+                _ => None,
+            })
+            .expect("a redispatch");
+        assert_eq!(replayed, Some("cid-1".to_owned()), "the retry must not mint a new id");
+
+        // The ack the first attempt never got still resolves the send.
+        ack(&mut app, "cid-1", true, None);
+        assert_eq!(status(&app), Some(LineStatus::Delivered));
+    }
+
+    /// F26: the effect worker is serial, so the ack clock must not run while
+    /// the frame is still queued behind slow HTTP effects.
+    #[test]
+    fn the_ack_clock_starts_when_the_frame_reaches_the_socket() {
+        let mut app = app();
+        let id = send_one(&mut app);
+
+        // Far past the ack timeout, but nothing has been dispatched yet.
+        app.clock_ms += ACK_TIMEOUT_MS * 4;
+        let effects = tick(&mut app);
+        assert!(effects.is_empty(), "a queued send must not time out before it is sent");
+        assert_eq!(status(&app), Some(LineStatus::Sending));
+
+        dispatched(&mut app, id, "cid-1");
+        app.clock_ms += ACK_TIMEOUT_MS - 1;
+        assert!(tick(&mut app).is_empty(), "the clock runs from the dispatch report");
+        app.clock_ms += 1;
+        tick(&mut app);
+        assert!(matches!(status(&app), Some(LineStatus::Retrying { .. })));
+    }
+
+    /// F28: a `command_result` can beat the ack that names its `command_id`.
+    #[test]
+    fn a_delivery_result_that_beats_its_ack_is_still_applied() {
+        let mut app = app();
+        let id = send_one(&mut app);
+        dispatched(&mut app, id, "cid-1");
+        let command = Uuid::from_u128(7);
+
+        reduce(
+            &mut app,
+            Action::Send(SendAction::DeliveryResult {
+                command_id: command,
+                ok: false,
+                error: Some("adapter refused it".to_owned()),
+            }),
+        );
+        ack(&mut app, "cid-1", true, Some(command));
+
+        assert_eq!(
+            status(&app),
+            Some(LineStatus::Retrying { attempt: 2, max: MAX_ATTEMPTS }),
+            "an early rejection must not read as delivered"
+        );
+    }
+
+    /// F28: without this the send spends four more attempts on a dead agent.
+    #[test]
+    fn a_send_fails_when_its_session_ends_and_leaves_when_it_is_deregistered() {
+        use cctui_proto::models::SessionEndReason;
+
+        use crate::app::attention::AttentionAction;
+
+        let mut app = app();
+        let id = send_one(&mut app);
+        dispatched(&mut app, id, "cid-1");
+
+        reduce(
+            &mut app,
+            Action::Attention(AttentionAction::SessionEnded {
+                session_id: "s-a".to_owned(),
+                reason: SessionEndReason::Completed,
+                detail: None,
+            }),
+        );
+        assert!(
+            matches!(status(&app), Some(LineStatus::Failed(_))),
+            "an ended session cannot deliver what is in flight"
+        );
+
+        reduce(&mut app, Action::SessionDeregistered("s-a".to_owned()));
+        assert!(pending_lines(&app, "s-a").is_empty(), "a deregistered session takes its sends");
     }
 }

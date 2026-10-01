@@ -30,6 +30,29 @@ export function codeFromSearch(search: string | URLSearchParams): string {
 	return raw ? normalizeUserCode(raw) : '';
 }
 
+/**
+ * The facts about the requester the approver can actually weigh, as opposed to
+ * `client_name`, which the unauthenticated caller chose. Omits whatever the
+ * deployment did not record rather than showing an empty row.
+ */
+export function requesterFacts(
+	info: { client_ip: string | null; user_agent: string | null; created_at: string },
+	nowMs: number
+): { label: string; value: string }[] {
+	const facts: { label: string; value: string }[] = [];
+	if (info.client_ip) facts.push({ label: 'from', value: info.client_ip });
+	if (info.user_agent) facts.push({ label: 'client', value: info.user_agent });
+	const startedMs = Date.parse(info.created_at);
+	if (!Number.isNaN(startedMs)) {
+		const secs = Math.max(0, Math.round((nowMs - startedMs) / 1000));
+		facts.push({
+			label: 'started',
+			value: secs < 60 ? `${secs}s ago` : `${Math.floor(secs / 60)}m ${secs % 60}s ago`
+		});
+	}
+	return facts;
+}
+
 /** Only a pending request is still the user's to decide. */
 export function isDecidable(status: DeviceAuthStatus): boolean {
 	return status === 'pending';

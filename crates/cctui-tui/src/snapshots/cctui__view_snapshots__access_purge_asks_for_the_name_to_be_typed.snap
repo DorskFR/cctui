@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2689
+expression: render_screen(&mut app)
+---
+ Access [Users]  Tokens  Machines  Keys
+ purge dorsk
+
+  a purge is a hard delete: nothing about it comes back.
+  type dorsk to confirm:
+
+  ❯ ▏
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Enter:confirm  Esc:back

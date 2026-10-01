@@ -1,6 +1,7 @@
 pub mod state;
 pub mod transport;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -45,6 +46,13 @@ pub struct WsClient {
     outgoing: mpsc::Sender<TuiCommand>,
     subscriptions: Arc<Mutex<SubscriptionState>>,
     acks: Arc<AckRegistry>,
+    /// Whether a socket is carrying frames right now.
+    ///
+    /// The outgoing queue accepts commands with no socket behind it, which is
+    /// what lets a subscription survive a reconnect. A user message must not
+    /// take that path: a queued frame is indistinguishable from a sent one, so
+    /// its ack clock would start on a frame nobody has written.
+    connected: Arc<AtomicBool>,
 }
 
 impl WsClient {
@@ -61,6 +69,7 @@ impl WsClient {
         let (incoming_tx, incoming_rx) = mpsc::channel::<Incoming>(QUEUE);
         let subscriptions = Arc::new(Mutex::new(SubscriptionState::new()));
         let acks = Arc::new(AckRegistry::new());
+        let connected = Arc::new(AtomicBool::new(false));
 
         tokio::spawn(run(Loop {
             connector,
@@ -69,9 +78,10 @@ impl WsClient {
             incoming: incoming_tx,
             subscriptions: Arc::clone(&subscriptions),
             acks: Arc::clone(&acks),
+            connected: Arc::clone(&connected),
         }));
 
-        (Self { outgoing: outgoing_tx, subscriptions, acks }, incoming_rx)
+        (Self { outgoing: outgoing_tx, subscriptions, acks, connected }, incoming_rx)
     }
 
     /// Queues `command`, recording anything the server would forget on a drop.
@@ -115,6 +125,9 @@ impl WsClient {
         ask_picks: Option<Vec<Vec<usize>>>,
         turn_id: Option<uuid::Uuid>,
     ) -> Result<(), ClientError> {
+        if !self.is_connected() {
+            return Err(ClientError::Disconnected);
+        }
         self.send(TuiCommand::Message {
             session_id,
             content,
@@ -134,6 +147,9 @@ impl WsClient {
         ask_picks: Option<Vec<Vec<usize>>>,
         turn_id: Option<uuid::Uuid>,
     ) -> Result<AckHandle, ClientError> {
+        if !self.is_connected() {
+            return Err(ClientError::Disconnected);
+        }
         let client_msg_id = uuid::Uuid::new_v4().to_string();
         let rx = self.acks.register(client_msg_id.clone());
         let handle = AckHandle::new(client_msg_id.clone(), rx);
@@ -151,6 +167,13 @@ impl WsClient {
             return Err(e);
         }
         Ok(handle)
+    }
+
+    /// Whether a socket is up right now. A send refused on this is parked for
+    /// the next one rather than queued behind a dead transport.
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
     }
 
     /// [`Self::send_message`] then [`AckHandle::wait`] under [`ACK_TIMEOUT`].
@@ -180,6 +203,7 @@ struct Loop {
     incoming: mpsc::Sender<Incoming>,
     subscriptions: Arc<Mutex<SubscriptionState>>,
     acks: Arc<AckRegistry>,
+    connected: Arc<AtomicBool>,
 }
 
 async fn run(mut ctx: Loop) {
@@ -188,6 +212,7 @@ async fn run(mut ctx: Loop) {
         match ctx.connector.connect().await {
             Ok(transport) => {
                 attempt = 0;
+                ctx.connected.store(true, Ordering::SeqCst);
                 let reason = pump(
                     &mut ctx.outgoing,
                     &ctx.incoming,
@@ -197,6 +222,7 @@ async fn run(mut ctx: Loop) {
                     transport,
                 )
                 .await;
+                ctx.connected.store(false, Ordering::SeqCst);
                 ctx.acks.fail_all();
                 if ctx.incoming.send(Incoming::Disconnected(reason)).await.is_err() {
                     return;
@@ -526,5 +552,29 @@ mod tests {
             other => panic!("expected a disconnect, got {other:?}"),
         };
         assert_eq!(reason, "keepalive timeout");
+    }
+
+    /// F20: the outgoing queue accepts frames with no socket behind it, which is
+    /// right for a subscription and wrong for a user message: the caller would
+    /// start an ack clock on a frame nobody wrote, time out, and resend.
+    #[tokio::test]
+    async fn a_message_is_refused_rather_than_queued_on_a_dead_socket() {
+        let (connector, mut sockets) = scripted(2);
+        let first = sockets.remove(0);
+        let (client, mut incoming) = WsClient::start(connector);
+        assert!(matches!(next_incoming(&mut incoming).await, Incoming::Connected));
+        assert!(client.is_connected());
+
+        drop(first);
+        assert!(matches!(next_incoming(&mut incoming).await, Incoming::Disconnected(_)));
+        assert!(!client.is_connected());
+
+        let refused = client
+            .send_message_as("s1".to_owned(), "hi".to_owned(), "cid-1".to_owned(), None, None)
+            .await;
+        assert!(matches!(refused, Err(ClientError::Disconnected)));
+
+        // A subscription still queues: it is replayed on the next socket.
+        assert!(client.subscribe("a".to_owned()).await.is_ok());
     }
 }

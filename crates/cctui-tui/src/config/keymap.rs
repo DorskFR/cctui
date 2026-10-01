@@ -11,6 +11,8 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The new-session dialog.
+    Spawn,
     /// The `f` sections popup over the list.
     Sections,
     /// The `/` prompt over the list.
@@ -25,20 +27,36 @@ pub enum Context {
     Rename,
     History,
     FileViewer,
+    Machines,
+    Dispatchers,
+    Access,
+    Instance,
+    Accounts,
+    AccountPools,
+    AccountsForm,
+    Usage,
+    Spend,
     LabelPicker,
     LabelFilter,
     Pins,
     Macros,
     BookmarkPrompt,
     BookmarkConfirm,
+    DraftEnv,
+    DraftConfirm,
+    SpawnProfileName,
+    SpawnProfileConfirm,
     Terminal,
     Help,
+    ForkDialog,
     ModelPicker,
     Sidebar,
     Permission,
     Diagnose,
     Bookmarks,
     Overview,
+    HarnessMode,
+    AccountSwitch,
     Ask,
     AskText,
     Plan,
@@ -52,26 +70,43 @@ pub const CONTEXTS: &[Context] = &[
     Context::Rename,
     Context::Conversation,
     Context::Composer,
+    Context::Spawn,
     Context::Sections,
     Context::ListSearch,
     Context::CmdLine,
     Context::FilterMenu,
     Context::History,
     Context::FileViewer,
+    Context::Machines,
+    Context::Dispatchers,
+    Context::Access,
+    Context::Instance,
+    Context::Accounts,
+    Context::AccountPools,
+    Context::AccountsForm,
+    Context::Usage,
+    Context::Spend,
     Context::LabelPicker,
     Context::LabelFilter,
     Context::Pins,
     Context::Macros,
     Context::BookmarkPrompt,
     Context::BookmarkConfirm,
+    Context::DraftEnv,
+    Context::DraftConfirm,
+    Context::SpawnProfileName,
+    Context::SpawnProfileConfirm,
     Context::Terminal,
     Context::Help,
+    Context::ForkDialog,
     Context::ModelPicker,
     Context::Sidebar,
     Context::Permission,
     Context::Diagnose,
     Context::Bookmarks,
     Context::Overview,
+    Context::HarnessMode,
+    Context::AccountSwitch,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -85,6 +120,7 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::Spawn => "spawn",
             Self::Sections => "sections",
             Self::ListSearch => "list-search",
             Self::CmdLine => "cmdline",
@@ -93,20 +129,36 @@ impl Context {
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
+            Self::Machines => "machines",
+            Self::Dispatchers => "dispatchers",
+            Self::Access => "access",
+            Self::Instance => "instance",
+            Self::Accounts => "accounts",
+            Self::AccountPools => "account-pools",
+            Self::AccountsForm => "accounts-form",
+            Self::Usage => "usage",
+            Self::Spend => "spend",
             Self::LabelPicker => "label-picker",
             Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
             Self::Macros => "macros",
             Self::BookmarkPrompt => "bookmark-prompt",
             Self::BookmarkConfirm => "bookmark-confirm",
+            Self::DraftEnv => "draft-env",
+            Self::DraftConfirm => "draft-confirm",
+            Self::SpawnProfileName => "spawn-profile-name",
+            Self::SpawnProfileConfirm => "spawn-profile-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
+            Self::ForkDialog => "fork-dialog",
             Self::ModelPicker => "model-picker",
             Self::Sidebar => "sidebar",
             Self::Permission => "permission",
             Self::Diagnose => "diagnose",
             Self::Bookmarks => "bookmarks",
             Self::Overview => "overview",
+            Self::HarnessMode => "harness-mode",
+            Self::AccountSwitch => "account-switch",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -120,6 +172,7 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::Spawn => "New session",
             Self::Sections => "Sections popup",
             Self::ListSearch => "List search",
             Self::CmdLine => "Search and commands",
@@ -128,20 +181,36 @@ impl Context {
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
+            Self::Machines => "Machines",
+            Self::Dispatchers => "Dispatchers",
+            Self::Access => "Access",
+            Self::Instance => "Instance",
+            Self::Accounts => "Accounts",
+            Self::AccountPools => "Accounts — pools pane",
+            Self::AccountsForm => "Accounts — form",
+            Self::Usage => "Usage",
+            Self::Spend => "Spend",
             Self::LabelPicker => "Labels",
             Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
             Self::Macros => "Macros",
             Self::BookmarkPrompt => "Bookmarks — search or edit",
             Self::BookmarkConfirm => "Bookmarks — confirm",
+            Self::DraftEnv => "Draft launch — env",
+            Self::DraftConfirm => "Draft — confirm",
+            Self::SpawnProfileName => "Profile — name",
+            Self::SpawnProfileConfirm => "Profile — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
+            Self::ForkDialog => "Fork a session",
             Self::ModelPicker => "Model picker",
             Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
             Self::Diagnose => "Diagnose / info",
             Self::Bookmarks => "Bookmarks",
             Self::Overview => "Overview",
+            Self::HarnessMode => "Harness mode",
+            Self::AccountSwitch => "Switch account",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -208,6 +277,16 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
+    SpawnOpen => "spawn-open", "Start a new session";
+    SpawnNextField => "spawn-next-field", "Next field";
+    SpawnPrevField => "spawn-prev-field", "Previous field";
+    SpawnSubmit => "spawn-submit", "Launch";
+    SpawnCancel => "spawn-cancel", "Close without launching";
+    SpawnDirNext => "spawn-dir-next", "Next directory";
+    SpawnDirPrev => "spawn-dir-prev", "Previous directory";
+    SpawnDirAccept => "spawn-dir-accept", "Accept, or a prompt newline";
+    SpawnRefreshModels => "spawn-refresh-models", "Re-read the model catalog";
+    SpawnToggleTarget => "spawn-toggle-target", "Machine or dispatch";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -226,7 +305,13 @@ actions! {
     NewSession => "new-session", "Spawn a session";
     Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
-    Resume => "resume", "Resume the session";
+    Resume => "resume", "Resume the ended session";
+    ForkSubmit => "fork-submit", "Fork with these options";
+    ForkCancel => "fork-cancel", "Abandon the fork";
+    ForkNextField => "fork-next-field", "Next field";
+    ForkPrevField => "fork-prev-field", "Previous field";
+    ForkCycleNext => "fork-cycle-next", "Next choice";
+    ForkCyclePrev => "fork-cycle-prev", "Previous choice";
 
     LeaveConversation => "leave-conversation", "Back to the session list";
     ScrollDown => "scroll-down", "Scroll down";
@@ -252,6 +337,83 @@ actions! {
     PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    OpenMachines => "open-machines", "Machines and daemons";
+    OpenAccounts => "open-accounts", "Accounts and pools";
+    AccountsNext => "accounts-next", "Next account";
+    AccountsPrev => "accounts-prev", "Previous account";
+    AccountsDetail => "accounts-detail", "Show or hide the detail pane";
+    AccountsFocus => "accounts-focus", "Switch between the accounts and pools panes";
+    AccountsEligible => "accounts-eligible", "Allow or withhold this account from pools";
+    AccountsWeightUp => "accounts-weight-up", "Give this account more of a pool";
+    AccountsWeightDown => "accounts-weight-down", "Deprioritise this account in its pool";
+    AccountsReset => "accounts-reset", "Claim a usage-limit reset";
+    AccountsRedirect => "accounts-redirect", "Redirect launches elsewhere, or clear it";
+    AccountsRefresh => "accounts-refresh", "Refresh the accounts and pools";
+    AccountsClose => "accounts-close", "Back";
+    AccountsCommit => "accounts-commit", "Confirm";
+    AccountsCancel => "accounts-cancel", "Back out of the form";
+    AccountsField => "accounts-field", "Next field, or cycle the value";
+    AccountsPickNext => "accounts-pick-next", "Next choice";
+    AccountsPickPrev => "accounts-pick-prev", "Previous choice";
+    PoolsNext => "pools-next", "Next pool or member";
+    PoolsPrev => "pools-prev", "Previous pool or member";
+    PoolsAddMember => "pools-add-member", "Add an account to this pool";
+    PoolsRemoveMember => "pools-remove-member", "Remove this member";
+    PoolsMoveDown => "pools-move-down", "Move this member later in the election order";
+    PoolsMoveUp => "pools-move-up", "Move this member earlier in the election order";
+    PoolsNew => "pools-new", "New pool";
+    PoolsDelete => "pools-delete", "Delete this pool";
+    OpenDispatchers => "open-dispatchers", "Dispatchers";
+    DispatchersNext => "dispatchers-next", "Next dispatcher";
+    DispatchersPrev => "dispatchers-prev", "Previous dispatcher";
+    DispatchersEnroll => "dispatchers-enroll", "Enroll a dispatcher";
+    DispatchersEdit => "dispatchers-edit", "Rename or rebind";
+    DispatchersDelete => "dispatchers-delete", "Remove this dispatcher";
+    DispatchersRefresh => "dispatchers-refresh", "Refresh the dispatcher list";
+    DispatchersField => "dispatchers-field", "Next field, or cycle the kind";
+    DispatchersCommit => "dispatchers-commit", "Confirm";
+    DispatchersCancel => "dispatchers-cancel", "Back";
+    DispatchersCopyKey => "dispatchers-copy-key", "Copy the new key";
+    OpenAccess => "open-access", "Access: users, tokens, machines, keys";
+    AccessNext => "access-next", "Next row";
+    AccessPrev => "access-prev", "Previous row";
+    AccessNextTab => "access-next-tab", "Next tab";
+    AccessPrevTab => "access-prev-tab", "Previous tab";
+    AccessRefresh => "access-refresh", "Refresh";
+    AccessRevealRevoked => "access-reveal-revoked", "Show or hide revoked rows";
+    AccessNew => "access-new", "Create a user, token or key";
+    AccessRename => "access-rename", "Rename or relabel";
+    AccessDisable => "access-disable", "Disable or enable this user";
+    AccessRevoke => "access-revoke", "Revoke this credential";
+    AccessRotate => "access-rotate", "Rotate this machine's key";
+    AccessPurge => "access-purge", "Hard-delete, typing the name";
+    AccessScope => "access-scope", "Grant or drop the scope";
+    AccessKeyScopes => "access-key-scopes", "Re-grant this key's scopes";
+    AccessDispatchers => "access-dispatchers", "The dispatchers panel";
+    AccessCommit => "access-commit", "Confirm";
+    AccessCancel => "access-cancel", "Back";
+    AccessCopySecret => "access-copy-secret", "Copy the new secret";
+    OpenInstance => "open-instance", "Instance status";
+    InstanceRefresh => "instance-refresh", "Refresh the instance status";
+    InstanceProbe => "instance-probe", "Check upstream for a release";
+    InstanceUpdate => "instance-update", "Update this server";
+    InstanceConfirm => "instance-confirm", "Confirm";
+    InstanceCancel => "instance-cancel", "Back";
+    MachinesNext => "machines-next", "Next machine";
+    MachinesPrev => "machines-prev", "Previous machine";
+    MachinesRefresh => "machines-refresh", "Refresh the machine list";
+    MachinesSpawn => "machines-spawn", "Aim a spawn at this machine";
+    MachinesClose => "machines-close", "Back to the sessions";
+    OpenUsage => "open-usage", "Usage: pool and account windows";
+    UsageNext => "usage-next", "Next window";
+    UsagePrev => "usage-prev", "Previous window";
+    UsagePane => "usage-pane", "Switch between pools and accounts";
+    UsageRefresh => "usage-refresh", "Refresh the usage windows";
+    UsageOpenAccount => "usage-open-account", "Open this account";
+    UsageClose => "usage-close", "Back";
+    OpenSpend => "open-spend", "Spend: token windows and cost";
+    SpendRefresh => "spend-refresh", "Refresh the spend figures";
+    SpendClose => "spend-close", "Back";
     OpenLabels => "open-labels", "Label this session";
     OpenLabelFilter => "open-label-filter", "Filter by label";
     LabelsClose => "labels-close", "Close the label list";
@@ -270,6 +432,9 @@ actions! {
     FocusAttachments => "focus-attachments", "Focus the attachment chips";
     AttachmentNext => "attachment-next", "Next attachment chip";
     AttachmentPrev => "attachment-prev", "Previous attachment chip";
+    PasteImage => "paste-image", "Paste an image from the clipboard";
+    OpenImage => "open-image", "Open the image on this line";
+    ToggleInlineImages => "toggle-inline-images", "Draw images inline, or describe them";
     OpenLinkedFile => "open-linked-file", "Open the file under the cursor";
     FileViewerClose => "file-viewer-close", "Close the file viewer";
     FileViewerOsOpen => "file-viewer-os-open", "Open in the desktop viewer";
@@ -292,7 +457,7 @@ actions! {
     CmdLineCommit => "cmdline-commit", "Run it";
     CmdLineCancel => "cmdline-cancel", "Abandon it";
     CmdLineComplete => "cmdline-complete", "Complete the path";
-    OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    OpenInEditor => "open-in-editor", "Edit the text in $EDITOR";
     RenameSession => "rename-session", "Rename the session";
     ArchiveSection => "archive-section", "Archive every session in the section";
     KillSession => "kill-session", "Kill the session";
@@ -338,6 +503,19 @@ actions! {
     BookmarksPreviewDown => "bookmarks-preview-down", "Scroll the preview down";
     BookmarksPreviewUp => "bookmarks-preview-up", "Scroll the preview up";
     BookmarksSearch => "bookmarks-search", "Search the bookmarks";
+    DraftLaunch => "draft-launch", "Launch the draft";
+    DraftEdit => "draft-edit", "Edit the draft";
+    DraftDiscard => "draft-discard", "Discard the draft";
+    SpawnFromConfig => "spawn-from-config", "New session from this configuration";
+    ProfileNameCommit => "profile-name-commit", "Save the profile";
+    ProfileNameCancel => "profile-name-cancel", "Do not save";
+    ProfileDeleteConfirm => "profile-delete-confirm", "Delete the profile";
+    ProfileDeleteCancel => "profile-delete-cancel", "Keep the profile";
+    DraftEnvNext => "draft-env-next", "Next variable";
+    DraftEnvCommit => "draft-env-commit", "Launch with these values";
+    DraftEnvCancel => "draft-env-cancel", "Do not launch";
+    DraftDiscardConfirm => "draft-discard-confirm", "Discard it";
+    DraftDiscardCancel => "draft-discard-cancel", "Keep it";
     BookmarksOpenSource => "bookmarks-open-source", "Open the source message";
     BookmarksCopy => "bookmarks-copy", "Copy the bookmark as markdown";
     BookmarksEdit => "bookmarks-edit", "Edit the title and note";
@@ -354,8 +532,20 @@ actions! {
     MacrosSelectNext => "macros-select-next", "Next macro";
     MacrosSelectPrev => "macros-select-prev", "Previous macro";
     MacrosInsert => "macros-insert", "Put this prompt in the composer";
+    MacrosRun => "macros-run", "Run this macro as a new session";
 
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    HarnessModeClose => "harness-mode-close", "Close the harness picker";
+    HarnessModeNext => "harness-mode-next", "Next mode";
+    HarnessModePrev => "harness-mode-prev", "Previous mode";
+    HarnessModeCommit => "harness-mode-commit", "Apply this mode to every daemon";
+    AccountSwitchOpen => "account-switch-open", "Switch this session's account";
+    AccountSwitchClose => "account-switch-close", "Close the account picker";
+    AccountSwitchNext => "account-switch-next", "Next account";
+    AccountSwitchPrev => "account-switch-prev", "Previous account";
+    AccountSwitchBinding => "account-switch-binding", "Next provider family";
+    AccountSwitchCommit => "account-switch-commit", "Switch to this account";
 
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
@@ -439,6 +629,9 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    // The ticket asks for `n`, but decision 7 makes `n` next-search-hit
+    // everywhere and a context binding would silently shadow it.
+    spec(Context::SessionList, "ctrl+n", ActionId::SpawnOpen),
     spec(Context::SessionList, "f", ActionId::ListSections),
     spec(Context::SessionList, "o", ActionId::ListSortCycle),
     spec(Context::SessionList, "O", ActionId::ListSortFlip),
@@ -502,6 +695,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, ">", ActionId::ToggleSidebar),
     spec(Context::Conversation, "u", ActionId::OpenParent),
     spec(Context::Conversation, "ctrl+f", ActionId::Fork),
+    spec(Context::Conversation, "r", ActionId::Resume),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
     spec(Context::Conversation, "ctrl+r", ActionId::HistoryOpen),
     spec(Context::Conversation, "y", ActionId::CopyMessage),
@@ -515,6 +709,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "m", ActionId::PinToggle),
     spec(Context::Conversation, "'", ActionId::PinsOpen),
     spec(Context::Conversation, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Conversation, "ctrl+e", ActionId::OpenInEditor),
     spec(Context::Conversation, "T", ActionId::TerminalOpen),
 ];
 
@@ -551,6 +746,20 @@ const FILTER_MENU: &[BindingSpec] = &[
     spec(Context::FilterMenu, "space, enter", ActionId::FilterMenuToggle),
     spec(Context::FilterMenu, "a", ActionId::FilterShowAll),
     spec(Context::FilterMenu, "r", ActionId::FilterReset),
+];
+
+/// Typed characters reach the focused field through the unbound fall-through.
+const SPAWN: &[BindingSpec] = &[
+    spec(Context::Spawn, "tab", ActionId::SpawnNextField),
+    spec(Context::Spawn, "backtab, shift+tab", ActionId::SpawnPrevField),
+    spec(Context::Spawn, "ctrl+s", ActionId::SpawnSubmit),
+    spec(Context::Spawn, "esc", ActionId::SpawnCancel),
+    spec(Context::Spawn, "down", ActionId::SpawnDirNext),
+    spec(Context::Spawn, "up", ActionId::SpawnDirPrev),
+    spec(Context::Spawn, "enter", ActionId::SpawnDirAccept),
+    spec(Context::Spawn, "ctrl+r", ActionId::SpawnRefreshModels),
+    spec(Context::Spawn, "ctrl+e", ActionId::OpenInEditor),
+    spec(Context::Spawn, "ctrl+d", ActionId::SpawnToggleTarget),
 ];
 
 const SECTIONS_POPUP: &[BindingSpec] = &[
@@ -595,6 +804,15 @@ const CHIPS: &[BindingSpec] = &[
     spec(Context::Composer, "right", ActionId::AttachmentNext),
 ];
 
+/// A bracketed paste cannot carry a picture, so `Ctrl-V` reads the clipboard
+/// itself rather than waiting for a paste event that will never hold one.
+const IMAGES: &[BindingSpec] = &[
+    spec(Context::Composer, "ctrl+v", ActionId::PasteImage),
+    spec(Context::Conversation, "ctrl+v", ActionId::PasteImage),
+    spec(Context::Conversation, "g i", ActionId::OpenImage),
+    spec(Context::FileViewer, "i", ActionId::ToggleInlineImages),
+];
+
 const FILE_VIEWER: &[BindingSpec] = &[
     spec(Context::Conversation, "g f", ActionId::OpenLinkedFile),
     spec(Context::FileViewer, "esc, q", ActionId::FileViewerClose),
@@ -608,7 +826,112 @@ const FILE_VIEWER: &[BindingSpec] = &[
 
 /// The picker is modal, so it claims plain letters: `space` toggles, and the
 /// manage verbs sit on the keys the webui's menu uses.
+/// The slice has its own context so `j`/`k` move its table rather than the
+/// session list underneath.
+const MACHINES: &[BindingSpec] = &[
+    spec(Context::Global, "M", ActionId::OpenMachines),
+    spec(Context::Global, "@", ActionId::OpenAccounts),
+    spec(Context::Accounts, "j, down", ActionId::AccountsNext),
+    spec(Context::Accounts, "k, up", ActionId::AccountsPrev),
+    spec(Context::Accounts, "enter", ActionId::AccountsDetail),
+    spec(Context::Accounts, "tab", ActionId::AccountsFocus),
+    spec(Context::Accounts, "e", ActionId::AccountsEligible),
+    spec(Context::Accounts, "+", ActionId::AccountsWeightUp),
+    spec(Context::Accounts, "-", ActionId::AccountsWeightDown),
+    spec(Context::Accounts, "R", ActionId::AccountsReset),
+    spec(Context::Accounts, "x", ActionId::AccountsRedirect),
+    spec(Context::Accounts, "r", ActionId::AccountsRefresh),
+    spec(Context::Accounts, "esc", ActionId::AccountsClose),
+    spec(Context::AccountPools, "j, down", ActionId::PoolsNext),
+    spec(Context::AccountPools, "k, up", ActionId::PoolsPrev),
+    spec(Context::AccountPools, "tab", ActionId::AccountsFocus),
+    spec(Context::AccountPools, "a", ActionId::PoolsAddMember),
+    spec(Context::AccountPools, "d", ActionId::PoolsRemoveMember),
+    spec(Context::AccountPools, "J", ActionId::PoolsMoveDown),
+    spec(Context::AccountPools, "K", ActionId::PoolsMoveUp),
+    spec(Context::AccountPools, "n", ActionId::PoolsNew),
+    spec(Context::AccountPools, "D", ActionId::PoolsDelete),
+    spec(Context::AccountPools, "r", ActionId::AccountsRefresh),
+    spec(Context::AccountPools, "esc", ActionId::AccountsClose),
+    spec(Context::AccountsForm, "enter", ActionId::AccountsCommit),
+    spec(Context::AccountsForm, "esc", ActionId::AccountsCancel),
+    spec(Context::AccountsForm, "tab", ActionId::AccountsField),
+    spec(Context::AccountsForm, "down, ctrl+n", ActionId::AccountsPickNext),
+    spec(Context::AccountsForm, "up, ctrl+p", ActionId::AccountsPickPrev),
+    spec(Context::Machines, "j, down", ActionId::MachinesNext),
+    spec(Context::Machines, "k, up", ActionId::MachinesPrev),
+    spec(Context::Machines, "r", ActionId::MachinesRefresh),
+    spec(Context::Machines, "enter", ActionId::MachinesSpawn),
+    spec(Context::Machines, "esc", ActionId::MachinesClose),
+];
+
+/// The ticket asks for `u`, which is already the undo-archive key on the list
+/// and open-parent in the conversation; a global `u` would be shadowed almost
+/// everywhere it matters, so the panel opens on `Ctrl+u`.
+const USAGE: &[BindingSpec] = &[
+    spec(Context::Global, "ctrl+u", ActionId::OpenUsage),
+    spec(Context::Usage, "j, down", ActionId::UsageNext),
+    spec(Context::Usage, "k, up", ActionId::UsagePrev),
+    spec(Context::Usage, "tab", ActionId::UsagePane),
+    spec(Context::Usage, "r", ActionId::UsageRefresh),
+    spec(Context::Usage, "enter", ActionId::UsageOpenAccount),
+    spec(Context::Usage, "esc", ActionId::UsageClose),
+    spec(Context::Global, "$", ActionId::OpenSpend),
+    spec(Context::Spend, "r", ActionId::SpendRefresh),
+    spec(Context::Spend, "esc", ActionId::SpendClose),
+];
+
+/// `D` is the diagnose global (decision 7), so the panel takes `Ctrl+d`.
+///
+/// The verbs are Ctrl-modified because the enroll and edit forms need the plain
+/// letters to type a name — the same reason the label picker uses `Ctrl+c`.
+const DISPATCHERS: &[BindingSpec] = &[
+    spec(Context::Global, "ctrl+d", ActionId::OpenDispatchers),
+    spec(Context::Dispatchers, "down, ctrl+n", ActionId::DispatchersNext),
+    spec(Context::Dispatchers, "up, ctrl+p", ActionId::DispatchersPrev),
+    spec(Context::Dispatchers, "ctrl+a", ActionId::DispatchersEnroll),
+    spec(Context::Dispatchers, "ctrl+e", ActionId::DispatchersEdit),
+    spec(Context::Dispatchers, "ctrl+x", ActionId::DispatchersDelete),
+    spec(Context::Dispatchers, "ctrl+r", ActionId::DispatchersRefresh),
+    spec(Context::Dispatchers, "tab", ActionId::DispatchersField),
+    spec(Context::Dispatchers, "enter", ActionId::DispatchersCommit),
+    spec(Context::Dispatchers, "esc", ActionId::DispatchersCancel),
+    spec(Context::Global, "U", ActionId::OpenAccess),
+    spec(Context::Access, "j, down", ActionId::AccessNext),
+    spec(Context::Access, "k, up", ActionId::AccessPrev),
+    spec(Context::Access, "tab", ActionId::AccessNextTab),
+    spec(Context::Access, "backtab", ActionId::AccessPrevTab),
+    spec(Context::Access, "r", ActionId::AccessRefresh),
+    spec(Context::Access, "a", ActionId::AccessRevealRevoked),
+    spec(Context::Access, "n", ActionId::AccessNew),
+    spec(Context::Access, "e", ActionId::AccessRename),
+    spec(Context::Access, "d", ActionId::AccessDisable),
+    spec(Context::Access, "x", ActionId::AccessRevoke),
+    spec(Context::Access, "R", ActionId::AccessRotate),
+    spec(Context::Access, "P", ActionId::AccessPurge),
+    spec(Context::Access, "space", ActionId::AccessScope),
+    spec(Context::Access, "s", ActionId::AccessKeyScopes),
+    spec(Context::Access, "G", ActionId::AccessDispatchers),
+    spec(Context::Access, "y", ActionId::AccessCopySecret),
+    spec(Context::Access, "enter", ActionId::AccessCommit),
+    spec(Context::Access, "esc", ActionId::AccessCancel),
+    spec(Context::Dispatchers, "ctrl+y", ActionId::DispatchersCopyKey),
+];
+
+const INSTANCE: &[BindingSpec] = &[
+    spec(Context::Global, "V", ActionId::OpenInstance),
+    spec(Context::Instance, "ctrl+r", ActionId::InstanceRefresh),
+    spec(Context::Instance, "p", ActionId::InstanceProbe),
+    spec(Context::Instance, "U", ActionId::InstanceUpdate),
+    spec(Context::Instance, "enter", ActionId::InstanceConfirm),
+    spec(Context::Instance, "esc", ActionId::InstanceCancel),
+];
+
 const LABELS: &[BindingSpec] = &[
+    spec(Context::SessionList, "s", ActionId::DraftLaunch),
+    spec(Context::SessionList, "E", ActionId::DraftEdit),
+    spec(Context::SessionList, "d", ActionId::DraftDiscard),
+    spec(Context::SessionList, "C", ActionId::SpawnFromConfig),
     spec(Context::SessionList, "l", ActionId::OpenLabels),
     spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
     spec(Context::LabelPicker, "esc", ActionId::LabelsClose),
@@ -639,6 +962,7 @@ const MACROS: &[BindingSpec] = &[
     spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
     spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
     spec(Context::Macros, "enter", ActionId::MacrosInsert),
+    spec(Context::Macros, "R", ActionId::MacrosRun),
 ];
 
 /// Slice roots, not overlays: each falls through to the globals, so `1-9`,
@@ -655,6 +979,24 @@ const BOOKMARKS: &[BindingSpec] = &[
     spec(Context::Bookmarks, "y", ActionId::BookmarksCopy),
     spec(Context::Bookmarks, "e", ActionId::BookmarksEdit),
     spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
+];
+
+/// Modal: a settings write is not something to trigger by a fall-through.
+const ACCOUNT_SWITCH: &[BindingSpec] = &[
+    spec(Context::Conversation, "A", ActionId::AccountSwitchOpen),
+    spec(Context::Diagnose, "A", ActionId::AccountSwitchOpen),
+    spec(Context::AccountSwitch, "esc, q", ActionId::AccountSwitchClose),
+    spec(Context::AccountSwitch, "down, ctrl+n, j", ActionId::AccountSwitchNext),
+    spec(Context::AccountSwitch, "up, ctrl+p, k", ActionId::AccountSwitchPrev),
+    spec(Context::AccountSwitch, "tab", ActionId::AccountSwitchBinding),
+    spec(Context::AccountSwitch, "enter", ActionId::AccountSwitchCommit),
+];
+
+const HARNESS_MODE: &[BindingSpec] = &[
+    spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
+    spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
+    spec(Context::HarnessMode, "up, ctrl+p, k", ActionId::HarnessModePrev),
+    spec(Context::HarnessMode, "enter", ActionId::HarnessModeCommit),
 ];
 
 const OVERVIEW: &[BindingSpec] = &[
@@ -678,6 +1020,27 @@ const DIAGNOSE: &[BindingSpec] = &[
     spec(Context::Diagnose, "i", ActionId::Info),
 ];
 
+const SPAWN_PROFILE_NAME: &[BindingSpec] = &[
+    spec(Context::SpawnProfileName, "enter", ActionId::ProfileNameCommit),
+    spec(Context::SpawnProfileName, "esc", ActionId::ProfileNameCancel),
+];
+
+const SPAWN_PROFILE_CONFIRM: &[BindingSpec] = &[
+    spec(Context::SpawnProfileConfirm, "y, enter", ActionId::ProfileDeleteConfirm),
+    spec(Context::SpawnProfileConfirm, "n, esc, q", ActionId::ProfileDeleteCancel),
+];
+
+const DRAFT_ENV: &[BindingSpec] = &[
+    spec(Context::DraftEnv, "tab", ActionId::DraftEnvNext),
+    spec(Context::DraftEnv, "enter", ActionId::DraftEnvCommit),
+    spec(Context::DraftEnv, "esc", ActionId::DraftEnvCancel),
+];
+
+const DRAFT_CONFIRM: &[BindingSpec] = &[
+    spec(Context::DraftConfirm, "y, enter", ActionId::DraftDiscardConfirm),
+    spec(Context::DraftConfirm, "n, esc, q", ActionId::DraftDiscardCancel),
+];
+
 const HELP: &[BindingSpec] = &[
     spec(Context::Help, "esc, q, ?", ActionId::CloseHelp),
     spec(Context::Help, "j, down", ActionId::ScrollDown),
@@ -694,6 +1057,16 @@ const SIDEBAR: &[BindingSpec] = &[
     spec(Context::Sidebar, "k, up", ActionId::SidebarPrev),
     spec(Context::Sidebar, "enter", ActionId::SidebarOpen),
     spec(Context::Sidebar, "u", ActionId::OpenParent),
+];
+
+/// Modal: a stray key must not reach the composer behind it.
+const FORK_DIALOG: &[BindingSpec] = &[
+    spec(Context::ForkDialog, "esc", ActionId::ForkCancel),
+    spec(Context::ForkDialog, "ctrl+s", ActionId::ForkSubmit),
+    spec(Context::ForkDialog, "tab, down", ActionId::ForkNextField),
+    spec(Context::ForkDialog, "backtab, up", ActionId::ForkPrevField),
+    spec(Context::ForkDialog, "right", ActionId::ForkCycleNext),
+    spec(Context::ForkDialog, "left", ActionId::ForkCyclePrev),
 ];
 
 /// Modal over the conversation: everything it does not claim stays claimed,
@@ -751,6 +1124,7 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    SPAWN,
     SECTIONS_POPUP,
     LIST_SEARCH,
     CONFIRM,
@@ -759,23 +1133,35 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     COMPOSER,
     ATTACH,
     CHIPS,
+    IMAGES,
     FILE_VIEWER,
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    MACHINES,
+    DISPATCHERS,
+    INSTANCE,
+    USAGE,
     LABELS,
     PINS,
     MACROS,
     BOOKMARK_PROMPT,
     BOOKMARK_CONFIRM,
+    DRAFT_ENV,
+    DRAFT_CONFIRM,
+    SPAWN_PROFILE_NAME,
+    SPAWN_PROFILE_CONFIRM,
     TERMINAL,
     HELP,
+    FORK_DIALOG,
     MODEL_PICKER,
     SIDEBAR,
     PERMISSION,
     DIAGNOSE,
     BOOKMARKS,
     OVERVIEW,
+    HARNESS_MODE,
+    ACCOUNT_SWITCH,
     ASK,
     ASK_TEXT,
     PLAN,
@@ -913,7 +1299,9 @@ impl Keymap {
             | Context::FileViewer
             | Context::Help
             | Context::Bookmarks
-            | Context::Overview => &[Context::Global],
+            | Context::Overview
+            | Context::Accounts
+            | Context::AccountPools => &[Context::Global],
             _ => &[],
         }
     }

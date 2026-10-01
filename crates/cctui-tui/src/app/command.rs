@@ -19,10 +19,14 @@ pub enum Command {
     },
     /// A whole-session fork: every dial inherited from the parent.
     Fork,
+    /// Resume an ended session.
+    Resume,
+    /// `None` opens the picker; a named mode is applied outright.
+    Harness(Option<super::harness_mode::HarnessMode>),
 }
 
-/// `export md|html [path]`, `attach <path>` or `fork`, without the leading
-/// colon.
+/// `export md|html [path]`, `attach <path>`, `fork` or
+/// `harness [bg|oneshot|sdk]`, without the leading colon.
 pub fn parse(input: &str) -> Result<Command, String> {
     let mut words = input.split_whitespace();
     let verb = words.next().ok_or_else(|| "type a command".to_owned())?;
@@ -49,6 +53,25 @@ pub fn parse(input: &str) -> Result<Command, String> {
             }
             Ok(Command::Fork)
         }
+        "resume" => {
+            if words.next().is_some() {
+                return Err("usage: :resume".to_owned());
+            }
+            Ok(Command::Resume)
+        }
+        // Session-independent: the harness mode is a user setting, so unlike
+        // the others this one works with nothing selected.
+        "harness" | "h" => {
+            let Some(word) = words.next() else { return Ok(Command::Harness(None)) };
+            if words.next().is_some() {
+                return Err("usage: :harness [bg|oneshot|sdk]".to_owned());
+            }
+            let mode = super::harness_mode::MODES
+                .into_iter()
+                .find(|m| m.as_str() == word)
+                .ok_or_else(|| format!("`{word}` is not bg, oneshot or sdk"))?;
+            Ok(Command::Harness(Some(mode)))
+        }
         other => Err(format!("`{other}` is not a command")),
     }
 }
@@ -73,12 +96,22 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
             return Vec::new();
         }
     };
-    if command == Command::Fork {
-        return super::controls::fork_now(app);
+    match command {
+        Command::Fork => return super::controls::fork_now(app),
+        Command::Resume => {
+            return super::forkform::reduce_fork(app, super::forkform::ForkAction::Resume);
+        }
+        _ => {}
+    }
+    if let Command::Harness(mode) = command {
+        let action = mode.map_or(super::harness_mode::HarnessModeAction::Open, |m| {
+            super::harness_mode::HarnessModeAction::Set(m)
+        });
+        return super::harness_mode::reduce_harness_mode(app, action);
     }
     let Some(session) = app.selected_session().cloned() else { return Vec::new() };
     match command {
-        Command::Fork => Vec::new(),
+        Command::Fork | Command::Resume | Command::Harness(_) => Vec::new(),
         Command::Attach { path } => {
             let path = super::cmdline::expand_home(&path.to_string_lossy());
             vec![Effect::ReadAttachment { session_id: session.id, path }]
@@ -120,11 +153,19 @@ mod tests {
     #[test]
     fn fork_takes_no_arguments_and_forks_the_selected_session() {
         assert_eq!(parse("fork"), Ok(Command::Fork));
+        assert_eq!(parse("harness"), Ok(Command::Harness(None)));
+        assert_eq!(
+            parse("harness sdk"),
+            Ok(Command::Harness(Some(super::super::harness_mode::HarnessMode::Sdk)))
+        );
+        assert!(parse("h oneshot").is_ok());
+        assert!(parse("harness nope").is_err());
+        assert!(parse("harness sdk extra").is_err());
         assert!(parse("fork now").is_err(), "no arguments to mistype");
 
         let mut app = app();
         match run(&mut app, "fork").as_slice() {
-            [Effect::Fork { session_id }] => assert_eq!(session_id, "s-a"),
+            [Effect::Fork { session_id, .. }] => assert_eq!(session_id, "s-a"),
             other => panic!("expected one fork effect, got {} effects", other.len()),
         }
         assert!(app.controls.armed.is_none(), "the command line does not arm anything");

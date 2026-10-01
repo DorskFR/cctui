@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2039
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1 Sessions  2  3  4  6  8   starred · live · dispatched  sort: activity ↓  group: status
+   ▾ Needs input (1)
+▸    ● [claude-code] infra (main)  opus  0s  $1.25
+   ▾ W┌ Switch account · anthropic ──────────────────────────────────────────────────────────┐
+     ●│  alice@max       91%      5h   in use                                                │
+     ▾│❯ carol@max       12%      5h   recommended                                           │
+      │  bob@max         limited  15m                                                        │
+   ▾ C│                                                                                      │
+     ○│                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │binding 1 of 2                                                                        │
+      │ ↑↓ Pick  Enter Switch  tab Family  Esc Cancel                                        │
+      └──────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

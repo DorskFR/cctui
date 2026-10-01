@@ -1,0 +1,79 @@
+{
+  "allScopes": ["read", "dispatch", "enroll", "admin"],
+  "scopeCells": [
+    {
+      "granted": [],
+      "out": [false, false, false, false]
+    },
+    {
+      "granted": ["read", "admin"],
+      "out": [true, false, false, true]
+    },
+    {
+      "granted": ["admin", "enroll", "dispatch", "read"],
+      "out": [true, true, true, true]
+    },
+    {
+      "granted": ["nonsense"],
+      "out": [false, false, false, false]
+    }
+  ],
+  "visibleOrder": [
+    {
+      "revoked": [false, true, false],
+      "show_revoked": false,
+      "out": [0, 2]
+    },
+    {
+      "revoked": [false, true, false],
+      "show_revoked": true,
+      "out": [0, 2, 1]
+    },
+    {
+      "revoked": [true, true],
+      "show_revoked": false,
+      "out": []
+    },
+    {
+      "revoked": [],
+      "show_revoked": true,
+      "out": []
+    }
+  ],
+  "filterByName": [
+    {
+      "names": ["dorsk", "Nanachi", "bot"],
+      "query": "  NA ",
+      "out": [1]
+    },
+    {
+      "names": ["dorsk", "Nanachi", "bot"],
+      "query": "",
+      "out": [0, 1, 2]
+    },
+    {
+      "names": ["dorsk", "Nanachi", "bot"],
+      "query": "o",
+      "out": [0, 2]
+    },
+    {
+      "names": ["dorsk"],
+      "query": "zzz",
+      "out": []
+    }
+  ],
+  "keyIcon": [
+    {
+      "kind": "machine",
+      "out": "tv"
+    },
+    {
+      "kind": "user",
+      "out": "user"
+    },
+    {
+      "kind": "",
+      "out": "user"
+    }
+  ]
+}

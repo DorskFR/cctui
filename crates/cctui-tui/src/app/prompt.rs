@@ -551,6 +551,96 @@ mod tests {
         assert!(app.asks.is_empty(), "answering clears the card optimistically");
     }
 
+    /// A half-written composer draft for `s-a`, as the store holds it.
+    fn with_draft(app: &mut App) {
+        app.drafts.composer_session = Some("s-a".to_owned());
+        app.set_input_text("half-written prompt");
+        let _ = reduce(
+            app,
+            Action::InputKey(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('!'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
+        assert!(app.drafts.has_draft("s-a"), "the fixture needs a live draft");
+    }
+
+    fn discards_a_draft(effects: &[Effect]) -> bool {
+        effects.iter().any(|e| matches!(e, Effect::DiscardDraft { .. }))
+    }
+
+    #[test]
+    fn answering_an_ask_leaves_the_composer_draft_and_history_alone() {
+        let mut app = app();
+        with_draft(&mut app);
+        ask(&mut app);
+        dispatch(&mut app, PromptAction::PickIndex(0));
+        dispatch(&mut app, PromptAction::NextQuestion);
+        dispatch(&mut app, PromptAction::PickIndex(0));
+
+        let effects = dispatch(&mut app, PromptAction::Submit);
+        let (_, content, _) = sent(&effects);
+        assert!(content.contains("Postgres"), "the answer still goes out");
+        assert!(app.drafts.has_draft("s-a"), "the unsent prompt survives the answer");
+        assert!(!discards_a_draft(&effects), "nothing discards the server draft");
+        assert!(
+            app.drafts.history_for("s-a").is_empty(),
+            "an answer is not a prompt the user can recall"
+        );
+    }
+
+    #[test]
+    fn choosing_a_plan_option_leaves_the_composer_draft_and_history_alone() {
+        let mut app = app();
+        with_draft(&mut app);
+        plan(&mut app);
+
+        let effects = dispatch(&mut app, PromptAction::PlanChoose(0));
+        let (_, content, _) = sent(&effects);
+        assert_eq!(content, PLAN_OPTIONS[0]);
+        assert!(app.drafts.has_draft("s-a"));
+        assert!(!discards_a_draft(&effects));
+        assert!(app.drafts.history_for("s-a").is_empty());
+    }
+
+    #[test]
+    fn a_plan_refinement_leaves_the_composer_draft_and_history_alone() {
+        let mut app = app();
+        with_draft(&mut app);
+        plan(&mut app);
+        dispatch(&mut app, PromptAction::PlanRefine);
+        for c in "narrow it".chars() {
+            dispatch(
+                &mut app,
+                PromptAction::TextKey(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            );
+        }
+
+        let effects = dispatch(&mut app, PromptAction::TextCommit);
+        let (_, content, _) = sent(&effects);
+        assert_eq!(content, "narrow it");
+        assert!(app.drafts.has_draft("s-a"));
+        assert!(!discards_a_draft(&effects));
+        assert!(app.drafts.history_for("s-a").is_empty());
+    }
+
+    #[test]
+    fn the_composer_still_spends_its_draft_and_records_the_prompt() {
+        let mut app = app();
+        with_draft(&mut app);
+        let typed = app.message_input.lines().join("\n");
+
+        let effects = reduce(&mut app, Action::SubmitInput);
+        let (_, content, _) = sent(&effects);
+        assert_eq!(content, typed);
+        assert!(!app.drafts.has_draft("s-a"), "the composer's draft is spent");
+        assert!(discards_a_draft(&effects), "and discarded server-side");
+        assert_eq!(app.drafts.history_for("s-a"), [typed], "and is recallable");
+    }
+
     #[test]
     fn a_single_select_question_keeps_only_the_last_pick() {
         let mut app = app();

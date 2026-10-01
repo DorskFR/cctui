@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 398
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0┌ New session ─────────────────────────────────────────────────────────┐
+ 1 Sessions  2│  [Machine]   Dispatch    Ctrl-D switches                             │tus
+   ▾ Needs inp│ Profile                                                              │
+▸    ● [claude│   no profiles yet — press + to save this setup                       │
+   ▾ Working (│  Machine  orion                                                      │
+     ● [claude│❯ Dir      /home/dev/infra                                            │
+     ▾ subagen│           main ⑂ worktree                                            │
+       ↳ ● [cl│      ❯ /home/dev/cctui                                               │
+   ▾ Completed│        /home/dev/cctui-wt/cct-1101                                   │
+     ○ [claude│  Name     —                                                          │
+              │  Harness  claude-code                                                │
+              │  Model    —                                                          │
+              │  Effort   —                                                          │
+              │  Mode     default                                                    │
+              │           the account's own setting                                  │
+              │  Prompt   —                                                          │
+              │ Account                                                              │
+              │   [auto (most allocation left)]                                      │
+              │ Labels                                                               │
+              │   no labels yet                                                      │
+              │ Env                                                                  │
+              │   none  (a add)                                                      │
+              │ Files                                                                │
+ j/k:nav  Ente└──────────────────────────────────────────────────────────────────────┘

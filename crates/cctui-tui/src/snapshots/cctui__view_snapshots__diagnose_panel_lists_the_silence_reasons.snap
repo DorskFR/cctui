@@ -1,9 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1242
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $1.25 today  ! 1 need input — Ctrl+g
- 1 Sessions  2 Bookmarks  3 Overview   starred · live · dispatched  sort: activity ↓  group: status
+ 1 Sessions  2  3  4  6  8   starred · live · dispatched  sort: activity ↓  group: status
    ┌ Diagnose ──────────────────────────────────────────────────────────────────────────────────┐
    │s-working                                                                                   │
    │daemon report:                                                                              │
@@ -20,7 +21,7 @@ expression: render_screen(&mut app)
    │dispatch [dispatch, undated]       — (not a dispatched session)                             │
    │gateway [daemon-config, undated]   — (no server client)                                     │
    │why is it silent?                                                                           │
-   │· 2 JSON-RPC request(s) outstanding and no frame for 2m ago.                                │
+   │· 2 JSON-RPC request(s) outstanding and no frame for 2m.                                    │
    │· No turn is in flight, so codex has nothing to answer.                                     │
    │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close    21/21                           │
    └────────────────────────────────────────────────────────────────────────────────────────────┘

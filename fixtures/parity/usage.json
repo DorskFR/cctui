@@ -1,0 +1,84 @@
+{
+  "headroomTone": [
+    { "utilization": null, "out": "unknown" },
+    { "utilization": 0, "out": "ok" },
+    { "utilization": 49, "out": "ok" },
+    { "utilization": 50, "out": "warn" },
+    { "utilization": 78, "out": "warn" },
+    { "utilization": 79.9, "out": "warn" },
+    { "utilization": 80, "out": "danger" },
+    { "utilization": 91, "out": "danger" },
+    { "utilization": 100, "out": "danger" },
+    { "utilization": 120, "out": "danger" }
+  ],
+  "paceState": [
+    { "ratio": null, "out": null },
+    { "ratio": 0, "out": "leaf" },
+    { "ratio": 0.79, "out": "leaf" },
+    { "ratio": 0.8, "out": "neutral" },
+    { "ratio": 1, "out": "neutral" },
+    { "ratio": 1.2, "out": "neutral" },
+    { "ratio": 1.4, "out": "flame" }
+  ],
+  "countdown": [
+    { "ms": 0, "out": "0 min" },
+    { "ms": 30000, "out": "1 min" },
+    { "ms": 2280000, "out": "38 min" },
+    { "ms": 3540000, "out": "59 min" },
+    { "ms": 3600000, "out": "1h00" },
+    { "ms": 4320000, "out": "1h12" },
+    { "ms": 7500000, "out": "2h05" },
+    { "ms": 86400000, "out": "1d 0h" },
+    { "ms": 273600000, "out": "3d 4h" },
+    { "ms": 432000000, "out": "5d 0h" }
+  ],
+  "resetIn": [
+    { "resetsAtMs": null, "nowMs": 0, "out": null },
+    { "resetsAtMs": 1000, "nowMs": 1000, "out": null },
+    { "resetsAtMs": 500, "nowMs": 1000, "out": null },
+    { "resetsAtMs": 4320000, "nowMs": 0, "out": "1h12" },
+    { "resetsAtMs": 1320000, "nowMs": 0, "out": "22 min" }
+  ],
+  "resetInShort": [
+    { "resetsAtMs": null, "nowMs": 0, "out": null },
+    { "resetsAtMs": 1000, "nowMs": 1000, "out": null },
+    { "resetsAtMs": 30000, "nowMs": 0, "out": "1m" },
+    { "resetsAtMs": 1320000, "nowMs": 0, "out": "22m" },
+    { "resetsAtMs": 4320000, "nowMs": 0, "out": "1h" },
+    { "resetsAtMs": 432000000, "nowMs": 0, "out": "5d" }
+  ],
+  "usdPct": [
+    { "amountUsd": null, "capUsd": 60, "out": null },
+    { "amountUsd": 12.4, "capUsd": null, "out": null },
+    { "amountUsd": 12.4, "capUsd": 0, "out": null },
+    { "amountUsd": 0, "capUsd": 60, "out": 0 },
+    { "amountUsd": 12.4, "capUsd": 60, "out": 21 },
+    { "amountUsd": 90, "capUsd": 60, "out": 100 }
+  ],
+  "usdReadout": [
+    { "amountUsd": null, "capUsd": 60, "out": null },
+    { "amountUsd": 12.4, "capUsd": null, "out": "$12.40" },
+    { "amountUsd": 0, "capUsd": null, "out": "$0.00" },
+    { "amountUsd": 12.4, "capUsd": 60, "out": "$12.40 / $60.00" }
+  ],
+  "money": [
+    { "n": 0, "out": "$0.00" },
+    { "n": 12.4, "out": "$12.40" },
+    { "n": 1234.567, "out": "$1234.57" }
+  ],
+  "barPct": [
+    { "utilization": null, "out": null },
+    { "utilization": -4, "out": 0 },
+    { "utilization": 78.4, "out": 78 },
+    { "utilization": 78.5, "out": 79 },
+    { "utilization": 104, "out": 100 }
+  ],
+  "wallInMs": [
+    { "wallAtMs": null, "resetsAtMs": 500, "nowMs": 0, "out": null },
+    { "wallAtMs": 400, "resetsAtMs": null, "nowMs": 0, "out": null },
+    { "wallAtMs": 500, "resetsAtMs": 400, "nowMs": 0, "out": null },
+    { "wallAtMs": 500, "resetsAtMs": 500, "nowMs": 0, "out": null },
+    { "wallAtMs": 400000, "resetsAtMs": 500000, "nowMs": 0, "out": 400000 },
+    { "wallAtMs": 400000, "resetsAtMs": 500000, "nowMs": 450000, "out": 0 }
+  ]
+}

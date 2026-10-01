@@ -1,0 +1,69 @@
+{
+  "_comment": "Golden for the one age rule: cctui_clientcore::age and the webui's fmtAge/fmtAgo. `unit` and `value` are the rule; `bare` and `ago` are the English wording the TUI prints and the webui's en messages produce. The web UI translates, so a locale words the same unit and value differently — which is why the rule is a unit and a count, not a string.",
+  "cases": [
+    { "ms": 0, "unit": "millis", "value": 0, "bare": "0ms", "ago": "0ms ago" },
+    {
+      "ms": 999,
+      "unit": "millis",
+      "value": 999,
+      "bare": "999ms",
+      "ago": "999ms ago"
+    },
+    {
+      "ms": 1000,
+      "unit": "seconds",
+      "value": 1,
+      "bare": "1s",
+      "ago": "1s ago"
+    },
+    {
+      "ms": 59999,
+      "unit": "seconds",
+      "value": 59,
+      "bare": "59s",
+      "ago": "59s ago"
+    },
+    {
+      "ms": 60000,
+      "unit": "minutes",
+      "value": 1,
+      "bare": "1m",
+      "ago": "1m ago"
+    },
+    {
+      "ms": 120000,
+      "unit": "minutes",
+      "value": 2,
+      "bare": "2m",
+      "ago": "2m ago"
+    },
+    {
+      "ms": 300000,
+      "unit": "minutes",
+      "value": 5,
+      "bare": "5m",
+      "ago": "5m ago"
+    },
+    {
+      "ms": 3599999,
+      "unit": "minutes",
+      "value": 59,
+      "bare": "59m",
+      "ago": "59m ago"
+    },
+    {
+      "ms": 3600000,
+      "unit": "hours",
+      "value": 1,
+      "bare": "1h",
+      "ago": "1h ago"
+    },
+    {
+      "ms": 7200000,
+      "unit": "hours",
+      "value": 2,
+      "bare": "2h",
+      "ago": "2h ago"
+    }
+  ]
+}

@@ -210,11 +210,34 @@ fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
     Some(line)
 }
 
+/// Every marker becomes the chip the webui's `<img>` stands for; a body of
+/// nothing but images becomes an image line.
+fn with_images(mut line: ConversationLine) -> ConversationLine {
+    let markers = cctui_clientcore::images::scan(&line.text);
+    if markers.is_empty() {
+        return line;
+    }
+    line.image_ids = markers.iter().map(|m| m.id.clone()).collect();
+    // Only the agent's own picture is an image line; a user message keeps its
+    // own kind so the transcript filters still read it as the human's turn.
+    if cctui_clientcore::images::is_only_images(&line.text)
+        && matches!(line.kind, LineKind::Assistant | LineKind::Reply)
+    {
+        line.kind = LineKind::Image;
+    }
+    line.text = cctui_clientcore::images::substitute(&line.text);
+    line
+}
+
 /// One event, at most one line.
 ///
 /// Events with nothing to show — heartbeats, turn ends, the empty text event
 /// that precedes a streamed message — return `None` rather than a blank row.
 pub fn agent_event_to_line(event: &AgentEvent) -> Option<ConversationLine> {
+    line_of(event).map(with_images)
+}
+
+fn line_of(event: &AgentEvent) -> Option<ConversationLine> {
     match event {
         AgentEvent::Text { .. } => text_line(event),
         AgentEvent::ToolCall { tool, input, kind, ts, .. } => {
@@ -517,6 +540,30 @@ mod tests {
         assert_eq!(ln.kind, LineKind::Summary);
         assert_eq!(ln.text, "waiting_on_you");
         assert!(ln.footer.expect("a footer").needs_action);
+    }
+
+    #[test]
+    fn an_agent_posted_image_becomes_an_image_line_with_its_blob_id() {
+        let ln = line(&text("![diagram.png](cctui-img://img-7)", None));
+        assert_eq!(ln.kind, LineKind::Image);
+        assert_eq!(ln.text, "[image: diagram.png]");
+        assert_eq!(ln.image_ids, ["img-7"]);
+    }
+
+    #[test]
+    fn a_picture_inside_prose_keeps_its_prose_and_still_carries_the_id() {
+        let ln = line(&text("here it is ![a.png](cctui-img://1)", None));
+        assert_eq!(ln.kind, LineKind::Assistant);
+        assert_eq!(ln.text, "here it is [image: a.png]");
+        assert_eq!(ln.image_ids, ["1"]);
+    }
+
+    #[test]
+    fn a_users_own_image_stays_the_humans_turn() {
+        let ln = line(&text("▷ User: ![shot.png](cctui-img://2)", None));
+        assert_eq!(ln.kind, LineKind::User, "the transcript filters read this as the human");
+        assert_eq!(ln.text, "[image: shot.png]");
+        assert_eq!(ln.image_ids, ["2"]);
     }
 
     #[test]

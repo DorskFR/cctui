@@ -2,7 +2,10 @@ mod app;
 mod auth;
 mod clipboard;
 mod config;
+mod editor;
 mod install;
+#[cfg(test)]
+mod journeys;
 mod keys;
 #[cfg(test)]
 mod parity;
@@ -85,8 +88,12 @@ enum Command {
         #[arg(long)]
         revoke: bool,
     },
-    /// Force re-download of the latest cctui release and re-apply settings.
-    Update,
+    /// Re-download the release the server runs and re-apply settings.
+    Update {
+        /// Install it even if it is older than the running version.
+        #[arg(long)]
+        force: bool,
+    },
     /// Start on one session's conversation. The session need not be in the
     /// live list: an archived one is fetched by id.
     Open {
@@ -105,6 +112,9 @@ enum Command {
     },
 }
 
+/// How long quit waits for the flushed draft writes before giving up on them.
+const QUIT_FLUSH: std::time::Duration = std::time::Duration::from_millis(1500);
+
 #[tokio::main]
 async fn main() -> Result<()> {
     use clap::Parser;
@@ -112,7 +122,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let filter = cli.filter;
     match cli.command {
-        Some(Command::Update) => selfupdate::force_update().await,
+        Some(Command::Update { force }) => {
+            let (base_url, _) = resolve_identity();
+            selfupdate::force_update(&base_url, force).await
+        }
         Some(Command::Login { server, key }) => auth::login(server, key).await,
         Some(Command::Logout { revoke }) => auth::logout(revoke).await,
         Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,
@@ -172,7 +185,7 @@ async fn run_diagnose(session_id: &str) -> Result<()> {
 
 /// One `name [source, age]: value-or-reason` line per fact.
 fn print_fact<T: serde::Serialize>(name: &str, fact: &cctui_proto::diagnose::DiagnoseFact<T>) {
-    let age = fact.age_ms.map_or_else(|| "undated".to_owned(), fmt_age);
+    let age = app::diagnose::fmt_age_opt(fact.age_ms);
     match &fact.value {
         Some(v) => {
             let rendered = serde_json::to_string(v).unwrap_or_else(|_| "<unserializable>".into());
@@ -186,22 +199,42 @@ fn print_fact<T: serde::Serialize>(name: &str, fact: &cctui_proto::diagnose::Dia
     }
 }
 
-fn fmt_age(ms: i64) -> String {
-    match ms {
-        ms if ms < 1_000 => format!("{ms}ms ago"),
-        ms if ms < 60_000 => format!("{}s ago", ms / 1_000),
-        ms if ms < 3_600_000 => format!("{}m ago", ms / 60_000),
-        ms => format!("{}h ago", ms / 3_600_000),
-    }
+fn fmt_age_since(at_ms: i64) -> String {
+    app::diagnose::fmt_age((chrono::Utc::now().timestamp_millis() - at_ms).max(0))
 }
 
-fn fmt_age_since(at_ms: i64) -> String {
-    fmt_age((chrono::Utc::now().timestamp_millis() - at_ms).max(0))
+/// Hands the terminal back to the shell: cooked mode, no mouse reporting, off
+/// the alternate screen, cursor visible.
+///
+/// Written against any `Write` and ignoring errors, because the two callers that
+/// matter are the normal exit and the panic hook, and a hook that gives up
+/// halfway leaves the terminal unusable.
+fn restore_terminal(out: &mut impl io::Write) {
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        out,
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+    let _ = out.flush();
+}
+
+/// Restores the terminal before the default hook prints, so the panic lands on
+/// the shell's screen instead of the alternate one that is about to disappear.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal(&mut io::stdout());
+        previous(info);
+    }));
 }
 
 async fn run_tui(startup: Startup) -> Result<()> {
     let (base_url, token) = resolve_identity();
 
+    install_panic_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
@@ -210,14 +243,7 @@ async fn run_tui(startup: Startup) -> Result<()> {
 
     let result = run(&mut terminal, base_url, token, startup).await;
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableBracketedPaste,
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
+    restore_terminal(terminal.backend_mut());
 
     result
 }
@@ -236,6 +262,10 @@ async fn run(
     let mut app = App::new();
     app.server_url = base_url.clone();
     apply_config(&mut app);
+    // The graphics query writes to and reads from the tty, so it runs before
+    // the first frame is drawn over it.
+    app.images.detect();
+    app.images.inline_pref = app.config.prefs.inline_images;
     apply_server_settings(&server, &mut app).await;
     theme::init(app.config.theme);
 
@@ -246,14 +276,17 @@ async fn run(
     effects.dispatch_all(startup_effects);
     effects.dispatch(app::action::Effect::FetchSessionStats);
     effects.dispatch(app::action::Effect::FetchIdentity);
+    app.permissions.fetch_started();
     effects.dispatch(app::action::Effect::FetchPendingPermissions);
     effects.dispatch(app::action::Effect::LoadDraftIndex);
+    effects.dispatch(app::action::Effect::FetchDispatchers);
     // The one clock in the app. Delivery deadlines are the reducer's and the
     // reducer only moves when it is called, so this has to be far tighter than
     // the session-list poll, which the reducer gates on its own elapsed period.
     let mut tick = time::interval(Duration::from_millis(TICK_MS));
     tick.tick().await;
-    let mut input_rx = spawn_input_task();
+    let gate = editor::InputGate::new();
+    let mut input_rx = spawn_input_task(gate.clone());
     let mut ws_closed = false;
     let mut ws_ever_connected = false;
 
@@ -321,7 +354,17 @@ async fn run(
             effects.dispatch_all(reduce(&mut app, action));
         }
 
+        if let Some(request) = app.editor.take() {
+            let actions = editor_handoff(terminal, &gate, &request);
+            for action in actions {
+                effects.dispatch_all(reduce(&mut app, action));
+            }
+        }
+
         if app.should_quit {
+            // The draft writes `Quit` just queued are the last thing the user
+            // typed; a debounced or still-queued save dies with the process.
+            effects.drain(QUIT_FLUSH).await;
             break;
         }
     }
@@ -349,7 +392,7 @@ async fn apply_server_settings(server: &Client, app: &mut App) {
         app.macros = app::macros::from_settings(&payload.data);
         app.list_shape = app::list_view::ListShape::from_settings(&payload.data);
         // Kept whole: a settings write is a replace, so a patch needs the rest.
-        app.settings_blob = payload.data;
+        app.settings_blob = Some(payload.data);
         app.reshape();
     }
     app.show_timestamps = app.config.prefs.timestamps;
@@ -402,10 +445,85 @@ fn update_scroll_metrics(app: &mut App) {
 /// `spawn_blocking` per iteration inside `tokio::select!`) prevents input
 /// starvation when the WS event stream keeps the select loop busy — the
 /// channel retains pending keypresses across iterations.
-fn spawn_input_task() -> mpsc::Receiver<InputEvent> {
+/// What the loop does with a pending editor request: the text that came back,
+/// or a toast saying why it did not.
+fn editor_handoff(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    gate: &editor::InputGate,
+    request: &editor::EditorRequest,
+) -> Vec<Action> {
+    match hand_over_to_editor(terminal, gate, &request.text) {
+        Ok(text) => vec![Action::EditorFinished { target: request.target, text }],
+        Err(e) => {
+            tracing::warn!(%e, "the editor handoff failed");
+            vec![Action::Toast(Level::Error, format!("editor: {e}"))]
+        }
+    }
+}
+
+/// Re-enters the TUI's terminal: raw mode, mouse reporting, alternate screen.
+fn reenter_terminal(out: &mut impl io::Write) {
+    let _ = enable_raw_mode();
+    let _ = execute!(out, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste);
+    let _ = out.flush();
+}
+
+/// Takes the terminal back and lets the input thread read again, however the
+/// handoff ended. A `?` that skipped either would leave the TUI drawn but deaf.
+struct EditorHandoff<'a> {
+    gate: &'a editor::InputGate,
+    /// Tests set this false: `enable_raw_mode` would act on the real terminal
+    /// running the test, and the gate is the half worth asserting on.
+    reenter: bool,
+}
+
+impl Drop for EditorHandoff<'_> {
+    fn drop(&mut self) {
+        if self.reenter {
+            reenter_terminal(&mut io::stdout());
+        }
+        self.gate.unpark();
+    }
+}
+
+/// Gives the terminal up, runs the editor, and takes it back.
+///
+/// The input thread is parked first: it and the editor would otherwise both be
+/// reading stdin. The guard restores both on every path out, so neither a broken
+/// `$EDITOR` nor a write error on the way down can leave the terminal unusable.
+fn hand_over_to_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    gate: &editor::InputGate,
+    text: &str,
+) -> io::Result<String> {
+    gate.park();
+    let handoff = EditorHandoff { gate, reenter: true };
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
+    terminal.show_cursor()?;
+
+    let argv = editor::editor_from_env();
+    let edited = editor::edit_via_file(text, |path| editor::run_editor(&argv, path));
+
+    drop(handoff);
+    terminal.clear()?;
+    edited
+}
+
+fn spawn_input_task(gate: editor::InputGate) -> mpsc::Receiver<InputEvent> {
     let (tx, rx) = mpsc::channel::<InputEvent>(64);
     std::thread::spawn(move || {
         loop {
+            if gate.should_park() {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => {}
                 Ok(false) => continue,
@@ -430,4 +548,93 @@ fn spawn_input_task() -> mpsc::Receiver<InputEvent> {
         }
     });
     rx
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::{EditorHandoff, install_panic_hook, reenter_terminal, restore_terminal};
+    use crate::editor::InputGate;
+
+    /// What the shell needs back: cooked mode is a syscall, the rest are
+    /// sequences we can read.
+    #[test]
+    fn restoring_leaves_the_alternate_screen_and_shows_the_cursor() {
+        let mut out: Vec<u8> = Vec::new();
+        restore_terminal(&mut out);
+        let written = String::from_utf8_lossy(&out);
+        assert!(written.contains("\x1b[?1049l"), "it must leave the alternate screen: {written:?}");
+        assert!(written.contains("\x1b[?1000l"), "it must stop mouse reporting: {written:?}");
+        assert!(written.contains("\x1b[?2004l"), "it must stop bracketed paste: {written:?}");
+        assert!(written.contains("\x1b[?25h"), "it must show the cursor: {written:?}");
+    }
+
+    #[test]
+    fn re_entering_is_the_mirror_of_restoring() {
+        let mut out: Vec<u8> = Vec::new();
+        reenter_terminal(&mut out);
+        let written = String::from_utf8_lossy(&out);
+        assert!(written.contains("\x1b[?1049h"), "it must enter the alternate screen: {written:?}");
+        assert!(written.contains("\x1b[?1000h"), "it must resume mouse reporting: {written:?}");
+        assert!(written.contains("\x1b[?2004h"), "it must resume bracketed paste: {written:?}");
+    }
+
+    /// F7: a panic used to unwind straight past the teardown, leaving the shell
+    /// in raw mode on the alternate screen with the message written to it.
+    #[test]
+    fn a_panic_restores_the_terminal_and_still_reports() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static REPORTED: AtomicBool = AtomicBool::new(false);
+
+        let original = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| REPORTED.store(true, Ordering::SeqCst)));
+        install_panic_hook();
+
+        let outcome = std::panic::catch_unwind(|| panic!("a reducer indexed off the end"));
+
+        let _ = std::panic::take_hook();
+        std::panic::set_hook(original);
+
+        assert!(outcome.is_err(), "the panic still happens");
+        assert!(
+            REPORTED.load(Ordering::SeqCst),
+            "the hook must chain to the previous one, or the panic is swallowed"
+        );
+    }
+
+    /// F13: the early `?` on the way down used to return with the gate still
+    /// parked, and the input thread then slept forever.
+    #[test]
+    fn the_handoff_guard_always_lets_input_resume() {
+        let gate = InputGate::new();
+
+        // Mirrors the input thread, so `park` does not wait out its full timeout.
+        let thread_gate = gate.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = std::sync::Arc::clone(&stop);
+        let input = std::thread::spawn(move || {
+            while !thread_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = thread_gate.should_park();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+
+        let handed_off = |fail: bool| -> std::io::Result<()> {
+            gate.park();
+            let _handoff = EditorHandoff { gate: &gate, reenter: false };
+            if fail {
+                // Stands in for the `?` on disable_raw_mode / execute!.
+                return Err(std::io::Error::other("stdout went away"));
+            }
+            Ok(())
+        };
+
+        assert!(handed_off(true).is_err(), "the write error still surfaces");
+        assert!(!gate.should_park(), "a failed handoff left the input thread parked");
+
+        handed_off(false).expect("the clean path");
+        assert!(!gate.should_park(), "the clean path must unpark too");
+
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        input.join().expect("the stand-in input thread");
+    }
 }

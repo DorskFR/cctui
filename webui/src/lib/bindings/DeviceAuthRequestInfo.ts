@@ -4,4 +4,18 @@ import type { DeviceAuthStatus } from "./DeviceAuthStatus";
 /**
  * What the approval page shows before the user decides.
  */
-export type DeviceAuthRequestInfo = { user_code: string, client_name: string | null, expires_in_secs: number, status: DeviceAuthStatus, };
+export type DeviceAuthRequestInfo = { user_code: string, 
+/**
+ * Chosen by the unauthenticated caller, so it is a claim and not evidence.
+ */
+client_name: string | null, expires_in_secs: number, status: DeviceAuthStatus, 
+/**
+ * Where the request came from, as the proxy saw it; `null` when the
+ * deployment sits behind no proxy that reports it.
+ */
+client_ip: string | null, user_agent: string | null, 
+/**
+ * When the request was started, so an approver can tell a login they just
+ * triggered from one that has been waiting.
+ */
+created_at: string, };

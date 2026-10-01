@@ -1,28 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1021
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
- 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Anywhere                                       Labels                                         │
-▸ │  ?           Toggle this cheat sheet            Esc         Close the label list             │
-  │  q           Quit cctui                         Ctrl+n / ↓  Next label                       │
-  │  1-9         Switch view                        Ctrl+p / ↑  Previous label                   │
-  │  /           Search the current view            Space       Attach or detach this label      │
-  │  n           Next search hit                    Ctrl+c      Create a label                   │
-  │  N           Previous search hit                Ctrl+e      Rename or recolor                │
-  │  D           Diagnose the selected session      Ctrl+d      Delete this label                │
-  │  i           Session info                       Enter       Confirm                          │
-  │  Ctrl+g      Jump to the next session needin… Label filter                                   │
-  │Session list                                     Esc         Close the label list             │
-  │  j / ↓       Next session                       Ctrl+n / ↓  Next label                       │
-  │  k / ↑       Previous session                   Ctrl+p / ↑  Previous label                   │
-  │  g           First session                      Space / En… Include or exclude this label    │
-  │  G           Last session                       a           Show every label again           │
-  │  Enter       Open the conversation            Pinned messages                                │
-  │  z / Tab     Fold or open the subagent group    Esc         Close the pinned messages        │
-  │  S           Fold or open the section           Ctrl+n / ↓  Next pin                         │
-  │  Z           Fold or open everything            Ctrl+p / ↑  Previous pin                     │
-  │  f           Choose which sections show         Enter       Jump to the pinned message       │
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
+  │Anywhere                                         j / ↓       Next account                     │
+▸ │  ?           Toggle this cheat sheet            k / ↑       Previous account                 │
+  │  q           Quit cctui                         Enter       Show or hide the detail pane     │
+  │  1-9         Switch view                        Tab         Switch between the accounts and …│
+  │  /           Search the current view            e           Allow or withhold this account f…│
+  │  n           Next search hit                    +           Give this account more of a pool │
+  │  N           Previous search hit                -           Deprioritise this account in its…│
+  │  D           Diagnose the selected session      R           Claim a usage-limit reset        │
+  │  i           Session info                       x           Redirect launches elsewhere, or …│
+  │  M           Machines and daemons               r           Refresh the accounts and pools   │
+  │  @           Accounts and pools                 Esc         Back                             │
+  │  Ctrl+d      Dispatchers                      Accounts — pools pane                          │
+  │  U           Access: users, tokens, machines…   Tab         Switch between the accounts and …│
+  │  V           Instance status                    r           Refresh the accounts and pools   │
+  │  Ctrl+u      Usage: pool and account windows    Esc         Back                             │
+  │  $           Spend: token windows and cost      j / ↓       Next pool or member              │
+  │  Ctrl+g      Jump to the next session needin…   k / ↑       Previous pool or member          │
+  │Session list                                     a           Add an account to this pool      │
+  │  j / ↓       Next session                       d           Remove this member               │
+  │  k / ↑       Previous session                   J           Move this member later in the el…│
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

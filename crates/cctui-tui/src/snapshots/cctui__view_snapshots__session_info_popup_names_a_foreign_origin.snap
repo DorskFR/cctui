@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2017
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1 Sessions  2  3  4  6  8   starred · live · dispatched  sort: activity ↓  group: status
+   ┌ Session info ──────────────────────────────────────────────────────────────────────────────┐
+   │s-working                                                                                   │
+   │session:                                                                                    │
+▸  │id                                 s-working                                                │
+   │parent                             —                                                        │
+   │machine                            orion                                                    │
+   │adapter                            claude-code                                              │
+   │origin                             foreign — cctui did not start it                         │
+   │account                            ambient                                                  │
+   │model                              —                                                        │
+   │permission mode                    —                                                        │
+   │registered                         —                                                        │
+   │last heartbeat                     —                                                        │
+   │last tool                          —                                                        │
+   │fetching…                                                                                   │
+   │                                                                                            │
+   │                                                                                            │
+   │                                                                                            │
+   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close                                    │
+   └────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

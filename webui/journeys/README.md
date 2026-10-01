@@ -373,3 +373,15 @@ Not determinable from the repo and left for CCT-981 to verify at runtime:
 - `npm run journey:book` produces byte-identical PNGs for every journey
   except `accounts-pools`, whose `index.md` carries the new title.
 - `search-sessions` is absent from the app bundle's journey list.
+
+## 10. The TUI replays these specs
+
+`npm run journey:ir` exports each public journey to `docs/journeys/<id>/ir.json`,
+committed next to its screens. `crates/cctui-tui/journeys.toml` then says which
+of them the TUI must express and why it cannot express the rest, and
+`crates/cctui-tui/src/journeys.rs` replays the required ones against a
+TestBackend: a step's target resolves through a widget registry mapping
+`data-journey` paths to TUI keys and probes, so a required step whose target is
+unmapped fails rather than passing silently. A step that changes a journey's
+shape therefore shows up twice — as a stale `ir.json` in CI, and as drift
+against `journeys.toml`.

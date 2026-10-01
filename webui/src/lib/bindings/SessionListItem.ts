@@ -7,13 +7,18 @@ import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
 import type { RemoveInitiator } from "./RemoveInitiator";
 import type { SessionEndReason } from "./SessionEndReason";
+import type { SessionOrigin } from "./SessionOrigin";
 import type { SessionStatus } from "./SessionStatus";
 import type { TodoEntry } from "./TodoEntry";
 import type { TokenUsage } from "./TokenUsage";
 import type { UserActionCounts } from "./UserActionCounts";
 import type { JsonValue } from "./serde_json/JsonValue";
 
-export type SessionListItem = { id: string, parent_id: string | null, machine_id: string, working_dir: string, status: SessionStatus, liveness: Liveness, attention?: Attention | null, bucket: Bucket, token_usage: TokenUsage, metadata: JsonValue, adapter_id: AdapterId | null, machine_name?: string | null, 
+export type SessionListItem = { id: string, parent_id: string | null, machine_id: string, working_dir: string, status: SessionStatus, liveness: Liveness, attention?: Attention | null, bucket: Bucket, token_usage: TokenUsage, metadata: JsonValue, adapter_id: AdapterId | null, 
+/**
+ * Who started the underlying job; `Fleet` unless the daemon discovered it.
+ */
+origin: SessionOrigin, machine_name?: string | null, 
 /**
  * 0–359. `None` = derived from the machine name.
  */

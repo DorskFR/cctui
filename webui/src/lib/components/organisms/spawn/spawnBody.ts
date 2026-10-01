@@ -1,5 +1,7 @@
+import type { PermissionMode } from '@bindings/PermissionMode';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import { normalizeDir } from '$lib/drafts';
+import { PERMISSION_MODES } from '$lib/domainTables';
 import { FOLLOWUP_RELATION } from '$lib/followup';
 import { isCompatibleProvider, NO_ACCOUNT, poolName } from './options';
 import type { EnvRow, Form } from './types';
@@ -25,9 +27,13 @@ export function buildSpawnBody(
 	const noAccount = f.account === NO_ACCOUNT;
 	const pool = poolName(f.account) ?? null;
 	const compatible = !!spawnProvider && isCompatibleProvider(spawnProvider);
-	const model = compatible
-		? f.model_account || null
-		: (adapter === 'codex' ? f.model_codex : f.model_claude) || null;
+	const model =
+		(compatible
+			? f.model_account
+			: adapter === 'codex'
+				? f.model_codex
+				: f.model_claude
+		).trim() || null;
 	return {
 		machine_id: f.machine_id,
 		working_dir: normalizeDir(f.working_dir.trim()),
@@ -35,8 +41,12 @@ export function buildSpawnBody(
 		name: f.name.trim() || null,
 		prompt: f.prompt.trim() || null,
 		prompt_name: null,
-		// null lets the server resolve the account default permission mode.
-		permission_mode: f.permission_mode || null,
+		// null lets the server resolve the account default permission mode. A
+		// profile or draft can carry a mode this build does not know, and the
+		// server must resolve its default rather than be sent a bad one.
+		permission_mode: PERMISSION_MODES.includes(f.permission_mode as PermissionMode)
+			? (f.permission_mode as PermissionMode)
+			: null,
 		effort: (adapter === 'codex' ? f.effort_codex : f.effort_claude) || null,
 		service_tier: (adapter === 'codex' && f.service_tier) || null,
 		model,

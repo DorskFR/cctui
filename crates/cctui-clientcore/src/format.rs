@@ -1,3 +1,50 @@
+/// `toFixed`, not `{:.N}`.
+///
+/// `{:.N}` rounds a tie to even and `Number.prototype.toFixed` rounds it away
+/// from zero, so every Rust mirror of a `toFixed` has to come through here:
+/// `compact(1250)` is "1.3k" on the web and must not be "1.2k" in the TUI.
+/// Rounds the f64's exact decimal expansion, as `toFixed` does, so a value only
+/// *near* a tie still rounds the way its binary value leans. Values at or above
+/// 1e21, where `toFixed` switches to exponential form, are not mirrored — no
+/// token count or price reaches them.
+#[must_use]
+pub fn js_to_fixed(v: f64, digits: usize) -> String {
+    if !v.is_finite() {
+        return format!("{v:.digits$}");
+    }
+    let negative = v < 0.0;
+    // 25 extra digits reach past any tie a double can represent here, so the
+    // digit that decides the rounding is exact rather than itself rounded.
+    let exact = format!("{:.*}", digits + 25, v.abs());
+    let (whole, frac) = exact.split_once('.').unwrap_or((exact.as_str(), ""));
+    let mut kept: Vec<u8> =
+        whole.bytes().chain(frac.bytes().take(digits)).map(|b| b - b'0').collect();
+    let mut int_len = whole.len();
+    if frac.as_bytes().get(digits).is_some_and(|b| *b >= b'5') {
+        let mut at = kept.len();
+        loop {
+            if at == 0 {
+                kept.insert(0, 1);
+                int_len += 1;
+                break;
+            }
+            at -= 1;
+            if kept[at] == 9 {
+                kept[at] = 0;
+            } else {
+                kept[at] += 1;
+                break;
+            }
+        }
+    }
+    let text: String = kept.iter().map(|d| char::from(b'0' + d)).collect();
+    let sign = if negative { "-" } else { "" };
+    if digits == 0 {
+        return format!("{sign}{}", &text[..int_len]);
+    }
+    format!("{sign}{}.{}", &text[..int_len], &text[int_len..])
+}
+
 const FAMILIES: [&str; 10] =
     ["opus", "sonnet", "haiku", "fable", "gpt", "o1", "o3", "o4", "gemini", "grok"];
 
@@ -27,12 +74,12 @@ pub fn compact(n: f64) -> String {
     }
     let mut i = TIERS.iter().position(|t| n >= t.div).unwrap_or(TIERS.len() - 1);
     let mut v = n / TIERS[i].div;
-    let rounded: f64 = format!("{:.*}", tier_digits(i, v), v).parse().unwrap_or(v);
+    let rounded: f64 = js_to_fixed(v, tier_digits(i, v)).parse().unwrap_or(v);
     if rounded >= 1000.0 && i > 0 {
         i -= 1;
         v = n / TIERS[i].div;
     }
-    format!("{:.*}{}", tier_digits(i, v), v, TIERS[i].suffix)
+    format!("{}{}", js_to_fixed(v, tier_digits(i, v)), TIERS[i].suffix)
 }
 
 #[must_use]
@@ -181,10 +228,10 @@ pub fn usd(n: f64) -> String {
         return "$0.00".to_string();
     }
     if n < 0.01 {
-        return format!("${n:.4}");
+        return format!("${}", js_to_fixed(n, 4));
     }
     if n < 100.0 {
-        return format!("${n:.2}");
+        return format!("${}", js_to_fixed(n, 2));
     }
     format!("${}", n.round() as i64)
 }
@@ -221,4 +268,40 @@ fn trim_number(n: f64) -> String {
         return format!("{}", n as i64);
     }
     format!("{n}")
+}
+
+#[cfg(test)]
+mod tie_rounding {
+    use super::{compact, js_to_fixed, usd};
+
+    /// The right-hand sides are what V8's `toFixed` prints for the same inputs.
+    #[test]
+    fn js_to_fixed_matches_tofixed() {
+        for (value, digits, want) in [
+            (1.25_f64, 1, "1.3"),
+            (0.125, 2, "0.13"),
+            (2.5, 0, "3"),
+            (3.5, 0, "4"),
+            (1.5, 0, "2"),
+            (0.0625, 4, "0.0625"),
+            (1.005, 2, "1.00"),
+            (9.95, 1, "9.9"),
+            (8.345, 2, "8.35"),
+            (99.995, 2, "100.00"),
+            (0.1, 2, "0.10"),
+            (0.0, 2, "0.00"),
+            (-0.125, 2, "-0.13"),
+        ] {
+            assert_eq!(js_to_fixed(value, digits), want, "js_to_fixed({value}, {digits})");
+        }
+    }
+
+    #[test]
+    fn ties_round_up_as_the_web_rounds_them() {
+        assert_eq!(compact(1250.0), "1.3k");
+        assert_eq!(compact(1_250_000.0), "1.3M");
+        assert_eq!(compact(1_250_000_000.0), "1.3B");
+        assert_eq!(usd(0.125), "$0.13");
+        assert_eq!(usd(0.001_25), "$0.0013");
+    }
 }

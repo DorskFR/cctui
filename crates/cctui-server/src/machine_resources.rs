@@ -145,6 +145,7 @@ pub async fn list(
                 display_name: r.display_name,
                 hue: r.hue,
                 liveness: crate::machine_liveness::derive(r.last_seen_at),
+                last_seen_at: r.last_seen_at,
                 resources,
                 updated_at: r.updated_at,
             }

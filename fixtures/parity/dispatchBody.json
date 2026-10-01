@@ -1,0 +1,246 @@
+{
+  "contextPackEnv": [
+    {
+      "pack": { "url": "", "ref": "", "subdir": "", "token": "" },
+      "out": {}
+    },
+    {
+      "pack": {
+        "url": "  https://git/packs.git ",
+        "ref": "main",
+        "subdir": "",
+        "token": "secret"
+      },
+      "out": {
+        "CONTEXT_PACK_URL": "https://git/packs.git",
+        "CONTEXT_PACK_REF": "main",
+        "CONTEXT_PACK_TOKEN": "secret"
+      }
+    },
+    {
+      "pack": {
+        "url": "https://git/p.git",
+        "ref": "v2",
+        "subdir": " packs/cctui ",
+        "token": ""
+      },
+      "out": {
+        "CONTEXT_PACK_URL": "https://git/p.git",
+        "CONTEXT_PACK_REF": "v2",
+        "CONTEXT_PACK_SUBDIR": "packs/cctui"
+      }
+    }
+  ],
+  "buildDispatchBody": [
+    {
+      "why": "an empty form omits every field the worker can default",
+      "form": { "dispatcher": "k8s-cyberia" },
+      "env": {},
+      "pack": {},
+      "provider": null,
+      "sessionId": "s-empty",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-empty",
+        "timeout": null,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": null,
+        "provider": null,
+        "accounts": [],
+        "payload": {}
+      }
+    },
+    {
+      "why": "the whole dispatch tab filled in, claude-code",
+      "form": {
+        "dispatcher": "k8s-cyberia",
+        "name": " nightly ",
+        "identity": "bot",
+        "repo": " cctui ",
+        "ticket": " CCT-1102 ",
+        "prompt": " fix the flake ",
+        "prompt_file": "prompts/fix.md",
+        "model_claude": "opus",
+        "model_codex": "gpt-5.6-sol",
+        "effort_claude": "high",
+        "effort_codex": "low",
+        "timeout": " 60 ",
+        "account": " main "
+      },
+      "env": { "FOO": "bar" },
+      "pack": { "url": "https://git/packs.git", "ref": "main", "token": "tok" },
+      "provider": "anthropic",
+      "sessionId": "s-full",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-full",
+        "timeout": 60,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": "main",
+        "provider": "anthropic",
+        "accounts": [],
+        "payload": {
+          "name": "nightly",
+          "identity": "bot",
+          "repo": "cctui",
+          "context": { "issue_id": "CCT-1102" },
+          "prompt": "fix the flake",
+          "prompt_file": "prompts/fix.md",
+          "model": "opus",
+          "effort": "high",
+          "env": {
+            "FOO": "bar",
+            "CONTEXT_PACK_URL": "https://git/packs.git",
+            "CONTEXT_PACK_REF": "main",
+            "CONTEXT_PACK_TOKEN": "tok"
+          }
+        }
+      }
+    },
+    {
+      "why": "codex names its adapter and takes its own model and effort",
+      "form": {
+        "dispatcher": "k8s-cyberia",
+        "dispatch_adapter": "codex",
+        "model_claude": "opus",
+        "model_codex": "gpt-5.6-sol",
+        "effort_claude": "high",
+        "effort_codex": "low"
+      },
+      "env": {},
+      "pack": {},
+      "provider": null,
+      "sessionId": "s-codex",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-codex",
+        "timeout": null,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": null,
+        "provider": null,
+        "accounts": [],
+        "payload": {
+          "adapter": "codex",
+          "model": "gpt-5.6-sol",
+          "effort": "low"
+        }
+      }
+    },
+    {
+      "why": "a -compatible provider overrides the harness model field",
+      "form": {
+        "dispatcher": "k8s-cyberia",
+        "model_claude": "opus",
+        "model_account": "llama-70b",
+        "account": "endpoint"
+      },
+      "env": {},
+      "pack": {},
+      "provider": "anthropic-compatible",
+      "sessionId": "s-compat",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-compat",
+        "timeout": null,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": "endpoint",
+        "provider": "anthropic-compatible",
+        "accounts": [],
+        "payload": { "model": "llama-70b" }
+      }
+    },
+    {
+      "why": "the no-account sentinel means no account on the wire",
+      "form": { "dispatcher": "k8s-cyberia", "account": "\u0000no-account" },
+      "env": {},
+      "pack": {},
+      "provider": null,
+      "sessionId": "s-noacct",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-noacct",
+        "timeout": null,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": null,
+        "provider": null,
+        "accounts": [],
+        "payload": {}
+      }
+    },
+    {
+      "why": "a pool pick is resolved server-side, so it is not sent as an account",
+      "form": { "dispatcher": "k8s-cyberia", "account": "\u0000pool:fleet" },
+      "env": {},
+      "pack": {},
+      "provider": null,
+      "sessionId": "s-pool",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-pool",
+        "timeout": null,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": null,
+        "provider": null,
+        "accounts": [],
+        "payload": {}
+      }
+    },
+    {
+      "why": "an unparseable timeout falls back to the runtime default",
+      "form": { "dispatcher": "k8s-cyberia", "timeout": "soon" },
+      "env": {},
+      "pack": {},
+      "provider": null,
+      "sessionId": "s-timeout",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-timeout",
+        "timeout": null,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": null,
+        "provider": null,
+        "accounts": [],
+        "payload": {}
+      }
+    },
+    {
+      "why": "an explicit context-pack field wins over a hand-typed env row",
+      "form": { "dispatcher": "k8s-cyberia" },
+      "env": { "CONTEXT_PACK_REF": "typed" },
+      "pack": { "url": "https://git/p.git", "ref": "pinned" },
+      "provider": null,
+      "sessionId": "s-dup",
+      "out": {
+        "dispatcher": "k8s-cyberia",
+        "session_id": "s-dup",
+        "timeout": null,
+        "reply_url": null,
+        "notify_url": null,
+        "notify_secret": null,
+        "account": null,
+        "provider": null,
+        "accounts": [],
+        "payload": {
+          "env": {
+            "CONTEXT_PACK_URL": "https://git/p.git",
+            "CONTEXT_PACK_REF": "pinned"
+          }
+        }
+      }
+    }
+  ]
+}

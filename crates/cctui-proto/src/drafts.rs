@@ -28,6 +28,16 @@ pub const DRAFT_TEXT_MAX: usize = 256 * 1024;
 /// Writes past the cap evict the least recently written entries.
 pub const SPAWN_MEMORY_CAP: usize = 50;
 
+/// How many drafts a user keeps.
+///
+/// Keys are client-chosen (one per session composer, one per session's prompt
+/// history, one per spawn slot), so nothing else bounds the row count. Writes
+/// past the cap evict the least recently updated drafts, which is why a put
+/// never fails for being over it. Generous against the real working set — a
+/// draft per live session plus the history and spawn keys — while keeping the
+/// per-user worst case bounded.
+pub const DRAFT_CAP_PER_USER: usize = 500;
+
 /// The composite-key separator, the ASCII unit separator.
 ///
 /// Absent from machine ids, dispatcher ids, working directories and repo
@@ -96,7 +106,7 @@ pub struct PutDraftRequest {
 ///
 /// Mirrors the fields the spawn form recalls; `account_provider` is carried for
 /// display only, the form recomputes it from the account.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnMemoryEntry {
     #[serde(default)]

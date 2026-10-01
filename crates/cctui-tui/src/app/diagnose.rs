@@ -3,6 +3,7 @@
 //! Which reasons apply is the server's call ([`cctui_proto::silence`]); this
 //! module only words them.
 
+use cctui_clientcore::age::age_bare;
 use cctui_proto::api::SessionListItem;
 use cctui_proto::diagnose::{DiagnoseFact, SessionDiagnoseResponse};
 use cctui_proto::silence::SilenceReason;
@@ -60,13 +61,9 @@ impl Harness {
     }
 }
 
+#[must_use]
 pub fn fmt_age(ms: i64) -> String {
-    match ms {
-        ms if ms < 1_000 => format!("{ms}ms ago"),
-        ms if ms < 60_000 => format!("{}s ago", ms / 1_000),
-        ms if ms < 3_600_000 => format!("{}m ago", ms / 60_000),
-        ms => format!("{}h ago", ms / 3_600_000),
-    }
+    cctui_clientcore::age::age_ago(ms)
 }
 
 #[must_use]
@@ -84,11 +81,11 @@ pub fn silence_text(reason: &SilenceReason) -> String {
     match reason {
         SilenceReason::CodexStalledRpc { count, age_ms } => format!(
             "{count} JSON-RPC request(s) outstanding and no frame for {}.",
-            fmt_age(*age_ms)
+            age_bare(*age_ms)
         ),
         SilenceReason::CodexSharedDropped { count, age_ms } => format!(
             "The shared app-server connection dropped {count} in-flight request(s), last {} ago.",
-            fmt_age(*age_ms)
+            age_bare(*age_ms)
         ),
         SilenceReason::CodexSharedNoFrames => "No JSON-RPC frames on the shared app-server \
              connection: inventory, history and lifecycle traffic is not flowing."
@@ -107,13 +104,16 @@ pub fn silence_text(reason: &SilenceReason) -> String {
              turn produces can reach cctui."
             .to_owned(),
         SilenceReason::OpencodeSseStalled { age_ms } => {
-            format!("A turn is in flight but no event has arrived for {}.", fmt_age(*age_ms))
+            format!("A turn is in flight but no event has arrived for {}.", age_bare(*age_ms))
         }
         SilenceReason::OpencodeSseNoFrames => "HTTP calls are flowing but no event ever arrived \
              on the stream: the `GET /event` path is the blind spot."
             .to_owned(),
         SilenceReason::OpencodeHttpErrors { count, age_ms, message } => {
-            format!("The server rejected {count} call(s), last {} ago: {message}", fmt_age(*age_ms))
+            format!(
+                "The server rejected {count} call(s), last {} ago: {message}",
+                age_bare(*age_ms)
+            )
         }
         SilenceReason::OpencodeAwaitingPermission { count } => {
             format!("{count} permission prompt(s) awaiting an answer.")
@@ -210,6 +210,11 @@ pub fn info_rows(s: &SessionListItem, now_ms: i64) -> Vec<Row> {
             Tone::Normal,
         ),
         Row::new("adapter", s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str()), Tone::Dim),
+        Row::new(
+            "origin",
+            if s.origin.is_foreign() { "foreign — cctui did not start it" } else { "cctui" },
+            if s.origin.is_foreign() { Tone::Warn } else { Tone::Dim },
+        ),
         Row::new(
             "account",
             s.account_name.clone().unwrap_or_else(|| "ambient".to_owned()),
@@ -437,8 +442,8 @@ mod tests {
     use cctui_proto::silence::SilenceReason;
 
     use super::{
-        DiagnoseAction, DiagnoseMode, Harness, Tone, fmt_age, info_rows, panel_rows, report_rows,
-        silence_messages, silence_text,
+        DiagnoseAction, DiagnoseMode, Harness, Tone, age_bare, fmt_age, info_rows, panel_rows,
+        report_rows, silence_messages, silence_text,
     };
     use crate::app::action::Effect;
     use crate::app::state::{App, View};
@@ -498,7 +503,7 @@ mod tests {
     fn the_numbers_a_code_supplies_reach_the_sentence() {
         let stalled = silence_text(&SilenceReason::CodexStalledRpc { count: 2, age_ms: 120_000 });
         assert!(stalled.contains('2'), "{stalled}");
-        assert!(stalled.contains(&fmt_age(120_000)), "{stalled}");
+        assert!(stalled.contains(&age_bare(120_000)), "{stalled}");
         assert!(
             silence_text(&SilenceReason::OpencodeHttpErrors {
                 count: 1,
@@ -534,6 +539,31 @@ mod tests {
         assert_eq!(fmt_age(2_000), "2s ago");
         assert_eq!(fmt_age(120_000), "2m ago");
         assert_eq!(fmt_age(7_200_000), "2h ago");
+    }
+
+    /// A sentence carrying its own preposition must not get a second one.
+    #[test]
+    fn a_sentence_with_its_own_preposition_reads_once() {
+        for reason in [
+            SilenceReason::CodexSharedDropped { count: 2, age_ms: 300_000 },
+            SilenceReason::OpencodeHttpErrors {
+                count: 1,
+                age_ms: 300_000,
+                message: "POST /prompt: 500".into(),
+            },
+        ] {
+            let text = silence_text(&reason);
+            assert!(text.contains("last 5m ago"), "{text}");
+            assert!(!text.contains("ago ago"), "{text}");
+        }
+        for reason in [
+            SilenceReason::CodexStalledRpc { count: 2, age_ms: 120_000 },
+            SilenceReason::OpencodeSseStalled { age_ms: 120_000 },
+        ] {
+            let text = silence_text(&reason);
+            assert!(text.contains("for 2m."), "{text}");
+            assert!(!text.contains("ago"), "{text}");
+        }
     }
 
     /// The panel is the CLI printer as widgets, so it must name every fact

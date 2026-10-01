@@ -4,6 +4,7 @@ import { parityFixture } from './fixtures';
 
 type Step =
 	| { op: 'caret'; at: number }
+	| { op: 'setList'; list: string[] }
 	| { op: 'reset' }
 	| { op: 'resetAll' }
 	| { op: 'recall'; pick: string; value: string }
@@ -18,6 +19,7 @@ describe('historyNav parity fixtures', () => {
 	for (const c of fx) {
 		it(c.name, () => {
 			let value = c.initial;
+			let list = c.list;
 			let caret = value.length;
 			const el = {
 				get selectionStart() {
@@ -28,7 +30,7 @@ describe('historyNav parity fixtures', () => {
 				}
 			} as HTMLTextAreaElement;
 			const nav = new HistoryNav({
-				list: () => c.list,
+				list: () => list,
 				value: () => value,
 				setValue: (v) => {
 					value = v;
@@ -40,6 +42,9 @@ describe('historyNav parity fixtures', () => {
 				switch (step.op) {
 					case 'caret':
 						caret = step.at;
+						break;
+					case 'setList':
+						list = step.list;
 						break;
 					case 'reset':
 						nav.reset();

@@ -64,9 +64,17 @@ pub struct DeviceAuthPoll {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DeviceAuthRequestInfo {
     pub user_code: String,
+    /// Chosen by the unauthenticated caller, so it is a claim and not evidence.
     pub client_name: Option<String>,
     pub expires_in_secs: u32,
     pub status: DeviceAuthStatus,
+    /// Where the request came from, as the proxy saw it; `null` when the
+    /// deployment sits behind no proxy that reports it.
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+    /// When the request was started, so an approver can tell a login they just
+    /// triggered from one that has been waiting.
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

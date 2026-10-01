@@ -7,7 +7,9 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use cctui_proto::drafts::{DRAFT_KEY_MAX, DRAFT_TEXT_MAX, Draft, DraftList, PutDraftRequest};
+use cctui_proto::drafts::{
+    DRAFT_CAP_PER_USER, DRAFT_KEY_MAX, DRAFT_TEXT_MAX, Draft, DraftList, PutDraftRequest,
+};
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -81,6 +83,7 @@ pub async fn put_draft(
     if body.text.is_empty() {
         return delete_draft(State(state), Extension(ctx), Path(key)).await;
     }
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO user_drafts (user_id, key, text, updated_at) VALUES ($1, $2, $3, now()) \
          ON CONFLICT (user_id, key) DO UPDATE SET text = EXCLUDED.text, updated_at = now()",
@@ -88,9 +91,35 @@ pub async fn put_draft(
     .bind(ctx.user_id)
     .bind(&key)
     .bind(&body.text)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+    evict_over_cap(&mut tx, ctx.user_id).await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Drop the least recently updated drafts past [`DRAFT_CAP_PER_USER`].
+///
+/// Runs in the put's transaction, after the upsert: the row just written is the
+/// newest, so a put is never the thing evicted and never fails for being over
+/// the cap. `key` breaks ties so concurrent puts in the same statement-timestamp
+/// evict deterministically.
+async fn evict_over_cap(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: uuid::Uuid,
+) -> Result<(), AppError> {
+    let over = i64::try_from(DRAFT_CAP_PER_USER).unwrap_or(i64::MAX);
+    sqlx::query(
+        "DELETE FROM user_drafts WHERE user_id = $1 AND key IN ( \
+           SELECT key FROM user_drafts WHERE user_id = $1 \
+            ORDER BY updated_at DESC, key ASC OFFSET $2 \
+         )",
+    )
+    .bind(user_id)
+    .bind(over)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub async fn delete_draft(
@@ -189,6 +218,107 @@ mod tests {
         assert_eq!(cleared, StatusCode::NO_CONTENT);
         let gone = get_draft(State(state), Extension(ctx(uid)), Path(key)).await;
         assert_eq!(gone.unwrap_err().status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Unbounded drafts are a per-user storage leak: keys are client-chosen, so
+    /// nothing but this cap limits the row count.
+    #[tokio::test]
+    async fn drafts_past_the_cap_evict_the_least_recently_updated() {
+        let Some(pool) = test_pool("drafts_past_the_cap_evict_the_least_recently_updated").await
+        else {
+            return;
+        };
+        let uid = insert_user(&pool, "draft-cap").await;
+        let other = insert_user(&pool, "draft-cap-other").await;
+        let state = AppState::for_test(pool.clone());
+
+        // Pre-seed the cap with rows whose age is explicit, so which one is
+        // "least recently updated" does not depend on statement timestamps.
+        for i in 0..DRAFT_CAP_PER_USER {
+            sqlx::query(
+                "INSERT INTO user_drafts (user_id, key, text, updated_at) \
+                 VALUES ($1, $2, $3, now() - make_interval(secs => $4))",
+            )
+            .bind(uid)
+            .bind(format!("k{i:04}"))
+            .bind("text")
+            .bind(f64::from(u32::try_from(DRAFT_CAP_PER_USER - i).expect("fits")))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // One row for the other user, to prove eviction is per user.
+        sqlx::query(
+            "INSERT INTO user_drafts (user_id, key, text, updated_at) \
+             VALUES ($1, $2, $3, now() - make_interval(secs => 9999))",
+        )
+        .bind(other)
+        .bind("theirs")
+        .bind("text")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let count = |uid: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM user_drafts WHERE user_id = $1")
+                    .bind(uid)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(count(uid).await, i64::try_from(DRAFT_CAP_PER_USER).unwrap(), "at the cap");
+
+        // The oldest of the seeded rows, which the next put must evict.
+        let oldest = "k0000";
+        put_draft(
+            State(state.clone()),
+            Extension(ctx(uid)),
+            Path("brand-new".to_owned()),
+            Json(PutDraftRequest { text: "newest".to_owned() }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count(uid).await,
+            i64::try_from(DRAFT_CAP_PER_USER).unwrap(),
+            "the cap holds instead of growing by one"
+        );
+        let kept =
+            get_draft(State(state.clone()), Extension(ctx(uid)), Path("brand-new".to_owned()))
+                .await
+                .unwrap();
+        assert_eq!(kept.0.text, "newest", "a put is never the row evicted");
+        let evicted =
+            get_draft(State(state.clone()), Extension(ctx(uid)), Path(oldest.to_owned())).await;
+        assert_eq!(
+            evicted.unwrap_err().status(),
+            StatusCode::NOT_FOUND,
+            "the least recently updated draft went"
+        );
+        let survivor =
+            get_draft(State(state.clone()), Extension(ctx(uid)), Path("k0001".to_owned())).await;
+        assert!(survivor.is_ok(), "the next-oldest is still inside the cap");
+
+        assert_eq!(count(other).await, 1, "another user's older draft is untouched");
+
+        // Updating an existing draft is not a new row, so nothing is evicted.
+        put_draft(
+            State(state.clone()),
+            Extension(ctx(uid)),
+            Path("brand-new".to_owned()),
+            Json(PutDraftRequest { text: "edited".to_owned() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(count(uid).await, i64::try_from(DRAFT_CAP_PER_USER).unwrap());
+        assert!(
+            get_draft(State(state), Extension(ctx(uid)), Path("k0001".to_owned())).await.is_ok(),
+            "an in-place update evicts nothing"
+        );
     }
 
     /// The whole point of moving drafts server-side is that they are per user:

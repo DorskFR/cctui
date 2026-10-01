@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2671
+expression: render_screen(&mut app)
+---
+ Access  Users  Tokens  Machines [Keys]  — dorsk
+   LABEL               STATE      SCOPES
+▸  ci                  active     read
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:move  Tab:tab  n:mint  s:scopes  x:revoke  P:purge  G:disp

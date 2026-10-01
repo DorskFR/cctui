@@ -285,13 +285,15 @@
 	"conversation_scheduled_for": "Scheduled for {time}",
 	"device_approve": "Approve",
 	"device_approved": "Approved — the device can finish signing in.",
-	"device_client": "Client: {name}",
+	"device_client": "Client (as the device named itself, unverified): {name}",
 	"device_code_label": "Device code",
 	"device_denied": "Denied.",
 	"device_deny": "Deny",
 	"device_expires_in": "Expires in {seconds} seconds",
 	"device_intro": "A cctui client is asking to sign in as you. Approve it only if you started this login yourself, and only if the code below matches the one the client is showing.",
 	"device_lookup": "Look up",
+	"device_prefilled_hint": "This page was opened with a code already filled in. Check it against the code the device is showing, then look it up.",
+	"device_requester": "Where this request came from",
 	"device_status_dead": "This code has expired or has already been decided. Start the login again on the device.",
 	"device_title": "Approve a device",
 	"device_unknown_client": "an unnamed client",
@@ -466,10 +468,11 @@
 	"conversation_unpin_title": "Remove this pin",
 	"conversation_waiting_input": "✋ Waiting for your input",
 	"conversation_working": "Working…",
-	"diagnose_age_h": "{h}h ago",
-	"diagnose_age_m": "{min}m ago",
-	"diagnose_age_ms": "{ms}ms ago",
-	"diagnose_age_s": "{s}s ago",
+	"diagnose_age_h": "{h}h",
+	"diagnose_age_ago": "{age} ago",
+	"diagnose_age_m": "{min}m",
+	"diagnose_age_ms": "{ms}ms",
+	"diagnose_age_s": "{s}s",
 	"diagnose_block_account": "Account / limits",
 	"diagnose_block_process": "Process",
 	"diagnose_block_transport": "Transport",
@@ -917,8 +920,13 @@
 	"pools_leave": "Remove from pool",
 	"pools_legend": [
 		{
-			"declarations": ["input n", "local nPlural = n: plural"],
-			"selectors": ["nPlural"],
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
 			"match": {
 				"nPlural=one": "pool · {n} account",
 				"nPlural=other": "pool · {n} accounts"
@@ -927,8 +935,13 @@
 	],
 	"pools_legend_failover": [
 		{
-			"declarations": ["input n", "local nPlural = n: plural"],
-			"selectors": ["nPlural"],
+			"declarations": [
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
 			"match": {
 				"nPlural=one": "pool · {n} account · failover armed",
 				"nPlural=other": "pool · {n} accounts · failover armed"
@@ -957,8 +970,14 @@
 	"pools_usage_failover_off": "Failover off: the projection only holds for new sessions",
 	"pools_usage_family": [
 		{
-			"declarations": ["input family", "input n", "local nPlural = n: plural"],
-			"selectors": ["nPlural"],
+			"declarations": [
+				"input family",
+				"input n",
+				"local nPlural = n: plural"
+			],
+			"selectors": [
+				"nPlural"
+			],
 			"match": {
 				"nPlural=one": "{family} · {n} account",
 				"nPlural=other": "{family} · {n} accounts"
@@ -2029,33 +2048,33 @@
 	"settings_plugins_admin_enabled": "{name} enabled for this instance",
 	"settings_plugins_admin_disabled": "{name} disabled for this instance",
 	"settings_plugins_admin_uninstalled": "{name} uninstalled",
-  "provider_status_aria": "Upstream provider status ({count} degraded)",
-  "provider_status_heading": "{provider} · {severity}",
-  "provider_status_affected": "Affected: {components}",
-  "provider_status_page": "Status page",
-  "provider_status_minor": "degraded",
-  "provider_status_major": "partial outage",
-  "provider_status_critical": "major outage",
-  "provider_status_account_badge": "{provider} upstream: {detail}",
-  "accounts_field_usage_probe": "Usage probe",
-  "accounts_usage_probe_help": "Reads this endpoint's own quota so the credential gets real windows, a pace and a soft limit. Without one it stays unmeasured.",
-  "rooms_joined_marker": "Added to a room",
-  "rooms_name_label": "Room name",
-  "rooms_name_placeholder": "wave 23",
-  "rooms_badge_title": "In room {room}",
-  "rooms_members_count": "{count} member(s)",
-  "rooms_none": "No rooms yet. Select several sessions to make one.",
-  "rooms_archive": "Archive room",
-  "rooms_delete": "Delete room",
-  "rooms_line_from_room": "in {room}",
-  "rooms_menu_label": "Room",
-  "rooms_menu_action": "Room…",
-  "rooms_menu_hint": "Sessions in a room can message each other and read each other's history.",
-  "rooms_clear": "No room",
-  "rooms_rename": "Rename room",
-  "rooms_move_count": "Move {count} to a room",
-  "sessions_dim_room": "Room",
-  "rooms_archive_confirm": "Archive “{room}” and the {count} session(s) in it? They stop running; unarchive them individually afterwards.",
-  "rooms_archive_confirm_empty": "Archive “{room}”? Nothing in it is still running.",
-  "rooms_archive_skipped_pinned": "{count} pinned session(s) were left running."
+	"provider_status_aria": "Upstream provider status ({count} degraded)",
+	"provider_status_heading": "{provider} · {severity}",
+	"provider_status_affected": "Affected: {components}",
+	"provider_status_page": "Status page",
+	"provider_status_minor": "degraded",
+	"provider_status_major": "partial outage",
+	"provider_status_critical": "major outage",
+	"provider_status_account_badge": "{provider} upstream: {detail}",
+	"accounts_field_usage_probe": "Usage probe",
+	"accounts_usage_probe_help": "Reads this endpoint's own quota so the credential gets real windows, a pace and a soft limit. Without one it stays unmeasured.",
+	"rooms_joined_marker": "Added to a room",
+	"rooms_name_label": "Room name",
+	"rooms_name_placeholder": "wave 23",
+	"rooms_badge_title": "In room {room}",
+	"rooms_members_count": "{count} member(s)",
+	"rooms_none": "No rooms yet. Select several sessions to make one.",
+	"rooms_archive": "Archive room",
+	"rooms_delete": "Delete room",
+	"rooms_line_from_room": "in {room}",
+	"rooms_menu_label": "Room",
+	"rooms_menu_action": "Room…",
+	"rooms_menu_hint": "Sessions in a room can message each other and read each other's history.",
+	"rooms_clear": "No room",
+	"rooms_rename": "Rename room",
+	"rooms_move_count": "Move {count} to a room",
+	"sessions_dim_room": "Room",
+	"rooms_archive_confirm": "Archive “{room}” and the {count} session(s) in it? They stop running; unarchive them individually afterwards.",
+	"rooms_archive_confirm_empty": "Archive “{room}”? Nothing in it is still running.",
+	"rooms_archive_skipped_pinned": "{count} pinned session(s) were left running."
 }

@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SessionProfile {
@@ -36,7 +36,7 @@ pub struct SessionProfile {
 ///
 /// The account pick is at most one of `account_id` / `pool_id` / `no_account`; none = Auto (the
 /// server elects one). `None` model / effort / permission mode = the harness or account default.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProfileSpec {
     pub harness: String,
@@ -66,7 +66,7 @@ pub struct ProfileSpec {
     pub context_items: Vec<Uuid>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CreateProfileRequest {
     pub name: String,
@@ -76,7 +76,7 @@ pub struct CreateProfileRequest {
 
 /// Every field optional; the spec, when present, replaces the whole kit (the
 /// panel always holds the full one), so a cleared knob really clears.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateProfileRequest {
     #[serde(default)]
@@ -87,7 +87,7 @@ pub struct UpdateProfileRequest {
     pub spec: Option<ProfileSpec>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ReorderProfilesRequest {
     #[cfg_attr(feature = "ts", ts(type = "string[]"))]

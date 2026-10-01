@@ -177,16 +177,29 @@ fn every_handled_route_is_called_by_its_module() {
 
 /// The `cctui_client::Client` methods whose body names `route_id`.
 fn client_methods_for(route_id: &str) -> Vec<String> {
-    let rest = src_dir().join("../../cctui-client/src/rest.rs");
-    let source = std::fs::read_to_string(&rest)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", rest.display()));
+    let dir = src_dir().join("../../cctui-client/src");
     let quoted = format!("\"{route_id}\"");
-    source
-        .split("pub async fn ")
-        .skip(1)
-        .filter(|body| body.split("\n    }").next().is_some_and(|b| b.contains(&quoted)))
-        .filter_map(|body| body.split(['(', '<']).next().map(str::to_owned))
-        .collect()
+    let mut methods = Vec::new();
+    let entries =
+        std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry.expect("a dir entry").path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        methods.extend(
+            source
+                .split("pub async fn ")
+                .skip(1)
+                .filter(|body| body.split("\n    }").next().is_some_and(|b| b.contains(&quoted)))
+                .filter_map(|body| body.split(['(', '<']).next().map(str::to_owned)),
+        );
+    }
+    methods.sort();
+    methods.dedup();
+    methods
 }
 
 /// `/sessions/{id}/pins` -> `/sessions/{}/pins`, the shape a `format!` call has.

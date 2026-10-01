@@ -5,17 +5,38 @@
 //! contains no path literals, so a renamed server route is a compile-or-test
 //! failure rather than a 404 at runtime.
 
+pub mod accounts;
+pub mod admin;
 pub mod device_auth;
 pub mod error;
+pub mod images;
+pub mod instance;
 pub mod rest;
+pub mod session_bindings;
+pub mod usage;
 pub mod ws;
 
 use std::sync::Arc;
 
+pub use accounts::{
+    Account, AccountPool, AccountPoolMember, AccountProvider, AccountRedirect, CreatePool,
+    LimitResetOutcome, LimitResetRequest, PutRedirect, UpdateAccount, UpdatePool,
+};
+pub use admin::{
+    ApiKey, CreatedUser, MintKey, MintedKey, MintedToken, Rotated, UpdateUser, User, UserAcls,
+    UserMachine, UserToken,
+};
+pub use cctui_proto::api::machine_resources::MachineResourcesRow;
 pub use error::ClientError;
+pub use instance::{Changelog, ReleaseNote, SelfUpdateLaunch, SelfUpdateRun, VersionInfo};
 pub use rest::{
-    Client, ConversationFetch, ConversationRow, FileRead, FileRefusal, LinkedFileOwner, Page,
-    PendingPermissionItem, UploadFile,
+    Client, ConversationFetch, ConversationRow, Dispatcher, EnrollDispatcher, EnrolledDispatcher,
+    FileRead, FileRefusal, LinkedFileOwner, Page, PendingPermissionItem, UpdateDispatcher,
+    UploadFile,
+};
+pub use usage::{
+    AccountUsageEntry, LimitResetStatusView, PoolFamilyUsage, PoolProjection, PoolUsageMember,
+    PoolUsageView, PoolUsageWindow, ProviderStatusView, UsagePace, UsageWindowView,
 };
 pub use ws::state::{Ack, AckHandle, AckRegistry, Health, SubscriptionState, Watchdog, backoff};
 pub use ws::transport::{Connector, Frame, HttpConnector, StreamTransport, Transport};

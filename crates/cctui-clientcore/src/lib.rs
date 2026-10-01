@@ -4,14 +4,28 @@
 //! ambient is a parameter, so the same case table in `fixtures/parity/` can be
 //! replayed against this crate and against the `TypeScript` originals.
 
+pub mod account_switch;
+pub mod accounts;
+pub mod admin;
+pub mod age;
 pub mod bookmarks;
+pub mod dispatch;
+pub mod drafts;
 pub mod format;
 pub mod git;
 pub mod history_nav;
+pub mod images;
+pub mod instance;
 pub mod labels;
+pub mod macros;
 pub mod mention;
+pub mod profiles;
 pub mod search;
 pub mod session_failure;
+pub mod spawn;
+pub mod spawn_accounts;
+pub mod spend;
 pub mod turnid;
 pub mod uploads;
 pub mod uri;
+pub mod usage;

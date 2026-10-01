@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2653
+expression: render_screen(&mut app)
+---
+ Access  Users [Tokens]  Machines  Keys  — dorsk
+   LABEL               STATE      PREVIEW
+▸  laptop              active     cctui_u_ab12…ef34
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:move  Tab:tab  n:mint  e:relabel  x:revoke  P:purge  G:disp

@@ -3,7 +3,7 @@ import type { SessionDiagnoseResponse } from '@bindings/SessionDiagnoseResponse'
 import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 import type { OpenCodeDiagnose } from '@bindings/OpenCodeDiagnose';
 import { sessionEnd } from '$lib/sessionEnd';
-import { fmtAge, silenceMessages } from '$lib/diagnoseSilence';
+import { fmtAgo, silenceMessages } from '$lib/diagnoseSilence';
 import { m } from '$lib/paraglide/messages';
 
 export type DiagnoseStatus = 'ok' | 'warn' | 'error';
@@ -103,7 +103,7 @@ function processRows(session: SessionListItem | null, report: SessionDiagnoseRes
 
 function openCodeProcessRow(oc: OpenCodeDiagnose, generatedAtMs: number): DiagnoseRow {
 	const stderr = joinTail(
-		(oc.stderr_tail ?? []).map((l) => `${fmtAge(generatedAtMs - l.ts_ms)}  ${l.line}`)
+		(oc.stderr_tail ?? []).map((l) => `${fmtAgo(generatedAtMs - l.ts_ms)}  ${l.line}`)
 	);
 	const pid = oc.server_pid != null ? `pid ${oc.server_pid}` : m.diagnose_short_down();
 	return {
@@ -117,7 +117,7 @@ function openCodeProcessRow(oc: OpenCodeDiagnose, generatedAtMs: number): Diagno
 
 function codexProcessRow(cx: CodexDiagnose, generatedAtMs: number): DiagnoseRow {
 	const stderr = joinTail(
-		(cx.stderr_tail ?? []).map((l) => `${fmtAge(generatedAtMs - l.ts_ms)}  ${l.line}`)
+		(cx.stderr_tail ?? []).map((l) => `${fmtAgo(generatedAtMs - l.ts_ms)}  ${l.line}`)
 	);
 	const pid = cx.app_server_pid != null ? `pid ${cx.app_server_pid}` : m.diagnose_short_down();
 	const outdated = cx.version_supported === false;
@@ -160,7 +160,7 @@ function transportRows(session: SessionListItem | null, report: SessionDiagnoseR
 			status: 'ok',
 			short:
 				seen != null
-					? m.diagnose_daemon_heartbeat({ age: fmtAge(now - seen) })
+					? m.diagnose_daemon_heartbeat({ age: fmtAgo(now - seen) })
 					: m.diagnose_short_online()
 		});
 	}
@@ -214,7 +214,9 @@ function transportRows(session: SessionListItem | null, report: SessionDiagnoseR
 		block: 'transport',
 		label: m.diagnose_row_last_event(),
 		status: 'ok',
-		short: hook.value ? `${hook.value.kind} · ${fmtAge(hook.age_ms ?? null)}` : fmtAge(hook.age_ms ?? null)
+		short: hook.value
+			? `${hook.value.kind} · ${fmtAgo(hook.age_ms ?? null)}`
+			: fmtAgo(hook.age_ms ?? null)
 	});
 	return rows;
 }

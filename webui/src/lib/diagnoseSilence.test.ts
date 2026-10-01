@@ -24,6 +24,25 @@ describe('silenceReasonMessage', () => {
 		for (const reason of reasons) expect(silenceReasonMessage(reason)).toBeTruthy();
 	});
 
+	it('never says ago twice, and reads once where the sentence has its own preposition', () => {
+		for (const reason of [
+			{ kind: 'codex_shared_dropped', count: 2, age_ms: 300_000 },
+			{ kind: 'opencode_http_errors', count: 1, age_ms: 300_000, message: 'POST /prompt: 500' }
+		] as SilenceReason[]) {
+			const text = silenceReasonMessage(reason);
+			expect(text).toContain('last 5m ago');
+			expect(text).not.toContain('ago ago');
+		}
+		for (const reason of [
+			{ kind: 'codex_stalled_rpc', count: 2, age_ms: 120_000 },
+			{ kind: 'opencode_sse_stalled', age_ms: 120_000 }
+		] as SilenceReason[]) {
+			const text = silenceReasonMessage(reason);
+			expect(text).toContain('for 2m.');
+			expect(text).not.toContain('ago');
+		}
+	});
+
 	it('carries the numbers the code supplies into the sentence', () => {
 		const stalled = silenceReasonMessage({
 			kind: 'codex_stalled_rpc',

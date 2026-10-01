@@ -7,7 +7,8 @@
 		codeFromSearch,
 		isCompleteUserCode,
 		isDecidable,
-		normalizeUserCode
+		normalizeUserCode,
+		requesterFacts
 	} from '$lib/deviceAuth';
 	import { endpoints } from '$lib/queries/endpoints';
 	import { errMessage } from '$lib/api';
@@ -19,6 +20,7 @@
 	let error = $state('');
 	let busy = $state(false);
 	let decided = $state<'approved' | 'denied' | null>(null);
+	const facts = $derived(info ? requesterFacts(info, Date.now()) : []);
 
 	async function lookup() {
 		const wanted = normalizeUserCode(code);
@@ -50,15 +52,11 @@
 		}
 	}
 
-	// A code that arrived in the link is looked up straight away: the user came
-	// here by clicking it, not to type it again. Once only — after that the
-	// form is theirs.
-	let autoLookedUp = false;
-	$effect(() => {
-		if (autoLookedUp) return;
-		autoLookedUp = true;
-		if (isCompleteUserCode(code)) void lookup();
-	});
+	// A code from the link fills the field and nothing else. Approving a device
+	// grants it this user's permissions, so it must take a deliberate action on
+	// this page — a single click from a link the attacker sent is exactly the
+	// device-code phishing flow.
+	const prefilled = isCompleteUserCode(code);
 </script>
 
 <PageHead title={m.device_title()} />
@@ -86,6 +84,10 @@
 		</Cluster>
 	</form>
 
+	{#if prefilled && !info && !error}
+		<Callout tone="warn">{m.device_prefilled_hint()}</Callout>
+	{/if}
+
 	{#if busy && !info}
 		<Spinner label={m.common_loading()} />
 	{/if}
@@ -100,8 +102,16 @@
 		</Callout>
 	{:else if info}
 		<Stack gap="var(--sp-2)">
-			<Text>{m.device_client({ name: info.client_name ?? m.device_unknown_client() })}</Text>
+			<Text>
+				{m.device_client({ name: info.client_name ?? m.device_unknown_client() })}
+			</Text>
 			<Text variant="code">{info.user_code}</Text>
+			{#if facts.length}
+				<Text size="sm" tone="muted">{m.device_requester()}</Text>
+				{#each facts as fact (fact.label)}
+					<Text size="sm" tone="muted">{fact.label}: {fact.value}</Text>
+				{/each}
+			{/if}
 			{#if isDecidable(info.status)}
 				<Text size="sm" tone="muted">{m.device_expires_in({ seconds: info.expires_in_secs })}</Text>
 				<Callout tone="warn">{m.device_warning()}</Callout>

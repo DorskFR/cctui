@@ -1,0 +1,242 @@
+{
+	"id": "sessions-list",
+	"version": 1,
+	"route": "/sessions",
+	"level": "checked",
+	"steps": [
+		{
+			"id": "list",
+			"do": {
+				"kind": "none"
+			},
+			"guide": "next",
+			"timeout": 10000,
+			"route": "/sessions",
+			"target": "session-list",
+			"say": {
+				"title": {
+					"en": "Grouped by what it needs from you",
+					"fr": "Regroupé selon ce qu’il attend de vous"
+				},
+				"body": {
+					"en": "This is the one screen you will keep open. Agents are not listed by age but by what they are waiting for: anything blocked on an answer from you rises to the top, so a fleet of thirty still reads in one glance.",
+					"fr": "C’est l’écran que vous garderez ouvert. Les agents ne sont pas listés par ancienneté mais selon ce qu’ils attendent : tout ce qui est bloqué sur une réponse de vous remonte en tête, pour qu’une flotte de trente se lise d’un coup d’œil."
+				}
+			},
+			"expect": [
+				{
+					"visible": "session-list"
+				},
+				{
+					"visible": "search"
+				}
+			],
+			"capture": {
+				"name": "list"
+			}
+		},
+		{
+			"id": "anatomy",
+			"do": {
+				"kind": "none"
+			},
+			"guide": "next",
+			"timeout": 10000,
+			"target": "session-list",
+			"say": {
+				"title": {
+					"en": "What one row tells you",
+					"fr": "Ce que dit une ligne"
+				},
+				"body": {
+					"en": "Each row carries the session’s title, the machine it runs on, the folder it works in, how long since it last did anything, and what it has spent. That is enough to decide whether it needs you without opening it.",
+					"fr": "Chaque ligne porte le titre de la session, la machine qui l’exécute, le dossier où elle travaille, le temps écoulé depuis sa dernière action et ce qu’elle a dépensé. De quoi décider si elle a besoin de vous sans l’ouvrir."
+				}
+			},
+			"capture": {
+				"name": "anatomy"
+			}
+		},
+		{
+			"id": "sections",
+			"do": {
+				"kind": "none"
+			},
+			"guide": "next",
+			"timeout": 10000,
+			"target": "sections",
+			"say": {
+				"title": {
+					"en": "Turn whole groups off",
+					"fr": "Désactiver des groupes entiers"
+				},
+				"body": {
+					"en": "Behind this button every group is an independent switch — live, blocked, in review, done, archived, and a starred group of your own. Switching off the ones you are not working in is what keeps the list short as the fleet grows.",
+					"fr": "Derrière ce bouton, chaque groupe est un interrupteur indépendant — en cours, bloqué, en revue, terminé, archivé, plus un groupe de favoris. Désactiver ceux sur lesquels vous ne travaillez pas garde la liste courte quand la flotte grandit."
+				}
+			},
+			"expect": [
+				{
+					"visible": "sections"
+				}
+			],
+			"capture": {
+				"name": "sections"
+			}
+		},
+		{
+			"id": "options",
+			"do": {
+				"kind": "none"
+			},
+			"guide": "next",
+			"timeout": 10000,
+			"target": "options",
+			"say": {
+				"title": {
+					"en": "Group by whatever you are debugging",
+					"fr": "Regrouper selon ce que vous déboguez"
+				},
+				"body": {
+					"en": "This holds the view settings. Group by machine when you suspect one box, by project when you are context-switching; colour-by tints the rows on a second dimension so you can read both at once. None of it touches the sessions themselves.",
+					"fr": "Ce bouton contient les réglages d’affichage. Regroupez par machine quand vous soupçonnez une machine, par projet quand vous jonglez entre contextes ; la couleur teinte les lignes sur une seconde dimension pour lire les deux à la fois. Rien n’agit sur les sessions elles-mêmes."
+				}
+			},
+			"expect": [
+				{
+					"visible": "options"
+				}
+			],
+			"capture": {
+				"name": "options"
+			}
+		},
+		{
+			"id": "view",
+			"do": {
+				"kind": "click"
+			},
+			"guide": "wait-for-user",
+			"timeout": 10000,
+			"target": "view",
+			"say": {
+				"title": {
+					"en": "Try it: dense rows or roomy cards",
+					"fr": "Essayez : lignes denses ou cartes aérées"
+				},
+				"body": {
+					"en": "Click it. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits — click again if you prefer the other.",
+					"fr": "Cliquez. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Votre choix est conservé d’une visite à l’autre — recliquez si vous préférez l’autre."
+				}
+			},
+			"capture": {
+				"name": "view"
+			},
+			"when": {
+				"viewport": "desktop"
+			}
+		},
+		{
+			"id": "density-mobile",
+			"do": {
+				"kind": "none"
+			},
+			"guide": "next",
+			"timeout": 10000,
+			"target": "options",
+			"say": {
+				"title": {
+					"en": "Dense rows or roomy cards",
+					"fr": "Lignes denses ou cartes aérées"
+				},
+				"body": {
+					"en": "On a narrow screen the density switch moves in here with the other view settings. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity.",
+					"fr": "Sur écran étroit, le réglage de densité rejoint ici les autres options d’affichage. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité."
+				}
+			},
+			"when": {
+				"viewport": "mobile"
+			}
+		},
+		{
+			"id": "search",
+			"do": {
+				"kind": "fill",
+				"value": {
+					"$param": "var.query"
+				}
+			},
+			"guide": "wait-for-user",
+			"timeout": 10000,
+			"target": {
+				"label": "Search sessions",
+				"within": "search"
+			},
+			"say": {
+				"title": {
+					"en": "And you can always just type",
+					"fr": "Et vous pouvez toujours taper"
+				},
+				"body": {
+					"en": "Type anything here and the list narrows as you go. There is a whole query language behind this box — conditions on machine, label and status — and a later guide is devoted to it.",
+					"fr": "Tapez n’importe quoi ici et la liste se réduit à mesure. Il y a tout un langage de requête derrière cette boîte — conditions sur machine, libellé et statut — et un guide ultérieur y est consacré."
+				}
+			},
+			"capture": {
+				"name": "search"
+			}
+		},
+		{
+			"id": "clear",
+			"do": {
+				"kind": "fill",
+				"value": {
+					"$param": "var.blank"
+				}
+			},
+			"guide": "wait-for-user",
+			"timeout": 10000,
+			"target": {
+				"label": "Search sessions",
+				"within": "search"
+			},
+			"say": {
+				"title": {
+					"en": "Empty it to get everyone back",
+					"fr": "Videz-la pour tout retrouver"
+				},
+				"body": {
+					"en": "Clear the box and the whole fleet returns, grouped as before. Nothing you did here changed a single session — this screen is a lens, never a lever.",
+					"fr": "Videz la boîte et toute la flotte revient, regroupée comme avant. Rien de ce que vous avez fait ici n’a modifié une session — cet écran est une lentille, jamais un levier."
+				}
+			},
+			"expect": [
+				{
+					"visible": "session-list"
+				}
+			],
+			"capture": {
+				"name": "cleared"
+			}
+		}
+	],
+	"title": {
+		"en": "Read the fleet at a glance",
+		"fr": "Lire la flotte d’un coup d’œil"
+	},
+	"description": {
+		"en": "The sessions list groups every agent by what it needs from you.",
+		"fr": "La liste des sessions regroupe chaque agent selon ce qu’il attend de vous."
+	},
+	"variants": {
+		"viewport": [
+			"desktop",
+			"mobile"
+		],
+		"theme": [
+			"dark",
+			"light",
+			"gruvbox"
+		]
+	}
+}

@@ -17,6 +17,9 @@ pub struct MachineResourcesRow {
     /// Operator-set badge hue (0-359). `None` = hash of the name.
     pub hue: Option<i16>,
     pub liveness: crate::models::MachineLiveness,
+    /// When the daemon was last heard from. The tier above is derived from this,
+    /// but a reader that wants to show an age needs the stamp itself.
+    pub last_seen_at: DateTime<Utc>,
     /// `None` until the machine's daemon has sent a heartbeat carrying a
     /// snapshot (older daemon, non-Linux host): the gauge shows "?" then.
     #[serde(skip_serializing_if = "Option::is_none")]

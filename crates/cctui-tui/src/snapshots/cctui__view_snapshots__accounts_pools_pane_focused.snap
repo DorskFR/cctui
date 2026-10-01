@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2507
+expression: render_screen(&mut app)
+---
+ Accounts  2/3 poolable  ! 1 need input — Ctrl+g  anthropic 91%
+    NAME                  PROVIDERS     POOL          USAGE
+▸ ● alice@max             anthropic     pool:default  5h 91%
+  ○ bob@max               anthropic     pool:default  -        w0.50 → alice@max
+  ● ops-codex             openai        pool:codex    -
+
+
+
+
+
+
+
+
+
+
+
+ Pools  2
+   default  ordered  failover  2 members
+▸    1. alice@max
+     2. bob@max
+   codex  headroom  1 members
+     1. ops-codex
+
+ j/k:move  a:add  d:drop  J/K:reorder  n:new pool  D:delete  Tab:accounts

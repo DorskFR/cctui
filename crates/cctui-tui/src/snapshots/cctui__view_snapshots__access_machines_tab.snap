@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 2662
+expression: render_screen(&mut app)
+---
+ Access  Users  Tokens [Machines]  Keys  — dorsk
+   NAME                STATE      PREVIEW
+▸  cyberia-ws          online     cctui_m_cd34…ab12
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:move  Tab:tab  R:rotate  x:revoke  P:purge  G:disp

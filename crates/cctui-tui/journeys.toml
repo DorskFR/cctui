@@ -1,0 +1,144 @@
+# Which webui journeys the TUI replays.
+#
+# The journeys themselves live in `webui/journeys/*.journey.ts` and are exported
+# as `docs/journeys/<id>/ir.json` by `npm run journey:ir`. That IR is the shared
+# spec: `crates/cctui-tui/src/journeys.rs` replays it against a TestBackend and
+# fails `cargo test` when this file drifts from it.
+#
+#   tui = "required" -> every step must resolve, act and hold its expectations
+#   tui = "waived"   -> `reason` says why the TUI cannot express it
+#
+# A required journey lists every one of its steps; a waived one lists none. A
+# required step whose target has no entry in the runner's widget registry is a
+# failure, not a silent skip.
+
+[[journey]]
+id = "sessions-list"
+tui = "required"
+
+[[journey.step]]
+id = "list"
+tui = "required"
+
+[[journey.step]]
+id = "anatomy"
+tui = "required"
+
+[[journey.step]]
+id = "sections"
+tui = "required"
+
+[[journey.step]]
+id = "options"
+tui = "required"
+
+[[journey.step]]
+id = "view"
+tui = "waived"
+reason = "list/grid/tiles is a web layout switch; the TUI has one list layout, and the dimensions that menu also carries (sort, group, colour) are the `options` step."
+
+[[journey.step]]
+id = "density-mobile"
+tui = "waived"
+reason = "a mobile-viewport variant; the TUI's narrow layout is covered by the 80-column snapshots instead."
+
+[[journey.step]]
+id = "search"
+tui = "required"
+
+[[journey.step]]
+id = "clear"
+tui = "required"
+
+[[journey]]
+id = "follow-session"
+tui = "required"
+
+[[journey.step]]
+id = "open"
+tui = "required"
+
+[[journey.step]]
+id = "header"
+tui = "required"
+
+[[journey.step]]
+id = "meta"
+tui = "required"
+
+[[journey.step]]
+id = "details"
+tui = "required"
+
+[[journey.step]]
+id = "activity"
+tui = "required"
+
+[[journey.step]]
+id = "actions"
+tui = "waived"
+reason = "a more-actions menu; every action behind it is a key in the TUI, enumerated by the `?` help overlay rather than a widget on the conversation."
+
+[[journey.step]]
+id = "kinds"
+tui = "required"
+
+[[journey.step]]
+id = "line-actions"
+tui = "waived"
+reason = "per-line buttons appear on hover; the TUI acts on the focused line through keys (`m` pin, `y` copy, `b` bookmark), so there is no per-line widget to point at."
+
+[[journey.step]]
+id = "filters"
+tui = "required"
+
+[[journey.step]]
+id = "filter-menu"
+tui = "required"
+
+[[journey.step]]
+id = "tools-only"
+tui = "required"
+
+[[journey.step]]
+id = "tools-restore"
+tui = "required"
+
+[[journey.step]]
+id = "reply"
+tui = "required"
+
+[[journey]]
+id = "welcome"
+tui = "waived"
+reason = "a carousel of first-run cards anchored to nothing; the TUI's first run is `cctui login` and its help overlay."
+
+[[journey]]
+id = "search-sessions"
+tui = "waived"
+reason = "its box/fill/clear steps are the same list search `sessions-list` already replays; what is left is the facet grammar, which `cctui-query` covers directly, and a `count` expectation the runner does not express."
+
+[[journey]]
+id = "spawn-session"
+tui = "waived"
+reason = "the dialog exists now (`Ctrl+n`), but the journey clicks and fills individual fields — a name box, a draft button — which the TUI reaches by tab order rather than by name, so a mapping would encode focus arithmetic instead of the view."
+
+[[journey]]
+id = "accounts-pools"
+tui = "waived"
+reason = "the board exists now (the `@` slice), but the journey's targets are the web's card anatomy and the runner's fixture carries no account payload, so every step would assert against an empty table."
+
+[[journey]]
+id = "usage-overview"
+tui = "waived"
+reason = "the panel exists now (`Ctrl+u`), but its steps name the web's individual tiles and period chips, and the runner's fixture loads no usage windows for them to read."
+
+[[journey]]
+id = "enroll-machine"
+tui = "waived"
+reason = "enrolment is a shell command on the machine being enrolled, not a TUI screen; the TUI only lists the machines it produced."
+
+[[journey]]
+id = "settings-tour"
+tui = "waived"
+reason = "the TUI's settings are `~/.config/cctui/tui.toml` and the keymap table, not a settings page; theme and language steps are web chrome."

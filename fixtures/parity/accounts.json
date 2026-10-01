@@ -1,0 +1,119 @@
+{
+  "accounts": [
+    { "id": "a1", "name": "alice@max", "user_id": "u1", "pool_eligible": true },
+    { "id": "a2", "name": "bob@max", "user_id": "u1", "pool_eligible": false },
+    { "id": "a3", "name": "ops-codex", "user_id": "u2", "pool_eligible": true },
+    { "id": "a4", "name": "withheld", "user_id": "u2", "pool_eligible": false }
+  ],
+  "pools": [
+    {
+      "id": "p1",
+      "user_id": "u1",
+      "members": [
+        { "account_id": "a2", "position": 1 },
+        { "account_id": "a1", "position": 0 }
+      ]
+    },
+    {
+      "id": "p2",
+      "user_id": "u1",
+      "members": [{ "account_id": "a3", "position": 0 }]
+    },
+    { "id": "p3", "user_id": "u2", "members": [] }
+  ],
+  "poolOf": [
+    { "accountId": "a1", "out": "p1" },
+    { "accountId": "a3", "out": "p2" },
+    { "accountId": "a4", "out": null }
+  ],
+  "orderedMembers": [
+    { "poolId": "p1", "out": ["a1", "a2"] },
+    { "poolId": "p3", "out": [] }
+  ],
+  "acceptsMember": [
+    { "poolId": "p1", "accountId": "a1", "out": false },
+    { "poolId": "p1", "accountId": "a3", "out": true },
+    { "poolId": "p1", "accountId": "a4", "out": false },
+    { "poolId": "p3", "accountId": "a4", "out": true },
+    { "poolId": "p3", "accountId": "a2", "out": false },
+    { "poolId": "p1", "accountId": "nope", "out": false }
+  ],
+  "membershipAfterMove": [
+    { "accountId": "a1", "to": "p1", "out": [] },
+    { "accountId": "a4", "to": null, "out": [] },
+    {
+      "accountId": "a1",
+      "to": "p2",
+      "out": [
+        { "poolId": "p1", "accounts": ["a2"] },
+        { "poolId": "p2", "accounts": ["a3", "a1"] }
+      ]
+    },
+    {
+      "accountId": "a1",
+      "to": null,
+      "out": [{ "poolId": "p1", "accounts": ["a2"] }]
+    },
+    {
+      "accountId": "a4",
+      "to": "p3",
+      "out": [{ "poolId": "p3", "accounts": ["a4"] }]
+    }
+  ],
+  "redirects": [
+    {
+      "id": "r1",
+      "from_account": "a1",
+      "to_account": "a3",
+      "family": "anthropic",
+      "expires_at": "2026-10-01T12:00:00Z"
+    },
+    {
+      "id": "r2",
+      "from_account": "a1",
+      "to_account": "gone",
+      "family": "openai",
+      "expires_at": null
+    },
+    {
+      "id": "r3",
+      "from_account": "a1",
+      "to_account": null,
+      "family": "anthropic",
+      "expires_at": null
+    },
+    {
+      "id": "r4",
+      "from_account": "a2",
+      "to_account": "a1",
+      "family": "anthropic",
+      "expires_at": null
+    }
+  ],
+  "redirectChips": [
+    {
+      "accountId": "a1",
+      "out": [
+        {
+          "id": "r1",
+          "family": "anthropic",
+          "targetName": "ops-codex",
+          "until": "2026-10-01T12:00:00Z"
+        },
+        { "id": "r2", "family": "openai", "targetName": "…", "until": null }
+      ]
+    },
+    {
+      "accountId": "a2",
+      "out": [
+        {
+          "id": "r4",
+          "family": "anthropic",
+          "targetName": "alice@max",
+          "until": null
+        }
+      ]
+    },
+    { "accountId": "a4", "out": [] }
+  ]
+}

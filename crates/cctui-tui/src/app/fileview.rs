@@ -35,6 +35,33 @@ pub fn classify(content_type: &str) -> FileKind {
     }
 }
 
+/// Types a handler would run rather than show. The bytes come from a session,
+/// so handing one to the desktop is handing it execution.
+const NEVER_EXTERNAL: [&str; 7] = [
+    "application/x-sh",
+    "application/x-shellscript",
+    "text/x-shellscript",
+    "application/x-executable",
+    "application/x-msdownload",
+    "application/x-desktop",
+    "application/vnd.microsoft.portable-executable",
+];
+
+/// Extensions the type alone would not catch. A served `content_type` is the
+/// sender's claim; the name is what the handler will dispatch on.
+const NEVER_EXTERNAL_SUFFIX: [&str; 9] =
+    [".sh", ".bash", ".zsh", ".desktop", ".exe", ".msi", ".bat", ".cmd", ".command"];
+
+/// Why this file must not be handed to the desktop, or `None` to allow it.
+#[must_use]
+pub fn refuse_external_open(name: &str, content_type: &str) -> Option<String> {
+    let base = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let lower = name.to_ascii_lowercase();
+    let runnable = NEVER_EXTERNAL.contains(&base.as_str())
+        || NEVER_EXTERNAL_SUFFIX.iter().any(|ext| lower.ends_with(ext));
+    runnable.then(|| format!("{name} is a program, not a document — refusing to open it"))
+}
+
 /// Which route a read came from. A blob is the server's own store and knows
 /// nothing about any machine, so its refusals must never be worded as a
 /// machine-side absence.
@@ -106,6 +133,8 @@ pub struct FileView {
     pub name: String,
     pub path: String,
     pub kind: FileKind,
+    /// As served, so `o` can refuse a type the desktop would run.
+    pub content_type: String,
     /// Decoded text for a text or markdown file; empty for an image.
     pub text: String,
     /// Raw bytes, kept so `o` can hand the file to the OS viewer.
@@ -146,16 +175,16 @@ pub fn reduce_fileview(app: &mut App, action: FileViewAction) -> Vec<Effect> {
         FileViewAction::OpenUnderCursor => open_under_cursor(app),
         FileViewAction::Opened { name, path, content_type, bytes } => {
             let kind = classify(&content_type);
-            if kind == FileKind::Download {
-                // Nothing the pager can render; the OS viewer is the honest answer.
-                return vec![Effect::OpenInOsViewer { name, bytes }];
-            }
             let text = if kind == FileKind::Image {
                 String::new()
             } else {
                 String::from_utf8_lossy(&bytes).into_owned()
             };
-            app.file_view = Some(FileView { name, path, kind, text, bytes, scroll: 0 });
+            if kind == FileKind::Image {
+                app.images.prepare(&name, &bytes);
+            }
+            app.file_view =
+                Some(FileView { name, path, kind, content_type, text, bytes, scroll: 0 });
             app.router.push(super::state::View::FileViewer);
             Vec::new()
         }
@@ -171,9 +200,14 @@ pub fn reduce_fileview(app: &mut App, action: FileViewAction) -> Vec<Effect> {
         }
         FileViewAction::OpenInOsViewer => {
             let Some(view) = app.file_view.as_ref() else { return Vec::new() };
+            if let Some(why) = refuse_external_open(&view.name, &view.content_type) {
+                app.toast(Level::Warn, why);
+                return Vec::new();
+            }
             vec![Effect::OpenInOsViewer { name: view.name.clone(), bytes: view.bytes.clone() }]
         }
         FileViewAction::Close => {
+            app.images.forget();
             app.file_view = None;
             app.router.pop();
             Vec::new()
@@ -207,7 +241,7 @@ mod tests {
 
     use super::{
         FileKind, FileSource, FileViewAction, classify, denied_roots, may_live_elsewhere,
-        refusal_message,
+        refusal_message, refuse_external_open,
     };
     use crate::app::action::Effect;
     use crate::app::{Action, App, LineKind, reduce};
@@ -355,8 +389,10 @@ mod tests {
         assert_eq!(app.view(), crate::app::View::Conversation);
     }
 
+    /// It opens on a placeholder naming the type, and waits for `o`: handing a
+    /// session's bytes to the desktop is the user's call.
     #[test]
-    fn an_unrenderable_type_goes_straight_to_the_os_viewer() {
+    fn an_unrenderable_type_waits_for_the_user_to_ask() {
         let mut app = app_with_line("x");
         let effects = reduce(
             &mut app,
@@ -367,8 +403,8 @@ mod tests {
                 bytes: vec![1, 2, 3],
             }),
         );
-        assert!(matches!(effects.as_slice(), [Effect::OpenInOsViewer { .. }]));
-        assert!(app.file_view.is_none(), "the pager cannot show it, so it does not open");
+        assert!(effects.is_empty(), "nothing is launched on its own");
+        assert_eq!(app.file_view.as_ref().expect("the placeholder").kind, FileKind::Download);
     }
 
     #[test]
@@ -405,5 +441,64 @@ mod tests {
             app.toasts.latest().expect("a toast").text,
             "Cannot open a.rs: the path is outside the roots the machine allows (/home)"
         );
+    }
+
+    fn opened(name: &str, content_type: &str) -> FileViewAction {
+        FileViewAction::Opened {
+            name: name.to_owned(),
+            path: format!("/tmp/{name}"),
+            content_type: content_type.to_owned(),
+            bytes: b"\x7fELF payload".to_vec(),
+        }
+    }
+
+    /// F9: an unknown type used to be written to /tmp and handed to xdg-open the
+    /// moment it arrived, with no key press in between.
+    #[test]
+    fn an_unknown_type_is_shown_not_launched() {
+        let mut app = App::new();
+        let effects = reduce(&mut app, Action::FileView(opened("thing.bin", "application/pdf")));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::OpenInOsViewer { .. })),
+            "opening a file must not hand it to the desktop on its own"
+        );
+        let view = app.file_view.as_ref().expect("the viewer is open on it");
+        assert_eq!(view.kind, FileKind::Download);
+        assert_eq!(view.content_type, "application/pdf");
+        assert_eq!(app.view(), crate::app::View::FileViewer);
+
+        // `o` is the explicit action, and it is what reaches the desktop.
+        let effects = reduce(&mut app, Action::FileView(FileViewAction::OpenInOsViewer));
+        assert!(effects.iter().any(|e| matches!(e, Effect::OpenInOsViewer { .. })));
+    }
+
+    /// F9: handing a session-controlled script to the desktop is handing it
+    /// execution, so `o` refuses rather than asking the handler.
+    #[test]
+    fn a_program_is_never_handed_to_the_desktop() {
+        for (name, content_type) in [
+            ("install.sh", "text/plain"),
+            ("payload.desktop", "application/x-desktop"),
+            ("thing.exe", "application/octet-stream"),
+            ("x.bin", "application/x-shellscript"),
+        ] {
+            assert!(refuse_external_open(name, content_type).is_some(), "{name} must be refused");
+
+            let mut app = App::new();
+            reduce(&mut app, Action::FileView(opened(name, content_type)));
+            let effects = reduce(&mut app, Action::FileView(FileViewAction::OpenInOsViewer));
+            assert!(
+                !effects.iter().any(|e| matches!(e, Effect::OpenInOsViewer { .. })),
+                "{name} reached the desktop anyway"
+            );
+            assert!(app.toasts.latest().expect("a toast").text.contains("program"));
+        }
+    }
+
+    #[test]
+    fn a_document_is_still_openable_on_request() {
+        for (name, content_type) in [("report.pdf", "application/pdf"), ("a.bin", "")] {
+            assert_eq!(refuse_external_open(name, content_type), None, "{name} is not a program");
+        }
     }
 }

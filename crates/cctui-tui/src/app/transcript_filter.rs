@@ -103,7 +103,7 @@ impl Category {
 #[must_use]
 pub const fn category_of(line: &ConversationLine) -> Category {
     match line.kind {
-        LineKind::Assistant => Category::Assistant,
+        LineKind::Assistant | LineKind::Image => Category::Assistant,
         LineKind::Thinking { redacted: false } => Category::Thinking,
         LineKind::Thinking { redacted: true } => Category::Redacted,
         LineKind::User | LineKind::Reply => Category::User,

@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1977
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g  @dev (user)
+ 1 Sessions  2  3  4  6  8   starred · live · dispatched  sort: activity ↓  group: status
+   ▾┌ Dispatchers ─────────────────────────────────────────────────────────────────────────────┐
+▸   │ remove "k8s-cyberia"? Enter confirms, Esc keeps it                                       │
+   ▾│                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+   ▾│                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │ Enter:remove  Esc:keep                                                                   │
+    └──────────────────────────────────────────────────────────────────────────────────────────┘
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
