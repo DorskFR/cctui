@@ -1,8 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 979
 expression: render_screen(&mut app)
 ---
- cctui (main) on orion ── gpt-5.6-sol·high ── $1.25 ── auto
+ cctui (main) on orion ── gpt-5.6-sol·high ── $1.25 ── auto  ! 1 need input — Ctrl+g
                                                                                                    ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕

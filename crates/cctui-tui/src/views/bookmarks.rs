@@ -1,9 +1,13 @@
-use cctui_clientcore::search::match_ranges;
-use cctui_proto::api::bookmarks::Bookmark;
+//! The Bookmarks slice: the switcher's chrome around the saved-message list,
+//! its search and the preview of the selected bookmark.
+
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+
+use cctui_clientcore::search::match_ranges;
+use cctui_proto::api::bookmarks::Bookmark;
 
 use crate::app::App;
 use crate::app::bookmarks::{Prompt, age_label};
@@ -16,7 +20,45 @@ const TITLE_WIDTH: usize = 32;
 const META_WIDTH: usize = 18;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let area = frame.area();
+    let [status_area, tabs_area, body_area, hotkeys_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    let mut status = vec![
+        Span::styled(" cctui ", theme::status_bar_bg()),
+        Span::raw(" "),
+        Span::styled(format!("v{}", app.version), theme::dim()),
+        Span::raw("  "),
+    ];
+    status.extend(crate::widgets::tabs::summary_spans(app, usize::from(status_area.width)));
+    status.extend(crate::widgets::status::status_spans(app));
+    frame.render_widget(Paragraph::new(Line::from(status)), status_area);
+
+    frame.render_widget(
+        Paragraph::new(crate::widgets::tabs::tab_line(app, usize::from(tabs_area.width))),
+        tabs_area,
+    );
+
+    draw_body(frame, app, body_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" 1-9 ", theme::hotkey()),
+            Span::raw("Switch view  "),
+            Span::styled("? ", theme::hotkey()),
+            Span::raw("Help  "),
+            Span::styled("q ", theme::hotkey()),
+            Span::raw("Quit"),
+        ])),
+        hotkeys_area,
+    );
+}
+
+fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
     let prompt_height =
         u16::from(app.bookmarks.prompt.is_some() || app.bookmarks.confirm.is_some());
     let [header_area, list_area, rule_area, preview_area, prompt_area] = Layout::vertical([
@@ -78,11 +120,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn header(app: &App, shown: usize) -> Line<'static> {
-    let mut spans = vec![Span::styled(" Bookmarks ", theme::header_bg())];
+    let mut spans = vec![Span::styled(format!(" {shown} saved "), theme::header_bg())];
     if !app.bookmarks.query.is_empty() {
         spans.push(Span::styled(format!(" /{} ", app.bookmarks.query), theme::hotkey()));
     }
-    spans.push(Span::styled(format!("  {shown}"), theme::dim()));
     if app.bookmarks.loading {
         spans.push(Span::styled("  …", theme::dim()));
     }

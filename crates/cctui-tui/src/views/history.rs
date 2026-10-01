@@ -12,6 +12,7 @@ pub fn draw(frame: &mut Frame, picker: &HistoryPicker) {
         frame,
         &Picker {
             title: "Prompt history",
+            prompt: "filter",
             filter: Some(&picker.filter),
             rows: &rows,
             selected: picker.selected,

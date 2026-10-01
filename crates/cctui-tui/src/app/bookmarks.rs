@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use uuid::Uuid;
 
 use super::action::Effect;
-use super::state::{App, View};
+use super::state::App;
 use super::toast::Level;
 
 /// Rows per page; the server clamps anything larger.
@@ -131,13 +131,7 @@ pub fn age_label(created_at: chrono::DateTime<chrono::Utc>, now_ms: i64) -> Stri
 }
 
 pub enum BookmarkAction {
-    /// Enter the view, loading the first page if it has never been read.
-    Open,
-    Close,
-    Loaded {
-        rows: Vec<Bookmark>,
-        append: bool,
-    },
+    Loaded { rows: Vec<Bookmark>, append: bool },
     Failed,
     SelectNext,
     SelectPrev,
@@ -154,9 +148,7 @@ pub enum BookmarkAction {
     DeleteAsk,
     DeleteConfirm,
     DeleteCancel,
-    Deleted {
-        id: Uuid,
-    },
+    Deleted { id: Uuid },
     Updated(Box<Bookmark>),
     OpenSource,
     CopyMarkdown,
@@ -164,11 +156,6 @@ pub enum BookmarkAction {
 
 pub fn reduce_bookmarks(app: &mut App, action: BookmarkAction) -> Vec<Effect> {
     match action {
-        BookmarkAction::Open => open(app),
-        BookmarkAction::Close => {
-            close(app);
-            Vec::new()
-        }
         BookmarkAction::Loaded { rows, append } => {
             loaded(app, rows, append);
             Vec::new()
@@ -254,23 +241,13 @@ pub fn reduce_bookmarks(app: &mut App, action: BookmarkAction) -> Vec<Effect> {
     }
 }
 
-fn open(app: &mut App) -> Vec<Effect> {
-    if app.view() != View::Bookmarks {
-        app.router.push(View::Bookmarks);
-    }
+/// Entering the slice reads the first page once; the switcher owns the routing.
+pub fn on_enter(app: &mut App) -> Vec<Effect> {
     if app.bookmarks.loaded_once || app.bookmarks.loading {
         return Vec::new();
     }
     app.bookmarks.loading = true;
     vec![Effect::LoadBookmarks { q: app.bookmarks.query.clone(), before: None }]
-}
-
-fn close(app: &mut App) {
-    app.bookmarks.prompt = None;
-    app.bookmarks.confirm = None;
-    if app.view() == View::Bookmarks {
-        app.router.pop();
-    }
 }
 
 fn loaded(app: &mut App, rows: Vec<Bookmark>, append: bool) {
@@ -381,12 +358,17 @@ fn open_source(app: &mut App) -> Vec<Effect> {
         return Vec::new();
     }
     let (Some(session_id), seq) = (b.session_id.clone(), b.seq) else { return Vec::new() };
-    close(app);
-    let effects = super::conversation::switch_to(app, session_id);
-    if effects.is_empty() {
+    if !app.flattened_sessions().iter().any(|s| s.id == session_id) {
         app.toast(Level::Warn, "source session is no longer listed");
-        return effects;
+        return Vec::new();
     }
+    app.bookmarks.prompt = None;
+    app.bookmarks.confirm = None;
+    // The source lives in the sessions slice, so the move is a slice change,
+    // not a push: the tab bar has to agree with what is on screen.
+    app.slice = super::slice::Slice::Sessions;
+    app.router.reset(super::slice::Slice::Sessions.root());
+    let effects = super::conversation::switch_to(app, session_id);
     if let Some(seq) = seq {
         super::pins::arm_jump(app, seq);
     }
@@ -442,9 +424,14 @@ mod tests {
         app
     }
 
+    /// The tab the switcher lands on, which is also what reads the first page.
+    fn enter(app: &mut App) -> Vec<Effect> {
+        reduce(app, Action::Slice(crate::app::slice::SliceAction::Switch(2)))
+    }
+
     fn with_rows(rows: Vec<cctui_proto::api::bookmarks::Bookmark>) -> App {
         let mut app = app();
-        reduce(&mut app, Action::Bookmarks(BookmarkAction::Open));
+        enter(&mut app);
         reduce(&mut app, Action::Bookmarks(BookmarkAction::Loaded { rows, append: false }));
         app
     }
@@ -466,10 +453,11 @@ mod tests {
     }
 
     #[test]
-    fn opening_the_view_reads_the_first_page_once() {
+    fn landing_on_the_tab_reads_the_first_page_once() {
         let mut app = app();
-        let effects = reduce(&mut app, Action::Bookmarks(BookmarkAction::Open));
+        let effects = enter(&mut app);
         assert_eq!(app.view(), View::Bookmarks);
+        assert_eq!(app.slice, crate::app::slice::Slice::Bookmarks);
         match effects.as_slice() {
             [Effect::LoadBookmarks { q, before: None }] => assert!(q.is_empty()),
             _ => panic!("expected the first page to be read"),
@@ -482,12 +470,9 @@ mod tests {
                 append: false,
             }),
         );
-        reduce(&mut app, Action::Bookmarks(BookmarkAction::Close));
+        reduce(&mut app, Action::Slice(crate::app::slice::SliceAction::Switch(1)));
         assert_eq!(app.view(), View::SessionList);
-        assert!(
-            reduce(&mut app, Action::Bookmarks(BookmarkAction::Open)).is_empty(),
-            "reopening does not refetch what is already loaded"
-        );
+        assert!(enter(&mut app).is_empty(), "coming back does not refetch what is already loaded");
     }
 
     #[test]
@@ -581,6 +566,11 @@ mod tests {
         let mut app = with_rows(vec![bookmark("Gateway fix", Some("s-a"), Some(7))]);
         let effects = reduce(&mut app, Action::Bookmarks(BookmarkAction::OpenSource));
         assert_eq!(app.view(), View::Conversation, "the bookmarks view is left behind");
+        assert_eq!(
+            app.slice,
+            crate::app::slice::Slice::Sessions,
+            "and the tab bar follows the conversation"
+        );
         assert!(
             effects.iter().any(|e| matches!(e, Effect::LoadConversationPage { .. })),
             "the conversation is opened"
@@ -775,13 +765,11 @@ mod tests {
     #[test]
     fn a_failed_load_says_so_and_stops_loading() {
         let mut app = app();
-        reduce(&mut app, Action::Bookmarks(BookmarkAction::Open));
+        enter(&mut app);
         reduce(&mut app, Action::Bookmarks(BookmarkAction::Failed));
         assert!(!app.bookmarks.loading);
         assert!(app.toasts.latest().is_some());
-        assert!(
-            !reduce(&mut app, Action::Bookmarks(BookmarkAction::Open)).is_empty(),
-            "a failed first read can be retried"
-        );
+        reduce(&mut app, Action::Slice(crate::app::slice::SliceAction::Switch(1)));
+        assert!(!enter(&mut app).is_empty(), "a failed first read is retried on the next visit");
     }
 }

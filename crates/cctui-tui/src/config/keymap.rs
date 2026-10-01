@@ -11,15 +11,24 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The `f` sections popup over the list.
+    Sections,
+    /// The `/` prompt over the list.
+    ListSearch,
     /// The `/` search and `:` command prompt.
     CmdLine,
     /// The `F` category menu.
     FilterMenu,
+    /// A y/N prompt over the list: kill, or a batch archive.
+    Confirm,
+    /// The inline rename field on a list row.
+    Rename,
     History,
     FileViewer,
+    LabelPicker,
+    LabelFilter,
     Pins,
     Macros,
-    Bookmarks,
     BookmarkPrompt,
     BookmarkConfirm,
     Terminal,
@@ -28,6 +37,8 @@ pub enum Context {
     Sidebar,
     Permission,
     Diagnose,
+    Bookmarks,
+    Overview,
     Ask,
     AskText,
     Plan,
@@ -37,15 +48,20 @@ pub enum Context {
 pub const CONTEXTS: &[Context] = &[
     Context::Global,
     Context::SessionList,
+    Context::Confirm,
+    Context::Rename,
     Context::Conversation,
     Context::Composer,
+    Context::Sections,
+    Context::ListSearch,
     Context::CmdLine,
     Context::FilterMenu,
     Context::History,
     Context::FileViewer,
+    Context::LabelPicker,
+    Context::LabelFilter,
     Context::Pins,
     Context::Macros,
-    Context::Bookmarks,
     Context::BookmarkPrompt,
     Context::BookmarkConfirm,
     Context::Terminal,
@@ -54,6 +70,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::Sidebar,
     Context::Permission,
     Context::Diagnose,
+    Context::Bookmarks,
+    Context::Overview,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -67,13 +85,18 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::Sections => "sections",
+            Self::ListSearch => "list-search",
             Self::CmdLine => "cmdline",
+            Self::Confirm => "confirm",
+            Self::Rename => "rename",
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
+            Self::LabelPicker => "label-picker",
+            Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
             Self::Macros => "macros",
-            Self::Bookmarks => "bookmarks",
             Self::BookmarkPrompt => "bookmark-prompt",
             Self::BookmarkConfirm => "bookmark-confirm",
             Self::Terminal => "terminal",
@@ -82,6 +105,8 @@ impl Context {
             Self::Sidebar => "sidebar",
             Self::Permission => "permission",
             Self::Diagnose => "diagnose",
+            Self::Bookmarks => "bookmarks",
+            Self::Overview => "overview",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -95,13 +120,18 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::Sections => "Sections popup",
+            Self::ListSearch => "List search",
             Self::CmdLine => "Search and commands",
+            Self::Confirm => "Confirm prompt",
+            Self::Rename => "Rename a session",
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
+            Self::LabelPicker => "Labels",
+            Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
             Self::Macros => "Macros",
-            Self::Bookmarks => "Bookmarks",
             Self::BookmarkPrompt => "Bookmarks — search or edit",
             Self::BookmarkConfirm => "Bookmarks — confirm",
             Self::Terminal => "Terminal pane",
@@ -110,6 +140,8 @@ impl Context {
             Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
             Self::Diagnose => "Diagnose / info",
+            Self::Bookmarks => "Bookmarks",
+            Self::Overview => "Overview",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -176,9 +208,23 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
-    TogglePin => "toggle-pin", "Pin the selected session";
+    ListSections => "list-sections", "Choose which sections show";
+    ListSortCycle => "list-sort", "Cycle the sort field";
+    ListSortFlip => "list-sort-flip", "Flip the sort direction";
+    ListGroupCycle => "list-group", "Cycle what rows group by";
+    ListColorCycle => "list-color", "Cycle the row accent dimension";
+    SectionsNext => "sections-next", "Next section";
+    SectionsPrev => "sections-prev", "Previous section";
+    SectionsToggle => "sections-toggle", "Show or hide this section";
+    ListSearchComplete => "list-search-complete", "Complete the field or value";
+    ListSearchCommit => "list-search-commit", "Open the result";
+    ListSearchCancel => "list-search-cancel", "Clear the search";
+    ListSearchArchived => "list-search-archived", "Include archived sessions";
+    ListSearchMore => "list-search-more", "Load more results";
+    ToggleUnreadOnly => "toggle-unread-only", "Show only unread sessions";
+    TogglePin => "toggle-pin", "Pin or unpin the session";
     NewSession => "new-session", "Spawn a session";
-    Archive => "archive", "Archive the selected session";
+    Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
     Resume => "resume", "Resume the session";
 
@@ -206,6 +252,19 @@ actions! {
     PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    OpenLabels => "open-labels", "Label this session";
+    OpenLabelFilter => "open-label-filter", "Filter by label";
+    LabelsClose => "labels-close", "Close the label list";
+    LabelsNext => "labels-next", "Next label";
+    LabelsPrev => "labels-prev", "Previous label";
+    LabelsToggle => "labels-toggle", "Attach or detach this label";
+    LabelsCreate => "labels-create", "Create a label";
+    LabelsEdit => "labels-edit", "Rename or recolor";
+    LabelsDelete => "labels-delete", "Delete this label";
+    LabelsCommit => "labels-commit", "Confirm";
+    LabelsCancel => "labels-cancel", "Back";
+    LabelFilterToggle => "label-filter-toggle", "Include or exclude this label";
+    LabelFilterClear => "label-filter-clear", "Show every label again";
     AttachFile => "attach-file", "Attach a file";
     RemoveAttachment => "remove-attachment", "Remove the focused attachment";
     FocusAttachments => "focus-attachments", "Focus the attachment chips";
@@ -234,6 +293,18 @@ actions! {
     CmdLineCancel => "cmdline-cancel", "Abandon it";
     CmdLineComplete => "cmdline-complete", "Complete the path";
     OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    RenameSession => "rename-session", "Rename the session";
+    ArchiveSection => "archive-section", "Archive every session in the section";
+    KillSession => "kill-session", "Kill the session";
+    UndoArchive => "undo-archive", "Undo the last archive";
+    SelectToggle => "select-toggle", "Select or deselect the row";
+    SelectRange => "select-range", "Select up to the anchor";
+    SelectAll => "select-all", "Select every visible row";
+    SelectClear => "select-clear", "Leave select mode";
+    ConfirmYes => "confirm-yes", "Yes";
+    ConfirmNo => "confirm-no", "No";
+    RenameCommit => "rename-commit", "Save the name";
+    RenameCancel => "rename-cancel", "Discard the name";
     TerminalOpen => "terminal-open", "Watch the live terminal";
     TerminalClose => "terminal-close", "Close the terminal pane";
     TerminalScrollDown => "terminal-scroll-down", "Scroll the terminal down";
@@ -259,8 +330,6 @@ actions! {
     PinsJump => "pins-jump", "Jump to the pinned message";
     PinsUnpin => "pins-unpin", "Unpin this message";
 
-    BookmarksOpen => "bookmarks-open", "Browse your bookmarks";
-    BookmarksClose => "bookmarks-close", "Back to the session list";
     BookmarksSelectNext => "bookmarks-select-next", "Next bookmark";
     BookmarksSelectPrev => "bookmarks-select-prev", "Previous bookmark";
     BookmarksSelectFirst => "bookmarks-select-first", "First bookmark";
@@ -287,6 +356,10 @@ actions! {
 
     CloseHelp => "close-help", "Close this cheat sheet";
 
+    OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
+    OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
+    OverviewRefresh => "overview-refresh", "Refresh the counts";
+
     DiagnoseClose => "diagnose-close", "Close the panel";
     DiagnoseScrollDown => "diagnose-scroll-down", "Scroll the panel down";
     DiagnoseScrollUp => "diagnose-scroll-up", "Scroll the panel up";
@@ -299,7 +372,7 @@ actions! {
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
     PermissionAllowAlways => "permission-allow-always", "Allow and auto-approve";
-    JumpToPending => "jump-to-pending", "Jump to the next pending approval";
+    JumpToAttention => "jump-to-attention", "Jump to the next session needing input";
 
     FocusPrompt => "focus-prompt", "Answer the waiting prompt";
     PromptDefer => "prompt-defer", "Answer later";
@@ -353,7 +426,7 @@ const GLOBAL: &[BindingSpec] = &[
     spec(Context::Global, "N", ActionId::SearchPrev),
     spec(Context::Global, "D", ActionId::Diagnose),
     spec(Context::Global, "i", ActionId::Info),
-    spec(Context::Global, "ctrl+g", ActionId::JumpToPending),
+    spec(Context::Global, "ctrl+g", ActionId::JumpToAttention),
 ];
 
 const SESSION_LIST: &[BindingSpec] = &[
@@ -365,26 +438,37 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
-    spec(Context::SessionList, "B", ActionId::BookmarksOpen),
+    spec(Context::SessionList, "f", ActionId::ListSections),
+    spec(Context::SessionList, "o", ActionId::ListSortCycle),
+    spec(Context::SessionList, "O", ActionId::ListSortFlip),
+    spec(Context::SessionList, "v", ActionId::ListGroupCycle),
+    // `V` is the range-select anchor; the accent dimension takes `c`.
+    spec(Context::SessionList, "c", ActionId::ListColorCycle),
+    spec(Context::SessionList, "U", ActionId::ToggleUnreadOnly),
+    spec(Context::SessionList, "p", ActionId::TogglePin),
+    spec(Context::SessionList, "r", ActionId::RenameSession),
+    spec(Context::SessionList, "x", ActionId::Archive),
+    spec(Context::SessionList, "X", ActionId::KillSession),
+    spec(Context::SessionList, "A", ActionId::ArchiveSection),
+    spec(Context::SessionList, "u", ActionId::UndoArchive),
+    spec(Context::SessionList, "space", ActionId::SelectToggle),
+    spec(Context::SessionList, "V", ActionId::SelectRange),
+    spec(Context::SessionList, "*", ActionId::SelectAll),
+    spec(Context::SessionList, "esc", ActionId::SelectClear),
 ];
 
-const BOOKMARKS: &[BindingSpec] = &[
-    spec(Context::Bookmarks, "esc, q", ActionId::BookmarksClose),
-    spec(Context::Bookmarks, "j, down", ActionId::BookmarksSelectNext),
-    spec(Context::Bookmarks, "k, up", ActionId::BookmarksSelectPrev),
-    spec(Context::Bookmarks, "g", ActionId::BookmarksSelectFirst),
-    spec(Context::Bookmarks, "G", ActionId::BookmarksSelectLast),
-    spec(Context::Bookmarks, "pagedown, ctrl+f", ActionId::BookmarksPreviewDown),
-    spec(Context::Bookmarks, "pageup, ctrl+b", ActionId::BookmarksPreviewUp),
-    spec(Context::Bookmarks, "/", ActionId::BookmarksSearch),
-    spec(Context::Bookmarks, "enter", ActionId::BookmarksOpenSource),
-    spec(Context::Bookmarks, "y", ActionId::BookmarksCopy),
-    spec(Context::Bookmarks, "e", ActionId::BookmarksEdit),
-    spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
+const CONFIRM: &[BindingSpec] = &[
+    spec(Context::Confirm, "y, Y", ActionId::ConfirmYes),
+    spec(Context::Confirm, "n, N, esc, q", ActionId::ConfirmNo),
 ];
 
-/// One prompt serves the search and the edit: `Tab` is only meaningful for the
-/// edit, which types a title and a note.
+const RENAME: &[BindingSpec] = &[
+    spec(Context::Rename, "enter", ActionId::RenameCommit),
+    spec(Context::Rename, "esc", ActionId::RenameCancel),
+];
+
+/// One prompt serves the bookmark search and the bookmark edit: `Tab` is only
+/// meaningful for the edit, which types a title and a note.
 const BOOKMARK_PROMPT: &[BindingSpec] = &[
     spec(Context::BookmarkPrompt, "enter", ActionId::BookmarksPromptCommit),
     spec(Context::BookmarkPrompt, "esc", ActionId::BookmarksPromptCancel),
@@ -467,6 +551,24 @@ const FILTER_MENU: &[BindingSpec] = &[
     spec(Context::FilterMenu, "r", ActionId::FilterReset),
 ];
 
+const SECTIONS_POPUP: &[BindingSpec] = &[
+    spec(Context::Sections, "esc, q, f", ActionId::ListSections),
+    spec(Context::Sections, "j, down", ActionId::SectionsNext),
+    spec(Context::Sections, "k, up", ActionId::SectionsPrev),
+    spec(Context::Sections, "space, enter", ActionId::SectionsToggle),
+];
+
+/// Typed characters reach the query through the unbound fall-through.
+const LIST_SEARCH: &[BindingSpec] = &[
+    spec(Context::ListSearch, "tab", ActionId::ListSearchComplete),
+    spec(Context::ListSearch, "enter", ActionId::ListSearchCommit),
+    spec(Context::ListSearch, "esc", ActionId::ListSearchCancel),
+    spec(Context::ListSearch, "ctrl+a", ActionId::ListSearchArchived),
+    spec(Context::ListSearch, "ctrl+n", ActionId::SearchNext),
+    spec(Context::ListSearch, "ctrl+p", ActionId::SearchPrev),
+    spec(Context::ListSearch, "ctrl+m", ActionId::ListSearchMore),
+];
+
 const HISTORY: &[BindingSpec] = &[
     spec(Context::History, "esc", ActionId::HistoryClose),
     spec(Context::History, "down, ctrl+n", ActionId::HistorySelectNext),
@@ -502,6 +604,26 @@ const FILE_VIEWER: &[BindingSpec] = &[
     spec(Context::FileViewer, "o", ActionId::FileViewerOsOpen),
 ];
 
+/// The picker is modal, so it claims plain letters: `space` toggles, and the
+/// manage verbs sit on the keys the webui's menu uses.
+const LABELS: &[BindingSpec] = &[
+    spec(Context::SessionList, "l", ActionId::OpenLabels),
+    spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
+    spec(Context::LabelPicker, "esc", ActionId::LabelsClose),
+    spec(Context::LabelPicker, "down, ctrl+n", ActionId::LabelsNext),
+    spec(Context::LabelPicker, "up, ctrl+p", ActionId::LabelsPrev),
+    spec(Context::LabelPicker, "space", ActionId::LabelsToggle),
+    spec(Context::LabelPicker, "ctrl+c", ActionId::LabelsCreate),
+    spec(Context::LabelPicker, "ctrl+e", ActionId::LabelsEdit),
+    spec(Context::LabelPicker, "ctrl+d", ActionId::LabelsDelete),
+    spec(Context::LabelPicker, "enter", ActionId::LabelsCommit),
+    spec(Context::LabelFilter, "esc", ActionId::LabelsClose),
+    spec(Context::LabelFilter, "down, ctrl+n", ActionId::LabelsNext),
+    spec(Context::LabelFilter, "up, ctrl+p", ActionId::LabelsPrev),
+    spec(Context::LabelFilter, "space, enter", ActionId::LabelFilterToggle),
+    spec(Context::LabelFilter, "a", ActionId::LabelFilterClear),
+];
+
 const PINS: &[BindingSpec] = &[
     spec(Context::Pins, "esc", ActionId::PinsClose),
     spec(Context::Pins, "down, ctrl+n", ActionId::PinsSelectNext),
@@ -515,6 +637,28 @@ const MACROS: &[BindingSpec] = &[
     spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
     spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
     spec(Context::Macros, "enter", ActionId::MacrosInsert),
+];
+
+/// Slice roots, not overlays: each falls through to the globals, so `1-9`,
+/// `?` and `q` keep working from them.
+const BOOKMARKS: &[BindingSpec] = &[
+    spec(Context::Bookmarks, "j, down", ActionId::BookmarksSelectNext),
+    spec(Context::Bookmarks, "k, up", ActionId::BookmarksSelectPrev),
+    spec(Context::Bookmarks, "g", ActionId::BookmarksSelectFirst),
+    spec(Context::Bookmarks, "G", ActionId::BookmarksSelectLast),
+    spec(Context::Bookmarks, "pagedown, ctrl+f", ActionId::BookmarksPreviewDown),
+    spec(Context::Bookmarks, "pageup, ctrl+b", ActionId::BookmarksPreviewUp),
+    spec(Context::Bookmarks, "/", ActionId::BookmarksSearch),
+    spec(Context::Bookmarks, "enter", ActionId::BookmarksOpenSource),
+    spec(Context::Bookmarks, "y", ActionId::BookmarksCopy),
+    spec(Context::Bookmarks, "e", ActionId::BookmarksEdit),
+    spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
+];
+
+const OVERVIEW: &[BindingSpec] = &[
+    spec(Context::Overview, "j, down", ActionId::OverviewScrollDown),
+    spec(Context::Overview, "k, up", ActionId::OverviewScrollUp),
+    spec(Context::Overview, "r", ActionId::OverviewRefresh),
 ];
 
 /// The panel is modal, so it claims its own scrolling rather than falling
@@ -605,6 +749,10 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    SECTIONS_POPUP,
+    LIST_SEARCH,
+    CONFIRM,
+    RENAME,
     CONVERSATION,
     COMPOSER,
     ATTACH,
@@ -613,9 +761,9 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    LABELS,
     PINS,
     MACROS,
-    BOOKMARKS,
     BOOKMARK_PROMPT,
     BOOKMARK_CONFIRM,
     TERMINAL,
@@ -624,6 +772,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     SIDEBAR,
     PERMISSION,
     DIAGNOSE,
+    BOOKMARKS,
+    OVERVIEW,
     ASK,
     ASK_TEXT,
     PLAN,
@@ -757,10 +907,11 @@ impl Keymap {
             // The pager is a plain reader and keeps the globals; the attach
             // prompt swallows typed characters and falls through to nothing.
             Context::SessionList
-            | Context::Bookmarks
             | Context::Conversation
             | Context::FileViewer
-            | Context::Help => &[Context::Global],
+            | Context::Help
+            | Context::Bookmarks
+            | Context::Overview => &[Context::Global],
             _ => &[],
         }
     }

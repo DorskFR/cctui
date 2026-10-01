@@ -2,13 +2,16 @@ use super::action::{Action, Effect, HeartbeatUsage};
 use super::conversation::{self, ConversationAction};
 use super::state::{App, View};
 use super::toast::Level;
-use super::{send, terminal};
+use super::{row_actions, send, terminal};
 
 /// The single place app state changes. Pure: no clock, no IO — anything that
 /// needs either comes back as an [`Effect`].
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     let mut effects = reduce_action(app, action);
     effects.extend(super::drafts::sync_composer(app));
+    // Every action can move a session in or out of waiting, so the diff runs
+    // once per pass rather than being hooked onto the handful that obviously do.
+    super::attention::reconcile(app);
     effects
 }
 
@@ -16,7 +19,9 @@ pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
 fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         Action::Auth(auth) => super::identity::reduce_auth(app, auth),
+        Action::RowAction(action) => row_actions::reduce_row_actions(app, action),
         Action::Attach(action) => super::attach::reduce_attach(app, action),
+        Action::Labels(action) => super::labels::reduce_labels(app, action),
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
             app.pending_chord = Some(chord);
@@ -42,8 +47,11 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         // One clock for the whole app: delivery deadlines move, and the session
         // list polls only when its own period has elapsed.
         Action::Tick => {
+            row_actions::prune(app);
             let mut effects = send::tick(app);
             effects.extend(super::session_live::poll_if_due(app));
+            effects.extend(super::list_search::on_tick(app));
+            effects.extend(super::unread::tick(app));
             effects
         }
 
@@ -208,6 +216,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
 
         Action::Controls(action) => super::controls::reduce_controls(app, action),
         Action::Sidebar(action) => super::sidebar::reduce_sidebar(app, action),
+        Action::Unread(action) => super::unread::reduce_unread(app, action),
         Action::ToggleAutoApproveSelected => app
             .selected_session()
             .map(|s| (s.id.clone(), !s.auto_approve))
@@ -224,19 +233,47 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::SessionsLoaded(sessions) => {
             app.sessions = sessions;
             app.update_aggregates();
+            row_actions::prune(app);
             super::controls::take_pending_jump(app)
         }
         Action::Conversation(action) => conversation::reduce(app, action),
+        Action::ListShape(action) => super::list_shape_reduce::reduce(app, action),
+        Action::ListSearch(action) => super::list_search::reduce(app, action),
+        // Decision 7: one key, scoped to whatever view is in front.
+        Action::SearchCurrentView => match app.view() {
+            View::SessionList => {
+                super::list_search::reduce(app, super::list_search::ListSearchAction::Open)
+            }
+            _ => super::cmdline::reduce(
+                app,
+                super::cmdline::CmdAction::Open(super::cmdline::Mode::Search),
+            ),
+        },
+        Action::SearchHitNext => match app.view() {
+            View::SessionList => {
+                super::list_search::reduce(app, super::list_search::ListSearchAction::Next)
+            }
+            _ => super::cmdline::reduce(app, super::cmdline::CmdAction::NextHit),
+        },
+        Action::SearchHitPrev => match app.view() {
+            View::SessionList => {
+                super::list_search::reduce(app, super::list_search::ListSearchAction::Prev)
+            }
+            _ => super::cmdline::reduce(app, super::cmdline::CmdAction::PrevHit),
+        },
         Action::CmdLine(action) => super::cmdline::reduce(app, action),
         Action::Copy(what) => copy(app, what),
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
         Action::Diagnose(action) => super::diagnose::reduce_diagnose(app, action),
+        Action::Slice(action) => super::slice::reduce_slice(app, action),
+        Action::DeepLink(action) => super::deeplink::reduce_deeplink(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
             if let Some(usage) = usage {
                 apply_heartbeat_usage(app, &session_id, &usage);
             }
             if let Some(line) = line {
+                super::unread::stream(app, &session_id, line.kind);
                 conversation::stream(app, &session_id, seq, *line);
             }
             Vec::new()

@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~4 live  ▪ 0/0 machines  $0.00 today  ●4 unread  unread only  ! 2 need input
+ 1 Sessions  2 Bookmarks  3 Overview   starred · live · dispatched  sort: activity ↓  group: status
+   ▾ Working (1)
+▸    ● [claude-code] cctui (main)  opus  0s  $1.25  ⚙14 8s  3/7 Running tests  ●4
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

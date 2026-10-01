@@ -1,15 +1,19 @@
 //! What a session wants from you: pending permission cards, the needs-you
-//! indicator, and the activity/end state the banner renders.
+//! indicator, the activity/end state the banner renders, and the watch that
+//! announces a session that has started waiting.
+
+use std::collections::BTreeSet;
 
 use cctui_proto::api::SessionListItem;
 use cctui_proto::classifier::Bucket;
-use cctui_proto::models::{SessionEndReason, SessionStatus};
+use cctui_proto::models::{Attention, SessionEndReason, SessionStatus};
 use cctui_proto::session_end::{EndTone, end_badge_detail};
 
 use super::action::Effect;
 use super::conversation;
 use super::state::{App, PendingPermission};
 use super::toast::Level;
+use crate::termnotify::{self, Mode};
 
 /// Nothing for this long and the banner calls the session silent.
 pub const SILENT_AFTER_SECS: i64 = 240;
@@ -41,7 +45,7 @@ pub enum AttentionAction {
     PendingPermissionsLoaded(Vec<PendingPermission>),
     /// Answer the card the focused session is showing.
     Respond(Decision),
-    JumpToPending,
+    JumpToAttention,
     SessionEnded {
         session_id: String,
         reason: SessionEndReason,
@@ -99,37 +103,6 @@ impl PermissionInbox {
     pub fn has(&self, session_id: &str) -> bool {
         self.items.iter().any(|p| p.session_id == session_id)
     }
-
-    pub const fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// Waiting sessions in arrival order, each listed once.
-    pub fn sessions(&self) -> Vec<&str> {
-        let mut out: Vec<&str> = Vec::new();
-        for item in &self.items {
-            if !out.contains(&item.session_id.as_str()) {
-                out.push(&item.session_id);
-            }
-        }
-        out
-    }
-
-    /// The next waiting session after `current`, wrapping round.
-    pub fn next_after(&self, current: Option<&str>) -> Option<String> {
-        let sessions = self.sessions();
-        if sessions.is_empty() {
-            return None;
-        }
-        let start = current
-            .and_then(|id| sessions.iter().position(|s| *s == id))
-            .map_or(0, |index| (index + 1) % sessions.len());
-        sessions.get(start).map(|id| (*id).to_owned())
-    }
 }
 
 pub fn reduce_attention(app: &mut App, action: AttentionAction) -> Vec<Effect> {
@@ -147,7 +120,7 @@ pub fn reduce_attention(app: &mut App, action: AttentionAction) -> Vec<Effect> {
             Vec::new()
         }
         AttentionAction::Respond(decision) => respond(app, decision),
-        AttentionAction::JumpToPending => jump_to_pending(app),
+        AttentionAction::JumpToAttention => jump_to_attention(app),
         AttentionAction::SessionEnded { session_id, reason, detail } => {
             end_session(app, &session_id, reason, detail)
         }
@@ -174,12 +147,22 @@ fn respond(app: &mut App, decision: Decision) -> Vec<Effect> {
     effects
 }
 
-fn jump_to_pending(app: &mut App) -> Vec<Effect> {
-    let current = app.selected_session_id();
-    let Some(target) = app.permissions.next_after(current.as_deref()) else {
-        app.toast(Level::Info, "nothing is waiting for approval");
+/// Every needs-input state, not just a pending approval: a permission card, an
+/// unanswered question, a plan waiting for approval, or a session the server
+/// says is blocked. Cycles in list order and has no reverse key — `n`/`N` are
+/// search hits everywhere.
+fn jump_to_attention(app: &mut App) -> Vec<Effect> {
+    let waiting = waiting_ids(app);
+    if waiting.is_empty() {
+        app.toast(Level::Info, "nothing is waiting for you");
         return Vec::new();
-    };
+    }
+    let current = app.selected_session_id();
+    let start = current
+        .as_deref()
+        .and_then(|id| waiting.iter().position(|w| w == id))
+        .map_or(0, |index| (index + 1) % waiting.len());
+    let target = waiting[start].clone();
     let Some(index) = app.flattened_sessions().iter().position(|s| s.id == target) else {
         return Vec::new();
     };
@@ -187,6 +170,96 @@ fn jump_to_pending(app: &mut App) -> Vec<Effect> {
     let mut effects = conversation::leave(app);
     effects.extend(conversation::open(app, target));
     effects
+}
+
+/// Whether this session is waiting on the operator.
+#[must_use]
+pub fn needs_input(app: &App, session: &SessionListItem) -> bool {
+    session.end_reason.is_none()
+        && (app.permissions.has(&session.id)
+            || app.prompt_marker(&session.id).is_some()
+            || session.attention == Some(Attention::NeedsInput)
+            || session.bucket == Bucket::Blocked)
+}
+
+/// The waiting sessions in list order, which is the order `Ctrl+g` cycles.
+#[must_use]
+pub fn waiting_ids(app: &App) -> Vec<String> {
+    app.flattened_sessions().iter().filter(|s| needs_input(app, s)).map(|s| s.id.clone()).collect()
+}
+
+/// How many sessions are waiting. The header's `! N need input` reads this.
+#[must_use]
+pub fn waiting_count(app: &App) -> usize {
+    app.sessions.iter().filter(|s| needs_input(app, s)).count()
+}
+
+/// The reconcile: which sessions were already waiting, so only a session that
+/// has *just* started waiting is announced.
+#[derive(Debug, Default)]
+pub struct Watch {
+    waiting: BTreeSet<String>,
+    /// Escape sequences the render loop has yet to write.
+    pending: String,
+    /// The title last written, so an unchanged one is not rewritten.
+    title: Option<String>,
+    started: bool,
+}
+
+impl Watch {
+    /// Taken by the render loop straight after a draw, which is the only point
+    /// it is safe to write escapes.
+    pub fn take_pending(&mut self) -> String {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// Diffs the waiting set and queues what the terminal should be told. Pure: the
+/// writing happens in the render loop, not here.
+pub fn reconcile(app: &mut App) {
+    let mode = app.config.prefs.notify;
+    let waiting: BTreeSet<String> =
+        app.sessions.iter().filter(|s| needs_input(app, s)).map(|s| s.id.clone()).collect();
+    if waiting == app.watch.waiting && app.watch.started {
+        return;
+    }
+
+    // The first reconcile adopts whatever is already waiting: starting the TUI
+    // on a blocked session is not news, and announcing the lot would be noise.
+    let fresh: Vec<String> = if app.watch.started {
+        waiting.difference(&app.watch.waiting).cloned().collect()
+    } else {
+        Vec::new()
+    };
+    app.watch.waiting = waiting;
+    app.watch.started = true;
+
+    if mode == Mode::Off {
+        return;
+    }
+    if let Some(id) = fresh.first() {
+        let body = announcement(app, id);
+        app.watch.pending.push_str(&termnotify::alert_sequences(mode, &body));
+    }
+    let title = termnotify::title_for(app.watch.waiting.len());
+    if app.watch.title.as_deref() != Some(title.as_str()) {
+        app.watch.pending.push_str(&termnotify::osc2(&title));
+        app.watch.title = Some(title);
+    }
+}
+
+/// What the notification says: the project the session is in, which is what the
+/// row shows, else its short id.
+fn announcement(app: &App, session_id: &str) -> String {
+    let label = app
+        .sessions
+        .iter()
+        .find(|s| s.id == session_id)
+        .and_then(|s| {
+            s.metadata.get("project_name").and_then(serde_json::Value::as_str).map(str::to_owned)
+        })
+        .unwrap_or_else(|| session_id.chars().take(8).collect());
+    format!("{label} needs input")
 }
 
 fn end_session(
@@ -317,7 +390,8 @@ mod tests {
     use cctui_proto::session_end::EndTone;
 
     use super::{
-        Activity, AttentionAction, Decision, EndBadge, PermissionInbox, SILENT_AFTER_SECS,
+        Activity, AttentionAction, Decision, EndBadge, Level, Mode, PermissionInbox,
+        SILENT_AFTER_SECS,
     };
     use crate::app::action::Effect;
     use crate::app::{Action, App, reduce};
@@ -351,24 +425,11 @@ mod tests {
         inbox.push(request("s-a", "r1"));
         inbox.push(request("s-a", "r2"));
         inbox.push(request("s-b", "r3"));
-        assert_eq!(inbox.len(), 3);
-        assert_eq!(inbox.for_session("s-a").count(), 2);
+        assert_eq!(inbox.for_session("s-a").count(), 2, "deduped by request id");
+        assert_eq!(inbox.for_session("s-b").count(), 1);
         assert_eq!(inbox.head("s-a").map(|p| p.request_id.as_str()), Some("r1"));
-        assert_eq!(inbox.sessions(), vec!["s-a", "s-b"]);
         assert!(inbox.has("s-b"));
         assert!(!inbox.has("s-c"));
-    }
-
-    #[test]
-    fn jumping_cycles_through_the_waiting_sessions() {
-        let mut inbox = PermissionInbox::default();
-        inbox.push(request("s-a", "r1"));
-        inbox.push(request("s-b", "r2"));
-        assert_eq!(inbox.next_after(None).as_deref(), Some("s-a"));
-        assert_eq!(inbox.next_after(Some("s-a")).as_deref(), Some("s-b"));
-        assert_eq!(inbox.next_after(Some("s-b")).as_deref(), Some("s-a"));
-        assert_eq!(inbox.next_after(Some("s-z")).as_deref(), Some("s-a"));
-        assert!(PermissionInbox::default().next_after(None).is_none());
     }
 
     #[test]
@@ -397,7 +458,7 @@ mod tests {
             }
             _ => panic!("expected one permission response"),
         }
-        assert!(app.permissions.is_empty());
+        assert!(!app.permissions.has("s-a"), "the card is gone");
         assert!(attention(&mut app, AttentionAction::Respond(Decision::Deny)).is_empty());
     }
 
@@ -429,7 +490,7 @@ mod tests {
                 request_id: "r1".to_owned(),
             },
         );
-        assert!(app.permissions.is_empty());
+        assert!(!app.permissions.has("s-a"), "the card is gone");
     }
 
     #[test]
@@ -448,7 +509,7 @@ mod tests {
     fn jumping_opens_the_waiting_sessions_conversation() {
         let mut app = app();
         attention(&mut app, AttentionAction::PermissionRequested(request("s-b", "r1")));
-        let effects = attention(&mut app, AttentionAction::JumpToPending);
+        let effects = attention(&mut app, AttentionAction::JumpToAttention);
         assert_eq!(app.selected_session_id().as_deref(), Some("s-b"));
         assert_eq!(app.view(), crate::app::View::Conversation);
         assert!(effects.iter().any(|e| matches!(e, Effect::Subscribe { .. })));
@@ -457,7 +518,7 @@ mod tests {
     #[test]
     fn jumping_with_nothing_pending_only_says_so() {
         let mut app = app();
-        assert!(attention(&mut app, AttentionAction::JumpToPending).is_empty());
+        assert!(attention(&mut app, AttentionAction::JumpToAttention).is_empty());
         assert!(app.toasts.latest().is_some());
         assert_eq!(app.view(), crate::app::View::SessionList);
     }
@@ -496,6 +557,140 @@ mod tests {
         );
         assert!(app.toasts.latest().is_none());
         assert_eq!(app.sessions[0].end_reason, Some(SessionEndReason::ReapedInactive));
+    }
+
+    // -- the needs-input watch --
+
+    fn blocked(app: &mut App, id: &str) {
+        app.sessions.iter_mut().find(|s| s.id == id).expect("a session").bucket = Bucket::Blocked;
+    }
+
+    fn settled(app: &mut App) {
+        reduce(app, Action::Toast(Level::Info, String::new()));
+        let _ = app.watch.take_pending();
+    }
+
+    #[test]
+    fn a_session_already_waiting_at_startup_is_not_announced() {
+        let mut app = app();
+        blocked(&mut app, "s-a");
+        reduce(&mut app, Action::Toast(Level::Info, "hi".to_owned()));
+        // The title frame is BEL-terminated too, so the absence of an alert is
+        // that the output is *only* the title.
+        assert_eq!(app.watch.take_pending(), crate::termnotify::osc2("(1) cctui"));
+    }
+
+    #[test]
+    fn only_a_newly_waiting_session_rings() {
+        let mut app = app();
+        settled(&mut app);
+
+        blocked(&mut app, "s-a");
+        reduce(&mut app, Action::Toast(Level::Info, "x".to_owned()));
+        let first = app.watch.take_pending();
+        assert!(first.starts_with('\x07'), "the bell rings: {first:?}");
+        assert!(first.ends_with(&crate::termnotify::osc2("(1) cctui")));
+
+        // Nothing changed: no repeat for a session that is still blocked.
+        reduce(&mut app, Action::Toast(Level::Info, "y".to_owned()));
+        assert_eq!(app.watch.take_pending(), "", "no repeat while it stays blocked");
+
+        blocked(&mut app, "s-b");
+        reduce(&mut app, Action::Toast(Level::Info, "z".to_owned()));
+        let second = app.watch.take_pending();
+        assert!(second.starts_with('\x07'), "the second one rings too: {second:?}");
+        assert!(second.ends_with(&crate::termnotify::osc2("(2) cctui")));
+    }
+
+    #[test]
+    fn the_title_resets_when_the_last_one_is_unblocked() {
+        let mut app = app();
+        settled(&mut app);
+        blocked(&mut app, "s-a");
+        reduce(&mut app, Action::Toast(Level::Info, "x".to_owned()));
+        let _ = app.watch.take_pending();
+
+        app.sessions[0].bucket = Bucket::Working;
+        reduce(&mut app, Action::Toast(Level::Info, "y".to_owned()));
+        // Only the title: coming off the waiting list is not an alert.
+        assert_eq!(app.watch.take_pending(), crate::termnotify::osc2("cctui"));
+    }
+
+    #[test]
+    fn a_pending_permission_or_a_card_counts_as_waiting() {
+        let mut app = app();
+        settled(&mut app);
+        attention(&mut app, AttentionAction::PermissionRequested(request("s-b", "r1")));
+        assert_eq!(super::waiting_count(&app), 1);
+        assert!(app.watch.take_pending().contains('\x07'));
+
+        attention(
+            &mut app,
+            AttentionAction::PermissionResolved {
+                session_id: "s-b".to_owned(),
+                request_id: "r1".to_owned(),
+            },
+        );
+        assert_eq!(super::waiting_count(&app), 0);
+    }
+
+    #[test]
+    fn an_ended_session_is_not_waiting_for_anyone() {
+        let mut app = app();
+        blocked(&mut app, "s-a");
+        app.sessions[0].end_reason = Some(SessionEndReason::Crashed);
+        assert_eq!(super::waiting_count(&app), 0);
+    }
+
+    #[test]
+    fn off_queues_nothing_not_even_a_title() {
+        let mut app = app();
+        app.config.prefs.notify = Mode::Off;
+        settled(&mut app);
+        blocked(&mut app, "s-a");
+        reduce(&mut app, Action::Toast(Level::Info, "x".to_owned()));
+        assert_eq!(app.watch.take_pending(), "");
+    }
+
+    #[test]
+    fn osc_mode_carries_the_project_name_in_the_notification() {
+        let mut app = app();
+        app.config.prefs.notify = Mode::Osc;
+        settled(&mut app);
+        blocked(&mut app, "s-a");
+        reduce(&mut app, Action::Toast(Level::Info, "x".to_owned()));
+        let out = app.watch.take_pending();
+        assert!(out.contains("alpha needs input"), "{out:?}");
+        assert!(out.contains("\x1b]9;"), "{out:?}");
+        assert!(out.contains("\x1b]777;notify;"), "{out:?}");
+    }
+
+    /// Decision 10: one key, every needs-input state, cycling in list order.
+    #[test]
+    fn ctrl_g_cycles_every_waiting_state_not_just_approvals() {
+        let mut app = app();
+        blocked(&mut app, "s-b");
+        attention(&mut app, AttentionAction::PermissionRequested(request("s-a", "r1")));
+
+        // List order, so the blocked group comes before the working one — a
+        // permission on a working session is still waiting.
+        let order = super::waiting_ids(&app);
+        assert_eq!(order, vec!["s-b", "s-a"], "both states, in list order");
+
+        // The cursor already sits on the first of them, so the key moves on
+        // rather than re-selecting what is on screen.
+        assert_eq!(app.selected_session_id().as_deref(), Some(order[0].as_str()));
+        attention(&mut app, AttentionAction::JumpToAttention);
+        assert_eq!(app.selected_session_id().as_deref(), Some(order[1].as_str()));
+        attention(&mut app, AttentionAction::JumpToAttention);
+        assert_eq!(app.selected_session_id().as_deref(), Some(order[0].as_str()), "it wraps");
+    }
+
+    #[test]
+    fn the_jump_says_so_when_nothing_is_waiting() {
+        let mut app = app();
+        assert!(attention(&mut app, AttentionAction::JumpToAttention).is_empty());
+        assert!(app.toasts.latest().expect("a toast").text.contains("nothing is waiting"));
     }
 
     #[test]

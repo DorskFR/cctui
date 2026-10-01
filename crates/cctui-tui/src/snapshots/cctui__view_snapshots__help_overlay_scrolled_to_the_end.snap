@@ -2,27 +2,27 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
- S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+n / ↓  Next prompt                        Enter       Accept the text                  │
-▸ │  Ctrl+p / ↑  Previous prompt                    Esc         Discard the text                 │
-  │  Enter       Put this prompt in the composer  Row glyphs                                     │
-  │File viewer                                      ●           working                          │
-  │  j / ↓       Scroll down                        ◐           stale or asleep                  │
-  │  k / ↑       Scroll up                          ○           idle                             │
-  │  PgDn        Page down                          ☾           hibernated                       │
-  │  PgUp        Page up                            ↳           subagent                         │
-  │  g           Jump to the top                    ▸ / ▾       folded / open group              │
-  │  q / Esc     Close the file viewer              !           permission waiting on you        │
-  │  o           Open in the desktop viewer         ?           question waiting on you          │
-  │Pinned messages                                  P           plan waiting for approval        │
-  │  Esc         Close the pinned messages          ●N          unread messages                  │
-  │  Ctrl+n / ↓  Next pin                           ⚡           auto-approve on                  │
-  │  Ctrl+p / ↑  Previous pin                       ⏸           account soft-limited             │
-  │  Enter       Jump to the pinned message         ⚠           account traffic never seen       │
-  │  d / m       Unpin this message                 ❄           cache cold, next turn re-reads   │
-  │Macros                                           ✕reason     how it ended                     │
-  │  Esc         Close the macro list               ⚙N age      tool calls, age of the last      │
-  │  Ctrl+n / ↓  Next macro                                                                      │
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
+  │Filter menu                                      Esc         Discard the text                 │
+▸ │  F / q / Esc Choose which lines to show       Row glyphs                                     │
+  │  a           Show every category                ●           working                          │
+  │  r           Back to the default filter         ◐           stale or asleep                  │
+  │  Space / En… Show or hide this category         ○           idle                             │
+  │  j / ↓       Next category                      ☾           hibernated                       │
+  │  k / ↑       Previous category                  ↳           subagent                         │
+  │Prompt history                                   ▸ / ▾       folded / open group              │
+  │  Esc         Close the prompt list              [name]      a label, tinted by its hue       │
+  │  Ctrl+n / ↓  Next prompt                        +N          more labels than fit             │
+  │  Ctrl+p / ↑  Previous prompt                    !           permission waiting on you        │
+  │  Enter       Put this prompt in the composer    ?           question waiting on you          │
+  │File viewer                                      P           plan waiting for approval        │
+  │  j / ↓       Scroll down                        ●N          unread messages                  │
+  │  k / ↑       Scroll up                          ⚡           auto-approve on                  │
+  │  PgDn        Page down                          ⏸           account soft-limited             │
+  │  PgUp        Page up                            ⚠           account traffic never seen       │
+  │  g           Jump to the top                    ❄           cache cold, next turn re-reads   │
+  │  q / Esc     Close the file viewer              ✕reason     how it ended                     │
+  │  o           Open in the desktop viewer         ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

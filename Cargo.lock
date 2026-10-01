@@ -1333,6 +1333,7 @@ dependencies = [
  "cctui-client",
  "cctui-clientcore",
  "cctui-proto",
+ "cctui-query",
  "chrono",
  "clap",
  "crossterm",

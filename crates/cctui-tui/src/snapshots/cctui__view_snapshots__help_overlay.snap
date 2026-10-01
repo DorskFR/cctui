@@ -2,27 +2,27 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
- S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         Ctrl+p / ↑  Previous macro                   │
-▸ │  ?           Toggle this cheat sheet            Enter       Put this prompt in the composer  │
-  │  q           Quit cctui                       Bookmarks                                      │
-  │  /           Search the current view            q / Esc     Back to the session list         │
-  │  n           Next search hit                    j / ↓       Next bookmark                    │
-  │  N           Previous search hit                k / ↑       Previous bookmark                │
-  │  D           Diagnose the selected session      g           First bookmark                   │
-  │  i           Session info                       G           Last bookmark                    │
-  │  Ctrl+g      Jump to the next pending approv…   Ctrl+f / P… Scroll the preview down          │
-  │Session list                                     Ctrl+b / P… Scroll the preview up            │
-  │  j / ↓       Next session                       /           Search the bookmarks             │
-  │  k / ↑       Previous session                   Enter       Open the source message          │
-  │  g           First session                      y           Copy the bookmark as markdown    │
-  │  G           Last session                       e           Edit the title and note          │
-  │  Enter       Open the conversation              d           Delete the bookmark              │
-  │  z / Tab     Fold or open the subagent group  Bookmarks — search or edit                     │
-  │  S           Fold or open the section           Enter       Accept                           │
-  │  Z           Fold or open everything            Esc         Discard                          │
-  │  B           Browse your bookmarks              Tab         Switch between title and note    │
-  │Conversation                                   Bookmarks — confirm                            │
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
+  │Anywhere                                       Labels                                         │
+▸ │  ?           Toggle this cheat sheet            Esc         Close the label list             │
+  │  q           Quit cctui                         Ctrl+n / ↓  Next label                       │
+  │  1-9         Switch view                        Ctrl+p / ↑  Previous label                   │
+  │  /           Search the current view            Space       Attach or detach this label      │
+  │  n           Next search hit                    Ctrl+c      Create a label                   │
+  │  N           Previous search hit                Ctrl+e      Rename or recolor                │
+  │  D           Diagnose the selected session      Ctrl+d      Delete this label                │
+  │  i           Session info                       Enter       Confirm                          │
+  │  Ctrl+g      Jump to the next session needin… Label filter                                   │
+  │Session list                                     Esc         Close the label list             │
+  │  j / ↓       Next session                       Ctrl+n / ↓  Next label                       │
+  │  k / ↑       Previous session                   Ctrl+p / ↑  Previous label                   │
+  │  g           First session                      Space / En… Include or exclude this label    │
+  │  G           Last session                       a           Show every label again           │
+  │  Enter       Open the conversation            Pinned messages                                │
+  │  z / Tab     Fold or open the subagent group    Esc         Close the pinned messages        │
+  │  S           Fold or open the section           Ctrl+n / ↓  Next pin                         │
+  │  Z           Fold or open everything            Ctrl+p / ↑  Previous pin                     │
+  │  f           Choose which sections show         Enter       Jump to the pinned message       │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

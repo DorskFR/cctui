@@ -52,7 +52,7 @@ impl Config {
         }
         let mut prefs = Prefs::default();
         prefs.apply_server(server);
-        prefs.apply_file(self.file);
+        prefs.apply_file(&self.file);
         self.prefs = prefs;
     }
 }
@@ -141,7 +141,7 @@ pub fn parse(text: &str) -> Loaded {
         }
     }
     config.file = file.preferences;
-    config.prefs.apply_file(config.file);
+    config.prefs.apply_file(&config.file.clone());
 
     for (context_name, table) in &file.keys {
         let Some(context) = Context::parse(context_name) else {

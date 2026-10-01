@@ -179,6 +179,16 @@ pub enum Row<'a> {
         total: usize,
         open: bool,
     },
+    /// Header of a group-by dimension other than status, whose buckets are
+    /// data rather than a fixed enum.
+    DimHeader {
+        key: String,
+        total: usize,
+        open: bool,
+        /// Set when the bucket *is* a machine, so the header can show that
+        /// machine's own liveness rather than any session's.
+        machine_id: Option<String>,
+    },
     Session {
         session: &'a SessionListItem,
         /// Index into [`sessions_of`], i.e. what `selected_index` addresses.
@@ -232,14 +242,37 @@ impl<'a> Walk<'a, '_> {
     }
 }
 
-/// Every display row, honouring the persisted fold state. A folded section drops
-/// its rows but keeps its header and count; a folded subagent group likewise.
+/// `rows_by` over an unsorted, unfiltered list under the status grouping.
+/// Test-only: the app always goes through [`rows_by`] with its chosen shape.
+#[cfg(test)]
 #[must_use]
 pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
-    let ids: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let mut refs: Vec<&'a SessionListItem> = sessions.iter().collect();
+    // No caller-chosen sort here: youngest first, as the list has always shown.
+    refs.sort_by_key(|s| uptime_secs(s));
+    rows_by(&refs, sessions, ui, super::list_view::GroupBy::Status)
+}
+
+/// Every display row, honouring the persisted fold state. A folded section
+/// drops its rows but keeps its header and count; a folded subagent group
+/// likewise.
+///
+/// `ordered` is the membership and the order: already narrowed by the sections
+/// and sorted. `all` is every session the server sent, and is only ever read
+/// for parentage and for the unread rule — judging either against the narrowed
+/// list would turn a hidden row's children into top-level ones.
+#[must_use]
+pub fn rows_by<'a>(
+    ordered: &[&'a SessionListItem],
+    all: &'a [SessionListItem],
+    ui: &UiState,
+    by: super::list_view::GroupBy,
+) -> Vec<Row<'a>> {
+    let ids: HashSet<&str> = all.iter().map(|s| s.id.as_str()).collect();
+    let shown = |s: &SessionListItem| !ui.unread_only || super::unread::keeps_row(all, s);
     let mut kids: HashMap<&str, Vec<&SessionListItem>> = HashMap::new();
-    for s in sessions {
-        if is_fork(s) {
+    for s in ordered {
+        if is_fork(s) || !shown(s) {
             continue;
         }
         if let Some(p) = s.parent_id.as_deref().filter(|p| ids.contains(p) && *p != s.id) {
@@ -247,13 +280,18 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
         }
     }
 
-    let mut tops: Vec<&SessionListItem> = sessions
+    let mut tops: Vec<&'a SessionListItem> = ordered
         .iter()
+        .copied()
         .filter(|s| {
-            is_fork(s) || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id)
+            shown(s)
+                && (is_fork(s)
+                    || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id))
         })
         .collect();
-    tops.sort_by_key(|s| (group_of(s).rank(), uptime_secs(s)));
+    // Stable, and by group rank alone: within a group the caller's order — the
+    // sort the operator chose — is the one that survives.
+    tops.sort_by_key(|s| group_of(s).rank());
     for group in kids.values_mut() {
         group.sort_by_key(|s| uptime_secs(s));
     }
@@ -265,6 +303,9 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
 
     let mut walk =
         Walk { kids, ui, out: Vec::with_capacity(tops.len() + 8), seen: HashSet::new(), index: 0 };
+    if by != super::list_view::GroupBy::Status {
+        return walk.by_dimension(&tops, by);
+    }
     let mut current: Option<Group> = None;
     for top in tops {
         let group = group_of(top);
@@ -290,6 +331,38 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
     walk.out
 }
 
+impl<'a> Walk<'a, '_> {
+    /// Buckets the top-level rows by `by`, in first-seen order, under one header
+    /// each. Dimension headers fold through the same section state as the status
+    /// ones, keyed `dim:<key>` so the two never collide.
+    fn by_dimension(
+        mut self,
+        tops: &[&'a SessionListItem],
+        by: super::list_view::GroupBy,
+    ) -> Vec<Row<'a>> {
+        for (key, members) in super::list_view::dimension_groups(tops, by) {
+            let fold_key = format!("dim:{key}");
+            let open = self.ui.section_open(&fold_key);
+            let machine_id = (by == super::list_view::GroupBy::Machine)
+                .then(|| members.first().map(|s| s.machine_id.clone()))
+                .flatten();
+            self.out.push(Row::DimHeader { key, total: members.len(), open, machine_id });
+            if !open {
+                continue;
+            }
+            for top in members {
+                if !self.seen.insert(top.id.as_str()) {
+                    continue;
+                }
+                self.out.push(Row::Session { session: top, index: self.index, depth: 0 });
+                self.index += 1;
+                self.descend(top, 1);
+            }
+        }
+        self.out
+    }
+}
+
 /// The visible sessions, in the order `selected_index` addresses.
 #[must_use]
 pub fn sessions_of<'a>(rows: &[Row<'a>]) -> Vec<&'a SessionListItem> {
@@ -303,13 +376,14 @@ pub fn sessions_of<'a>(rows: &[Row<'a>]) -> Vec<&'a SessionListItem> {
 
 /// Every foldable group on screen plus every section, for a fold-everything key.
 #[must_use]
-pub fn fold_targets(rows: &[Row<'_>]) -> (Vec<(String, usize)>, Vec<&'static str>) {
+pub fn fold_targets(rows: &[Row<'_>]) -> (Vec<(String, usize)>, Vec<String>) {
     let mut groups = Vec::new();
     let mut sections = Vec::new();
     for row in rows {
         match row {
             Row::SubHeader { id, total, .. } => groups.push((id.clone(), *total)),
-            Row::Header { group, .. } => sections.push(group.key()),
+            Row::Header { group, .. } => sections.push(group.key().to_owned()),
+            Row::DimHeader { key, .. } => sections.push(format!("dim:{key}")),
             Row::Session { .. } => {}
         }
     }
