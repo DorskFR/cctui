@@ -6,6 +6,8 @@ FROM rust:1.97.1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c
 
 ARG CCTUI_GIT_HASH=unknown
 ENV CCTUI_GIT_HASH=${CCTUI_GIT_HASH}
+ARG CCTUI_CLAUDE_CLI_VERSION=
+ENV CCTUI_CLAUDE_CLI_VERSION=${CCTUI_CLAUDE_CLI_VERSION}
 
 # webauthn-rs (passkey login) links against OpenSSL, so the builder needs the
 # headers and the runtime needs the library, both from the distro.
