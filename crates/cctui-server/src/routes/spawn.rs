@@ -552,6 +552,17 @@ async fn default_account_name(
     resolve_default_account(&names, user_id, adapter_id)
 }
 
+/// One account an `auto_account` spawn may bind: account id, name, provider row
+/// id, soft limits, model catalog, alias map.
+type AutoAccountRow = (
+    Uuid,
+    String,
+    Uuid,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+);
+
 /// Pick the account an `auto_account` spawn binds: the one with the most
 /// allocation left for the model it will run.
 ///
@@ -573,8 +584,8 @@ async fn auto_account_name(
     model: Option<&str>,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
     let family = crate::routes::gateway::Family::from_adapter(adapter_id);
-    let rows: Vec<(Uuid, String, Uuid, Option<serde_json::Value>)> = sqlx::query_as(
-        "SELECT a.id, a.name, ap.id, ap.soft_limits_json \
+    let rows: Vec<AutoAccountRow> = sqlx::query_as(
+        "SELECT a.id, a.name, ap.id, ap.soft_limits_json, ap.models, ap.model_aliases \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
          WHERE ap.family = $2 \
            AND (a.user_id = $1 OR EXISTS ( \
@@ -603,23 +614,42 @@ async fn auto_account_name(
         });
     // account id → the provider row whose usage represents it.
     let providers: std::collections::HashMap<Uuid, Uuid> =
-        rows.iter().map(|(account_id, _, provider_id, _)| (*account_id, *provider_id)).collect();
+        rows.iter().map(|r| (r.0, r.2)).collect();
 
     // Follow the chain to whoever will actually serve; fall back to the
     // account's own credential when the target is not one we can read. Usage
     // and the sessions already in flight are both measured on that credential.
     let effective: Vec<Uuid> = rows
         .iter()
-        .map(|(account_id, _, provider_id, _)| {
-            crate::store::account_redirects::follow_account_chain(
-                &rules,
-                *account_id,
-                family.label(),
-            )
-            .and_then(|to| providers.get(&to).copied())
-            .unwrap_or(*provider_id)
+        .map(|r| {
+            crate::store::account_redirects::follow_account_chain(&rules, r.0, family.label())
+                .and_then(|to| providers.get(&to).copied())
+                .unwrap_or(r.2)
         })
         .collect();
+
+    // An account whose catalog (the one of the credential that will serve)
+    // does not list the model would answer `404 model_not_found` on the first
+    // turn: a local `anthropic-compatible` endpoint always looks wide open, so
+    // without this it wins every election for models it has never heard of.
+    let catalogs: std::collections::HashMap<
+        Uuid,
+        (Option<&serde_json::Value>, Option<&serde_json::Value>),
+    > = rows.iter().map(|r| (r.2, (r.4.as_ref(), r.5.as_ref()))).collect();
+    let (rows, effective): (Vec<&AutoAccountRow>, Vec<Uuid>) = rows
+        .iter()
+        .zip(effective)
+        .filter(|(_, provider)| {
+            let (catalog, aliases) = catalogs.get(provider).copied().unwrap_or((None, None));
+            crate::account_pick::serves_model(family, catalog, aliases, model)
+        })
+        .unzip();
+    if rows.is_empty() {
+        return Err(bad_request(format!(
+            "no account can serve model {:?}: every candidate's model catalog excludes it",
+            model.unwrap_or("(harness default)")
+        )));
+    }
     let usages = futures_util::future::join_all(effective.iter().map(|provider| async move {
         crate::routes::gateway::usage_for_soft_limit(state, *provider).await
     }))
@@ -630,13 +660,13 @@ async fn auto_account_name(
         .iter()
         .zip(usages)
         .zip(&effective)
-        .map(|(((_, name, _, soft_limits_json), usage), provider)| crate::account_pick::Candidate {
-            name: name.clone(),
+        .map(|((r, usage), provider)| crate::account_pick::Candidate {
+            name: r.1.clone(),
             windows: usage
                 .as_ref()
                 .map(crate::soft_limit::normalize_usage_windows)
                 .unwrap_or_default(),
-            limits: crate::soft_limit::SoftLimits::from_json(soft_limits_json.as_ref()),
+            limits: crate::soft_limit::SoftLimits::from_json(r.3.as_ref()),
             usage_known: usage.is_some(),
             in_flight: in_flight.get(provider).copied().unwrap_or(0),
         })

@@ -196,6 +196,27 @@ pub async fn elect_pool_member(
         )));
     }
 
+    // A member whose catalog does not list the session's model would answer
+    // `404 model_not_found`: it is out of the election, not merely ranked low.
+    let members: Vec<_> = members
+        .into_iter()
+        .filter(|m| {
+            crate::account_pick::serves_model(
+                family,
+                m.models.as_ref(),
+                m.model_aliases.as_ref(),
+                model,
+            )
+        })
+        .collect();
+    if members.is_empty() {
+        return Err(ResolveError::Rejected(format!(
+            "no account in pool {:?} can serve model {:?}",
+            pool.name,
+            model.unwrap_or("(harness default)")
+        )));
+    }
+
     let rules = crate::store::account_redirects::live_for_launch(&state.pool, user_id)
         .await
         .unwrap_or_else(|e| {
