@@ -2,18 +2,17 @@
 source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
- S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Tab         Complete the path                Plan card — refine                             │
-▸ │Filter menu                                      Enter       Accept the text                  │
-  │  F / q / Esc Choose which lines to show         Esc         Discard the text                 │
-  │  a           Show every category              Row glyphs                                     │
-  │  r           Back to the default filter         ●           working                          │
-  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
-  │  j / ↓       Next category                      ○           idle                             │
-  │  k / ↑       Previous category                  ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
+  │Filter menu                                    Row glyphs                                     │
+▸ │  F / q / Esc Choose which lines to show         ●           working                          │
+  │  a           Show every category                ◐           stale or asleep                  │
+  │  r           Back to the default filter         ○           idle                             │
+  │  Space / En… Show or hide this category         ☾           hibernated                       │
+  │  j / ↓       Next category                      ↳           subagent                         │
+  │  k / ↑       Previous category                  ▸ / ▾       folded / open group              │
+  │Prompt history                                   [name]      a label, tinted by its hue       │
+  │  Esc         Close the prompt list              +N          more labels than fit             │
   │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
   │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
   │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
@@ -24,5 +23,6 @@ expression: render_screen(&mut app)
   │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
   │  g           Jump to the top                    ✕reason     how it ended                     │
   │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
+  │  o           Open in the desktop viewer                                                      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

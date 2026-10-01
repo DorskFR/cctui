@@ -12,11 +12,16 @@ use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
 pub use super::session_list::uptime_secs_at;
 use super::session_live::RefreshCounters;
+use super::slice::{Cursor, Slice};
 use super::toast::{Level, StatusCounters, Toasts};
 pub use crate::config::uistate::UiState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    /// The `l` label picker for one session.
+    LabelPicker,
+    /// The `L` any-of label filter.
+    LabelFilter,
     /// The overlay pager for an agent-linked local file.
     FileViewer,
     SessionList,
@@ -29,6 +34,9 @@ pub enum View {
     Terminal,
     ModelPicker,
     Sidebar,
+    /// Slice roots: the switcher resets the router to one of these.
+    Bookmarks,
+    Overview,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -259,6 +267,7 @@ pub struct App {
     pub auth: AuthState,
     pub drafts: super::drafts::DraftState,
     pub pins: super::pins::PinState,
+    pub bookmarks: super::bookmarks::BookmarkState,
     pub mentions: super::mentions::MentionState,
     pub macros: super::macros::MacroState,
     /// Sends that have left the composer but are not confirmed delivered.
@@ -278,12 +287,39 @@ pub struct App {
     pub ws_healthy: bool,
     pub last_refresh_ms: i64,
     pub refresh: RefreshCounters,
+    /// Selection and the pending prompts of the list's row actions.
+    pub row_actions: super::row_actions::RowActionState,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
+    /// Which top-level slice `1-9` last selected.
+    pub slice: Slice,
+    /// Where each slice's cursor was when it was last left.
+    pub slice_cursors: HashMap<Slice, Cursor>,
+    /// `GET /sessions/stats`, `None` until the first reply.
+    pub stats: Option<cctui_proto::api::SessionStats>,
+    pub overview_scroll: usize,
+    /// The label catalogue, the `l` overlay and the `L` filter.
+    pub labels: super::labels::Labels,
+    /// Sections, sort and group-by, restored from the server settings.
+    pub list_shape: super::list_view::ListShape,
+    /// Focused row of the sections popup while it is open.
+    pub sections_menu: Option<usize>,
+    /// The `/` search over the list.
+    pub list_search: super::list_search::ListSearch,
+    /// Seq a just-opened conversation should land on, set by whatever opened it
+    /// at a match. Cleared by the view once it has anchored.
+    pub pending_seq_anchor: Option<i64>,
+    /// The settings blob as the server last gave it, so a write patches it
+    /// instead of dropping the keys only the web UI uses.
+    pub settings_blob: serde_json::Value,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
     pub sidebar: super::sidebar::Sidebar,
+    /// Mark-seen debounce state; the counts themselves live on the rows.
+    pub unread: super::unread::Unread,
+    /// The needs-input reconcile and the escapes it has queued.
+    pub watch: super::attention::Watch,
     /// The watched session's emulated screen, open only while the pane is.
     pub terminal: Option<super::terminal::TerminalPane>,
 }
@@ -376,6 +412,7 @@ impl App {
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
             pins: super::pins::PinState::default(),
+            bookmarks: super::bookmarks::BookmarkState::default(),
             mentions: super::mentions::MentionState::default(),
             macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
@@ -387,9 +424,22 @@ impl App {
             ws_healthy: false,
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
+            row_actions: super::row_actions::RowActionState::default(),
             ui: UiState::default(),
+            slice: Slice::Sessions,
+            slice_cursors: HashMap::new(),
+            stats: None,
+            overview_scroll: 0,
+            labels: super::labels::Labels::default(),
+            list_shape: super::list_view::ListShape::default(),
+            sections_menu: None,
+            list_search: super::list_search::ListSearch::default(),
+            pending_seq_anchor: None,
+            settings_blob: serde_json::Value::Null,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
+            unread: super::unread::Unread::default(),
+            watch: super::attention::Watch::default(),
             terminal: None,
         }
     }
@@ -426,11 +476,33 @@ impl App {
     #[must_use]
     pub const fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
         use crate::config::keymap::Context;
+        // A row-action prompt is modal over the list: it answers one key and
+        // closes, so it outranks the strips that stay open while you work.
+        if self.row_actions.confirm.is_some() {
+            return Some(Context::Confirm);
+        }
+        if self.row_actions.rename.is_some() {
+            return Some(Context::Rename);
+        }
         if self.cmdline.open.is_some() {
             return Some(Context::CmdLine);
         }
         if self.filter_menu.is_some() {
             return Some(Context::FilterMenu);
+        }
+        if self.sections_menu.is_some() {
+            return Some(Context::Sections);
+        }
+        if self.list_search.open {
+            return Some(Context::ListSearch);
+        }
+        // Last: every strip above belongs to the sessions slice, these two to
+        // the bookmarks slice, so no pair of them is ever open together.
+        if self.bookmarks.prompt.is_some() {
+            return Some(Context::BookmarkPrompt);
+        }
+        if self.bookmarks.confirm.is_some() {
+            return Some(Context::BookmarkConfirm);
         }
         None
     }
@@ -448,8 +520,25 @@ impl App {
         self.conversations.entry(session_id.to_owned()).or_default()
     }
 
+    /// The rows on screen: `sessions` narrowed by the sections, in the chosen
+    /// sort, grouped by the chosen dimension. Borrowed throughout, so an
+    /// in-place edit to a session shows up without anything being recomputed.
     pub fn list_rows(&self) -> Vec<super::session_list::Row<'_>> {
-        super::session_list::rows(&self.sessions, &self.ui)
+        // The label filter narrows in the same seam as P1's sections and P4's
+        // unread rule: one list of survivors, then one bucketing pass.
+        let mut visible = super::list_view::visible_refs(&self.sessions, &self.list_shape);
+        visible.retain(|s| self.labels.passes(s));
+        super::session_list::rows_by(&visible, &self.sessions, &self.ui, self.list_shape.group_by)
+    }
+
+    /// Brings the selection back inside the list after its shape changed.
+    pub fn reshape(&mut self) {
+        let len = self.flattened_sessions().len();
+        if len == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= len {
+            self.selected_index = len - 1;
+        }
     }
 
     pub fn flattened_sessions(&self) -> Vec<&SessionListItem> {
@@ -486,6 +575,7 @@ impl App {
             .iter()
             .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
             .count();
+        self.reshape();
     }
 }
 

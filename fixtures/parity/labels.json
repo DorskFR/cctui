@@ -45,6 +45,61 @@
       "out": 121
     },
     {
+      "name": "wave-5",
+      "color": "",
+      "out": 353
+    },
+    {
+      "name": "wave-6",
+      "color": "",
+      "out": 354
+    },
+    {
+      "name": "fix-auth",
+      "color": "",
+      "out": 56
+    },
+    {
+      "name": "infra",
+      "color": "",
+      "out": 168
+    },
+    {
+      "name": "a",
+      "color": "",
+      "out": 97
+    },
+    {
+      "name": "",
+      "color": "",
+      "out": 0
+    },
+    {
+      "name": "release wave",
+      "color": "",
+      "out": 90
+    },
+    {
+      "name": "\u00dcn\u00efc\u00f4de",
+      "color": "",
+      "out": 47
+    },
+    {
+      "name": "\u65e5\u672c\u8a9e",
+      "color": "",
+      "out": 143
+    },
+    {
+      "name": "\ud83d\ude80 ship",
+      "color": "",
+      "out": 257
+    },
+    {
+      "name": "label-with-a-very-long-name",
+      "color": "",
+      "out": 271
+    },
+    {
       "name": "urgent",
       "color": "210",
       "out": 210
@@ -53,6 +108,21 @@
       "name": "urgent",
       "color": "nope",
       "out": 121
+    },
+    {
+      "name": "wave-5",
+      "color": "400",
+      "out": 40
+    },
+    {
+      "name": "wave-5",
+      "color": "-30",
+      "out": 330
+    },
+    {
+      "name": "wave-5",
+      "color": "  90  ",
+      "out": 90
     }
   ],
   "hueToColor": [

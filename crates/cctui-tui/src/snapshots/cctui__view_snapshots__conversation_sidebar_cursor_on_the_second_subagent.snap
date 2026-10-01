@@ -1,8 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1031
 expression: render_screen(&mut app)
 ---
- cctui (main) on orion ── opus ── $1.25                           │ Todo 1/3
+ cctui (main) on orion ── opus ── $1.25  ! 2 need input — Ctrl+g  │ Todo 1/3
                                                                  ▕│ [x] Read the brief
 ∴ thinking (2 lines)  (2 more · o)                               ▕│ [~] Wiring the panel
  Read  crates/cctui-tui/src/main.rs  read                        ▕│ [ ] Write the tests

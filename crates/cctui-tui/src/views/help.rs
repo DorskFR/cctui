@@ -54,6 +54,12 @@ fn keys_label(chords: &[Chord]) -> String {
     labels.join(" / ")
 }
 
+/// Rows per column when the whole sheet is shown in two columns.
+#[cfg(test)]
+pub fn rows_per_column(keys: &Keymap) -> usize {
+    rows(keys).len().div_ceil(2)
+}
+
 fn rows(keys: &Keymap) -> Vec<Row> {
     let mut rows = Vec::new();
     for context in CONTEXTS {

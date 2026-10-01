@@ -1,9 +1,11 @@
+use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
-    AutoApproveRequest, ForkRequest, ForkResponse, SessionListItem, SessionListResponse,
-    SetModelRequest, StageFilesResponse,
+    AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, ForkRequest, ForkResponse, Label,
+    LabelListResponse, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
+    SetModelRequest, StageFilesResponse, UpdateLabelRequest,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -333,6 +335,18 @@ impl Client {
         self.json(Self::route("get_sessions_by_id")?, &[("id", session_id)], &[], None).await
     }
 
+    /// `timezone` is an IANA name: the today/week/month counts are local
+    /// calendar periods and the server defaults to UTC without it.
+    pub async fn session_stats(&self, timezone: &str) -> Result<SessionStats, ClientError> {
+        self.json(
+            Self::route("get_sessions_stats")?,
+            &[],
+            &[("timezone", timezone.to_owned())],
+            None,
+        )
+        .await
+    }
+
     pub async fn me(&self) -> Result<MeResponse, ClientError> {
         self.json(Self::route("get_me")?, &[], &[], None).await
     }
@@ -411,6 +425,57 @@ impl Client {
             .await
     }
 
+    /// Every label the caller owns.
+    pub async fn labels(&self) -> Result<Vec<Label>, ClientError> {
+        let resp: LabelListResponse = self.json(Self::route("get_labels")?, &[], &[], None).await?;
+        Ok(resp.labels)
+    }
+
+    /// Get-or-create by name: the server returns the existing label when the
+    /// name is taken, so a duplicate create is not an error.
+    pub async fn create_label(&self, name: &str, color: &str) -> Result<Label, ClientError> {
+        let route = Self::route("post_labels")?;
+        let body = serde_json::to_value(CreateLabelRequest {
+            name: name.to_owned(),
+            color: color.to_owned(),
+        })
+        .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Rename or recolor; an omitted field is left alone.
+    pub async fn update_label(
+        &self,
+        id: &str,
+        name: Option<String>,
+        color: Option<String>,
+    ) -> Result<Label, ClientError> {
+        let route = Self::route("patch_labels_by_id")?;
+        let body = serde_json::to_value(UpdateLabelRequest { name, color })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[("id", id)], &[], Some(&body)).await
+    }
+
+    pub async fn delete_label(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_labels_by_id")?, &[("id", id)], None).await
+    }
+
+    pub async fn attach_label(&self, session_id: &str, label_id: &str) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_by_id_labels")?;
+        let body = serde_json::to_value(AttachLabelRequest { label_id: label_id.to_owned() })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    pub async fn detach_label(&self, session_id: &str, label_id: &str) -> Result<(), ClientError> {
+        self.unit(
+            Self::route("delete_sessions_by_id_labels_by_label")?,
+            &[("id", session_id), ("label_id", label_id)],
+            None,
+        )
+        .await
+    }
+
     pub async fn set_auto_approve(
         &self,
         session_id: &str,
@@ -420,6 +485,33 @@ impl Client {
         let body = serde_json::to_value(AutoApproveRequest { enabled })
             .map_err(|source| ClientError::Decode { route: route.id, source })?;
         self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    pub async fn rename_session(&self, session_id: &str, name: &str) -> Result<(), ClientError> {
+        let route = Self::route("patch_sessions_by_id")?;
+        let body = serde_json::to_value(RenameRequest { name: name.to_owned() })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.unit(route, &[("id", session_id)], Some(&body)).await
+    }
+
+    pub async fn kill_session(&self, session_id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("post_sessions_by_id_kill")?, &[("id", session_id)], None).await
+    }
+
+    /// Archives or unarchives a batch of sessions in one request. The server
+    /// filters the ids to the ones the caller owns and is idempotent per id.
+    pub async fn archive_sessions(
+        &self,
+        ids: &[String],
+        archived: bool,
+    ) -> Result<(), ClientError> {
+        let id = if archived { "post_sessions_archive" } else { "post_sessions_unarchive" };
+        self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
+    }
+
+    pub async fn pin_sessions(&self, ids: &[String], pinned: bool) -> Result<(), ClientError> {
+        let id = if pinned { "post_sessions_pin" } else { "post_sessions_unpin" };
+        self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
     }
 
     /// The caller's settings blob. The TUI reads it and never writes it back.
@@ -539,6 +631,43 @@ impl Client {
     }
 
     /// Save a draft. Empty text deletes the row, as the route documents.
+    /// Replaces the settings blob. `PUT /settings` is a replace, so the caller
+    /// must send the whole blob it read, patched — never just its own keys.
+    pub async fn put_settings(
+        &self,
+        version: i32,
+        data: Value,
+    ) -> Result<SettingsPayload, ClientError> {
+        let route = Self::route("put_settings")?;
+        let body = serde_json::to_value(SettingsPayload { version, data })
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Full-text session search. `q` is the raw query: the server parses it with
+    /// the same `cctui-query` grammar the TUI uses to complete it.
+    pub async fn search_sessions(
+        &self,
+        q: &str,
+        include_archived: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<SessionListResponse, ClientError> {
+        let query = vec![
+            ("q", q.to_owned()),
+            ("include_archived", include_archived.to_string()),
+            ("limit", limit.to_string()),
+            ("offset", offset.to_string()),
+        ];
+        self.json(Self::route("get_sessions_search")?, &[], &query, None).await
+    }
+
+    /// Autocomplete values for one search field.
+    pub async fn search_values(&self, field: &str, q: &str) -> Result<Vec<String>, ClientError> {
+        let query = vec![("field", field.to_owned()), ("q", q.to_owned())];
+        self.json(Self::route("get_sessions_search_values")?, &[], &query, None).await
+    }
+
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
         let route = Self::route("put_drafts_by_*key")?;
         let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
@@ -567,10 +696,57 @@ impl Client {
         self.unit(route, &[("id", session_id), ("seq", &seq.to_string())], None).await
     }
 
+    /// A page of the caller's bookmarks, newest first. `before` is the
+    /// `created_at` of the last row of the previous page.
+    pub async fn list_bookmarks(
+        &self,
+        q: &str,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+        limit: i64,
+    ) -> Result<Vec<Bookmark>, ClientError> {
+        let mut query = vec![("limit", limit.to_string())];
+        if !q.trim().is_empty() {
+            query.push(("q", q.to_owned()));
+        }
+        if let Some(before) = before {
+            query.push(("before", before.to_rfc3339()));
+        }
+        self.json(Self::route("get_bookmarks")?, &[], &query, None).await
+    }
+
+    /// Save a message as a bookmark. The body is a snapshot, so the row
+    /// outlives both the message and its session.
+    pub async fn create_bookmark(&self, draft: &CreateBookmark) -> Result<Bookmark, ClientError> {
+        let route = Self::route("post_bookmarks")?;
+        let body = serde_json::to_value(draft)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Edit a bookmark's title and note; the snapshot itself is immutable.
+    pub async fn update_bookmark(
+        &self,
+        id: &str,
+        title: &str,
+        note: Option<&str>,
+    ) -> Result<Bookmark, ClientError> {
+        let body = serde_json::json!({ "title": title, "note": note });
+        self.json(Self::route("patch_bookmarks_by_id")?, &[("id", id)], &[], Some(&body)).await
+    }
+
+    pub async fn delete_bookmark(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_bookmarks_by_id")?, &[("id", id)], None).await
+    }
+
     /// Revoke the key this client authenticates with (`cctui logout --revoke`).
     pub async fn revoke_current_key(&self) -> Result<(), ClientError> {
         self.unit(Self::route("delete_me_key")?, &[], None).await
     }
+}
+
+/// The `{ids: [...]}` body every batch session route takes.
+fn batch_ids(ids: &[String]) -> Value {
+    serde_json::json!({ "ids": ids })
 }
 
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
@@ -679,7 +855,11 @@ mod tests {
     fn every_named_route_exists_in_the_table() {
         for id in [
             "get_sessions",
+            "get_sessions_search",
+            "get_sessions_search_values",
+            "put_settings",
             "get_sessions_by_id",
+            "get_sessions_stats",
             "get_sessions_by_id_conversation",
             "get_sessions_by_id_diagnose",
             "post_sessions_by_id_interrupt",
@@ -689,6 +869,12 @@ mod tests {
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",
             "get_permissions_pending",
+            "get_labels",
+            "post_labels",
+            "patch_labels_by_id",
+            "delete_labels_by_id",
+            "post_sessions_by_id_labels",
+            "delete_sessions_by_id_labels_by_label",
             "post_sessions_by_id_files",
             "get_machines_by_machine_fs_file",
             "get_sessions_by_id_linked_file_owner",
@@ -699,9 +885,19 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "patch_sessions_by_id",
+            "post_sessions_by_id_kill",
+            "post_sessions_archive",
+            "post_sessions_unarchive",
+            "post_sessions_pin",
+            "post_sessions_unpin",
             "get_sessions_by_id_pins",
             "post_sessions_by_id_pins",
             "delete_sessions_by_id_pins_by_seq",
+            "get_bookmarks",
+            "post_bookmarks",
+            "patch_bookmarks_by_id",
+            "delete_bookmarks_by_id",
         ] {
             assert!(Client::route(id).is_ok(), "missing route id {id}");
         }

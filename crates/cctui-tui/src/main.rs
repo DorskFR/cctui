@@ -9,6 +9,7 @@ mod parity;
 mod selfupdate;
 #[cfg(test)]
 mod server_event_contract;
+mod termnotify;
 #[cfg(test)]
 mod testsupport;
 mod theme;
@@ -23,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use app::deeplink::Startup;
 use app::effects::Effects;
 use app::session_live::{SessionLiveAction, TICK_MS};
 use app::toast::Level;
@@ -60,6 +62,9 @@ fn resolve_identity() -> (String, String) {
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// Open the list with this search already applied, e.g. `tag:wave-5`.
+    #[arg(long, value_name = "QUERY", global = true)]
+    filter: Option<String>,
 }
 
 #[derive(clap::Subcommand)]
@@ -82,6 +87,15 @@ enum Command {
     },
     /// Force re-download of the latest cctui release and re-apply settings.
     Update,
+    /// Start on one session's conversation. The session need not be in the
+    /// live list: an archived one is fetched by id.
+    Open {
+        /// The session id (as shown in the session list / URL).
+        session_id: String,
+        /// Transcript position to land on.
+        #[arg(long)]
+        seq: Option<i64>,
+    },
     /// One-call session diagnose: print everything the daemon knows
     /// about a session — each fact dated + sourced — plus the server-side
     /// gateway/account binding facts.
@@ -95,18 +109,22 @@ enum Command {
 async fn main() -> Result<()> {
     use clap::Parser;
     let _ = rustls::crypto::ring::default_provider().install_default();
-    match Cli::parse().command {
-        Some(Command::Update) => {
-            let (base_url, _) = resolve_identity();
-            selfupdate::force_update(&base_url).await
-        }
+    let cli = Cli::parse();
+    let filter = cli.filter;
+    match cli.command {
+        Some(Command::Update) => selfupdate::force_update().await,
         Some(Command::Login { server, key }) => auth::login(server, key).await,
         Some(Command::Logout { revoke }) => auth::logout(revoke).await,
         Some(Command::Diagnose { session_id }) => run_diagnose(&session_id).await,
+        Some(Command::Open { session_id, seq }) => {
+            let (base_url, _) = resolve_identity();
+            selfupdate::maybe_update(&base_url).await;
+            run_tui(Startup { open: Some(session_id), seq, filter }).await
+        }
         None => {
             let (base_url, _) = resolve_identity();
             selfupdate::maybe_update(&base_url).await;
-            run_tui().await
+            run_tui(Startup { filter, ..Startup::default() }).await
         }
     }
 }
@@ -181,7 +199,7 @@ fn fmt_age_since(at_ms: i64) -> String {
     fmt_age((chrono::Utc::now().timestamp_millis() - at_ms).max(0))
 }
 
-async fn run_tui() -> Result<()> {
+async fn run_tui(startup: Startup) -> Result<()> {
     let (base_url, token) = resolve_identity();
 
     enable_raw_mode()?;
@@ -190,7 +208,7 @@ async fn run_tui() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run(&mut terminal, base_url, token).await;
+    let result = run(&mut terminal, base_url, token, startup).await;
 
     disable_raw_mode()?;
     execute!(
@@ -212,6 +230,7 @@ async fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     base_url: String,
     token: String,
+    startup: Startup,
 ) -> Result<()> {
     let server = Arc::new(Client::new(&base_url, &token));
     let mut app = App::new();
@@ -221,8 +240,11 @@ async fn run(
     theme::init(app.config.theme);
 
     init_sessions(&server, &mut app).await;
+    let startup_effects = app::deeplink::apply(&mut app, startup);
     let (ws, mut event_rx) = server.connect_ws();
     let (effects, mut action_rx) = Effects::start(Arc::clone(&server), Arc::new(ws));
+    effects.dispatch_all(startup_effects);
+    effects.dispatch(app::action::Effect::FetchSessionStats);
     effects.dispatch(app::action::Effect::FetchIdentity);
     effects.dispatch(app::action::Effect::FetchPendingPermissions);
     effects.dispatch(app::action::Effect::LoadDraftIndex);
@@ -240,6 +262,11 @@ async fn run(
         app.toasts.prune(app.clock_ms);
         update_scroll_metrics(&mut app);
         terminal.draw(|f| views::render(f, &mut app))?;
+        // The one safe point for an escape sequence: the frame is on screen and
+        // nothing else is mid-write.
+        if let Err(e) = termnotify::emit(&app.watch.take_pending()) {
+            tracing::warn!(%e, "cannot write the terminal attention sequences");
+        }
 
         let actions: Vec<Action> = tokio::select! {
             biased;
@@ -320,6 +347,10 @@ async fn apply_server_settings(server: &Client, app: &mut App) {
     if let Ok(payload) = server.settings().await {
         app.config.apply_server(config::server::ServerPrefs::from_settings(&payload.data));
         app.macros = app::macros::from_settings(&payload.data);
+        app.list_shape = app::list_view::ListShape::from_settings(&payload.data);
+        // Kept whole: a settings write is a replace, so a patch needs the rest.
+        app.settings_blob = payload.data;
+        app.reshape();
     }
     app.show_timestamps = app.config.prefs.timestamps;
 }

@@ -10,20 +10,27 @@ use tokio::sync::mpsc;
 use super::action::{Action, Effect};
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
+use super::bookmarks::BookmarkAction;
 use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
+use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
 use super::identity::AuthAction;
+use super::labels::LabelAction;
 use super::line::agent_event_to_line;
 use super::pins::PinAction;
 use super::send::SendAction;
+use super::slice::SliceAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
 const QUEUE: usize = 256;
+
+/// Payload version sent with a settings write; the server migrates forward.
+const SETTINGS_VERSION: i32 = 1;
 
 /// Rows per page while walking a transcript for an export.
 const EXPORT_PAGE: i64 = 500;
@@ -149,6 +156,46 @@ async fn run(
                 Vec::new()
             }
         },
+        Effect::LoadBookmarks { q, before } => {
+            match server.list_bookmarks(&q, before, super::bookmarks::PAGE).await {
+                Ok(rows) => vec![Action::Bookmarks(BookmarkAction::Loaded {
+                    rows,
+                    append: before.is_some(),
+                })],
+                Err(e) => {
+                    tracing::warn!(%e, "bookmark list fetch failed");
+                    vec![Action::Bookmarks(BookmarkAction::Failed)]
+                }
+            }
+        }
+        Effect::CreateBookmark { draft } => match server.create_bookmark(&draft).await {
+            Ok(bookmark) => vec![Action::Bookmarks(BookmarkAction::Saved(Box::new(bookmark)))],
+            Err(e) => {
+                tracing::warn!(%e, "bookmark save failed");
+                vec![Action::Toast(Level::Error, "could not save the bookmark".to_owned())]
+            }
+        },
+        Effect::UpdateBookmark { id, title, note } => {
+            match server.update_bookmark(&id, &title, note.as_deref()).await {
+                Ok(bookmark) => {
+                    vec![Action::Bookmarks(BookmarkAction::Updated(Box::new(bookmark)))]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, id, "bookmark update failed");
+                    vec![Action::Toast(Level::Error, "could not save the bookmark".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteBookmark { id } => match server.delete_bookmark(&id).await {
+            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
+                |_| Vec::new(),
+                |id| vec![Action::Bookmarks(BookmarkAction::Deleted { id })],
+            ),
+            Err(e) => {
+                tracing::warn!(%e, id, "bookmark delete failed");
+                vec![Action::Toast(Level::Error, "could not delete the bookmark".to_owned())]
+            }
+        },
         Effect::PinMessage { session_id, seq } => pin(server, session_id, seq, true).await,
         Effect::UnpinMessage { session_id, seq } => pin(server, session_id, seq, false).await,
         Effect::Copy { text, label } => copy(&text, label),
@@ -207,6 +254,47 @@ async fn run(
                 })],
             }
         }
+        Effect::ArchiveSessions { ids, archived } => {
+            let verb = if archived { "archive" } else { "unarchive" };
+            match server.archive_sessions(&ids, archived).await {
+                Ok(()) => vec![Action::RefreshSessions],
+                Err(e) => {
+                    tracing::warn!(%e, verb, "batch archive failed");
+                    vec![Action::Toast(Level::Error, format!("{verb} failed: {e}"))]
+                }
+            }
+        }
+        Effect::PinSessions { ids, pinned } => {
+            let verb = if pinned { "pin" } else { "unpin" };
+            match server.pin_sessions(&ids, pinned).await {
+                Ok(()) => vec![Action::RefreshSessions],
+                Err(e) => {
+                    tracing::warn!(%e, verb, "pin toggle failed");
+                    vec![Action::Toast(Level::Error, format!("{verb} failed: {e}"))]
+                }
+            }
+        }
+        Effect::RenameSession { session_id, name } => {
+            match server.rename_session(&session_id, &name).await {
+                Ok(()) => vec![
+                    Action::Toast(Level::Info, format!("renamed to \"{name}\"")),
+                    Action::RefreshSessions,
+                ],
+                Err(e) => {
+                    tracing::warn!(%e, "rename failed");
+                    vec![Action::Toast(Level::Error, format!("rename failed: {e}"))]
+                }
+            }
+        }
+        Effect::KillSession { session_id } => match server.kill_session(&session_id).await {
+            Ok(()) => {
+                vec![Action::Toast(Level::Info, "killed".to_owned()), Action::RefreshSessions]
+            }
+            Err(e) => {
+                tracing::warn!(%e, "kill failed");
+                vec![Action::Toast(Level::Error, format!("kill failed: {e}"))]
+            }
+        },
         Effect::Interrupt { session_id } => {
             let error = server.interrupt(&session_id).await.err();
             if let Some(e) = error.as_ref() {
@@ -264,8 +352,139 @@ async fn run(
             open_in_os_viewer(&name, &bytes);
             Vec::new()
         }
+        Effect::FetchSessionStats => {
+            match server.session_stats(&super::slice::local_timezone()).await {
+                Ok(stats) => vec![Action::Slice(SliceAction::StatsLoaded(Box::new(stats)))],
+                Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+                Err(e) => {
+                    tracing::warn!(%e, "session stats fetch failed");
+                    vec![Action::Slice(SliceAction::StatsFailed)]
+                }
+            }
+        }
+        Effect::FetchSession { session_id, seq } => match server.get_session(&session_id).await {
+            Ok(session) => {
+                vec![Action::DeepLink(DeepLinkAction::Fetched { session: Box::new(session), seq })]
+            }
+            Err(e) if e.is_unauthorized() => vec![Action::Auth(AuthAction::Rejected)],
+            Err(e) => {
+                tracing::warn!(%e, session_id, "session fetch failed");
+                vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
+            }
+        },
+        Effect::FetchLabels => match server.labels().await {
+            Ok(labels) => vec![Action::Labels(LabelAction::Loaded(labels))],
+            Err(e) => {
+                tracing::warn!(%e, "fetching labels failed");
+                Vec::new()
+            }
+        },
+        // Creating a label from a row means you wanted it on that row, so the
+        // attach happens here rather than asking the user for a second gesture.
+        Effect::CreateLabel { name, color, session_id } => {
+            let label = match server.create_label(&name, &color).await {
+                Ok(label) => label,
+                Err(e) => {
+                    tracing::warn!(%e, "creating a label failed");
+                    return vec![Action::Toast(Level::Error, format!("could not create {name}"))];
+                }
+            };
+            let mut actions = refetch_labels(server).await;
+            match server.attach_label(&session_id, &label.id).await {
+                Ok(()) => actions
+                    .push(Action::Labels(LabelAction::Attached { session_id, label_id: label.id })),
+                Err(e) => {
+                    tracing::warn!(%e, "attaching a fresh label failed");
+                    actions.push(Action::Toast(
+                        Level::Warn,
+                        format!("{name} was created but not attached"),
+                    ));
+                }
+            }
+            actions
+        }
+        Effect::UpdateLabel { id, name, color } => {
+            match server.update_label(&id, name, color).await {
+                Ok(_) => refetch_labels(server).await,
+                Err(e) => {
+                    tracing::warn!(%e, "editing a label failed");
+                    vec![Action::Toast(Level::Error, "could not edit the label".to_owned())]
+                }
+            }
+        }
+        Effect::DeleteLabel { id } => match server.delete_label(&id).await {
+            Ok(()) => refetch_labels(server).await,
+            Err(e) => {
+                tracing::warn!(%e, "deleting a label failed");
+                vec![Action::Toast(Level::Error, "could not delete the label".to_owned())]
+            }
+        },
+        Effect::AttachLabel { session_id, label_id } => {
+            match server.attach_label(&session_id, &label_id).await {
+                Ok(()) => vec![Action::Labels(LabelAction::Attached { session_id, label_id })],
+                Err(e) => {
+                    tracing::warn!(%e, "attaching a label failed");
+                    vec![Action::Toast(Level::Error, "could not attach the label".to_owned())]
+                }
+            }
+        }
+        Effect::DetachLabel { session_id, label_id } => {
+            match server.detach_label(&session_id, &label_id).await {
+                Ok(()) => vec![Action::Labels(LabelAction::Detached { session_id, label_id })],
+                Err(e) => {
+                    tracing::warn!(%e, "detaching a label failed");
+                    vec![Action::Toast(Level::Error, "could not detach the label".to_owned())]
+                }
+            }
+        }
         Effect::SaveUiState(state) => {
             crate::config::uistate::save(&state);
+            Vec::new()
+        }
+        Effect::SearchSessions { q, include_archived, offset } => {
+            let limit = super::list_search::LIMIT;
+            let at = i64::try_from(offset).unwrap_or(i64::MAX);
+            match server.search_sessions(&q, include_archived, limit, at).await {
+                Ok(resp) => {
+                    // A full page means there is probably another: the route
+                    // reports no total, so the page size is the only signal.
+                    let has_more = i64::try_from(resp.sessions.len()).unwrap_or(0) >= limit;
+                    vec![Action::ListSearch(super::list_search::ListSearchAction::Loaded {
+                        query: q,
+                        offset,
+                        sessions: resp.sessions,
+                        has_more,
+                    })]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "the session search failed");
+                    vec![Action::ListSearch(super::list_search::ListSearchAction::Failed(
+                        "search failed".to_owned(),
+                    ))]
+                }
+            }
+        }
+        Effect::SearchValues { field, q } => match server.search_values(&field, &q).await {
+            Ok(values) => {
+                vec![Action::ListSearch(super::list_search::ListSearchAction::ValuesLoaded {
+                    values,
+                })]
+            }
+            Err(e) => {
+                tracing::warn!(%e, field, "the value autocomplete failed");
+                Vec::new()
+            }
+        },
+        Effect::SaveSettings { data } => {
+            // The version the server last reported travels with the blob; it
+            // migrates an older payload forward rather than rejecting it.
+            if let Err(e) = server.put_settings(SETTINGS_VERSION, data).await {
+                tracing::warn!(%e, "cannot save the list settings");
+                return vec![Action::Toast(
+                    Level::Warn,
+                    "could not save the list settings".to_owned(),
+                )];
+            }
             Vec::new()
         }
         Effect::RespondPermission { session_id, request_id, behavior } => {
@@ -638,5 +857,17 @@ fn open_in_os_viewer(name: &str, bytes: &[u8]) {
         .spawn()
     {
         tracing::warn!(%e, opener, "cannot launch the OS viewer");
+    }
+}
+
+/// The catalogue after a change, so a rename or a delete shows everywhere at
+/// once rather than only where it was made.
+async fn refetch_labels(server: &Client) -> Vec<Action> {
+    match server.labels().await {
+        Ok(labels) => vec![Action::Labels(LabelAction::Loaded(labels))],
+        Err(e) => {
+            tracing::warn!(%e, "refetching labels failed");
+            Vec::new()
+        }
     }
 }

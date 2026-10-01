@@ -1,0 +1,28 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  labels: docs  ! 1 need input — Ctrl+g
+ 1 Sessions  2 Bookmarks  3 Overview   starred · live · dispatched  sort: activity ↓  group: status
+   ▾ Completed (1)
+▸    ○ [claude-code] notes (main)  opus  0s  $1.25 [docs] [infra] +2
+      ┌ Filter by label (any of) ────────────────────────────────────────────────────────────┐
+      │❯ [x] ■ docs                                                                          │
+      │  [ ] ■ infra                                                                         │
+      │  [ ] ■ urgent                                                                        │
+      │  [ ] ■ wave-5                                                                        │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │                                                                                      │
+      │ space toggle  a show all  esc close                                                  │
+      └──────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

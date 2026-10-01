@@ -2,14 +2,20 @@ use cctui_proto::drafts::{Draft, DraftList, session_history_key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::attach::AttachAction;
+use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::diagnose::DiagnoseAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
+use crate::app::labels::LabelAction;
+use crate::app::list_search::ListSearchAction;
+use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::sidebar::SidebarAction;
+use crate::app::slice::SliceAction;
+use crate::app::unread::UnreadAction;
 use crate::app::{Action, View, reduce};
 use crate::testsupport::{
     CLOCK_MS, app_with_sessions, ask_card, conversation_store, diagnosable_session,
@@ -56,6 +62,100 @@ fn app_in_conversation() -> crate::app::App {
     app.conversations.insert(id, conversation_store());
     app.router.push(View::Conversation);
     app
+}
+
+/// Dated fields are pinned to the test clock, so the ages do not drift.
+fn bookmark(
+    title: &str,
+    session: Option<&str>,
+    note: Option<&str>,
+    age_days: i64,
+) -> cctui_proto::api::bookmarks::Bookmark {
+    cctui_proto::api::bookmarks::Bookmark {
+        id: uuid::Uuid::from_u128(u128::try_from(age_days).unwrap_or(0) + 1),
+        session_id: session.map(str::to_owned),
+        seq: Some(4),
+        message_id: None,
+        title: title.to_owned(),
+        body: format!(
+            "## {title}\n\nThe saved body, with a `code` span and a list:\n\n- one\n- two"
+        ),
+        role: "assistant".to_owned(),
+        session_name: session.map(str::to_owned),
+        note: note.map(str::to_owned),
+        message_ts: crate::testsupport::ms_ago(age_days * 86_400_000),
+        created_at: crate::testsupport::ms_ago(age_days * 86_400_000),
+    }
+}
+
+fn app_with_bookmarks() -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = crate::testsupport::CLOCK_MS;
+    reduce(&mut app, Action::Slice(SliceAction::Switch(2)));
+    reduce(
+        &mut app,
+        Action::Bookmarks(BookmarkAction::Loaded {
+            rows: vec![
+                bookmark(
+                    "Gateway fix summary",
+                    Some("fix-auth"),
+                    Some("keep for release notes"),
+                    2,
+                ),
+                bookmark("Old plan", None, None, 9),
+                bookmark("Auth rollout checklist", Some("cctui"), Some("auth, step by step"), 14),
+            ],
+            append: false,
+        }),
+    );
+    app
+}
+
+#[test]
+fn bookmarks_list() {
+    let mut app = app_with_bookmarks();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The wave's row budget: a bookmark row has to stay readable at 80 columns.
+#[test]
+fn bookmarks_list_at_eighty_columns() {
+    let mut app = app_with_bookmarks();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn bookmarks_search_highlights_the_terms() {
+    let mut app = app_with_bookmarks();
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::SearchOpen));
+    for c in "auth".chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptKey(key)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn bookmarks_delete_confirm() {
+    let mut app = app_with_bookmarks();
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::DeleteAsk));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn bookmarks_edit_prompt() {
+    let mut app = app_with_bookmarks();
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::EditOpen));
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::PromptSwitch));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn bookmarks_empty() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Slice(SliceAction::Switch(2)));
+    reduce(&mut app, Action::Bookmarks(BookmarkAction::Loaded { rows: Vec::new(), append: false }));
+    insta::assert_snapshot!(render_screen(&mut app));
 }
 
 #[test]
@@ -112,10 +212,10 @@ fn conversation_plan_card_refining() {
 fn help_overlay_tall_enough_for_the_glyph_legend() {
     let mut app = app_with_sessions();
     app.router.push(View::Help);
-    // Tall enough for the legend's last entry: the sheet is two columns, the
-    // legend is the tail of the right one, and this case is where it is
-    // reviewable in full.
-    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 96));
+    // The whole sheet in two columns, plus the overlay's margin and border.
+    let rows = crate::views::help::rows_per_column(&app.config.keys);
+    let height = u16::try_from(rows + 4).expect("a sheet that fits a terminal");
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, height));
 }
 
 #[test]
@@ -129,6 +229,120 @@ fn session_list_shows_a_waiting_prompt_marker() {
 #[test]
 fn session_list() {
     let mut app = app_with_sessions();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_sections_popup() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListShape(ListShapeAction::ToggleSectionsMenu));
+    reduce(&mut app, Action::ListShape(ListShapeAction::SectionsNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_grouped_by_machine_with_accents() {
+    let mut app = app_with_sessions();
+    app.sessions[1].machine_id = "cyberia".to_owned();
+    app.sessions[1].machine_name = Some("cyberia".to_owned());
+    app.list_shape.group_by = crate::app::list_view::GroupBy::Machine;
+    app.list_shape.color_by = crate::app::list_view::ColorBy::Machine;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_sorted_by_name_ascending() {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListShape(ListShapeAction::CycleSort));
+    reduce(&mut app, Action::ListShape(ListShapeAction::CycleSort));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_with_archived_shown() {
+    let mut app = app_with_sessions();
+    let mut old = crate::testsupport::session("s-arch", "retired", "archived", "done");
+    old.status = cctui_proto::models::SessionStatus::Archived;
+    app.sessions.push(old);
+    app.list_shape.sections.toggle(crate::app::list_view::Section::Archived);
+    app.update_aggregates();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn searching(query: &str) -> crate::app::App {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::ListSearch(ListSearchAction::Open));
+    for c in query.chars() {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        reduce(&mut app, Action::ListSearch(ListSearchAction::Key(key)));
+    }
+    app
+}
+
+fn search_hit(
+    id: &str,
+    project: &str,
+    snippet: &str,
+    seq: i64,
+) -> cctui_proto::api::SessionListItem {
+    let mut s = crate::testsupport::session(id, project, "active", "working");
+    s.match_snippet = Some(snippet.to_owned());
+    s.match_seq = Some(seq);
+    s
+}
+
+#[test]
+fn session_list_search_prompt_before_any_reply() {
+    let mut app = searching("machine:cyberia auth");
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_results_with_highlighted_snippets() {
+    let mut app = searching("auth token");
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "auth token".to_owned(),
+            offset: 0,
+            sessions: vec![
+                search_hit("s-1", "gateway", "refresh the auth token before the gateway", 42),
+                search_hit("s-2", "api", "the auth token expired", 7),
+            ],
+            has_more: false,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_with_no_match() {
+    let mut app = searching("nothing matches this");
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "nothing matches this".to_owned(),
+            offset: 0,
+            sessions: vec![],
+            has_more: false,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_search_including_archived() {
+    let mut app = searching("auth");
+    reduce(&mut app, Action::ListSearch(ListSearchAction::ToggleArchived));
+    reduce(
+        &mut app,
+        Action::ListSearch(ListSearchAction::Loaded {
+            query: "auth".to_owned(),
+            offset: 0,
+            sessions: vec![search_hit("s-1", "gateway", "the auth flow", 1)],
+            has_more: true,
+        }),
+    );
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
@@ -248,6 +462,67 @@ fn app_with_rich_statuses() -> crate::app::App {
 fn session_list_rich_statuses() {
     let mut app = app_with_rich_statuses();
     insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// `U`: only the rows with something new, and the header says the filter is on.
+#[test]
+fn session_list_unread_only() {
+    let mut app = app_with_rich_statuses();
+    reduce(&mut app, Action::Unread(UnreadAction::ToggleOnly));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Select mode: the checkbox gutter, the picked rows and the strip that
+/// replaces the hotkey hints.
+#[test]
+fn session_list_select_mode() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ToggleSelect));
+    crate::app::reduce(&mut app, crate::app::Action::SelectNext);
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ToggleSelect));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_batch_archive_confirm() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::SelectAllVisible));
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::ArchiveOrUnarchive));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_rename_field() {
+    use crate::app::row_actions::RowAction;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::RenameStart));
+    for c in "fix-auth".chars() {
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::RowAction(RowAction::RenameKey(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            ))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The checkbox gutter comes out of the same 80-column budget the rich row
+/// already fights over.
+#[test]
+fn session_list_select_mode_at_eighty_columns() {
+    use crate::app::row_actions::RowAction;
+
+    let mut app = app_with_rich_statuses();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::SelectAllVisible));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
 }
 
 #[test]
@@ -1044,5 +1319,221 @@ fn conversation_sidebar_with_nothing_to_show() {
 fn conversation_sidebar_suppressed_when_narrow() {
     let mut app = app_with_a_subagent();
     reduce(&mut app, Action::Sidebar(SidebarAction::Toggle));
+    insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+// --- Labels and machines ---
+
+fn label(id: &str, name: &str, color: &str) -> cctui_proto::api::Label {
+    cctui_proto::api::Label { id: id.to_owned(), name: name.to_owned(), color: color.to_owned() }
+}
+
+/// Rows carrying one, two and four labels, so the `+N` cut is visible.
+fn app_with_labels() -> crate::app::App {
+    let mut app = app_with_sessions();
+    let catalogue = vec![
+        label("l-5", "wave-5", "210"),
+        label("l-i", "infra", ""),
+        label("l-u", "urgent", "0"),
+        label("l-d", "docs", "120"),
+    ];
+    let _ = reduce(&mut app, Action::Labels(LabelAction::Loaded(catalogue.clone())));
+    session_mut(&mut app, "s-working").labels = vec![catalogue[0].clone()];
+    session_mut(&mut app, "s-blocked").labels = vec![catalogue[1].clone(), catalogue[2].clone()];
+    session_mut(&mut app, "s-done").labels = catalogue;
+    app
+}
+
+#[test]
+fn session_list_label_chips() {
+    let mut app = app_with_labels();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_label_chips_at_eighty_columns() {
+    let mut app = app_with_labels();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
+
+#[test]
+fn label_picker() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_filtered() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    for c in "wa".chars() {
+        let _ = reduce(&mut app, Action::Labels(LabelAction::FilterKey(c)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_creating() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::StartCreate));
+    for c in "wave-7".chars() {
+        let _ = reduce(&mut app, Action::Labels(LabelAction::NameKey(c)));
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_hue_choice() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::StartCreate));
+    for c in "wave-7".chars() {
+        let _ = reduce(&mut app, Action::Labels(LabelAction::NameKey(c)));
+    }
+    let _ = reduce(&mut app, Action::Labels(LabelAction::Commit));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::HueNext));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_picker_confirming_a_delete() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenPicker));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::StartDelete));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn label_filter_overlay() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenFilter));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::FilterToggle));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_narrowed_by_a_label_filter() {
+    let mut app = app_with_labels();
+    let _ = reduce(&mut app, Action::Labels(LabelAction::OpenFilter));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::FilterToggle));
+    let _ = reduce(&mut app, Action::Labels(LabelAction::CloseFilter));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// Three machines, one of each liveness tier, so the header dot is reviewable.
+fn app_with_machines() -> crate::app::App {
+    use cctui_proto::models::MachineLiveness;
+    let mut app = app_with_sessions();
+    for (id, name, hue) in [
+        ("s-working", "cyberia-1", 210_i16),
+        ("s-blocked", "cyberia-2", 30),
+        ("s-done", "orion", 120),
+    ] {
+        let s = session_mut(&mut app, id);
+        s.machine_id = name.to_owned();
+        s.machine_name = Some(name.to_owned());
+        s.machine_hue = Some(hue);
+    }
+    session_mut(&mut app, "s-child").machine_id = "cyberia-1".to_owned();
+    session_mut(&mut app, "s-child").machine_name = Some("cyberia-1".to_owned());
+    app.machine_liveness.insert("cyberia-1".to_owned(), MachineLiveness::Online);
+    app.machine_liveness.insert("cyberia-2".to_owned(), MachineLiveness::Stale);
+    app.machine_liveness.insert("orion".to_owned(), MachineLiveness::Offline);
+    app
+}
+
+#[test]
+fn session_list_machine_column() {
+    let mut app = app_with_machines();
+    app.config.prefs.machine_column = true;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_grouped_by_machine() {
+    let mut app = app_with_machines();
+    app.list_shape.group_by = crate::app::list_view::GroupBy::Machine;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_grouped_by_machine_after_one_goes_offline() {
+    use cctui_proto::models::MachineLiveness;
+    let mut app = app_with_machines();
+    app.list_shape.group_by = crate::app::list_view::GroupBy::Machine;
+    // The WS event is all it takes; no refetch stands between it and the header.
+    reduce(
+        &mut app,
+        Action::SessionLive(crate::app::session_live::SessionLiveAction::MachineLiveness {
+            machine_id: "cyberia-1".to_owned(),
+            liveness: MachineLiveness::Offline,
+        }),
+    );
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+fn app_with_stats() -> crate::app::App {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    app.machine_liveness.insert("orion".to_owned(), cctui_proto::models::MachineLiveness::Online);
+    app.machine_liveness.insert("rigel".to_owned(), cctui_proto::models::MachineLiveness::Offline);
+    reduce(
+        &mut app,
+        Action::Slice(SliceAction::StatsLoaded(Box::new(cctui_proto::api::SessionStats {
+            total: 18,
+            live: 3,
+            needs_input: 1,
+            archived: 6,
+            today: 4,
+            yesterday: 2,
+            week: 11,
+            month: 17,
+        }))),
+    );
+    app
+}
+
+#[test]
+fn session_list_tab_bar_and_summary() {
+    let mut app = app_with_stats();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn session_list_summary_before_the_stats_land() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view() {
+    let mut app = app_with_stats();
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view_before_the_stats_land() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view_with_a_session_needing_input() {
+    let mut app = app_with_stats();
+    session_mut(&mut app, "s-blocked").attention = Some(cctui_proto::models::Attention::NeedsInput);
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn overview_view_narrow() {
+    let mut app = app_with_stats();
+    reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }

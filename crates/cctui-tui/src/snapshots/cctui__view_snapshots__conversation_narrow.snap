@@ -1,9 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 460
+assertion_line: 546
 expression: "render_screen_sized(&mut app, 60, 20)"
 ---
- infra (main) on orion ── opus ── $1.25
+ infra (main) on orion ── opus ── $1.25  ! 1 need input — Ct
  Bash  cargo test  write                                   ▕
 └ ✗ exit 101 · 3 failed  (2 more · o)                      ▕
                                                            ▕
