@@ -1,3 +1,4 @@
+import { localTimeZone } from '@dorsk/tsumikit';
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { MachineRow } from '@bindings/MachineRow';
 import { endpoints } from '$lib/queries/endpoints';
@@ -17,7 +18,7 @@ export function createProbes(qc: QueryClient): Probes {
 	const pools = () => qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools });
 	const sessions = () =>
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) });
-	const stats = () => qc.fetchQuery({ queryKey: qk.sessionStats, queryFn: () => endpoints.sessionStats(Intl.DateTimeFormat().resolvedOptions().timeZone) });
+	const stats = () => qc.fetchQuery({ queryKey: qk.sessionStats, queryFn: () => endpoints.sessionStats(localTimeZone()) });
 	const machines = async (): Promise<MachineRow[]> => {
 		const who = await me();
 		if (who.role === 'admin') {

@@ -1,3 +1,4 @@
+import { formatTimestamp } from '@dorsk/tsumikit';
 import { ApiError, errMessage } from '$lib/api';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import { ws, type SpawnProbeHit } from '$lib/ws.svelte';
@@ -75,7 +76,7 @@ export async function scheduleLaunch(sf: SpawnForm, at: Date) {
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
 	toasts.ok(
 		m.spawn_toast_scheduled({
-			when: at.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+			when: formatTimestamp(at, 'datetime')
 		})
 	);
 	// The draft row now owns the payload; dropping the local slot keeps a later

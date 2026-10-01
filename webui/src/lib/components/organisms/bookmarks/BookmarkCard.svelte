@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { Bookmark } from '@bindings/Bookmark';
-	import { Badge, Button, IconButton, Text, Tooltip } from '@dorsk/tsumikit';
-	import { relativeTime } from '$lib/format';
+	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import { renderMarkdown } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
 	import { isDeadLink, sourceHref } from '$lib/bookmarks';
@@ -72,7 +71,7 @@
 			{bookmark.session_name
 				? m.bookmarks_from_session({ name: bookmark.session_name })
 				: m.bookmarks_from_unknown()}
-			· {relativeTime(bookmark.created_at)}
+			· <Timestamp value={bookmark.created_at} mode="relative" tone="inherit" />
 		</Text>
 		{#if dead}
 			<Badge tone="neutral">{m.bookmarks_source_deleted()}</Badge>

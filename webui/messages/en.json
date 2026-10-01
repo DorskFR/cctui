@@ -1117,7 +1117,7 @@
 	"sessions_draft_autosaved": "autosaved {when}",
 	"sessions_draft_cancel_schedule": "Cancel schedule",
 	"sessions_draft_launch_failed": "Launch failed: {error}",
-	"sessions_draft_launches_at": "Launches {when}",
+	"sessions_draft_launches_at": "Launches",
 	"sessions_edit_draft_body": "The spawn form already has content. Replace it with this draft, or save it as its own draft first.",
 	"sessions_edit_draft_replace": "Replace",
 	"sessions_edit_draft_save_first": "Save current as draft first",

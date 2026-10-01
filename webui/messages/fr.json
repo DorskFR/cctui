@@ -1117,7 +1117,7 @@
 	"sessions_draft_autosaved": "enregistré automatiquement {when}",
 	"sessions_draft_cancel_schedule": "Annuler la planification",
 	"sessions_draft_launch_failed": "Échec du lancement : {error}",
-	"sessions_draft_launches_at": "Lancement {when}",
+	"sessions_draft_launches_at": "Lancement",
 	"sessions_edit_draft_body": "Le formulaire de lancement contient déjà du texte. Le remplacer par ce brouillon, ou l’enregistrer d’abord comme brouillon.",
 	"sessions_edit_draft_replace": "Remplacer",
 	"sessions_edit_draft_save_first": "Enregistrer le formulaire actuel d’abord",

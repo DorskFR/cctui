@@ -49,22 +49,14 @@ export interface SessionView {
 	scheduled: ScheduledLaunch | null;
 }
 
-export type ScheduledLaunch = { at: Date; label: string; error: string | null };
+export type ScheduledLaunch = { at: Date; error: string | null };
 
 /** A draft's queued launch, `null` when it is not scheduled. */
 export function scheduledLaunchOf(s: SessionListItem): ScheduledLaunch | null {
 	if (!s.launch_at) return null;
 	const at = new Date(s.launch_at);
 	if (Number.isNaN(at.getTime())) return null;
-	return {
-		at,
-		label: at.toLocaleString([], {
-			weekday: 'short',
-			hour: '2-digit',
-			minute: '2-digit'
-		}),
-		error: s.launch_error ?? null
-	};
+	return { at, error: s.launch_error ?? null };
 }
 
 export interface SessionActions {

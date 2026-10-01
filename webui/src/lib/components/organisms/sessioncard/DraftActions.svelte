@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { m } from '$lib/paraglide/messages';
-	import { Button } from '@dorsk/tsumikit';
+	import { Button, Timestamp } from '@dorsk/tsumikit';
 	import type { SessionActions, SessionView } from './view';
 
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
@@ -19,9 +19,12 @@
 			title={view.scheduled.error ?? undefined}
 			data-journey="draft-scheduled"
 		>
-			{view.scheduled.error
-				? m.sessions_draft_launch_failed({ error: view.scheduled.error })
-				: m.sessions_draft_launches_at({ when: view.scheduled.label })}
+			{#if view.scheduled.error}
+				{m.sessions_draft_launch_failed({ error: view.scheduled.error })}
+			{:else}
+				{m.sessions_draft_launches_at()}
+				<Timestamp value={view.scheduled.at} mode="datetime" tone="inherit" />
+			{/if}
 		</span>
 	{/if}
 	<Button

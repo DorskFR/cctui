@@ -15,6 +15,7 @@
  *    on-screen lines — what you see is what you save.
  */
 
+import { formatTimestamp } from "@dorsk/tsumikit";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type {
@@ -38,7 +39,6 @@ import {
 } from "$lib/markdown";
 import { USER_PREFIX } from "$lib/ws.svelte";
 import { parsePeerMessage } from "$lib/components/organisms/conversation/format";
-import { getLocale } from "$lib/paraglide/runtime";
 
 /** The subset of the drawer's ViewOpts the export honors. Typed from the
  * drawer's own categories so a new filter cannot silently skip the export. */
@@ -285,8 +285,7 @@ const ROLE_LABEL: Record<Block["role"], string> = {
 };
 
 function fmtTs(ts: number): string {
-  const d = new Date(ts);
-  return isNaN(d.getTime()) ? "" : d.toLocaleString(getLocale());
+  return formatTimestamp(ts, "datetime");
 }
 
 // ── Theme capture ────────────────────────────────────────────────────────────
@@ -451,7 +450,7 @@ export function buildConversationHtml(
 <div class="page">
 <header><h1>${escapeHtml(title)}</h1><div class="meta">${meta.join("")}</div></header>
 ${body}
-<footer>Exported from cctui · ${escapeHtml(new Date().toLocaleString(getLocale()))} · use your browser's Print → Save as PDF for a PDF copy</footer>
+<footer>Exported from cctui · ${escapeHtml(formatTimestamp(Date.now(), "datetime"))} · use your browser's Print → Save as PDF for a PDF copy</footer>
 </div>
 </body>
 </html>
