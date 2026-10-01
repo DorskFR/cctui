@@ -8,7 +8,11 @@
 //! after it and must leave the account fields alone: blank / `NO_ACCOUNT` /
 //! `POOL_PREFIX` / a name is one coupled rule the shared builder owns.
 
+pub mod accounts;
 pub mod core_section;
+pub mod env;
+pub mod files;
+pub mod labels;
 
 use cctui_clientcore::spawn::SpawnFields;
 use cctui_proto::api::SpawnRequest;
@@ -78,6 +82,55 @@ pub trait SpawnSection: Send {
     fn as_profiles_mut(&mut self) -> Option<&mut crate::app::profiles::ProfileSection> {
         None
     }
+
+    /// Files this section attaches, as multipart parts. The spawn route carries
+    /// them alongside the request, so they are up before the first turn runs.
+    fn parts(&self) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
+
+    /// Catalogs fetched for the dialog. Called when the dialog opens and again
+    /// whenever one lands, so a section never owns a fetch of its own.
+    fn receive(&mut self, _data: &SpawnData) {}
+}
+
+/// Cuts a section's rows to the dialog's inner width. A row that wrapped would
+/// push every row under it down by one.
+#[must_use]
+pub fn clamp_rows(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut left = width;
+            let mut spans = Vec::with_capacity(line.spans.len());
+            for span in line.spans {
+                if left == 0 {
+                    break;
+                }
+                let cols = span.content.chars().count();
+                if cols <= left {
+                    left -= cols;
+                    spans.push(span);
+                    continue;
+                }
+                let cut: String = span.content.chars().take(left).collect();
+                left = 0;
+                spans.push(ratatui::text::Span::styled(cut, span.style));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// What the dialog's sections read but none of them fetches: the catalogs live
+/// on [`super::state::App`], so they outlive one dialog and are fetched once.
+#[derive(Debug, Default, Clone)]
+pub struct SpawnData {
+    pub accounts: Vec<cctui_client::AccountPick>,
+    pub pools: Vec<cctui_client::PoolPick>,
+    pub usage: Vec<cctui_client::AccountUsagePick>,
+    pub labels: Vec<cctui_proto::api::Label>,
 }
 
 /// Which tab the dialog is on. The toggle belongs to the dialog; a tab's own
@@ -145,6 +198,10 @@ impl SpawnForm {
         vec![
             Box::new(crate::app::profiles::ProfileSection::default()),
             Box::new(core_section::CoreSection),
+            Box::new(accounts::AccountSection::default()),
+            Box::new(labels::LabelsSection::default()),
+            Box::new(env::EnvSection::default()),
+            Box::new(files::FilesSection::default()),
         ]
     }
 
@@ -433,34 +490,38 @@ mod tests {
     #[test]
     fn the_core_section_is_registered_and_takes_focus_first() {
         let mut form = SpawnForm::new();
-        assert_eq!(form.sections.len(), 2, "the profile strip, then the core section");
         form.settle_focus();
+        assert_eq!(form.sections[0].title(), "Profile", "the profile strip comes first");
+        assert_eq!(form.sections[CORE].title(), "New session", "then the core fields");
         assert_eq!(
             form.focus,
             Focus { section: CORE, row: 0 },
             "an empty profile strip takes no focus, so the core section has it"
         );
         assert!(form.sections[CORE].rows(&form.fields) > 0);
+        assert!(
+            form.sections.len() > 2,
+            "the lane sections register themselves; this count is not pinned"
+        );
     }
 
     #[test]
     fn tab_walks_every_row_of_every_section_and_wraps() {
         let mut form = form();
-        let core_rows = form.sections[CORE].rows(&form.fields);
         form.sections.push(Box::new(Stub { rows: 2, seen: Vec::new() }));
-        let stub = form.sections.len() - 1;
         form.settle_focus();
 
-        let total = core_rows + 2;
+        let total: usize = form.sections.iter().map(|s| s.rows(&form.fields)).sum();
         for _ in 0..total {
             form.step_focus(1);
         }
         assert_eq!(form.focus, Focus { section: CORE, row: 0 }, "a full lap comes home");
 
+        let last = form.sections.len() - 1;
         form.step_focus(-1);
         assert_eq!(
             form.focus,
-            Focus { section: stub, row: 1 },
+            Focus { section: last, row: 1 },
             "stepping back from the first row wraps to the last section's last row"
         );
     }
@@ -468,24 +529,25 @@ mod tests {
     #[test]
     fn a_section_with_no_rows_draws_but_never_takes_focus() {
         let mut form = form();
-        let core_rows = form.sections[CORE].rows(&form.fields);
         form.sections.push(Box::new(Stub { rows: 0, seen: Vec::new() }));
+        let rowless = form.sections.len() - 1;
         form.settle_focus();
-        for _ in 0..core_rows {
+        let total: usize = form.sections.iter().map(|s| s.rows(&form.fields)).sum();
+        for _ in 0..=total {
             form.step_focus(1);
+            assert_ne!(form.focus.section, rowless, "focus never reached the rowless section");
         }
-        assert_eq!(form.focus.section, CORE, "focus never reached a rowless section");
     }
 
     #[test]
     fn a_key_reaches_the_focused_section_with_its_own_row_index() {
         let mut form = form();
         form.sections.push(Box::new(Stub { rows: 2, seen: Vec::new() }));
-        let at = form.sections.len() - 1;
-        form.focus = Focus { section: at, row: 1 };
+        let stub_at = form.sections.len() - 1;
+        form.focus = Focus { section: stub_at, row: 1 };
         form.handle_key(key('x'));
 
-        let stub = &form.sections[at];
+        let stub = &form.sections[stub_at];
         assert_eq!(stub.rows(&form.fields), 2);
         // The stub recorded the row it was handed; read it back through Debug.
         assert!(
@@ -565,7 +627,15 @@ mod tests {
 }
 
 #[derive(Debug, Clone)]
+/// One landed catalog.
+pub enum SpawnFetch {
+    Accounts(Vec<cctui_client::AccountPick>),
+    Pools(Vec<cctui_client::PoolPick>),
+    Usage(Vec<cctui_client::AccountUsagePick>),
+}
+
 pub enum SpawnAction {
+    DataLoaded(Box<SpawnFetch>),
     Open,
     Close,
     NextField,
@@ -589,13 +659,25 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
                 form.fields.machine_id.clone_from(&session.machine_id);
                 form.fields.working_dir.clone_from(&session.working_dir);
             }
+            // The labels the last spawn carried; the labels section drops any
+            // the catalog has since lost.
+            form.fields.labels.clone_from(&app.ui.last_spawn_labels);
+            app.spawn_data.labels.clone_from(&app.labels.all);
+            for section in &mut form.sections {
+                section.receive(&app.spawn_data);
+            }
             app.spawn = Some(form);
             app.router.push(View::Spawn);
-            app.spawn
-                .as_mut()
-                .and_then(SpawnForm::profiles_mut)
-                .map(crate::app::profiles::ProfileSection::on_open)
-                .unwrap_or_default()
+            let mut effects =
+                vec![Effect::FetchAccounts, Effect::FetchAccountPools, Effect::FetchAccountsUsage];
+            effects.extend(
+                app.spawn
+                    .as_mut()
+                    .and_then(SpawnForm::profiles_mut)
+                    .map(crate::app::profiles::ProfileSection::on_open)
+                    .unwrap_or_default(),
+            );
+            effects
         }
         SpawnAction::Close => {
             app.spawn = None;
@@ -622,10 +704,23 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             effects
         }
         SpawnAction::Submit => submit(app),
+        SpawnAction::DataLoaded(data) => {
+            match *data {
+                SpawnFetch::Accounts(accounts) => app.spawn_data.accounts = accounts,
+                SpawnFetch::Pools(pools) => app.spawn_data.pools = pools,
+                SpawnFetch::Usage(usage) => app.spawn_data.usage = usage,
+            }
+            if let Some(form) = app.spawn.as_mut() {
+                for section in &mut form.sections {
+                    section.receive(&app.spawn_data);
+                }
+            }
+            Vec::new()
+        }
         SpawnAction::Failed(reason) => {
             if let Some(form) = app.spawn.as_mut() {
                 form.submitting = false;
-                form.errors = vec![reason];
+                form.errors = vec![accounts::spawn_error_hint(&reason)];
             }
             Vec::new()
         }
@@ -640,7 +735,15 @@ fn submit(app: &mut super::state::App) -> Vec<Effect> {
         return Vec::new();
     }
     form.submitting = true;
-    vec![Effect::SpawnSession { request: Box::new(form.request()) }]
+    let files = form.sections.iter().flat_map(|section| section.parts()).collect();
+    let request = Box::new(form.request());
+    let labels = request.label_ids.clone();
+    let mut effects = vec![Effect::SpawnSession { request, files }];
+    if app.ui.last_spawn_labels != labels {
+        app.ui.last_spawn_labels = labels;
+        effects.push(Effect::SaveUiState(app.ui.clone()));
+    }
+    effects
 }
 
 #[cfg(test)]
@@ -703,7 +806,7 @@ mod reduce_tests {
         let mut app = app();
         reduce(&mut app, SpawnAction::Open);
         match reduce(&mut app, SpawnAction::Submit).as_slice() {
-            [Effect::SpawnSession { request }] => {
+            [Effect::SpawnSession { request, .. }] => {
                 assert_eq!(request.machine_id, "orion");
                 assert_eq!(request.working_dir, "/home/dev/alpha");
                 assert_eq!(request.adapter_id.as_deref(), Some("claude-code"));

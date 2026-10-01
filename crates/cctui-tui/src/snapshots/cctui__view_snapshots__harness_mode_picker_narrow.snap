@@ -1,0 +1,25 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1807
+expression: "render_screen_sized(&mut app, 60, 20)"
+---
+ cctui  v0.0.0-test  ● ~3  ▪ 0/0  $0.00  ! 1 need input — Ct
+ 1   starred · live · dispatched  sort: activity ↓  group: s
+   ▾ Needs input (1)
+▸    ● [claude-code] infra (main)  opus  0s  $1.25
+   ▾ W┌ Harness mode ────────────────────────────────┐
+     ●│❯ bg       in use                             │
+     ▾│  oneshot                                     │
+      │  sdk                                         │1.25
+   ▾ C│                                              │
+     ○│claude daemon drives a background PTY worker. │
+      │Richest transcript, and the only mode with a  │
+      │PTY fallback for prompts — but it depends on  │
+      │state.json and the on-disk JSONL being there  │
+      │to read.                                      │
+      │ ↑↓ Pick  Enter Apply to every daemon  Esc Can│
+      └──────────────────────────────────────────────┘
+
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

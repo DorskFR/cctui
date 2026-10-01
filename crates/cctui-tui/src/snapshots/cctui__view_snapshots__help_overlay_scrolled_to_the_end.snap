@@ -3,26 +3,26 @@ source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
- 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │  a           Show every category              Row glyphs                                     │
-▸ │  r           Back to the default filter         ●           working                          │
-  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
-  │  j / ↓       Next category                      ○           idle                             │
-  │  k / ↑       Previous category                  ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
-  │  Ctrl+n / ↓  Next prompt                        [name]      a label, tinted by its hue       │
-  │  Ctrl+p / ↑  Previous prompt                    +N          more labels than fit             │
-  │  Enter       Put this prompt in the composer    !           permission waiting on you        │
-  │File viewer                                      ?           question waiting on you          │
-  │  j / ↓       Scroll down                        P           plan waiting for approval        │
-  │  k / ↑       Scroll up                          ●N          unread messages                  │
-  │  PgDn        Page down                          ⚡           auto-approve on                  │
-  │  PgUp        Page up                            ⏸           account soft-limited             │
-  │  g           Jump to the top                    ⚠           account traffic never seen       │
-  │  q / Esc     Close the file viewer              ❄           cache cold, next turn re-reads   │
-  │  o           Open in the desktop viewer         ✕reason     how it ended                     │
-  │Labels                                           ⚙N age      tool calls, age of the last      │
-  │  Esc         Close the label list                                                            │
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
+  │File viewer                                    Row glyphs                                     │
+▸ │  j / ↓       Scroll down                        ●           working                          │
+  │  k / ↑       Scroll up                          ◐           stale or asleep                  │
+  │  PgDn        Page down                          ○           idle                             │
+  │  PgUp        Page up                            ☾           hibernated                       │
+  │  g           Jump to the top                    ↳           subagent                         │
+  │  q / Esc     Close the file viewer              ▸ / ▾       folded / open group              │
+  │  o           Open in the desktop viewer         [name]      a label, tinted by its hue       │
+  │Machines                                         +N          more labels than fit             │
+  │  j / ↓       Next machine                       !           permission waiting on you        │
+  │  k / ↑       Previous machine                   ?           question waiting on you          │
+  │  r           Refresh the machine list           P           plan waiting for approval        │
+  │  Enter       Aim a spawn at this machine        ●N          unread messages                  │
+  │  Esc         Back to the sessions               ⚡           auto-approve on                  │
+  │Dispatchers                                      ⏸           account soft-limited             │
+  │  Ctrl+n / ↓  Next dispatcher                    ⚠           account traffic never seen       │
+  │  Ctrl+p / ↑  Previous dispatcher                ❄           cache cold, next turn re-reads   │
+  │  Ctrl+a      Enroll a dispatcher                ⌂           a job cctui did not start        │
+  │  Ctrl+e      Rename or rebind                   ✕reason     how it ended                     │
+  │  Ctrl+x      Remove this dispatcher             ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -1,9 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1041
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $1.25 today  ! 1 need input — Ctrl+g
- 1 Sessions  2 Bookmarks  3 Overview   starred · live · dispatched  sort: activity ↓  group: status
+ 1 Sessions  2  3  4   starred · live · dispatched  sort: activity ↓  group: status
    ┌ Session info ──────────────────────────────────────────────────────────────────────────────┐
    │s-working                                                                                   │
    │session:                                                                                    │
@@ -11,6 +12,7 @@ expression: render_screen(&mut app)
    │parent                             —                                                        │
    │machine                            orion                                                    │
    │adapter                            claude-code                                              │
+   │origin                             cctui                                                    │
    │account                            main                                                     │
    │model                              opus (high)                                              │
    │permission mode                    yolo                                                     │
@@ -21,8 +23,7 @@ expression: render_screen(&mut app)
    │status                             active                                                   │
    │account                            main                                                     │
    │account bound                      true                                                     │
-   │machine last seen                  4s ago                                                   │
-   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close    16/29                           │
+   │ j/k Scroll  r Refresh  y Copy id  D/i Switch  Esc Close    16/30                           │
    └────────────────────────────────────────────────────────────────────────────────────────────┘
 
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

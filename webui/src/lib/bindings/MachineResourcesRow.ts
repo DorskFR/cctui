@@ -12,6 +12,11 @@ export type MachineResourcesRow = { machine_id: string, name: string, display_na
  */
 hue: number | null, liveness: MachineLiveness, 
 /**
+ * When the daemon was last heard from. The tier above is derived from this,
+ * but a reader that wants to show an age needs the stamp itself.
+ */
+last_seen_at: string, 
+/**
  * `None` until the machine's daemon has sent a heartbeat carrying a
  * snapshot (older daemon, non-Linux host): the gauge shows "?" then.
  */

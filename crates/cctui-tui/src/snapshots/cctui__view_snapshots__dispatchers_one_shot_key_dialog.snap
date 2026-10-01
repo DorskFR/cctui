@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1732
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g  @dev (user)
+ 1 Sessions  2  3  4   starred · live · dispatched  sort: activity ↓  group: status
+   ▾┌ Dispatchers ─────────────────────────────────────────────────────────────────────────────┐
+▸   │ k8s-tokyo is enrolled                                                                    │
+   ▾│                                                                                          │
+    │  its key is shown once and cannot be fetched again:                                      │
+    │                                                                                          │
+    │  cctui-disp-EXAMPLEKEY0123456789                                                         │
+   ▾│                                                                                          │
+    │  Ctrl+y copies it, Enter closes. Give it to the dispatcher now.                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │                                                                                          │
+    │ Ctrl+y:copy  Enter:close                                                                 │
+    └──────────────────────────────────────────────────────────────────────────────────────────┘
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

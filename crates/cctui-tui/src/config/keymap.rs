@@ -27,6 +27,8 @@ pub enum Context {
     Rename,
     History,
     FileViewer,
+    Machines,
+    Dispatchers,
     LabelPicker,
     LabelFilter,
     Pins,
@@ -45,6 +47,7 @@ pub enum Context {
     Diagnose,
     Bookmarks,
     Overview,
+    HarnessMode,
     Ask,
     AskText,
     Plan,
@@ -65,6 +68,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::FilterMenu,
     Context::History,
     Context::FileViewer,
+    Context::Machines,
+    Context::Dispatchers,
     Context::LabelPicker,
     Context::LabelFilter,
     Context::Pins,
@@ -83,6 +88,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Diagnose,
     Context::Bookmarks,
     Context::Overview,
+    Context::HarnessMode,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -105,6 +111,8 @@ impl Context {
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
+            Self::Machines => "machines",
+            Self::Dispatchers => "dispatchers",
             Self::LabelPicker => "label-picker",
             Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
@@ -123,6 +131,7 @@ impl Context {
             Self::Diagnose => "diagnose",
             Self::Bookmarks => "bookmarks",
             Self::Overview => "overview",
+            Self::HarnessMode => "harness-mode",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -145,6 +154,8 @@ impl Context {
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
+            Self::Machines => "Machines",
+            Self::Dispatchers => "Dispatchers",
             Self::LabelPicker => "Labels",
             Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
@@ -163,6 +174,7 @@ impl Context {
             Self::Diagnose => "Diagnose / info",
             Self::Bookmarks => "Bookmarks",
             Self::Overview => "Overview",
+            Self::HarnessMode => "Harness mode",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -278,6 +290,23 @@ actions! {
     PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    OpenMachines => "open-machines", "Machines and daemons";
+    OpenDispatchers => "open-dispatchers", "Dispatchers";
+    DispatchersNext => "dispatchers-next", "Next dispatcher";
+    DispatchersPrev => "dispatchers-prev", "Previous dispatcher";
+    DispatchersEnroll => "dispatchers-enroll", "Enroll a dispatcher";
+    DispatchersEdit => "dispatchers-edit", "Rename or rebind";
+    DispatchersDelete => "dispatchers-delete", "Remove this dispatcher";
+    DispatchersRefresh => "dispatchers-refresh", "Refresh the dispatcher list";
+    DispatchersField => "dispatchers-field", "Next field, or cycle the kind";
+    DispatchersCommit => "dispatchers-commit", "Confirm";
+    DispatchersCancel => "dispatchers-cancel", "Back";
+    DispatchersCopyKey => "dispatchers-copy-key", "Copy the new key";
+    MachinesNext => "machines-next", "Next machine";
+    MachinesPrev => "machines-prev", "Previous machine";
+    MachinesRefresh => "machines-refresh", "Refresh the machine list";
+    MachinesSpawn => "machines-spawn", "Aim a spawn at this machine";
+    MachinesClose => "machines-close", "Back to the sessions";
     OpenLabels => "open-labels", "Label this session";
     OpenLabelFilter => "open-label-filter", "Filter by label";
     LabelsClose => "labels-close", "Close the label list";
@@ -396,6 +425,11 @@ actions! {
     MacrosRun => "macros-run", "Run this macro as a new session";
 
     CloseHelp => "close-help", "Close this cheat sheet";
+
+    HarnessModeClose => "harness-mode-close", "Close the harness picker";
+    HarnessModeNext => "harness-mode-next", "Next mode";
+    HarnessModePrev => "harness-mode-prev", "Previous mode";
+    HarnessModeCommit => "harness-mode-commit", "Apply this mode to every daemon";
 
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
@@ -659,6 +693,35 @@ const FILE_VIEWER: &[BindingSpec] = &[
 
 /// The picker is modal, so it claims plain letters: `space` toggles, and the
 /// manage verbs sit on the keys the webui's menu uses.
+/// The slice has its own context so `j`/`k` move its table rather than the
+/// session list underneath.
+const MACHINES: &[BindingSpec] = &[
+    spec(Context::Global, "M", ActionId::OpenMachines),
+    spec(Context::Machines, "j, down", ActionId::MachinesNext),
+    spec(Context::Machines, "k, up", ActionId::MachinesPrev),
+    spec(Context::Machines, "r", ActionId::MachinesRefresh),
+    spec(Context::Machines, "enter", ActionId::MachinesSpawn),
+    spec(Context::Machines, "esc", ActionId::MachinesClose),
+];
+
+/// `D` is the diagnose global (decision 7), so the panel takes `Ctrl+d`.
+///
+/// The verbs are Ctrl-modified because the enroll and edit forms need the plain
+/// letters to type a name — the same reason the label picker uses `Ctrl+c`.
+const DISPATCHERS: &[BindingSpec] = &[
+    spec(Context::Global, "ctrl+d", ActionId::OpenDispatchers),
+    spec(Context::Dispatchers, "down, ctrl+n", ActionId::DispatchersNext),
+    spec(Context::Dispatchers, "up, ctrl+p", ActionId::DispatchersPrev),
+    spec(Context::Dispatchers, "ctrl+a", ActionId::DispatchersEnroll),
+    spec(Context::Dispatchers, "ctrl+e", ActionId::DispatchersEdit),
+    spec(Context::Dispatchers, "ctrl+x", ActionId::DispatchersDelete),
+    spec(Context::Dispatchers, "ctrl+r", ActionId::DispatchersRefresh),
+    spec(Context::Dispatchers, "tab", ActionId::DispatchersField),
+    spec(Context::Dispatchers, "enter", ActionId::DispatchersCommit),
+    spec(Context::Dispatchers, "esc", ActionId::DispatchersCancel),
+    spec(Context::Dispatchers, "ctrl+y", ActionId::DispatchersCopyKey),
+];
+
 const LABELS: &[BindingSpec] = &[
     spec(Context::SessionList, "s", ActionId::DraftLaunch),
     spec(Context::SessionList, "E", ActionId::DraftEdit),
@@ -711,6 +774,14 @@ const BOOKMARKS: &[BindingSpec] = &[
     spec(Context::Bookmarks, "y", ActionId::BookmarksCopy),
     spec(Context::Bookmarks, "e", ActionId::BookmarksEdit),
     spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
+];
+
+/// Modal: a settings write is not something to trigger by a fall-through.
+const HARNESS_MODE: &[BindingSpec] = &[
+    spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
+    spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
+    spec(Context::HarnessMode, "up, ctrl+p, k", ActionId::HarnessModePrev),
+    spec(Context::HarnessMode, "enter", ActionId::HarnessModeCommit),
 ];
 
 const OVERVIEW: &[BindingSpec] = &[
@@ -841,6 +912,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    MACHINES,
+    DISPATCHERS,
     LABELS,
     PINS,
     MACROS,
@@ -858,6 +931,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     DIAGNOSE,
     BOOKMARKS,
     OVERVIEW,
+    HARNESS_MODE,
     ASK,
     ASK_TEXT,
     PLAN,

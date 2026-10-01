@@ -1,4 +1,5 @@
 use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
+use cctui_proto::api::machine_resources::MachineResourcesRow;
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::profiles::{
     CreateProfileRequest, ReorderProfilesRequest, SessionProfile, UpdateProfileRequest,
@@ -163,6 +164,57 @@ pub enum FileRead {
 pub struct LinkedFileOwner {
     pub session_id: String,
     pub machine_id: String,
+}
+
+/// One enrolled dispatcher, as `GET /dispatchers` reports it.
+///
+/// Mirrors `cctui-server`'s `DispatcherInfo`, which lives in the server crate:
+/// the TUI cannot depend on it, and a reader only needs these fields.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Dispatcher {
+    pub id: String,
+    pub name: String,
+    /// `kubernetes` | `docker` | `http`, as the binary reported at enroll.
+    pub kind: String,
+    pub liveness: cctui_proto::models::MachineLiveness,
+    /// A live socket is registered right now, which `liveness` alone cannot say.
+    pub connected: bool,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub default_pool: Option<String>,
+}
+
+/// What `POST /dispatcher/enroll` takes.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct EnrollDispatcher {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+}
+
+/// The one-shot reply to an enrollment.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnrolledDispatcher {
+    pub dispatcher_id: String,
+    /// Shown once and never persisted: the server keeps only a hash.
+    pub dispatcher_key: String,
+}
+
+/// A rename or a rebind; an omitted field is left alone.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateDispatcher {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 /// Typed REST client. Every URL is built from
@@ -428,6 +480,46 @@ impl Client {
             .await
     }
 
+    /// The caller's daemon machines with their last resource snapshot. Readable
+    /// without admin: the row set is already owner-filtered server-side, so a
+    /// single-user install sees its own machine and nothing 403s.
+    pub async fn machines(&self) -> Result<Vec<MachineResourcesRow>, ClientError> {
+        self.json(Self::route("get_machines_resources")?, &[], &[], None).await
+    }
+
+    /// Enrolled dispatchers with their liveness.
+    pub async fn dispatchers(&self) -> Result<Vec<Dispatcher>, ClientError> {
+        self.json(Self::route("get_dispatchers")?, &[], &[], None).await
+    }
+
+    /// Enroll a dispatcher. The reply carries the key ONCE; it is never stored
+    /// server-side beyond a hash, so a caller that loses it must re-enroll.
+    pub async fn enroll_dispatcher(
+        &self,
+        request: &EnrollDispatcher,
+    ) -> Result<EnrolledDispatcher, ClientError> {
+        let route = Self::route("post_dispatcher_enroll")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Rename a dispatcher or rebind its default account/pool.
+    pub async fn update_dispatcher(
+        &self,
+        id: &str,
+        request: &UpdateDispatcher,
+    ) -> Result<Dispatcher, ClientError> {
+        let route = Self::route("patch_dispatchers_by_id")?;
+        let body = serde_json::to_value(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        self.json(route, &[("id", id)], &[], Some(&body)).await
+    }
+
+    pub async fn delete_dispatcher(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_dispatchers_by_id")?, &[("id", id)], None).await
+    }
+
     /// Every label the caller owns.
     pub async fn labels(&self) -> Result<Vec<Label>, ClientError> {
         let resp: LabelListResponse = self.json(Self::route("get_labels")?, &[], &[], None).await?;
@@ -515,6 +607,50 @@ impl Client {
     pub async fn pin_sessions(&self, ids: &[String], pinned: bool) -> Result<(), ClientError> {
         let id = if pinned { "post_sessions_pin" } else { "post_sessions_unpin" };
         self.unit(Self::route(id)?, &[], Some(&batch_ids(ids))).await
+    }
+
+    /// `POST /sessions/spawn`. The route is multipart so a spawn can carry file
+    /// uploads; with none to send, the JSON body is the only part.
+    /// `POST /sessions/spawn`. The route is `multipart/form-data`: the JSON
+    /// goes in a `request` part, and each attachment in a part of its own.
+    pub async fn spawn_session(
+        &self,
+        request: &cctui_proto::api::SpawnRequest,
+        files: Vec<UploadFile>,
+    ) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_spawn")?;
+        let json = serde_json::to_string(request)
+            .map_err(|source| ClientError::Decode { route: route.id, source })?;
+        let mut form = reqwest::multipart::Form::new().text("request", json);
+        for file in files {
+            let part = reqwest::multipart::Part::bytes(file.bytes).file_name(file.name);
+            form = form.part("files", part);
+        }
+        let resp = self
+            .http
+            .post(self.url_for(route, &[]))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|source| ClientError::Transport { route: route.id, source })?;
+        let _ = check_status(route.id, resp).await?;
+        Ok(())
+    }
+
+    /// The caller's accounts, as the spawn picker needs them.
+    pub async fn accounts(&self) -> Result<Vec<AccountPick>, ClientError> {
+        self.json(Self::route("get_accounts")?, &[], &[], None).await
+    }
+
+    /// The caller's account pools with their membership.
+    pub async fn account_pools(&self) -> Result<Vec<PoolPick>, ClientError> {
+        self.json(Self::route("get_account_pools")?, &[], &[], None).await
+    }
+
+    /// Usage windows per provider credential, for the picker's percentages.
+    pub async fn accounts_usage(&self) -> Result<Vec<AccountUsagePick>, ClientError> {
+        self.json(Self::route("get_accounts_usage")?, &[], &[], None).await
     }
 
     /// The caller's settings blob. The TUI reads it and never writes it back.
@@ -671,18 +807,6 @@ impl Client {
         self.json(Self::route("get_sessions_search_values")?, &[], &query, None).await
     }
 
-    /// `POST /sessions/spawn`. The route is multipart so a spawn can carry file
-    /// uploads; with none to send, the JSON body is the only part.
-    pub async fn spawn_session(
-        &self,
-        request: &cctui_proto::api::SpawnRequest,
-    ) -> Result<(), ClientError> {
-        let route = Self::route("post_sessions_spawn")?;
-        let body = serde_json::to_value(request)
-            .map_err(|source| ClientError::Decode { route: route.id, source })?;
-        self.unit(route, &[], Some(&body)).await
-    }
-
     pub async fn put_draft(&self, key: &str, text: &str) -> Result<(), ClientError> {
         let route = Self::route("put_drafts_by_*key")?;
         let body = serde_json::to_value(PutDraftRequest { text: text.to_owned() })
@@ -831,6 +955,58 @@ fn to_value<B: Serialize>(route: &'static str, body: &B) -> Result<Value, Client
     serde_json::to_value(body).map_err(|source| ClientError::Decode { route, source })
 }
 
+/// An account as the spawn picker reads it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountPick {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(default)]
+    pub providers: Vec<ProviderPick>,
+}
+
+impl AccountPick {
+    /// Provider ids, in the order the server returned them.
+    #[must_use]
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.providers.iter().map(|p| p.provider.as_str()).collect()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderPick {
+    pub provider: String,
+}
+
+/// A pool and its membership.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolPick {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub members: Vec<PoolMemberPick>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolMemberPick {
+    pub account_id: String,
+}
+
+/// One credential's usage windows.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountUsagePick {
+    pub account: String,
+    #[serde(default)]
+    pub windows: Vec<UsageWindowPick>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsageWindowPick {
+    pub key: String,
+    pub utilization: f64,
+}
+
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
     resp.headers()
         .get(ETAG)
@@ -940,7 +1116,6 @@ mod tests {
             "get_sessions_search",
             "get_sessions_search_values",
             "put_settings",
-            "post_sessions_spawn",
             "get_sessions_by_id",
             "get_sessions_stats",
             "get_sessions_by_id_conversation",
@@ -953,6 +1128,11 @@ mod tests {
             "post_sessions_by_id_seen",
             "get_permissions_pending",
             "get_labels",
+            "get_machines_resources",
+            "get_dispatchers",
+            "post_dispatcher_enroll",
+            "patch_dispatchers_by_id",
+            "delete_dispatchers_by_id",
             "post_labels",
             "patch_labels_by_id",
             "delete_labels_by_id",
@@ -968,6 +1148,10 @@ mod tests {
             "get_drafts_by_*key",
             "put_drafts_by_*key",
             "delete_drafts_by_*key",
+            "post_sessions_spawn",
+            "get_accounts",
+            "get_account_pools",
+            "get_accounts_usage",
             "patch_sessions_by_id",
             "post_sessions_by_id_kill",
             "post_sessions_archive",

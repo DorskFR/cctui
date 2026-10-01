@@ -158,6 +158,8 @@ pub struct RowBadges {
     /// A named account whose traffic the gateway has never seen: the session
     /// is probably billing somewhere else.
     pub account_traffic: bool,
+    /// A job cctui did not start, so removing it ends someone else's work.
+    pub foreign: bool,
     pub end: Option<String>,
 }
 
@@ -178,6 +180,7 @@ impl RowBadges {
             cache_cold: s.cache_cold,
             soft_limited,
             account_traffic: s.account_name.is_some() && !s.account_traffic_observed,
+            foreign: s.origin.is_foreign(),
             end: end_badge(s),
         }
     }
@@ -198,6 +201,7 @@ impl RowBadges {
             && !self.cache_cold
             && !self.soft_limited
             && !self.account_traffic
+            && !self.foreign
             && self.end.is_none()
     }
 
@@ -231,6 +235,9 @@ impl RowBadges {
         }
         if self.cache_cold {
             parts.push("❄".to_owned());
+        }
+        if self.foreign {
+            parts.push("⌂".to_owned());
         }
         if let Some(end) = &self.end {
             parts.push(end.clone());
@@ -336,6 +343,7 @@ pub const GLYPH_LEGEND: &[(&str, &str)] = &[
     ("⏸", "account soft-limited"),
     ("⚠", "account traffic never seen"),
     ("❄", "cache cold, next turn re-reads"),
+    ("⌂", "a job cctui did not start"),
     ("✕reason", "how it ended"),
     ("⚙N age", "tool calls, age of the last"),
 ];
@@ -527,6 +535,20 @@ mod tests {
         let quiet = RowBadges::of(&s, false, None, false);
         assert!(!quiet.wants_you(), "unread and auto-approve are reports, not requests");
         assert_eq!(quiet.text(), "●4 ⚡ ✕crashed");
+    }
+
+    #[test]
+    fn a_foreign_job_earns_its_own_glyph_and_asks_for_nothing() {
+        let mut s = session("s", "p", "active", "working");
+        assert!(RowBadges::of(&s, false, None, false).is_empty());
+        s.origin = cctui_proto::api::SessionOrigin::Foreign;
+        let badges = RowBadges::of(&s, false, None, false);
+        assert_eq!(badges.text(), "⌂");
+        assert!(!badges.wants_you(), "it reports whose job it is, it does not ask");
+        assert!(
+            super::GLYPH_LEGEND.iter().any(|(glyph, _)| *glyph == "⌂"),
+            "every row glyph is in the cheat sheet's legend"
+        );
     }
 
     #[test]

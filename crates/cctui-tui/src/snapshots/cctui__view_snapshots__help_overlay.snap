@@ -3,26 +3,26 @@ source: crates/cctui-tui/src/view_snapshots.rs
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
- 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Anywhere                                         Ctrl+n / ↓  Next label                       │
-▸ │  ?           Toggle this cheat sheet            Ctrl+p / ↑  Previous label                   │
-  │  q           Quit cctui                         Space       Attach or detach this label      │
-  │  1-9         Switch view                        Ctrl+c      Create a label                   │
-  │  /           Search the current view            Ctrl+e      Rename or recolor                │
-  │  n           Next search hit                    Ctrl+d      Delete this label                │
-  │  N           Previous search hit                Enter       Confirm                          │
-  │  D           Diagnose the selected session    Label filter                                   │
-  │  i           Session info                       Esc         Close the label list             │
-  │  Ctrl+g      Jump to the next session needin…   Ctrl+n / ↓  Next label                       │
-  │Session list                                     Ctrl+p / ↑  Previous label                   │
-  │  j / ↓       Next session                       Space / En… Include or exclude this label    │
-  │  k / ↑       Previous session                   a           Show every label again           │
-  │  g           First session                    Pinned messages                                │
-  │  G           Last session                       Esc         Close the pinned messages        │
-  │  Enter       Open the conversation              Ctrl+n / ↓  Next pin                         │
-  │  z / Tab     Fold or open the subagent group    Ctrl+p / ↑  Previous pin                     │
-  │  S           Fold or open the section           Enter       Jump to the pinned message       │
-  │  Z           Fold or open everything            d / m       Unpin this message               │
-  │  Ctrl+n      Start a new session              Macros                                         │
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
+  │Anywhere                                         Ctrl+r      Refresh the dispatcher list      │
+▸ │  ?           Toggle this cheat sheet            Tab         Next field, or cycle the kind    │
+  │  q           Quit cctui                         Enter       Confirm                          │
+  │  1-9         Switch view                        Esc         Back                             │
+  │  /           Search the current view            Ctrl+y      Copy the new key                 │
+  │  n           Next search hit                  Labels                                         │
+  │  N           Previous search hit                Esc         Close the label list             │
+  │  D           Diagnose the selected session      Ctrl+n / ↓  Next label                       │
+  │  i           Session info                       Ctrl+p / ↑  Previous label                   │
+  │  M           Machines and daemons               Space       Attach or detach this label      │
+  │  Ctrl+d      Dispatchers                        Ctrl+c      Create a label                   │
+  │  Ctrl+g      Jump to the next session needin…   Ctrl+e      Rename or recolor                │
+  │Session list                                     Ctrl+d      Delete this label                │
+  │  j / ↓       Next session                       Enter       Confirm                          │
+  │  k / ↑       Previous session                 Label filter                                   │
+  │  g           First session                      Esc         Close the label list             │
+  │  G           Last session                       Ctrl+n / ↓  Next label                       │
+  │  Enter       Open the conversation              Ctrl+p / ↑  Previous label                   │
+  │  z / Tab     Fold or open the subagent group    Space / En… Include or exclude this label    │
+  │  S           Fold or open the section           a           Show every label again           │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -7,6 +7,7 @@ use ratatui_textarea::TextArea;
 use super::attention::PermissionInbox;
 use super::conversation_store::ConversationStore;
 use super::diagnose::DiagnosePanel;
+use super::harness_mode::Picker as HarnessPicker;
 use super::identity::AuthState;
 use super::prompt::{AskCard, PlanCard};
 use super::router::Router;
@@ -18,6 +19,10 @@ pub use crate::config::uistate::UiState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    /// The machines slice's table.
+    Machines,
+    /// The dispatchers admin panel.
+    Dispatchers,
     /// The `l` label picker for one session.
     LabelPicker,
     /// The `L` any-of label filter.
@@ -39,6 +44,7 @@ pub enum View {
     /// Slice roots: the switcher resets the router to one of these.
     Bookmarks,
     Overview,
+    HarnessMode,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -294,10 +300,19 @@ pub struct App {
     pub row_actions: super::row_actions::RowActionState,
     /// The open spawn dialog, or `None`.
     pub spawn: Option<super::spawn::SpawnForm>,
+    /// Catalogs the spawn dialog reads; fetched once, kept across dialogs.
+    pub spawn_data: super::spawn::SpawnData,
     /// Fold state, loaded at startup and written back on every toggle.
     pub ui: UiState,
     /// Which top-level slice `1-9` last selected.
     pub slice: Slice,
+    /// The machines slice's table and cursor.
+    pub machines: super::machines::Machines,
+    /// The dispatchers panel, open only while it is.
+    pub dispatchers: super::dispatchers::Dispatchers,
+    /// The machine a spawn should aim at, set by `Enter` in the machines table.
+    /// The spawn dialog reads it; nothing else does.
+    pub spawn_target: Option<String>,
     /// Where each slice's cursor was when it was last left.
     pub slice_cursors: HashMap<Slice, Cursor>,
     /// `GET /sessions/stats`, `None` until the first reply.
@@ -317,6 +332,8 @@ pub struct App {
     /// The settings blob as the server last gave it, so a write patches it
     /// instead of dropping the keys only the web UI uses.
     pub settings_blob: serde_json::Value,
+    /// The harness-mode picker, `None` when closed.
+    pub harness_picker: Option<HarnessPicker>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -431,10 +448,14 @@ impl App {
             last_refresh_ms: 0,
             refresh: RefreshCounters::default(),
             row_actions: super::row_actions::RowActionState::default(),
+            spawn_data: super::spawn::SpawnData::default(),
             spawn: None,
             ui: UiState::default(),
             slice: Slice::Sessions,
             slice_cursors: HashMap::new(),
+            machines: super::machines::Machines::default(),
+            dispatchers: super::dispatchers::Dispatchers::default(),
+            spawn_target: None,
             stats: None,
             overview_scroll: 0,
             labels: super::labels::Labels::default(),
@@ -443,6 +464,7 @@ impl App {
             list_search: super::list_search::ListSearch::default(),
             pending_seq_anchor: None,
             settings_blob: serde_json::Value::Null,
+            harness_picker: None,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
