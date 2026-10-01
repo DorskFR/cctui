@@ -7,7 +7,7 @@ use cctui_proto::adapter::PermissionMode;
 use cctui_proto::api::SessionListItem;
 use cctui_proto::harness_models::HarnessModels;
 
-use super::action::Effect;
+use super::action::{Effect, ModelsFor};
 use super::conversation;
 use super::state::{App, View};
 use super::toast::Level;
@@ -279,7 +279,12 @@ fn open_picker(app: &mut App) -> Vec<Effect> {
         loading: true,
     });
     app.router.push(View::ModelPicker);
-    vec![Effect::FetchHarnessModels { harness, machine_id: session.machine_id, model }]
+    vec![Effect::FetchHarnessModels {
+        want: ModelsFor::RunningSession,
+        harness,
+        machine_id: session.machine_id,
+        model,
+    }]
 }
 
 fn close_picker(app: &mut App) -> Vec<Effect> {

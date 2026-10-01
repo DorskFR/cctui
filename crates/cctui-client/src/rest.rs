@@ -690,6 +690,12 @@ impl Client {
         self.json(route, &[("machine_id", machine_id)], &query, None).await
     }
 
+    /// Re-reads every `OpenAI` account's catalog from upstream.
+    pub async fn refresh_codex_models(&self, machine_id: &str) -> Result<(), ClientError> {
+        let route = Self::route("post_machines_by_machine_codex_models_refresh")?;
+        self.unit(route, &[("machine_id", machine_id)], None).await
+    }
+
     /// Working dirs the caller spawned into recently.
     pub async fn recent_dirs(&self) -> Result<Vec<String>, ClientError> {
         self.json(Self::route("get_sessions_recent_dirs")?, &[], &[], None).await
@@ -901,6 +907,7 @@ mod tests {
             "get_machines_by_machine_fs_dirs",
             "get_machines_by_machine_fs_gitinfo",
             "get_sessions_recent_dirs",
+            "post_machines_by_machine_codex_models_refresh",
             "get_sessions_by_id",
             "get_sessions_stats",
             "get_sessions_by_id_conversation",

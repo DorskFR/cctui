@@ -25,9 +25,13 @@ export function buildSpawnBody(
 	const noAccount = f.account === NO_ACCOUNT;
 	const pool = poolName(f.account) ?? null;
 	const compatible = !!spawnProvider && isCompatibleProvider(spawnProvider);
-	const model = compatible
-		? f.model_account || null
-		: (adapter === 'codex' ? f.model_codex : f.model_claude) || null;
+	const model =
+		(compatible
+			? f.model_account
+			: adapter === 'codex'
+				? f.model_codex
+				: f.model_claude
+		).trim() || null;
 	return {
 		machine_id: f.machine_id,
 		working_dir: normalizeDir(f.working_dir.trim()),

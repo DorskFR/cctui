@@ -312,11 +312,18 @@ async fn run(
                 vec![Action::Toast(Level::Error, format!("fork failed: {e}"))]
             }
         },
-        Effect::FetchHarnessModels { harness, machine_id, model } => {
+        Effect::FetchHarnessModels { want, harness, machine_id, model } => {
             match server.harness_models(&harness, Some(&machine_id), &model).await {
-                Ok(models) => {
-                    vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
-                }
+                Ok(models) => match want {
+                    super::action::ModelsFor::RunningSession => {
+                        vec![Action::Controls(ControlsAction::ModelsLoaded(Box::new(models)))]
+                    }
+                    super::action::ModelsFor::SpawnDialog => {
+                        vec![Action::Spawn(super::spawn::SpawnAction::ModelsLoaded(Box::new(
+                            models,
+                        )))]
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(%e, "harness model list fetch failed");
                     vec![Action::Toast(Level::Warn, "could not read the model list".to_owned())]
@@ -497,6 +504,12 @@ async fn run(
                 Vec::new()
             }
         },
+        Effect::RefreshCodexModels { machine_id } => {
+            if let Err(e) = server.refresh_codex_models(&machine_id).await {
+                tracing::warn!(%e, machine_id, "the codex catalog refresh failed");
+            }
+            vec![Action::Spawn(super::spawn::SpawnAction::ModelsRefreshed)]
+        }
         Effect::SpawnSession { request } => match server.spawn_session(&request).await {
             Ok(()) => Vec::new(),
             Err(e) => {

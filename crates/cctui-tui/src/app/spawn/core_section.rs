@@ -33,6 +33,13 @@ pub fn dir_line_index(adapter: &str) -> usize {
     rows_for(adapter).iter().position(|r| *r == Row::Dir).unwrap_or(0)
 }
 
+/// Which rendered line the Model row is, for the same reason as
+/// [`dir_line_index`]: Model also comes before Mode.
+#[must_use]
+pub fn model_line_index(adapter: &str) -> usize {
+    rows_for(adapter).iter().position(|r| *r == Row::Model).unwrap_or(0)
+}
+
 /// Service tier is codex-only, so the row list depends on the harness.
 #[must_use]
 pub fn rows_for(adapter: &str) -> Vec<Row> {
@@ -72,9 +79,12 @@ pub fn step_choice(values: &[&str], current: &str, delta: i32) -> String {
     values.get(next).copied().unwrap_or_default().to_owned()
 }
 
-/// Stateless: every value it shows and edits lives in the form's `fields`.
+/// Holds only the lists its pickers step through; every value it shows lives in
+/// the form's `fields`.
 #[derive(Debug, Default)]
-pub struct CoreSection;
+pub struct CoreSection {
+    pub options: Options,
+}
 
 impl SpawnSection for CoreSection {
     fn title(&self) -> &'static str {
@@ -106,10 +116,14 @@ impl SpawnSection for CoreSection {
         out
     }
 
+    fn set_options(&mut self, options: Options) {
+        self.options = options;
+    }
+
     fn handle(&mut self, row: usize, key: KeyEvent, fields: &mut SpawnFields) -> Vec<Effect> {
         let rows = rows_for(&fields.adapter_id);
         if let Some(row) = rows.get(row).copied() {
-            edit(fields, row, key);
+            edit(fields, row, key, &self.options);
         }
         Vec::new()
     }
@@ -186,7 +200,15 @@ fn row_line(f: &SpawnFields, row: Row, focused: bool, width: u16) -> Line<'stati
 }
 
 /// Text rows take characters; choice rows step with left/right.
-fn edit(f: &mut SpawnFields, row: Row, key: KeyEvent) {
+/// The lists the Model and Effort rows step through, derived by the form from
+/// the machine's live catalog.
+#[derive(Debug, Default)]
+pub struct Options {
+    pub models: Vec<cctui_proto::harness_models::ModelOption>,
+    pub efforts: Vec<String>,
+}
+
+fn edit(f: &mut SpawnFields, row: Row, key: KeyEvent, options: &Options) {
     let codex = f.adapter_id == "codex";
     let delta = match key.code {
         KeyCode::Left => -1,
@@ -204,6 +226,30 @@ fn edit(f: &mut SpawnFields, row: Row, key: KeyEvent) {
         Row::Machine => type_into(&mut f.machine_id, key),
         Row::Dir => type_into(&mut f.working_dir, key),
         Row::Name => type_into(&mut f.name, key),
+        // Left/Right steps the catalog, skipping a gated entry so it cannot be
+        // picked; typing still works, because every picker also takes a
+        // free-text id.
+        Row::Model if delta != 0 && !options.models.is_empty() => {
+            let pickable: Vec<&str> =
+                options.models.iter().filter(|o| !o.disabled).map(|o| o.v.as_str()).collect();
+            let current = if codex { f.model_codex.clone() } else { f.model_claude.clone() };
+            let next = step_choice(&pickable, &current, delta);
+            if codex {
+                f.model_codex = next;
+            } else {
+                f.model_claude = next;
+            }
+        }
+        Row::Effort if delta != 0 && !options.efforts.is_empty() => {
+            let levels: Vec<&str> = options.efforts.iter().map(String::as_str).collect();
+            let current = if codex { f.effort_codex.clone() } else { f.effort_claude.clone() };
+            let next = step_choice(&levels, &current, delta);
+            if codex {
+                f.effort_codex = next;
+            } else {
+                f.effort_claude = next;
+            }
+        }
         Row::Model => {
             let target = if codex { &mut f.model_codex } else { &mut f.model_claude };
             type_into(target, key);
@@ -245,7 +291,7 @@ mod tests {
     }
     impl HandleAt for CoreSection {
         fn handle_at(&self, row: usize, key: KeyEvent, f: &mut SpawnFields) {
-            let mut me = Self;
+            let mut me = Self::default();
             SpawnSection::handle(&mut me, row, key, f);
         }
     }
@@ -267,7 +313,7 @@ mod tests {
 
     #[test]
     fn switching_harness_changes_the_row_count_the_dialog_tabs_through() {
-        let s = CoreSection;
+        let s = CoreSection::default();
         let mut f = fields();
         let before = s.rows(&f);
         f.adapter_id = "codex".to_owned();
@@ -294,7 +340,7 @@ mod tests {
 
     #[test]
     fn left_and_right_step_the_harness_and_the_mode() {
-        let s = CoreSection;
+        let s = CoreSection::default();
         let mut f = fields();
         let harness_row = rows_for("claude-code").iter().position(|r| *r == Row::Harness).unwrap();
         s.handle_at(harness_row, key(KeyCode::Right), &mut f);
@@ -309,7 +355,7 @@ mod tests {
 
     #[test]
     fn typing_lands_in_the_field_the_focused_row_names() {
-        let s = CoreSection;
+        let s = CoreSection::default();
         let mut f = fields();
         let rows = rows_for("claude-code");
         let dir = rows.iter().position(|r| *r == Row::Dir).unwrap();
@@ -323,7 +369,7 @@ mod tests {
 
     #[test]
     fn the_model_row_writes_the_field_the_harness_selects() {
-        let s = CoreSection;
+        let s = CoreSection::default();
         let mut f = fields();
         let model = rows_for("claude-code").iter().position(|r| *r == Row::Model).unwrap();
         s.handle_at(model, key(KeyCode::Char('o')), &mut f);
@@ -339,7 +385,7 @@ mod tests {
 
     #[test]
     fn a_row_renders_its_label_its_value_and_a_dash_when_empty() {
-        let s = CoreSection;
+        let s = CoreSection::default();
         let mut f = fields();
         f.machine_id = "cyberia".to_owned();
         let lines = s.lines(Some(0), 60, &f);
@@ -355,7 +401,7 @@ mod tests {
 
     #[test]
     fn the_mode_row_is_followed_by_its_hint() {
-        let s = CoreSection;
+        let s = CoreSection::default();
         let mut f = fields();
         f.permission_mode = "yolo".to_owned();
         let rendered: Vec<String> = s
@@ -374,7 +420,7 @@ mod tests {
 
     #[test]
     fn a_long_value_is_clipped_to_the_dialog_width() {
-        let s = CoreSection;
+        let s = CoreSection::default();
         let mut f = fields();
         f.working_dir = "/".to_owned() + &"x".repeat(200);
         for width in [40_u16, 60, 80] {

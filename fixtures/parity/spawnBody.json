@@ -155,7 +155,10 @@
       "provider": null,
       "expect": {
         "label_ids": ["l-1", "l-2"],
-        "context": { "items": ["notes", "runbook"], "auto": true }
+        "context": {
+          "items": ["notes", "runbook"],
+          "auto": true
+        }
       }
     },
     {
@@ -166,7 +169,9 @@
         "adapter_id": "claude-code"
       },
       "provider": null,
-      "expect": { "working_dir": "/" }
+      "expect": {
+        "working_dir": "/"
+      }
     },
     {
       "name": "an unreadable permission mode leaves it to the server",
@@ -177,7 +182,38 @@
         "permission_mode": "sideways"
       },
       "provider": null,
-      "expect": { "permission_mode": null }
+      "expect": {
+        "permission_mode": null
+      }
+    },
+    {
+      "name": "a free-text model id is trimmed",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "codex",
+        "model_codex": "  gpt-6-astra  ",
+        "model_claude": "opus"
+      },
+      "provider": null,
+      "expect": {
+        "adapter_id": "codex",
+        "model": "gpt-6-astra"
+      }
+    },
+    {
+      "name": "a model id that is only blanks leaves the harness its default",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "/home/dev/cctui",
+        "adapter_id": "claude-code",
+        "model_claude": "   "
+      },
+      "provider": null,
+      "expect": {
+        "adapter_id": "claude-code",
+        "model": null
+      }
     }
   ]
 }

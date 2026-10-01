@@ -108,37 +108,38 @@ expression: "render_screen_sized(&mut app, 100, height)"
   │  ↓           Next directory                     o           Write a free-text answer         │
   │  ↑           Previous directory                 Enter       Send the answer                  │
   │  Enter       Use this directory               Question card — free text                      │
-  │Sections popup                                   Enter       Accept the text                  │
-  │  f / q / Esc Choose which sections show         Esc         Discard the text                 │
-  │  j / ↓       Next section                     Plan card                                      │
-  │  k / ↑       Previous section                   Esc         Answer later                     │
-  │  Space / En… Show or hide this section          1           Approve, auto-accept edits       │
-  │List search                                      2           Approve, manually approve edits  │
-  │  Ctrl+n      Next search hit                    3           Keep planning                    │
-  │  Ctrl+p      Previous search hit                r           Refine the plan                  │
-  │  Tab         Complete the field or value        j / ↓       Scroll the plan down             │
-  │  Enter       Open the result                    k / ↑       Scroll the plan up               │
-  │  Esc         Clear the search                 Plan card — refine                             │
-  │  Ctrl+a      Include archived sessions          Enter       Accept the text                  │
-  │  Ctrl+m      Load more results                  Esc         Discard the text                 │
-  │Search and commands                            Row glyphs                                     │
-  │  Enter       Run it                             ●           working                          │
-  │  Esc         Abandon it                         ◐           stale or asleep                  │
-  │  Tab         Complete the path                  ○           idle                             │
-  │Filter menu                                      ☾           hibernated                       │
-  │  F / q / Esc Choose which lines to show         ↳           subagent                         │
-  │  a           Show every category                ▸ / ▾       folded / open group              │
-  │  r           Back to the default filter         [name]      a label, tinted by its hue       │
-  │  Space / En… Show or hide this category         +N          more labels than fit             │
-  │  j / ↓       Next category                      !           permission waiting on you        │
-  │  k / ↑       Previous category                  ?           question waiting on you          │
-  │Prompt history                                   P           plan waiting for approval        │
-  │  Esc         Close the prompt list              ●N          unread messages                  │
-  │  Ctrl+n / ↓  Next prompt                        ⚡           auto-approve on                  │
-  │  Ctrl+p / ↑  Previous prompt                    ⏸           account soft-limited             │
-  │  Enter       Put this prompt in the composer    ⚠           account traffic never seen       │
-  │File viewer                                      ❄           cache cold, next turn re-reads   │
-  │  j / ↓       Scroll down                        ✕reason     how it ended                     │
-  │  k / ↑       Scroll up                          ⚙N age      tool calls, age of the last      │
+  │  Ctrl+r      Re-read the model catalog          Enter       Accept the text                  │
+  │Sections popup                                   Esc         Discard the text                 │
+  │  f / q / Esc Choose which sections show       Plan card                                      │
+  │  j / ↓       Next section                       Esc         Answer later                     │
+  │  k / ↑       Previous section                   1           Approve, auto-accept edits       │
+  │  Space / En… Show or hide this section          2           Approve, manually approve edits  │
+  │List search                                      3           Keep planning                    │
+  │  Ctrl+n      Next search hit                    r           Refine the plan                  │
+  │  Ctrl+p      Previous search hit                j / ↓       Scroll the plan down             │
+  │  Tab         Complete the field or value        k / ↑       Scroll the plan up               │
+  │  Enter       Open the result                  Plan card — refine                             │
+  │  Esc         Clear the search                   Enter       Accept the text                  │
+  │  Ctrl+a      Include archived sessions          Esc         Discard the text                 │
+  │  Ctrl+m      Load more results                Row glyphs                                     │
+  │Search and commands                              ●           working                          │
+  │  Enter       Run it                             ◐           stale or asleep                  │
+  │  Esc         Abandon it                         ○           idle                             │
+  │  Tab         Complete the path                  ☾           hibernated                       │
+  │Filter menu                                      ↳           subagent                         │
+  │  F / q / Esc Choose which lines to show         ▸ / ▾       folded / open group              │
+  │  a           Show every category                [name]      a label, tinted by its hue       │
+  │  r           Back to the default filter         +N          more labels than fit             │
+  │  Space / En… Show or hide this category         !           permission waiting on you        │
+  │  j / ↓       Next category                      ?           question waiting on you          │
+  │  k / ↑       Previous category                  P           plan waiting for approval        │
+  │Prompt history                                   ●N          unread messages                  │
+  │  Esc         Close the prompt list              ⚡           auto-approve on                  │
+  │  Ctrl+n / ↓  Next prompt                        ⏸           account soft-limited             │
+  │  Ctrl+p / ↑  Previous prompt                    ⚠           account traffic never seen       │
+  │  Enter       Put this prompt in the composer    ❄           cache cold, next turn re-reads   │
+  │File viewer                                      ✕reason     how it ended                     │
+  │  j / ↓       Scroll down                        ⚙N age      tool calls, age of the last      │
+  │  k / ↑       Scroll up                                                                       │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

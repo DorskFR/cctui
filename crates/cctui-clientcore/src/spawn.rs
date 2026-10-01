@@ -93,13 +93,15 @@ fn some_value(value: &str) -> Option<String> {
 /// The model the request carries: a compatible-endpoint account drives the
 /// picker from its own declared models, so that field wins over the
 /// per-adapter family lists.
+///
+/// Trimmed, because a free-text id is typed rather than picked.
 #[must_use]
 pub fn model_of(fields: &SpawnFields, spawn_provider: Option<&str>) -> Option<String> {
     let compatible = spawn_provider.is_some_and(is_compatible_provider);
     if compatible {
-        return some_value(&fields.model_account);
+        return some_trimmed(&fields.model_account);
     }
-    some_value(if fields.adapter_id == "codex" {
+    some_trimmed(if fields.adapter_id == "codex" {
         &fields.model_codex
     } else {
         &fields.model_claude

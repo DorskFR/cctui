@@ -167,6 +167,17 @@ pub fn codex_efforts_for(catalog: Option<&CodexModelCatalog>, model_id: &str) ->
     std::iter::once(String::new()).chain(supported).collect()
 }
 
+/// Keeps a value the list does not know — a free-text id, or one remembered
+/// from a spawn the catalog has since dropped — selectable by listing it.
+#[must_use]
+pub fn with_current_model(mut options: Vec<ModelOption>, current: &str) -> Vec<ModelOption> {
+    if current.is_empty() || options.iter().any(|o| o.v == current) {
+        return options;
+    }
+    options.push(ModelOption::plain(current, current));
+    options
+}
+
 /// The lists for one harness.
 ///
 /// `model` is the id already selected, so `efforts` are the ones it supports.
@@ -276,6 +287,20 @@ mod tests {
     fn hidden_models_are_dropped() {
         let catalog = gated_catalog(Some("0.156.1"));
         assert!(!codex_models_for(Some(&catalog)).iter().any(|o| o.v == "codex-auto-review"));
+    }
+
+    #[test]
+    fn an_unknown_current_model_stays_selectable() {
+        let known = vec![ModelOption::plain("", "Default"), ModelOption::plain("opus", "Opus")];
+        assert_eq!(super::with_current_model(known.clone(), "opus").len(), 2, "already listed");
+        assert_eq!(super::with_current_model(known.clone(), "").len(), 2, "the default is listed");
+
+        let widened = super::with_current_model(known, "some-retired-model");
+        assert_eq!(widened.len(), 3);
+        let last = widened.last().expect("the added option");
+        assert_eq!(last.v, "some-retired-model");
+        assert_eq!(last.label, "some-retired-model");
+        assert!(!last.disabled, "a remembered id must stay pickable");
     }
 
     #[test]

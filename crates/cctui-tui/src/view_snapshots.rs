@@ -401,6 +401,30 @@ fn spawn_dialog_codex_shows_the_service_tier_and_a_mode_hint() {
 }
 
 #[test]
+fn spawn_dialog_annotates_a_model_its_codex_is_too_old_for() {
+    use cctui_proto::harness_models::{HarnessModels, ModelHint, ModelOption};
+
+    let mut app = spawn_dialog();
+    let form = app.spawn.as_mut().expect("a form");
+    form.fields.adapter_id = "codex".to_owned();
+    form.fields.model_codex = "gpt-6-preview".to_owned();
+    form.models = Some(Box::new(HarnessModels {
+        harness: "codex".to_owned(),
+        models: vec![ModelOption {
+            v: "gpt-6-preview".to_owned(),
+            label: "GPT-6 preview".to_owned(),
+            hint: Some(ModelHint::Gated {
+                version: "0.200.0".to_owned(),
+                current: "0.150.0".to_owned(),
+            }),
+            disabled: true,
+        }],
+        efforts: vec![String::new(), "high".to_owned()],
+    }));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn spawn_dialog_reports_a_failed_launch_inline() {
     let mut app = spawn_dialog();
     app.spawn.as_mut().expect("a form").fields.working_dir.clear();

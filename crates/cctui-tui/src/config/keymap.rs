@@ -221,6 +221,7 @@ actions! {
     SpawnDirNext => "spawn-dir-next", "Next directory";
     SpawnDirPrev => "spawn-dir-prev", "Previous directory";
     SpawnDirAccept => "spawn-dir-accept", "Use this directory";
+    SpawnRefreshModels => "spawn-refresh-models", "Re-read the model catalog";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -578,6 +579,7 @@ const SPAWN: &[BindingSpec] = &[
     spec(Context::Spawn, "down", ActionId::SpawnDirNext),
     spec(Context::Spawn, "up", ActionId::SpawnDirPrev),
     spec(Context::Spawn, "enter", ActionId::SpawnDirAccept),
+    spec(Context::Spawn, "ctrl+r", ActionId::SpawnRefreshModels),
 ];
 
 const SECTIONS_POPUP: &[BindingSpec] = &[

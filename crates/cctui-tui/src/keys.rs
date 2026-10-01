@@ -250,6 +250,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SpawnDirNext => Action::Spawn(SpawnAction::DirPick(1)),
         ActionId::SpawnDirPrev => Action::Spawn(SpawnAction::DirPick(-1)),
         ActionId::SpawnDirAccept => Action::Spawn(SpawnAction::DirAccept),
+        ActionId::SpawnRefreshModels => Action::Spawn(SpawnAction::RefreshModels),
         ActionId::ListSections => Action::ListShape(ListShapeAction::ToggleSectionsMenu),
         ActionId::ListSortCycle => Action::ListShape(ListShapeAction::CycleSort),
         ActionId::ListSortFlip => Action::ListShape(ListShapeAction::FlipSortDir),

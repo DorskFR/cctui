@@ -47,6 +47,34 @@ fn clip(text: &str, width: u16) -> String {
     text.chars().take(usize::from(width)).collect()
 }
 
+/// The hint under the Model row: why a model is annotated, and whether the
+/// catalog is being re-read.
+fn model_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
+    use cctui_proto::harness_models::ModelHint;
+
+    let mut out = Vec::new();
+    if form.refreshing_models {
+        out.push(Line::from(Span::styled(
+            clip("           re-reading the catalog…", width),
+            theme::dim(),
+        )));
+        return out;
+    }
+    let current = form.model().to_owned();
+    let options = form.model_options();
+    let Some(option) = options.iter().find(|o| o.v == current) else { return out };
+    let Some(hint) = option.hint.as_ref() else { return out };
+    let text = match hint {
+        ModelHint::Gated { version, current } => {
+            format!("needs codex \u{2265} {version}, catalog is {current}")
+        }
+        ModelHint::NeedsVersion { version } => format!("needs codex \u{2265} {version}"),
+    };
+    let style = if option.disabled { theme::error() } else { theme::dim() };
+    out.push(Line::from(Span::styled(clip(&format!("           {text}"), width), style)));
+    out
+}
+
 /// The badge beside the Dir row, and the dropdown under it while it is open.
 fn cwd_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
     let mut out = Vec::new();
@@ -83,10 +111,18 @@ fn body_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
         // section, which only knows the field's text — so they are slotted in
         // under the Dir row rather than appended after the section.
         if index == 0 {
-            let at = crate::app::spawn::core_section::dir_line_index(&form.fields.adapter_id);
-            let extra = cwd_lines(form, width);
-            let at = (at + 1).min(lines.len());
-            lines.splice(at..at, extra);
+            // Slot each row's own extra lines in from the bottom up, so an
+            // earlier insert cannot move a later index.
+            let model_at =
+                crate::app::spawn::core_section::model_line_index(&form.fields.adapter_id);
+            let model_extra = model_lines(form, width);
+            let at = (model_at + 1).min(lines.len());
+            lines.splice(at..at, model_extra);
+
+            let dir_at = crate::app::spawn::core_section::dir_line_index(&form.fields.adapter_id);
+            let dir_extra = cwd_lines(form, width);
+            let at = (dir_at + 1).min(lines.len());
+            lines.splice(at..at, dir_extra);
         }
         out.extend(lines);
     }

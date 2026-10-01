@@ -69,6 +69,10 @@ pub trait SpawnSection: Send {
     fn selected_provider(&self) -> Option<&str> {
         None
     }
+
+    /// Handed the model and effort lists when they change. Only the core
+    /// section's pickers use them.
+    fn set_options(&mut self, _options: core_section::Options) {}
 }
 
 /// Where focus is: which section, and which of its rows.
@@ -87,6 +91,10 @@ pub struct SpawnForm {
     pub env: Vec<(String, String)>,
     /// Recent dirs, completions and the git badge for the Dir row.
     pub cwd: cwd::CwdState,
+    /// Lists from `GET /models/{harness}`. `None` until they land, which is
+    /// when the static lists stand in.
+    pub models: Option<Box<cctui_proto::harness_models::HarnessModels>>,
+    pub refreshing_models: bool,
     pub focus: Focus,
     /// Inline errors from the last submit, cleared on the next edit.
     pub errors: Vec<String>,
@@ -102,6 +110,8 @@ impl std::fmt::Debug for SpawnForm {
             .field("env", &format_args!("<{} row(s) redacted>", self.env.len()))
             .field("focus", &self.focus)
             .field("cwd", &self.cwd)
+            .field("models", &self.models.is_some())
+            .field("refreshing_models", &self.refreshing_models)
             .field("errors", &self.errors)
             .field("submitting", &self.submitting)
             .field("sections", &self.sections.iter().map(|s| s.title()).collect::<Vec<_>>())
@@ -120,7 +130,7 @@ impl SpawnForm {
     /// adds**: push your section here.
     #[must_use]
     pub fn sections() -> Vec<Box<dyn SpawnSection>> {
-        vec![Box::new(core_section::CoreSection)]
+        vec![Box::new(core_section::CoreSection::default())]
     }
 
     #[must_use]
@@ -129,6 +139,8 @@ impl SpawnForm {
             fields: SpawnFields { adapter_id: "claude-code".to_owned(), ..SpawnFields::default() },
             env: Vec::new(),
             cwd: cwd::CwdState::default(),
+            models: None,
+            refreshing_models: false,
             focus: Focus::default(),
             errors: Vec::new(),
             submitting: false,
@@ -183,9 +195,10 @@ impl SpawnForm {
     /// Hands a key to the focused section, then applies any harness it implies.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         self.errors.clear();
+        let before = self.list_key();
         let Focus { section, row } = self.focus;
         let Some(target) = self.sections.get_mut(section) else { return Vec::new() };
-        let effects = target.handle(row, key, &mut self.fields);
+        let mut effects = target.handle(row, key, &mut self.fields);
         let harness = target.harness_override().map(str::to_owned);
         let account = target.account_pick().map(str::to_owned);
         if let Some(harness) = harness {
@@ -195,8 +208,29 @@ impl SpawnForm {
             self.fields.account = account;
         }
         self.sync_provider();
+        if self.list_key() != before {
+            effects.extend(self.fetch_models());
+        }
+        self.sync_options();
         self.settle_focus();
         effects
+    }
+
+    /// What the lists depend on: another machine, harness or model means the
+    /// ones in hand no longer describe the form.
+    fn list_key(&self) -> (String, String, String) {
+        (self.fields.machine_id.clone(), self.fields.adapter_id.clone(), self.model().to_owned())
+    }
+
+    /// Hands the core section the lists its pickers step through. Called after
+    /// every key and whenever the catalog lands, because switching harness
+    /// changes both lists.
+    pub fn sync_options(&mut self) {
+        let models = self.model_options();
+        let efforts = self.effort_options();
+        if let Some(core) = self.sections.first_mut() {
+            core.set_options(core_section::Options { models, efforts });
+        }
     }
 
     /// Mirrors the live provider onto the field, so a draft or profile written
@@ -205,6 +239,56 @@ impl SpawnForm {
         if let Some(provider) = self.provider().map(str::to_owned) {
             self.fields.account_provider = provider;
         }
+    }
+
+    /// The model id the current harness uses.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        if self.fields.adapter_id == "codex" {
+            &self.fields.model_codex
+        } else {
+            &self.fields.model_claude
+        }
+    }
+
+    /// Lists the server sent when they are for the harness in the form, the
+    /// static ones otherwise.
+    fn lists(&self) -> std::borrow::Cow<'_, cctui_proto::harness_models::HarnessModels> {
+        use std::borrow::Cow;
+        match self.models.as_deref() {
+            Some(m) if m.harness == self.fields.adapter_id => Cow::Borrowed(m),
+            _ => Cow::Owned(cctui_proto::harness_models::harness_models(
+                &self.fields.adapter_id,
+                None,
+                self.model(),
+            )),
+        }
+    }
+
+    /// Always widened to keep the current pick selectable, which a free-text id
+    /// and a model the catalog has dropped both need.
+    #[must_use]
+    pub fn model_options(&self) -> Vec<cctui_proto::harness_models::ModelOption> {
+        let current = self.model().to_owned();
+        cctui_proto::harness_models::with_current_model(self.lists().models.clone(), &current)
+    }
+
+    /// Efforts the chosen model supports.
+    #[must_use]
+    pub fn effort_options(&self) -> Vec<String> {
+        self.lists().efforts.clone()
+    }
+
+    /// The fetch that fills those lists for the harness and model now in the
+    /// form. `None` when no machine is chosen yet.
+    #[must_use]
+    pub fn fetch_models(&self) -> Option<Effect> {
+        (!self.fields.machine_id.is_empty()).then(|| Effect::FetchHarnessModels {
+            want: super::action::ModelsFor::SpawnDialog,
+            harness: self.fields.adapter_id.clone(),
+            machine_id: self.fields.machine_id.clone(),
+            model: self.model().to_owned(),
+        })
     }
 
     /// Whether focus is on the core section's Dir row, which Tab and the
@@ -521,26 +605,15 @@ pub enum SpawnAction {
     DirPick(i32),
     /// Enter on the dropdown.
     DirAccept,
+    ModelsLoaded(Box<cctui_proto::harness_models::HarnessModels>),
+    /// `Ctrl+r` in the dialog.
+    RefreshModels,
+    ModelsRefreshed,
 }
 
 pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
-    use super::state::View;
     match action {
-        SpawnAction::Open => {
-            if app.view() != View::SessionList {
-                return Vec::new();
-            }
-            let mut form = SpawnForm::new();
-            // Seeded from the row in front of you: the machine and checkout you
-            // were just looking at are nearly always the ones you want.
-            if let Some(session) = app.selected_session() {
-                form.fields.machine_id.clone_from(&session.machine_id);
-                form.fields.working_dir.clone_from(&session.working_dir);
-            }
-            app.spawn = Some(form);
-            app.router.push(View::Spawn);
-            vec![Effect::FetchRecentDirs]
-        }
+        SpawnAction::Open => open(app),
         SpawnAction::Close => {
             app.spawn = None;
             app.router.pop();
@@ -611,6 +684,20 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             }
             Vec::new()
         }
+        SpawnAction::ModelsLoaded(models) => {
+            if let Some(form) = app.spawn.as_mut() {
+                form.models = Some(models);
+                form.refreshing_models = false;
+                form.sync_options();
+            }
+            Vec::new()
+        }
+        SpawnAction::RefreshModels => refresh_models(app),
+        SpawnAction::ModelsRefreshed => {
+            let Some(form) = app.spawn.as_mut() else { return Vec::new() };
+            form.refreshing_models = false;
+            form.fetch_models().into_iter().collect()
+        }
         SpawnAction::Submit => submit(app),
         SpawnAction::Failed(reason) => {
             if let Some(form) = app.spawn.as_mut() {
@@ -620,6 +707,39 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             Vec::new()
         }
     }
+}
+
+fn open(app: &mut super::state::App) -> Vec<Effect> {
+    use super::state::View;
+    if app.view() != View::SessionList {
+        return Vec::new();
+    }
+    let mut form = SpawnForm::new();
+    // Seeded from the row in front of you: the machine and checkout you were
+    // just looking at are nearly always the ones you want.
+    if let Some(session) = app.selected_session() {
+        form.fields.machine_id.clone_from(&session.machine_id);
+        form.fields.working_dir.clone_from(&session.working_dir);
+    }
+    let mut effects = vec![Effect::FetchRecentDirs];
+    effects.extend(form.fetch_models());
+    app.spawn = Some(form);
+    app.router.push(View::Spawn);
+    effects
+}
+
+/// Only codex has a catalog to re-read upstream; every other harness just
+/// asks the server again.
+fn refresh_models(app: &mut super::state::App) -> Vec<Effect> {
+    let Some(form) = app.spawn.as_mut() else { return Vec::new() };
+    if form.fields.machine_id.is_empty() || form.refreshing_models {
+        return Vec::new();
+    }
+    if form.fields.adapter_id != "codex" {
+        return form.fetch_models().into_iter().collect();
+    }
+    form.refreshing_models = true;
+    vec![Effect::RefreshCodexModels { machine_id: form.fields.machine_id.clone() }]
 }
 
 /// `Some` when Tab was consumed by dir completion.
@@ -801,13 +921,146 @@ mod reduce_tests {
         }
     }
 
+    /// The lists `GET /models/codex` answers with for a machine whose codex is
+    /// too old for one of them.
+    fn codex_lists() -> cctui_proto::harness_models::HarnessModels {
+        use cctui_proto::harness_models::{HarnessModels, ModelHint, ModelOption};
+        HarnessModels {
+            harness: "codex".to_owned(),
+            models: vec![
+                ModelOption {
+                    v: String::new(),
+                    label: "Default".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+                ModelOption {
+                    v: "gpt-5.6-sol".to_owned(),
+                    label: "GPT-5.6 Sol".to_owned(),
+                    hint: None,
+                    disabled: false,
+                },
+                ModelOption {
+                    v: "gpt-6-preview".to_owned(),
+                    label: "GPT-6 preview".to_owned(),
+                    hint: Some(ModelHint::Gated {
+                        version: "0.200.0".to_owned(),
+                        current: "0.150.0".to_owned(),
+                    }),
+                    disabled: true,
+                },
+            ],
+            efforts: vec![String::new(), "high".to_owned()],
+        }
+    }
+
     #[test]
-    fn opening_asks_for_the_recent_dirs() {
+    fn opening_asks_for_the_recent_dirs_and_the_machines_model_lists() {
         let mut app = app();
-        assert!(matches!(
-            reduce(&mut app, SpawnAction::Open).as_slice(),
-            [Effect::FetchRecentDirs]
-        ));
+        match reduce(&mut app, SpawnAction::Open).as_slice() {
+            [
+                Effect::FetchRecentDirs,
+                Effect::FetchHarnessModels { want, harness, machine_id, .. },
+            ] => {
+                assert_eq!(*want, crate::app::action::ModelsFor::SpawnDialog);
+                assert_eq!(harness, "claude-code");
+                assert_eq!(machine_id, "orion");
+            }
+            other => panic!("expected both fetches, got {} effects", other.len()),
+        }
+    }
+
+    #[test]
+    fn switching_harness_asks_for_that_harnesss_lists() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let form = app.spawn.as_mut().expect("a form");
+        let harness_row = super::core_section::rows_for("claude-code")
+            .iter()
+            .position(|r| *r == super::core_section::Row::Harness)
+            .expect("a harness row");
+        form.focus = super::Focus { section: 0, row: harness_row };
+        let effects = form.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        match effects.as_slice() {
+            [Effect::FetchHarnessModels { harness, .. }] => assert_eq!(harness, "codex"),
+            other => panic!("expected a refetch, got {} effects", other.len()),
+        }
+    }
+
+    #[test]
+    fn a_gated_model_cannot_be_stepped_onto() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let form = app.spawn.as_mut().expect("a form");
+        form.fields.adapter_id = "codex".to_owned();
+        reduce(&mut app, SpawnAction::ModelsLoaded(Box::new(codex_lists())));
+
+        let form = app.spawn.as_mut().expect("a form");
+        let gated: Vec<String> =
+            form.model_options().iter().filter(|o| o.disabled).map(|o| o.v.clone()).collect();
+        assert_eq!(gated, ["gpt-6-preview"], "the newer model is gated by the client version");
+
+        let model_row = super::core_section::rows_for("codex")
+            .iter()
+            .position(|r| *r == super::core_section::Row::Model)
+            .expect("a model row");
+        form.focus = super::Focus { section: 0, row: model_row };
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            form.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+            seen.push(form.fields.model_codex.clone());
+        }
+        assert!(seen.contains(&"gpt-5.6-sol".to_owned()));
+        assert!(!seen.iter().any(|m| m == "gpt-6-preview"), "stepping skips the gated model");
+    }
+
+    #[test]
+    fn a_remembered_model_the_lists_dropped_stays_selectable() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        app.spawn.as_mut().expect("a form").fields.adapter_id = "codex".to_owned();
+        reduce(&mut app, SpawnAction::ModelsLoaded(Box::new(codex_lists())));
+        let form = app.spawn.as_mut().expect("a form");
+        form.fields.model_codex = "gpt-5.1-retired".to_owned();
+        let last = form.model_options().last().cloned().expect("an option");
+        assert_eq!(last.v, "gpt-5.1-retired");
+        assert!(!last.disabled);
+    }
+
+    #[test]
+    fn refreshing_the_catalog_asks_upstream_then_re_reads_the_lists() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        app.spawn.as_mut().expect("a form").fields.adapter_id = "codex".to_owned();
+        match reduce(&mut app, SpawnAction::RefreshModels).as_slice() {
+            [Effect::RefreshCodexModels { machine_id }] => assert_eq!(machine_id, "orion"),
+            other => panic!("expected a refresh, got {} effects", other.len()),
+        }
+        assert!(app.spawn.as_ref().expect("a form").refreshing_models);
+        assert!(
+            reduce(&mut app, SpawnAction::RefreshModels).is_empty(),
+            "not while one is in flight"
+        );
+
+        match reduce(&mut app, SpawnAction::ModelsRefreshed).as_slice() {
+            [Effect::FetchHarnessModels { harness, .. }] => assert_eq!(harness, "codex"),
+            other => panic!("expected a re-read, got {} effects", other.len()),
+        }
+        assert!(!app.spawn.as_ref().expect("a form").refreshing_models);
+    }
+
+    #[test]
+    fn lists_for_another_harness_are_ignored_in_favour_of_the_static_ones() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        reduce(&mut app, SpawnAction::ModelsLoaded(Box::new(codex_lists())));
+        let form = app.spawn.as_ref().expect("a form");
+        assert_eq!(form.fields.adapter_id, "claude-code");
+        assert!(
+            form.model_options().iter().any(|o| o.v == "opus"),
+            "the static claude list stands in until its own lists land"
+        );
+        assert!(!form.effort_options().is_empty());
     }
 }
 

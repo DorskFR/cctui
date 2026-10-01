@@ -157,6 +157,13 @@ pub struct HeartbeatUsage {
     pub cost_usd: f64,
 }
 
+/// Which picker a model list is for, so the reply reaches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelsFor {
+    RunningSession,
+    SpawnDialog,
+}
+
 /// The only way the reducer reaches the network. Nothing here runs on the
 /// key-handling path; the effects runner owns them.
 pub enum Effect {
@@ -279,6 +286,7 @@ pub enum Effect {
     },
     /// `GET /models/{harness}`: the picker's model and effort lists.
     FetchHarnessModels {
+        want: ModelsFor,
         harness: String,
         machine_id: String,
         model: String,
@@ -368,6 +376,10 @@ pub enum Effect {
         path: String,
     },
     FetchRecentDirs,
+    /// Re-reads the machine's codex catalog upstream; refetch the lists after.
+    RefreshCodexModels {
+        machine_id: String,
+    },
     /// `POST /sessions/spawn`. The reply arrives as a `command_result`.
     SpawnSession {
         request: Box<cctui_proto::api::SpawnRequest>,
