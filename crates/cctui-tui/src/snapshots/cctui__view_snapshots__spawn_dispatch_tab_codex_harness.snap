@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1960
+expression: render_screen(&mut app)
+---
+ cctui  v0.0.0┌ New session ─────────────────────────────────────────────────────────┐
+ 1 Sessions  2│❯ Machine  orion                                                      │
+   ▾ Needs inp│  Dir      /home/dev/infra                                            │
+▸    ● [claude│  Name     —                                                          │
+   ▾ Working (│  Harness  claude-code                                                │
+     ● [claude│  Model    —                                                          │
+     ▾ subagen│  Effort   —                                                          │
+       ↳ ● [cl│  Mode     default                                                    │
+   ▾ Completed│           the account's own setting                                  │
+     ○ [claude│  Prompt   —                                                          │
+              │ Account                                                              │
+              │   [auto (most allocation left)]                                      │
+              │ Labels                                                               │
+              │   no labels yet                                                      │
+              │ Env                                                                  │
+              │   none  (a add)                                                      │
+              │ Files                                                                │
+              │   none  (o add path)                                                 │
+              │ Dispatch                                                             │
+              │ Dispatcher [k8s-cyberia           ]  Harness ( ) claude (*) codex    │
+              │ Repo [cctui             ] Ticket [CCT-1102      ] Timeout [60   ] min│
+              │ Prompt [                                                          ]  │
+              │ Context pack                                                         │
+ j/k:nav  Ente└──────────────────────────────────────────────────────────────────────┘

@@ -11,6 +11,8 @@ pub enum Context {
     SessionList,
     Conversation,
     Composer,
+    /// The new-session dialog.
+    Spawn,
     /// The `f` sections popup over the list.
     Sections,
     /// The `/` prompt over the list.
@@ -25,6 +27,8 @@ pub enum Context {
     Rename,
     History,
     FileViewer,
+    Machines,
+    Dispatchers,
     LabelPicker,
     LabelFilter,
     Pins,
@@ -33,7 +37,6 @@ pub enum Context {
     BookmarkConfirm,
     Terminal,
     Help,
-    Dispatch,
     ForkDialog,
     ModelPicker,
     Sidebar,
@@ -41,6 +44,7 @@ pub enum Context {
     Diagnose,
     Bookmarks,
     Overview,
+    HarnessMode,
     Ask,
     AskText,
     Plan,
@@ -54,12 +58,15 @@ pub const CONTEXTS: &[Context] = &[
     Context::Rename,
     Context::Conversation,
     Context::Composer,
+    Context::Spawn,
     Context::Sections,
     Context::ListSearch,
     Context::CmdLine,
     Context::FilterMenu,
     Context::History,
     Context::FileViewer,
+    Context::Machines,
+    Context::Dispatchers,
     Context::LabelPicker,
     Context::LabelFilter,
     Context::Pins,
@@ -68,7 +75,6 @@ pub const CONTEXTS: &[Context] = &[
     Context::BookmarkConfirm,
     Context::Terminal,
     Context::Help,
-    Context::Dispatch,
     Context::ForkDialog,
     Context::ModelPicker,
     Context::Sidebar,
@@ -76,6 +82,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Diagnose,
     Context::Bookmarks,
     Context::Overview,
+    Context::HarnessMode,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -89,6 +96,7 @@ impl Context {
             Self::SessionList => "session-list",
             Self::Conversation => "conversation",
             Self::Composer => "composer",
+            Self::Spawn => "spawn",
             Self::Sections => "sections",
             Self::ListSearch => "list-search",
             Self::CmdLine => "cmdline",
@@ -97,6 +105,8 @@ impl Context {
             Self::FilterMenu => "filter-menu",
             Self::History => "history",
             Self::FileViewer => "file-viewer",
+            Self::Machines => "machines",
+            Self::Dispatchers => "dispatchers",
             Self::LabelPicker => "label-picker",
             Self::LabelFilter => "label-filter",
             Self::Pins => "pins",
@@ -105,7 +115,6 @@ impl Context {
             Self::BookmarkConfirm => "bookmark-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
-            Self::Dispatch => "dispatch",
             Self::ForkDialog => "fork-dialog",
             Self::ModelPicker => "model-picker",
             Self::Sidebar => "sidebar",
@@ -113,6 +122,7 @@ impl Context {
             Self::Diagnose => "diagnose",
             Self::Bookmarks => "bookmarks",
             Self::Overview => "overview",
+            Self::HarnessMode => "harness-mode",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -126,6 +136,7 @@ impl Context {
             Self::SessionList => "Session list",
             Self::Conversation => "Conversation",
             Self::Composer => "Composer",
+            Self::Spawn => "New session",
             Self::Sections => "Sections popup",
             Self::ListSearch => "List search",
             Self::CmdLine => "Search and commands",
@@ -134,6 +145,8 @@ impl Context {
             Self::FilterMenu => "Filter menu",
             Self::History => "Prompt history",
             Self::FileViewer => "File viewer",
+            Self::Machines => "Machines",
+            Self::Dispatchers => "Dispatchers",
             Self::LabelPicker => "Labels",
             Self::LabelFilter => "Label filter",
             Self::Pins => "Pinned messages",
@@ -142,7 +155,6 @@ impl Context {
             Self::BookmarkConfirm => "Bookmarks — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
-            Self::Dispatch => "Dispatch a job",
             Self::ForkDialog => "Fork a session",
             Self::ModelPicker => "Model picker",
             Self::Sidebar => "Sidebar",
@@ -150,6 +162,7 @@ impl Context {
             Self::Diagnose => "Diagnose / info",
             Self::Bookmarks => "Bookmarks",
             Self::Overview => "Overview",
+            Self::HarnessMode => "Harness mode",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -216,6 +229,11 @@ actions! {
     ToggleFold => "toggle-fold", "Fold or open the subagent group";
     ToggleFoldSection => "toggle-fold-section", "Fold or open the section";
     ToggleFoldAll => "toggle-fold-all", "Fold or open everything";
+    SpawnOpen => "spawn-open", "Start a new session";
+    SpawnNextField => "spawn-next-field", "Next field";
+    SpawnPrevField => "spawn-prev-field", "Previous field";
+    SpawnSubmit => "spawn-submit", "Launch";
+    SpawnCancel => "spawn-cancel", "Close without launching";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -241,12 +259,6 @@ actions! {
     ForkPrevField => "fork-prev-field", "Previous field";
     ForkCycleNext => "fork-cycle-next", "Next choice";
     ForkCyclePrev => "fork-cycle-prev", "Previous choice";
-    DispatchNextField => "dispatch-next-field", "Next dispatch field";
-    DispatchPrevField => "dispatch-prev-field", "Previous dispatch field";
-    DispatchAdapter => "dispatch-adapter", "Switch the dispatched harness";
-    DispatchCycleTarget => "dispatch-cycle-target", "Next dispatcher";
-    DispatchSubmit => "dispatch-submit", "Dispatch the job";
-    DispatchClose => "dispatch-close", "Leave the dispatch tab";
 
     LeaveConversation => "leave-conversation", "Back to the session list";
     ScrollDown => "scroll-down", "Scroll down";
@@ -272,6 +284,23 @@ actions! {
     PickerApply => "picker-apply", "Apply model and effort";
     ToggleAutoApprove => "toggle-auto-approve", "Toggle auto-approve";
     LineCursor => "line-cursor", "Select transcript lines";
+    OpenMachines => "open-machines", "Machines and daemons";
+    OpenDispatchers => "open-dispatchers", "Dispatchers";
+    DispatchersNext => "dispatchers-next", "Next dispatcher";
+    DispatchersPrev => "dispatchers-prev", "Previous dispatcher";
+    DispatchersEnroll => "dispatchers-enroll", "Enroll a dispatcher";
+    DispatchersEdit => "dispatchers-edit", "Rename or rebind";
+    DispatchersDelete => "dispatchers-delete", "Remove this dispatcher";
+    DispatchersRefresh => "dispatchers-refresh", "Refresh the dispatcher list";
+    DispatchersField => "dispatchers-field", "Next field, or cycle the kind";
+    DispatchersCommit => "dispatchers-commit", "Confirm";
+    DispatchersCancel => "dispatchers-cancel", "Back";
+    DispatchersCopyKey => "dispatchers-copy-key", "Copy the new key";
+    MachinesNext => "machines-next", "Next machine";
+    MachinesPrev => "machines-prev", "Previous machine";
+    MachinesRefresh => "machines-refresh", "Refresh the machine list";
+    MachinesSpawn => "machines-spawn", "Aim a spawn at this machine";
+    MachinesClose => "machines-close", "Back to the sessions";
     OpenLabels => "open-labels", "Label this session";
     OpenLabelFilter => "open-label-filter", "Filter by label";
     LabelsClose => "labels-close", "Close the label list";
@@ -377,6 +406,11 @@ actions! {
 
     CloseHelp => "close-help", "Close this cheat sheet";
 
+    HarnessModeClose => "harness-mode-close", "Close the harness picker";
+    HarnessModeNext => "harness-mode-next", "Next mode";
+    HarnessModePrev => "harness-mode-prev", "Previous mode";
+    HarnessModeCommit => "harness-mode-commit", "Apply this mode to every daemon";
+
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
     OverviewRefresh => "overview-refresh", "Refresh the counts";
@@ -459,6 +493,9 @@ const SESSION_LIST: &[BindingSpec] = &[
     spec(Context::SessionList, "tab, z", ActionId::ToggleFold),
     spec(Context::SessionList, "S", ActionId::ToggleFoldSection),
     spec(Context::SessionList, "Z", ActionId::ToggleFoldAll),
+    // The ticket asks for `n`, but decision 7 makes `n` next-search-hit
+    // everywhere and a context binding would silently shadow it.
+    spec(Context::SessionList, "ctrl+n", ActionId::SpawnOpen),
     spec(Context::SessionList, "f", ActionId::ListSections),
     spec(Context::SessionList, "o", ActionId::ListSortCycle),
     spec(Context::SessionList, "O", ActionId::ListSortFlip),
@@ -574,6 +611,14 @@ const FILTER_MENU: &[BindingSpec] = &[
     spec(Context::FilterMenu, "r", ActionId::FilterReset),
 ];
 
+/// Typed characters reach the focused field through the unbound fall-through.
+const SPAWN: &[BindingSpec] = &[
+    spec(Context::Spawn, "tab", ActionId::SpawnNextField),
+    spec(Context::Spawn, "backtab, shift+tab", ActionId::SpawnPrevField),
+    spec(Context::Spawn, "ctrl+s", ActionId::SpawnSubmit),
+    spec(Context::Spawn, "esc", ActionId::SpawnCancel),
+];
+
 const SECTIONS_POPUP: &[BindingSpec] = &[
     spec(Context::Sections, "esc, q, f", ActionId::ListSections),
     spec(Context::Sections, "j, down", ActionId::SectionsNext),
@@ -629,6 +674,35 @@ const FILE_VIEWER: &[BindingSpec] = &[
 
 /// The picker is modal, so it claims plain letters: `space` toggles, and the
 /// manage verbs sit on the keys the webui's menu uses.
+/// The slice has its own context so `j`/`k` move its table rather than the
+/// session list underneath.
+const MACHINES: &[BindingSpec] = &[
+    spec(Context::Global, "M", ActionId::OpenMachines),
+    spec(Context::Machines, "j, down", ActionId::MachinesNext),
+    spec(Context::Machines, "k, up", ActionId::MachinesPrev),
+    spec(Context::Machines, "r", ActionId::MachinesRefresh),
+    spec(Context::Machines, "enter", ActionId::MachinesSpawn),
+    spec(Context::Machines, "esc", ActionId::MachinesClose),
+];
+
+/// `D` is the diagnose global (decision 7), so the panel takes `Ctrl+d`.
+///
+/// The verbs are Ctrl-modified because the enroll and edit forms need the plain
+/// letters to type a name — the same reason the label picker uses `Ctrl+c`.
+const DISPATCHERS: &[BindingSpec] = &[
+    spec(Context::Global, "ctrl+d", ActionId::OpenDispatchers),
+    spec(Context::Dispatchers, "down, ctrl+n", ActionId::DispatchersNext),
+    spec(Context::Dispatchers, "up, ctrl+p", ActionId::DispatchersPrev),
+    spec(Context::Dispatchers, "ctrl+a", ActionId::DispatchersEnroll),
+    spec(Context::Dispatchers, "ctrl+e", ActionId::DispatchersEdit),
+    spec(Context::Dispatchers, "ctrl+x", ActionId::DispatchersDelete),
+    spec(Context::Dispatchers, "ctrl+r", ActionId::DispatchersRefresh),
+    spec(Context::Dispatchers, "tab", ActionId::DispatchersField),
+    spec(Context::Dispatchers, "enter", ActionId::DispatchersCommit),
+    spec(Context::Dispatchers, "esc", ActionId::DispatchersCancel),
+    spec(Context::Dispatchers, "ctrl+y", ActionId::DispatchersCopyKey),
+];
+
 const LABELS: &[BindingSpec] = &[
     spec(Context::SessionList, "l", ActionId::OpenLabels),
     spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
@@ -678,6 +752,14 @@ const BOOKMARKS: &[BindingSpec] = &[
     spec(Context::Bookmarks, "d", ActionId::BookmarksDelete),
 ];
 
+/// Modal: a settings write is not something to trigger by a fall-through.
+const HARNESS_MODE: &[BindingSpec] = &[
+    spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
+    spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
+    spec(Context::HarnessMode, "up, ctrl+p, k", ActionId::HarnessModePrev),
+    spec(Context::HarnessMode, "enter", ActionId::HarnessModeCommit),
+];
+
 const OVERVIEW: &[BindingSpec] = &[
     spec(Context::Overview, "j, down", ActionId::OverviewScrollDown),
     spec(Context::Overview, "k, up", ActionId::OverviewScrollUp),
@@ -715,16 +797,6 @@ const SIDEBAR: &[BindingSpec] = &[
     spec(Context::Sidebar, "k, up", ActionId::SidebarPrev),
     spec(Context::Sidebar, "enter", ActionId::SidebarOpen),
     spec(Context::Sidebar, "u", ActionId::OpenParent),
-];
-
-/// Modal, like the fork dialog: the tab owns every key while it is up.
-const DISPATCH: &[BindingSpec] = &[
-    spec(Context::Dispatch, "esc", ActionId::DispatchClose),
-    spec(Context::Dispatch, "tab, down", ActionId::DispatchNextField),
-    spec(Context::Dispatch, "backtab, up", ActionId::DispatchPrevField),
-    spec(Context::Dispatch, "ctrl+d", ActionId::DispatchCycleTarget),
-    spec(Context::Dispatch, "ctrl+h", ActionId::DispatchAdapter),
-    spec(Context::Dispatch, "ctrl+s", ActionId::DispatchSubmit),
 ];
 
 /// Modal: a stray key must not reach the composer behind it.
@@ -792,6 +864,7 @@ const PLAN_TEXT: &[BindingSpec] = &[
 pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     GLOBAL,
     SESSION_LIST,
+    SPAWN,
     SECTIONS_POPUP,
     LIST_SEARCH,
     CONFIRM,
@@ -804,6 +877,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     CMDLINE,
     FILTER_MENU,
     HISTORY,
+    MACHINES,
+    DISPATCHERS,
     LABELS,
     PINS,
     MACROS,
@@ -811,7 +886,6 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     BOOKMARK_CONFIRM,
     TERMINAL,
     HELP,
-    DISPATCH,
     FORK_DIALOG,
     MODEL_PICKER,
     SIDEBAR,
@@ -819,6 +893,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     DIAGNOSE,
     BOOKMARKS,
     OVERVIEW,
+    HARNESS_MODE,
     ASK,
     ASK_TEXT,
     PLAN,

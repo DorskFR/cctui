@@ -5,12 +5,15 @@ pub mod cards;
 pub mod conversation;
 pub mod diagnose;
 pub mod dispatch;
+pub mod dispatchers;
 pub mod fileview;
 pub mod filters;
 pub mod forkform;
+pub mod harness_mode;
 pub mod help;
 pub mod history;
 pub mod labels;
+pub mod machines;
 pub mod macros;
 pub mod mentions;
 pub mod model_picker;
@@ -21,6 +24,7 @@ pub mod row_actions;
 pub mod sections;
 pub mod sessions;
 pub mod sidebar;
+pub mod spawn;
 pub mod terminal;
 
 use ratatui::Frame;
@@ -40,18 +44,30 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view() {
         View::SessionList => sessions::draw(frame, app),
         View::Bookmarks => bookmarks::draw(frame, app),
+        View::Machines => machines::draw(frame, app),
+        View::Dispatchers => {
+            draw_below(frame, app);
+            dispatchers::draw(frame, app);
+        }
+        View::HarnessMode => {
+            draw_below(frame, app);
+            if let Some(picker) = app.harness_picker.as_ref() {
+                harness_mode::draw(frame, picker);
+            }
+        }
         View::Overview => overview::draw(frame, app),
         // The sidebar is focus only: the conversation draws the panel itself,
         // so taking the keyboard never redraws the transcript differently.
         View::Conversation | View::Sidebar => conversation::draw(frame, app),
+        // The dialog is modal over the list it was opened from.
+        View::Spawn => {
+            sessions::draw(frame, app);
+            spawn::draw(frame, app);
+        }
         // Help always renders over the session list, whatever it was opened from.
         View::Help => {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
-        }
-        View::Dispatch => {
-            draw_below(frame, app);
-            dispatch::draw_panel(frame, app);
         }
         View::ForkDialog => {
             conversation::draw(frame, app);

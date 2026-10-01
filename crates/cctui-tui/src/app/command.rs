@@ -21,12 +21,12 @@ pub enum Command {
     Fork,
     /// Resume an ended session.
     Resume,
-    /// The dispatch tab. Its own verb until the spawn dialog carries it.
-    Dispatch,
+    /// `None` opens the picker; a named mode is applied outright.
+    Harness(Option<super::harness_mode::HarnessMode>),
 }
 
-/// `export md|html [path]`, `attach <path>` or `fork`, without the leading
-/// colon.
+/// `export md|html [path]`, `attach <path>`, `fork` or
+/// `harness [bg|oneshot|sdk]`, without the leading colon.
 pub fn parse(input: &str) -> Result<Command, String> {
     let mut words = input.split_whitespace();
     let verb = words.next().ok_or_else(|| "type a command".to_owned())?;
@@ -59,11 +59,18 @@ pub fn parse(input: &str) -> Result<Command, String> {
             }
             Ok(Command::Resume)
         }
-        "dispatch" => {
+        // Session-independent: the harness mode is a user setting, so unlike
+        // the others this one works with nothing selected.
+        "harness" | "h" => {
+            let Some(word) = words.next() else { return Ok(Command::Harness(None)) };
             if words.next().is_some() {
-                return Err("usage: :dispatch".to_owned());
+                return Err("usage: :harness [bg|oneshot|sdk]".to_owned());
             }
-            Ok(Command::Dispatch)
+            let mode = super::harness_mode::MODES
+                .into_iter()
+                .find(|m| m.as_str() == word)
+                .ok_or_else(|| format!("`{word}` is not bg, oneshot or sdk"))?;
+            Ok(Command::Harness(Some(mode)))
         }
         other => Err(format!("`{other}` is not a command")),
     }
@@ -94,14 +101,17 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
         Command::Resume => {
             return super::forkform::reduce_fork(app, super::forkform::ForkAction::Resume);
         }
-        Command::Dispatch => {
-            return super::dispatch::reduce_dispatch(app, super::dispatch::DispatchAction::Open);
-        }
         _ => {}
+    }
+    if let Command::Harness(mode) = command {
+        let action = mode.map_or(super::harness_mode::HarnessModeAction::Open, |m| {
+            super::harness_mode::HarnessModeAction::Set(m)
+        });
+        return super::harness_mode::reduce_harness_mode(app, action);
     }
     let Some(session) = app.selected_session().cloned() else { return Vec::new() };
     match command {
-        Command::Fork | Command::Resume | Command::Dispatch => Vec::new(),
+        Command::Fork | Command::Resume | Command::Harness(_) => Vec::new(),
         Command::Attach { path } => {
             let path = super::cmdline::expand_home(&path.to_string_lossy());
             vec![Effect::ReadAttachment { session_id: session.id, path }]
@@ -143,6 +153,14 @@ mod tests {
     #[test]
     fn fork_takes_no_arguments_and_forks_the_selected_session() {
         assert_eq!(parse("fork"), Ok(Command::Fork));
+        assert_eq!(parse("harness"), Ok(Command::Harness(None)));
+        assert_eq!(
+            parse("harness sdk"),
+            Ok(Command::Harness(Some(super::super::harness_mode::HarnessMode::Sdk)))
+        );
+        assert!(parse("h oneshot").is_ok());
+        assert!(parse("harness nope").is_err());
+        assert!(parse("harness sdk extra").is_err());
         assert!(parse("fork now").is_err(), "no arguments to mistype");
 
         let mut app = app();

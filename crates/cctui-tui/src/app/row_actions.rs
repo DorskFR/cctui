@@ -226,10 +226,21 @@ fn archive_or_unarchive(app: &mut App) -> Vec<Effect> {
     let Some(session) = app.selected_session() else { return Vec::new() };
     let id = session.id.clone();
     let archived = session.status == cctui_proto::models::SessionStatus::Archived;
+    let foreign = session.origin.is_foreign();
     let label = label_of(app, &id);
     if archived {
         app.toast(Level::Info, format!("unarchived {label}"));
         return vec![Effect::ArchiveSessions { ids: vec![id], archived: false }];
+    }
+    // Archiving a job cctui did not start also removes it on the machine, which
+    // is someone else's work ending: that one always asks first, and says so.
+    if foreign {
+        app.row_actions.rename = None;
+        app.row_actions.confirm = Some(Confirm {
+            prompt: format!("Remove the claude job {label} on its machine?"),
+            action: Pending::Archive { ids: vec![id], label },
+        });
+        return Vec::new();
     }
     archive(app, vec![id], &label)
 }
@@ -695,5 +706,38 @@ mod tests {
             assert!(act(&mut app, action).is_empty());
         }
         assert!(app.row_actions.strip().is_none());
+    }
+
+    /// Archiving a job cctui did not start removes it on the machine, so it is
+    /// the one single-row archive that stops to ask.
+    #[test]
+    fn a_foreign_job_is_never_archived_without_a_confirm() {
+        let mut app = app();
+        let id = app.selected_session_id().expect("a selection");
+        app.sessions.iter_mut().find(|s| s.id == id).expect("the selected row").origin =
+            cctui_proto::api::SessionOrigin::Foreign;
+
+        let effects = act(&mut app, RowAction::ArchiveOrUnarchive);
+        assert!(effects.is_empty(), "nothing goes out before the answer");
+        let confirm = app.row_actions.confirm.as_ref().expect("a confirm");
+        assert!(
+            confirm.prompt.contains("on its machine"),
+            "the prompt has to say what it does: {:?}",
+            confirm.prompt
+        );
+        assert!(matches!(confirm.action, Pending::Archive { .. }));
+
+        let effects = act(&mut app, RowAction::ConfirmYes);
+        assert!(
+            matches!(effects.as_slice(), [Effect::ArchiveSessions { ids, archived: true }] if ids == &[id]),
+        );
+    }
+
+    #[test]
+    fn a_session_cctui_started_still_archives_in_one_keystroke() {
+        let mut app = app();
+        let effects = act(&mut app, RowAction::ArchiveOrUnarchive);
+        assert!(matches!(effects.as_slice(), [Effect::ArchiveSessions { archived: true, .. }]));
+        assert!(app.row_actions.confirm.is_none());
     }
 }

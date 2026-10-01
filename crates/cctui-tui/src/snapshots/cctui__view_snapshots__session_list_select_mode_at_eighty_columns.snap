@@ -1,5 +1,6 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 527
 expression: "render_screen_sized(&mut app, 80, 24)"
 ---
  cctui  v0.0.0-test  ● ~4  ▪ 0/0  $0.00  ●4  ! 2 need input — Ctrl+g

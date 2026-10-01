@@ -47,6 +47,10 @@ pub fn reduce_session_live(app: &mut App, action: SessionLiveAction) -> Vec<Effe
     match action {
         SessionLiveAction::MachineLiveness { machine_id, liveness } => {
             app.machine_liveness.insert(machine_id, liveness);
+            // The machines table holds its own copy of the tier, so the event has
+            // to land there as well or it would wait for a refetch.
+            let live = app.machine_liveness.clone();
+            app.machines.apply_liveness(&live);
             Vec::new()
         }
         SessionLiveAction::WsHealth(healthy) => {

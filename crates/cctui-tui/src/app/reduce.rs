@@ -22,6 +22,8 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::RowAction(action) => row_actions::reduce_row_actions(app, action),
         Action::Attach(action) => super::attach::reduce_attach(app, action),
         Action::Labels(action) => super::labels::reduce_labels(app, action),
+        Action::Machines(action) => super::machines::reduce_machines(app, action),
+        Action::Dispatchers(action) => super::dispatchers::reduce_dispatchers(app, action),
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
             app.pending_chord = Some(chord);
@@ -240,6 +242,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
         Action::Conversation(action) => conversation::reduce(app, action),
         Action::ListShape(action) => super::list_shape_reduce::reduce(app, action),
+        Action::Spawn(action) => super::spawn::reduce(app, action),
         Action::ListSearch(action) => super::list_search::reduce(app, action),
         // Decision 7: one key, scoped to whatever view is in front.
         Action::SearchCurrentView => match app.view() {
@@ -268,6 +271,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Prompt(action) => super::prompt::reduce_prompt(app, action),
         Action::Diagnose(action) => super::diagnose::reduce_diagnose(app, action),
         Action::Slice(action) => super::slice::reduce_slice(app, action),
+        Action::HarnessMode(action) => super::harness_mode::reduce_harness_mode(app, action),
         Action::DeepLink(action) => super::deeplink::reduce_deeplink(app, action),
 
         Action::StreamLine { session_id, seq, line, usage } => {
@@ -386,6 +390,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         // Classifier signals arrive on the next REST refresh; Working until then.
         bucket: cctui_proto::classifier::Bucket::Working,
         token_usage: cctui_proto::models::TokenUsage::default(),
+        origin: cctui_proto::api::SessionOrigin::from_metadata(&session.metadata),
         metadata: session.metadata,
         adapter_id: session.adapter_id,
         machine_name: None,

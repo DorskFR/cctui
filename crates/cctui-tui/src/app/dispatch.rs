@@ -8,7 +8,8 @@
 //! `cctui_clientcore::dispatch`, shared with the web UI.
 
 use cctui_clientcore::dispatch::{self, ContextPack, DispatchForm};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
 
 use super::action::Effect;
 use super::state::App;
@@ -133,6 +134,24 @@ impl DispatchFields {
         !self.form.dispatcher.trim().is_empty()
     }
 
+    pub fn toggle_adapter(&mut self) {
+        self.form.dispatch_adapter =
+            if self.is_codex() { String::new() } else { "codex".to_owned() };
+    }
+
+    pub fn cycle_dispatcher(&mut self) {
+        if self.dispatchers.is_empty() {
+            return;
+        }
+        let next = self
+            .dispatchers
+            .iter()
+            .position(|d| *d == self.form.dispatcher)
+            .map_or(0, |i| (i + 1) % self.dispatchers.len());
+        self.form.dispatcher = self.dispatchers[next].clone();
+        self.recall();
+    }
+
     fn remember(&mut self) {
         let key = dispatch::memory_key(&self.form.dispatcher, &self.form.repo);
         self.remembered.insert(
@@ -162,20 +181,8 @@ impl DispatchFields {
     }
 }
 
+/// What the dispatch tab still needs the store for: the server's answer.
 pub enum DispatchAction {
-    /// Show the tab on its own. The spawn dialog will carry it instead, and
-    /// then this is the dialog opening on the Dispatch target.
-    Open,
-    Close,
-    DispatchersLoaded(Vec<String>),
-    FocusNext,
-    FocusPrev,
-    Key(KeyEvent),
-    /// Cycle the harness radio.
-    ToggleAdapter,
-    /// Take the next dispatcher the server offered.
-    CycleDispatcher,
-    Submit,
     Submitted {
         session_id: String,
         /// The server had this one already: an idempotent resubmit.
@@ -184,103 +191,15 @@ pub enum DispatchAction {
 }
 
 pub fn reduce_dispatch(app: &mut App, action: DispatchAction) -> Vec<Effect> {
-    match action {
-        DispatchAction::Open => open(app),
-        DispatchAction::Close => close(app),
-        DispatchAction::DispatchersLoaded(names) => {
-            let first = names.first().cloned();
-            app.dispatch.dispatchers = names;
-            if app.dispatch.form.dispatcher.is_empty()
-                && let Some(name) = first
-            {
-                app.dispatch.form.dispatcher = name;
-                app.dispatch.recall();
-            }
-            Vec::new()
-        }
-        DispatchAction::FocusNext => {
-            app.dispatch.focus = (app.dispatch.focus + 1) % Field::ORDER.len();
-            Vec::new()
-        }
-        DispatchAction::FocusPrev => {
-            app.dispatch.focus =
-                app.dispatch.focus.checked_sub(1).unwrap_or(Field::ORDER.len() - 1);
-            Vec::new()
-        }
-        DispatchAction::Key(key) => {
-            let which = app.dispatch.focused();
-            edit(app.dispatch.field(which), key);
-            if which == Field::Dispatcher || which == Field::Repo {
-                app.dispatch.recall();
-            }
-            Vec::new()
-        }
-        DispatchAction::ToggleAdapter => {
-            app.dispatch.form.dispatch_adapter =
-                if app.dispatch.is_codex() { String::new() } else { "codex".to_owned() };
-            Vec::new()
-        }
-        DispatchAction::CycleDispatcher => {
-            cycle_dispatcher(app);
-            Vec::new()
-        }
-        DispatchAction::Submit => submit(app),
-        DispatchAction::Submitted { session_id, existing } => {
-            let what = if existing { "already running" } else { "dispatched" };
-            app.toast(Level::Info, format!("{what}: {}", short(&session_id)));
-            app.dispatch.remember();
-            super::conversation::switch_to(app, session_id)
+    let DispatchAction::Submitted { session_id, existing } = action;
+    let what = if existing { "already running" } else { "dispatched" };
+    app.toast(Level::Info, format!("{what}: {}", short(&session_id)));
+    if let Some(form) = app.spawn.as_mut() {
+        for section in &mut form.sections {
+            section.remember_dispatch();
         }
     }
-}
-
-fn open(app: &mut App) -> Vec<Effect> {
-    if !available(app) {
-        app.toast(Level::Info, "no dispatcher is enrolled");
-        return Vec::new();
-    }
-    app.dispatch.focus = 0;
-    app.router.push(super::state::View::Dispatch);
-    Vec::new()
-}
-
-fn close(app: &mut App) -> Vec<Effect> {
-    if app.view() == super::state::View::Dispatch {
-        app.router.pop();
-    }
-    Vec::new()
-}
-
-fn cycle_dispatcher(app: &mut App) {
-    if app.dispatch.dispatchers.is_empty() {
-        return;
-    }
-    let next = app
-        .dispatch
-        .dispatchers
-        .iter()
-        .position(|d| *d == app.dispatch.form.dispatcher)
-        .map_or(0, |i| (i + 1) % app.dispatch.dispatchers.len());
-    app.dispatch.form.dispatcher = app.dispatch.dispatchers[next].clone();
-    app.dispatch.recall();
-}
-
-fn submit(app: &mut App) -> Vec<Effect> {
-    if !app.dispatch.ready() {
-        app.toast(Level::Warn, "pick a dispatcher first");
-        return Vec::new();
-    }
-    // The id is the idempotency key, so the same job resubmitted lands on the
-    // session already running instead of starting a second one.
-    let session_id = dispatch_id(&app.dispatch);
-    let body = dispatch::build_dispatch_body(
-        &app.dispatch.form,
-        &[],
-        &app.dispatch.pack,
-        None,
-        &session_id,
-    );
-    vec![Effect::Dispatch { body: Box::new(body) }]
+    super::conversation::switch_to(app, session_id)
 }
 
 /// A stable id for one job: the same dispatcher, repo and ticket resubmit onto
@@ -308,11 +227,112 @@ fn short(session_id: &str) -> &str {
     session_id.get(..12).unwrap_or(session_id)
 }
 
-/// The tab is hidden when the server offers no dispatcher: there is nothing to
-/// dispatch to, and an empty picker is worse than no tab.
-#[must_use]
-pub const fn available(app: &App) -> bool {
-    !app.dispatch.dispatchers.is_empty()
+/// The spawn dialog's Dispatch section.
+///
+/// It holds its own fields, like every other section, so the dialog needed no
+/// field of its own. `apply` is empty on purpose: a dispatch is a different
+/// route with a different body, not a `SpawnRequest`, so the dialog's submit
+/// asks this section for its body instead when the Dispatch tab is showing.
+#[derive(Debug, Default)]
+pub struct DispatchSection {
+    pub fields: DispatchFields,
+}
+
+impl super::spawn::SpawnSection for DispatchSection {
+    fn title(&self) -> &'static str {
+        "Dispatch"
+    }
+
+    /// Zero rows is how a section hides: no dispatcher enrolled means there is
+    /// nothing to dispatch to, and an empty picker is worse than no section.
+    fn rows(&self, _fields: &cctui_clientcore::spawn::SpawnFields) -> usize {
+        if self.fields.dispatchers.is_empty() { 0 } else { Field::ORDER.len() }
+    }
+
+    fn lines(
+        &self,
+        focused: Option<usize>,
+        width: u16,
+        _fields: &cctui_clientcore::spawn::SpawnFields,
+    ) -> Vec<Line<'static>> {
+        if self.fields.dispatchers.is_empty() {
+            return Vec::new();
+        }
+        super::spawn::clamp_rows(crate::views::dispatch::lines(&self.fields, focused, width), width)
+    }
+
+    fn handle(
+        &mut self,
+        row: usize,
+        key: KeyEvent,
+        _fields: &mut cctui_clientcore::spawn::SpawnFields,
+    ) -> Vec<Effect> {
+        self.fields.focus = row;
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.fields.cycle_dispatcher(),
+            (KeyCode::Char('h'), KeyModifiers::CONTROL) => self.fields.toggle_adapter(),
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => return self.submit(),
+            _ => {
+                let which = self.fields.focused();
+                edit(self.fields.field(which), key);
+                if matches!(which, Field::Dispatcher | Field::Repo) {
+                    self.fields.recall();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// A dispatch is not a spawn: nothing of this section belongs on a
+    /// `SpawnRequest`.
+    fn apply(&self, _request: &mut cctui_proto::api::SpawnRequest) {}
+
+    fn problems(&self) -> Vec<String> {
+        if self.fields.dispatchers.is_empty() || self.fields.ready() {
+            Vec::new()
+        } else {
+            vec!["pick a dispatcher".to_owned()]
+        }
+    }
+
+    fn receive(&mut self, data: &super::spawn::SpawnData) {
+        let first = data.dispatchers.first().cloned();
+        self.fields.dispatchers.clone_from(&data.dispatchers);
+        if self.fields.form.dispatcher.is_empty()
+            && let Some(name) = first
+        {
+            self.fields.form.dispatcher = name;
+            self.fields.recall();
+        }
+    }
+
+    fn dispatch_body(&self) -> Option<serde_json::Value> {
+        if !self.fields.ready() {
+            return None;
+        }
+        // The id is the idempotency key, so the same job resubmitted lands on
+        // the session already running rather than starting a second one.
+        let session_id = dispatch_id(&self.fields);
+        Some(dispatch::build_dispatch_body(
+            &self.fields.form,
+            &[],
+            &self.fields.pack,
+            None,
+            &session_id,
+        ))
+    }
+
+    fn remember_dispatch(&mut self) {
+        self.fields.remember();
+    }
+}
+
+impl DispatchSection {
+    fn submit(&self) -> Vec<Effect> {
+        use super::spawn::SpawnSection as _;
+        self.dispatch_body()
+            .map_or_else(Vec::new, |body| vec![Effect::Dispatch { body: Box::new(body) }])
+    }
 }
 
 /// One field's worth of editing. Each dialog in the TUI keeps its own, because
@@ -329,10 +349,12 @@ fn edit(buffer: &mut String, key: KeyEvent) {
 
 #[cfg(test)]
 mod tests {
+    use cctui_clientcore::spawn::SpawnFields;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{DispatchAction, Field, available, dispatch_id};
+    use super::{DispatchAction, DispatchSection, Field, dispatch_id};
     use crate::app::action::Effect;
+    use crate::app::spawn::{SpawnData, SpawnSection};
     use crate::app::{Action, App, reduce};
     use crate::testsupport::session;
 
@@ -343,201 +365,184 @@ mod tests {
         app
     }
 
-    fn act(app: &mut App, action: DispatchAction) -> Vec<Effect> {
-        reduce(app, Action::Dispatch(action))
+    fn section(names: &[&str]) -> DispatchSection {
+        let mut s = DispatchSection::default();
+        s.receive(&SpawnData {
+            dispatchers: names.iter().map(|n| (*n).to_owned()).collect(),
+            ..SpawnData::default()
+        });
+        s
     }
 
-    fn type_text(app: &mut App, text: &str) {
+    fn key(section: &mut DispatchSection, field: Field, code: KeyCode) -> Vec<Effect> {
+        let row = Field::ORDER.iter().position(|f| *f == field).expect("a field");
+        section.handle(row, KeyEvent::new(code, KeyModifiers::NONE), &mut SpawnFields::default())
+    }
+
+    fn type_text(section: &mut DispatchSection, field: Field, text: &str) {
         for c in text.chars() {
-            act(app, DispatchAction::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
+            key(section, field, KeyCode::Char(c));
         }
     }
 
-    fn backspace(app: &mut App, times: usize) {
-        for _ in 0..times {
-            act(app, DispatchAction::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-        }
+    fn ctrl(section: &mut DispatchSection, c: char) -> Vec<Effect> {
+        section.handle(
+            0,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            &mut SpawnFields::default(),
+        )
     }
 
-    fn focus(app: &mut App, which: Field) {
-        app.dispatch.focus = Field::ORDER.iter().position(|f| *f == which).expect("a field");
+    /// Zero rows is how the section hides when nothing can be dispatched to.
+    #[test]
+    fn the_section_hides_until_the_server_offers_a_dispatcher() {
+        let empty = DispatchSection::default();
+        assert_eq!(empty.rows(&SpawnFields::default()), 0);
+        assert!(empty.lines(None, 100, &SpawnFields::default()).is_empty());
+        assert!(empty.problems().is_empty(), "a hidden section blocks nothing");
+
+        let filled = section(&["k8s-cyberia"]);
+        assert_eq!(filled.rows(&SpawnFields::default()), Field::ORDER.len());
+        assert_eq!(filled.fields.form.dispatcher, "k8s-cyberia", "the first is preselected");
     }
 
     #[test]
-    fn the_tab_is_hidden_until_the_server_offers_a_dispatcher() {
-        let mut app = app();
-        assert!(!available(&app));
-        act(&mut app, DispatchAction::DispatchersLoaded(vec!["k8s-cyberia".to_owned()]));
-        assert!(available(&app));
-        assert_eq!(app.dispatch.form.dispatcher, "k8s-cyberia", "the first is preselected");
+    fn typing_lands_in_the_row_the_key_was_aimed_at() {
+        let mut s = section(&["k8s"]);
+        type_text(&mut s, Field::Repo, "cctui");
+        assert_eq!(s.fields.form.repo, "cctui");
+        assert!(s.fields.form.ticket.is_empty());
+        key(&mut s, Field::Repo, KeyCode::Backspace);
+        assert_eq!(s.fields.form.repo, "cctu");
     }
 
     #[test]
-    fn the_focus_walks_the_fields_and_wraps_both_ways() {
-        let mut app = app();
-        assert_eq!(app.dispatch.focused(), Field::Dispatcher);
-        act(&mut app, DispatchAction::FocusPrev);
-        assert_eq!(app.dispatch.focused(), Field::PackToken, "it wraps backwards");
-        act(&mut app, DispatchAction::FocusNext);
-        assert_eq!(app.dispatch.focused(), Field::Dispatcher);
+    fn the_harness_and_the_dispatcher_cycle_on_their_own_keys() {
+        let mut s = section(&["a", "b"]);
+        assert!(!s.fields.is_codex());
+        ctrl(&mut s, 'h');
+        assert!(s.fields.is_codex());
+        ctrl(&mut s, 'h');
+        assert!(!s.fields.is_codex());
+
+        ctrl(&mut s, 'd');
+        assert_eq!(s.fields.form.dispatcher, "b");
+        ctrl(&mut s, 'd');
+        assert_eq!(s.fields.form.dispatcher, "a", "it wraps");
     }
 
     #[test]
-    fn typing_lands_in_the_focused_field_only() {
-        let mut app = app();
-        focus(&mut app, Field::Repo);
-        type_text(&mut app, "cctui");
-        assert_eq!(app.dispatch.form.repo, "cctui");
-        assert!(app.dispatch.form.ticket.is_empty());
-
-        act(&mut app, DispatchAction::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-        assert_eq!(app.dispatch.form.repo, "cctu");
-    }
-
-    #[test]
-    fn the_harness_radio_toggles_between_claude_and_codex() {
-        let mut app = app();
-        assert!(!app.dispatch.is_codex());
-        act(&mut app, DispatchAction::ToggleAdapter);
-        assert!(app.dispatch.is_codex());
-        act(&mut app, DispatchAction::ToggleAdapter);
-        assert!(!app.dispatch.is_codex());
-    }
-
-    #[test]
-    fn the_dispatcher_key_cycles_what_the_server_offered() {
-        let mut app = app();
-        act(&mut app, DispatchAction::DispatchersLoaded(vec!["a".to_owned(), "b".to_owned()]));
-        act(&mut app, DispatchAction::CycleDispatcher);
-        assert_eq!(app.dispatch.form.dispatcher, "b");
-        act(&mut app, DispatchAction::CycleDispatcher);
-        assert_eq!(app.dispatch.form.dispatcher, "a", "it wraps");
-    }
-
-    #[test]
-    fn submitting_without_a_dispatcher_says_so_and_posts_nothing() {
-        let mut app = app();
-        assert!(act(&mut app, DispatchAction::Submit).is_empty());
-        assert!(app.toasts.latest().expect("a toast").text.contains("pick a dispatcher"));
+    fn a_section_with_no_dispatcher_picked_says_what_is_missing() {
+        let mut s = section(&["k8s"]);
+        s.fields.form.dispatcher.clear();
+        assert_eq!(s.problems(), vec!["pick a dispatcher".to_owned()]);
+        assert!(s.dispatch_body().is_none(), "and posts nothing");
+        assert!(ctrl(&mut s, 's').is_empty());
     }
 
     #[test]
     fn the_body_is_the_shared_one_and_carries_the_context_pack() {
-        let mut app = app();
-        act(&mut app, DispatchAction::DispatchersLoaded(vec!["k8s".to_owned()]));
-        focus(&mut app, Field::Repo);
-        type_text(&mut app, "cctui");
-        focus(&mut app, Field::Ticket);
-        type_text(&mut app, "CCT-1102");
-        focus(&mut app, Field::Timeout);
-        type_text(&mut app, "60");
-        focus(&mut app, Field::PackUrl);
-        type_text(&mut app, "https://git/p.git");
-        focus(&mut app, Field::PackToken);
-        type_text(&mut app, "tok");
+        let mut s = section(&["k8s"]);
+        type_text(&mut s, Field::Repo, "cctui");
+        type_text(&mut s, Field::Ticket, "CCT-1102");
+        type_text(&mut s, Field::Timeout, "60");
+        type_text(&mut s, Field::PackUrl, "https://git/p.git");
+        type_text(&mut s, Field::PackToken, "tok");
 
-        match act(&mut app, DispatchAction::Submit).as_slice() {
-            [Effect::Dispatch { body }] => {
-                assert_eq!(body["dispatcher"], "k8s");
-                assert_eq!(body["timeout"], 60);
-                assert_eq!(body["payload"]["repo"], "cctui");
-                assert_eq!(body["payload"]["context"]["issue_id"], "CCT-1102");
-                assert_eq!(body["payload"]["env"]["CONTEXT_PACK_URL"], "https://git/p.git");
-                assert_eq!(body["payload"]["env"]["CONTEXT_PACK_TOKEN"], "tok");
-            }
+        let body = s.dispatch_body().expect("a body");
+        assert_eq!(body["dispatcher"], "k8s");
+        assert_eq!(body["timeout"], 60);
+        assert_eq!(body["payload"]["repo"], "cctui");
+        assert_eq!(body["payload"]["context"]["issue_id"], "CCT-1102");
+        assert_eq!(body["payload"]["env"]["CONTEXT_PACK_URL"], "https://git/p.git");
+        assert_eq!(body["payload"]["env"]["CONTEXT_PACK_TOKEN"], "tok");
+
+        match ctrl(&mut s, 's').as_slice() {
+            [Effect::Dispatch { body }] => assert_eq!(body["dispatcher"], "k8s"),
             other => panic!("expected one dispatch effect, got {}", other.len()),
         }
+    }
+
+    /// A dispatch is a different route: nothing of this section may land on a
+    /// spawn request.
+    #[test]
+    fn the_section_writes_nothing_onto_a_spawn_request() {
+        let mut s = section(&["k8s"]);
+        type_text(&mut s, Field::Repo, "cctui");
+        let mut request = cctui_clientcore::spawn::build_spawn_body(
+            &SpawnFields::default(),
+            None,
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+        );
+        let before = serde_json::to_value(&request).expect("serialises");
+        s.apply(&mut request);
+        assert_eq!(serde_json::to_value(&request).expect("serialises"), before);
     }
 
     /// The id is the idempotency key, so the same job twice is the same id.
     #[test]
     fn the_same_job_resubmits_onto_the_same_id() {
-        let mut a = app();
-        act(&mut a, DispatchAction::DispatchersLoaded(vec!["k8s".to_owned()]));
-        focus(&mut a, Field::Ticket);
-        type_text(&mut a, "CCT-1");
-        let first = dispatch_id(&a.dispatch);
+        let mut a = section(&["k8s"]);
+        type_text(&mut a, Field::Ticket, "CCT-1");
+        let first = dispatch_id(&a.fields);
 
-        let mut b = app();
-        act(&mut b, DispatchAction::DispatchersLoaded(vec!["k8s".to_owned()]));
-        focus(&mut b, Field::Ticket);
-        type_text(&mut b, "CCT-1");
-        assert_eq!(dispatch_id(&b.dispatch), first);
-
-        type_text(&mut b, "9");
-        assert_ne!(dispatch_id(&b.dispatch), first, "a different ticket is a different job");
+        let mut b = section(&["k8s"]);
+        type_text(&mut b, Field::Ticket, "CCT-1");
+        assert_eq!(dispatch_id(&b.fields), first);
+        type_text(&mut b, Field::Ticket, "9");
+        assert_ne!(dispatch_id(&b.fields), first, "a different ticket is a different job");
     }
 
     #[test]
     fn an_idempotent_resubmit_says_the_session_was_already_running() {
         let mut app = app();
         app.sessions.push(session("s-disp", "worker", "active", "working"));
-        act(
+        reduce(
             &mut app,
-            DispatchAction::Submitted { session_id: "s-disp".to_owned(), existing: true },
+            Action::Dispatch(DispatchAction::Submitted {
+                session_id: "s-disp".to_owned(),
+                existing: true,
+            }),
         );
         assert!(app.toasts.latest().expect("a toast").text.contains("already running"));
         assert_eq!(app.selected_session_id().as_deref(), Some("s-disp"));
     }
 
     /// The form comes back per dispatcher and repo — but never the token.
-    /// Recall restores what was remembered; it never wipes what is being typed
-    /// for a job that has not been dispatched before.
     #[test]
     fn the_form_is_remembered_per_dispatcher_and_repo_without_the_token() {
-        let mut app = app();
-        app.sessions.push(session("s-disp", "worker", "active", "working"));
-        act(&mut app, DispatchAction::DispatchersLoaded(vec!["k8s".to_owned()]));
+        let mut s = section(&["k8s"]);
+        type_text(&mut s, Field::Repo, "a");
+        type_text(&mut s, Field::Ticket, "T-1");
+        type_text(&mut s, Field::PackToken, "secret");
+        s.remember_dispatch();
 
-        // One job against repo `a`.
-        focus(&mut app, Field::Repo);
-        type_text(&mut app, "a");
-        focus(&mut app, Field::Ticket);
-        type_text(&mut app, "T-1");
-        focus(&mut app, Field::PackToken);
-        type_text(&mut app, "secret");
-        act(
-            &mut app,
-            DispatchAction::Submitted { session_id: "s-disp".to_owned(), existing: false },
-        );
+        type_text(&mut s, Field::Repo, "b");
+        for _ in 0..3 {
+            key(&mut s, Field::Ticket, KeyCode::Backspace);
+        }
+        type_text(&mut s, Field::Ticket, "T-2");
+        s.remember_dispatch();
 
-        // Another against repo `b`, with its own ticket.
-        focus(&mut app, Field::Repo);
-        backspace(&mut app, 1);
-        type_text(&mut app, "b");
-        focus(&mut app, Field::Ticket);
-        backspace(&mut app, 3);
-        type_text(&mut app, "T-2");
-        act(
-            &mut app,
-            DispatchAction::Submitted { session_id: "s-disp".to_owned(), existing: false },
-        );
-
-        // Clear the typed credential, so what comes back is only what was
-        // remembered rather than what happens to still be on screen.
-        focus(&mut app, Field::PackToken);
-        backspace(&mut app, 6);
-        assert!(app.dispatch.pack.token.is_empty());
-
-        // Back to `a`: its own ticket returns, over the one just typed.
-        focus(&mut app, Field::Repo);
-        backspace(&mut app, 1);
-        type_text(&mut app, "a");
-        assert_eq!(app.dispatch.form.ticket, "T-1", "repo a's ticket came back");
-        assert!(app.dispatch.pack.token.is_empty(), "the credential was never kept");
+        // Clear the typed credential, so what comes back is only what was kept.
+        for _ in 0..6 {
+            key(&mut s, Field::PackToken, KeyCode::Backspace);
+        }
+        key(&mut s, Field::Repo, KeyCode::Backspace);
+        assert_eq!(s.fields.form.repo, "a");
+        assert_eq!(s.fields.form.ticket, "T-1", "repo a's ticket came back");
+        assert!(s.fields.pack.token.is_empty(), "the credential was never kept");
     }
 
-    /// A repo with no history leaves what is being typed alone: clearing a
-    /// half-filled form because the repo changed would lose work.
+    /// A repo with no history leaves what is being typed alone.
     #[test]
     fn an_unseen_repo_does_not_wipe_the_form() {
-        let mut app = app();
-        act(&mut app, DispatchAction::DispatchersLoaded(vec!["k8s".to_owned()]));
-        focus(&mut app, Field::Ticket);
-        type_text(&mut app, "T-9");
-        focus(&mut app, Field::Repo);
-        type_text(&mut app, "fresh");
-        assert_eq!(app.dispatch.form.ticket, "T-9");
+        let mut s = section(&["k8s"]);
+        type_text(&mut s, Field::Ticket, "T-9");
+        type_text(&mut s, Field::Repo, "fresh");
+        assert_eq!(s.fields.form.ticket, "T-9");
     }
 
     #[test]

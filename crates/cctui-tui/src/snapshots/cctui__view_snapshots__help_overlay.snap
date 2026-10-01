@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 819
+assertion_line: 920
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
- 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Anywhere                                         Ctrl+e      Rename or recolor                │
-▸ │  ?           Toggle this cheat sheet            Ctrl+d      Delete this label                │
-  │  q           Quit cctui                         Enter       Confirm                          │
-  │  1-9         Switch view                      Label filter                                   │
-  │  /           Search the current view            Esc         Close the label list             │
-  │  n           Next search hit                    Ctrl+n / ↓  Next label                       │
-  │  N           Previous search hit                Ctrl+p / ↑  Previous label                   │
-  │  D           Diagnose the selected session      Space / En… Include or exclude this label    │
-  │  i           Session info                       a           Show every label again           │
-  │  Ctrl+g      Jump to the next session needin… Pinned messages                                │
-  │Session list                                     Esc         Close the pinned messages        │
-  │  j / ↓       Next session                       Ctrl+n / ↓  Next pin                         │
-  │  k / ↑       Previous session                   Ctrl+p / ↑  Previous pin                     │
-  │  g           First session                      Enter       Jump to the pinned message       │
-  │  G           Last session                       d / m       Unpin this message               │
-  │  Enter       Open the conversation            Macros                                         │
-  │  z / Tab     Fold or open the subagent group    Esc         Close the macro list             │
-  │  S           Fold or open the section           Ctrl+n / ↓  Next macro                       │
-  │  Z           Fold or open everything            Ctrl+p / ↑  Previous macro                   │
-  │  f           Choose which sections show         Enter       Put this prompt in the composer  │
+ 1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
+  │Anywhere                                         Ctrl+e      Rename or rebind                 │
+▸ │  ?           Toggle this cheat sheet            Ctrl+x      Remove this dispatcher           │
+  │  q           Quit cctui                         Ctrl+r      Refresh the dispatcher list      │
+  │  1-9         Switch view                        Tab         Next field, or cycle the kind    │
+  │  /           Search the current view            Enter       Confirm                          │
+  │  n           Next search hit                    Esc         Back                             │
+  │  N           Previous search hit                Ctrl+y      Copy the new key                 │
+  │  D           Diagnose the selected session    Labels                                         │
+  │  i           Session info                       Esc         Close the label list             │
+  │  M           Machines and daemons               Ctrl+n / ↓  Next label                       │
+  │  Ctrl+d      Dispatchers                        Ctrl+p / ↑  Previous label                   │
+  │  Ctrl+g      Jump to the next session needin…   Space       Attach or detach this label      │
+  │Session list                                     Ctrl+c      Create a label                   │
+  │  j / ↓       Next session                       Ctrl+e      Rename or recolor                │
+  │  k / ↑       Previous session                   Ctrl+d      Delete this label                │
+  │  g           First session                      Enter       Confirm                          │
+  │  G           Last session                     Label filter                                   │
+  │  Enter       Open the conversation              Esc         Close the label list             │
+  │  z / Tab     Fold or open the subagent group    Ctrl+n / ↓  Next label                       │
+  │  S           Fold or open the section           Ctrl+p / ↑  Previous label                   │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

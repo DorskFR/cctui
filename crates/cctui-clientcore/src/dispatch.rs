@@ -6,24 +6,10 @@
 
 use serde_json::{Map, Value};
 
-/// Sentinel for "no account at all", outside the account-name space so one
-/// picker can offer accounts and pools without a collision.
-pub const NO_ACCOUNT: &str = "\x00no-account";
-/// Sentinel prefix for "bind inside this pool".
-pub const POOL_PREFIX: &str = "\x00pool:";
-
-/// The pool a picker value names, if it names one.
-#[must_use]
-pub fn pool_name(value: &str) -> Option<&str> {
-    value.strip_prefix(POOL_PREFIX)
-}
-
-/// A `-compatible` provider takes the model id the account was configured
-/// with, not the harness's own family.
-#[must_use]
-pub fn is_compatible_provider(provider: &str) -> bool {
-    provider.ends_with("-compatible")
-}
+// The account/pool sentinels and the provider rule are spawn-wide, so `spawn`
+// owns them and this module uses them rather than keeping a second copy: two
+// copies of a parity-governed rule is what the fixtures exist to prevent.
+pub use super::spawn::{NO_ACCOUNT, POOL_PREFIX, is_compatible_provider, pool_name};
 
 /// Context-pack field → the env var the worker entrypoint reads. Fixed keys, in
 /// the order the web UI writes them.

@@ -211,6 +211,11 @@ pub fn info_rows(s: &SessionListItem, now_ms: i64) -> Vec<Row> {
         ),
         Row::new("adapter", s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str()), Tone::Dim),
         Row::new(
+            "origin",
+            if s.origin.is_foreign() { "foreign — cctui did not start it" } else { "cctui" },
+            if s.origin.is_foreign() { Tone::Warn } else { Tone::Dim },
+        ),
+        Row::new(
             "account",
             s.account_name.clone().unwrap_or_else(|| "ambient".to_owned()),
             if s.account_name.is_some() && !s.account_traffic_observed {

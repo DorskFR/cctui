@@ -3,47 +3,13 @@
 //! Drawn into whatever rectangle the dialog hands it; [`height`] says how many
 //! rows that needs, so the core dialog reserves exactly the section's size.
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 use crate::app::dispatch::{DispatchFields, Field};
 use crate::theme;
 
-/// Header, three field rows, the pack header and its two rows.
-pub const HEIGHT: u16 = 7;
-
-#[must_use]
-pub const fn height(_fields: &DispatchFields) -> u16 {
-    HEIGHT
-}
-
-pub fn draw(frame: &mut Frame, area: Rect, fields: &DispatchFields, focused: bool) {
-    frame.render_widget(Paragraph::new(lines(fields, focused, area.width)), area);
-}
-
-/// The tab on its own, until the spawn dialog reserves a section for it. The
-/// dialog's version calls [`draw`] with the rectangle it allotted; this only
-/// supplies a frame around it.
-pub fn draw_panel(frame: &mut Frame, app: &crate::app::App) {
-    use ratatui::layout::Margin;
-    use ratatui::widgets::{Block, Borders, Clear};
-
-    let area = frame.area().inner(Margin { horizontal: 4, vertical: 3 });
-    frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::border_focused())
-        .title(" Dispatch a job ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let rows = Rect { height: height(&app.dispatch).min(inner.height), ..inner };
-    draw(frame, rows, &app.dispatch, true);
-}
-
-/// Pure so the layout is readable in a test without a terminal.
-fn lines(fields: &DispatchFields, focused: bool, width: u16) -> Vec<Line<'static>> {
+/// The section's rows. `focused` is its own row index, or `None`.
+pub fn lines(fields: &DispatchFields, focused: Option<usize>, width: u16) -> Vec<Line<'static>> {
     let budget = width as usize;
     vec![
         Line::from(vec![
@@ -98,13 +64,13 @@ fn radio(on: bool, text: &str) -> Span<'static> {
 fn boxed(
     fields: &DispatchFields,
     which: Field,
-    section_focused: bool,
+    focused: Option<usize>,
     width: usize,
 ) -> Span<'static> {
     let raw = fields.read(which);
     let shown =
         if which.secret() && !raw.is_empty() { "********".to_owned() } else { clip(raw, width) };
-    let here = section_focused && fields.focused() == which;
+    let here = focused.is_some_and(|row| Field::ORDER.get(row) == Some(&which));
     let text = format!("[{shown:<width$}]");
     Span::styled(text, if here { theme::border_focused() } else { theme::border_dim() })
 }
@@ -133,11 +99,11 @@ fn clip(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HEIGHT, lines};
+    use super::lines;
     use crate::app::dispatch::{DispatchFields, Field};
 
     fn text(fields: &DispatchFields, width: u16) -> String {
-        lines(fields, true, width)
+        lines(fields, Some(0), width)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
@@ -167,12 +133,25 @@ mod tests {
         assert!(rendered.contains("Context pack"), "{rendered}");
     }
 
-    /// The token is a git credential: neither it nor its length is shown.
+    /// The token is a git credential: neither it nor its length is shown. This
+    /// is the test that pins the mask — the dialog clips the pack rows out of
+    /// the snapshots, so a render-level assertion there proves nothing.
     #[test]
     fn the_token_is_masked() {
-        let rendered = text(&filled(), 100);
-        assert!(!rendered.contains("hunter2"), "{rendered}");
-        assert!(rendered.contains("********"), "{rendered}");
+        let mut fields = filled();
+        fields.pack.token = "hunter2".to_owned();
+        let short = text(&fields, 100);
+        assert!(!short.contains("hunter2"), "{short}");
+        assert!(short.contains("********"), "{short}");
+
+        fields.pack.token = "a".repeat(80);
+        let long = text(&fields, 100);
+        assert_eq!(
+            long.matches("********").count(),
+            1,
+            "the mask is the same width whatever the secret: {long}"
+        );
+        assert!(!long.contains("aaaa"), "{long}");
     }
 
     #[test]
@@ -196,15 +175,10 @@ mod tests {
         let mut fields = filled();
         fields.form.prompt = "x".repeat(300);
         fields.pack.url = "y".repeat(300);
-        for line in lines(&fields, true, 80) {
+        for line in lines(&fields, Some(0), 80) {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert!(width <= 80, "a dispatch row overflowed: {width}");
         }
-    }
-
-    #[test]
-    fn the_reserved_height_matches_what_is_drawn() {
-        assert_eq!(lines(&filled(), true, 100).len(), HEIGHT as usize);
     }
 
     #[test]
