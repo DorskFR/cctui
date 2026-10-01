@@ -1,8 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 168
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  5 sessions  ● 4 active
+ cctui  v0.0.0-test  5 sessions  ● 4 active  ! 1 need input — Ctrl+g
  Sessions
    ▾ Pinned (1)
 ▸    ● [claude-code] starred (main)  opus  0s  $1.25

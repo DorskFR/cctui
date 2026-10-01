@@ -319,7 +319,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PermissionAllowAlways => {
             Action::Attention(AttentionAction::Respond(Decision::AllowAlways))
         }
-        ActionId::JumpToPending => Action::Attention(AttentionAction::JumpToPending),
+        ActionId::JumpToAttention => Action::Attention(AttentionAction::JumpToAttention),
 
         ActionId::FocusPrompt => Action::Prompt(PromptAction::Focus),
         ActionId::PromptDefer => Action::Prompt(PromptAction::Defer),
@@ -785,7 +785,7 @@ mod tests {
         for view in [View::SessionList, View::Conversation] {
             assert!(matches!(
                 map_event(view, false, ctrl('g')),
-                Some(Action::Attention(AttentionAction::JumpToPending))
+                Some(Action::Attention(AttentionAction::JumpToAttention))
             ));
         }
     }

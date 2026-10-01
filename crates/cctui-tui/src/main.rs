@@ -9,6 +9,7 @@ mod parity;
 mod selfupdate;
 #[cfg(test)]
 mod server_event_contract;
+mod termnotify;
 #[cfg(test)]
 mod testsupport;
 mod theme;
@@ -240,6 +241,11 @@ async fn run(
         app.toasts.prune(app.clock_ms);
         update_scroll_metrics(&mut app);
         terminal.draw(|f| views::render(f, &mut app))?;
+        // The one safe point for an escape sequence: the frame is on screen and
+        // nothing else is mid-write.
+        if let Err(e) = termnotify::emit(&app.watch.take_pending()) {
+            tracing::warn!(%e, "cannot write the terminal attention sequences");
+        }
 
         let actions: Vec<Action> = tokio::select! {
             biased;

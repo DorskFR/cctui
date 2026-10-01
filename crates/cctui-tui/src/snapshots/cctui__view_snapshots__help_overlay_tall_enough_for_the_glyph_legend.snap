@@ -1,8 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 119
 expression: "render_screen_sized(&mut app, 100, 96)"
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
+ cctui  v0.0.0-test  4 sessions  ● 3 active  ! 1 need input — Ctrl+g
  S┌ Keys ────────────────────────────────────────────────────────────────────────────────────────┐
   │Anywhere                                         o           Open in the desktop viewer       │
 ▸ │  ?           Toggle this cheat sheet          Pinned messages                                │
@@ -12,7 +13,7 @@ expression: "render_screen_sized(&mut app, 100, 96)"
   │  N           Previous search hit                Enter       Jump to the pinned message       │
   │  D           Diagnose the selected session      d / m       Unpin this message               │
   │  i           Session info                     Macros                                         │
-  │  Ctrl+g      Jump to the next pending approv…   Esc         Close the macro list             │
+  │  Ctrl+g      Jump to the next session needin…   Esc         Close the macro list             │
   │Session list                                     Ctrl+n / ↓  Next macro                       │
   │  j / ↓       Next session                       Ctrl+p / ↑  Previous macro                   │
   │  k / ↑       Previous session                   Enter       Put this prompt in the composer  │

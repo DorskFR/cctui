@@ -1,9 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 438
+assertion_line: 524
 expression: render_screen(&mut app)
 ---
- infra (main) on orion ── opus ── $1.25 ── ⛛ assistant · 2 hidden
+ infra (main) on orion ── opus ── $1.25 ── ⛛ assistant · 2 hidden  ! 1 need input — Ctrl+g
 
 ● Assistant
 Looking at the views first.

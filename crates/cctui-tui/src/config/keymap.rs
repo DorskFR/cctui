@@ -269,7 +269,7 @@ actions! {
     PermissionAllow => "permission-allow", "Allow";
     PermissionDeny => "permission-deny", "Deny";
     PermissionAllowAlways => "permission-allow-always", "Allow and auto-approve";
-    JumpToPending => "jump-to-pending", "Jump to the next pending approval";
+    JumpToAttention => "jump-to-attention", "Jump to the next session needing input";
 
     FocusPrompt => "focus-prompt", "Answer the waiting prompt";
     PromptDefer => "prompt-defer", "Answer later";
@@ -323,7 +323,7 @@ const GLOBAL: &[BindingSpec] = &[
     spec(Context::Global, "N", ActionId::SearchPrev),
     spec(Context::Global, "D", ActionId::Diagnose),
     spec(Context::Global, "i", ActionId::Info),
-    spec(Context::Global, "ctrl+g", ActionId::JumpToPending),
+    spec(Context::Global, "ctrl+g", ActionId::JumpToAttention),
 ];
 
 const SESSION_LIST: &[BindingSpec] = &[

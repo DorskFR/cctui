@@ -9,6 +9,9 @@ use super::{send, terminal};
 pub fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
     let mut effects = reduce_action(app, action);
     effects.extend(super::drafts::sync_composer(app));
+    // Every action can move a session in or out of waiting, so the diff runs
+    // once per pass rather than being hooked onto the handful that obviously do.
+    super::attention::reconcile(app);
     effects
 }
 

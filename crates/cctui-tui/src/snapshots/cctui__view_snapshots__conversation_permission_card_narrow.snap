@@ -1,9 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 517
+assertion_line: 603
 expression: "render_screen_sized(&mut app, 60, 20)"
 ---
- infra (main) on orion ── opus ── $1.25  ⚠ 1 approval pendin
+ infra (main) on orion ── opus ── $1.25  ! 1 need input — Ct
 ● Assistant                                                ▕
 Looking at the views first.                                ▕
                                                            ▕

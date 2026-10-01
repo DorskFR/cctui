@@ -286,6 +286,8 @@ pub struct App {
     pub sidebar: super::sidebar::Sidebar,
     /// Mark-seen debounce state; the counts themselves live on the rows.
     pub unread: super::unread::Unread,
+    /// The needs-input reconcile and the escapes it has queued.
+    pub watch: super::attention::Watch,
     /// The watched session's emulated screen, open only while the pane is.
     pub terminal: Option<super::terminal::TerminalPane>,
 }
@@ -393,6 +395,7 @@ impl App {
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
+            watch: super::attention::Watch::default(),
             terminal: None,
         }
     }

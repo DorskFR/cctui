@@ -1,8 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 153
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  34 sessions  ● 33 active
+ cctui  v0.0.0-test  34 sessions  ● 33 active  ! 1 need input — Ctrl+g
  Sessions
    ▾ Needs input (1)
 ▸    ● [claude-code] infra (main)  opus  0s  $1.25
