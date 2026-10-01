@@ -9,9 +9,13 @@ import {
 	parseAsk,
 	IMAGE_TOKEN_RUN_RE,
 	isSyntheticImageNotice,
+	harnessCommandText,
+	parseHarnessCommand,
 	parsePeerMessage,
 	parseRoomJoined,
 	parsePlan,
+	parseTaskNotification,
+	taskNotificationText,
 	parseTodos,
 	stampTurns,
 	todoSignature,
@@ -127,6 +131,18 @@ function userOrSystem(
 		if (!ctx.visible('marker')) return null;
 		const label = m.conversation_keepalive_tick();
 		return { role: 'marker', ts, text: label, markerTexts: [label], keepalive: true };
+	}
+	if (meta) {
+		const note = parseTaskNotification(content);
+		if (note) {
+			if (!ctx.visible('system')) return null;
+			return { role: 'system', ts, notification: note, text: taskNotificationText(note) };
+		}
+		const cmd = parseHarnessCommand(content);
+		if (cmd) {
+			if (!ctx.visible('system')) return null;
+			return { role: 'system', ts, command: cmd, text: harnessCommandText(cmd) };
+		}
 	}
 	let role: Line['role'] = meta ? 'system' : 'user';
 	if (scheduledAt) {
@@ -503,6 +519,9 @@ export function buildLines(
 				closes.push({ key: queueKey(body), absorbed: op !== 'removed' && op !== 'cleared' });
 				continue;
 			}
+			// A harness-injected prompt is not a human one: the delivered meta turn
+			// renders it, and no `user` line can ever absorb the placeholder.
+			if (looksMeta(body)) continue;
 			if (!body || !ctx.visible('user')) continue;
 			const ln: Line = {
 				role: 'user',

@@ -1,9 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
+	harnessCommandHead,
+	harnessCommandText,
 	insertAtCaret,
+	parseHarnessCommand,
+	parseTaskNotification,
 	parseTodos,
 	quoteMarkdown,
 	stripAttachmentDecorations,
+	taskNotificationText,
+	taskTone,
 	todoProgress
 } from './format';
 import type { AskQuestion, Line } from './types';
@@ -200,5 +206,100 @@ describe('stripAttachmentDecorations', () => {
 	it("keeps the prose of Claude's copy of an image turn", () => {
 		expect(stripAttachmentDecorations('[Image #1]good ?\nAttached file:\n-')).toBe('good ?');
 		expect(stripAttachmentDecorations('[Image #1][shot.png]\nlook\n\nAttached file:\n-')).toBe('look');
+	});
+});
+
+describe('parseTaskNotification', () => {
+	const note = [
+		'<task-notification>',
+		'<task-id>bpo32ykle</task-id>',
+		'<tool-use-id>toolu_01abc</tool-use-id>',
+		'<output-file>/tmp/claude-1000/tasks/bpo32ykle.output</output-file>',
+		'<status>completed</status>',
+		'<summary>Background command "Watch beta.18" completed (exit code 0)</summary>',
+		'</task-notification>'
+	].join('\n');
+
+	it('extracts every field', () => {
+		expect(parseTaskNotification(note)).toEqual({
+			taskId: 'bpo32ykle',
+			toolUseId: 'toolu_01abc',
+			outputFile: '/tmp/claude-1000/tasks/bpo32ykle.output',
+			status: 'completed',
+			summary: 'Background command "Watch beta.18" completed (exit code 0)'
+		});
+	});
+
+	it('leaves missing fields undefined', () => {
+		const partial = '<task-notification>\n<status>failed</status>\n</task-notification>';
+		expect(parseTaskNotification(partial)).toEqual({
+			taskId: undefined,
+			toolUseId: undefined,
+			outputFile: undefined,
+			status: 'failed',
+			summary: undefined
+		});
+	});
+
+	it('parses a block the harness never closed', () => {
+		const open = '<task-notification>\n<task-id>abc</task-id>';
+		expect(parseTaskNotification(open)?.taskId).toBe('abc');
+	});
+
+	it('returns null for junk, an empty block, and a quoted wrapper', () => {
+		expect(parseTaskNotification('ship it')).toBeNull();
+		expect(parseTaskNotification('')).toBeNull();
+		expect(parseTaskNotification('<task-notification></task-notification>')).toBeNull();
+		expect(parseTaskNotification(`I keep seeing this:\n${note}`)).toBeNull();
+	});
+
+	it('maps the status to a card tone', () => {
+		expect(taskTone('completed')).toBe('success');
+		expect(taskTone('Failed')).toBe('danger');
+		expect(taskTone('killed')).toBe('danger');
+		expect(taskTone('running')).toBe('neutral');
+		expect(taskTone(undefined)).toBe('neutral');
+	});
+
+	it('renders a plain-text form with no XML in it', () => {
+		const text = taskNotificationText(parseTaskNotification(note)!);
+		expect(text).not.toMatch(/<[a-z-]+>/);
+		expect(text).toContain('bpo32ykle');
+		expect(text.split('\n')[0]).toContain('Background command');
+	});
+});
+
+describe('parseHarnessCommand', () => {
+	it('reads the name, args and output of a slash-command wrapper', () => {
+		const body = [
+			'<command-name>/release</command-name>',
+			'<command-args>beta.18 --dry-run</command-args>',
+			'<command-message>release is running…</command-message>',
+			'<local-command-stdout>tagged v0.23.0-beta.18</local-command-stdout>'
+		].join('\n');
+		const cmd = parseHarnessCommand(body);
+		expect(cmd).toEqual({
+			name: 'release',
+			args: 'beta.18 --dry-run',
+			message: 'release is running…',
+			stdout: 'tagged v0.23.0-beta.18',
+			stderr: undefined
+		});
+		expect(harnessCommandHead(cmd!)).toBe('/release beta.18 --dry-run');
+		expect(harnessCommandText(cmd!)).not.toMatch(/<[a-z-]+>/);
+	});
+
+	it('reads a bare stdout block', () => {
+		const cmd = parseHarnessCommand('<local-command-stdout>ok</local-command-stdout>');
+		expect(cmd?.stdout).toBe('ok');
+		expect(harnessCommandHead(cmd!)).toBe('');
+	});
+
+	it('returns null unless a wrapper opens the turn', () => {
+		expect(parseHarnessCommand('run /release for me')).toBeNull();
+		expect(
+			parseHarnessCommand('what does this mean?\n<command-name>/release</command-name>')
+		).toBeNull();
+		expect(parseHarnessCommand('')).toBeNull();
 	});
 });
