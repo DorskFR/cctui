@@ -287,6 +287,49 @@ pub fn pick_in_order(candidates: &[Candidate], model: Option<&str>, now: DateTim
     Pick::Exhausted(blocked)
 }
 
+/// Whether an account can serve `model` at all, judged on its provider row's
+/// model catalog (`account_providers.models`) and alias map.
+///
+/// A row with no catalog (an OAuth subscription) serves whatever its harness
+/// asks for. A row with a catalog is *closed*: an `anthropic-compatible`
+/// endpoint in front of a local model answers `404 model_not_found` to any id
+/// it does not list, which the harness reports as "There's an issue with the
+/// selected model". Such an account is a candidate only when the requested
+/// model, after the alias map, is one of its catalog entries (by id or
+/// label). With no model named the harness would send its own default, a
+/// model the catalog does not list either, so it is no candidate then.
+///
+/// The fireworks family is exempt: its harness has no model list of its own,
+/// and spawn resolves every model, absent or unknown, through the catalog.
+pub fn serves_model(
+    family: crate::routes::gateway::Family,
+    catalog: Option<&serde_json::Value>,
+    aliases: Option<&serde_json::Value>,
+    model: Option<&str>,
+) -> bool {
+    if family == crate::routes::gateway::Family::Fireworks {
+        return true;
+    }
+    let Some(entries) = catalog.and_then(serde_json::Value::as_array).filter(|a| !a.is_empty())
+    else {
+        return true;
+    };
+    let Some(requested) = model.map(str::trim).filter(|m| !m.is_empty()) else {
+        return false;
+    };
+    let resolved = aliases
+        .and_then(|a| a.get(requested))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(requested);
+    entries.iter().any(|e| {
+        ["model", "label"]
+            .iter()
+            .any(|k| e.get(*k).and_then(serde_json::Value::as_str) == Some(resolved))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,5 +800,70 @@ mod tests {
         first.in_flight = 30;
         let candidates = vec![first, weekly("second", 0.0, 1)];
         assert_eq!(chosen(&pick_in_order(&candidates, None, now())), "first");
+    }
+
+    fn spark_catalog() -> serde_json::Value {
+        serde_json::json!([{"label": "DeepSeek V4 Flash (Spark)", "model": "deepseek-v4-flash"}])
+    }
+
+    fn spark_aliases() -> serde_json::Value {
+        serde_json::json!({"opus": "deepseek-v4-flash", "sonnet": "deepseek-v4-flash", "haiku": "deepseek-v4-flash"})
+    }
+
+    #[test]
+    fn an_account_without_a_catalog_serves_every_model() {
+        use crate::routes::gateway::Family;
+        assert!(serves_model(Family::Anthropic, None, None, Some("claude-opus-5-5")));
+        assert!(serves_model(Family::Anthropic, None, None, None));
+        let empty = serde_json::json!([]);
+        assert!(serves_model(Family::Anthropic, Some(&empty), None, Some("claude-opus-5-5")));
+    }
+
+    #[test]
+    fn a_closed_catalog_refuses_a_model_it_does_not_list() {
+        use crate::routes::gateway::Family;
+        let (catalog, aliases) = (spark_catalog(), spark_aliases());
+        assert!(!serves_model(
+            Family::Anthropic,
+            Some(&catalog),
+            Some(&aliases),
+            Some("claude-opus-5-5")
+        ));
+        assert!(!serves_model(Family::Anthropic, Some(&catalog), Some(&aliases), Some("opus[1m]")));
+    }
+
+    #[test]
+    fn a_closed_catalog_serves_its_models_directly_or_through_an_alias() {
+        use crate::routes::gateway::Family;
+        let (catalog, aliases) = (spark_catalog(), spark_aliases());
+        assert!(serves_model(
+            Family::Anthropic,
+            Some(&catalog),
+            Some(&aliases),
+            Some("deepseek-v4-flash")
+        ));
+        assert!(serves_model(Family::Anthropic, Some(&catalog), Some(&aliases), Some("opus")));
+        assert!(serves_model(
+            Family::Anthropic,
+            Some(&catalog),
+            None,
+            Some("DeepSeek V4 Flash (Spark)")
+        ));
+    }
+
+    #[test]
+    fn a_closed_catalog_is_not_elected_when_no_model_is_named() {
+        use crate::routes::gateway::Family;
+        let (catalog, aliases) = (spark_catalog(), spark_aliases());
+        assert!(!serves_model(Family::Anthropic, Some(&catalog), Some(&aliases), None));
+        assert!(!serves_model(Family::Anthropic, Some(&catalog), Some(&aliases), Some("  ")));
+    }
+
+    #[test]
+    fn fireworks_resolves_every_model_through_its_catalog() {
+        use crate::routes::gateway::Family;
+        let catalog = spark_catalog();
+        assert!(serves_model(Family::Fireworks, Some(&catalog), None, Some("kimi")));
+        assert!(serves_model(Family::Fireworks, Some(&catalog), None, None));
     }
 }

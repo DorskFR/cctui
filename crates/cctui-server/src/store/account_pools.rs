@@ -195,6 +195,10 @@ pub struct UsableMember {
     /// The credential in the requested family that will serve.
     pub provider_id: Uuid,
     pub soft_limits_json: Option<serde_json::Value>,
+    /// That credential's model catalog and alias map, which decide whether it
+    /// can serve the session's model at all ([`crate::account_pick::serves_model`]).
+    pub models: Option<serde_json::Value>,
+    pub model_aliases: Option<serde_json::Value>,
 }
 
 /// The members of `pool_id` that `user_id` may bind in `family`, in election
@@ -213,7 +217,8 @@ pub async fn usable_members(
     family: &str,
 ) -> Result<Vec<UsableMember>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT a.id AS account_id, a.name, ap.id AS provider_id, ap.soft_limits_json \
+        "SELECT a.id AS account_id, a.name, ap.id AS provider_id, ap.soft_limits_json, \
+                ap.models, ap.model_aliases \
            FROM account_pool_members m \
            JOIN accounts a          ON a.id = m.account_id \
            JOIN account_providers ap ON ap.account_id = a.id AND ap.family = $3 \

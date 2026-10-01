@@ -215,8 +215,21 @@ async fn pick_within_pool(
         crate::store::account_pools::usable_members(&state.pool, pool.id, user_id, family)
             .await
             .ok()?;
-    let members: Vec<_> =
-        members.into_iter().filter(|m| m.provider_id != exclude_provider).collect();
+    // A sibling whose catalog does not list the request's model would only
+    // trade a 429 for a 404.
+    let fam = super::Family::from_label(family)?;
+    let members: Vec<_> = members
+        .into_iter()
+        .filter(|m| m.provider_id != exclude_provider)
+        .filter(|m| {
+            crate::account_pick::serves_model(
+                fam,
+                m.models.as_ref(),
+                m.model_aliases.as_ref(),
+                model,
+            )
+        })
+        .collect();
     if members.is_empty() {
         return None;
     }
