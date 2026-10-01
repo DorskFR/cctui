@@ -19,6 +19,8 @@ pub enum Command {
     },
     /// A whole-session fork: every dial inherited from the parent.
     Fork,
+    /// The dispatch tab. Its own verb until the spawn dialog carries it.
+    Dispatch,
 }
 
 /// `export md|html [path]`, `attach <path>` or `fork`, without the leading
@@ -49,6 +51,12 @@ pub fn parse(input: &str) -> Result<Command, String> {
             }
             Ok(Command::Fork)
         }
+        "dispatch" => {
+            if words.next().is_some() {
+                return Err("usage: :dispatch".to_owned());
+            }
+            Ok(Command::Dispatch)
+        }
         other => Err(format!("`{other}` is not a command")),
     }
 }
@@ -73,12 +81,16 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
             return Vec::new();
         }
     };
-    if command == Command::Fork {
-        return super::controls::fork_now(app);
+    match command {
+        Command::Fork => return super::controls::fork_now(app),
+        Command::Dispatch => {
+            return super::dispatch::reduce_dispatch(app, super::dispatch::DispatchAction::Open);
+        }
+        _ => {}
     }
     let Some(session) = app.selected_session().cloned() else { return Vec::new() };
     match command {
-        Command::Fork => Vec::new(),
+        Command::Fork | Command::Dispatch => Vec::new(),
         Command::Attach { path } => {
             let path = super::cmdline::expand_home(&path.to_string_lossy());
             vec![Effect::ReadAttachment { session_id: session.id, path }]

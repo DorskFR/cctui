@@ -9,6 +9,7 @@ use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
 use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
+use crate::app::dispatch::DispatchAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
 use crate::app::labels::LabelAction;
@@ -102,6 +103,7 @@ pub const fn context_for(
         View::Diagnose => Context::Diagnose,
         View::Terminal => Context::Terminal,
         View::ModelPicker => Context::ModelPicker,
+        View::Dispatch => Context::Dispatch,
         // Not modal: it takes the keyboard but leaves the strips, the composer
         // and the cards ahead of it, and falls through to the transcript.
         View::Sidebar => Context::Sidebar,
@@ -122,6 +124,7 @@ const fn modal_context(view: View) -> Option<Context> {
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
+        View::Dispatch => Some(Context::Dispatch),
         _ => None,
     }
 }
@@ -186,6 +189,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::Dispatch
             | View::LabelPicker
             | View::LabelFilter => None,
         },
@@ -204,6 +208,7 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
+            | View::Dispatch
             | View::LabelPicker
             | View::LabelFilter => None,
         },
@@ -299,6 +304,13 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
             Action::Controls(ControlsAction::PickerColumn(PickerColumn::Effort))
         }
         ActionId::PickerApply => Action::Controls(ControlsAction::PickerApply),
+
+        ActionId::DispatchNextField => Action::Dispatch(DispatchAction::FocusNext),
+        ActionId::DispatchPrevField => Action::Dispatch(DispatchAction::FocusPrev),
+        ActionId::DispatchAdapter => Action::Dispatch(DispatchAction::ToggleAdapter),
+        ActionId::DispatchCycleTarget => Action::Dispatch(DispatchAction::CycleDispatcher),
+        ActionId::DispatchSubmit => Action::Dispatch(DispatchAction::Submit),
+        ActionId::DispatchClose => Action::Dispatch(DispatchAction::Close),
 
         ActionId::ToggleUnreadOnly => Action::Unread(UnreadAction::ToggleOnly),
         ActionId::ToggleSidebar => Action::Sidebar(SidebarAction::Toggle),
@@ -460,6 +472,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
+        Context::Dispatch => Some(Action::Dispatch(DispatchAction::Key(key))),
         _ => None,
     }
 }

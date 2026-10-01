@@ -33,6 +33,7 @@ pub enum Context {
     BookmarkConfirm,
     Terminal,
     Help,
+    Dispatch,
     ModelPicker,
     Sidebar,
     Permission,
@@ -66,6 +67,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::BookmarkConfirm,
     Context::Terminal,
     Context::Help,
+    Context::Dispatch,
     Context::ModelPicker,
     Context::Sidebar,
     Context::Permission,
@@ -101,6 +103,7 @@ impl Context {
             Self::BookmarkConfirm => "bookmark-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
+            Self::Dispatch => "dispatch",
             Self::ModelPicker => "model-picker",
             Self::Sidebar => "sidebar",
             Self::Permission => "permission",
@@ -136,6 +139,7 @@ impl Context {
             Self::BookmarkConfirm => "Bookmarks — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
+            Self::Dispatch => "Dispatch a job",
             Self::ModelPicker => "Model picker",
             Self::Sidebar => "Sidebar",
             Self::Permission => "Permission card",
@@ -227,6 +231,12 @@ actions! {
     Archive => "archive", "Archive or unarchive the session";
     Fork => "fork", "Fork the session";
     Resume => "resume", "Resume the session";
+    DispatchNextField => "dispatch-next-field", "Next dispatch field";
+    DispatchPrevField => "dispatch-prev-field", "Previous dispatch field";
+    DispatchAdapter => "dispatch-adapter", "Switch the dispatched harness";
+    DispatchCycleTarget => "dispatch-cycle-target", "Next dispatcher";
+    DispatchSubmit => "dispatch-submit", "Dispatch the job";
+    DispatchClose => "dispatch-close", "Leave the dispatch tab";
 
     LeaveConversation => "leave-conversation", "Back to the session list";
     ScrollDown => "scroll-down", "Scroll down";
@@ -696,6 +706,16 @@ const SIDEBAR: &[BindingSpec] = &[
     spec(Context::Sidebar, "u", ActionId::OpenParent),
 ];
 
+/// Modal: the tab owns every key while it is up.
+const DISPATCH: &[BindingSpec] = &[
+    spec(Context::Dispatch, "esc", ActionId::DispatchClose),
+    spec(Context::Dispatch, "tab, down", ActionId::DispatchNextField),
+    spec(Context::Dispatch, "backtab, up", ActionId::DispatchPrevField),
+    spec(Context::Dispatch, "ctrl+d", ActionId::DispatchCycleTarget),
+    spec(Context::Dispatch, "ctrl+h", ActionId::DispatchAdapter),
+    spec(Context::Dispatch, "ctrl+s", ActionId::DispatchSubmit),
+];
+
 /// Modal over the conversation: everything it does not claim stays claimed,
 /// so a stray key cannot type into the composer behind it.
 const MODEL_PICKER: &[BindingSpec] = &[
@@ -770,6 +790,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     BOOKMARK_CONFIRM,
     TERMINAL,
     HELP,
+    DISPATCH,
     MODEL_PICKER,
     SIDEBAR,
     PERMISSION,

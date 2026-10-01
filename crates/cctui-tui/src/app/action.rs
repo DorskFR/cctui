@@ -10,6 +10,7 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatch::DispatchAction;
 use super::drafts::DraftAction;
 use super::fileview::FileViewAction;
 use super::identity::AuthAction;
@@ -63,6 +64,7 @@ pub enum Action {
     SubmitInput,
 
     Controls(ControlsAction),
+    Dispatch(DispatchAction),
     Sidebar(SidebarAction),
     Unread(UnreadAction),
     ToggleAutoApproveSelected,
@@ -275,6 +277,12 @@ pub enum Effect {
     },
     Fork {
         session_id: String,
+    },
+    /// `GET /sessions/dispatchers`: the dispatch targets a spawn can pick.
+    FetchDispatchers,
+    /// `POST /sessions/dispatch` with the shared body.
+    Dispatch {
+        body: Box<serde_json::Value>,
     },
     /// `GET /models/{harness}`: the picker's model and effort lists.
     FetchHarnessModels {

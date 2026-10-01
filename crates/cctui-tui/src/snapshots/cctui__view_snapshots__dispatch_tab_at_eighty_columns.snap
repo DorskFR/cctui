@@ -1,0 +1,29 @@
+---
+source: crates/cctui-tui/src/view_snapshots.rs
+assertion_line: 1594
+expression: "render_screen_sized(&mut app, 80, 24)"
+---
+ cctui  v0.0.0-test  ● ~3  ▪ 0/0  $0.00  ! 1 need input — Ctrl+g
+ 1 Sessions  2  3   starred · live · dispatched  sort: activity ↓  group: status
+   ▾ Needs input (1)
+▸   ┌ Dispatch a job ──────────────────────────────────────────────────────┐
+   ▾│ Dispatcher [k8s-cyberia           ]  Harness (*) claude ( ) codex    │
+    │ Repo [cctui             ] Ticket [CCT-1102      ] Timeout [60   ] min│
+    │ Prompt [                                                          ]  │
+    │ Context pack                                                         │
+   ▾│   URL [https://git.example/packs.git                             ]   │
+    │   ref [main        ] subdir [packs/cctui     ] token [********  ]    │
+    │  Tab field  ctrl+d dispatcher  ctrl+h harness  ctrl+s dispatch       │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    │                                                                      │
+    └──────────────────────────────────────────────────────────────────────┘
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

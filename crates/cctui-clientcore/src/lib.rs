@@ -5,6 +5,7 @@
 //! replayed against this crate and against the `TypeScript` originals.
 
 pub mod bookmarks;
+pub mod dispatch;
 pub mod format;
 pub mod git;
 pub mod history_nav;

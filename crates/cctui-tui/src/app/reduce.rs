@@ -215,6 +215,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
 
         Action::Controls(action) => super::controls::reduce_controls(app, action),
+        Action::Dispatch(action) => super::dispatch::reduce_dispatch(app, action),
         Action::Sidebar(action) => super::sidebar::reduce_sidebar(app, action),
         Action::Unread(action) => super::unread::reduce_unread(app, action),
         Action::ToggleAutoApproveSelected => app

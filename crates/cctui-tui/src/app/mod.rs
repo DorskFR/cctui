@@ -10,6 +10,7 @@ pub mod conversation_store;
 pub mod copy;
 pub mod deeplink;
 pub mod diagnose;
+pub mod dispatch;
 pub mod drafts;
 pub mod effects;
 pub mod export;

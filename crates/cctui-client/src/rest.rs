@@ -3,9 +3,9 @@ use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
-    AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, ForkRequest, ForkResponse, Label,
-    LabelListResponse, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
-    SetModelRequest, StageFilesResponse, UpdateLabelRequest,
+    AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, DispatchResponse, ForkRequest,
+    ForkResponse, Label, LabelListResponse, RenameRequest, SessionListItem, SessionListResponse,
+    SessionStats, SetModelRequest, StageFilesResponse, UpdateLabelRequest,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -414,6 +414,18 @@ impl Client {
         }
         self.json(Self::route("get_models_by_harness")?, &[("harness", harness)], &query, None)
             .await
+    }
+
+    /// The dispatch targets a spawn can pick, `GET /sessions/dispatchers`.
+    pub async fn dispatchers(&self) -> Result<Vec<String>, ClientError> {
+        self.json(Self::route("get_sessions_dispatchers")?, &[], &[], None).await
+    }
+
+    /// Hand a job to a dispatcher. The body is
+    /// `cctui_clientcore::dispatch::build_dispatch_body`, shared with the web
+    /// UI, so it is passed through as built.
+    pub async fn dispatch(&self, body: &Value) -> Result<DispatchResponse, ClientError> {
+        self.json(Self::route("post_sessions_dispatch")?, &[], &[], Some(body)).await
     }
 
     pub async fn interrupt(&self, session_id: &str) -> Result<(), ClientError> {
@@ -865,6 +877,8 @@ mod tests {
             "post_sessions_by_id_interrupt",
             "post_sessions_by_id_set_model",
             "post_sessions_by_id_fork",
+            "get_sessions_dispatchers",
+            "post_sessions_dispatch",
             "get_models_by_harness",
             "post_sessions_by_id_auto_approve",
             "post_sessions_by_id_seen",

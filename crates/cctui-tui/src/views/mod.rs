@@ -4,6 +4,7 @@ pub mod bookmarks;
 pub mod cards;
 pub mod conversation;
 pub mod diagnose;
+pub mod dispatch;
 pub mod fileview;
 pub mod filters;
 pub mod help;
@@ -46,6 +47,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Help => {
             sessions::draw(frame, app);
             help::draw(frame, &app.config.keys, &mut app.help_scroll);
+        }
+        View::Dispatch => {
+            draw_below(frame, app);
+            dispatch::draw_panel(frame, app);
         }
         View::ModelPicker => {
             conversation::draw(frame, app);

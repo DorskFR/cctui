@@ -16,6 +16,7 @@ use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
+use super::dispatch::DispatchAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
 use super::identity::AuthAction;
@@ -305,6 +306,25 @@ async fn run(
                 error: error.map(|e| e.to_string()),
             })]
         }
+        Effect::FetchDispatchers => match server.dispatchers().await {
+            Ok(names) => vec![Action::Dispatch(DispatchAction::DispatchersLoaded(names))],
+            Err(e) => {
+                tracing::warn!(%e, "dispatcher list fetch failed");
+                Vec::new()
+            }
+        },
+        Effect::Dispatch { body } => match server.dispatch(&body).await {
+            Ok(resp) => vec![Action::Dispatch(DispatchAction::Submitted {
+                session_id: resp.session_id,
+                // `deduplicated` is the idempotency key landing on the job that
+                // is already running.
+                existing: resp.status == "deduplicated",
+            })],
+            Err(e) => {
+                tracing::warn!(%e, "dispatch failed");
+                vec![Action::Toast(Level::Error, format!("dispatch failed: {e}"))]
+            }
+        },
         Effect::Fork { session_id } => match server.fork(&session_id).await {
             Ok(resp) => vec![Action::Controls(ControlsAction::Forked(resp.session_id))],
             Err(e) => {

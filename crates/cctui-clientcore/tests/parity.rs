@@ -4,7 +4,9 @@
 //! changed case fails on both sides until both implementations agree.
 
 use cctui_clientcore::history_nav::HistoryNav;
-use cctui_clientcore::{bookmarks, format, git, labels, mention, search, session_failure, uploads};
+use cctui_clientcore::{
+    bookmarks, dispatch, format, git, labels, mention, search, session_failure, uploads,
+};
 use cctui_proto::git::GitInfo;
 use serde_json::Value;
 
@@ -309,4 +311,68 @@ fn attachment_caps_parity() {
     assert_eq!(uploads::MAX_FILE_BYTES, fx["MAX_FILE_BYTES"].as_u64().unwrap());
     assert_eq!(uploads::MAX_TOTAL_BYTES, fx["MAX_TOTAL_BYTES"].as_u64().unwrap());
     assert_eq!(u64::from(uploads::MAX_FILES), fx["MAX_FILES"].as_u64().unwrap());
+}
+
+/// The dispatch body both clients post for the same choices. A changed case
+/// fails here and in the webui's own replay until both agree.
+#[test]
+fn dispatch_body_parity() {
+    let fx = fixture("dispatchBody");
+
+    for c in cases(&fx, "contextPackEnv") {
+        let pack = pack_of(&c["pack"]);
+        let got: serde_json::Map<String, Value> = dispatch::context_pack_env(&pack)
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect();
+        assert_eq!(Value::Object(got), c["out"], "contextPackEnv {c}");
+    }
+
+    for c in cases(&fx, "buildDispatchBody") {
+        let form = form_of(&c["form"]);
+        let pack = pack_of(&c["pack"]);
+        let env = env_of(&c["env"]);
+        let provider = c["provider"].as_str();
+        let got = dispatch::build_dispatch_body(&form, &env, &pack, provider, &s(c, "sessionId"));
+        assert_eq!(got, c["out"], "buildDispatchBody {}", s(c, "why"));
+    }
+}
+
+fn pack_of(v: &Value) -> dispatch::ContextPack {
+    dispatch::ContextPack {
+        url: s(v, "url"),
+        r#ref: s(v, "ref"),
+        subdir: s(v, "subdir"),
+        token: s(v, "token"),
+    }
+}
+
+/// Object order is the order the keys were written, which is what a
+/// byte-equivalence claim needs.
+fn env_of(v: &Value) -> Vec<(String, String)> {
+    v.as_object()
+        .map(|o| {
+            o.iter().map(|(k, x)| (k.clone(), x.as_str().unwrap_or_default().to_owned())).collect()
+        })
+        .unwrap_or_default()
+}
+
+fn form_of(v: &Value) -> dispatch::DispatchForm {
+    dispatch::DispatchForm {
+        dispatcher: s(v, "dispatcher"),
+        dispatch_adapter: s(v, "dispatch_adapter"),
+        name: s(v, "name"),
+        identity: s(v, "identity"),
+        repo: s(v, "repo"),
+        ticket: s(v, "ticket"),
+        prompt: s(v, "prompt"),
+        prompt_file: s(v, "prompt_file"),
+        model_claude: s(v, "model_claude"),
+        model_codex: s(v, "model_codex"),
+        model_account: s(v, "model_account"),
+        effort_claude: s(v, "effort_claude"),
+        effort_codex: s(v, "effort_codex"),
+        timeout: s(v, "timeout"),
+        account: s(v, "account"),
+    }
 }

@@ -32,6 +32,7 @@ pub enum View {
     Macros,
     Diagnose,
     Terminal,
+    Dispatch,
     ModelPicker,
     Sidebar,
     /// Slice roots: the switcher resets the router to one of these.
@@ -314,6 +315,8 @@ pub struct App {
     pub settings_blob: serde_json::Value,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
+    /// The spawn dialog's Dispatch tab.
+    pub dispatch: super::dispatch::DispatchFields,
     /// Cursor state of the todo/subagent sidebar.
     pub sidebar: super::sidebar::Sidebar,
     /// Mark-seen debounce state; the counts themselves live on the rows.
@@ -437,6 +440,7 @@ impl App {
             pending_seq_anchor: None,
             settings_blob: serde_json::Value::Null,
             controls: super::controls::Controls::default(),
+            dispatch: super::dispatch::DispatchFields::default(),
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
             watch: super::attention::Watch::default(),

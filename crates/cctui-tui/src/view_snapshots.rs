@@ -1537,3 +1537,67 @@ fn overview_view_narrow() {
     reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
 }
+
+// -- the dispatch tab --
+
+fn app_with_dispatchers() -> crate::app::App {
+    use crate::app::dispatch::{DispatchAction, Field};
+    let mut app = app_with_sessions();
+    reduce(
+        &mut app,
+        Action::Dispatch(DispatchAction::DispatchersLoaded(vec![
+            "k8s-cyberia".to_owned(),
+            "docker-local".to_owned(),
+        ])),
+    );
+    reduce(&mut app, Action::Dispatch(DispatchAction::Open));
+    let mut fill = |field: Field, text: &str| {
+        app.dispatch.focus = Field::ORDER.iter().position(|f| *f == field).expect("a field");
+        for c in text.chars() {
+            reduce(
+                &mut app,
+                Action::Dispatch(DispatchAction::Key(KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                ))),
+            );
+        }
+    };
+    fill(Field::Repo, "cctui");
+    fill(Field::Ticket, "CCT-1102");
+    fill(Field::Timeout, "60");
+    fill(Field::PackUrl, "https://git.example/packs.git");
+    fill(Field::PackRef, "main");
+    fill(Field::PackSubdir, "packs/cctui");
+    fill(Field::PackToken, "hunter2");
+    app.dispatch.focus = 0;
+    app
+}
+
+#[test]
+fn dispatch_tab() {
+    let mut app = app_with_dispatchers();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+/// The context-pack token is a git credential: masked, whatever its length.
+#[test]
+fn dispatch_tab_masks_the_token() {
+    let mut app = app_with_dispatchers();
+    let rendered = render_screen(&mut app);
+    assert!(!rendered.contains("hunter2"), "{rendered}");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn dispatch_tab_codex_harness() {
+    let mut app = app_with_dispatchers();
+    reduce(&mut app, Action::Dispatch(crate::app::dispatch::DispatchAction::ToggleAdapter));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn dispatch_tab_at_eighty_columns() {
+    let mut app = app_with_dispatchers();
+    insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));
+}
