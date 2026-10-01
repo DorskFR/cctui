@@ -362,7 +362,19 @@ async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// Mint the child's gateway env and resolve its model under the parent's account.
+/// Mint the child's gateway env and resolve its model under the account that
+/// serves the child's family.
+///
+/// That is the parent's own account whenever it carries a credential in that
+/// family. It often does not: crossing families (a claude parent spawning a
+/// `codex` child) only works when ONE identity holds both providers, and a
+/// deployment is free to keep its openai credential on a SEPARATE account. The
+/// spawn capability advertises the adapter either way, so refusing here made
+/// `CctuiAgent` promise a child it could never provision. When the parent's
+/// account cannot serve the family we therefore elect one that can, among the
+/// accounts this user owns or has been shared, by the same ranking an
+/// `auto_account` spawn uses — most allocation left first.
+///
 /// A child of an unbound parent is unbound too (empty env, model as requested).
 async fn child_account_env(
     state: &AppState,
@@ -371,50 +383,104 @@ async fn child_account_env(
     requested_model: Option<&str>,
     child_key: &str,
 ) -> Result<(std::collections::BTreeMap<String, String>, Option<String>), AppError> {
-    let mut model = requested_model.map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
-    let Some(account) = parent_account_name(state, &parent.session_id).await else {
-        return Ok((std::collections::BTreeMap::new(), model));
+    let wanted = requested_model.map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
+    let Some(parent_account) = parent_account_name(state, &parent.session_id).await else {
+        return Ok((std::collections::BTreeMap::new(), wanted));
     };
-    if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
-        let resolved = crate::routes::gateway::resolve_account_model(
+
+    let mut first_error = None;
+    for account in [Some(parent_account.clone()), None] {
+        let account = match account {
+            Some(a) => a,
+            // Second pass: the parent's own account could not serve the family.
+            None => match elect_family_account(state, parent, family, wanted.as_deref()).await {
+                Some(elected) if elected != parent_account => {
+                    tracing::info!(
+                        parent = %parent.session_id, child = %child_key,
+                        from = %parent_account, to = %elected, family = family.label(),
+                        "spawn-child: parent's account carries no credential in the child's \
+                         family, electing one that does"
+                    );
+                    elected
+                }
+                _ => break,
+            },
+        };
+
+        let mut model = wanted.clone();
+        if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
+            let resolved = crate::routes::gateway::resolve_account_model(
+                state,
+                parent.user_id,
+                &account,
+                family,
+                model.as_deref().unwrap_or_default(),
+            )
+            .await;
+            model = (!resolved.is_empty()).then_some(resolved);
+        }
+        match crate::routes::gateway::mint_session_env(
             state,
             parent.user_id,
             &account,
             family,
-            model.as_deref().unwrap_or_default(),
+            child_key,
         )
-        .await;
-        model = (!resolved.is_empty()).then_some(resolved);
-    }
-    match crate::routes::gateway::mint_session_env(
-        state,
-        parent.user_id,
-        &account,
-        family,
-        child_key,
-    )
-    .await
-    {
-        Ok(env) => Ok((env, model)),
-        Err(e) => {
-            let why = match e {
-                crate::routes::gateway::MintSessionEnvError::NoAccount => {
-                    "the parent's account no longer exists".to_owned()
-                }
-                crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f) => {
-                    format!("the parent's account has no {} provider", f.label())
-                }
-                crate::routes::gateway::MintSessionEnvError::Db(err) => {
-                    tracing::error!(parent = %parent.session_id, "spawn-child mint failed: {err}");
-                    crate::error::DB_ERROR.to_owned()
-                }
-            };
-            Err(deny(
-                StatusCode::CONFLICT,
-                format!("could not provision a {} child: {why}", family.label()),
-            ))
+        .await
+        {
+            Ok(env) => return Ok((env, model)),
+            // Only a missing provider is worth a second account: a vanished
+            // account or a DB fault would fail the same way on any of them.
+            Err(e @ crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(_)) => {
+                first_error.get_or_insert(e);
+            }
+            Err(e) => {
+                first_error.get_or_insert(e);
+                break;
+            }
         }
     }
+
+    let why = match first_error {
+        Some(crate::routes::gateway::MintSessionEnvError::NoAccount) => {
+            "the parent's account no longer exists".to_owned()
+        }
+        Some(crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f)) => format!(
+            "no account you can use carries a {} provider (the parent's does not, \
+             and no other candidate was found)",
+            f.label()
+        ),
+        Some(crate::routes::gateway::MintSessionEnvError::Db(err)) => {
+            tracing::error!(parent = %parent.session_id, "spawn-child mint failed: {err}");
+            crate::error::DB_ERROR.to_owned()
+        }
+        None => crate::error::DB_ERROR.to_owned(),
+    };
+    Err(deny(
+        StatusCode::CONFLICT,
+        format!("could not provision a {} child: {why}", family.label()),
+    ))
+}
+
+/// An account the parent's user may bind in `family`, ranked as an
+/// `auto_account` spawn ranks them. A ranking failure (every candidate out of
+/// allocation, or none serving the model) is not an error here: it only means
+/// there is no fallback, and the caller reports the original mint failure.
+async fn elect_family_account(
+    state: &AppState,
+    parent: &Parent,
+    family: crate::routes::gateway::Family,
+    model: Option<&str>,
+) -> Option<String> {
+    crate::routes::spawn::auto_account_name(state, parent.user_id, family, model)
+        .await
+        .unwrap_or_else(|(_, e)| {
+            tracing::warn!(
+                parent = %parent.session_id, family = family.label(),
+                "spawn-child: no fallback account for this family: {}", e.0.error
+            );
+            None
+        })
 }
 
 /// The caller's capability, from the in-memory cache or the durable table it
@@ -744,6 +810,126 @@ mod tests {
             authorize(Some(&cap), &req("claude-code", Some(1_000.0)), &usage(0)),
             Err(Denied::Budget { .. })
         ));
+    }
+
+    /// DB-gated: a claude parent may spawn a `codex` child even when the
+    /// openai credential lives on a DIFFERENT account — the deployment shape
+    /// that made `CctuiAgent` answer "the parent's account has no openai
+    /// provider" for an adapter its own capability advertised.
+    #[tokio::test]
+    async fn child_crosses_to_a_sibling_account_for_its_family() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "child_crosses_to_a_sibling_account_for_its_family",
+        ) else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'cross-test', $2)")
+            .bind(uid)
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+
+        // The parent runs on an anthropic-only identity; the openai credential
+        // is a separate account, as a pooled deployment keeps it.
+        let mut providers = Vec::new();
+        for (name, provider) in [("parent-claude", "anthropic"), ("sibling-codex", "openai")] {
+            let account = Uuid::new_v4();
+            sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+                .bind(account)
+                .bind(uid)
+                .bind(name)
+                .execute(&pool)
+                .await
+                .expect("seed account");
+            let provider_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO account_providers                    (id, user_id, account_id, provider, auth_scheme, encrypted_access_token)                  VALUES ($1, $2, $3, $4, 'api_key', 'x')",
+            )
+            .bind(provider_id)
+            .bind(uid)
+            .bind(account)
+            .bind(provider)
+            .execute(&pool)
+            .await
+            .expect("seed provider");
+            providers.push((provider, provider_id));
+        }
+        let anthropic_provider = providers[0].1;
+        let openai_provider = providers[1].1;
+
+        let parent_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("th-{parent_id}"))
+        .bind(&parent_id)
+        .bind(anthropic_provider)
+        .execute(&pool)
+        .await
+        .expect("bind parent to its anthropic account");
+
+        let state = crate::state::AppState::for_test(pool.clone());
+        let parent = Parent {
+            session_id: parent_id.clone(),
+            machine_uuid: Uuid::new_v4(),
+            working_dir: None,
+            user_id: uid,
+            permission_mode: None,
+        };
+
+        let child_key = Uuid::new_v4().to_string();
+        let minted = child_account_env(
+            &state,
+            &parent,
+            crate::routes::gateway::Family::Openai,
+            None,
+            &child_key,
+        )
+        .await;
+        assert!(minted.is_ok(), "codex child refused: {:?}", minted.err().map(|e| e.to_string()));
+        let (env, _) = minted.expect("env");
+        assert!(!env.is_empty(), "the child got no gateway env");
+
+        // It is the SIBLING's credential the child is bound to, not the
+        // parent's: binding the anthropic row would 401 on the first turn.
+        let bound: Uuid =
+            sqlx::query_scalar("SELECT account_id FROM session_tokens WHERE session_id = $1")
+                .bind(&child_key)
+                .fetch_one(&pool)
+                .await
+                .expect("child token");
+        assert_eq!(bound, openai_provider, "child bound to the wrong provider row");
+
+        // The parent's own family still binds the parent's own account: the
+        // fallback must not hijack a child that needs no crossing.
+        let same_family_key = Uuid::new_v4().to_string();
+        let (env, _) = child_account_env(
+            &state,
+            &parent,
+            crate::routes::gateway::Family::Anthropic,
+            None,
+            &same_family_key,
+        )
+        .await
+        .expect("claude child");
+        assert!(!env.is_empty());
+        let bound: Uuid =
+            sqlx::query_scalar("SELECT account_id FROM session_tokens WHERE session_id = $1")
+                .bind(&same_family_key)
+                .fetch_one(&pool)
+                .await
+                .expect("child token");
+        assert_eq!(bound, anthropic_provider, "same-family child left its parent's account");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
     /// DB-gated: the follow-up target must be the caller's own child on the

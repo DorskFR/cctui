@@ -235,7 +235,7 @@ async fn resolve_spawn_account(
         AccountDecision::Unbound => None,
         AccountDecision::ResolveDefault => default_account_name(state, uid, adapter_id).await?,
         AccountDecision::Auto => {
-            auto_account_name(state, uid, adapter_id, model.as_deref()).await?
+            auto_account_name(state, uid, family_for_binding, model.as_deref()).await?
         }
         AccountDecision::Pool(name) => {
             let (account, pool_id) = crate::account_resolve::resolve_pool(
@@ -577,13 +577,12 @@ type AutoAccountRow = (
 /// cold one costs a single tokenless call per account, made concurrently. An
 /// account whose usage cannot be read is ranked but never treated as
 /// exhausted — see the fail-open note on `pick_account`.
-async fn auto_account_name(
+pub(super) async fn auto_account_name(
     state: &AppState,
     user_id: Uuid,
-    adapter_id: &str,
+    family: crate::routes::gateway::Family,
     model: Option<&str>,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
     let rows: Vec<AutoAccountRow> = sqlx::query_as(
         "SELECT a.id, a.name, ap.id, ap.soft_limits_json, ap.models, ap.model_aliases \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
@@ -676,7 +675,7 @@ async fn auto_account_name(
         crate::account_pick::Pick::Chosen { name, headroom_pct, score, resets_at } => {
             let in_flight = candidates.iter().find(|c| c.name == name).map_or(0, |c| c.in_flight);
             tracing::info!(
-                %user_id, account = %name, %adapter_id, headroom_pct, score,
+                %user_id, account = %name, family = family.label(), headroom_pct, score,
                 resets_at = resets_at.map(|t| t.to_rfc3339()), in_flight,
                 "auto account: bound the account with the most allocation left"
             );
