@@ -25,6 +25,14 @@ pub enum Row {
     Prompt,
 }
 
+/// Which rendered line the Dir row is, so the view can slot the git badge and
+/// the dropdown under it. Dir comes before Mode, the only row that adds a line
+/// of its own, so the row index and the line index agree.
+#[must_use]
+pub fn dir_line_index(adapter: &str) -> usize {
+    rows_for(adapter).iter().position(|r| *r == Row::Dir).unwrap_or(0)
+}
+
 /// Service tier is codex-only, so the row list depends on the harness.
 #[must_use]
 pub fn rows_for(adapter: &str) -> Vec<Row> {

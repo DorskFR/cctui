@@ -346,6 +346,68 @@ fn session_list_search_including_archived() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+fn spawn_dialog() -> crate::app::App {
+    let mut app = app_with_sessions();
+    reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
+    app
+}
+
+#[test]
+fn spawn_dialog_core_fields() {
+    let mut app = spawn_dialog();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dialog_with_a_git_badge_and_the_recent_dirs_open() {
+    use crate::app::spawn::SpawnAction;
+
+    let mut app = spawn_dialog();
+    reduce(
+        &mut app,
+        Action::Spawn(SpawnAction::RecentDirsLoaded(vec![
+            "/home/dev/cctui".to_owned(),
+            "/home/dev/cctui-wt/cct-1101".to_owned(),
+        ])),
+    );
+    let info = cctui_proto::git::GitInfo {
+        is_repo: true,
+        branch: Some("main".to_owned()),
+        is_worktree: true,
+        ..cctui_proto::git::GitInfo::default()
+    };
+    app.spawn.as_mut().expect("a form").cwd.asked =
+        Some(("orion".to_owned(), "/home/dev/alpha".to_owned()));
+    reduce(
+        &mut app,
+        Action::Spawn(SpawnAction::GitInfo {
+            machine_id: "orion".to_owned(),
+            path: "/home/dev/alpha".to_owned(),
+            info: Some(Box::new(info)),
+        }),
+    );
+    reduce(&mut app, Action::Spawn(SpawnAction::NextField));
+    reduce(&mut app, Action::Spawn(SpawnAction::DirPick(1)));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dialog_codex_shows_the_service_tier_and_a_mode_hint() {
+    let mut app = spawn_dialog();
+    let form = app.spawn.as_mut().expect("a form");
+    form.fields.adapter_id = "codex".to_owned();
+    form.fields.permission_mode = "yolo".to_owned();
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
+fn spawn_dialog_reports_a_failed_launch_inline() {
+    let mut app = spawn_dialog();
+    app.spawn.as_mut().expect("a form").fields.working_dir.clear();
+    reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Submit));
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
 fn app_with_many_sessions() -> crate::app::App {
     let mut app = app_with_sessions();
     for i in 0..30 {

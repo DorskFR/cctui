@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 819
+assertion_line: 881
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐s
-  │Anywhere                                         g           Jump to the top                  │
-▸ │  ?           Toggle this cheat sheet            q / Esc     Close the file viewer            │
-  │  q           Quit cctui                         o           Open in the desktop viewer       │
-  │  1-9         Switch view                      Labels                                         │
-  │  /           Search the current view            Esc         Close the label list             │
-  │  n           Next search hit                    Ctrl+n / ↓  Next label                       │
-  │  N           Previous search hit                Ctrl+p / ↑  Previous label                   │
-  │  D           Diagnose the selected session      Space       Attach or detach this label      │
-  │  i           Session info                       Ctrl+c      Create a label                   │
-  │  Ctrl+g      Jump to the next session needin…   Ctrl+e      Rename or recolor                │
-  │Session list                                     Ctrl+d      Delete this label                │
-  │  j / ↓       Next session                       Enter       Confirm                          │
-  │  k / ↑       Previous session                 Label filter                                   │
-  │  g           First session                      Esc         Close the label list             │
-  │  G           Last session                       Ctrl+n / ↓  Next label                       │
-  │  Enter       Open the conversation              Ctrl+p / ↑  Previous label                   │
-  │  z / Tab     Fold or open the subagent group    Space / En… Include or exclude this label    │
-  │  S           Fold or open the section           a           Show every label again           │
-  │  Z           Fold or open everything          Pinned messages                                │
-  │  Ctrl+n      Start a new session                Esc         Close the pinned messages        │
+  │Anywhere                                         PgDn        Page down                        │
+▸ │  ?           Toggle this cheat sheet            PgUp        Page up                          │
+  │  q           Quit cctui                         g           Jump to the top                  │
+  │  1-9         Switch view                        q / Esc     Close the file viewer            │
+  │  /           Search the current view            o           Open in the desktop viewer       │
+  │  n           Next search hit                  Labels                                         │
+  │  N           Previous search hit                Esc         Close the label list             │
+  │  D           Diagnose the selected session      Ctrl+n / ↓  Next label                       │
+  │  i           Session info                       Ctrl+p / ↑  Previous label                   │
+  │  Ctrl+g      Jump to the next session needin…   Space       Attach or detach this label      │
+  │Session list                                     Ctrl+c      Create a label                   │
+  │  j / ↓       Next session                       Ctrl+e      Rename or recolor                │
+  │  k / ↑       Previous session                   Ctrl+d      Delete this label                │
+  │  g           First session                      Enter       Confirm                          │
+  │  G           Last session                     Label filter                                   │
+  │  Enter       Open the conversation              Esc         Close the label list             │
+  │  z / Tab     Fold or open the subagent group    Ctrl+n / ↓  Next label                       │
+  │  S           Fold or open the section           Ctrl+p / ↑  Previous label                   │
+  │  Z           Fold or open everything            Space / En… Include or exclude this label    │
+  │  Ctrl+n      Start a new session                a           Show every label again           │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

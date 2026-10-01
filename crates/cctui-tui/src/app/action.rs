@@ -358,6 +358,16 @@ pub enum Effect {
         seq: Option<i64>,
     },
     SaveUiState(crate::config::uistate::UiState),
+    /// Debounced per keystroke: only the latest `(machine, path)` is asked for.
+    FetchGitInfo {
+        machine_id: String,
+        path: String,
+    },
+    FetchMachineDirs {
+        machine_id: String,
+        path: String,
+    },
+    FetchRecentDirs,
     /// `POST /sessions/spawn`. The reply arrives as a `command_result`.
     SpawnSession {
         request: Box<cctui_proto::api::SpawnRequest>,

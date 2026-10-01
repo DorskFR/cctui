@@ -668,6 +668,33 @@ impl Client {
         self.json(Self::route("get_sessions_search_values")?, &[], &query, None).await
     }
 
+    /// Directories under `path` on a machine, for the spawn dir picker.
+    pub async fn machine_dirs(
+        &self,
+        machine_id: &str,
+        path: &str,
+    ) -> Result<Vec<String>, ClientError> {
+        let route = Self::route("get_machines_by_machine_fs_dirs")?;
+        let query = vec![("path", path.to_owned())];
+        self.json(route, &[("machine_id", machine_id)], &query, None).await
+    }
+
+    /// Branch / detached HEAD / worktree of a directory on a machine.
+    pub async fn machine_git_info(
+        &self,
+        machine_id: &str,
+        path: &str,
+    ) -> Result<cctui_proto::git::GitInfo, ClientError> {
+        let route = Self::route("get_machines_by_machine_fs_gitinfo")?;
+        let query = vec![("path", path.to_owned())];
+        self.json(route, &[("machine_id", machine_id)], &query, None).await
+    }
+
+    /// Working dirs the caller spawned into recently.
+    pub async fn recent_dirs(&self) -> Result<Vec<String>, ClientError> {
+        self.json(Self::route("get_sessions_recent_dirs")?, &[], &[], None).await
+    }
+
     /// `POST /sessions/spawn`. The route is multipart so a spawn can carry file
     /// uploads; with none to send, the JSON body is the only part.
     pub async fn spawn_session(
@@ -871,6 +898,9 @@ mod tests {
             "get_sessions_search_values",
             "put_settings",
             "post_sessions_spawn",
+            "get_machines_by_machine_fs_dirs",
+            "get_machines_by_machine_fs_gitinfo",
+            "get_sessions_recent_dirs",
             "get_sessions_by_id",
             "get_sessions_stats",
             "get_sessions_by_id_conversation",

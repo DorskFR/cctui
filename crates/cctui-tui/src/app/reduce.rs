@@ -51,6 +51,7 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             let mut effects = send::tick(app);
             effects.extend(super::session_live::poll_if_due(app));
             effects.extend(super::list_search::on_tick(app));
+            effects.extend(super::spawn::reduce(app, super::spawn::SpawnAction::Tick));
             effects.extend(super::unread::tick(app));
             effects
         }

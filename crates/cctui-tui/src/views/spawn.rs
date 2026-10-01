@@ -47,6 +47,26 @@ fn clip(text: &str, width: u16) -> String {
     text.chars().take(usize::from(width)).collect()
 }
 
+/// The badge beside the Dir row, and the dropdown under it while it is open.
+fn cwd_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    if let Some(badge) = form.cwd.badge_text() {
+        let style = if form.cwd.not_a_dir { theme::error() } else { theme::branch() };
+        out.push(Line::from(Span::styled(clip(&format!("           {badge}"), width), style)));
+    }
+    if !form.on_dir_row() || form.cwd.picking.is_none() {
+        return out;
+    }
+    for (index, dir) in form.cwd.offered().iter().enumerate().take(6) {
+        let on = form.cwd.picking == Some(index);
+        out.push(Line::from(Span::styled(
+            clip(&format!("      {} {dir}", if on { '❯' } else { ' ' }), width),
+            if on { theme::selected() } else { theme::dim() },
+        )));
+    }
+    out
+}
+
 /// Every section's rows, then the errors, then the key hints.
 fn body_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
     let mut out = Vec::new();
@@ -58,7 +78,17 @@ fn body_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
                 theme::section_title(),
             )));
         }
-        out.extend(section.lines(focused, width, &form.fields));
+        let mut lines = section.lines(focused, width, &form.fields);
+        // The badge and the dropdown belong to the cwd state, not to the core
+        // section, which only knows the field's text — so they are slotted in
+        // under the Dir row rather than appended after the section.
+        if index == 0 {
+            let at = crate::app::spawn::core_section::dir_line_index(&form.fields.adapter_id);
+            let extra = cwd_lines(form, width);
+            let at = (at + 1).min(lines.len());
+            lines.splice(at..at, extra);
+        }
+        out.extend(lines);
     }
     for problem in &form.errors {
         out.push(Line::from(Span::styled(clip(&format!(" ✗ {problem}"), width), theme::error())));

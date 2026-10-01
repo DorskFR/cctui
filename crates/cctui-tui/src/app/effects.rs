@@ -475,6 +475,28 @@ async fn run(
                 Vec::new()
             }
         },
+        Effect::FetchGitInfo { machine_id, path } => {
+            // A failure is the answer, not an error: an unreadable path is how
+            // the badge learns to say "not a directory".
+            let info = server.machine_git_info(&machine_id, &path).await.ok().map(Box::new);
+            vec![Action::Spawn(super::spawn::SpawnAction::GitInfo { machine_id, path, info })]
+        }
+        Effect::FetchMachineDirs { machine_id, path } => {
+            match server.machine_dirs(&machine_id, &path).await {
+                Ok(dirs) => vec![Action::Spawn(super::spawn::SpawnAction::DirsLoaded(dirs))],
+                Err(e) => {
+                    tracing::warn!(%e, machine_id, "cannot list directories");
+                    Vec::new()
+                }
+            }
+        }
+        Effect::FetchRecentDirs => match server.recent_dirs().await {
+            Ok(dirs) => vec![Action::Spawn(super::spawn::SpawnAction::RecentDirsLoaded(dirs))],
+            Err(e) => {
+                tracing::warn!(%e, "cannot read the recent directories");
+                Vec::new()
+            }
+        },
         Effect::SpawnSession { request } => match server.spawn_session(&request).await {
             Ok(()) => Vec::new(),
             Err(e) => {

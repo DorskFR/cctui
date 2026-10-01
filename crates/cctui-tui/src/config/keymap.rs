@@ -218,6 +218,9 @@ actions! {
     SpawnPrevField => "spawn-prev-field", "Previous field";
     SpawnSubmit => "spawn-submit", "Launch";
     SpawnCancel => "spawn-cancel", "Close without launching";
+    SpawnDirNext => "spawn-dir-next", "Next directory";
+    SpawnDirPrev => "spawn-dir-prev", "Previous directory";
+    SpawnDirAccept => "spawn-dir-accept", "Use this directory";
     ListSections => "list-sections", "Choose which sections show";
     ListSortCycle => "list-sort", "Cycle the sort field";
     ListSortFlip => "list-sort-flip", "Flip the sort direction";
@@ -572,6 +575,9 @@ const SPAWN: &[BindingSpec] = &[
     spec(Context::Spawn, "backtab, shift+tab", ActionId::SpawnPrevField),
     spec(Context::Spawn, "ctrl+s", ActionId::SpawnSubmit),
     spec(Context::Spawn, "esc", ActionId::SpawnCancel),
+    spec(Context::Spawn, "down", ActionId::SpawnDirNext),
+    spec(Context::Spawn, "up", ActionId::SpawnDirPrev),
+    spec(Context::Spawn, "enter", ActionId::SpawnDirAccept),
 ];
 
 const SECTIONS_POPUP: &[BindingSpec] = &[

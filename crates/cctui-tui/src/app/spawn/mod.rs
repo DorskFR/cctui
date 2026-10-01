@@ -9,6 +9,7 @@
 //! `POOL_PREFIX` / a name is one coupled rule the shared builder owns.
 
 pub mod core_section;
+pub mod cwd;
 
 use cctui_clientcore::spawn::SpawnFields;
 use cctui_proto::api::SpawnRequest;
@@ -70,19 +71,6 @@ pub trait SpawnSection: Send {
     }
 }
 
-/// Which tab the dialog is on. The toggle belongs to the dialog; a tab's own
-/// fields belong to whichever lane owns it.
-///
-/// `Dispatch` is unreachable until Q4's tab lands, which is what the allow is
-/// for: the variant is the published shape that lane builds against.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum SpawnTarget {
-    #[default]
-    Machine,
-    Dispatch,
-}
-
 /// Where focus is: which section, and which of its rows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Focus {
@@ -94,11 +82,11 @@ pub struct Focus {
 /// everything else is presentation.
 pub struct SpawnForm {
     pub fields: SpawnFields,
-    /// Which tab is showing. `Dispatch` is hidden when no dispatcher exists.
-    pub target: SpawnTarget,
     /// Env rows as typed; a half-typed row is not sent. Reduced by
     /// `cctui_clientcore::spawn::env_map` at submit.
     pub env: Vec<(String, String)>,
+    /// Recent dirs, completions and the git badge for the Dir row.
+    pub cwd: cwd::CwdState,
     pub focus: Focus,
     /// Inline errors from the last submit, cleared on the next edit.
     pub errors: Vec<String>,
@@ -111,9 +99,9 @@ impl std::fmt::Debug for SpawnForm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpawnForm")
             .field("fields", &self.fields)
-            .field("target", &self.target)
             .field("env", &format_args!("<{} row(s) redacted>", self.env.len()))
             .field("focus", &self.focus)
+            .field("cwd", &self.cwd)
             .field("errors", &self.errors)
             .field("submitting", &self.submitting)
             .field("sections", &self.sections.iter().map(|s| s.title()).collect::<Vec<_>>())
@@ -139,8 +127,8 @@ impl SpawnForm {
     pub fn new() -> Self {
         Self {
             fields: SpawnFields { adapter_id: "claude-code".to_owned(), ..SpawnFields::default() },
-            target: SpawnTarget::default(),
             env: Vec::new(),
+            cwd: cwd::CwdState::default(),
             focus: Focus::default(),
             errors: Vec::new(),
             submitting: false,
@@ -217,6 +205,15 @@ impl SpawnForm {
         if let Some(provider) = self.provider().map(str::to_owned) {
             self.fields.account_provider = provider;
         }
+    }
+
+    /// Whether focus is on the core section's Dir row, which Tab and the
+    /// dropdown keys treat specially.
+    #[must_use]
+    pub fn on_dir_row(&self) -> bool {
+        self.focus.section == 0
+            && core_section::rows_for(&self.fields.adapter_id).get(self.focus.row).copied()
+                == Some(core_section::Row::Dir)
     }
 
     /// The provider behind the chosen account, from whichever section owns it.
@@ -511,6 +508,19 @@ pub enum SpawnAction {
     Submit,
     Failed(String),
     Key(KeyEvent),
+    /// The clock tick: fires the debounced git lookup when it comes due.
+    Tick,
+    GitInfo {
+        machine_id: String,
+        path: String,
+        info: Option<Box<cctui_proto::git::GitInfo>>,
+    },
+    DirsLoaded(Vec<String>),
+    RecentDirsLoaded(Vec<String>),
+    /// Down/up over the recent-dirs and completion dropdown.
+    DirPick(i32),
+    /// Enter on the dropdown.
+    DirAccept,
 }
 
 pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
@@ -529,7 +539,7 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             }
             app.spawn = Some(form);
             app.router.push(View::Spawn);
-            Vec::new()
+            vec![Effect::FetchRecentDirs]
         }
         SpawnAction::Close => {
             app.spawn = None;
@@ -537,6 +547,12 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             Vec::new()
         }
         SpawnAction::NextField => {
+            // On the Dir row, Tab completes the path first and only moves on
+            // when there is nothing left to complete — what the ticket asks for
+            // and what the web UI's dir field does.
+            if let Some(effects) = complete_dir(app) {
+                return effects;
+            }
             if let Some(form) = app.spawn.as_mut() {
                 form.step_focus(1);
             }
@@ -554,6 +570,47 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             app.spawn = form;
             effects
         }
+        SpawnAction::Tick => {
+            let Some(form) = app.spawn.as_mut() else { return Vec::new() };
+            let (machine, path) = (form.fields.machine_id.clone(), form.fields.working_dir.clone());
+            form.cwd.on_tick(app.clock_ms, &machine, &path)
+        }
+        SpawnAction::GitInfo { machine_id, path, info } => {
+            if let Some(form) = app.spawn.as_mut() {
+                match info {
+                    Some(info) => form.cwd.git_loaded(&machine_id, &path, Some(&info)),
+                    None => form.cwd.git_failed(&machine_id, &path),
+                }
+            }
+            Vec::new()
+        }
+        SpawnAction::DirsLoaded(dirs) => {
+            if let Some(form) = app.spawn.as_mut() {
+                form.cwd.completions = dirs;
+            }
+            Vec::new()
+        }
+        SpawnAction::RecentDirsLoaded(dirs) => {
+            if let Some(form) = app.spawn.as_mut() {
+                form.cwd.recent = dirs;
+            }
+            Vec::new()
+        }
+        SpawnAction::DirPick(delta) => {
+            if let Some(form) = app.spawn.as_mut() {
+                form.cwd.step(delta);
+            }
+            Vec::new()
+        }
+        SpawnAction::DirAccept => {
+            let Some(form) = app.spawn.as_mut() else { return Vec::new() };
+            if let Some(pick) = form.cwd.selected().map(str::to_owned) {
+                form.fields.working_dir = pick;
+                form.cwd.close();
+                form.cwd.on_edit(app.clock_ms);
+            }
+            Vec::new()
+        }
         SpawnAction::Submit => submit(app),
         SpawnAction::Failed(reason) => {
             if let Some(form) = app.spawn.as_mut() {
@@ -562,6 +619,28 @@ pub fn reduce(app: &mut super::state::App, action: SpawnAction) -> Vec<Effect> {
             }
             Vec::new()
         }
+    }
+}
+
+/// `Some` when Tab was consumed by dir completion.
+fn complete_dir(app: &mut super::state::App) -> Option<Vec<Effect>> {
+    let form = app.spawn.as_mut()?;
+    if !form.on_dir_row() {
+        return None;
+    }
+    let path = form.fields.working_dir.clone();
+    match cwd::complete(&form.cwd, &path) {
+        cwd::Complete::Replace(full) => {
+            form.fields.working_dir = full;
+            form.cwd.on_edit(app.clock_ms);
+            Some(Vec::new())
+        }
+        cwd::Complete::Fetch => Some(vec![Effect::FetchMachineDirs {
+            machine_id: form.fields.machine_id.clone(),
+            path,
+        }]),
+        // Nothing more to complete: let Tab do its usual job.
+        cwd::Complete::Ambiguous | cwd::Complete::None => None,
     }
 }
 
@@ -650,6 +729,8 @@ mod reduce_tests {
     fn tab_walks_the_fields_and_a_key_reaches_the_focused_one() {
         let mut app = app();
         reduce(&mut app, SpawnAction::Open);
+        // Nothing the Dir row can complete, so Tab walks past it as usual.
+        app.spawn.as_mut().expect("a form").cwd.completions = vec!["/nowhere".to_owned()];
         reduce(&mut app, SpawnAction::NextField);
         reduce(&mut app, SpawnAction::NextField);
         // Machine, Dir, Name: the third row is the name field.
@@ -658,13 +739,83 @@ mod reduce_tests {
         }
         assert_eq!(app.spawn.as_ref().expect("a form").fields.name, "fix");
     }
+
+    #[test]
+    fn tab_on_the_dir_row_completes_before_it_moves_on() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        reduce(&mut app, SpawnAction::NextField);
+        assert!(app.spawn.as_ref().expect("a form").on_dir_row());
+
+        // Nothing held yet: Tab asks the machine and focus stays put.
+        match reduce(&mut app, SpawnAction::NextField).as_slice() {
+            [Effect::FetchMachineDirs { machine_id, path }] => {
+                assert_eq!(machine_id, "orion");
+                assert_eq!(path, "/home/dev/alpha");
+            }
+            other => panic!("expected a dir listing, got {} effects", other.len()),
+        }
+        assert!(app.spawn.as_ref().expect("a form").on_dir_row(), "focus did not move");
+
+        // With one offer, Tab finishes the path.
+        reduce(&mut app, SpawnAction::DirsLoaded(vec!["/home/dev/alpha-worktree".to_owned()]));
+        reduce(&mut app, SpawnAction::NextField);
+        let form = app.spawn.as_ref().expect("a form");
+        assert_eq!(form.fields.working_dir, "/home/dev/alpha-worktree");
+        assert!(form.on_dir_row());
+    }
+
+    #[test]
+    fn the_dropdown_accepts_a_recent_dir_and_rearms_the_badge() {
+        let mut app = app();
+        app.clock_ms = 500;
+        reduce(&mut app, SpawnAction::Open);
+        reduce(
+            &mut app,
+            SpawnAction::RecentDirsLoaded(vec!["/srv/one".to_owned(), "/srv/two".to_owned()]),
+        );
+        reduce(&mut app, SpawnAction::DirPick(1));
+        reduce(&mut app, SpawnAction::DirPick(1));
+        reduce(&mut app, SpawnAction::DirAccept);
+        let form = app.spawn.as_ref().expect("a form");
+        assert_eq!(form.fields.working_dir, "/srv/two");
+        assert!(form.cwd.picking.is_none(), "the dropdown closes");
+        assert!(form.cwd.due_ms.is_some(), "and the badge lookup is re-armed");
+    }
+
+    #[test]
+    fn the_badge_lookup_goes_out_once_the_debounce_passes() {
+        let mut app = app();
+        app.clock_ms = 1_000;
+        reduce(&mut app, SpawnAction::Open);
+        app.spawn.as_mut().expect("a form").cwd.on_edit(app.clock_ms);
+        assert!(reduce(&mut app, SpawnAction::Tick).is_empty());
+
+        app.clock_ms += super::cwd::GIT_DEBOUNCE_MS;
+        match reduce(&mut app, SpawnAction::Tick).as_slice() {
+            [Effect::FetchGitInfo { machine_id, path }] => {
+                assert_eq!(machine_id, "orion");
+                assert_eq!(path, "/home/dev/alpha");
+            }
+            other => panic!("expected one lookup, got {} effects", other.len()),
+        }
+    }
+
+    #[test]
+    fn opening_asks_for_the_recent_dirs() {
+        let mut app = app();
+        assert!(matches!(
+            reduce(&mut app, SpawnAction::Open).as_slice(),
+            [Effect::FetchRecentDirs]
+        ));
+    }
 }
 
 /// The seams Q2–Q4 build against. These are the published contract, so they are
 /// exercised here rather than waiting for the lane that consumes them.
 #[cfg(test)]
 mod contract_tests {
-    use super::{SpawnForm, SpawnTarget, form_snapshot, open_prefilled};
+    use super::{SpawnForm, form_snapshot, open_prefilled};
     use crate::app::state::{App, View};
     use crate::testsupport::session;
 
@@ -737,13 +888,5 @@ mod contract_tests {
         let form = app.spawn.as_ref().expect("a form");
         assert_eq!(form.fields.machine_id, "cyberia");
         assert_eq!(json(&form_snapshot(&app).expect("a snapshot")), json(&original));
-    }
-
-    #[test]
-    fn the_dialog_starts_on_the_machine_tab() {
-        let mut form = SpawnForm::new();
-        assert_eq!(form.target, SpawnTarget::Machine);
-        form.target = SpawnTarget::Dispatch;
-        assert_ne!(form.target, SpawnTarget::Machine, "the tab is switchable");
     }
 }
