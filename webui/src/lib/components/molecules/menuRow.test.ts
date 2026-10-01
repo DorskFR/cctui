@@ -31,12 +31,16 @@ const ROWS = [
 	}
 ] as const;
 
-const declared = (style: string) =>
-	style
+// The DOM expands shorthands (`flex: none`), so both sides must round-trip it.
+const declared = (style: string) => {
+	const probe = document.createElement('span');
+	probe.style.cssText = style;
+	return probe.style.cssText
 		.split(';')
 		.map((d) => d.trim().replace(/\s*:\s*/, ': ').replace(/\s+/g, ' '))
 		.filter(Boolean)
 		.sort();
+};
 
 function render(entry: (typeof ROWS)[number]) {
 	comp = mount(entry.Component as Parameters<typeof mount>[0], {
