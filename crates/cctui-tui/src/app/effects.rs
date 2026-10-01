@@ -22,6 +22,7 @@ use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
 use super::pins::PinAction;
+use super::spawn_drafts::SpawnDraftAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
 use super::state::{ConversationLine, PendingPermission};
@@ -165,6 +166,24 @@ async fn run(
                 Err(e) => {
                     tracing::warn!(%e, "bookmark list fetch failed");
                     vec![Action::Bookmarks(BookmarkAction::Failed)]
+                }
+            }
+        }
+        Effect::LaunchDraft { session_id, env } => {
+            match server.launch_draft(&session_id, &env).await {
+                Ok(_) => vec![Action::SpawnDrafts(SpawnDraftAction::Launched { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft launch failed");
+                    vec![Action::Toast(Level::Error, "could not launch the draft".to_owned())]
+                }
+            }
+        }
+        Effect::DiscardDraftSession { session_id } => {
+            match server.discard_draft(&session_id).await {
+                Ok(()) => vec![Action::SpawnDrafts(SpawnDraftAction::Discarded { session_id })],
+                Err(e) => {
+                    tracing::warn!(%e, session_id, "draft discard failed");
+                    vec![Action::Toast(Level::Error, "could not discard the draft".to_owned())]
                 }
             }
         }

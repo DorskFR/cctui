@@ -14,6 +14,35 @@ pub struct Macro {
     pub title: String,
     pub prompt: String,
     pub adapter: String,
+    /// Where it launches. A macro missing these can be read into the composer
+    /// but cannot be run as a session.
+    pub machine_id: Option<String>,
+    pub working_dir: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub pool_id: Option<String>,
+    pub permission_mode: Option<String>,
+    pub confirm: bool,
+}
+
+impl Macro {
+    /// The shared shape the launch rules read.
+    #[must_use]
+    pub fn spec(&self) -> cctui_clientcore::macros::MacroSpec {
+        cctui_clientcore::macros::MacroSpec {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            prompt: self.prompt.clone(),
+            adapter: self.adapter.clone(),
+            machine_id: self.machine_id.clone(),
+            working_dir: self.working_dir.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+            pool_id: self.pool_id.clone(),
+            permission_mode: self.permission_mode.clone(),
+            confirm: self.confirm,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -74,7 +103,26 @@ fn parse_macro(raw: &Value) -> Option<Macro> {
     }
     let adapter = text("adapter");
     let adapter = if adapter.is_empty() { "claude-code".to_owned() } else { adapter };
-    Some(Macro { id, title, prompt, adapter })
+    let opt = |key: &str| {
+        raw.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    Some(Macro {
+        id,
+        title,
+        prompt,
+        adapter,
+        machine_id: opt("machine_id"),
+        working_dir: opt("working_dir"),
+        model: opt("model"),
+        effort: opt("effort"),
+        pool_id: opt("pool_id"),
+        permission_mode: opt("permission_mode"),
+        confirm: raw.get("confirm").and_then(Value::as_bool) != Some(false),
+    })
 }
 
 #[derive(Debug, Clone, Copy)]

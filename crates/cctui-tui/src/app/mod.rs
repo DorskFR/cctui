@@ -23,6 +23,7 @@ pub mod list_view;
 pub mod macros;
 pub mod mentions;
 pub mod pins;
+pub mod spawn_drafts;
 pub mod prompt;
 pub mod reduce;
 pub mod router;

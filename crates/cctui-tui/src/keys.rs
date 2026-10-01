@@ -16,6 +16,7 @@ use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
+use crate::app::spawn_drafts::SpawnDraftAction;
 use crate::app::prompt::PromptAction;
 use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
@@ -382,6 +383,15 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::BookmarksPreviewDown => Action::Bookmarks(BookmarkAction::PreviewDown),
         ActionId::BookmarksPreviewUp => Action::Bookmarks(BookmarkAction::PreviewUp),
         ActionId::BookmarksSearch => Action::Bookmarks(BookmarkAction::SearchOpen),
+        ActionId::DraftLaunch => Action::SpawnDrafts(SpawnDraftAction::Launch),
+        ActionId::DraftEdit => Action::SpawnDrafts(SpawnDraftAction::Edit),
+        ActionId::DraftDiscard => Action::SpawnDrafts(SpawnDraftAction::Discard),
+        ActionId::SpawnFromConfig => Action::SpawnDrafts(SpawnDraftAction::NewFromConfig),
+        ActionId::DraftEnvNext => Action::SpawnDrafts(SpawnDraftAction::EnvNext),
+        ActionId::DraftEnvCommit => Action::SpawnDrafts(SpawnDraftAction::EnvCommit),
+        ActionId::DraftEnvCancel => Action::SpawnDrafts(SpawnDraftAction::EnvCancel),
+        ActionId::DraftDiscardConfirm => Action::SpawnDrafts(SpawnDraftAction::DiscardConfirm),
+        ActionId::DraftDiscardCancel => Action::SpawnDrafts(SpawnDraftAction::DiscardCancel),
         ActionId::BookmarksOpenSource => Action::Bookmarks(BookmarkAction::OpenSource),
         ActionId::BookmarksCopy => Action::Bookmarks(BookmarkAction::CopyMarkdown),
         ActionId::BookmarksEdit => Action::Bookmarks(BookmarkAction::EditOpen),
@@ -398,6 +408,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::MacrosSelectNext => Action::Macros(MacroAction::SelectNext),
         ActionId::MacrosSelectPrev => Action::Macros(MacroAction::SelectPrev),
         ActionId::MacrosInsert => Action::Macros(MacroAction::Insert),
+        ActionId::MacrosRun => Action::SpawnDrafts(SpawnDraftAction::RunSelectedMacro),
 
         ActionId::PermissionAllow => Action::Attention(AttentionAction::Respond(Decision::Allow)),
         ActionId::PermissionDeny => Action::Attention(AttentionAction::Respond(Decision::Deny)),
@@ -459,6 +470,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
         Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
+        Context::DraftEnv => Some(Action::SpawnDrafts(SpawnDraftAction::EnvKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
         _ => None,
     }

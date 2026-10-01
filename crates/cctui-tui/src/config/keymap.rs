@@ -31,6 +31,8 @@ pub enum Context {
     Macros,
     BookmarkPrompt,
     BookmarkConfirm,
+    DraftEnv,
+    DraftConfirm,
     Terminal,
     Help,
     ModelPicker,
@@ -64,6 +66,8 @@ pub const CONTEXTS: &[Context] = &[
     Context::Macros,
     Context::BookmarkPrompt,
     Context::BookmarkConfirm,
+    Context::DraftEnv,
+    Context::DraftConfirm,
     Context::Terminal,
     Context::Help,
     Context::ModelPicker,
@@ -99,6 +103,8 @@ impl Context {
             Self::Macros => "macros",
             Self::BookmarkPrompt => "bookmark-prompt",
             Self::BookmarkConfirm => "bookmark-confirm",
+            Self::DraftEnv => "draft-env",
+            Self::DraftConfirm => "draft-confirm",
             Self::Terminal => "terminal",
             Self::Help => "help",
             Self::ModelPicker => "model-picker",
@@ -134,6 +140,8 @@ impl Context {
             Self::Macros => "Macros",
             Self::BookmarkPrompt => "Bookmarks — search or edit",
             Self::BookmarkConfirm => "Bookmarks — confirm",
+            Self::DraftEnv => "Draft launch — env",
+            Self::DraftConfirm => "Draft — confirm",
             Self::Terminal => "Terminal pane",
             Self::Help => "Help",
             Self::ModelPicker => "Model picker",
@@ -338,6 +346,15 @@ actions! {
     BookmarksPreviewDown => "bookmarks-preview-down", "Scroll the preview down";
     BookmarksPreviewUp => "bookmarks-preview-up", "Scroll the preview up";
     BookmarksSearch => "bookmarks-search", "Search the bookmarks";
+    DraftLaunch => "draft-launch", "Launch the draft";
+    DraftEdit => "draft-edit", "Edit the draft";
+    DraftDiscard => "draft-discard", "Discard the draft";
+    SpawnFromConfig => "spawn-from-config", "New session from this configuration";
+    DraftEnvNext => "draft-env-next", "Next variable";
+    DraftEnvCommit => "draft-env-commit", "Launch with these values";
+    DraftEnvCancel => "draft-env-cancel", "Do not launch";
+    DraftDiscardConfirm => "draft-discard-confirm", "Discard it";
+    DraftDiscardCancel => "draft-discard-cancel", "Keep it";
     BookmarksOpenSource => "bookmarks-open-source", "Open the source message";
     BookmarksCopy => "bookmarks-copy", "Copy the bookmark as markdown";
     BookmarksEdit => "bookmarks-edit", "Edit the title and note";
@@ -354,6 +371,7 @@ actions! {
     MacrosSelectNext => "macros-select-next", "Next macro";
     MacrosSelectPrev => "macros-select-prev", "Previous macro";
     MacrosInsert => "macros-insert", "Put this prompt in the composer";
+    MacrosRun => "macros-run", "Run this macro as a new session";
 
     CloseHelp => "close-help", "Close this cheat sheet";
 
@@ -609,6 +627,10 @@ const FILE_VIEWER: &[BindingSpec] = &[
 /// The picker is modal, so it claims plain letters: `space` toggles, and the
 /// manage verbs sit on the keys the webui's menu uses.
 const LABELS: &[BindingSpec] = &[
+    spec(Context::SessionList, "L", ActionId::DraftLaunch),
+    spec(Context::SessionList, "E", ActionId::DraftEdit),
+    spec(Context::SessionList, "X", ActionId::DraftDiscard),
+    spec(Context::SessionList, "N", ActionId::SpawnFromConfig),
     spec(Context::SessionList, "l", ActionId::OpenLabels),
     spec(Context::SessionList, "L", ActionId::OpenLabelFilter),
     spec(Context::LabelPicker, "esc", ActionId::LabelsClose),
@@ -639,6 +661,7 @@ const MACROS: &[BindingSpec] = &[
     spec(Context::Macros, "down, ctrl+n", ActionId::MacrosSelectNext),
     spec(Context::Macros, "up, ctrl+p", ActionId::MacrosSelectPrev),
     spec(Context::Macros, "enter", ActionId::MacrosInsert),
+    spec(Context::Macros, "R", ActionId::MacrosRun),
 ];
 
 /// Slice roots, not overlays: each falls through to the globals, so `1-9`,
@@ -676,6 +699,17 @@ const DIAGNOSE: &[BindingSpec] = &[
     spec(Context::Diagnose, "y", ActionId::DiagnoseCopyId),
     spec(Context::Diagnose, "D", ActionId::Diagnose),
     spec(Context::Diagnose, "i", ActionId::Info),
+];
+
+const DRAFT_ENV: &[BindingSpec] = &[
+    spec(Context::DraftEnv, "tab", ActionId::DraftEnvNext),
+    spec(Context::DraftEnv, "enter", ActionId::DraftEnvCommit),
+    spec(Context::DraftEnv, "esc", ActionId::DraftEnvCancel),
+];
+
+const DRAFT_CONFIRM: &[BindingSpec] = &[
+    spec(Context::DraftConfirm, "y, enter", ActionId::DraftDiscardConfirm),
+    spec(Context::DraftConfirm, "n, esc, q", ActionId::DraftDiscardCancel),
 ];
 
 const HELP: &[BindingSpec] = &[
@@ -768,6 +802,8 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     MACROS,
     BOOKMARK_PROMPT,
     BOOKMARK_CONFIRM,
+    DRAFT_ENV,
+    DRAFT_CONFIRM,
     TERMINAL,
     HELP,
     MODEL_PICKER,

@@ -5,11 +5,14 @@
 //! replayed against this crate and against the `TypeScript` originals.
 
 pub mod bookmarks;
+pub mod drafts;
 pub mod format;
 pub mod git;
 pub mod history_nav;
 pub mod labels;
+pub mod macros;
 pub mod mention;
+pub mod profiles;
 pub mod search;
 pub mod session_failure;
 pub mod turnid;

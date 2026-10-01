@@ -1,11 +1,14 @@
 use cctui_proto::api::bookmarks::{Bookmark, CreateBookmark};
+use cctui_proto::api::profiles::{
+    CreateProfileRequest, ReorderProfilesRequest, SessionProfile, UpdateProfileRequest,
+};
 use cctui_proto::api::me::MeResponse;
 use cctui_proto::api::routes::{Method, Route, by_id};
 use cctui_proto::api::settings::SettingsPayload;
 use cctui_proto::api::{
     AttachLabelRequest, AutoApproveRequest, CreateLabelRequest, ForkRequest, ForkResponse, Label,
     LabelListResponse, RenameRequest, SessionListItem, SessionListResponse, SessionStats,
-    SetModelRequest, StageFilesResponse, UpdateLabelRequest,
+    SetModelRequest, SpawnRequest, SpawnResponse, StageFilesResponse, UpdateLabelRequest,
 };
 use cctui_proto::diagnose::SessionDiagnoseResponse;
 use cctui_proto::drafts::{Draft, DraftList, PutDraftRequest};
@@ -738,6 +741,68 @@ impl Client {
         self.unit(Self::route("delete_bookmarks_by_id")?, &[("id", id)], None).await
     }
 
+    /// The caller's spawn profiles, in their stored order.
+    pub async fn profiles(&self) -> Result<Vec<SessionProfile>, ClientError> {
+        self.json(Self::route("get_profiles")?, &[], &[], None).await
+    }
+
+    pub async fn create_profile(
+        &self,
+        body: &CreateProfileRequest,
+    ) -> Result<SessionProfile, ClientError> {
+        let route = Self::route("post_profiles")?;
+        self.json(route, &[], &[], Some(&to_value(route.id, body)?)).await
+    }
+
+    pub async fn update_profile(
+        &self,
+        id: &str,
+        body: &UpdateProfileRequest,
+    ) -> Result<SessionProfile, ClientError> {
+        let route = Self::route("patch_profiles_by_id")?;
+        self.json(route, &[("id", id)], &[], Some(&to_value(route.id, body)?)).await
+    }
+
+    pub async fn delete_profile(&self, id: &str) -> Result<(), ClientError> {
+        self.unit(Self::route("delete_profiles_by_id")?, &[("id", id)], None).await
+    }
+
+    /// Store a new order; the server answers with the reordered list.
+    pub async fn reorder_profiles(
+        &self,
+        ids: Vec<uuid::Uuid>,
+    ) -> Result<Vec<SessionProfile>, ClientError> {
+        let route = Self::route("put_profiles_order")?;
+        let body = to_value(route.id, &ReorderProfilesRequest { ids })?;
+        self.json(route, &[], &[], Some(&body)).await
+    }
+
+    /// Replace a draft session's stored payload — the autosave and the edit.
+    pub async fn update_draft(
+        &self,
+        session_id: &str,
+        body: &SpawnRequest,
+    ) -> Result<SpawnResponse, ClientError> {
+        let route = Self::route("put_sessions_by_id_draft")?;
+        self.json(route, &[("id", session_id)], &[], Some(&to_value(route.id, body)?)).await
+    }
+
+    /// Launch a draft. `env` is entered at launch and never stored in the draft.
+    pub async fn launch_draft(
+        &self,
+        session_id: &str,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<SpawnResponse, ClientError> {
+        let route = Self::route("post_sessions_by_id_launch")?;
+        let body = serde_json::json!({ "env": env });
+        self.json(route, &[("id", session_id)], &[], Some(&body)).await
+    }
+
+    pub async fn discard_draft(&self, session_id: &str) -> Result<(), ClientError> {
+        let route = Self::route("post_sessions_by_id_discard")?;
+        self.unit(route, &[("id", session_id)], Some(&serde_json::json!({}))).await
+    }
+
     /// Revoke the key this client authenticates with (`cctui logout --revoke`).
     pub async fn revoke_current_key(&self) -> Result<(), ClientError> {
         self.unit(Self::route("delete_me_key")?, &[], None).await
@@ -747,6 +812,11 @@ impl Client {
 /// The `{ids: [...]}` body every batch session route takes.
 fn batch_ids(ids: &[String]) -> Value {
     serde_json::json!({ "ids": ids })
+}
+
+/// A typed request body as JSON, with the route named in the error.
+fn to_value<B: Serialize>(route: &'static str, body: &B) -> Result<Value, ClientError> {
+    serde_json::to_value(body).map_err(|source| ClientError::Decode { route, source })
 }
 
 fn read_etag(resp: &reqwest::Response) -> Option<String> {
@@ -896,6 +966,14 @@ mod tests {
             "delete_sessions_by_id_pins_by_seq",
             "get_bookmarks",
             "post_bookmarks",
+            "get_profiles",
+            "post_profiles",
+            "patch_profiles_by_id",
+            "delete_profiles_by_id",
+            "put_profiles_order",
+            "put_sessions_by_id_draft",
+            "post_sessions_by_id_launch",
+            "post_sessions_by_id_discard",
             "patch_bookmarks_by_id",
             "delete_bookmarks_by_id",
         ] {

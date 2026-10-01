@@ -16,6 +16,7 @@ use super::identity::AuthAction;
 use super::labels::LabelAction;
 use super::macros::MacroAction;
 use super::pins::PinAction;
+use super::spawn_drafts::SpawnDraftAction;
 use super::prompt::PromptAction;
 use super::row_actions::RowAction;
 use super::send::SendAction;
@@ -117,6 +118,7 @@ pub enum Action {
     Drafts(DraftAction),
     Pins(PinAction),
     Bookmarks(BookmarkAction),
+    SpawnDrafts(SpawnDraftAction),
     Macros(MacroAction),
     /// Take the highlighted `#session` completion. Carries the key so a
     /// composer with no popup open still types it.
@@ -194,6 +196,14 @@ pub enum Effect {
     LoadBookmarks {
         q: String,
         before: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// Launch a draft session. `env` is entered at launch, never stored.
+    LaunchDraft {
+        session_id: String,
+        env: std::collections::BTreeMap<String, String>,
+    },
+    DiscardDraftSession {
+        session_id: String,
     },
     CreateBookmark {
         draft: Box<cctui_proto::api::bookmarks::CreateBookmark>,

@@ -268,6 +268,7 @@ pub struct App {
     pub drafts: super::drafts::DraftState,
     pub pins: super::pins::PinState,
     pub bookmarks: super::bookmarks::BookmarkState,
+    pub spawn_drafts: super::spawn_drafts::SpawnDraftState,
     pub mentions: super::mentions::MentionState,
     pub macros: super::macros::MacroState,
     /// Sends that have left the composer but are not confirmed delivered.
@@ -413,6 +414,7 @@ impl App {
             drafts: super::drafts::DraftState::default(),
             pins: super::pins::PinState::default(),
             bookmarks: super::bookmarks::BookmarkState::default(),
+            spawn_drafts: super::spawn_drafts::SpawnDraftState::default(),
             mentions: super::mentions::MentionState::default(),
             macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
@@ -498,6 +500,12 @@ impl App {
         }
         // Last: every strip above belongs to the sessions slice, these two to
         // the bookmarks slice, so no pair of them is ever open together.
+        if self.spawn_drafts.env_prompt.is_some() {
+            return Some(Context::DraftEnv);
+        }
+        if self.spawn_drafts.confirm.is_some() {
+            return Some(Context::DraftConfirm);
+        }
         if self.bookmarks.prompt.is_some() {
             return Some(Context::BookmarkPrompt);
         }
