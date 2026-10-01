@@ -1,14 +1,14 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 130
+assertion_line: 418
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active  ! 2 need input — Ctrl+g
+ cctui  v0.0.0-test  4 sessions  ● 3 active  ! 1 need input — Ctrl+g
  Sessions  starred · live · dispatched  sort: activity ↓  group: status
    ▾ Needs input (1)
-▸    ● [claude-code] infra (main)  opus  0s  $1.25  P
+▸    ● [claude-code] infra (main)  opus  0s  $1.25
    ▾ Working (1)
-     ● [claude-code] cctui (main)  opus  0s  $1.25  ?
+     ● [claude-code] cctui (main)  opus  0s  $1.25
      ▾ subagents (1/1 running)
        ↳ ● [claude-code] cctui-sub (main)  opus  0s  $1.25
    ▾ Completed (1)
@@ -26,4 +26,4 @@ expression: render_screen(&mut app)
 
 
 
- j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
+ rename: fix-auth_

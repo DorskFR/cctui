@@ -20,6 +20,8 @@ pub struct UiState {
     pub folded_sections: BTreeSet<String>,
     /// Whether the conversation's todo/subagent sidebar is showing.
     pub sidebar_open: bool,
+    /// `U`: show only the sessions with something unread.
+    pub unread_only: bool,
     /// The transcript quick filter (`f`) by name; empty means the default.
     pub transcript_quick: String,
     /// Categories the `F` menu is holding back.

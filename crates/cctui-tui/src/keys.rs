@@ -15,11 +15,13 @@ use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
+use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
+use crate::app::unread::UnreadAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -263,6 +265,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         }
         ActionId::PickerApply => Action::Controls(ControlsAction::PickerApply),
 
+        ActionId::ToggleUnreadOnly => Action::Unread(UnreadAction::ToggleOnly),
         ActionId::ToggleSidebar => Action::Sidebar(SidebarAction::Toggle),
         ActionId::SidebarClose => Action::Sidebar(SidebarAction::Close),
         ActionId::SidebarNext => Action::Sidebar(SidebarAction::Move(1)),
@@ -278,6 +281,21 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::EditSend => Action::Send(SendAction::Edit(chord.event())),
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
+
+        ActionId::TogglePin => Action::RowAction(RowAction::TogglePin),
+        ActionId::RenameSession => Action::RowAction(RowAction::RenameStart),
+        ActionId::RenameCommit => Action::RowAction(RowAction::RenameCommit),
+        ActionId::RenameCancel => Action::RowAction(RowAction::RenameCancel),
+        ActionId::Archive => Action::RowAction(RowAction::ArchiveOrUnarchive),
+        ActionId::ArchiveSection => Action::RowAction(RowAction::ArchiveSection),
+        ActionId::KillSession => Action::RowAction(RowAction::KillStart),
+        ActionId::UndoArchive => Action::RowAction(RowAction::Undo),
+        ActionId::SelectToggle => Action::RowAction(RowAction::ToggleSelect),
+        ActionId::SelectRange => Action::RowAction(RowAction::RangeToAnchor),
+        ActionId::SelectAll => Action::RowAction(RowAction::SelectAllVisible),
+        ActionId::SelectClear => Action::RowAction(RowAction::ClearSelection),
+        ActionId::ConfirmYes => Action::RowAction(RowAction::ConfirmYes),
+        ActionId::ConfirmNo => Action::RowAction(RowAction::ConfirmNo),
 
         ActionId::CopyMessage => Action::Copy(CopyWhat::Line),
         ActionId::CopyCodeBlock => Action::Copy(CopyWhat::CodeBlock),
@@ -333,7 +351,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PermissionAllowAlways => {
             Action::Attention(AttentionAction::Respond(Decision::AllowAlways))
         }
-        ActionId::JumpToPending => Action::Attention(AttentionAction::JumpToPending),
+        ActionId::JumpToAttention => Action::Attention(AttentionAction::JumpToAttention),
 
         ActionId::FocusPrompt => Action::Prompt(PromptAction::Focus),
         ActionId::PromptDefer => Action::Prompt(PromptAction::Defer),
@@ -377,6 +395,7 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
         Context::ListSearch => Some(Action::ListSearch(ListSearchAction::Key(key))),
+        Context::Rename => Some(Action::RowAction(RowAction::RenameKey(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
@@ -830,7 +849,7 @@ mod tests {
         for view in [View::SessionList, View::Conversation] {
             assert!(matches!(
                 map_event(view, false, ctrl('g')),
-                Some(Action::Attention(AttentionAction::JumpToPending))
+                Some(Action::Attention(AttentionAction::JumpToAttention))
             ));
         }
     }

@@ -247,26 +247,29 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
     let mut refs: Vec<&'a SessionListItem> = sessions.iter().collect();
     // No caller-chosen sort here: youngest first, as the list has always shown.
     refs.sort_by_key(|s| uptime_secs(s));
-    rows_by(&refs, ui, super::list_view::GroupBy::Status)
+    rows_by(&refs, sessions, ui, super::list_view::GroupBy::Status)
 }
 
 /// Every display row, honouring the persisted fold state. A folded section
 /// drops its rows but keeps its header and count; a folded subagent group
 /// likewise.
 ///
-/// Takes a borrowed, already-filtered-and-sorted list, under a chosen
-/// group-by dimension. `Status` is the bucketed list; every other dimension
-/// buckets by a key read off the session.
+/// `ordered` is the membership and the order: already narrowed by the sections
+/// and sorted. `all` is every session the server sent, and is only ever read
+/// for parentage and for the unread rule — judging either against the narrowed
+/// list would turn a hidden row's children into top-level ones.
 #[must_use]
 pub fn rows_by<'a>(
-    sessions: &[&'a SessionListItem],
+    ordered: &[&'a SessionListItem],
+    all: &'a [SessionListItem],
     ui: &UiState,
     by: super::list_view::GroupBy,
 ) -> Vec<Row<'a>> {
-    let ids: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let ids: HashSet<&str> = all.iter().map(|s| s.id.as_str()).collect();
+    let shown = |s: &SessionListItem| !ui.unread_only || super::unread::keeps_row(all, s);
     let mut kids: HashMap<&str, Vec<&SessionListItem>> = HashMap::new();
-    for s in sessions {
-        if is_fork(s) {
+    for s in ordered {
+        if is_fork(s) || !shown(s) {
             continue;
         }
         if let Some(p) = s.parent_id.as_deref().filter(|p| ids.contains(p) && *p != s.id) {
@@ -274,11 +277,13 @@ pub fn rows_by<'a>(
         }
     }
 
-    let mut tops: Vec<&'a SessionListItem> = sessions
+    let mut tops: Vec<&'a SessionListItem> = ordered
         .iter()
         .copied()
         .filter(|s| {
-            is_fork(s) || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id)
+            shown(s)
+                && (is_fork(s)
+                    || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id))
         })
         .collect();
     // Stable, and by group rank alone: within a group the caller's order — the

@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 655
+assertion_line: 723
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
+ cctui  v0.0.0-test  4 sessions  ● 3 active  ! 1 need input — Ctrl+g
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         Ctrl+p / ↑  Previous prompt                  │
-▸ │  ?           Toggle this cheat sheet            Enter       Put this prompt in the composer  │
-  │  q           Quit cctui                       File viewer                                    │
-  │  /           Search the current view            j / ↓       Scroll down                      │
-  │  n           Next search hit                    k / ↑       Scroll up                        │
-  │  N           Previous search hit                PgDn        Page down                        │
-  │  D           Diagnose the selected session      PgUp        Page up                          │
-  │  i           Session info                       g           Jump to the top                  │
-  │  Ctrl+g      Jump to the next pending approv…   q / Esc     Close the file viewer            │
-  │Session list                                     o           Open in the desktop viewer       │
-  │  j / ↓       Next session                     Pinned messages                                │
-  │  k / ↑       Previous session                   Esc         Close the pinned messages        │
-  │  g           First session                      Ctrl+n / ↓  Next pin                         │
-  │  G           Last session                       Ctrl+p / ↑  Previous pin                     │
-  │  Enter       Open the conversation              Enter       Jump to the pinned message       │
-  │  z / Tab     Fold or open the subagent group    d / m       Unpin this message               │
-  │  S           Fold or open the section         Macros                                         │
-  │  Z           Fold or open everything            Esc         Close the macro list             │
-  │  f           Choose which sections show         Ctrl+n / ↓  Next macro                       │
-  │  o           Cycle the sort field               Ctrl+p / ↑  Previous macro                   │
+  │Anywhere                                         a           Show every category              │
+▸ │  ?           Toggle this cheat sheet            r           Back to the default filter       │
+  │  q           Quit cctui                         Space / En… Show or hide this category       │
+  │  /           Search the current view            j / ↓       Next category                    │
+  │  n           Next search hit                    k / ↑       Previous category                │
+  │  N           Previous search hit              Prompt history                                 │
+  │  D           Diagnose the selected session      Esc         Close the prompt list            │
+  │  i           Session info                       Ctrl+n / ↓  Next prompt                      │
+  │  Ctrl+g      Jump to the next session needin…   Ctrl+p / ↑  Previous prompt                  │
+  │Session list                                     Enter       Put this prompt in the composer  │
+  │  j / ↓       Next session                     File viewer                                    │
+  │  k / ↑       Previous session                   j / ↓       Scroll down                      │
+  │  g           First session                      k / ↑       Scroll up                        │
+  │  G           Last session                       PgDn        Page down                        │
+  │  Enter       Open the conversation              PgUp        Page up                          │
+  │  z / Tab     Fold or open the subagent group    g           Jump to the top                  │
+  │  S           Fold or open the section           q / Esc     Close the file viewer            │
+  │  Z           Fold or open everything            o           Open in the desktop viewer       │
+  │  f           Choose which sections show       Pinned messages                                │
+  │  o           Cycle the sort field               Esc         Close the pinned messages        │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

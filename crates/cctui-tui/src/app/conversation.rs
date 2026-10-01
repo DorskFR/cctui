@@ -85,6 +85,7 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
     app.line_cursor = None;
     app.router.push(View::Conversation);
     app.subscribed = Some(session_id.clone());
+    super::unread::opened(app, &session_id);
 
     let store = app.conversation_mut(&session_id);
     let page = ConversationStore::latest_request();

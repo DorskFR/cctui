@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 663
+assertion_line: 731
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0-test  4 sessions  ● 3 active
+ cctui  v0.0.0-test  4 sessions  ● 3 active  ! 1 need input — Ctrl+g
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Ctrl+p      Previous search hit              Plan card — refine                             │
-▸ │  Tab         Complete the field or value        Enter       Accept the text                  │
-  │  Enter       Open the result                    Esc         Discard the text                 │
-  │  Esc         Clear the search                 Row glyphs                                     │
-  │  Ctrl+a      Include archived sessions          ●           working                          │
-  │  Ctrl+m      Load more results                  ◐           stale or asleep                  │
-  │Search and commands                              ○           idle                             │
-  │  Enter       Run it                             ☾           hibernated                       │
-  │  Esc         Abandon it                         ↳           subagent                         │
-  │  Tab         Complete the path                  ▸ / ▾       folded / open group              │
-  │Filter menu                                      !           permission waiting on you        │
-  │  F / q / Esc Choose which lines to show         ?           question waiting on you          │
-  │  a           Show every category                P           plan waiting for approval        │
-  │  r           Back to the default filter         ●N          unread messages                  │
-  │  Space / En… Show or hide this category         ⚡           auto-approve on                  │
-  │  j / ↓       Next category                      ⏸           account soft-limited             │
-  │  k / ↑       Previous category                  ⚠           account traffic never seen       │
-  │Prompt history                                   ❄           cache cold, next turn re-reads   │
-  │  Esc         Close the prompt list              ✕reason     how it ended                     │
-  │  Ctrl+n / ↓  Next prompt                        ⚙N age      tool calls, age of the last      │
+  │  Ctrl+t      Insert a canned prompt             Enter       Accept the text                  │
+▸ │Sections popup                                   Esc         Discard the text                 │
+  │  f / q / Esc Choose which sections show       Row glyphs                                     │
+  │  j / ↓       Next section                       ●           working                          │
+  │  k / ↑       Previous section                   ◐           stale or asleep                  │
+  │  Space / En… Show or hide this section          ○           idle                             │
+  │List search                                      ☾           hibernated                       │
+  │  Ctrl+n      Next search hit                    ↳           subagent                         │
+  │  Ctrl+p      Previous search hit                ▸ / ▾       folded / open group              │
+  │  Tab         Complete the field or value        !           permission waiting on you        │
+  │  Enter       Open the result                    ?           question waiting on you          │
+  │  Esc         Clear the search                   P           plan waiting for approval        │
+  │  Ctrl+a      Include archived sessions          ●N          unread messages                  │
+  │  Ctrl+m      Load more results                  ⚡           auto-approve on                  │
+  │Search and commands                              ⏸           account soft-limited             │
+  │  Enter       Run it                             ⚠           account traffic never seen       │
+  │  Esc         Abandon it                         ❄           cache cold, next turn re-reads   │
+  │  Tab         Complete the path                  ✕reason     how it ended                     │
+  │Filter menu                                      ⚙N age      tool calls, age of the last      │
+  │  F / q / Esc Choose which lines to show                                                      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

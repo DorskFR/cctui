@@ -26,10 +26,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Session list
     draw_session_list(frame, app, list_area);
 
-    if app.list_search.is_active() {
-        draw_search_prompt(frame, app, hotkeys_area);
-    } else {
-        crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
+    // One bottom line, in the order the keyboard resolves: a row-action prompt
+    // is modal and owns it, then the search prompt, then the hotkeys.
+    if !super::row_actions::draw_strip(frame, app, hotkeys_area) {
+        if app.list_search.is_active() {
+            draw_search_prompt(frame, app, hotkeys_area);
+        } else {
+            crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
+        }
     }
 
     super::sections::draw(frame, app);
@@ -47,6 +51,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw("  "),
         Span::styled(format!("● {active} active"), theme::active()),
     ];
+    let unread = crate::app::unread::total(app);
+    if unread > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("●{unread} unread"), theme::unread()));
+    }
+    if app.ui.unread_only {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled("unread only", theme::cost()));
+    }
     if app.refresh.requested > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -303,6 +316,11 @@ fn spans_of(segs: Vec<Seg>) -> Vec<Span<'static>> {
     segs.into_iter().map(|s| Span::styled(s.text, s.style)).collect()
 }
 
+/// Empty outside select mode, so the row keeps its full width.
+fn checkbox(app: &App, session_id: &str) -> String {
+    super::row_actions::checkbox(app, session_id).unwrap_or_default().to_owned()
+}
+
 fn session_line(app: &App, s: &SessionListItem, depth: usize, width: u16) -> ListItem<'static> {
     ListItem::new(Line::from(session_line_spans(app, s, depth, width)))
 }
@@ -346,6 +364,7 @@ fn session_line_spans(
     }
     segs.extend([
         Seg::new(KEEP, theme::dim(), lead),
+        Seg::new(KEEP, theme::hotkey(), checkbox(app, &s.id)),
         Seg::new(KEEP, theme::liveness_style(liveness), format!("{} ", liveness.glyph())),
         Seg::new(5, theme::dim(), format!("[{adapter}] ")),
         Seg::new(KEEP, if is_subagent { theme::dim() } else { theme::bold() }, project.to_owned()),
@@ -633,6 +652,29 @@ mod tests {
                 "{width} columns overflowed: {:?}",
                 text(&spans)
             );
+        }
+    }
+
+    #[test]
+    fn a_row_in_select_mode_still_fits_eighty_columns() {
+        let mut s = session("s-long", "a-project-with-a-really-long-name", "active", "working");
+        s.metadata = serde_json::json!({
+            "project_name": "a-project-with-a-really-long-name",
+            "git_branch": "feature/an-extremely-long-branch-name-that-keeps-going",
+            "model": "claude-opus-5-1m",
+        });
+        s.unread_count = 12;
+        let mut app = app_with(s);
+        app.clock_ms = 600_000;
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::RowAction(crate::app::row_actions::RowAction::ToggleSelect),
+        );
+
+        for width in [40_u16, 80] {
+            let spans = session_line_spans(&app, &app.sessions[0], 0, width);
+            assert!(cols(&spans) <= usize::from(width), "{width} overflowed: {:?}", text(&spans));
+            assert!(text(&spans).contains("[x] "), "the checkbox is part of the identity");
         }
     }
 

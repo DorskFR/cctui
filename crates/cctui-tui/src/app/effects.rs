@@ -210,6 +210,47 @@ async fn run(
                 })],
             }
         }
+        Effect::ArchiveSessions { ids, archived } => {
+            let verb = if archived { "archive" } else { "unarchive" };
+            match server.archive_sessions(&ids, archived).await {
+                Ok(()) => vec![Action::RefreshSessions],
+                Err(e) => {
+                    tracing::warn!(%e, verb, "batch archive failed");
+                    vec![Action::Toast(Level::Error, format!("{verb} failed: {e}"))]
+                }
+            }
+        }
+        Effect::PinSessions { ids, pinned } => {
+            let verb = if pinned { "pin" } else { "unpin" };
+            match server.pin_sessions(&ids, pinned).await {
+                Ok(()) => vec![Action::RefreshSessions],
+                Err(e) => {
+                    tracing::warn!(%e, verb, "pin toggle failed");
+                    vec![Action::Toast(Level::Error, format!("{verb} failed: {e}"))]
+                }
+            }
+        }
+        Effect::RenameSession { session_id, name } => {
+            match server.rename_session(&session_id, &name).await {
+                Ok(()) => vec![
+                    Action::Toast(Level::Info, format!("renamed to \"{name}\"")),
+                    Action::RefreshSessions,
+                ],
+                Err(e) => {
+                    tracing::warn!(%e, "rename failed");
+                    vec![Action::Toast(Level::Error, format!("rename failed: {e}"))]
+                }
+            }
+        }
+        Effect::KillSession { session_id } => match server.kill_session(&session_id).await {
+            Ok(()) => {
+                vec![Action::Toast(Level::Info, "killed".to_owned()), Action::RefreshSessions]
+            }
+            Err(e) => {
+                tracing::warn!(%e, "kill failed");
+                vec![Action::Toast(Level::Error, format!("kill failed: {e}"))]
+            }
+        },
         Effect::Interrupt { session_id } => {
             let error = server.interrupt(&session_id).await.err();
             if let Some(e) = error.as_ref() {

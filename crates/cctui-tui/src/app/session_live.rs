@@ -84,6 +84,7 @@ fn toggle_fold_all(app: &mut App) -> Vec<Effect> {
     let visible = super::list_view::visible_refs(&app.sessions, &app.list_shape);
     let (groups, sections) = super::session_list::fold_targets(&super::session_list::rows_by(
         &visible,
+        &app.sessions,
         &probe,
         app.list_shape.group_by,
     ));

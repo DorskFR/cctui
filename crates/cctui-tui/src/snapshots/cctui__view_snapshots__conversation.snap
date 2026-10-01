@@ -1,9 +1,9 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 295
+assertion_line: 337
 expression: render_screen(&mut app)
 ---
- infra (main) on orion ── opus ── $1.25
+ infra (main) on orion ── opus ── $1.25  ! 1 need input — Ctrl+g
                                                                                                    ▕
 ∴ thinking (2 lines)  (2 more · o)                                                                 ▕
  Read  crates/cctui-tui/src/main.rs  read                                                          ▕
