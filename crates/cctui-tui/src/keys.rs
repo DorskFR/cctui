@@ -285,8 +285,8 @@ pub fn is_wired(id: ActionId) -> bool {
     to_action(id, Chord::new(KeyCode::Char('1'), KeyModifiers::NONE)).is_some()
 }
 
-/// Actions a later wave still owns return `None`: the key then behaves as if it
-/// were unbound rather than being silently swallowed.
+/// Total over [`ActionId`], so a new id cannot be named in a `tui.toml`
+/// without something to run.
 #[allow(clippy::too_many_lines)]
 fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
     Some(match id {
@@ -636,8 +636,6 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DiagnoseTop => Action::Diagnose(DiagnoseAction::ScrollTop),
         ActionId::DiagnoseRefresh => Action::Diagnose(DiagnoseAction::Refresh),
         ActionId::DiagnoseCopyId => Action::Diagnose(DiagnoseAction::CopyId),
-
-        _ => return None,
     })
 }
 
@@ -1333,5 +1331,16 @@ mod tests {
             ),
             Some(Action::SelectNext)
         ));
+    }
+    /// A name a `tui.toml` may bind has to do something; an id with no action
+    /// would swallow the key it was bound to.
+    #[test]
+    fn every_nameable_action_has_an_action() {
+        let unwired: Vec<&str> = crate::config::keymap::ACTION_IDS
+            .iter()
+            .filter(|id| !super::is_wired(**id))
+            .map(|id| id.as_str())
+            .collect();
+        assert!(unwired.is_empty(), "these ids are bindable but do nothing: {unwired:?}");
     }
 }

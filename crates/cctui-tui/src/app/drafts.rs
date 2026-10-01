@@ -279,29 +279,67 @@ pub fn on_quit(app: &mut App) -> Vec<Effect> {
         let typed = app.message_input.lines().join("\n");
         app.drafts.set_text(session_id, typed);
     }
-    for (session_id, text) in undelivered_by_session(app) {
+    for (session_id, text) in unsent_by_session(app) {
         let kept = app.drafts.text(&session_id);
         let merged = if kept.trim().is_empty() { text } else { format!("{text}\n\n{kept}") };
         app.drafts.set_text(session_id, merged);
     }
-    for (session_id, text) in &app.drafts.texts {
-        if text.trim().is_empty() {
-            continue;
-        }
-        effects
-            .push(Effect::SaveDraftNow { key: composer_draft_key(session_id), text: text.clone() });
+
+    let pending: std::collections::BTreeMap<String, String> = app
+        .drafts
+        .texts
+        .iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .map(|(session_id, text)| (composer_draft_key(session_id), text.clone()))
+        .collect();
+
+    // On disk BEFORE the saves go out, not after they fail: a black-holed server
+    // outlasts the shutdown budget, so there is no failure to react to. Each save
+    // that lands removes its own key again.
+    let owner = recovery_owner(app);
+    let path = owner.as_ref().and_then(crate::config::recovery::path_for);
+    if let (Some(owner), Some(path)) = (owner.as_ref(), path.as_ref()) {
+        crate::config::recovery::write_to(path, owner, pending.clone());
     }
-    // The spawn form's own debounce is just as abandoned, and its row may not
-    // exist yet.
-    effects.extend(super::spawn_drafts::autosave(app));
+
+    for (key, text) in pending {
+        effects.push(Effect::SaveDraftNow {
+            key,
+            text,
+            recovery: owner
+                .clone()
+                .zip(path.clone())
+                .map(|(owner, path)| crate::config::recovery::Target { owner, path }),
+        });
+    }
+    // The spawn form's debounce is just as abandoned, so its save skips it; its
+    // row may not exist yet either.
+    effects.extend(super::spawn_drafts::autosave_now(app));
     effects
 }
 
-/// Outbox text that never reached the server, oldest first, one entry per
+/// Who the recovery file belongs to, or `None` until `/me` has answered: an
+/// unidentified run must not write a file nobody can claim.
+#[must_use]
+pub fn recovery_owner(app: &App) -> Option<crate::config::recovery::Owner> {
+    let super::identity::AuthState::Identified(identity) = &app.auth else { return None };
+    let user_id = identity.user_id.as_deref()?;
+    if app.server_url.is_empty() || user_id.is_empty() {
+        return None;
+    }
+    Some(crate::config::recovery::Owner::new(&app.server_url, user_id))
+}
+
+/// Outbox text the server certainly does not have, oldest first, one entry per
 /// session.
-fn undelivered_by_session(app: &App) -> Vec<(String, String)> {
+///
+/// Narrower than [`TrackedSend::undelivered`] on purpose: a send that was acked
+/// as queued toward a daemon HAS reached the server, and copying it back would
+/// show the user a message that actually ran. Only a send waiting out a backoff,
+/// one that ran out of attempts, and one that never left the client qualify.
+fn unsent_by_session(app: &App) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for send in app.outbox.tracked().filter(|s| s.undelivered()) {
+    for send in app.outbox.tracked().filter(|s| s.never_reached_the_server()) {
         if let Some(entry) = out.iter_mut().find(|(id, _)| *id == send.session_id) {
             entry.1.push_str("\n\n");
             entry.1.push_str(&send.content);
@@ -310,6 +348,55 @@ fn undelivered_by_session(app: &App) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// Drafts a previous quit could not hand to the server, read back off disk.
+///
+/// They are re-sent so the server store catches up. Deleting the file is the
+/// caller's: this takes no filesystem action, so a test can drive it without
+/// pointing at the real one.
+pub fn restore_recovered(
+    app: &mut App,
+    recovered: crate::config::recovery::Recovery,
+) -> Vec<Effect> {
+    if recovered.is_empty() {
+        return Vec::new();
+    }
+    let mut effects = Vec::new();
+    let mut sessions = 0;
+    for (key, text) in recovered.drafts {
+        if text.trim().is_empty() {
+            continue;
+        }
+        if let Some(session_id) = draft_session_id(&key) {
+            app.drafts.set_text(session_id.to_owned(), text.clone());
+            sessions += 1;
+        }
+        effects.push(Effect::SaveDraft { key, text });
+    }
+    if sessions > 0 {
+        let what = if sessions == 1 { "draft" } else { "drafts" };
+        app.toast(
+            super::toast::Level::Info,
+            format!("recovered {sessions} unsaved {what} from the last exit"),
+        );
+    }
+    restore_composer(app);
+    effects
+}
+
+/// `/me` has answered, so the recovery file can be matched against the identity
+/// that wrote it. Anything left by another user, or another server, is left
+/// where it is.
+pub fn restore_for_identity(app: &mut App) -> Vec<Effect> {
+    let Some(owner) = recovery_owner(app) else { return Vec::new() };
+    let recovered = crate::config::recovery::load(&owner);
+    if recovered.is_empty() {
+        return Vec::new();
+    }
+    let effects = restore_recovered(app, recovered);
+    crate::config::recovery::clear(&owner);
+    effects
 }
 
 /// The caret as a character offset, which is what the shared recall rule reads.
@@ -429,7 +516,7 @@ mod tests {
         effects
             .iter()
             .filter_map(|e| match e {
-                Effect::SaveDraftNow { key, text } => Some((key.clone(), text.clone())),
+                Effect::SaveDraftNow { key, text, .. } => Some((key.clone(), text.clone())),
                 _ => None,
             })
             .collect()
@@ -477,7 +564,7 @@ mod tests {
             "the message that never left".to_owned(),
             None,
         );
-        assert!(app.outbox.tracked().any(crate::app::send::TrackedSend::undelivered));
+        assert!(app.outbox.tracked().any(crate::app::send::TrackedSend::never_reached_the_server));
 
         let effects = reduce(&mut app, Action::Quit);
         let saved = saved_now(&effects);
@@ -495,6 +582,220 @@ mod tests {
         let saved = saved_now(&reduce(&mut app, Action::Quit));
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].1, "parked\n\nnewer text!", "neither is lost");
+    }
+
+    #[test]
+    fn quitting_saves_the_spawn_form_without_waiting_for_its_debounce() {
+        let mut app = app();
+        reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
+        let form = app.spawn.as_mut().expect("the dialog");
+        form.fields.machine_id = "m-1".to_owned();
+        form.fields.working_dir = "/w".to_owned();
+        form.fields.prompt = "half a plan".to_owned();
+
+        let effects = reduce(&mut app, Action::Quit);
+        let immediate =
+            effects.iter().any(|e| matches!(e, Effect::AutosaveDraft { immediate: true, .. }));
+        assert!(immediate, "a 700 ms debounce does not survive the exit");
+    }
+
+    #[test]
+    fn a_send_the_server_already_acked_is_not_copied_back() {
+        use crate::app::send::SendAction;
+        let mut app = app();
+        app.router.push(View::Conversation);
+        let _ = super::sync_composer(&mut app);
+        let _ = crate::app::send::submit(&mut app, "s-a".to_owned(), "queued".to_owned(), None);
+        let send_id = app.outbox.tracked().next().expect("a send").id;
+        let _ = reduce(
+            &mut app,
+            Action::Send(SendAction::Dispatched {
+                send_id,
+                client_msg_id: "c-1".to_owned(),
+                turn_id: uuid::Uuid::new_v4(),
+            }),
+        );
+        let _ = reduce(
+            &mut app,
+            Action::Send(SendAction::Acked {
+                client_msg_id: "c-1".to_owned(),
+                ok: true,
+                error: None,
+                command_id: Some(uuid::Uuid::new_v4()),
+            }),
+        );
+
+        assert!(
+            saved_now(&reduce(&mut app, Action::Quit)).is_empty(),
+            "it is queued toward a daemon; showing it back would look like it never ran"
+        );
+    }
+
+    #[test]
+    fn a_send_that_never_left_the_client_is_copied_back() {
+        let mut app = app();
+        app.router.push(View::Conversation);
+        let _ = super::sync_composer(&mut app);
+        // Submitted, never dispatched: no client_msg_id was ever assigned.
+        let _ = crate::app::send::submit(&mut app, "s-a".to_owned(), "never left".to_owned(), None);
+        let saved = saved_now(&reduce(&mut app, Action::Quit));
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].1, "never left");
+    }
+
+    fn alice() -> crate::config::recovery::Owner {
+        crate::config::recovery::Owner::new("https://one.example", "user-alice")
+    }
+
+    fn bob() -> crate::config::recovery::Owner {
+        crate::config::recovery::Owner::new("https://one.example", "user-bob")
+    }
+
+    /// An app identified as `owner`, with the recovery directory pointed at a
+    /// temp dir for the whole process.
+    fn identified_as(owner: &crate::config::recovery::Owner) -> App {
+        let mut app = app();
+        app.server_url = owner.server_url.clone();
+        app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+            role: "user".to_owned(),
+            user_id: Some(owner.user_id.clone()),
+            user_name: None,
+            scopes: Vec::new(),
+            token_preview: String::new(),
+        });
+        app
+    }
+
+    fn recovery_dir_for_this_test() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::config::recovery::set_dir_for_tests(tmp.path());
+        tmp
+    }
+
+    #[test]
+    fn drafts_the_server_refused_are_handed_back_at_the_next_start() {
+        let _dir = recovery_dir_for_this_test();
+        let mut app = identified_as(&alice());
+        crate::config::recovery::write(
+            &alice(),
+            std::iter::once((
+                super::composer_draft_key("s-a"),
+                "the text the server never took".to_owned(),
+            ))
+            .collect(),
+        );
+
+        let effects = super::restore_for_identity(&mut app);
+        assert_eq!(app.drafts.text("s-a"), "the text the server never took");
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::SaveDraft { .. })),
+            "the server store is brought up to date too"
+        );
+        assert!(app.toasts.latest().expect("a toast").text.contains("recovered 1"));
+        assert!(
+            crate::config::recovery::load(&alice()).is_empty(),
+            "handed back, so the file goes"
+        );
+    }
+
+    #[test]
+    fn another_users_recovery_is_neither_restored_nor_uploaded_nor_deleted() {
+        let _dir = recovery_dir_for_this_test();
+        crate::config::recovery::write(
+            &alice(),
+            std::iter::once((super::composer_draft_key("s-a"), "alice's unsent prompt".to_owned()))
+                .collect(),
+        );
+
+        let mut app = identified_as(&bob());
+        let effects = super::restore_for_identity(&mut app);
+        assert!(effects.is_empty(), "bob's account must not be sent alice's text");
+        assert_eq!(app.drafts.text("s-a"), "", "and it must not reach bob's composer");
+        assert!(app.toasts.latest().is_none());
+        assert!(
+            !crate::config::recovery::load(&alice()).is_empty(),
+            "it is still alice's to recover"
+        );
+    }
+
+    #[test]
+    fn the_same_user_against_another_server_does_not_inherit_the_drafts() {
+        let _dir = recovery_dir_for_this_test();
+        crate::config::recovery::write(
+            &alice(),
+            std::iter::once((super::composer_draft_key("s-a"), "text for one instance".to_owned()))
+                .collect(),
+        );
+
+        let elsewhere =
+            crate::config::recovery::Owner::new("https://other.example", &alice().user_id);
+        let mut app = identified_as(&elsewhere);
+        assert!(super::restore_for_identity(&mut app).is_empty());
+        assert!(!crate::config::recovery::load(&alice()).is_empty());
+    }
+
+    #[test]
+    fn an_unidentified_run_restores_nothing_and_writes_nothing() {
+        let _dir = recovery_dir_for_this_test();
+        let mut app = app();
+        assert!(super::recovery_owner(&app).is_none(), "no /me answer yet");
+        assert!(super::restore_for_identity(&mut app).is_empty());
+
+        typing(&mut app, "typed before the server answered");
+        let effects = reduce(&mut app, Action::Quit);
+        assert!(
+            effects.iter().all(|e| matches!(e, Effect::SaveDraftNow { recovery: None, .. })
+                | matches!(e, Effect::AutosaveDraft { .. })),
+            "there is no identity to scope a file to"
+        );
+    }
+
+    #[test]
+    fn quitting_writes_the_local_copy_before_the_saves_go_out() {
+        let _dir = recovery_dir_for_this_test();
+        let mut app = identified_as(&alice());
+        typing(&mut app, "half a thought");
+
+        let effects = reduce(&mut app, Action::Quit);
+        // Nothing has been dispatched yet, let alone failed: the copy is already
+        // on disk, which is the only thing that survives a server that hangs.
+        let held = crate::config::recovery::load(&alice());
+        assert_eq!(
+            held.drafts.get(&super::composer_draft_key("s-a")).map(String::as_str),
+            Some("half a thought!")
+        );
+        let saved = saved_now(&effects);
+        assert_eq!(saved.len(), 1);
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::SaveDraftNow { recovery: Some(_), .. })),
+            "and the save knows which file to remove itself from"
+        );
+    }
+
+    #[test]
+    fn a_recovered_draft_is_not_overwritten_by_the_servers_older_copy() {
+        let _dir = recovery_dir_for_this_test();
+        let mut app = identified_as(&alice());
+        crate::config::recovery::write(
+            &alice(),
+            std::iter::once((super::composer_draft_key("s-a"), "newer local text".to_owned()))
+                .collect(),
+        );
+        let _ = super::restore_for_identity(&mut app);
+
+        let list = DraftList {
+            drafts: vec![draft(&super::composer_draft_key("s-a"), "what the server still held")],
+        };
+        let _ = reduce(&mut app, Action::Drafts(DraftAction::IndexLoaded(Box::new(list))));
+        assert_eq!(app.drafts.text("s-a"), "newer local text");
+    }
+
+    #[test]
+    fn nothing_recovered_is_a_no_op_with_no_toast() {
+        let _dir = recovery_dir_for_this_test();
+        let mut app = identified_as(&alice());
+        assert!(super::restore_for_identity(&mut app).is_empty());
+        assert!(app.toasts.latest().is_none());
     }
 
     #[test]
@@ -528,7 +829,7 @@ mod tests {
             Action::Send(SendAction::DeliveryResult { command_id, ok: true, error: None }),
         );
         assert!(
-            !app.outbox.tracked().any(crate::app::send::TrackedSend::undelivered),
+            app.outbox.tracked().all(|s| s.phase == crate::app::send::Phase::Delivered),
             "the fixture needs it actually delivered"
         );
         assert!(saved_now(&reduce(&mut app, Action::Quit)).is_empty());

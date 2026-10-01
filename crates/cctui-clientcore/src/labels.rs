@@ -8,8 +8,9 @@ fn js_parse_int(s: &str) -> Option<i64> {
     let t = s.trim_start();
     let mut chars = t.chars().peekable();
     let mut out = String::new();
-    if matches!(chars.peek(), Some('+' | '-')) {
-        out.push(chars.next().unwrap());
+    if let Some(sign @ ('+' | '-')) = chars.peek().copied() {
+        out.push(sign);
+        chars.next();
     }
     while let Some(c) = chars.peek() {
         if c.is_ascii_digit() {

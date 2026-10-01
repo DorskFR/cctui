@@ -830,6 +830,37 @@ fn terminal_pane() {
     insta::assert_snapshot!(render_screen(&mut app));
 }
 
+/// The header names the machine and the project the way the info panel does:
+/// an id is a fallback, never the label.
+#[test]
+fn the_conversation_header_names_the_machine_not_its_id() {
+    let mut app = app_in_conversation();
+    let id = selected(&app);
+    let row = session_mut(&mut app, &id);
+    row.machine_id = "m-7f3a2b".to_owned();
+    row.machine_name = Some("orion".to_owned());
+    let screen = render_screen(&mut app);
+    let header = screen.lines().next().unwrap_or_default().to_owned();
+    assert!(header.contains("on orion"), "{header}");
+    assert!(!header.contains("m-7f3a2b"), "the raw id must not be the label: {header}");
+}
+
+/// A session whose metadata carries no project name still says where it works.
+#[test]
+fn the_conversation_header_falls_back_to_the_working_directory() {
+    let mut app = app_in_conversation();
+    let id = selected(&app);
+    let row = session_mut(&mut app, &id);
+    if let Some(map) = row.metadata.as_object_mut() {
+        map.remove("project_name");
+    }
+    row.working_dir = "/work/ledger-app".to_owned();
+    let screen = render_screen(&mut app);
+    let header = screen.lines().next().unwrap_or_default().to_owned();
+    assert!(header.contains("ledger-app"), "{header}");
+    assert!(!header.contains("unknown"), "{header}");
+}
+
 #[test]
 fn conversation() {
     let mut app = app_in_conversation();
@@ -1286,6 +1317,29 @@ fn session_info_popup_for_an_ended_session() {
 fn session_info_popup_narrow() {
     let mut app = app_with_panel(crate::app::diagnose::DiagnoseMode::Info);
     insta::assert_snapshot!(render_screen_sized(&mut app, 60, 20));
+}
+
+/// Every dollar on screen goes through the shared formatter, so a cost sitting
+/// exactly on a tie reads the same here as in the web UI. Rust's own `{:.2}`
+/// rounds 1.125 to even ("$1.12"); `toFixed` and therefore cctui round away
+/// from zero.
+#[test]
+fn a_cost_on_a_rounding_tie_reads_as_the_web_ui_reads_it() {
+    let mut app = app_with_sessions();
+    app.clock_ms = CLOCK_MS;
+    for row in &mut app.sessions {
+        row.token_usage.cost_usd = 1.125;
+    }
+    app.update_aggregates();
+    let list = render_screen(&mut app);
+    assert!(list.contains("$1.13"), "the list row must not round to even: {list}");
+    assert!(!list.contains("$1.12"), "{list}");
+
+    let id = selected(&app);
+    app.conversations.insert(id, conversation_store());
+    app.router.push(View::Conversation);
+    let conversation = render_screen(&mut app);
+    assert!(conversation.contains("$1.13"), "the header must agree: {conversation}");
 }
 
 #[test]
@@ -1924,6 +1978,7 @@ fn app_with_dispatchers(scopes: &[&str]) -> crate::app::App {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
     app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        user_id: None,
         role: "user".to_owned(),
         user_name: Some("dev".to_owned()),
         scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
@@ -2529,6 +2584,7 @@ fn app_with_instance(role: &str, latest: Option<&str>, hook: bool, ready: bool) 
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
     app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        user_id: None,
         role: role.to_owned(),
         user_name: Some("dev".to_owned()),
         scopes: vec!["read".to_owned()],
@@ -2960,6 +3016,7 @@ fn app_in_access_slice(scopes: &[&str]) -> crate::app::App {
     let mut app = app_with_sessions();
     app.clock_ms = CLOCK_MS;
     app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+        user_id: None,
         role: "admin".to_owned(),
         user_name: Some("dorsk".to_owned()),
         scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),

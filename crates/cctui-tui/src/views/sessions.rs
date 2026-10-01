@@ -440,7 +440,11 @@ fn session_line_spans(
             theme::dim(),
             format!("  {}", format_uptime(uptime_secs_at(s, now))),
         ));
-        segs.push(Seg::new(1, theme::cost(), format!("  ${:.2}", s.token_usage.cost_usd)));
+        segs.push(Seg::new(
+            1,
+            theme::cost(),
+            format!("  {}", cctui_clientcore::usage::money(s.token_usage.cost_usd)),
+        ));
         if let Some(cadence) = session_status::cadence_text(&act) {
             segs.push(Seg::new(4, theme::dim(), format!("  {cadence}")));
         }

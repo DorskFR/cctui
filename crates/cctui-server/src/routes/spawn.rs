@@ -680,18 +680,31 @@ pub(super) async fn auto_account_name(
     family: crate::routes::gateway::Family,
     model: Option<&str>,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
+    auto_account_name_scoped(state, user_id, family, model, false).await
+}
+
+/// `owned_only` drops accounts merely shared with the caller. An election the
+/// user did not ask for must not spend another owner's allocation.
+pub(super) async fn auto_account_name_scoped(
+    state: &AppState,
+    user_id: Uuid,
+    family: crate::routes::gateway::Family,
+    model: Option<&str>,
+    owned_only: bool,
+) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
     let rows: Vec<AutoAccountRow> = sqlx::query_as(
         "SELECT a.id, a.name, ap.id, ap.soft_limits_json, ap.models, ap.model_aliases \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
          WHERE ap.family = $2 \
-           AND (a.user_id = $1 OR EXISTS ( \
+           AND (a.user_id = $1 OR (NOT $3 AND EXISTS ( \
                SELECT 1 FROM resource_shares s \
                 WHERE s.resource_type = 'account' AND s.resource_id = a.id \
-                  AND s.grantee_id = $1 AND s.revoked_at IS NULL)) \
+                  AND s.grantee_id = $1 AND s.revoked_at IS NULL))) \
          ORDER BY a.name",
     )
     .bind(user_id)
     .bind(family.label())
+    .bind(owned_only)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| AppError::from(e).into_parts())?;

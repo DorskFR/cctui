@@ -1,5 +1,5 @@
-//! The spawn dialog. Draws each registered section in order; a lane that adds a
-//! section needs no change here.
+//! The spawn dialog. Draws each registered section in order, so adding one
+//! needs no change here.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

@@ -184,7 +184,11 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(format!("{:<12}", provider.family), theme::dim()),
             Span::styled(
-                format!("${:.2}  {} tok", provider.est_cost_usd, provider.total_tokens),
+                format!(
+                    "{}  {} tok",
+                    cctui_clientcore::usage::money(provider.est_cost_usd),
+                    provider.total_tokens
+                ),
                 theme::dim(),
             ),
         ];

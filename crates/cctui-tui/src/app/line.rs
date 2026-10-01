@@ -260,7 +260,7 @@ fn line_of(event: &AgentEvent) -> Option<ConversationLine> {
         AgentEvent::ToolResult { tool, output_summary, error, ts, .. } => {
             let kind = LineKind::Result { error: *error };
             let mut line = ConversationLine::new(kind, output_summary.clone(), *ts);
-            line.tool = Some(tool.clone());
+            line.tool = (!tool.is_empty()).then(|| tool.clone());
             Some(line)
         }
         AgentEvent::Heartbeat { .. } | AgentEvent::TurnEnd { .. } => None,

@@ -426,6 +426,7 @@ mod tests {
     fn app_with_scope(scopes: &[&str]) -> App {
         let mut app = App::new();
         app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+            user_id: None,
             role: "user".to_owned(),
             user_name: Some("dev".to_owned()),
             scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),

@@ -15,9 +15,6 @@ use super::toast::Level;
 /// The websocket's only entry point into the store. Exhaustive on purpose: a
 /// new [`ServerEvent`] variant must not compile until it is handled or waived
 /// here, and every waiver carries its reason on the arm.
-// Waived variants keep one arm each even where the reason repeats: the list is
-// meant to be read per variant in review.
-#[allow(clippy::match_same_arms)]
 /// A delivery ack that the spawn dialog also waits on.
 fn command_result(
     command_id: &str,
@@ -116,18 +113,24 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::PlanResolved { session_id } => {
             vec![Action::Prompt(PromptAction::PlanResolved { session_id })]
         }
-        ServerEvent::MachineResources { .. } => waived("the TUI shows no machine list"),
-        ServerEvent::DispatcherLiveness { .. } => waived("the TUI shows no dispatcher list"),
-        ServerEvent::AccountUsage { .. } => waived("the TUI shows no account panel"),
+        ServerEvent::MachineResources { .. } => waived("the machines view refetches over REST"),
+        ServerEvent::DispatcherLiveness { .. } => {
+            waived("the dispatchers view refetches over REST")
+        }
+        ServerEvent::AccountUsage { .. } => {
+            waived("the accounts and usage views refetch over REST")
+        }
         ServerEvent::GithubEvent { .. } => {
             waived("PR links come from the session rows the REST refresh returns")
         }
         ServerEvent::PtyChunk { session_id, data } => {
             vec![Action::Terminal(TerminalAction::Chunk { session_id, data })]
         }
-        ServerEvent::ScheduledLaunch { .. } => waived("the TUI has no drafts view"),
+        ServerEvent::ScheduledLaunch { .. } => {
+            waived("a draft is a session row the list refresh carries")
+        }
         ServerEvent::RoomMembers { .. } => waived("the TUI list does not group by room"),
-        ServerEvent::UserActions { .. } => waived("the TUI has no needs-you list yet"),
+        ServerEvent::UserActions { .. } => waived("no needs-you list; the counts ride on the rows"),
         ServerEvent::Heartbeat { .. } => waived("liveness tick with nothing to render"),
     }
 }

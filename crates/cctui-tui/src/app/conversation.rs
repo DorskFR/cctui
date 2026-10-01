@@ -6,6 +6,9 @@ pub enum ConversationAction {
     Loaded {
         session_id: String,
         kind: PageKind,
+        /// Which older-page request this answers; `None` for a page nothing
+        /// claimed (the newest page, a gap refetch).
+        claim: Option<u64>,
         rows: Vec<(i64, ConversationLine)>,
         etag: Option<String>,
         has_more: bool,
@@ -13,10 +16,12 @@ pub enum ConversationAction {
     NotModified {
         session_id: String,
         kind: PageKind,
+        claim: Option<u64>,
     },
     Failed {
         session_id: String,
         kind: PageKind,
+        claim: Option<u64>,
     },
     ToggleLineCursor,
     MoveCursor {
@@ -28,8 +33,9 @@ pub enum ConversationAction {
 
 pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
     match action {
-        ConversationAction::Loaded { session_id, kind, rows, etag, has_more } => {
-            let merge = app.conversation_mut(&session_id).merge_page(kind, rows, etag, has_more);
+        ConversationAction::Loaded { session_id, kind, claim, rows, etag, has_more } => {
+            let merge =
+                app.conversation_mut(&session_id).merge_page(kind, claim, rows, etag, has_more);
             // The cursor, the viewport and the anchor all belong to whatever is
             // on screen; a background session's page must not move them.
             let on_screen = app.subscribed.as_deref() == Some(session_id.as_str());
@@ -67,12 +73,12 @@ pub fn reduce(app: &mut App, action: ConversationAction) -> Vec<Effect> {
             }
             Vec::new()
         }
-        ConversationAction::NotModified { session_id, kind } => {
-            app.conversation_mut(&session_id).page_not_modified(kind);
+        ConversationAction::NotModified { session_id, kind, claim } => {
+            app.conversation_mut(&session_id).page_not_modified(kind, claim);
             Vec::new()
         }
-        ConversationAction::Failed { session_id, kind } => {
-            app.conversation_mut(&session_id).page_failed(kind);
+        ConversationAction::Failed { session_id, kind, claim } => {
+            app.conversation_mut(&session_id).page_failed(kind, claim);
             super::pins::page_failed(app);
             Vec::new()
         }
@@ -103,6 +109,7 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
         Effect::LoadConversationPage {
             session_id: session_id.clone(),
             kind: PageKind::Latest,
+            claim: None,
             page,
             etag,
         },
@@ -116,10 +123,9 @@ pub fn open(app: &mut App, session_id: String) -> Vec<Effect> {
 /// Move the whole view to another session: leave whatever is subscribed, put
 /// the selection on the target and open it.
 pub fn switch_to(app: &mut App, session_id: String) -> Vec<Effect> {
-    let Some(index) = app.flattened_sessions().iter().position(|s| s.id == session_id) else {
+    if !app.select_session_id(&session_id) {
         return Vec::new();
-    };
-    app.selected_index = index;
+    }
     let mut effects = leave(app);
     effects.extend(open(app, session_id));
     effects
@@ -137,7 +143,13 @@ pub fn reconnect(app: &mut App) -> Vec<Effect> {
     let page = app.conversation_mut(&session_id).gap_request();
     vec![
         Effect::Subscribe { session_id: session_id.clone() },
-        Effect::LoadConversationPage { session_id, kind: PageKind::Gap, page, etag: None },
+        Effect::LoadConversationPage {
+            session_id,
+            kind: PageKind::Gap,
+            claim: None,
+            page,
+            etag: None,
+        },
     ]
 }
 
@@ -146,12 +158,32 @@ pub fn load_older(app: &mut App) -> Vec<Effect> {
         return Vec::new();
     }
     let Some(session_id) = app.selected_session_id() else { return Vec::new() };
-    let Some(page) = app.conversation_mut(&session_id).begin_older() else { return Vec::new() };
-    vec![Effect::LoadConversationPage { session_id, kind: PageKind::Older, page, etag: None }]
+    let Some((page, claim)) = app.conversation_mut(&session_id).begin_older() else {
+        return Vec::new();
+    };
+    vec![Effect::LoadConversationPage {
+        session_id,
+        kind: PageKind::Older,
+        claim: Some(claim),
+        page,
+        etag: None,
+    }]
 }
 
 pub fn stream(app: &mut App, session_id: &str, seq: Option<i64>, line: ConversationLine) {
-    app.conversation_mut(session_id).push_live(seq, line);
+    let trimmed = {
+        let store = app.conversation_mut(session_id);
+        store.push_live(seq, line);
+        store.trim_to_cap()
+    };
+    // Entries are addressed by index, so dropping the oldest moves the cursor
+    // of whatever is on screen the same way a prepend does, in reverse.
+    if trimmed > 0 && app.subscribed.as_deref() == Some(session_id) {
+        app.pending_prepend = true;
+        if let Some(cursor) = app.line_cursor.as_mut() {
+            *cursor = cursor.saturating_sub(trimmed);
+        }
+    }
     evict_cold_stores(app);
 }
 
@@ -240,6 +272,16 @@ pub const fn line_select_active(app: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The claim the store is waiting on, which is what the reply to the live
+    /// request carries.
+    fn outstanding(app: &mut App, session_id: &str, kind: PageKind) -> Option<u64> {
+        if kind == PageKind::Older {
+            app.conversation_mut(session_id).outstanding_claim()
+        } else {
+            None
+        }
+    }
+
     use super::{ConversationAction, PageKind, load_older, open, reconnect};
     use crate::app::action::Effect;
     use crate::app::state::{App, ConversationLine, LineKind};
@@ -259,11 +301,13 @@ mod tests {
 
     fn page(app: &mut App, kind: PageKind, rows: &[(i64, &str)], has_more: bool) {
         let rows = rows.iter().map(|(seq, text)| (*seq, line(text))).collect();
+        let claim = outstanding(app, "s-a", kind);
         reduce(
             app,
             Action::Conversation(ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind,
+                claim,
                 rows,
                 etag: Some("etag-1".to_owned()),
                 has_more,
@@ -400,11 +444,13 @@ mod tests {
         app.follow_tail = false;
         assert!(!load_older(&mut app).is_empty());
 
+        let claim = outstanding(&mut app, "s-a", PageKind::Older);
         reduce(
             &mut app,
             Action::Conversation(ConversationAction::Failed {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Older,
+                claim,
             }),
         );
         assert!(!load_older(&mut app).is_empty(), "the failed page can be asked for again");
@@ -413,11 +459,13 @@ mod tests {
     /// A page for a session other than `s-a`, which the helper above hardcodes.
     fn page_for(app: &mut App, session_id: &str, kind: PageKind, rows: &[(i64, &str)]) {
         let rows = rows.iter().map(|(seq, text)| (*seq, line(text))).collect();
+        let claim = outstanding(app, session_id, kind);
         reduce(
             app,
             Action::Conversation(ConversationAction::Loaded {
                 session_id: session_id.to_owned(),
                 kind,
+                claim,
                 rows,
                 etag: None,
                 has_more: false,
@@ -476,6 +524,36 @@ mod tests {
 
         open(&mut app, "s-b".to_owned());
         assert!(app.pending_seq_anchor.is_none(), "an anchor for elsewhere must not fire here");
+    }
+
+    /// F12 residual: the subscribed store is capped too, and the cursor follows
+    /// the lines it pointed at rather than the indices they used to have.
+    #[test]
+    fn capping_the_open_transcript_carries_the_cursor_with_its_line() {
+        use super::super::conversation_store::MAX_ENTRIES;
+
+        let mut app = app();
+        open(&mut app, "s-a".to_owned());
+        page(&mut app, PageKind::Latest, &[(1, "oldest")], false);
+        let cap = i64::try_from(MAX_ENTRIES).expect("the cap fits");
+        for seq in 2..=cap {
+            super::stream(&mut app, "s-a", Some(seq), line("chatter"));
+        }
+        line_select(&mut app);
+        let before = app.line_cursor.expect("a cursor");
+        assert_eq!(app.conversation_mut("s-a").entries().len(), MAX_ENTRIES);
+
+        super::stream(&mut app, "s-a", Some(cap + 1), line("one too many"));
+
+        let store = app.conversation_mut("s-a");
+        assert_eq!(store.entries().len(), MAX_ENTRIES, "the transcript is bounded");
+        assert_eq!(store.oldest_seq(), Some(2), "the oldest line went");
+        assert_eq!(
+            app.line_cursor,
+            Some(before - 1),
+            "the cursor moved down one with the line it was on"
+        );
+        assert!(app.pending_prepend, "and the viewport is re-anchored");
     }
 
     #[test]
@@ -587,6 +665,7 @@ mod tests {
             Action::Conversation(ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Latest,
+                claim: None,
                 rows,
                 etag: None,
                 has_more: false,
@@ -610,6 +689,7 @@ mod tests {
             Action::Conversation(ConversationAction::Loaded {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Latest,
+                claim: None,
                 rows: vec![(
                     1,
                     ConversationLine::new(LineKind::Thinking { redacted: false }, "hmm", 0),
@@ -662,6 +742,7 @@ mod tests {
             Action::Conversation(ConversationAction::NotModified {
                 session_id: "s-a".to_owned(),
                 kind: PageKind::Latest,
+                claim: None,
             }),
         );
         assert_eq!(

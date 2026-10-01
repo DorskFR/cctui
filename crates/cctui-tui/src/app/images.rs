@@ -50,6 +50,42 @@ impl Support {
     }
 }
 
+/// The protocol the environment announces, or `None` to stay in text.
+///
+/// Deliberately not the crate's stdio query: that writes to the tty and waits
+/// for a reply, and the reader it leaves behind when none comes consumes the
+/// user's next keystroke — a terminal under tmux with no answering outer
+/// terminal silently eats the first key of the session. `CCTUI_GRAPHICS_QUERY=1`
+/// asks for the query anyway.
+fn graphics_from_env(env: &dyn Env) -> Option<ProtocolType> {
+    let has = |key: &str| env.var(key).is_some();
+    let term = env.var("TERM").unwrap_or_default();
+    let program = env.var("TERM_PROGRAM").unwrap_or_default();
+    if has("KITTY_WINDOW_ID") || term.contains("kitty") || program == "ghostty" {
+        return Some(ProtocolType::Kitty);
+    }
+    if program == "iTerm.app" || program == "WezTerm" || has("WEZTERM_EXECUTABLE") {
+        return Some(ProtocolType::Iterm2);
+    }
+    if term.contains("sixel") {
+        return Some(ProtocolType::Sixel);
+    }
+    None
+}
+
+/// What the decision reads, so a test can state an environment.
+pub trait Env {
+    fn var(&self, key: &str) -> Option<String>;
+}
+
+struct EnvProbe;
+
+impl Env for EnvProbe {
+    fn var(&self, key: &str) -> Option<String> {
+        std::env::var(key).ok().filter(|v| !v.is_empty())
+    }
+}
+
 const fn support_of(protocol: ProtocolType) -> Support {
     match protocol {
         ProtocolType::Halfblocks => Support::Halfblocks,
@@ -93,6 +129,18 @@ impl Images {
     /// it runs once before the TUI takes the screen — never from a test, which
     /// keeps every snapshot on the text fallback.
     pub fn detect(&mut self) {
+        if let Some(protocol) = graphics_from_env(&EnvProbe) {
+            let mut picker = Picker::halfblocks();
+            picker.set_protocol_type(protocol);
+            self.support = support_of(protocol);
+            self.picker = Some(picker);
+            return;
+        }
+        if EnvProbe.var("CCTUI_GRAPHICS_QUERY").is_none_or(|v| v != "1") {
+            self.support = Support::Text;
+            self.picker = None;
+            return;
+        }
         match Picker::from_query_stdio() {
             Ok(picker) => {
                 self.support = support_of(picker.protocol_type());
@@ -491,5 +539,33 @@ mod tests {
         app.line_cursor = Some(0);
         assert!(reduce(&mut app, Action::Images(ImagesAction::OpenUnderCursor)).is_empty());
         assert!(app.toasts.latest().is_some());
+    }
+    /// The stdio query leaves a reader on stdin that eats the next keystroke
+    /// when no reply comes, so the protocol is read from the environment and a
+    /// terminal that announces nothing stays in text.
+    #[test]
+    fn the_protocol_comes_from_the_environment_not_from_stdin() {
+        struct Fake(Vec<(&'static str, &'static str)>);
+        impl super::Env for Fake {
+            fn var(&self, key: &str) -> Option<String> {
+                self.0.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_owned())
+            }
+        }
+        use ratatui_image::picker::ProtocolType;
+        let plain = Fake(vec![("TERM", "xterm-256color")]);
+        assert!(super::graphics_from_env(&plain).is_none(), "a plain xterm announces nothing");
+
+        let under_tmux =
+            Fake(vec![("TERM", "screen-256color"), ("TMUX", "/tmp/tmux-1000/default")]);
+        assert!(super::graphics_from_env(&under_tmux).is_none(), "tmux alone promises nothing");
+
+        let kitty = Fake(vec![("TERM", "xterm-kitty"), ("KITTY_WINDOW_ID", "1")]);
+        assert_eq!(super::graphics_from_env(&kitty), Some(ProtocolType::Kitty));
+
+        let iterm = Fake(vec![("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")]);
+        assert_eq!(super::graphics_from_env(&iterm), Some(ProtocolType::Iterm2));
+
+        let sixel = Fake(vec![("TERM", "xterm-sixel")]);
+        assert_eq!(super::graphics_from_env(&sixel), Some(ProtocolType::Sixel));
     }
 }

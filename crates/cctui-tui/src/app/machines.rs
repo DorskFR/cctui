@@ -128,13 +128,7 @@ pub enum MachineAction {
 
 pub fn reduce_machines(app: &mut App, action: MachineAction) -> Vec<Effect> {
     match action {
-        MachineAction::Open => {
-            let mut effects = super::slice::go_to(app, super::slice::Slice::Machines);
-            if !app.machines.loaded {
-                effects.extend(refresh(app));
-            }
-            effects
-        }
+        MachineAction::Open => super::slice::go_to(app, super::slice::Slice::Machines),
         MachineAction::Close => super::slice::go_to(app, super::slice::Slice::Sessions),
         MachineAction::Refresh => refresh(app),
         MachineAction::Loaded(rows) => {
@@ -165,6 +159,11 @@ pub fn reduce_machines(app: &mut App, action: MachineAction) -> Vec<Effect> {
         }
         MachineAction::SpawnHere => spawn_here(app),
     }
+}
+
+/// Entering the slice: load once, whatever key or tab number got here.
+pub fn on_enter(app: &mut App) -> Vec<Effect> {
+    if app.machines.loaded { Vec::new() } else { refresh(app) }
 }
 
 fn refresh(app: &mut App) -> Vec<Effect> {
@@ -204,7 +203,7 @@ fn clamp(app: &mut App) {
     app.machines.selected = if len == 0 { 0 } else { app.machines.selected.min(len - 1) };
 }
 
-/// Aiming the spawn dialog is all this lane can do: the dialog itself belongs to
+/// Aiming the spawn dialog is all this view does: the dialog itself belongs to
 /// the spawn lane, which reads `spawn_target`.
 fn spawn_here(app: &mut App) -> Vec<Effect> {
     let Some(row) = app.machines.selected_row() else { return Vec::new() };

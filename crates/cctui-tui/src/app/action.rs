@@ -104,6 +104,8 @@ pub enum Action {
     Usage(super::usage::UsageAction),
     /// The row as the server stored it, so the next patch merges onto it.
     SettingsSaved(Box<serde_json::Value>),
+    /// Nothing was stored, so anything shown optimistically is a lie.
+    SettingsWriteFailed,
     Spend(super::spend::SpendAction),
     /// A lead chord of a two-chord binding is held; the next key completes it.
     PendingChord(crate::config::chord::Chord),
@@ -221,6 +223,9 @@ pub enum Effect {
     LoadConversationPage {
         session_id: String,
         kind: PageKind,
+        /// Identifies an older-page request so its reply can be told from the
+        /// reply to one the store has since abandoned.
+        claim: Option<u64>,
         page: PageRequest,
         etag: Option<String>,
     },
@@ -271,7 +276,15 @@ pub enum Effect {
     AutosaveDraft {
         session_id: Option<String>,
         request: Box<cctui_proto::api::SpawnRequest>,
+        /// Skip the typing debounce: quit cannot wait 700 ms for it.
+        immediate: bool,
+        /// The dialog instance that asked, carried back on the reply so a late
+        /// create cannot be adopted by a different dialog.
+        generation: u64,
     },
+    /// The spawn dialog closed or launched: stop the save it still owed, so a
+    /// debounce that fires afterwards cannot mint an orphan draft row.
+    CancelSpawnAutosave,
     /// Launch a draft session. `env` is entered at launch, never stored.
     LaunchDraft {
         session_id: String,
@@ -413,6 +426,9 @@ pub enum Effect {
     SaveDraftNow {
         key: String,
         text: String,
+        /// The local copy this save removes itself from once it lands. `None`
+        /// when there is no identity to scope a recovery file to.
+        recovery: Option<crate::config::recovery::Target>,
     },
     /// Signals once every effect queued before it has run, so quit can wait a
     /// bounded time for the writes it just asked for.

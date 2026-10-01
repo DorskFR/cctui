@@ -317,6 +317,7 @@ mod tests {
     fn app_as(role: &str) -> App {
         let mut app = App::new();
         app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+            user_id: None,
             role: role.to_owned(),
             user_name: Some("dev".to_owned()),
             scopes: vec!["read".to_owned()],

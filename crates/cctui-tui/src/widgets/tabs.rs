@@ -20,18 +20,23 @@ pub fn tab_spans(app: &App, width: usize, reserve: usize) -> Vec<Span<'static>> 
         .filter(|t| t.slice.is_some_and(|slice| slice::permitted(app, slice)))
         .map(cost)
         .sum();
-    // Degrade in order: everything, then the tabs that lead nowhere, then the
-    // labels of the slices you are not on — a bare number still teaches the key.
-    // Bare numbers still have a width, so the last rung drops whole tabs.
-    let show_unbuilt = all + reserve <= width;
+    let unbuilt_bare: usize =
+        TABS.iter().filter(|t| !t.slice.is_some_and(|s| slice::permitted(app, s))).count() * 3;
+    // Degrade in order: every label; then the labels of the tabs that lead
+    // nowhere, which keep a bare number so the sequence has no hole in it; then
+    // the labels of the slices you are not on; then the placeholders, because a
+    // reachable slice's number is worth more than one that leads nowhere. Bare
+    // numbers still have a width, so the last rung drops whole tabs.
+    let show_unbuilt_labels = all + reserve <= width;
     let show_labels = built + reserve <= width;
+    let keep_unbuilt = built + unbuilt_bare + reserve <= width;
 
     let mut groups: Vec<(bool, Vec<Span<'static>>)> = Vec::with_capacity(TABS.len());
     for (index, tab) in TABS.iter().enumerate() {
         // A slice this key may not enter reads as one the TUI has not built:
         // same dimmed number, so the built tabs never renumber under the user.
         let reachable = tab.slice.is_some_and(|slice| slice::permitted(app, slice));
-        if !reachable && !show_unbuilt {
+        if !reachable && !keep_unbuilt {
             continue;
         }
         let number = index + 1;
@@ -44,7 +49,8 @@ pub fn tab_spans(app: &App, width: usize, reserve: usize) -> Vec<Span<'static>> 
             (theme::border_dim(), theme::border_dim())
         };
         let mut group = vec![Span::styled(format!(" {number}"), key_style)];
-        if current || show_labels {
+        let labelled = current || if reachable { show_labels } else { show_unbuilt_labels };
+        if labelled {
             group.push(Span::styled(format!(" {}", tab.label), label_style));
         }
         group.push(Span::raw(" "));
@@ -102,7 +108,10 @@ pub fn summary_spans(app: &App, width: usize) -> Vec<Span<'static>> {
             theme::dim(),
         ),
         Span::raw("  "),
-        Span::styled(format!("${:.2}{}", s.today_cost_usd, word("today")), theme::cost()),
+        Span::styled(
+            format!("{}{}", cctui_clientcore::usage::money(s.today_cost_usd), word("today")),
+            theme::cost(),
+        ),
     ];
     if s.unread > 0 {
         spans.push(Span::raw("  "));
@@ -134,6 +143,32 @@ mod tests {
         app.sessions = vec![session("s-a", "alpha", "active", "working")];
         app.update_aggregates();
         app
+    }
+
+    /// Every slice reachable, as an admin's is: the width an all-labels row no
+    /// longer fits is not a reason for a number to vanish out of the middle of
+    /// the sequence, because a hole reads as a bug.
+    #[test]
+    fn a_placeholder_keeps_its_number_once_the_labels_stop_fitting() {
+        let mut app = app();
+        app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
+            user_id: None,
+            role: "user".to_owned(),
+            user_name: Some("tester".to_owned()),
+            scopes: vec!["admin".to_owned()],
+            token_preview: String::new(),
+        });
+        let labelled: usize =
+            crate::app::slice::TABS.iter().map(|t| t.label.chars().count() + 4).sum();
+        // One column short of the all-labels row: the rung the live bar sat on.
+        let width = labelled - 1;
+        let strip = text(&tab_spans(&app, width, 0));
+        for number in 1..=crate::app::slice::TABS.len() {
+            assert!(
+                strip.contains(&format!(" {number}")),
+                "width {width} dropped tab {number}: {strip}"
+            );
+        }
     }
 
     #[test]

@@ -233,6 +233,8 @@ pub struct App {
     pub version: &'static str,
     pub sessions: Vec<SessionListItem>,
     pub selected_index: usize,
+    /// A session chosen outright, which outranks the row the cursor landed on.
+    pub selecting: Option<String>,
     pub conversations: HashMap<String, ConversationStore>,
     pub subscribed: Option<String>,
     pub message_input: TextArea<'static>,
@@ -448,6 +450,7 @@ impl App {
             version: env!("CARGO_PKG_VERSION"),
             sessions: Vec::new(),
             selected_index: 0,
+            selecting: None,
             conversations: HashMap::new(),
             subscribed: None,
             message_input: Self::new_input_textarea(),
@@ -549,9 +552,11 @@ impl App {
     ///
     /// An open conversation is addressed by the session it subscribed to, not
     /// by the list cursor: the cursor indexes the visible rows, which a filter
-    /// or a regroup can drop the subscribed session out of entirely.
+    /// or a regroup can drop the subscribed session out of entirely. An overlay
+    /// pushed over the conversation still acts on it, so the stack is searched
+    /// rather than only its top.
     pub fn selected_session(&self) -> Option<&SessionListItem> {
-        if self.view() == View::Conversation
+        if self.router.contains(View::Conversation)
             && let Some(id) = self.subscribed.as_deref()
         {
             return self.sessions.iter().find(|s| s.id == id);
@@ -680,7 +685,23 @@ impl App {
     /// did not move; without this the row number would address a different
     /// session, and with it every target read off the selection. An action that
     /// moved the cursor itself is left alone.
+    pub fn select_session_id(&mut self, session_id: &str) -> bool {
+        let Some(position) = self.flattened_sessions().iter().position(|s| s.id == session_id)
+        else {
+            return false;
+        };
+        self.selected_index = position;
+        self.selecting = Some(session_id.to_owned());
+        true
+    }
+
     pub fn restore_selection(&mut self, anchor: &SelectionAnchor) {
+        if let Some(id) = self.selecting.take() {
+            if let Some(position) = self.flattened_sessions().iter().position(|s| s.id == id) {
+                self.selected_index = position;
+            }
+            return;
+        }
         if self.selected_index != anchor.index {
             return;
         }

@@ -548,9 +548,13 @@ function toMarkdownBlock(
         .replace(/\\t/g, "\t");
       return `**Tool · ${e.tool}**\n\n${fenced(json, "json")}`;
     }
-    case "tool_result":
+    case "tool_result": {
       if (!visible(opts, resultCategory(e))) return null;
-      return `**Result · ${e.tool}**\n\n${fenced(e.output_summary)}`;
+      // The served shape carries no tool name — it belongs to the call above —
+      // so the label is dropped rather than printed as "undefined".
+      const head = e.tool ? `**Result · ${e.tool}**` : "**Result**";
+      return `${head}\n\n${fenced(e.output_summary)}`;
+    }
     case "context_reset":
       if (!visible(opts, "reset")) return null;
       return `---\n\n_⟳ context reset · /clear or /compact_\n\n---`;

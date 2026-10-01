@@ -19,7 +19,13 @@ turn_id?: string | null, } | { "type": "tool_call", tool: string, input: JsonVal
 /**
  * `server_tool_use` for provider-executed tools.
  */
-kind?: string | null, ts: number, seq?: number | null, } | { "type": "tool_result", tool: string, output_summary: string, 
+kind?: string | null, ts: number, seq?: number | null, } | { "type": "tool_result", 
+/**
+ * Absent on the wire: a result's tool name lives on the `tool_call`
+ * that opened it, and the canonical shape `normalize.rs` serves carries
+ * only the summary.
+ */
+tool: string, output_summary: string, 
 /**
  * `server_tool_result` for provider-executed tools.
  */

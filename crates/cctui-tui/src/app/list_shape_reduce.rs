@@ -3,7 +3,7 @@
 //! reads, so the two agree on the next reload.
 
 use super::action::Effect;
-use super::list_view::{SECTIONS, next_sort};
+use super::list_view::{SECTIONS, ShapeKey, next_sort};
 use super::state::{App, View};
 
 #[derive(Debug, Clone, Copy)]
@@ -39,26 +39,27 @@ pub fn reduce(app: &mut App, action: ListShapeAction) -> Vec<Effect> {
             let Some(at) = app.sections_menu else { return Vec::new() };
             let Some(section) = SECTIONS.get(at).copied() else { return Vec::new() };
             app.list_shape.sections.toggle(section);
-            settle(app)
+            settle(app, &[ShapeKey::Section])
         }
         ListShapeAction::CycleSort => {
             let chosen = app.list_shape.sort.next();
             let (sort, dir) = next_sort(app.list_shape.sort, app.list_shape.sort_dir, chosen);
             app.list_shape.sort = sort;
             app.list_shape.sort_dir = dir;
-            settle(app)
+            // A new field takes its natural direction, so both keys moved.
+            settle(app, &[ShapeKey::Sort, ShapeKey::SortDir])
         }
         ListShapeAction::FlipSortDir => {
             app.list_shape.sort_dir = app.list_shape.sort_dir.flipped();
-            settle(app)
+            settle(app, &[ShapeKey::SortDir])
         }
         ListShapeAction::CycleGroupBy => {
             app.list_shape.group_by = app.list_shape.group_by.next();
-            settle(app)
+            settle(app, &[ShapeKey::GroupBy])
         }
         ListShapeAction::CycleColorBy => {
             app.list_shape.color_by = next_color_by(app.list_shape.color_by);
-            settle(app)
+            settle(app, &[ShapeKey::ColorBy])
         }
     }
 }
@@ -81,18 +82,16 @@ fn move_menu(app: &mut App, delta: i32) {
 
 /// Re-shapes the list and persists. The row set moved, so the selection and the
 /// viewport have to be recomputed before anything reads them.
-fn settle(app: &mut App) -> Vec<Effect> {
+fn settle(app: &mut App, changed: &[ShapeKey]) -> Vec<Effect> {
     app.reshape();
-    vec![save(app)]
+    vec![save(app, changed)]
 }
 
-/// Sends only this view's own keys, under `sessionList`.
-fn save(app: &mut App) -> Effect {
-    let patch = serde_json::json!({"sessionList": app.list_shape.settings_patch()});
-    if let Some(blob) = app.settings_blob.as_mut() {
-        super::settings_write::deep_merge(blob, patch.clone());
-    }
-    super::settings_write::save(patch)
+/// Sends the keys this action changed, and nothing else.
+fn save(app: &App, changed: &[ShapeKey]) -> Effect {
+    super::settings_write::save(
+        serde_json::json!({"sessionList": app.list_shape.settings_patch_for(changed)}),
+    )
 }
 
 #[cfg(test)]
@@ -197,10 +196,107 @@ mod tests {
             patch["sessionList"].get("width").is_none(),
             "a sibling key we do not own is not sent"
         );
-        let blob = app.settings_blob.as_ref().expect("known");
-        assert_eq!(blob["display"]["theme"], "dark", "the local copy still has it");
-        assert_eq!(blob["sessionList"]["width"], "wide");
-        assert_eq!(blob["sessionList"]["sort"], "created");
+    }
+
+    /// R11: a write must name only the key the user changed. Re-sending the
+    /// other four from the startup snapshot reverts whatever the web UI stored
+    /// for them since.
+    #[test]
+    fn changing_the_sort_does_not_resend_the_other_shape_keys() {
+        let mut app = app();
+        let effects = reduce(&mut app, ListShapeAction::CycleSort);
+        let list = saved_list(&effects);
+        let mut keys: Vec<&str> =
+            list.as_object().expect("an object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["sort", "sortDir"],
+            "only the field and the direction it brought with it"
+        );
+    }
+
+    /// One case per action, so a key cannot creep back into a patch that does
+    /// not own it.
+    #[test]
+    fn every_shape_action_writes_exactly_the_keys_it_changed() {
+        let cases: &[(ListShapeAction, &[&str])] = &[
+            (ListShapeAction::FlipSortDir, &["sortDir"]),
+            (ListShapeAction::CycleGroupBy, &["groupBy"]),
+            (ListShapeAction::CycleColorBy, &["colorBy"]),
+            (ListShapeAction::CycleSort, &["sort", "sortDir"]),
+        ];
+        for (action, expected) in cases {
+            let mut app = app();
+            let effects = reduce(&mut app, *action);
+            let list = saved_list(&effects);
+            let mut keys: Vec<&str> =
+                list.as_object().expect("an object").keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            let mut want = expected.to_vec();
+            want.sort_unstable();
+            assert_eq!(keys, want, "{action:?} wrote the wrong key set");
+        }
+
+        let mut app = app();
+        reduce(&mut app, ListShapeAction::ToggleSectionsMenu);
+        let effects = reduce(&mut app, ListShapeAction::SectionsToggle);
+        let list = saved_list(&effects);
+        let keys: Vec<&str> =
+            list.as_object().expect("an object").keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["section"], "toggling a section writes only the section key");
+    }
+
+    /// The other half of R11: the in-memory shape is re-read from what the
+    /// server actually stored, so a sibling key the web UI changed is adopted
+    /// rather than staying stale until restart.
+    #[test]
+    fn a_confirmed_write_adopts_the_servers_value_for_a_key_the_web_ui_changed() {
+        let mut app = app();
+        assert_eq!(app.list_shape.color_by, ColorBy::None);
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::SettingsSaved(Box::new(serde_json::json!({
+                "sessionList": {"sort": "created", "sortDir": "desc", "colorBy": "label"},
+            }))),
+        );
+        assert_eq!(app.list_shape.sort, Sort::Created, "our own change came back");
+        assert_eq!(
+            app.list_shape.color_by,
+            ColorBy::Label,
+            "the web UI's change to a key we did not touch is adopted"
+        );
+    }
+
+    /// The write was refused, so the server still holds the old shape; showing
+    /// the new one would be a lie (R15, the F3 residual).
+    #[test]
+    fn a_refused_write_puts_the_shape_back_to_what_the_server_holds() {
+        let mut app = app();
+        app.settings_blob = Some(serde_json::json!({
+            "sessionList": {"sort": "activity", "sortDir": "desc", "groupBy": "status"},
+        }));
+        reduce(&mut app, ListShapeAction::CycleSort);
+        assert_eq!(app.list_shape.sort, Sort::Created, "shown optimistically");
+
+        crate::app::reduce(&mut app, crate::app::Action::SettingsWriteFailed);
+        assert_eq!(
+            app.list_shape.sort,
+            Sort::Activity,
+            "nothing was stored, so the shape goes back"
+        );
+    }
+
+    /// With no row ever read there is nothing truer to fall back to, so the
+    /// user keeps what they just chose rather than being reset to defaults.
+    #[test]
+    fn a_refused_write_with_no_row_read_keeps_what_the_user_chose() {
+        let mut app = app();
+        assert_eq!(app.settings_blob, None);
+        reduce(&mut app, ListShapeAction::CycleGroupBy);
+        let chosen = app.list_shape.group_by;
+        crate::app::reduce(&mut app, crate::app::Action::SettingsWriteFailed);
+        assert_eq!(app.list_shape.group_by, chosen);
     }
 
     /// The F3 case for this writer: with no row read, the write is still a
@@ -216,13 +312,28 @@ mod tests {
         assert_eq!(app.settings_blob, None, "an unread row stays unread");
     }
 
+    /// A write is not a confirmation: until the server answers, the cached row
+    /// must keep the value the server actually holds.
     #[test]
-    fn a_blob_the_server_never_sent_still_writes_our_keys() {
+    fn a_pending_write_does_not_move_the_cached_row() {
+        let mut app = app();
+        app.settings_blob =
+            Some(serde_json::json!({"sessionList": {"sort": "activity"}, "theme": "dark"}));
+        let before = app.settings_blob.clone();
+        reduce(&mut app, ListShapeAction::CycleSort);
+        assert_eq!(app.settings_blob, before, "nothing is cached before the server confirms");
+    }
+
+    #[test]
+    fn a_blob_the_server_never_sent_still_writes_the_changed_key() {
         let mut app = app();
         let effects = reduce(&mut app, ListShapeAction::CycleGroupBy);
         let list = saved_list(&effects);
         assert_eq!(list["groupBy"], "label");
-        assert_eq!(list["section"], "starred,live,dispatched");
+        assert!(
+            list.get("section").is_none(),
+            "an unread row is no reason to write a default over the web UI's value"
+        );
     }
 
     #[test]

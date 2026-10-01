@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden for buildSpawnBody (webui spawn/spawnBody.ts) and clientcore::spawn::build_spawn_body. Each case is the form choices plus the request they must produce. `expect` lists only the keys that matter to the case: both sides assert on those, so a key a lane adds later does not invalidate the file. The account sentinels are written with \\u0000 because that is what the pickers put in the value space. `account` and `pool` are passed through verbatim: the server resolves both BY NAME (account_resolve::resolve_account_or_pool), so a picker must hold names, and these cases use names deliberately rather than ids.",
+  "_comment": "Golden for buildSpawnBody (webui spawn/spawnBody.ts) and clientcore::spawn::build_spawn_body. Each case is the form choices plus the request they must produce. `expect` lists only the keys that matter to the case: both sides assert on those, so a key added later does not invalidate the file. The account sentinels are written with \\u0000 because that is what the pickers put in the value space. `account` and `pool` are passed through verbatim: the server resolves both BY NAME (account_resolve::resolve_account_or_pool), so a picker must hold names, and these cases use names deliberately rather than ids.",
   "cases": [
     {
       "name": "auto account, claude-code, nothing else filled",
@@ -213,6 +213,52 @@
       "expect": {
         "adapter_id": "claude-code",
         "model": null
+      }
+    },
+    {
+      "name": "every field at once, so no key drifts unasserted",
+      "fields": {
+        "machine_id": "m-1",
+        "working_dir": "  /work/app/  ",
+        "name": "  nightly sweep  ",
+        "prompt": "  look at the flaky test  ",
+        "adapter_id": "codex",
+        "permission_mode": "ask",
+        "model_claude": "opus",
+        "model_codex": "gpt-5.6-sol",
+        "model_account": "ignored-unless-compatible",
+        "effort_claude": "high",
+        "effort_codex": "medium",
+        "service_tier": "fast",
+        "account": "personal",
+        "account_provider": "openai",
+        "labels": ["l-urgent", "l-infra"],
+        "context_items": ["notes.md", "runbook.md"],
+        "context_auto": true
+      },
+      "provider": "openai",
+      "expect": {
+        "machine_id": "m-1",
+        "working_dir": "/work/app",
+        "adapter_id": "codex",
+        "name": "nightly sweep",
+        "prompt": "look at the flaky test",
+        "prompt_name": null,
+        "permission_mode": "ask",
+        "effort": "medium",
+        "service_tier": "fast",
+        "model": "gpt-5.6-sol",
+        "account": "personal",
+        "provider": "openai",
+        "no_account": false,
+        "auto_account": false,
+        "pool": null,
+        "save_draft": false,
+        "label_ids": ["l-urgent", "l-infra"],
+        "context": { "items": ["notes.md", "runbook.md"], "auto": true },
+        "profile_id": null,
+        "relation": null,
+        "parent_session_id": null
       }
     }
   ]

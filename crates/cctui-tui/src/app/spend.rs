@@ -195,13 +195,7 @@ pub struct SpendData {
 
 pub fn reduce_spend(app: &mut App, action: SpendAction) -> Vec<Effect> {
     match action {
-        SpendAction::Open => {
-            let mut effects = super::slice::go_to(app, super::slice::Slice::Spend);
-            if !app.spend.loaded {
-                effects.extend(refresh(app));
-            }
-            effects
-        }
+        SpendAction::Open => super::slice::go_to(app, super::slice::Slice::Spend),
         SpendAction::Close => super::slice::go_to(app, super::slice::Slice::Sessions),
         SpendAction::Refresh => refresh(app),
         SpendAction::Loaded(data) => {
@@ -225,6 +219,11 @@ pub fn reduce_spend(app: &mut App, action: SpendAction) -> Vec<Effect> {
             Vec::new()
         }
     }
+}
+
+/// Entering the slice: load once, whatever key or tab number got here.
+pub fn on_enter(app: &mut App) -> Vec<Effect> {
+    if app.spend.loaded { Vec::new() } else { refresh(app) }
 }
 
 fn refresh(app: &mut App) -> Vec<Effect> {

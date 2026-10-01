@@ -208,10 +208,7 @@ pub enum AccountAction {
 pub fn reduce_accounts(app: &mut App, action: AccountAction) -> Vec<Effect> {
     match action {
         AccountAction::Open => {
-            let mut effects = super::slice::go_to(app, super::slice::Slice::Accounts);
-            if !app.accounts.loaded {
-                effects.extend(refresh(app));
-            }
+            let effects = super::slice::go_to(app, super::slice::Slice::Accounts);
             aim_at_handoff(app);
             effects
         }
@@ -290,7 +287,7 @@ pub fn reduce_accounts(app: &mut App, action: AccountAction) -> Vec<Effect> {
                 format!("upstream said {} ({credit})", outcome.outcome)
             };
             app.toast(if outcome.reset() { Level::Info } else { Level::Warn }, text);
-            // The windows may have moved, so the usage lane must re-read them
+            // The windows may have moved, so the usage view must re-read them
             // rather than serve what it already has.
             let mut effects = refresh(app);
             effects.extend(super::usage::reduce_usage(app, super::usage::UsageAction::Refresh));
@@ -330,6 +327,11 @@ pub fn reduce_accounts(app: &mut App, action: AccountAction) -> Vec<Effect> {
 
 /// One gesture fills both panes: the pools pane is part of this slice, not a
 /// view of its own.
+/// Entering the slice: load once, whatever key or tab number got here.
+pub fn on_enter(app: &mut App) -> Vec<Effect> {
+    if app.accounts.loaded { Vec::new() } else { refresh(app) }
+}
+
 fn refresh(app: &mut App) -> Vec<Effect> {
     app.accounts.loading = true;
     app.pools.loading = true;
@@ -561,7 +563,7 @@ pub mod tests {
     }
 
     /// One `GET /accounts/usage` row for `account`, offering a reset on its own
-    /// provider row — the shape the usage lane holds.
+    /// provider row — the shape the usage view holds.
     fn usage_row(
         account: &str,
         provider_row: &str,

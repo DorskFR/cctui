@@ -37,9 +37,27 @@ pub const DEVICE_KEY_DAYS: i64 = 90;
 /// `start` is unauthenticated, so the only thing bounding it is this: per
 /// client address per minute, and a ceiling on how many requests may be alive
 /// at once across the deployment.
+/// Per caller address per minute, and **per replica**: the limiter is an
+/// in-process map, so a deployment running `n` replicas behind a load balancer
+/// admits up to `n ×` these numbers before refusing. With the 2 replicas this
+/// runs, the effective ceiling is 20 starts and 120 polls a minute per caller.
+/// That is deliberate — the figures are sized so the per-replica multiple is
+/// still far below what hurts, and the durable bound on abuse is the per-caller
+/// pending cap below, which is counted in the database and so is cluster-wide.
 pub const START_PER_MIN: usize = 10;
 pub const POLL_PER_MIN: usize = 60;
-pub const MAX_PENDING: i64 = 500;
+/// Live requests one caller may have waiting. A human runs one `cctui login` at
+/// a time; this is per caller so a flood cannot deny anyone else a login.
+pub const MAX_PENDING_PER_CALLER: i64 = 10;
+/// Last-resort bound on the table as a whole. Far above anything legitimate
+/// traffic reaches, because hitting it *does* refuse honest logins: it exists
+/// only so the row count and the `user_code` space cannot grow without limit.
+pub const MAX_PENDING_TOTAL: i64 = 20_000;
+
+/// Refusing on the global ceiling denies honest logins, so it must stay far out
+/// of reach of any realistic number of callers; the per-caller cap is what does
+/// the work.
+const _: () = assert!(MAX_PENDING_TOTAL > MAX_PENDING_PER_CALLER * 100);
 
 /// No vowels (so no code spells a word), and no glyph pair a terminal font
 /// renders alike: the user is reading this off one screen and typing it into
@@ -107,22 +125,68 @@ pub fn normalize_user_code(raw: &str) -> String {
     if stripped.len() == 8 { format!("{}-{}", &stripped[..4], &stripped[4..]) } else { stripped }
 }
 
-/// The caller's address as the proxy reports it. Absent in a direct-to-server
-/// deployment, where every caller shares one throttle bucket.
-fn client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
-    for name in ["x-forwarded-for", "x-real-ip"] {
-        if let Some(raw) = headers.get(name).and_then(|v| v.to_str().ok()) {
-            let first = raw.split(',').next().unwrap_or("").trim();
-            if !first.is_empty() {
-                return Some(first.chars().take(64).collect());
-            }
-        }
+/// The connection's peer address when the server was started with connect info,
+/// `None` otherwise (a test router, or a serve path without it). Infallible so a
+/// missing extension degrades to "unknown" instead of refusing the request.
+pub struct PeerAddr(pub Option<std::net::SocketAddr>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|info| info.0),
+        ))
     }
-    None
 }
 
-fn throttle(bucket: &str, ip: Option<&str>, max: usize) -> Result<(), AppError> {
-    let key = format!("device-{bucket}:{}", ip.unwrap_or("unknown"));
+/// Who to charge for an unauthenticated request.
+///
+/// `X-Forwarded-For` is a list each proxy *appends* to, so the entries nearest
+/// the right were written by the hops nearest us and everything a client sent
+/// arrives pushed to the left. With `trusted_hops = n` the caller is therefore
+/// the n-th entry from the right; a client that injects its own XFF only adds
+/// entries we never read.
+///
+/// `trusted_hops = 0` means no header is believed and the connection's peer
+/// address is used. That is the safe default: taking the leftmost entry (or any
+/// entry at all without knowing the hop count) lets a caller mint a fresh
+/// rate-limit bucket per request simply by rotating the header, which is the
+/// one adversary this throttle exists for.
+fn caller_key(
+    headers: &axum::http::HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+    trusted_hops: usize,
+) -> String {
+    if trusted_hops > 0
+        && let Some(raw) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+    {
+        let hops: Vec<&str> = raw.split(',').map(str::trim).filter(|h| !h.is_empty()).collect();
+        // A chain shorter than the operator described means the configuration
+        // does not match reality, so nothing in the header is known to come from
+        // a trusted hop: fall through to the peer address rather than reach for
+        // an entry the caller may have written.
+        if let Some(addr) = hops.len().checked_sub(trusted_hops).and_then(|i| hops.get(i)) {
+            return addr.chars().take(64).collect();
+        }
+    }
+    if trusted_hops == 0 && headers.contains_key("x-forwarded-for") {
+        tracing::debug!(
+            "X-Forwarded-For present but CCTUI_TRUSTED_PROXY_HOPS is 0: rate limiting on the \
+             peer address, so every caller behind the proxy shares one bucket"
+        );
+    }
+    peer.map_or_else(|| "unknown".to_owned(), |addr| addr.ip().to_string())
+}
+
+fn throttle(bucket: &str, caller: &str, max: usize) -> Result<(), AppError> {
+    let key = format!("device-{bucket}:{caller}");
     if crate::routes::peer::limiter().admit(&key, max, std::time::Instant::now()) {
         return Ok(());
     }
@@ -132,23 +196,21 @@ fn throttle(bucket: &str, ip: Option<&str>, max: usize) -> Result<(), AppError> 
 /// `POST /api/v1/auth/device/start` — unauthenticated.
 pub async fn start(
     State(state): State<AppState>,
+    PeerAddr(peer): PeerAddr,
     headers: axum::http::HeaderMap,
     Json(req): Json<DeviceAuthStartRequest>,
 ) -> Result<Json<DeviceAuthStart>, AppError> {
-    let ip = client_ip(&headers);
-    throttle("start", ip.as_deref(), START_PER_MIN)?;
+    let caller = caller_key(&headers, peer, state.config.trusted_proxy_hops);
+    throttle("start", &caller, START_PER_MIN)?;
     reap_expired(&state.pool).await;
 
-    // Even a throttled flood must not be able to grow the table without bound,
-    // and the user_code space is small enough that exhausting it 503s honest
-    // logins.
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM device_auth_requests \
-         WHERE expires_at > now() AND claimed_at IS NULL AND denied_at IS NULL",
-    )
-    .fetch_one(&state.pool)
-    .await?;
-    if pending >= MAX_PENDING {
+    if pending_for_caller(&state.pool, &caller).await? >= MAX_PENDING_PER_CALLER {
+        return Err(AppError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many device logins already pending for this caller",
+        ));
+    }
+    if pending_total(&state.pool).await? >= MAX_PENDING_TOTAL {
         return Err(AppError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "too many device logins are pending, try again shortly",
@@ -178,7 +240,7 @@ pub async fn start(
         .bind(&candidate)
         .bind(client_name.as_deref())
         .bind(expires_at)
-        .bind(ip.as_deref())
+        .bind(&caller)
         .bind(user_agent.as_deref())
         .execute(&state.pool)
         .await?
@@ -209,13 +271,37 @@ pub async fn start(
     }))
 }
 
+/// Live requests this caller is already holding. Counted per caller so one
+/// flood cannot spend the allowance every other user needs to log in.
+async fn pending_for_caller(pool: &PgPool, caller: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM device_auth_requests \
+         WHERE expires_at > now() AND claimed_at IS NULL AND denied_at IS NULL \
+         AND client_ip IS NOT DISTINCT FROM $1",
+    )
+    .bind(caller)
+    .fetch_one(pool)
+    .await
+}
+
+async fn pending_total(pool: &PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM device_auth_requests \
+         WHERE expires_at > now() AND claimed_at IS NULL AND denied_at IS NULL",
+    )
+    .fetch_one(pool)
+    .await
+}
+
 /// `POST /api/v1/auth/device/poll` — unauthenticated.
 pub async fn poll(
     State(state): State<AppState>,
+    PeerAddr(peer): PeerAddr,
     headers: axum::http::HeaderMap,
     Json(req): Json<DeviceAuthPollRequest>,
 ) -> Result<Json<DeviceAuthPoll>, AppError> {
-    throttle("poll", client_ip(&headers).as_deref(), POLL_PER_MIN)?;
+    let caller = caller_key(&headers, peer, state.config.trusted_proxy_hops);
+    throttle("poll", &caller, POLL_PER_MIN)?;
     let hash = auth::sha256_hex(&req.device_code);
     let row = sqlx::query_as::<_, RequestRow>(SELECT_BY_DEVICE_CODE)
         .bind(&hash)
@@ -399,7 +485,8 @@ async fn reap_expired(pool: &PgPool) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CODE_ALPHABET, DeviceAuthStatus, RequestRow, Utc, generate_user_code, normalize_user_code,
+        CODE_ALPHABET, DeviceAuthStatus, RequestRow, Utc, caller_key, generate_user_code,
+        normalize_user_code,
     };
     use axum::http::StatusCode;
     use chrono::Duration;
@@ -444,33 +531,160 @@ mod tests {
     /// reach the server can fill the table and exhaust the `user_code` space.
     #[test]
     fn start_is_bounded_per_caller_address() {
-        let ip = format!("198.51.100.{}", Uuid::new_v4().as_u128() % 250);
+        // The limiter is a process-wide static shared with every other test, so
+        // this bucket has to be unique or a collision eats the allowance.
+        let ip = format!("throttle-{}", Uuid::new_v4());
         for i in 0..super::START_PER_MIN {
             assert!(
-                super::throttle("start", Some(&ip), super::START_PER_MIN).is_ok(),
+                super::throttle("start", &ip, super::START_PER_MIN).is_ok(),
                 "call {i} is within the window"
             );
         }
-        let refused = super::throttle("start", Some(&ip), super::START_PER_MIN)
-            .expect_err("the next call is refused");
+        let refused =
+            super::throttle("start", &ip, super::START_PER_MIN).expect_err("the next is refused");
         assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
 
-        // A different caller has its own window.
-        let other = format!("198.51.100.{}", (Uuid::new_v4().as_u128() % 250) + 1000);
-        assert!(super::throttle("start", Some(&other), super::START_PER_MIN).is_ok());
+        let other = format!("throttle-{}", Uuid::new_v4());
+        assert!(super::throttle("start", &other, super::START_PER_MIN).is_ok());
         // And polling is counted separately from starting.
-        assert!(super::throttle("poll", Some(&ip), super::POLL_PER_MIN).is_ok());
+        assert!(super::throttle("poll", &ip, super::POLL_PER_MIN).is_ok());
     }
 
+    fn peer(ip: &str) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(ip.parse().unwrap(), 4000)
+    }
+
+    /// The whole point of the throttle: a caller must not be able to choose its
+    /// own bucket. A proxy appends, so anything the client sent sits left of the
+    /// entry our own hop wrote.
     #[test]
-    fn the_caller_address_comes_from_the_proxy_headers() {
+    fn a_forged_x_forwarded_for_cannot_move_the_caller_to_a_fresh_bucket() {
         let mut headers = axum::http::HeaderMap::new();
-        assert_eq!(super::client_ip(&headers), None);
-        headers.insert("x-real-ip", "203.0.113.9".parse().unwrap());
-        assert_eq!(super::client_ip(&headers).as_deref(), Some("203.0.113.9"));
-        // The first hop is the client; the rest are proxies.
-        headers.insert("x-forwarded-for", "203.0.113.5, 10.0.0.1".parse().unwrap());
-        assert_eq!(super::client_ip(&headers).as_deref(), Some("203.0.113.5"));
+        // One trusted proxy: it appended the real client, 203.0.113.5. The two
+        // entries to the left are whatever the client chose to send.
+        headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8, 203.0.113.5".parse().unwrap());
+        assert_eq!(caller_key(&headers, Some(peer("10.0.0.1")), 1), "203.0.113.5");
+
+        // Rotating the forged prefix must not change the key.
+        let mut rotated = axum::http::HeaderMap::new();
+        rotated.insert("x-forwarded-for", "9.9.9.9, 8.8.8.8, 203.0.113.5".parse().unwrap());
+        assert_eq!(
+            caller_key(&rotated, Some(peer("10.0.0.1")), 1),
+            caller_key(&headers, Some(peer("10.0.0.1")), 1),
+            "the bucket is the trusted hop's view, not the client's"
+        );
+
+        // Two trusted hops: the caller is the second from the right.
+        assert_eq!(caller_key(&headers, Some(peer("10.0.0.1")), 2), "5.6.7.8");
+    }
+
+    /// With no declared proxy, a header is not evidence of anything.
+    #[test]
+    fn with_no_trusted_hop_the_peer_address_is_used_and_headers_are_ignored() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        headers.insert("x-real-ip", "9.9.9.9".parse().unwrap());
+        assert_eq!(caller_key(&headers, Some(peer("10.0.0.7")), 0), "10.0.0.7");
+
+        // And a spoofer gains nothing by varying them.
+        headers.insert("x-forwarded-for", "5.5.5.5".parse().unwrap());
+        assert_eq!(caller_key(&headers, Some(peer("10.0.0.7")), 0), "10.0.0.7");
+
+        // No peer address either (a router without connect info): one bucket.
+        assert_eq!(caller_key(&headers, None, 0), "unknown");
+    }
+
+    /// A chain shorter than the operator claimed means the hop count is wrong, so
+    /// no entry is known to be trustworthy and the header must be ignored.
+    #[test]
+    fn a_chain_shorter_than_the_configured_hops_falls_back_to_the_peer_address() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 203.0.113.5".parse().unwrap());
+        assert_eq!(caller_key(&headers, Some(peer("10.0.0.1")), 3), "10.0.0.1");
+        // Exactly as many entries as hops still resolves to the leftmost, which
+        // is the entry the outermost trusted proxy wrote.
+        assert_eq!(caller_key(&headers, Some(peer("10.0.0.1")), 2), "1.2.3.4");
+
+        // An empty or whitespace-only header is no evidence; peer wins.
+        let mut blank = axum::http::HeaderMap::new();
+        blank.insert("x-forwarded-for", " , ".parse().unwrap());
+        assert_eq!(caller_key(&blank, Some(peer("10.0.0.9")), 1), "10.0.0.9");
+    }
+
+    /// R5: the map must not keep a key per attacker-chosen address forever.
+    #[test]
+    fn idle_limiter_keys_are_swept_so_a_flood_does_not_leak_memory() {
+        use crate::routes::peer::Limiter;
+        let limiter = Limiter::default();
+        let now = std::time::Instant::now();
+
+        for i in 0..50 {
+            assert!(limiter.admit(&format!("device-start:10.0.0.{i}"), 10, now));
+        }
+        assert_eq!(limiter.len(), 50, "one window per caller while they are live");
+
+        // A sweep inside the window keeps them: they still carry a count.
+        limiter.sweep(now + std::time::Duration::from_secs(1));
+        assert_eq!(limiter.len(), 50);
+
+        // Once every window has elapsed the keys carry nothing and must go.
+        limiter.sweep(now + std::time::Duration::from_mins(2));
+        assert_eq!(limiter.len(), 0, "elapsed windows are dropped");
+
+        // And admitting again after the window does not accumulate.
+        let later = now + std::time::Duration::from_mins(4);
+        assert!(limiter.admit("device-start:10.0.0.1", 10, later));
+        assert_eq!(limiter.len(), 1);
+    }
+
+    /// R4's lockout half: the cap must bound the flooder, not the deployment.
+    #[tokio::test]
+    async fn the_pending_cap_counts_per_caller_not_globally() {
+        let name = "the_pending_cap_counts_per_caller_not_globally";
+        let Some(pool) = test_pool(name).await else { return };
+        // Unique per run: other tests insert rows for literal addresses, and a
+        // collision would make the isolation assertion below flaky.
+        let flooder = format!("flooder-{}", Uuid::new_v4());
+        let honest = format!("honest-{}", Uuid::new_v4());
+
+        for _ in 0..super::MAX_PENDING_PER_CALLER {
+            insert_pending(&pool, &flooder).await;
+        }
+        assert_eq!(
+            super::pending_for_caller(&pool, &flooder).await.unwrap(),
+            super::MAX_PENDING_PER_CALLER,
+            "the flooder has spent its own allowance"
+        );
+        assert_eq!(
+            super::pending_for_caller(&pool, &honest).await.unwrap(),
+            0,
+            "and none of anyone else's: an honest login is still allowed"
+        );
+        // The global count is shared with every other test on this database, so
+        // only its relation to the per-caller cap is asserted here.
+        assert!(
+            super::pending_total(&pool).await.unwrap() >= super::MAX_PENDING_PER_CALLER,
+            "the flooder's rows are counted in the global total too"
+        );
+
+        sqlx::query("DELETE FROM device_auth_requests WHERE client_ip = $1")
+            .bind(&flooder)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    async fn insert_pending(pool: &sqlx::PgPool, caller: &str) {
+        sqlx::query(
+            "INSERT INTO device_auth_requests (device_code_hash, user_code, expires_at, client_ip) \
+             VALUES ($1, $2, now() + interval '10 minutes', $3)",
+        )
+        .bind(format!("hash-{}", Uuid::new_v4()))
+        .bind(super::generate_user_code())
+        .bind(caller)
+        .execute(pool)
+        .await
+        .unwrap();
     }
 
     async fn seed(pool: &sqlx::PgPool, code: &str, ttl: Duration) -> (Uuid, Uuid) {

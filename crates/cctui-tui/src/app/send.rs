@@ -17,6 +17,12 @@ pub const MAX_ATTEMPTS: u32 = 5;
 /// A send parked on a missing socket is waiting for a transport, not backing
 /// off a server, so it spends no retry budget.
 pub const RECONNECT_PARK_MS: i64 = 1_000;
+
+/// How long a frame may wait for the effect worker before the send gives up on
+/// ever being dispatched. Longer than the ordered lane can block (one request
+/// bound each), so a slow lane does not retry; without it a send whose effect
+/// never ran would sit at "Sending" with no deadline at all.
+pub const DISPATCH_TIMEOUT_MS: i64 = 120_000;
 /// How long a delivered send keeps its mark before the server's own echo is
 /// the only copy of it.
 pub const DELIVERED_LINGER_MS: i64 = 1_500;
@@ -56,6 +62,9 @@ pub struct TrackedSend {
     /// Carried on every attempt so a retried answer still drives the agent's
     /// own form rather than dismissing it.
     pub ask_picks: Option<Vec<Vec<usize>>>,
+    /// Whether the current attempt's frame has reached the socket. Cleared by
+    /// every dispatch and set by its `Dispatched` report.
+    pub on_the_wire: bool,
     /// Correlation id of this message, minted on the first dispatch and kept
     /// for every retry: the server dedupes on it, and a late ack for an
     /// earlier attempt still resolves the send instead of being orphaned.
@@ -157,13 +166,14 @@ impl Outbox {
 /// Emits one attempt. The ack clock does not start here: the effect worker is
 /// serial, so the frame may be written seconds after this returns. `Dispatched`
 /// is what the frame actually reaching the socket looks like, and that is where
-/// the deadline is set.
-fn dispatch(send: &mut TrackedSend, _now: i64) -> Effect {
+/// the ack deadline is set; until then the deadline only has to outlast the lane.
+fn dispatch(send: &mut TrackedSend, now: i64) -> Effect {
     send.attempt = send.attempt.saturating_add(1);
     send.phase = Phase::Pending;
     send.reason = None;
     send.command_id = None;
-    send.deadline_ms = i64::MAX;
+    send.on_the_wire = false;
+    send.deadline_ms = now.saturating_add(DISPATCH_TIMEOUT_MS);
     Effect::SendMessage {
         send_id: send.id,
         session_id: send.session_id.clone(),
@@ -175,13 +185,19 @@ fn dispatch(send: &mut TrackedSend, _now: i64) -> Effect {
 }
 
 impl TrackedSend {
-    /// Whether this message never reached the server, so quitting would lose it.
+    /// Whether the server certainly never saw this message, so quitting would
+    /// lose it outright. An acked send is excluded: it is queued toward a daemon,
+    /// and showing its text back to the user would look like it never ran.
     #[must_use]
-    pub const fn undelivered(&self) -> bool {
-        matches!(
-            self.phase,
-            Phase::Pending | Phase::AwaitingDelivery | Phase::Backoff | Phase::Failed
-        )
+    pub const fn never_reached_the_server(&self) -> bool {
+        match self.phase {
+            // Dispatched but unacked only counts when this attempt's frame never
+            // went out. `client_msg_id` cannot say so: it is minted once and
+            // replayed by every retry, so it is set while a retry is in flight.
+            Phase::Pending => !self.on_the_wire,
+            Phase::Backoff | Phase::Failed => true,
+            Phase::AwaitingDelivery | Phase::Delivered => false,
+        }
     }
 }
 
@@ -227,6 +243,7 @@ pub fn submit(
         content,
         turn_id: None,
         ask_picks,
+        on_the_wire: false,
         client_msg_id: None,
         command_id: None,
         attempt: 0,
@@ -330,6 +347,7 @@ pub fn seed(app: &mut App, session_id: &str, content: &str, phase: Phase, reason
         content: content.to_owned(),
         turn_id: None,
         ask_picks: None,
+        on_the_wire: true,
         client_msg_id: None,
         command_id: None,
         attempt: 1,
@@ -374,6 +392,7 @@ pub fn reduce_send(app: &mut App, action: SendAction) -> Vec<Effect> {
             let Some(send) = app.outbox.find_mut(send_id) else { return Vec::new() };
             send.client_msg_id = Some(client_msg_id.clone());
             send.turn_id = Some(turn_id);
+            send.on_the_wire = true;
             if send.phase == Phase::Pending {
                 send.deadline_ms = now + ACK_TIMEOUT_MS;
             }
@@ -501,8 +520,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ACK_TIMEOUT_MS, DELIVERED_LINGER_MS, DELIVERY_TIMEOUT_MS, MAX_ATTEMPTS, Phase, SendAction,
-        backoff_ms, pending_lines, redispatch_parked, tick,
+        ACK_TIMEOUT_MS, DELIVERED_LINGER_MS, DELIVERY_TIMEOUT_MS, DISPATCH_TIMEOUT_MS,
+        MAX_ATTEMPTS, Phase, SendAction, TrackedSend, backoff_ms, pending_lines, redispatch_parked,
+        tick,
     };
     use crate::app::state::{App, LineStatus, View};
     use crate::app::{Action, reduce};
@@ -881,5 +901,133 @@ mod tests {
 
         reduce(&mut app, Action::SessionDeregistered("s-a".to_owned()));
         assert!(pending_lines(&app, "s-a").is_empty(), "a deregistered session takes its sends");
+    }
+
+    /// R1: the server refuses a message whose daemon is offline. That ack must
+    /// never read as delivered — the line stays undelivered so the retry runs
+    /// and the quit flush keeps the text.
+    #[test]
+    fn a_refused_send_is_not_delivered_and_survives_a_quit() {
+        let mut app = app();
+        let id = send_one(&mut app);
+        dispatched(&mut app, id, "cid-1");
+
+        reduce(
+            &mut app,
+            Action::Send(SendAction::Acked {
+                client_msg_id: "cid-1".to_owned(),
+                ok: false,
+                error: Some("no daemon connected".to_owned()),
+                command_id: None,
+            }),
+        );
+
+        assert_ne!(status(&app), Some(LineStatus::Delivered), "a refusal is not a delivery");
+        assert!(
+            app.outbox.tracked().any(TrackedSend::never_reached_the_server),
+            "a refused send must still count as never having reached the server"
+        );
+
+        // The retry goes out rather than the message being dropped.
+        app.clock_ms += backoff_ms(1);
+        let effects = tick(&mut app);
+        assert!(
+            effects.iter().any(|e| matches!(e, crate::app::action::Effect::SendMessage { .. })),
+            "a refused attempt must be retried"
+        );
+
+        let effects = reduce(&mut app, Action::Quit);
+        assert!(
+            effects.iter().any(|e| matches!(
+                e,
+                crate::app::action::Effect::SaveDraftNow { text, .. } if text.contains("ship it")
+            )),
+            "quitting must put the undelivered text back into the draft"
+        );
+    }
+
+    /// R1: a resend the server deduped carries the original command, so the
+    /// client resolves a real delivery state instead of assuming success.
+    #[test]
+    fn a_deduped_resend_waits_on_the_original_command() {
+        let mut app = app();
+        let id = send_one(&mut app);
+        dispatched(&mut app, id, "cid-1");
+        let original = Uuid::from_u128(42);
+
+        ack(&mut app, "cid-1", true, Some(original));
+        assert_eq!(status(&app), Some(LineStatus::Sending), "still awaiting the adapter");
+
+        reduce(
+            &mut app,
+            Action::Send(SendAction::DeliveryResult {
+                command_id: original,
+                ok: true,
+                error: None,
+            }),
+        );
+        assert_eq!(status(&app), Some(LineStatus::Delivered));
+    }
+
+    /// N1: a send whose effect never ran had `deadline_ms = i64::MAX`, so tick
+    /// skipped it forever and it showed "Sending" with nothing to move it on.
+    #[test]
+    fn a_send_whose_effect_never_ran_does_not_wait_for_ever() {
+        let mut app = app();
+        let effects = super::submit(&mut app, "s-a".to_owned(), "hello".to_owned(), None);
+        let (send_id, _) = sent(&effects);
+        let send = app.outbox.find_mut(send_id).expect("the tracked send");
+        assert_eq!(send.phase, Phase::Pending);
+        assert!(send.deadline_ms < i64::MAX, "a send with no deadline can never be retried");
+
+        // Nothing acks and no Dispatched arrives: the effect was dropped.
+        app.clock_ms += DISPATCH_TIMEOUT_MS + 1;
+        let retries = tick(&mut app);
+        let send = app.outbox.find_mut(send_id).expect("the tracked send");
+        assert_ne!(send.phase, Phase::Pending, "it must leave Pending once the deadline passes");
+        assert!(
+            retries.iter().any(|e| matches!(e, crate::app::action::Effect::SendMessage { .. }))
+                || send.phase == Phase::Backoff,
+            "it must be retried or parked, not stuck"
+        );
+    }
+
+    /// The queue-full path hands the send straight to the failure route, which
+    /// parks it for a retry rather than leaving it to the fallback deadline.
+    #[test]
+    fn a_dropped_dispatch_parks_the_send_for_a_retry() {
+        let mut app = app();
+        let effects = super::submit(&mut app, "s-a".to_owned(), "hello".to_owned(), None);
+        let (send_id, _) = sent(&effects);
+
+        reduce(
+            &mut app,
+            Action::Send(SendAction::DispatchFailed {
+                send_id,
+                reason: "the effect queue is full".to_owned(),
+            }),
+        );
+        let send = app.outbox.find_mut(send_id).expect("the tracked send");
+        assert_eq!(send.phase, Phase::Backoff, "a dropped send waits to be retried");
+        assert!(send.deadline_ms > 0 && send.deadline_ms < i64::MAX);
+        assert!(send.reason.is_some(), "the line says why it is waiting");
+    }
+
+    /// The other direction of the quit flush: a frame that did reach the socket
+    /// must not be handed back as draft text, or the user sees it twice.
+    #[test]
+    fn a_dispatched_send_is_not_put_back_into_the_draft() {
+        let mut app = app();
+        let id = send_one(&mut app);
+        assert!(
+            app.outbox.tracked().any(TrackedSend::never_reached_the_server),
+            "nothing has been written yet"
+        );
+
+        dispatched(&mut app, id, "cid-1");
+        assert!(
+            !app.outbox.tracked().any(TrackedSend::never_reached_the_server),
+            "the frame is on the socket, so quitting must not duplicate it"
+        );
     }
 }

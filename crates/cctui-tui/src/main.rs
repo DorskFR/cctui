@@ -223,12 +223,33 @@ fn restore_terminal(out: &mut impl io::Write) {
 
 /// Restores the terminal before the default hook prints, so the panic lands on
 /// the shell's screen instead of the alternate one that is about to disappear.
+///
+/// Only the thread that draws gets that treatment. The hook is process-wide, and
+/// a panic in a background task does not end the UI — tokio catches it and the
+/// main loop keeps drawing — so tearing the terminal down there would leave the
+/// TUI painting over a cooked-mode shell. Those are logged instead; the effect
+/// runner turns the ones it owns into a toast.
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
+    let ui_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal(&mut io::stdout());
-        previous(info);
+        if on_panic(ui_thread, &mut io::stdout()) {
+            previous(info);
+            return;
+        }
+        tracing::error!(%info, "a background task panicked");
     }));
+}
+
+/// Hands the terminal back only when the panicking thread is the one that draws.
+/// Returns whether it did, which is also whether the default hook should print:
+/// its message would otherwise land on a screen the TUI is still painting.
+fn on_panic(ui_thread: std::thread::ThreadId, out: &mut impl io::Write) -> bool {
+    if std::thread::current().id() != ui_thread {
+        return false;
+    }
+    restore_terminal(out);
+    true
 }
 
 async fn run_tui(startup: Startup) -> Result<()> {
@@ -280,6 +301,8 @@ async fn run(
     effects.dispatch(app::action::Effect::FetchPendingPermissions);
     effects.dispatch(app::action::Effect::LoadDraftIndex);
     effects.dispatch(app::action::Effect::FetchDispatchers);
+    // The status line counts machines, so it cannot wait for the slice's visit.
+    effects.dispatch(app::action::Effect::FetchMachines);
     // The one clock in the app. Delivery deadlines are the reducer's and the
     // reducer only moves when it is called, so this has to be far tighter than
     // the session-list poll, which the reducer gates on its own elapsed period.
@@ -479,7 +502,9 @@ struct EditorHandoff<'a> {
 
 impl Drop for EditorHandoff<'_> {
     fn drop(&mut self) {
-        if self.reenter {
+        // Unwinding past here means the hook has already handed the terminal
+        // back; re-entering would undo exactly that, and nothing restores after.
+        if self.reenter && !std::thread::panicking() {
             reenter_terminal(&mut io::stdout());
         }
         self.gate.unpark();
@@ -552,7 +577,7 @@ fn spawn_input_task(gate: editor::InputGate) -> mpsc::Receiver<InputEvent> {
 
 #[cfg(test)]
 mod terminal_tests {
-    use super::{EditorHandoff, install_panic_hook, reenter_terminal, restore_terminal};
+    use super::{EditorHandoff, install_panic_hook, on_panic, reenter_terminal, restore_terminal};
     use crate::editor::InputGate;
 
     /// What the shell needs back: cooked mode is a syscall, the rest are
@@ -636,5 +661,52 @@ mod terminal_tests {
 
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         input.join().expect("the stand-in input thread");
+    }
+
+    /// N2: the hook is process-wide, and a panicking effect task does not end the
+    /// UI — tokio catches it and the main loop keeps drawing. Tearing the terminal
+    /// down there left the TUI painting over a cooked-mode shell.
+    #[test]
+    fn a_background_panic_leaves_the_terminal_alone() {
+        let ui_thread = std::thread::current().id();
+
+        let elsewhere = std::thread::spawn(move || {
+            let mut out: Vec<u8> = Vec::new();
+            let tore_down = on_panic(ui_thread, &mut out);
+            (tore_down, out)
+        });
+        let (tore_down, out) = elsewhere.join().expect("the background thread");
+
+        assert!(!tore_down, "a background panic must not hand the terminal back");
+        assert!(out.is_empty(), "it wrote {} bytes at the running TUI", out.len());
+    }
+
+    /// The other half: a panic on the drawing thread does end the UI, so it still
+    /// restores and still lets the default hook print.
+    #[test]
+    fn a_panic_on_the_drawing_thread_still_restores() {
+        let mut out: Vec<u8> = Vec::new();
+        let tore_down = on_panic(std::thread::current().id(), &mut out);
+
+        assert!(tore_down, "the drawing thread's panic ends the UI");
+        let written = String::from_utf8_lossy(&out);
+        assert!(written.contains("\x1b[?1049l"), "it must leave the alternate screen: {written:?}");
+        assert!(written.contains("\x1b[?25h"), "it must show the cursor: {written:?}");
+    }
+
+    /// N3: unwinding through the handoff re-entered raw mode on the alternate
+    /// screen after the hook had just handed the terminal back.
+    #[test]
+    fn a_panic_during_the_handoff_does_not_re_enter_the_alternate_screen() {
+        use crate::editor::InputGate;
+        let gate = InputGate::new();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _handoff = EditorHandoff { gate: &gate, reenter: true };
+            panic!("the editor blew up");
+        }));
+
+        assert!(outcome.is_err(), "the panic still happens");
+        assert!(!gate.should_park(), "the gate is released either way");
     }
 }

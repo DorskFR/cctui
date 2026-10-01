@@ -49,9 +49,6 @@ pub struct AppState {
     pub self_update: Arc<crate::routes::self_update::SelfUpdateGuard>,
     /// Commands awaiting their daemon `CommandResult`, keyed by `command_id`.
     pub pending_commands: Arc<DashMap<Uuid, PendingCommand>>,
-    /// Turns already dispatched to an agent, so a client's retry of a message
-    /// it never saw acked is not delivered a second time.
-    pub dispatched_turns: Arc<DashMap<(String, Uuid), Instant>>,
     /// `None` unless `CCTUI_LANGFUSE_*` is configured.
     pub langfuse: Option<Arc<crate::langfuse::LangfuseClient>>,
     /// Single-use, TTL-bounded, swept lazily on access.
@@ -136,29 +133,6 @@ pub struct PendingCommand {
 
 pub const PENDING_COMMAND_TTL: Duration = Duration::from_mins(10);
 
-/// How long a dispatched turn blocks a repeat of itself. Comfortably longer
-/// than the TUI's whole retry ladder (five attempts over ~30s), so every resend
-/// of one logical message falls inside the window.
-pub const TURN_DEDUPE_TTL: Duration = Duration::from_mins(5);
-
-/// Records `turn_id` as dispatched for `session_id`, returning whether this
-/// caller is the first to do so.
-///
-/// A client that resends a message it never saw acked replays the turn id, and
-/// a reply is not idempotent: without this the agent is handed the same prompt
-/// once per attempt.
-pub fn claim_turn(map: &DashMap<(String, Uuid), Instant>, session_id: &str, turn_id: Uuid) -> bool {
-    let now = Instant::now();
-    map.retain(|_, at| now.duration_since(*at) < TURN_DEDUPE_TTL);
-    match map.entry((session_id.to_owned(), turn_id)) {
-        dashmap::mapref::entry::Entry::Occupied(_) => false,
-        dashmap::mapref::entry::Entry::Vacant(slot) => {
-            slot.insert(now);
-            true
-        }
-    }
-}
-
 pub fn track_command(
     map: &DashMap<Uuid, PendingCommand>,
     command_id: Uuid,
@@ -213,39 +187,7 @@ impl AppState {
             provider_status: crate::provider_status::ProviderStatusCache::shared(),
             self_update: Arc::new(crate::routes::self_update::SelfUpdateGuard::default()),
             pending_commands: Arc::new(DashMap::new()),
-            dispatched_turns: Arc::new(DashMap::new()),
             pool,
         }
-    }
-}
-
-#[cfg(test)]
-mod turn_dedupe_tests {
-    use dashmap::DashMap;
-    use uuid::Uuid;
-
-    use super::claim_turn;
-
-    /// A reply is not idempotent: the retry of a message whose ack was lost
-    /// must not reach the agent twice.
-    #[test]
-    fn only_the_first_claim_of_a_turn_dispatches() {
-        let map = DashMap::new();
-        let turn = Uuid::from_u128(1);
-
-        assert!(claim_turn(&map, "s-a", turn), "the first attempt dispatches");
-        assert!(!claim_turn(&map, "s-a", turn), "a resend of the same turn does not");
-        assert!(!claim_turn(&map, "s-a", turn));
-    }
-
-    #[test]
-    fn a_turn_is_claimed_per_session_and_per_id() {
-        let map = DashMap::new();
-        let turn = Uuid::from_u128(1);
-        let other = Uuid::from_u128(2);
-
-        assert!(claim_turn(&map, "s-a", turn));
-        assert!(claim_turn(&map, "s-b", turn), "another session is another turn");
-        assert!(claim_turn(&map, "s-a", other), "another message is another turn");
     }
 }
