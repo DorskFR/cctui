@@ -26,8 +26,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Session list
     draw_session_list(frame, app, list_area);
 
-    // Hotkeys
-    crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
+    // The row-action strip owns the bottom line whenever it is up.
+    if !super::row_actions::draw_strip(frame, app, hotkeys_area) {
+        crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);
+    }
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {

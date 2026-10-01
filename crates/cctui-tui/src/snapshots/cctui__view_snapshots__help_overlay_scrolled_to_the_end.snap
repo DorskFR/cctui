@@ -4,25 +4,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  4 sessions  ● 3 active
  S┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  Tab         Complete the path                Plan card — refine                             │
-▸ │Filter menu                                      Enter       Accept the text                  │
-  │  F / q / Esc Choose which lines to show         Esc         Discard the text                 │
-  │  a           Show every category              Row glyphs                                     │
-  │  r           Back to the default filter         ●           working                          │
-  │  Space / En… Show or hide this category         ◐           stale or asleep                  │
-  │  j / ↓       Next category                      ○           idle                             │
-  │  k / ↑       Previous category                  ☾           hibernated                       │
-  │Prompt history                                   ↳           subagent                         │
-  │  Esc         Close the prompt list              ▸ / ▾       folded / open group              │
-  │  Ctrl+n / ↓  Next prompt                        !           permission waiting on you        │
-  │  Ctrl+p / ↑  Previous prompt                    ?           question waiting on you          │
-  │  Enter       Put this prompt in the composer    P           plan waiting for approval        │
-  │File viewer                                      ●N          unread messages                  │
-  │  j / ↓       Scroll down                        ⚡           auto-approve on                  │
-  │  k / ↑       Scroll up                          ⏸           account soft-limited             │
-  │  PgDn        Page down                          ⚠           account traffic never seen       │
-  │  PgUp        Page up                            ❄           cache cold, next turn re-reads   │
-  │  g           Jump to the top                    ✕reason     how it ended                     │
-  │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
+  │  Tab         Take the session completion        Enter       Accept the text                  │
+▸ │  Ctrl+t      Insert a canned prompt             Esc         Discard the text                 │
+  │Search and commands                            Row glyphs                                     │
+  │  Enter       Run it                             ●           working                          │
+  │  Esc         Abandon it                         ◐           stale or asleep                  │
+  │  Tab         Complete the path                  ○           idle                             │
+  │Filter menu                                      ☾           hibernated                       │
+  │  F / q / Esc Choose which lines to show         ↳           subagent                         │
+  │  a           Show every category                ▸ / ▾       folded / open group              │
+  │  r           Back to the default filter         !           permission waiting on you        │
+  │  Space / En… Show or hide this category         ?           question waiting on you          │
+  │  j / ↓       Next category                      P           plan waiting for approval        │
+  │  k / ↑       Previous category                  ●N          unread messages                  │
+  │Prompt history                                   ⚡           auto-approve on                  │
+  │  Esc         Close the prompt list              ⏸           account soft-limited             │
+  │  Ctrl+n / ↓  Next prompt                        ⚠           account traffic never seen       │
+  │  Ctrl+p / ↑  Previous prompt                    ❄           cache cold, next turn re-reads   │
+  │  Enter       Put this prompt in the composer    ✕reason     how it ended                     │
+  │File viewer                                      ⚙N age      tool calls, age of the last      │
+  │  j / ↓       Scroll down                                                                     │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

@@ -251,6 +251,25 @@ fn session_list_rich_statuses() {
 }
 
 #[test]
+fn session_list_rename_field() {
+    use crate::app::row_actions::RowAction;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = app_with_sessions();
+    crate::app::reduce(&mut app, crate::app::Action::RowAction(RowAction::RenameStart));
+    for c in "fix-auth".chars() {
+        crate::app::reduce(
+            &mut app,
+            crate::app::Action::RowAction(RowAction::RenameKey(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            ))),
+        );
+    }
+    insta::assert_snapshot!(render_screen(&mut app));
+}
+
+#[test]
 fn session_list_rich_statuses_at_eighty_columns() {
     let mut app = app_with_rich_statuses();
     insta::assert_snapshot!(render_screen_sized(&mut app, 80, 24));

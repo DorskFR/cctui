@@ -13,6 +13,7 @@ use crate::app::fileview::FileViewAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
 use crate::app::prompt::PromptAction;
+use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
 use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
@@ -268,6 +269,16 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::DiscardSend => Action::Send(SendAction::Discard(chord.event())),
         ActionId::ToggleAutoApprove => Action::ToggleAutoApproveSelected,
 
+        ActionId::TogglePin => Action::RowAction(RowAction::TogglePin),
+        ActionId::RenameSession => Action::RowAction(RowAction::RenameStart),
+        ActionId::RenameCommit => Action::RowAction(RowAction::RenameCommit),
+        ActionId::RenameCancel => Action::RowAction(RowAction::RenameCancel),
+        ActionId::Archive => Action::RowAction(RowAction::ArchiveOrUnarchive),
+        ActionId::KillSession => Action::RowAction(RowAction::KillStart),
+        ActionId::UndoArchive => Action::RowAction(RowAction::Undo),
+        ActionId::ConfirmYes => Action::RowAction(RowAction::ConfirmYes),
+        ActionId::ConfirmNo => Action::RowAction(RowAction::ConfirmNo),
+
         ActionId::CopyMessage => Action::Copy(CopyWhat::Line),
         ActionId::CopyCodeBlock => Action::Copy(CopyWhat::CodeBlock),
         ActionId::CopySessionLink => Action::Copy(CopyWhat::SessionLink),
@@ -360,6 +371,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
 const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
     match context {
         Context::CmdLine => Some(Action::CmdLine(CmdAction::Key(key))),
+        Context::Rename => Some(Action::RowAction(RowAction::RenameKey(key))),
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
