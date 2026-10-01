@@ -214,6 +214,9 @@ pub struct App {
     pub subscribed: Option<String>,
     pub message_input: TextArea<'static>,
     pub input_active: bool,
+    /// Set by the open-in-editor action; the main loop takes it, because only
+    /// it owns the terminal.
+    pub editor: Option<crate::editor::EditorRequest>,
     pub should_quit: bool,
     /// Pending permission requests for every session, rendered as a card in
     /// the session they belong to.
@@ -402,6 +405,7 @@ impl App {
             subscribed: None,
             message_input: Self::new_input_textarea(),
             input_active: false,
+            editor: None,
             should_quit: false,
             permissions: PermissionInbox::default(),
             asks: HashMap::new(),

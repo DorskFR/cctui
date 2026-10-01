@@ -351,7 +351,7 @@ actions! {
     CmdLineCommit => "cmdline-commit", "Run it";
     CmdLineCancel => "cmdline-cancel", "Abandon it";
     CmdLineComplete => "cmdline-complete", "Complete the path";
-    OpenInEditor => "open-in-editor", "Compose in $EDITOR";
+    OpenInEditor => "open-in-editor", "Edit the text in $EDITOR";
     RenameSession => "rename-session", "Rename the session";
     ArchiveSection => "archive-section", "Archive every session in the section";
     KillSession => "kill-session", "Kill the session";
@@ -596,6 +596,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "m", ActionId::PinToggle),
     spec(Context::Conversation, "'", ActionId::PinsOpen),
     spec(Context::Conversation, "ctrl+t", ActionId::MacrosOpen),
+    spec(Context::Conversation, "ctrl+e", ActionId::OpenInEditor),
     spec(Context::Conversation, "T", ActionId::TerminalOpen),
 ];
 
@@ -644,6 +645,7 @@ const SPAWN: &[BindingSpec] = &[
     spec(Context::Spawn, "up", ActionId::SpawnDirPrev),
     spec(Context::Spawn, "enter", ActionId::SpawnDirAccept),
     spec(Context::Spawn, "ctrl+r", ActionId::SpawnRefreshModels),
+    spec(Context::Spawn, "ctrl+e", ActionId::OpenInEditor),
 ];
 
 const SECTIONS_POPUP: &[BindingSpec] = &[

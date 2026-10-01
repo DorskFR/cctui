@@ -37,6 +37,14 @@ use super::unread::UnreadAction;
 pub enum Action {
     Quit,
 
+    /// Hand the focused text to `$EDITOR`; the main loop does the handoff.
+    OpenInEditor,
+    /// What came back from it.
+    EditorFinished {
+        target: crate::editor::EditorTarget,
+        text: String,
+    },
+
     SelectNext,
     SelectPrev,
     SelectFirst,

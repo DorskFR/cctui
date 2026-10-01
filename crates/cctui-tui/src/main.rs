@@ -2,6 +2,7 @@ mod app;
 mod auth;
 mod clipboard;
 mod config;
+mod editor;
 mod install;
 mod keys;
 #[cfg(test)]
@@ -253,7 +254,8 @@ async fn run(
     // the session-list poll, which the reducer gates on its own elapsed period.
     let mut tick = time::interval(Duration::from_millis(TICK_MS));
     tick.tick().await;
-    let mut input_rx = spawn_input_task();
+    let gate = editor::InputGate::new();
+    let mut input_rx = spawn_input_task(gate.clone());
     let mut ws_closed = false;
     let mut ws_ever_connected = false;
 
@@ -319,6 +321,22 @@ async fn run(
 
         for action in actions {
             effects.dispatch_all(reduce(&mut app, action));
+        }
+
+        if let Some(request) = app.editor.take() {
+            match hand_over_to_editor(terminal, &gate, &request.text) {
+                Ok(text) => effects.dispatch_all(reduce(
+                    &mut app,
+                    Action::EditorFinished { target: request.target, text },
+                )),
+                Err(e) => {
+                    tracing::warn!(%e, "the editor handoff failed");
+                    effects.dispatch_all(reduce(
+                        &mut app,
+                        Action::Toast(Level::Error, format!("editor: {e}")),
+                    ));
+                }
+            }
         }
 
         if app.should_quit {
@@ -402,10 +420,49 @@ fn update_scroll_metrics(app: &mut App) {
 /// `spawn_blocking` per iteration inside `tokio::select!`) prevents input
 /// starvation when the WS event stream keeps the select loop busy — the
 /// channel retains pending keypresses across iterations.
-fn spawn_input_task() -> mpsc::Receiver<InputEvent> {
+/// Gives the terminal up, runs the editor, and takes it back.
+///
+/// The input thread is parked first: it and the editor would otherwise both be
+/// reading stdin. Everything is restored on the way out, including after a
+/// failure, so a broken `$EDITOR` cannot leave the terminal unusable.
+fn hand_over_to_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    gate: &editor::InputGate,
+    text: &str,
+) -> io::Result<String> {
+    gate.park();
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
+    terminal.show_cursor()?;
+
+    let argv = editor::editor_from_env();
+    let edited = editor::edit_via_file(text, |path| editor::run_editor(&argv, path));
+
+    enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    terminal.clear()?;
+    gate.unpark();
+    edited
+}
+
+fn spawn_input_task(gate: editor::InputGate) -> mpsc::Receiver<InputEvent> {
     let (tx, rx) = mpsc::channel::<InputEvent>(64);
     std::thread::spawn(move || {
         loop {
+            if gate.should_park() {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
             match event::poll(Duration::from_millis(100)) {
                 Ok(true) => {}
                 Ok(false) => continue,
