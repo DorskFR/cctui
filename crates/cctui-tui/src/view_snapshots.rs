@@ -212,11 +212,10 @@ fn conversation_plan_card_refining() {
 fn help_overlay_tall_enough_for_the_glyph_legend() {
     let mut app = app_with_sessions();
     app.router.push(View::Help);
-    // Tall enough for the legend's last entry: the sheet is two columns, the
-    // legend is the tail of the right one, and this case is where it is
-    // reviewable in full. A lane that adds bindings grows the left column and
-    // pushes the legend down, so this height has to grow with it.
-    insta::assert_snapshot!(render_screen_sized(&mut app, 100, 160));
+    // The whole sheet in two columns, plus the overlay's margin and border.
+    let rows = crate::views::help::rows_per_column(&app.config.keys);
+    let height = u16::try_from(rows + 4).expect("a sheet that fits a terminal");
+    insta::assert_snapshot!(render_screen_sized(&mut app, 100, height));
 }
 
 #[test]

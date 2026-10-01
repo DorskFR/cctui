@@ -1,6 +1,7 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-expression: "render_screen_sized(&mut app, 100, 160)"
+assertion_line: 218
+expression: "render_screen_sized(&mut app, 100, height)"
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys ────────────────────────────────────────────────────────────────────────────────────────┐s
@@ -135,30 +136,5 @@ expression: "render_screen_sized(&mut app, 100, 160)"
   │  g           Jump to the top                    ✕reason     how it ended                     │
   │  q / Esc     Close the file viewer              ⚙N age      tool calls, age of the last      │
   │  o           Open in the desktop viewer                                                      │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
-  │                                                                                              │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
