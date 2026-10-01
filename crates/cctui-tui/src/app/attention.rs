@@ -84,7 +84,7 @@ impl PermissionInbox {
 
     /// Called when a pending-permissions fetch is issued, so its reply can tell
     /// what the server had yet to see.
-    pub fn fetch_started(&mut self) {
+    pub const fn fetch_started(&mut self) {
         self.fetched_at = self.seq;
     }
 
@@ -149,10 +149,10 @@ impl PermissionInbox {
         let mut at = 0;
         self.items.retain(|p| {
             let keep = p.session_id != session_id;
-            if !keep {
-                self.arrived.remove(at);
-            } else {
+            if keep {
                 at += 1;
+            } else {
+                self.arrived.remove(at);
             }
             keep
         });

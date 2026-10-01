@@ -46,7 +46,7 @@ pub async fn host_gate(State(state): State<AppState>, request: Request, next: Ne
         .map(str::to_owned)
         .or_else(|| request.uri().host().map(str::to_owned));
     match host.and_then(|h| pattern.id_from_host(&h)) {
-        Some(id) => handle(state, &id, request).await,
+        Some(id) => Box::pin(handle(state, &id, request)).await,
         None => next.run(request).await,
     }
 }

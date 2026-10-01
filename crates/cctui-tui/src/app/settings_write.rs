@@ -12,7 +12,7 @@ use serde_json::Value;
 use super::action::Effect;
 
 /// The body a settings write should send.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WritePlan {
     Put(Value),
     /// The pre-write read failed, so the merge base is unknown. Replacing the
@@ -54,7 +54,7 @@ pub fn plan(fresh: Option<Value>, patch: Value) -> WritePlan {
 
 /// The one way to persist a settings change: name the keys you own, nothing else.
 #[must_use]
-pub fn save(patch: Value) -> Effect {
+pub const fn save(patch: Value) -> Effect {
     Effect::SaveSettings { patch }
 }
 
