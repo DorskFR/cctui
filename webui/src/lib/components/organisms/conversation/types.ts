@@ -1,6 +1,7 @@
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 import { m } from '$lib/paraglide/messages';
 import type { UserUploadRefs } from './lines';
+import type { HarnessCommand, TaskNotification } from './format';
 
 export type MsgCategory =
 	| 'assistant'
@@ -184,6 +185,10 @@ export interface Line {
 	plan?: string;
 	// Parsed TodoWrite / update_plan task list — rendered as a Todo card.
 	todos?: TodoItem[];
+	// Parsed `<task-notification>` — rendered as a system card, never as XML.
+	notification?: TaskNotification;
+	// Parsed `<command-*>` / `<local-command-*>` wrapper block.
+	command?: HarnessCommand;
 	// Turn summary attached to this (assistant) line, rendered under its bubble.
 	summary?: TurnSummary;
 	durationMs?: number;
