@@ -72,17 +72,23 @@ fn toggle_fold(app: &mut App) -> Vec<Effect> {
 }
 
 fn toggle_section(app: &mut App) -> Vec<Effect> {
-    let Some(key) = app.selected_session().map(|s| super::session_list::group_of(s).key()) else {
+    let grouping = app.grouping;
+    let Some(key) =
+        app.selected_session().map(|s| super::session_list::group_key_of(s, grouping).key)
+    else {
         return Vec::new();
     };
-    app.ui.toggle_section(key);
+    app.ui.toggle_section(&key);
     settle(app)
 }
 
 fn toggle_fold_all(app: &mut App) -> Vec<Effect> {
     let probe = crate::config::uistate::UiState::probe();
-    let (groups, sections) =
-        super::session_list::fold_targets(&super::session_list::rows(&app.sessions, &probe));
+    let (groups, sections) = super::session_list::fold_targets(&super::session_list::rows_grouped(
+        &app.sessions.iter().collect::<Vec<_>>(),
+        &probe,
+        app.grouping,
+    ));
     app.ui.fold_all(&groups, &sections);
     settle(app)
 }

@@ -170,11 +170,83 @@ pub fn sub_groups<'a>(kids: &[&'a SessionListItem]) -> Vec<SubGroup<'a>> {
     out
 }
 
+/// How the list groups its rows. The status buckets are the default; a new
+/// dimension is a variant here plus an arm in [`group_key_of`], which is what
+/// the group-by cycle selects — there is one grouping, not one per feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Grouping {
+    #[default]
+    Status,
+    Machine,
+}
+
+impl Grouping {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Machine => "machine",
+        }
+    }
+}
+
+/// One group header's identity, whatever the grouping. `key` is what the fold
+/// state remembers, so it must not change with the label's wording.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupKey {
+    pub key: String,
+    pub label: String,
+    pub rank: u8,
+    /// Tint for a header that stands for something with a hue (a machine).
+    pub hue: Option<u32>,
+    /// Set when the group *is* a machine, so the header can show its liveness.
+    pub machine_id: Option<String>,
+}
+
+impl GroupKey {
+    #[must_use]
+    pub fn status(group: Group) -> Self {
+        Self {
+            key: group.key().to_owned(),
+            label: group.label().to_owned(),
+            rank: group.rank(),
+            hue: None,
+            machine_id: None,
+        }
+    }
+
+    /// Machines sort by name, so the rank is uniform and the name breaks the tie.
+    #[must_use]
+    pub fn machine(s: &SessionListItem) -> Self {
+        let name = s.machine_name.clone().unwrap_or_else(|| s.machine_id.clone());
+        let hue = s
+            .machine_hue
+            .and_then(|h| u32::try_from(h).ok())
+            .unwrap_or_else(|| cctui_clientcore::format::hash_hue(&name));
+        Self {
+            key: format!("machine:{}", s.machine_id),
+            label: name,
+            rank: 0,
+            hue: Some(hue),
+            machine_id: Some(s.machine_id.clone()),
+        }
+    }
+}
+
+/// The group a session belongs to under `grouping`.
+#[must_use]
+pub fn group_key_of(s: &SessionListItem, grouping: Grouping) -> GroupKey {
+    match grouping {
+        Grouping::Status => GroupKey::status(group_of(s)),
+        Grouping::Machine => GroupKey::machine(s),
+    }
+}
+
 /// One rendered line of the list.
 #[derive(Debug, Clone)]
 pub enum Row<'a> {
     Header {
-        group: Group,
+        group: GroupKey,
         /// Top-level sessions the group holds, folded or not.
         total: usize,
         open: bool,
@@ -234,11 +306,26 @@ impl<'a> Walk<'a, '_> {
 
 /// Every display row, honouring the persisted fold state. A folded section drops
 /// its rows but keeps its header and count; a folded subagent group likewise.
+#[cfg(test)]
 #[must_use]
 pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
+    let refs: Vec<&SessionListItem> = sessions.iter().collect();
+    rows_grouped(&refs, ui, Grouping::Status)
+}
+
+/// [`rows`] over an already-narrowed set, under an explicit grouping.
+///
+/// The caller filters: a feature that hides rows composes its own predicate and
+/// passes what survives, so filtering never has to be known about in here.
+#[must_use]
+pub fn rows_grouped<'a>(
+    sessions: &[&'a SessionListItem],
+    ui: &UiState,
+    grouping: Grouping,
+) -> Vec<Row<'a>> {
     let ids: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
-    let mut kids: HashMap<&str, Vec<&SessionListItem>> = HashMap::new();
-    for s in sessions {
+    let mut kids: HashMap<&str, Vec<&'a SessionListItem>> = HashMap::new();
+    for &s in sessions {
         if is_fork(s) {
             continue;
         }
@@ -247,33 +334,37 @@ pub fn rows<'a>(sessions: &'a [SessionListItem], ui: &UiState) -> Vec<Row<'a>> {
         }
     }
 
-    let mut tops: Vec<&SessionListItem> = sessions
+    let mut tops: Vec<&'a SessionListItem> = sessions
         .iter()
+        .copied()
         .filter(|s| {
             is_fork(s) || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id)
         })
         .collect();
-    tops.sort_by_key(|s| (group_of(s).rank(), uptime_secs(s)));
+    tops.sort_by_cached_key(|s| {
+        let group = group_key_of(s, grouping);
+        (group.rank, group.label, uptime_secs(s))
+    });
     for group in kids.values_mut() {
         group.sort_by_key(|s| uptime_secs(s));
     }
 
-    let mut totals: HashMap<&'static str, usize> = HashMap::new();
+    let mut totals: HashMap<String, usize> = HashMap::new();
     for top in &tops {
-        *totals.entry(group_of(top).key()).or_default() += 1;
+        *totals.entry(group_key_of(top, grouping).key).or_default() += 1;
     }
 
     let mut walk =
         Walk { kids, ui, out: Vec::with_capacity(tops.len() + 8), seen: HashSet::new(), index: 0 };
-    let mut current: Option<Group> = None;
+    let mut current: Option<String> = None;
     for top in tops {
-        let group = group_of(top);
-        let open = ui.section_open(group.key());
-        if current != Some(group) {
-            current = Some(group);
+        let group = group_key_of(top, grouping);
+        let open = ui.section_open(&group.key);
+        if current.as_ref() != Some(&group.key) {
+            current = Some(group.key.clone());
             walk.out.push(Row::Header {
+                total: totals.get(&group.key).copied().unwrap_or_default(),
                 group,
-                total: totals.get(group.key()).copied().unwrap_or_default(),
                 open,
             });
         }
@@ -303,13 +394,13 @@ pub fn sessions_of<'a>(rows: &[Row<'a>]) -> Vec<&'a SessionListItem> {
 
 /// Every foldable group on screen plus every section, for a fold-everything key.
 #[must_use]
-pub fn fold_targets(rows: &[Row<'_>]) -> (Vec<(String, usize)>, Vec<&'static str>) {
+pub fn fold_targets(rows: &[Row<'_>]) -> (Vec<(String, usize)>, Vec<String>) {
     let mut groups = Vec::new();
     let mut sections = Vec::new();
     for row in rows {
         match row {
             Row::SubHeader { id, total, .. } => groups.push((id.clone(), *total)),
-            Row::Header { group, .. } => sections.push(group.key()),
+            Row::Header { group, .. } => sections.push(group.key.clone()),
             Row::Session { .. } => {}
         }
     }
@@ -401,10 +492,11 @@ mod tests {
         sessions.iter().map(|s| s.id.clone()).collect()
     }
 
-    fn headers(rows: &[Row<'_>]) -> Vec<Group> {
+    /// Header keys, which is what identifies a group whatever the grouping.
+    fn headers(rows: &[Row<'_>]) -> Vec<String> {
         rows.iter()
             .filter_map(|r| match r {
-                Row::Header { group, .. } => Some(*group),
+                Row::Header { group, .. } => Some(group.key.clone()),
                 _ => None,
             })
             .collect()
@@ -510,10 +602,11 @@ mod tests {
             pinned_session("s-pin", "p"),
         ];
         let list = rows(&sessions, &UiState::default());
-        assert_eq!(headers(&list), [Group::Pinned, Group::Bucket(Bucket::Working)]);
+        assert_eq!(headers(&list), ["pinned", "working"]);
         match &list[2] {
             Row::Header { group, total, open } => {
-                assert_eq!(*group, Group::Bucket(Bucket::Working));
+                assert_eq!(group.key, "working");
+                assert_eq!(group.label, "Working");
                 assert_eq!(*total, 2);
                 assert!(open);
             }
@@ -599,7 +692,7 @@ mod tests {
         let mut ui = UiState::default();
         assert!(!ui.toggle_section("working"));
         let list = rows(&sessions, &ui);
-        assert_eq!(headers(&list), [Group::Pinned, Group::Bucket(Bucket::Working)]);
+        assert_eq!(headers(&list), ["pinned", "working"]);
         assert_eq!(ids(&sessions_of(&list)), ["s-pin"]);
         match list.last() {
             Some(Row::Header { total, open, .. }) => {

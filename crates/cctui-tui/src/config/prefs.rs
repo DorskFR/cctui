@@ -9,6 +9,7 @@ pub struct PrefsFile {
     pub compact_rows: Option<bool>,
     pub notifications: Option<bool>,
     pub ascii_glyphs: Option<bool>,
+    pub machine_column: Option<bool>,
 }
 
 // The knobs are independent switches, not a state machine, so grouping them
@@ -24,11 +25,19 @@ pub struct Prefs {
     pub notifications: bool,
     /// Plain ASCII instead of emoji, for a terminal or font without them.
     pub ascii_glyphs: bool,
+    /// Show which machine each row runs on, tinted by the machine's hue.
+    pub machine_column: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { timestamps: false, compact_rows: false, notifications: true, ascii_glyphs: false }
+        Self {
+            timestamps: false,
+            compact_rows: false,
+            notifications: true,
+            ascii_glyphs: false,
+            machine_column: false,
+        }
     }
 }
 
@@ -56,6 +65,9 @@ impl Prefs {
         }
         if let Some(v) = file.ascii_glyphs {
             self.ascii_glyphs = v;
+        }
+        if let Some(v) = file.machine_column {
+            self.machine_column = v;
         }
     }
 }

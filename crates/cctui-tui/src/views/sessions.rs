@@ -68,7 +68,9 @@ fn draw_session_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     let items: Vec<ListItem> = rows
         .iter()
         .map(|row| match row {
-            session_list::Row::Header { group, total, open } => group_header(*group, *total, *open),
+            session_list::Row::Header { group, total, open } => {
+                group_header(app, group, *total, *open)
+            }
             session_list::Row::SubHeader { label, total, running, open, depth, .. } => {
                 sub_header(label, *total, *running, *open, *depth)
             }
@@ -101,11 +103,50 @@ const fn arrow(open: bool) -> &'static str {
     if open { OPEN } else { FOLDED }
 }
 
-fn group_header(group: session_list::Group, total: usize, open: bool) -> ListItem<'static> {
-    ListItem::new(Line::from(vec![
-        Span::styled(format!(" {} {} ", arrow(open), group.label()), theme::section_title()),
-        Span::styled(format!("({total})"), theme::dim()),
-    ]))
+/// `▾ Working (4)`, or `▾ ● cyberia-1 (online) (3)` when grouping by machine:
+/// the dot is the machine's own liveness, not any session's.
+fn group_header(
+    app: &App,
+    group: &session_list::GroupKey,
+    total: usize,
+    open: bool,
+) -> ListItem<'static> {
+    let name_style = group.hue.map_or_else(theme::section_title, theme::hue_fg);
+    let mut spans = vec![Span::styled(format!(" {} ", arrow(open)), theme::section_title())];
+
+    if let Some(machine_id) = &group.machine_id {
+        // One dot, coloured by tier, with the word after it: the colour is the
+        // fast read and the word is what a monochrome terminal has.
+        let tier = session_live::machine_dot(app, machine_id);
+        spans.push(Span::styled("● ", machine_style(tier)));
+    }
+    spans.push(Span::styled(format!("{} ", group.label), name_style));
+    if let Some(machine_id) = &group.machine_id
+        && let Some(tier) = session_live::machine_dot(app, machine_id)
+    {
+        spans.push(Span::styled(format!("({}) ", machine_word(tier)), theme::dim()));
+    }
+    spans.push(Span::styled(format!("({total})"), theme::dim()));
+    ListItem::new(Line::from(spans))
+}
+
+/// A machine that is not online is the thing worth noticing, so only those two
+/// tiers get a loud colour.
+fn machine_style(tier: Option<cctui_proto::models::MachineLiveness>) -> ratatui::style::Style {
+    match tier {
+        Some(cctui_proto::models::MachineLiveness::Online) => theme::active(),
+        Some(cctui_proto::models::MachineLiveness::Stale) => theme::stale(),
+        Some(cctui_proto::models::MachineLiveness::Offline) => theme::error(),
+        None => theme::dim(),
+    }
+}
+
+const fn machine_word(tier: cctui_proto::models::MachineLiveness) -> &'static str {
+    match tier {
+        cctui_proto::models::MachineLiveness::Online => "online",
+        cctui_proto::models::MachineLiveness::Stale => "stale",
+        cctui_proto::models::MachineLiveness::Offline => "offline",
+    }
 }
 
 /// `▸ subagents (2)` / `▾ wf: release-wave (4/9 running)`.
@@ -215,6 +256,11 @@ fn session_line_spans(
     if !branch.is_empty() {
         segs.push(Seg::new(6, theme::branch(), format!(" ({branch})")));
     }
+    if app.config.prefs.machine_column {
+        let group = session_list::GroupKey::machine(s);
+        let tint = group.hue.map_or_else(theme::dim, theme::hue_fg);
+        segs.push(Seg::new(5, tint, format!(" @{}", group.label)));
+    }
     // Only a machine that is not online earns a glyph; a dot on every row is
     // noise, and the row already says whether the session itself is live.
     if let Some(tier) = session_live::machine_dot(app, &s.machine_id)
@@ -248,11 +294,15 @@ fn session_line_spans(
 
     let width = usize::from(width);
     let badge_text = badges.text();
-    let badge_cols = if badges.is_empty() { 0 } else { badge_text.chars().count() + 2 };
-    shed(&mut segs, width.saturating_sub(badge_cols));
+    let glyph_cols = if badges.glyphs_empty() { 0 } else { badge_text.chars().count() + 2 };
+    // Chips are reserved with the glyphs: they are the right-hand tail too, and
+    // shedding has to know the whole of it before it decides what to drop.
+    let chip_cols: usize = badges.labels.iter().map(|chip| chip.text.chars().count() + 1).sum();
+    let tail_cols = glyph_cols + chip_cols;
+    shed(&mut segs, width.saturating_sub(tail_cols));
 
     if !compact {
-        let spare = width.saturating_sub(badge_cols + total_width(&segs));
+        let spare = width.saturating_sub(tail_cols + total_width(&segs));
         if spare >= MIN_ACTIVITY_COLS
             && let Some(text) = session_status::activity_text(s, &act, stale, now)
         {
@@ -263,7 +313,12 @@ fn session_line_spans(
     }
 
     let mut spans = spans_of(segs);
-    if !badges.is_empty() {
+    for chip in &badges.labels {
+        spans.push(Span::raw(" "));
+        let tint = chip.hue.map_or_else(theme::dim, theme::hue_fg);
+        spans.push(Span::styled(chip.text.clone(), tint));
+    }
+    if !badges.glyphs_empty() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(badge_text, badge_style(&badges)));
     }

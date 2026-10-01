@@ -171,3 +171,92 @@ mod tests {
         assert_ne!(light().selected, super::dark().selected);
     }
 }
+
+/// Whether the terminal takes 24-bit colour. Probed once: a hue is a continuous
+/// value and the 16-colour fallback has to bucket it.
+fn truecolor() -> bool {
+    static TRUECOLOR: OnceLock<bool> = OnceLock::new();
+    *TRUECOLOR.get_or_init(|| {
+        supports_color::on(supports_color::Stream::Stdout).is_some_and(|s| s.has_16m)
+    })
+}
+
+/// A hue (0–359, as `cctui_clientcore::labels::label_hue` gives it) as a
+/// foreground colour: exact on a truecolor terminal, bucketed to the nearest of
+/// the six ANSI hues otherwise.
+#[must_use]
+pub fn hue_fg(hue: u32) -> Style {
+    if truecolor() {
+        let (r, g, b) = hsl_to_rgb(hue, 0.65, 0.65);
+        return Style::new().fg(Color::Rgb(r, g, b));
+    }
+    Style::new().fg(ansi_bucket(hue))
+}
+
+/// The six ANSI hues sit 60° apart, so a bucket is the nearest multiple of 60.
+const fn ansi_bucket(hue: u32) -> Color {
+    match ((hue % 360) + 30) / 60 {
+        1 => Color::Yellow,
+        2 => Color::Green,
+        3 => Color::Cyan,
+        4 => Color::Blue,
+        5 => Color::Magenta,
+        _ => Color::Red,
+    }
+}
+
+/// HSL with `s`/`l` in 0..=1, matching the webui's chip saturation and lightness
+/// closely enough that a label reads as the same colour in both clients.
+#[allow(clippy::many_single_char_names)]
+fn hsl_to_rgb(hue: u32, s: f64, l: f64) -> (u8, u8, u8) {
+    let h = f64::from(hue % 360) / 60.0;
+    let c = (1.0 - 2.0f64.mul_add(l, -1.0).abs()) * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let byte = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (byte(r), byte(g), byte(b))
+}
+
+#[cfg(test)]
+mod hue_tests {
+    use super::{ansi_bucket, hsl_to_rgb};
+    use ratatui::style::Color;
+
+    #[test]
+    fn the_six_ansi_hues_sit_at_their_own_centres() {
+        assert_eq!(ansi_bucket(0), Color::Red);
+        assert_eq!(ansi_bucket(60), Color::Yellow);
+        assert_eq!(ansi_bucket(120), Color::Green);
+        assert_eq!(ansi_bucket(180), Color::Cyan);
+        assert_eq!(ansi_bucket(240), Color::Blue);
+        assert_eq!(ansi_bucket(300), Color::Magenta);
+    }
+
+    #[test]
+    fn a_bucket_rounds_to_the_nearest_hue_and_wraps() {
+        assert_eq!(ansi_bucket(29), Color::Red);
+        assert_eq!(ansi_bucket(31), Color::Yellow);
+        assert_eq!(ansi_bucket(359), Color::Red, "just short of 360 is still red");
+        assert_eq!(ansi_bucket(720), Color::Red, "a hue past one turn still buckets");
+    }
+
+    #[test]
+    fn hsl_hits_the_primaries_and_stays_in_range() {
+        let (r, g, b) = hsl_to_rgb(0, 1.0, 0.5);
+        assert_eq!((r, g, b), (255, 0, 0));
+        assert_eq!(hsl_to_rgb(120, 1.0, 0.5), (0, 255, 0));
+        assert_eq!(hsl_to_rgb(240, 1.0, 0.5), (0, 0, 255));
+        for hue in (0..360).step_by(7) {
+            let (r, g, b) = hsl_to_rgb(hue, 0.65, 0.65);
+            assert!(r > 60 && g > 60 && b > 60, "hue {hue} is too dark to read");
+        }
+    }
+}
