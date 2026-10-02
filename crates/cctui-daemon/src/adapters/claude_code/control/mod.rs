@@ -887,7 +887,8 @@ impl Driver {
         // decision to Claude Code, so the tool runs/skips with no attach
         // and no keystroke at all. `take`n so a duplicate response can't
         // double-fire on an already-resolved (and dropped) channel.
-        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(local_id));
+        let key = (local_id.to_owned(), request_id.to_owned());
+        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(&key));
         if let Some(tx) = hook {
             if tx.send(allow).is_ok() {
                 tracing::info!(%local_id, %request_id, allow, "answered permission prompt via PreToolUse hook");

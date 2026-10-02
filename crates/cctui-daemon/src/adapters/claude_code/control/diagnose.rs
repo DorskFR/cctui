@@ -39,7 +39,7 @@ impl Driver {
             parked_perm_hook: self
                 .pending_perm_hooks
                 .lock()
-                .is_ok_and(|m| m.contains_key(local_id)),
+                .is_ok_and(|m| m.keys().any(|(id, _)| id == local_id)),
             pending_perm: short.as_deref().and_then(|s| self.pending_perms.get(s)).cloned(),
         };
 

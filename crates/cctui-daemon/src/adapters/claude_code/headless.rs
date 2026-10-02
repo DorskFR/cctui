@@ -588,7 +588,8 @@ impl SessionDriver for SdkDriver {
     ) -> CommandOutcome {
         // Headless: the carrier is the bidirectional PreToolUse hook
         // long-polling in the listener (same as oneshot).
-        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut m| m.remove(&local_id));
+        let key = (local_id.clone(), request_id.clone());
+        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut m| m.remove(&key));
         if let Some(tx) = hook {
             if tx.send(allow).is_ok() {
                 tracing::info!(%local_id, %request_id, allow, "sdk answered permission via hook");
