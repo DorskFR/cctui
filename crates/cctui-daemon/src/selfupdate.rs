@@ -13,6 +13,7 @@
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -144,10 +145,20 @@ pub fn binary_url(server_url: &str, target: &str) -> String {
     format!("{}/api/v1/daemon/binary/{target}", server_url.trim_end_matches('/'))
 }
 
+/// A stalled read past this fails the request; a slow download that keeps
+/// making progress is not cut short.
+const READ_TIMEOUT: Duration = Duration::from_mins(1);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Upper bound on any single download: the daemon binary is tens of MB.
+const MAX_DOWNLOAD_BYTES: usize = 256 * 1024 * 1024;
+
 pub fn client() -> Result<reqwest::Client> {
     crate::install_crypto_provider();
     Ok(reqwest::Client::builder()
         .user_agent(concat!("cctui-daemon/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
         .build()?)
 }
 
@@ -230,8 +241,22 @@ pub async fn download(
         req = req.bearer_auth(bearer);
     }
     let res = req.send().await?.error_for_status()?;
-    let bytes = res.bytes().await?;
-    Ok(bytes.to_vec())
+    read_capped(res, MAX_DOWNLOAD_BYTES).await
+}
+
+/// The response body, refusing it as soon as it exceeds `cap` bytes.
+async fn read_capped(mut res: reqwest::Response, cap: usize) -> Result<Vec<u8>> {
+    if res.content_length().is_some_and(|len| len > cap as u64) {
+        bail!("{} is larger than the {cap}-byte download cap", res.url());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = res.chunk().await? {
+        if body.len() + chunk.len() > cap {
+            bail!("{} exceeded the {cap}-byte download cap", res.url());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 #[must_use]
@@ -493,6 +518,21 @@ pub fn reexec(exe: &Path) -> ! {
     std::process::exit(1);
 }
 
+/// Let adapters hibernate their stateful children, then [`reexec`].
+pub async fn reexec_after_grace(exe: &Path) -> ! {
+    REEXEC_PREP.cancel();
+    tokio::time::sleep(REEXEC_GRACE).await;
+    reexec(exe)
+}
+
+/// This binary's install path, captured at start-up: after an in-place swap
+/// `current_exe()` names the unlinked old inode (see [`reexec`]).
+#[must_use]
+pub fn install_path() -> Option<PathBuf> {
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| std::env::current_exe().ok()).clone()
+}
+
 /// Spawn the periodic auto-update loop. Cancellation-aware so the
 /// supervisor can wind it down cleanly. Applied updates trigger a
 /// re-exec via [`reexec`].
@@ -540,9 +580,7 @@ pub fn spawn_loop(
                     // Re-exec the resolved install path, not current_exe() —
                     // see reexec() for why.
                     tracing::info!(exe = %exe.display(), "auto-update applied; re-execing into the new binary");
-                    REEXEC_PREP.cancel();
-                    tokio::time::sleep(REEXEC_GRACE).await;
-                    reexec(&exe);
+                    reexec_after_grace(&exe).await;
                 }
                 Ok(None) => {}
                 Err(err) => tracing::warn!(%err, "auto-update check failed"),
@@ -606,6 +644,33 @@ mod tests {
             sock.flush().await.unwrap();
         });
         (format!("http://{addr}"), captured)
+    }
+
+    #[tokio::test]
+    async fn a_download_over_the_cap_is_refused() {
+        let (url, _req) =
+            serve_once("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789").await;
+        let res = client().unwrap().get(&url).send().await.unwrap();
+        let err = read_capped(res, 4).await.unwrap_err();
+        assert!(err.to_string().contains("download cap"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_chunked_download_over_the_cap_is_refused_mid_stream() {
+        let (url, _req) = serve_once(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n01234\r\n5\r\n56789\r\n0\r\n\r\n",
+        )
+        .await;
+        let res = client().unwrap().get(&url).send().await.unwrap();
+        let err = read_capped(res, 7).await.unwrap_err();
+        assert!(err.to_string().contains("exceeded"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_download_within_the_cap_is_returned_whole() {
+        let (url, _req) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nabcd").await;
+        let res = client().unwrap().get(&url).send().await.unwrap();
+        assert_eq!(read_capped(res, 4).await.unwrap(), b"abcd");
     }
 
     #[tokio::test]
