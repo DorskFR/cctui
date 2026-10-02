@@ -20,6 +20,8 @@ pub struct Record {
     pub permission_mode: Option<PermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_local_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub account_bound: bool,
     pub started_at_ms: u64,
 }
 
@@ -160,6 +162,7 @@ mod tests {
             model: Some("fireworks-ai/kimi".to_owned()),
             permission_mode: Some(PermissionMode::Yolo),
             parent_local_id: parent.map(str::to_owned),
+            account_bound: true,
             started_at_ms: 1_784_143_530_428,
         }
     }
