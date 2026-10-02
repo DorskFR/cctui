@@ -127,6 +127,7 @@ impl VersionGate {
                 Decision::Deferred { running, local } => gate.first_warning_for(running, local),
                 _ => false,
             };
+            drop(gate);
             (decision, first_warning)
         };
         match &decision {
