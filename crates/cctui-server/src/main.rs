@@ -863,7 +863,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = axum::Router::new()
-            .route("/hang", axum::routing::get(|| std::future::pending::<&'static str>()));
+            .route("/hang", axum::routing::get(std::future::pending::<&'static str>));
         let (fire, signal) = tokio::sync::oneshot::channel::<()>();
         let drain = std::time::Duration::from_millis(200);
         let server = tokio::spawn(serve_until(
