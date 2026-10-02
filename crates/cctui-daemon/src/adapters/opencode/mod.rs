@@ -403,12 +403,11 @@ impl Pump {
 
     async fn restore_key(&self, key: String, sessions: Vec<(String, persist::Record)>) {
         let Some(first) = sessions.first().map(|(_, r)| r.clone()) else { return };
-        let none = std::collections::BTreeMap::new();
-        let launch = match resolve_launch(
+        let launch = match resolve_restore(
             self.server.as_ref(),
             self.machine_key.as_ref(),
             &key,
-            &none,
+            &sessions,
         )
         .await
         {
@@ -463,6 +462,34 @@ impl Pump {
             resume: sessions,
         });
     }
+}
+
+/// The server binds the account to the opencode session id once it starts,
+/// not to the spawn key, so a restore pulls by the root session's id.
+async fn resolve_restore(
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    key: &str,
+    sessions: &[(String, persist::Record)],
+) -> anyhow::Result<crate::adapters::gateway_env::LaunchEnv> {
+    let lookup = sessions
+        .iter()
+        .find(|(_, r)| r.parent_local_id.is_none())
+        .or_else(|| sessions.first())
+        .map_or(key, |(id, _)| id.as_str());
+    let launch =
+        resolve_launch(server, machine_key, lookup, &std::collections::BTreeMap::new()).await?;
+    if sessions.iter().any(|(_, r)| r.account_bound)
+        && !launch.env.contains_key(crate::adapters::gateway_env::FIREWORKS_GATEWAY_KEYS[1])
+    {
+        tracing::warn!(
+            %key,
+            session_id = lookup,
+            "opencode: account-bound session restored without an account; its turns will fail \
+             unauthenticated"
+        );
+    }
+    Ok(launch)
 }
 
 /// The recorded agent passes the permission ceiling again, so an edited
@@ -802,6 +829,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_reloaded_registry_pulls_credentials_by_the_opencode_session_id() {
+        use std::io::{Read, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode-sessions.json");
+        let record = |parent: Option<&str>| persist::Record {
+            key: "spawn-key".to_owned(),
+            cwd: "/repo".to_owned(),
+            agent: None,
+            model: None,
+            permission_mode: None,
+            parent_local_id: parent.map(str::to_owned),
+            account_bound: true,
+            started_at_ms: 1,
+        };
+        let store = SessionStore::at(path.clone());
+        store.upsert("ses_root", record(None));
+        store.upsert("ses_fork", record(Some("ses_root")));
+        let groups = persist::by_key(SessionStore::at(path).snapshot());
+        let sessions = &groups["spawn-key"];
+        assert!(sessions.iter().all(|(_, r)| r.account_bound));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requested = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).unwrap();
+            let body = serde_json::to_string(&cctui_proto::api::GatewayEnvResponse {
+                account_bound: true,
+                env: env_of(&[("FIREWORKS_BASE_URL", "gw"), ("FIREWORKS_API_KEY", "tok")]),
+                ..Default::default()
+            })
+            .unwrap();
+            let _ = write!(
+                sock,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or_default().to_owned()
+        });
+
+        let server = ServerClient::new(format!("http://{addr}"));
+        let launch =
+            resolve_restore(Some(&server), Some(&"mk".to_owned()), "spawn-key", sessions)
+                .await
+                .expect("a routed env");
+        let request_line = requested.join().unwrap();
+        assert!(
+            request_line.contains("/api/v1/daemon/sessions/ses_root/gateway-env"),
+            "got: {request_line}"
+        );
+        assert_eq!(launch.env.get("FIREWORKS_API_KEY").map(String::as_str), Some("tok"));
+    }
+
     #[test]
     fn a_restored_agent_is_capped_by_its_recorded_permission_mode() {
         use cctui_proto::adapter::PermissionMode;
@@ -812,6 +895,7 @@ mod tests {
             model: None,
             permission_mode: mode,
             parent_local_id: None,
+            account_bound: false,
             started_at_ms: 0,
         };
         let cfg = OpenCodeConfig::default();
@@ -842,6 +926,7 @@ mod tests {
                 model: None,
                 permission_mode: None,
                 parent_local_id: None,
+                account_bound: false,
                 started_at_ms: 1,
             },
         );
