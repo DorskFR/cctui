@@ -94,6 +94,35 @@ pub fn upstream_refused(
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
+/// Largest request body the gateway will buffer (the observed/reshaped path).
+/// An unbuffered passthrough streams and is not bounded by this.
+const MAX_BUFFERED_BODY: usize = 32 * 1024 * 1024;
+
+fn declared_body_len(headers: &HeaderMap) -> Option<usize> {
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+/// 403 for a path or method outside the provider's allowlist.
+fn path_refused(reason: &super::GatewayPathError, is_anthropic: bool) -> Response {
+    let message = format!(
+        "cctui gateway refused this request: the path {reason}. Only the provider's \
+         inference endpoints are forwarded."
+    );
+    let body = if is_anthropic {
+        serde_json::json!({ "type": "error", "error": { "type": "invalid_request_error", "message": message } })
+    } else {
+        serde_json::json!({ "error": { "message": message, "type": "invalid_request_error" } })
+    };
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap_or_else(|_| StatusCode::FORBIDDEN.into_response())
+}
+
 /// Refuse a request the soft limit blocks: fail it over to a sibling account
 /// with headroom if there is one, else flag the session and 429.
 ///
@@ -151,12 +180,12 @@ pub async fn anthropic(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response, StatusCode> {
-    passthrough(state, req, "/gateway/anthropic", &anthropic_upstream()).await
+    passthrough(state, req, Family::Anthropic, "/gateway/anthropic", &anthropic_upstream()).await
 }
 
 /// `/gateway/openai/*path` — passthrough to api.openai.com.
 pub async fn openai(State(state): State<AppState>, req: Request) -> Result<Response, StatusCode> {
-    passthrough(state, req, "/gateway/openai", &openai_upstream()).await
+    passthrough(state, req, Family::Openai, "/gateway/openai", &openai_upstream()).await
 }
 
 /// `/gateway/fireworks/*path` — passthrough to Fireworks' OpenAI-compatible API.
@@ -169,7 +198,7 @@ pub async fn fireworks(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response, StatusCode> {
-    passthrough(state, req, "/gateway/fireworks", &fireworks_upstream()).await
+    passthrough(state, req, Family::Fireworks, "/gateway/fireworks", &fireworks_upstream()).await
 }
 
 pub fn skip_request_header(lower_name: &str) -> bool {
@@ -392,15 +421,26 @@ async fn admit(
 }
 
 /// Pick the upstream credentials, host and client for this account.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_upstream(
     state: &AppState,
     acct: &super::Account,
     uri: &axum::http::Uri,
     req_method: &axum::http::Method,
+    family: Family,
     prefix: &str,
     upstream_base: &str,
     is_anthropic: bool,
 ) -> Result<UpstreamTarget, Reply> {
+    // Decided before a credential is spent on it, and never normalized: a tail
+    // that could re-resolve is refused, not rewritten.
+    let path = uri.path();
+    let tail = path.strip_prefix(prefix).unwrap_or(path);
+    if let Err(e) = super::gateway_path_permitted(family, req_method.as_str(), tail) {
+        tracing::warn!(account = %acct.id, %tail, method = %req_method, "gateway refused path: {e}");
+        return Err(Ok(path_refused(&e, is_anthropic)));
+    }
+
     // The session token is valid (resolved already); a failure to obtain an
     // upstream access token here is a provider-credential problem (no/expired
     // refresh token, failed refresh) — label it as such.
@@ -432,9 +472,6 @@ async fn resolve_upstream(
         state.http_client.clone()
     };
 
-    // Build the upstream URL: strip the gateway prefix, keep path + query.
-    let path = uri.path();
-    let tail = path.strip_prefix(prefix).unwrap_or(path);
     let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
     let url = format!("{}{tail}{query}", upstream.trim_end_matches('/'));
 
@@ -544,9 +581,9 @@ async fn prepare_body(
             RequestInfo { traced_request: None, request_model: None, rewrote_body: false },
         ));
     }
-    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+    let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
         .await
-        .map_err(|_| Err(StatusCode::BAD_REQUEST))?;
+        .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
     let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
     let request_model = parsed
         .as_ref()
@@ -866,10 +903,14 @@ fn spawn_observer(
 pub async fn passthrough(
     state: AppState,
     req: Request,
+    family: Family,
     prefix: &str,
     upstream_base: &str,
 ) -> Result<Response, StatusCode> {
-    let is_anthropic = prefix.contains("anthropic");
+    let is_anthropic = family == Family::Anthropic;
+    if declared_body_len(req.headers()).is_some_and(|n| n > MAX_BUFFERED_BODY) {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     let auth = match authenticate(&state, req.headers(), is_anthropic).await {
         Ok(auth) => auth,
         Err(reply) => return reply,
@@ -884,6 +925,7 @@ pub async fn passthrough(
         &auth.acct,
         &uri,
         &req_method,
+        family,
         prefix,
         upstream_base,
         is_anthropic,
@@ -911,7 +953,25 @@ pub async fn passthrough(
 
 #[cfg(test)]
 mod tests {
-    use super::{FireworksSettings, skip_request_header, upstream_payload};
+    use super::{
+        FireworksSettings, MAX_BUFFERED_BODY, declared_body_len, skip_request_header,
+        upstream_payload,
+    };
+    use axum::http::HeaderMap;
+
+    #[test]
+    fn an_oversized_declared_body_is_rejected_before_it_is_read() {
+        let with = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(http::header::CONTENT_LENGTH, v.parse().unwrap());
+            declared_body_len(&h)
+        };
+        assert_eq!(with("17"), Some(17));
+        assert_eq!(with("nonsense"), None);
+        assert_eq!(declared_body_len(&HeaderMap::new()), None);
+        assert!(with("34000000").is_some_and(|n| n > MAX_BUFFERED_BODY));
+        assert!(with("1000000").is_some_and(|n| n <= MAX_BUFFERED_BODY));
+    }
 
     #[test]
     fn actor_authorization_dummy_is_stripped_before_forwarding() {
