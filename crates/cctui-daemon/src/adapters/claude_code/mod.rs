@@ -32,6 +32,7 @@ mod pty_view;
 mod roster;
 mod session_registry;
 mod socket;
+mod spawn_watchdog;
 pub(crate) mod state;
 mod streamjson;
 mod transcript;

@@ -27,6 +27,7 @@ use super::discovery::Discovery;
 use super::dispatch_done::{self, DispatchDoneTracker};
 use super::kickstart::Kickstarter;
 use super::launch::{self, JobIds, LaunchArgs};
+use super::spawn_watchdog::SpawnWatchdog;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
@@ -310,6 +311,9 @@ pub struct DeferredDispatch {
     what: String,
     session_id: String,
     gate: Option<crate::preflight::Preflight>,
+    /// `None` skips the post-dispatch confirmation: the dispatch reply alone
+    /// becomes the ack, which is what tests against a fake daemon want.
+    watchdog: Option<SpawnWatchdog>,
 }
 
 pub struct Driver {
