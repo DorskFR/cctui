@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@dorsk/journey": "^0.8.0",
-    "@dorsk/tsumikit": "^0.64.1",
+    "@dorsk/tsumikit": "^0.66.0",
     "@tanstack/query-async-storage-persister": "^5.103.2",
     "@tanstack/svelte-query": "^6.2.4",
     "@tanstack/svelte-query-persist-client": "^6.2.4",
