@@ -87,7 +87,6 @@ const ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// which is still an edge — the signal carries no payload.
 const CONNECT_SIGNAL_BUFFER: usize = 8;
 
-/// Sleep until `deadline`, or never when there's nothing buffered to flush.
 /// One WS send, bounded by [`SEND_TIMEOUT`]. An expiry is an error so the
 /// caller tears the connection down and the reconnect loop takes over.
 async fn send_bounded(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
@@ -108,6 +107,7 @@ async fn send_shutdown(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
     }
 }
 
+/// Sleep until `deadline`, or never when there's nothing buffered to flush.
 async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(d) => tokio::time::sleep_until(d).await,
@@ -2092,8 +2092,6 @@ mod tests {
         }
     }
 
-    /// A `ResumeMarks` archiving more jobs than the 64-deep command channel
-    /// holds must not block the transport loop: pings keep flowing.
     /// The paused clock makes the connect ceiling deterministic: nothing else
     /// can make progress, so time advances to the timeout rather than elapsing.
     #[tokio::test(start_paused = true)]
@@ -2123,6 +2121,8 @@ mod tests {
         stall.abort();
     }
 
+    /// A `ResumeMarks` archiving more jobs than the 64-deep command channel
+    /// holds must not block the transport loop: pings keep flowing.
     #[tokio::test]
     async fn resume_marks_backlog_does_not_starve_pings() {
         use futures_util::{SinkExt, StreamExt};
