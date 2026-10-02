@@ -21,6 +21,7 @@ import {
 	requiredParams
 } from '../journey';
 import { createProbes } from './probes';
+import { MOVED_ROUTES } from '../../routes/movedRoutes';
 
 const SPECS: Journey[] = [
 	welcome,
@@ -170,6 +171,15 @@ describe('public journey set', () => {
 				for (const name of anchorNames(step)) {
 					expect(anchors, `${id}/${step.id} anchors "${name}"`).toContain(name);
 				}
+			}
+		}
+	});
+
+	it('routes no step through a page that only redirects', () => {
+		for (const id of PUBLIC_JOURNEYS) {
+			const ir = pub(id);
+			for (const route of [ir.route, ...ir.steps.map((s) => s.route)]) {
+				if (route !== undefined) expect(Object.keys(MOVED_ROUTES), `${id} ${route}`).not.toContain(route);
 			}
 		}
 	});

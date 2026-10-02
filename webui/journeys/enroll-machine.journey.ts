@@ -1,11 +1,11 @@
 import { defineJourney } from '@dorsk/journey';
 
-const ACCESS = '/access';
+const ACCESS = '/settings/users';
 
 export default defineJourney({
 	id: 'enroll-machine',
 	title: { en: 'Bring a machine into the fleet', fr: 'Enrôler une machine dans la flotte' },
-	description: { en: 'Access holds the people, their keys and the machines that run their agents.', fr: 'Accès regroupe les personnes, leurs clés et les machines qui exécutent leurs agents.' },
+	description: { en: 'Users & keys holds the people, their keys and the machines that run their agents.', fr: 'Utilisateurs et clés regroupe les personnes, leurs clés et les machines qui exécutent leurs agents.' },
 	route: ACCESS,
 	fixture: 'instance',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
