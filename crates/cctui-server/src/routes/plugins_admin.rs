@@ -182,6 +182,14 @@ pub async fn install(
         .await
         .map_err(install_error)?;
     tracing::info!(id = %plugin.manifest.id, version = %plugin.manifest.version, "plugin installed");
+    crate::plugin_host_token::reconcile_plugin(
+        &state.pool,
+        &state.auth_config,
+        &state.plugins,
+        &plugin.manifest.id,
+    )
+    .await
+    .map_err(|e| db_err(&e))?;
     let mut info = AdminPluginInfo::from(&plugin);
     if plugin.manifest.backend.is_some() {
         let (secret, fresh) =
@@ -207,6 +215,15 @@ pub async fn set_enabled(
         crate::plugin_host_token::revoke_for_all(&state.pool, &state.auth_config, &id)
             .await
             .map_err(|e| db_err(&e))?;
+    } else if known {
+        crate::plugin_host_token::reconcile_plugin(
+            &state.pool,
+            &state.auth_config,
+            &state.plugins,
+            &id,
+        )
+        .await
+        .map_err(|e| db_err(&e))?;
     }
     let plugin = known.then(|| state.plugins.all_admin().into_iter().find(|p| p.manifest.id == id));
     plugin.flatten().map_or_else(
