@@ -1537,7 +1537,7 @@ mod tests {
             "type": "function_call", "name": "wait", "call_id": "call_b", "arguments": "{}" } });
         let out = json!({ "type": "response_item", "payload": {
             "type": "function_call_output", "call_id": "call_b", "output": "ok" } });
-        assert_eq!(for_client("codex", "tool_use", call.clone()).unwrap()["tool_use_id"], "call_b");
+        assert_eq!(for_client("codex", "tool_use", call).unwrap()["tool_use_id"], "call_b");
         assert_eq!(for_client("codex", "tool_use", out.clone()).unwrap()["tool_use_id"], "call_b");
         match to_agent_event("codex", "tool_use", &out) {
             Some(AgentEvent::ToolResult { tool_use_id, .. }) => {
