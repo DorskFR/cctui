@@ -80,8 +80,18 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
         machine_key,
         mut connected,
         pty_watch,
+        interrupts,
         ..
     } = ctx;
+    let _interrupt_handle = interrupts.map(|queue| {
+        crate::adapter_runtime::spawn_interrupt_pump(
+            ADAPTER_ID,
+            queue,
+            std::sync::Arc::new(OpenCodeInterrupter),
+            events.clone(),
+            shutdown.clone(),
+        )
+    });
     let _watch_handle = pty_watch.map(|watches| {
         let pump = pty_view::PtyWatchPump::new(live.clone(), events.clone(), shutdown.clone());
         tokio::spawn(pump.run(watches))
@@ -109,6 +119,20 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                 let events = pump.events.clone();
                 dispatch_command(&mut pump, &events, cmd).await;
             }
+        }
+    }
+}
+
+struct OpenCodeInterrupter;
+
+#[async_trait::async_trait]
+impl crate::adapter_runtime::Interrupter for OpenCodeInterrupter {
+    async fn interrupt(&self, local_id: &str, _command_ids: &[Uuid]) -> CommandOutcome {
+        if session::interrupt_live(local_id).await {
+            Ok(Handled::Done)
+        } else {
+            tracing::warn!(%local_id, "opencode: no live session to interrupt");
+            Err(anyhow::anyhow!("no live opencode session"))
         }
     }
 }
@@ -562,6 +586,10 @@ impl AdapterFactory for OpenCodeFactory {
         Box::new(OpenCodeAdapter)
     }
     fn pty_watch(&self, _config: &serde_json::Value) -> bool {
+        true
+    }
+
+    fn interrupts(&self, _config: &serde_json::Value) -> bool {
         true
     }
 }

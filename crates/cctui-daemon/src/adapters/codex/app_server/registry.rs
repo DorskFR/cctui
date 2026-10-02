@@ -6,6 +6,7 @@ use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use super::config::AppServerConfig;
+use crate::adapter_runtime::InterruptQueue;
 
 /// Per-session commands routed from the adapter-level command pump.
 #[derive(Debug, Clone)]
@@ -78,6 +79,37 @@ pub struct CodexLiveSnapshot {
 /// task. Senders disappear when the app-server exits; the durable
 /// [`SessionRegistry`] below stays so a later reply can revive the thread.
 pub type LiveSessionRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommand>>>>;
+
+/// Interrupt queue of each live session, which its event loop polls ahead of
+/// the command channel: an interrupt must not wait for room in that channel or
+/// behind the commands already in it.
+static LIVE_INTERRUPTS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, InterruptQueue>>> =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
+fn live_interrupts() -> std::sync::MutexGuard<'static, HashMap<String, InterruptQueue>> {
+    LIVE_INTERRUPTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub fn register_interrupts(local_id: &str, queue: &InterruptQueue) {
+    live_interrupts().insert(local_id.to_owned(), queue.clone());
+}
+
+/// Only while `queue` is still the registered one: a resumed driver may have
+/// replaced it already.
+pub fn forget_interrupts(local_id: &str, queue: &InterruptQueue) {
+    let mut map = live_interrupts();
+    if map.get(local_id).is_some_and(|q| q.same_queue(queue)) {
+        map.remove(local_id);
+    }
+}
+
+/// `false` when `local_id` has no live driver.
+#[must_use]
+pub fn raise_interrupt(local_id: &str, command_ids: &[Uuid]) -> bool {
+    let Some(queue) = live_interrupts().get(local_id).cloned() else { return false };
+    queue.push(local_id, command_ids.iter().copied());
+    true
+}
 
 /// Durable-in-daemon metadata for cctui-owned Codex threads. This is not a
 /// process handle; it is the minimum launch context needed to call

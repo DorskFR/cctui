@@ -32,7 +32,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
 use crate::adapter_runtime::{
-    Adapter, AdapterCtx, AdapterFactory, CommandOutcome, Handled, SessionDriver, run_command_loop,
+    Adapter, AdapterCtx, AdapterFactory, CommandOutcome, Handled, Interrupter, SessionDriver,
+    run_command_loop, spawn_interrupt_pump,
 };
 use crate::client::ServerClient;
 use app_server::{
@@ -44,6 +45,22 @@ use cctui_proto::diagnose::{
 };
 
 static LIVE: std::sync::Mutex<Option<LiveSessionRegistry>> = std::sync::Mutex::new(None);
+
+/// Hands the interrupt to the live session's own queue, which its event loop
+/// polls ahead of its commands; the `turn/interrupt` outcome answers the ids.
+struct CodexInterrupter;
+
+#[async_trait::async_trait]
+impl Interrupter for CodexInterrupter {
+    async fn interrupt(&self, local_id: &str, command_ids: &[uuid::Uuid]) -> CommandOutcome {
+        if app_server::raise_interrupt(local_id, command_ids) {
+            Ok(Handled::Deferred)
+        } else {
+            tracing::warn!(%local_id, "codex: interrupt for non-live session");
+            Err(anyhow::anyhow!("no live codex session to interrupt"))
+        }
+    }
+}
 
 /// Whether any live cctui codex session has a turn in flight, for the
 /// app-server auto-cycle. `None` when a session does not answer its snapshot.
@@ -220,6 +237,16 @@ async fn run_default(mut ctx: AdapterCtx) -> anyhow::Result<()> {
 
     let log_handle = tokio::spawn(log.run());
 
+    let interrupt_handle = ctx.interrupts.take().map(|queue| {
+        spawn_interrupt_pump(
+            "codex",
+            queue,
+            std::sync::Arc::new(CodexInterrupter),
+            ctx.events.clone(),
+            ctx.shutdown.clone(),
+        )
+    });
+
     let pty_watch_handle = ctx.pty_watch.take().map(|watches| {
         let pump =
             pty_view::PtyWatchPump::new(live.clone(), ctx.events.clone(), ctx.shutdown.clone());
@@ -240,6 +267,9 @@ async fn run_default(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     pump.run(ctx.commands).await;
     log_handle.abort();
     if let Some(h) = pty_watch_handle {
+        h.abort();
+    }
+    if let Some(h) = interrupt_handle {
         h.abort();
     }
     if let Some(h) = inventory_handle {
@@ -1134,6 +1164,10 @@ impl AdapterFactory for CodexFactory {
     }
     /// The uds mode has no session registry to stream rings from.
     fn pty_watch(&self, config: &serde_json::Value) -> bool {
+        !uses_uds_mode(config)
+    }
+
+    fn interrupts(&self, config: &serde_json::Value) -> bool {
         !uses_uds_mode(config)
     }
 }

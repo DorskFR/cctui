@@ -67,20 +67,27 @@ impl InterruptQueue {
     /// Cancel-safe: nothing is taken until the future resolves.
     pub async fn next(&self) -> PendingInterrupt {
         loop {
-            if let Some(pending) = self.take() {
+            if let Some(pending) = self.try_next() {
                 return pending;
             }
             self.inner.notify.notified().await;
         }
     }
 
+    #[must_use]
     pub fn drain(&self) -> Vec<PendingInterrupt> {
         std::mem::take(
             &mut *self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         )
     }
 
-    fn take(&self) -> Option<PendingInterrupt> {
+    #[must_use]
+    pub fn same_queue(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    #[must_use]
+    pub fn try_next(&self) -> Option<PendingInterrupt> {
         let mut pending =
             self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (!pending.is_empty()).then(|| pending.remove(0))

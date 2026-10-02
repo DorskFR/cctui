@@ -23,6 +23,7 @@ use super::client::{
 use super::config::{ModelRef, SessionHome, session_config};
 use super::events::{OcEvent, SseDecoder, StatusKind, status_kind};
 use super::normalize::{self, Kind};
+use crate::adapter_runtime::InterruptQueue;
 use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TRANSPORT_SSE, TrafficRings};
 
 /// A just-started server accepts the connection before its handlers are wired
@@ -35,6 +36,32 @@ const HEALTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const STREAM_INACTIVITY: std::time::Duration = std::time::Duration::from_mins(2);
 
 pub type LiveRegistry = Arc<Mutex<HashMap<String, LiveSession>>>;
+
+/// What an interrupt needs to reach a live session without its command loop.
+struct LiveInterrupt {
+    client: Arc<OpenCodeClient>,
+    queue: InterruptQueue,
+}
+
+static LIVE_INTERRUPTS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, LiveInterrupt>>> =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
+fn live_interrupts() -> std::sync::MutexGuard<'static, HashMap<String, LiveInterrupt>> {
+    LIVE_INTERRUPTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Aborts the turn over HTTP right away, even with the driver busy in another
+/// request, then queues the driver's own teardown ahead of its commands.
+/// `false` when `local_id` has no live driver.
+pub async fn interrupt_live(local_id: &str) -> bool {
+    let entry = live_interrupts().get(local_id).map(|l| (Arc::clone(&l.client), l.queue.clone()));
+    let Some((client, queue)) = entry else { return false };
+    if let Err(err) = client.abort(local_id).await {
+        tracing::warn!(%err, session = %local_id, "opencode abort failed");
+    }
+    queue.push(local_id, std::iter::empty());
+    true
+}
 
 /// `meta` is retained so a reconnect can replay the original `SessionStarted`.
 #[derive(Debug, Clone)]
@@ -261,6 +288,8 @@ pub struct OpenCodeSession {
     pending_permissions: HashSet<String>,
     /// Snapshotted at construction rather than read per turn.
     turn_end_supported: bool,
+    client: Option<Arc<OpenCodeClient>>,
+    interrupts: InterruptQueue,
 }
 
 impl OpenCodeSession {
@@ -294,6 +323,8 @@ impl OpenCodeSession {
             server_version: None,
             pending_permissions: HashSet::new(),
             turn_end_supported: crate::adapters::turn_end::supported(),
+            client: None,
+            interrupts: InterruptQueue::default(),
         }
     }
 
@@ -322,7 +353,7 @@ impl OpenCodeSession {
             return;
         }
         for id in self.owned.clone() {
-            self.live.lock().await.remove(&id);
+            self.unlist(&id).await;
             crate::adapters::emit(
                 &self.events,
                 AdapterEvent::SessionEnded { local_id: id, reason: EndReason::Completed },
@@ -394,6 +425,7 @@ impl OpenCodeSession {
         self.server_url = Some(base.clone());
         let client =
             Arc::new(OpenCodeClient::new(base, password).observed(Arc::clone(&self.rings)));
+        self.client = Some(Arc::clone(&client));
         if let Err(err) = self.await_health(&client).await {
             shutdown_serve(&mut child).await;
             return Err(err);
@@ -459,12 +491,24 @@ impl OpenCodeSession {
 
         let mut reattached = false;
         let reexec = crate::selfupdate::reexec_prep();
+        let interrupts = self.interrupts.clone();
         loop {
             if !self.in_flight {
                 reattached = false;
             }
+            if let Some(pending) = interrupts.try_next() {
+                if !self.on_interrupt(&client, pending.local_id).await {
+                    break;
+                }
+                continue;
+            }
             tokio::select! {
                 () = self.shutdown.cancelled() => break,
+                pending = interrupts.next() => {
+                    if !self.on_interrupt(&client, pending.local_id).await {
+                        break;
+                    }
+                }
                 () = reexec.cancelled() => {
                     self.on_reexec(&stream, &mut child).await;
                     return Ok(());
@@ -629,6 +673,12 @@ impl OpenCodeSession {
             local_id.to_owned(),
             LiveSession { commands: self.commands_tx.clone(), meta: meta.clone() },
         );
+        if let Some(client) = &self.client {
+            live_interrupts().insert(
+                local_id.to_owned(),
+                LiveInterrupt { client: Arc::clone(client), queue: self.interrupts.clone() },
+            );
+        }
         let _ = self
             .events
             .send(AdapterEvent::SessionStarted { local_id: local_id.to_owned(), meta })
@@ -714,11 +764,28 @@ impl OpenCodeSession {
         Stall::Reattach
     }
 
+    async fn unlist(&self, local_id: &str) {
+        self.live.lock().await.remove(local_id);
+        let mut interrupts = live_interrupts();
+        if interrupts.get(local_id).is_some_and(|l| l.queue.same_queue(&self.interrupts)) {
+            interrupts.remove(local_id);
+        }
+    }
+
+    /// Stop presses end the session, as the command-path interrupt always has;
+    /// the HTTP abort already went out from [`interrupt_live`].
+    async fn on_interrupt(&mut self, client: &OpenCodeClient, session_id: String) -> bool {
+        if !self.owned.contains(&session_id) {
+            return true;
+        }
+        self.on_command(client, SessionCommand::Kill { session_id }, None).await
+    }
+
     /// Report every still-owned session as crashed.
     async fn crash_all(&mut self, detail: &str) {
         for id in std::mem::take(&mut self.owned) {
             self.emit_error(&id, detail).await;
-            self.live.lock().await.remove(&id);
+            self.unlist(&id).await;
             crate::adapters::emit(
                 &self.events,
                 AdapterEvent::SessionEnded {
@@ -748,7 +815,7 @@ impl OpenCodeSession {
                 }
                 self.in_flight = false;
                 self.owned.remove(&session_id);
-                self.live.lock().await.remove(&session_id);
+                self.unlist(&session_id).await;
                 crate::adapters::emit(
                     &self.events,
                     AdapterEvent::SessionEnded { local_id: session_id, reason: EndReason::Killed },
@@ -919,7 +986,7 @@ impl OpenCodeSession {
             }
             OcEvent::SessionDeleted { .. } => {
                 self.owned.remove(&session_id);
-                self.live.lock().await.remove(&session_id);
+                self.unlist(&session_id).await;
                 crate::adapters::emit(
                     &self.events,
                     AdapterEvent::SessionEnded {
@@ -959,7 +1026,7 @@ impl OpenCodeSession {
 
     async fn end_crashed(&mut self, session_id: String, detail: String) -> bool {
         self.owned.remove(&session_id);
-        self.live.lock().await.remove(&session_id);
+        self.unlist(&session_id).await;
         crate::adapters::emit(
             &self.events,
             AdapterEvent::SessionEnded {
@@ -1443,6 +1510,78 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("grandchild {grandchild} survived shutdown_serve");
+    }
+
+    /// Answers one HTTP request with `true` and reports its request line.
+    async fn one_shot_http() -> (String, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request_line = lines.next_line().await.unwrap().unwrap_or_default();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.is_empty() {
+                    break;
+                }
+            }
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "content-type: application/json\r\n",
+                "content-length: 4\r\n",
+                "connection: close\r\n\r\n",
+                "true",
+            );
+            write.write_all(response.as_bytes()).await.unwrap();
+            let _ = seen_tx.send(request_line);
+        });
+        (base, seen_rx)
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_aborts_over_http_without_the_driver_loop() {
+        let (base, seen) = one_shot_http().await;
+        let local_id = format!("ses_{}", Uuid::new_v4().simple());
+        let queue = InterruptQueue::default();
+        live_interrupts().insert(
+            local_id.clone(),
+            LiveInterrupt {
+                client: Arc::new(OpenCodeClient::new(base, "pw".to_owned())),
+                queue: queue.clone(),
+            },
+        );
+        assert!(interrupt_live(&local_id).await);
+        let request_line =
+            tokio::time::timeout(std::time::Duration::from_secs(5), seen).await.unwrap().unwrap();
+        assert!(
+            request_line.starts_with(&format!("POST /session/{local_id}/abort ")),
+            "{request_line}"
+        );
+        assert_eq!(queue.try_next().map(|p| p.local_id), Some(local_id.clone()));
+        live_interrupts().remove(&local_id);
+        assert!(!interrupt_live(&local_id).await, "no live driver, no interrupt");
+    }
+
+    #[tokio::test]
+    async fn a_queued_interrupt_ends_the_owned_session_like_the_command_path() {
+        let (mut session, mut rx, client) = test_session(None);
+        assert!(session.on_interrupt(&client, "ses_other".to_owned()).await);
+        assert!(!session.on_interrupt(&client, "ses_1".to_owned()).await, "last owned session");
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(evt) = rx.recv().await {
+                if let AdapterEvent::SessionEnded { local_id, reason } = evt {
+                    return (local_id, reason);
+                }
+            }
+            panic!("no SessionEnded");
+        })
+        .await
+        .unwrap();
+        assert_eq!(ended.0, "ses_1");
+        assert!(matches!(ended.1, EndReason::Killed));
     }
 
     fn test_session(
