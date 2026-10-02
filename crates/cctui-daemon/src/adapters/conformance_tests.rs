@@ -171,6 +171,7 @@ fn ctx(config: serde_json::Value) -> (AdapterCtx, Harness) {
         events: events_tx,
         commands: commands_rx,
         pty_watch: None,
+        interrupts: None,
         shutdown: shutdown.clone(),
         config,
         server: None,

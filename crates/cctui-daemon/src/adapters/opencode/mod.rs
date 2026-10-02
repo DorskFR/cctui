@@ -888,6 +888,7 @@ mod reconnect_tests {
             events,
             commands,
             pty_watch: None,
+            interrupts: None,
             shutdown: shutdown.clone(),
             config: serde_json::Value::Null,
             server: None,

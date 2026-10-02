@@ -6,6 +6,8 @@
 //! this trait, and the supervisor drives them.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use cctui_proto::adapter::{
     AdapterCommand, AdapterEvent, ForkExtract, RemoveInitiator, SessionSpec,
@@ -16,6 +18,115 @@ use uuid::Uuid;
 
 /// A `WatchPty` routed off the command path: `(local_id, watch)`.
 pub type PtyWatch = (String, bool);
+
+const MAX_COALESCED_IDS: usize = 16;
+
+const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PendingInterrupt {
+    pub local_id: String,
+    pub command_ids: Vec<Uuid>,
+}
+
+/// Interrupts coalesced per session. `push` never blocks or fails: Stop must
+/// not depend on a command queue having room.
+#[derive(Clone, Default)]
+pub struct InterruptQueue {
+    inner: Arc<InterruptState>,
+}
+
+#[derive(Default)]
+struct InterruptState {
+    pending: std::sync::Mutex<Vec<PendingInterrupt>>,
+    notify: tokio::sync::Notify,
+}
+
+impl InterruptQueue {
+    pub fn push(&self, local_id: &str, command_ids: impl IntoIterator<Item = Uuid>) {
+        {
+            let mut pending =
+                self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let i = pending.iter().position(|p| p.local_id == local_id).unwrap_or_else(|| {
+                pending
+                    .push(PendingInterrupt { local_id: local_id.to_owned(), command_ids: vec![] });
+                pending.len() - 1
+            });
+            let entry = &mut pending[i];
+            for id in command_ids {
+                if entry.command_ids.len() < MAX_COALESCED_IDS {
+                    entry.command_ids.push(id);
+                }
+            }
+        }
+        // Stores a permit when nobody waits yet, so a push racing ahead of
+        // `next` still wakes it.
+        self.inner.notify.notify_one();
+    }
+
+    /// Cancel-safe: nothing is taken until the future resolves.
+    pub async fn next(&self) -> PendingInterrupt {
+        loop {
+            if let Some(pending) = self.take() {
+                return pending;
+            }
+            self.inner.notify.notified().await;
+        }
+    }
+
+    pub fn drain(&self) -> Vec<PendingInterrupt> {
+        std::mem::take(
+            &mut *self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn take(&self) -> Option<PendingInterrupt> {
+        let mut pending =
+            self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (!pending.is_empty()).then(|| pending.remove(0))
+    }
+}
+
+/// Must not go through the adapter's serial command loop.
+#[async_trait::async_trait]
+pub trait Interrupter: Send + Sync + 'static {
+    /// `Handled::Deferred` means the interrupter answers `command_ids` itself.
+    async fn interrupt(&self, local_id: &str, command_ids: &[Uuid]) -> CommandOutcome;
+}
+
+/// One task per interrupt, so a slow one holds up no other session.
+pub fn spawn_interrupt_pump(
+    adapter: &'static str,
+    queue: InterruptQueue,
+    interrupter: Arc<dyn Interrupter>,
+    events: mpsc::Sender<AdapterEvent>,
+    shutdown: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let pending = tokio::select! {
+                () = shutdown.cancelled() => return,
+                pending = queue.next() => pending,
+            };
+            let (interrupter, events) = (Arc::clone(&interrupter), events.clone());
+            tokio::spawn(async move {
+                let PendingInterrupt { local_id, command_ids } = pending;
+                let outcome = tokio::time::timeout(
+                    INTERRUPT_TIMEOUT,
+                    interrupter.interrupt(&local_id, &command_ids),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!("interrupt did not complete within {INTERRUPT_TIMEOUT:?}"))
+                });
+                if outcome.is_ok() {
+                    tracing::info!(adapter, %local_id, "interrupt delivered off the command path");
+                }
+                report_outcomes(adapter, &events, &command_ids, outcome).await;
+            });
+        }
+    })
+}
 
 /// Per-adapter execution context handed to [`Adapter::start`].
 pub struct AdapterCtx {
@@ -28,6 +139,9 @@ pub struct AdapterCtx {
     /// behind a command whose socket round-trip can take 30s. `None` for
     /// adapters that declared no live view.
     pub pty_watch: Option<mpsc::Receiver<PtyWatch>>,
+    /// Inbound, out-of-band: `Interrupt` only. `None` keeps interrupts on
+    /// `commands`; an adapter that declared them must drain this.
+    pub interrupts: Option<InterruptQueue>,
     /// Daemon-wide shutdown signal. Adapters MUST observe it and return
     /// cleanly when it fires.
     pub shutdown: CancellationToken,
@@ -62,6 +176,11 @@ pub trait AdapterFactory: Send + Sync {
     /// A `false` here keeps `WatchPty` on the command path, where it answers
     /// "unsupported"; a `true` that never drains the channel leaks watches.
     fn pty_watch(&self, _config: &serde_json::Value) -> bool {
+        false
+    }
+
+    /// Whether this adapter, under `config`, drains [`AdapterCtx::interrupts`].
+    fn interrupts(&self, _config: &serde_json::Value) -> bool {
         false
     }
 }
@@ -248,6 +367,15 @@ async fn report_outcome(
     command_id: Option<Uuid>,
     outcome: CommandOutcome,
 ) {
+    report_outcomes(adapter, events, command_id.as_slice(), outcome).await;
+}
+
+async fn report_outcomes(
+    adapter: &'static str,
+    events: &mpsc::Sender<AdapterEvent>,
+    command_ids: &[Uuid],
+    outcome: CommandOutcome,
+) {
     let error = match outcome {
         Ok(Handled::Deferred) => return,
         Ok(Handled::Done) => None,
@@ -260,9 +388,13 @@ async fn report_outcome(
             Some(err.to_string())
         }
     };
-    let Some(command_id) = command_id else { return };
-    let _ =
-        events.send(AdapterEvent::CommandResult { command_id, ok: error.is_none(), error }).await;
+    for &command_id in command_ids {
+        let event =
+            AdapterEvent::CommandResult { command_id, ok: error.is_none(), error: error.clone() };
+        if events.send(event).await.is_err() {
+            tracing::debug!(adapter, %command_id, "command result dropped: event channel closed");
+        }
+    }
 }
 
 /// Feed `commands` to `driver` one at a time until shutdown fires or the
@@ -281,5 +413,137 @@ pub async fn run_command_loop<D: SessionDriver + ?Sized>(
                 dispatch_command(driver, events, cmd).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupts_coalesce_per_session_in_arrival_order() {
+        let queue = InterruptQueue::default();
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        queue.push("s1", Some(a));
+        queue.push("s2", None);
+        queue.push("s1", Some(b));
+        queue.push("s2", Some(c));
+        assert_eq!(
+            queue.drain(),
+            vec![
+                PendingInterrupt { local_id: "s1".to_owned(), command_ids: vec![a, b] },
+                PendingInterrupt { local_id: "s2".to_owned(), command_ids: vec![c] },
+            ],
+        );
+        assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn spamming_stop_caps_the_kept_ids() {
+        let queue = InterruptQueue::default();
+        for _ in 0..(MAX_COALESCED_IDS * 4) {
+            queue.push("s1", Some(Uuid::new_v4()));
+        }
+        let pending = queue.drain();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].command_ids.len(), MAX_COALESCED_IDS);
+    }
+
+    #[tokio::test]
+    async fn next_wakes_on_a_push_made_before_it_waits() {
+        let queue = InterruptQueue::default();
+        queue.push("s1", None);
+        let got = tokio::time::timeout(Duration::from_secs(1), queue.next()).await.unwrap();
+        assert_eq!(got.local_id, "s1");
+        let waiter = tokio::spawn({
+            let queue = queue.clone();
+            async move { queue.next().await }
+        });
+        tokio::task::yield_now().await;
+        queue.push("s2", None);
+        let got = tokio::time::timeout(Duration::from_secs(1), waiter).await.unwrap().unwrap();
+        assert_eq!(got.local_id, "s2");
+    }
+
+    struct Blocked {
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Interrupter for Blocked {
+        async fn interrupt(&self, local_id: &str, _command_ids: &[Uuid]) -> CommandOutcome {
+            if local_id == "stuck" {
+                self.release.notified().await;
+            }
+            Ok(Handled::Done)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_interrupt_does_not_hold_up_another_session() {
+        let queue = InterruptQueue::default();
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let shutdown = CancellationToken::new();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pump = spawn_interrupt_pump(
+            "test",
+            queue.clone(),
+            Arc::new(Blocked { release: Arc::clone(&release) }),
+            events_tx,
+            shutdown.clone(),
+        );
+        let (stuck, fast) = (Uuid::new_v4(), Uuid::new_v4());
+        queue.push("stuck", Some(stuck));
+        queue.push("fast", Some(fast));
+        let first = tokio::time::timeout(Duration::from_secs(1), events_rx.recv())
+            .await
+            .expect("the second session's interrupt must not wait for the first")
+            .unwrap();
+        assert!(matches!(
+            first,
+            AdapterEvent::CommandResult { command_id, ok: true, .. } if command_id == fast
+        ));
+        release.notify_one();
+        let second =
+            tokio::time::timeout(Duration::from_secs(1), events_rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(
+            second,
+            AdapterEvent::CommandResult { command_id, ok: true, .. } if command_id == stuck
+        ));
+        shutdown.cancel();
+        pump.await.unwrap();
+    }
+
+    struct Failing;
+
+    #[async_trait::async_trait]
+    impl Interrupter for Failing {
+        async fn interrupt(&self, _local_id: &str, _command_ids: &[Uuid]) -> CommandOutcome {
+            Err(anyhow::anyhow!("no live session"))
+        }
+    }
+
+    #[tokio::test]
+    async fn every_coalesced_id_hears_the_outcome() {
+        let queue = InterruptQueue::default();
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let shutdown = CancellationToken::new();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        queue.push("s1", [a, b]);
+        let pump =
+            spawn_interrupt_pump("test", queue, Arc::new(Failing), events_tx, shutdown.clone());
+        let mut answered = Vec::new();
+        for _ in 0..2 {
+            match tokio::time::timeout(Duration::from_secs(1), events_rx.recv()).await.unwrap() {
+                Some(AdapterEvent::CommandResult { command_id, ok: false, error }) => {
+                    assert_eq!(error.as_deref(), Some("no live session"));
+                    answered.push(command_id);
+                }
+                other => panic!("expected a failed CommandResult, got {other:?}"),
+            }
+        }
+        assert_eq!(answered, vec![a, b]);
+        shutdown.cancel();
+        pump.await.unwrap();
     }
 }

@@ -622,6 +622,15 @@ impl Supervisor {
                     }
                     return;
                 }
+                if let cctui_proto::adapter::AdapterCommand::Interrupt { local_id, command_id } =
+                    command.as_ref()
+                    && let Some(interrupts) =
+                        running.get(&adapter_id).and_then(|r| r.interrupts.as_ref())
+                {
+                    interrupts.push(local_id, *command_id);
+                    tracing::info!(%adapter_id, %local_id, "interrupt routed off the command path");
+                    return;
+                }
                 // `try_send`, never `send().await`: this runs inside the
                 // transport `select!`, alongside the keepalive ping and the
                 // socket read. Awaiting a full adapter channel here stalls
@@ -874,6 +883,7 @@ impl Supervisor {
                 Some(self.machine_key.clone()),
                 &self.connected,
                 factory.pty_watch(&cfg.config),
+                factory.interrupts(&cfg.config),
             );
             let adapter = factory.build(cfg.config.clone());
             let adapter_id_for_pump = id.clone();
@@ -911,6 +921,7 @@ impl Supervisor {
                     config: cfg.config,
                     commands_tx: channels.commands_tx,
                     pty_watch_tx: channels.pty_watch_tx,
+                    interrupts: channels.interrupts,
                     tasks: vec![pump, driver],
                 },
             );
@@ -1041,6 +1052,9 @@ struct AdapterRunning {
     /// "command queue is full" or wait behind a 30s socket round-trip. `None`
     /// for adapters without a live view.
     pty_watch_tx: Option<mpsc::Sender<crate::adapter_runtime::PtyWatch>>,
+    /// Out-of-band sink for `Interrupt`: never full, never behind a command.
+    /// `None` for adapters that do not drain it.
+    interrupts: Option<crate::adapter_runtime::InterruptQueue>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -1654,6 +1668,7 @@ mod tests {
                 config: serde_json::json!({}),
                 commands_tx,
                 pty_watch_tx: None,
+                interrupts: None,
                 tasks: Vec::new(),
             },
         );
@@ -1717,6 +1732,7 @@ mod tests {
                 config: serde_json::json!({}),
                 commands_tx,
                 pty_watch_tx: Some(pty_watch_tx),
+                interrupts: None,
                 tasks: Vec::new(),
             },
         );
@@ -1743,6 +1759,66 @@ mod tests {
         assert!(event_rx.try_recv().is_err(), "no rejection result for a routed watch");
     }
 
+    #[tokio::test]
+    async fn interrupt_bypasses_a_full_command_queue_and_coalesces() {
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let (commands_tx, _commands_rx) = mpsc::channel(1);
+        commands_tx
+            .try_send(cctui_proto::adapter::AdapterCommand::ResumeMarks { marks: vec![] })
+            .unwrap();
+        let interrupts = crate::adapter_runtime::InterruptQueue::default();
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+        running.insert(
+            "codex".to_owned(),
+            AdapterRunning {
+                shutdown: CancellationToken::new(),
+                config: serde_json::json!({}),
+                commands_tx,
+                pty_watch_tx: None,
+                interrupts: Some(interrupts.clone()),
+                tasks: Vec::new(),
+            },
+        );
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for command_id in [first, second] {
+            let frame = cctui_proto::ws::DaemonFrameDown::Command {
+                adapter_id: "codex".to_owned(),
+                command: Box::new(cctui_proto::adapter::AdapterCommand::Interrupt {
+                    local_id: "sess-1".to_owned(),
+                    command_id: Some(command_id),
+                }),
+            };
+            let handled = supervisor.handle_frame(
+                frame,
+                &mut running,
+                &event_tx,
+                &frame_up_tx,
+                &mut scrub,
+                &shutdown,
+            );
+            tokio::time::timeout(Duration::from_secs(5), handled)
+                .await
+                .expect("handle_frame must not block");
+        }
+        assert!(event_rx.try_recv().is_err(), "an interrupt is never rejected for a full queue");
+        assert_eq!(
+            interrupts.drain(),
+            vec![crate::adapter_runtime::PendingInterrupt {
+                local_id: "sess-1".to_owned(),
+                command_ids: vec![first, second],
+            }],
+        );
+    }
+
     /// An adapter with no live view keeps the command path, so `WatchPty`
     /// still answers "unsupported" rather than silently vanishing.
     #[tokio::test]
@@ -1765,6 +1841,7 @@ mod tests {
                 config: serde_json::json!({}),
                 commands_tx,
                 pty_watch_tx: None,
+                interrupts: None,
                 tasks: Vec::new(),
             },
         );
@@ -1797,6 +1874,7 @@ mod tests {
                 config: serde_json::json!({}),
                 commands_tx,
                 pty_watch_tx: None,
+                interrupts: None,
                 tasks: Vec::new(),
             },
         );
@@ -1855,6 +1933,7 @@ mod tests {
                 config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
                 commands_tx,
                 pty_watch_tx: None,
+                interrupts: None,
                 tasks: Vec::new(),
             },
         );
@@ -1929,6 +2008,7 @@ mod tests {
                 config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
                 commands_tx,
                 pty_watch_tx: None,
+                interrupts: None,
                 tasks: Vec::new(),
             },
         );

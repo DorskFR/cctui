@@ -31,7 +31,7 @@ use super::spawn_watchdog::SpawnWatchdog;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
-use crate::adapter_runtime::{CommandOutcome, Handled, SessionDriver};
+use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver};
 
 mod delivered;
 mod diagnose;
@@ -314,6 +314,31 @@ pub struct DeferredDispatch {
     /// `None` skips the post-dispatch confirmation: the dispatch reply alone
     /// becomes the ack, which is what tests against a fake daemon want.
     watchdog: Option<SpawnWatchdog>,
+}
+
+/// ESC into the worker's PTY straight from the shared roster. No kickstart
+/// wait: with no live claude daemon there is no turn to stop.
+pub(super) struct ControlInterrupter {
+    discovery: Discovery,
+    roster: super::roster::SessionRoster,
+}
+
+#[async_trait::async_trait]
+impl Interrupter for ControlInterrupter {
+    async fn interrupt(&self, local_id: &str, _command_ids: &[uuid::Uuid]) -> CommandOutcome {
+        let short = self
+            .roster
+            .get(local_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown session {local_id}"))?;
+        let sock = self
+            .discovery
+            .locate_live()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no claude daemon running, nothing to interrupt"))?;
+        socket::attach_interrupt(&sock, &short).await?;
+        tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
+        Ok(Handled::Done)
+    }
 }
 
 pub struct Driver {
@@ -754,6 +779,13 @@ impl Driver {
     /// listener to maintain.
     pub fn hook_log(&self) -> super::HookLog {
         self.hook_log.clone()
+    }
+
+    pub(super) fn interrupter(&self) -> ControlInterrupter {
+        ControlInterrupter {
+            discovery: self.cfg.discovery.clone(),
+            roster: self.short_by_session.clone(),
+        }
     }
 
     /// Clone handles the pty-watch pump needs to serve a `WatchPty` without

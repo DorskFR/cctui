@@ -27,7 +27,8 @@ use super::control::DriverConfig;
 use super::launch::LaunchArgs;
 use super::{PendingAsks, PendingPermHooks, SessionMap, streamjson};
 use crate::adapter_runtime::{
-    AdapterCtx, CommandOutcome, Handled, SessionDriver, run_command_loop,
+    AdapterCtx, CommandOutcome, Handled, InterruptQueue, Interrupter, SessionDriver,
+    run_command_loop, spawn_interrupt_pump,
 };
 
 /// Launch posture captured at spawn so a later reply/resume/relaunch reuses the
@@ -42,11 +43,73 @@ struct SessionPosture {
     name: Option<String>,
 }
 
+/// Shared so an interrupt can write its `control_request` without waiting
+/// for the serial command loop.
+type SharedStdin = Arc<tokio::sync::Mutex<ChildStdin>>;
+
+#[derive(Clone, Default)]
+struct StdinMap(Arc<std::sync::Mutex<HashMap<String, SharedStdin>>>);
+
+impl StdinMap {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, SharedStdin>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, local_id: &str) -> Option<SharedStdin> {
+        self.lock().get(local_id).cloned()
+    }
+}
+
+async fn write_line(stdin: &SharedStdin, frame: &serde_json::Value) -> std::io::Result<()> {
+    let mut buf = serde_json::to_vec(frame)?;
+    buf.push(b'\n');
+    let mut stdin = stdin.lock().await;
+    stdin.write_all(&buf).await?;
+    stdin.flush().await.ok();
+    Ok(())
+}
+
+fn interrupt_frame(request_id: &str) -> serde_json::Value {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "interrupt" },
+    })
+}
+
+/// Writes the interrupt `control_request` straight to the child's stdin.
+pub(super) struct SdkInterrupter {
+    stdins: StdinMap,
+}
+
+#[async_trait::async_trait]
+impl Interrupter for SdkInterrupter {
+    async fn interrupt(&self, local_id: &str, _command_ids: &[uuid::Uuid]) -> CommandOutcome {
+        let Some(stdin) = self.stdins.get(local_id) else {
+            tracing::info!(%local_id, "sdk interrupt: no live child (already idle)");
+            return Ok(Handled::Done);
+        };
+        let request_id = format!("req_int_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        match write_line(&stdin, &interrupt_frame(&request_id)).await {
+            Ok(()) => {
+                tracing::info!(%local_id, "sdk sent interrupt control_request");
+                Ok(Handled::Done)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {
+                tracing::info!(%local_id, "sdk interrupt: child already exited");
+                Ok(Handled::Done)
+            }
+            Err(err) => Err(anyhow::Error::new(err)
+                .context(format!("writing interrupt to sdk child stdin for {local_id}"))),
+        }
+    }
+}
+
 /// A live persistent `claude` child plus the handles needed to talk to it and
 /// reap it.
 struct LiveChild {
     child: Child,
-    stdin: ChildStdin,
+    stdin: SharedStdin,
     /// The stdout pump task; aborted on kill so a dead child leaves no orphan
     /// reader.
     pump: JoinHandle<()>,
@@ -84,6 +147,9 @@ pub(super) struct SdkDriver {
     machine_key: Option<String>,
     /// Live persistent children keyed by stable `local_id` (== session id).
     children: HashMap<String, LiveChild>,
+    /// The stdin of every entry in `children`, readable off the command loop.
+    stdins: StdinMap,
+    interrupts: Option<InterruptQueue>,
     /// Launch posture per session, kept across child death for cold-resume.
     postures: HashMap<String, SessionPosture>,
     /// Daemon-side names (no PTY/state.json round-trip in this mode).
@@ -106,6 +172,8 @@ impl SdkDriver {
             server: ctx.server,
             machine_key: ctx.machine_key,
             children: HashMap::new(),
+            stdins: StdinMap::default(),
+            interrupts: ctx.interrupts,
             postures: HashMap::new(),
             names: HashMap::new(),
             req_counter: 0,
@@ -128,6 +196,16 @@ impl SdkDriver {
         self.spawn_hook_listener()?;
 
         let (events, shutdown) = (self.events.clone(), self.shutdown.clone());
+        if let Some(queue) = self.interrupts.take() {
+            let interrupter = SdkInterrupter { stdins: self.stdins.clone() };
+            spawn_interrupt_pump(
+                "claude-code",
+                queue,
+                Arc::new(interrupter),
+                events.clone(),
+                shutdown.clone(),
+            );
+        }
         run_command_loop(&mut self, &mut commands, &events, &shutdown).await;
         shutdown.cancelled().await;
         self.kill_all().await;
@@ -276,12 +354,7 @@ impl SdkDriver {
             return Ok(());
         }
         let req_id = self.next_req_id();
-        let frame = json!({
-            "type": "control_request",
-            "request_id": req_id,
-            "request": { "subtype": "interrupt" },
-        });
-        self.write_frame(local_id, &frame).await?;
+        self.write_frame(local_id, &interrupt_frame(&req_id)).await?;
         tracing::info!(%local_id, "sdk sent interrupt control_request");
         Ok(())
     }
@@ -331,7 +404,7 @@ impl SdkDriver {
             return Ok(());
         }
         // Reap a dead child if present.
-        if let Some(dead) = self.children.remove(local_id) {
+        if let Some(dead) = self.take_child(local_id) {
             dead.terminate().await;
         }
         let posture = self.postures.get(local_id).cloned().ok_or_else(|| {
@@ -381,7 +454,8 @@ impl SdkDriver {
         let mut child = command.spawn().with_context(|| {
             format!("spawning persistent `{}` (sdk) in {cwd}", self.cfg.claude_bin)
         })?;
-        let stdin = child.stdin.take().expect("piped stdin");
+        let stdin: SharedStdin =
+            Arc::new(tokio::sync::Mutex::new(child.stdin.take().expect("piped stdin")));
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr_ring =
             child.stderr.take().map(|stderr| streamjson::spawn_stderr_ring(stderr, "sdk"));
@@ -394,6 +468,7 @@ impl SdkDriver {
             self.shutdown.clone(),
         ));
 
+        self.stdins.lock().insert(local_id.to_owned(), Arc::clone(&stdin));
         // Replace any stale slot (a dead child already reaped by ensure_child).
         if let Some(old) =
             self.children.insert(local_id.to_owned(), LiveChild { child, stdin, pump })
@@ -417,18 +492,14 @@ impl SdkDriver {
         local_id: &str,
         frame: &serde_json::Value,
     ) -> anyhow::Result<()> {
-        let live = self
+        let stdin = self
             .children
-            .get_mut(local_id)
+            .get(local_id)
+            .map(|live| Arc::clone(&live.stdin))
             .ok_or_else(|| anyhow::anyhow!("no live sdk child for {local_id}"))?;
-        let mut buf = serde_json::to_vec(frame)?;
-        buf.push(b'\n');
-        live.stdin
-            .write_all(&buf)
+        write_line(&stdin, frame)
             .await
-            .with_context(|| format!("writing to sdk child stdin for {local_id}"))?;
-        live.stdin.flush().await.ok();
-        Ok(())
+            .with_context(|| format!("writing to sdk child stdin for {local_id}"))
     }
 
     /// Pull the session's gateway-routing env from the server,
@@ -452,7 +523,7 @@ impl SdkDriver {
     /// Terminate the persistent child for `local_id` but keep the session
     /// resumable (posture retained; no `SessionEnded`).
     async fn kill(&mut self, local_id: &str) {
-        if let Some(live) = self.children.remove(local_id) {
+        if let Some(live) = self.take_child(local_id) {
             live.terminate().await;
             tracing::info!(%local_id, "sdk killed persistent child (still resumable)");
         }
@@ -461,10 +532,20 @@ impl SdkDriver {
     async fn kill_all(&mut self) {
         let ids: Vec<String> = self.children.keys().cloned().collect();
         for id in ids {
-            if let Some(live) = self.children.remove(&id) {
+            if let Some(live) = self.take_child(&id) {
                 live.terminate().await;
             }
         }
+    }
+
+    fn take_child(&mut self, local_id: &str) -> Option<LiveChild> {
+        let live = self.children.remove(local_id)?;
+        let mut stdins = self.stdins.lock();
+        if stdins.get(local_id).is_some_and(|s| Arc::ptr_eq(s, &live.stdin)) {
+            stdins.remove(local_id);
+        }
+        drop(stdins);
+        Some(live)
     }
 
     /// SDK control-request id, mirroring the SDK's `req_{counter}_{hex}` shape.
@@ -712,14 +793,40 @@ mod tests {
 
     #[test]
     fn interrupt_frame_shape() {
-        // The interrupt envelope must match the captured protocol.
-        let frame = json!({
-            "type": "control_request",
-            "request_id": "req_1_abcd",
-            "request": { "subtype": "interrupt" },
-        });
+        let frame = interrupt_frame("req_1_abcd");
         assert_eq!(frame["type"], "control_request");
+        assert_eq!(frame["request_id"], "req_1_abcd");
         assert_eq!(frame["request"]["subtype"], "interrupt");
+    }
+
+    #[tokio::test]
+    async fn interrupter_writes_to_the_shared_stdin() {
+        let mut cat = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin: SharedStdin = Arc::new(tokio::sync::Mutex::new(cat.stdin.take().unwrap()));
+        let stdins = StdinMap::default();
+        stdins.lock().insert("sid-1".to_owned(), stdin);
+        let interrupter = SdkInterrupter { stdins };
+        let outcome = interrupter.interrupt("sid-1", &[]).await.unwrap();
+        assert!(matches!(outcome, Handled::Done));
+        let mut lines = BufReader::new(cat.stdout.take().unwrap()).lines();
+        let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(frame["request"]["subtype"], "interrupt");
+    }
+
+    #[tokio::test]
+    async fn interrupter_without_a_live_child_is_a_no_op() {
+        let interrupter = SdkInterrupter { stdins: StdinMap::default() };
+        assert!(matches!(interrupter.interrupt("gone", &[]).await.unwrap(), Handled::Done));
     }
 
     #[test]

@@ -134,6 +134,7 @@ async fn start_bg(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     tracing::info!("claude-code adapter starting in claude-daemon mode");
     let cfg = control::DriverConfig::from_value(&ctx.config);
     let pty_watch = ctx.pty_watch.take();
+    let interrupts = ctx.interrupts.take();
     let driver = control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
         // Gateway-env launch chokepoint source.
         .with_server(ctx.server.clone(), ctx.machine_key.clone());
@@ -141,6 +142,15 @@ async fn start_bg(mut ctx: AdapterCtx) -> anyhow::Result<()> {
         let (views, roster) = driver.pty_watch_pump();
         let pump = pty_view::PtyWatchPump::new(views, roster, ctx.shutdown.clone());
         tokio::spawn(pump.run(watches));
+    }
+    if let Some(queue) = interrupts {
+        crate::adapter_runtime::spawn_interrupt_pump(
+            "claude-code",
+            queue,
+            std::sync::Arc::new(driver.interrupter()),
+            ctx.events.clone(),
+            ctx.shutdown.clone(),
+        );
     }
     // The `AskUserQuestion` PreToolUse hook delivers the pending
     // question here over the daemon's local socket. The hook reports claude's
@@ -588,6 +598,10 @@ impl AdapterFactory for ClaudeCodeFactory {
     /// Only the `claude daemon` path owns a PTY to relay.
     fn pty_watch(&self, config: &serde_json::Value) -> bool {
         Mode::from_config(config) == Mode::Bg
+    }
+
+    fn interrupts(&self, config: &serde_json::Value) -> bool {
+        matches!(Mode::from_config(config), Mode::Bg | Mode::Sdk)
     }
 }
 
