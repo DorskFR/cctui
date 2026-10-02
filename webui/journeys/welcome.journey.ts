@@ -62,18 +62,19 @@ export default defineJourney({
 			id: 'to-sessions',
 			target: 'nav[sessions]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'The nav is the whole app', fr: 'La navigation, c’est toute l’application' },
 				body: {
-					en: 'Six destinations, and you will live in the second one. Open Sessions.',
-					fr: 'Six destinations, et vous vivrez dans la deuxième. Ouvrez Sessions.'
+					en: 'Every page hangs off this rail. Sessions is where most of the work happens — open it.',
+					fr: 'Toutes les pages partent de cette barre. C’est dans Sessions que se passe l’essentiel du travail — ouvrez-la.'
 				}
 			},
 			capture: 'nav'
 		},
 		{
 			id: 'sessions',
-			target: 'session-list',
+			target: { css: '[data-journey="session-list"], [data-journey="session-tiles"]' },
 			say: {
 				title: { en: 'Sessions — where the work happens', fr: 'Sessions — là où le travail se fait' },
 				body: {
@@ -81,12 +82,13 @@ export default defineJourney({
 					fr: 'Chaque exécution lancée, regroupée selon ce qu’elle attend de vous. Celles bloquées sur une réponse remontent en tête : une longue flotte se lit toujours d’un coup d’œil.'
 				}
 			},
-			expect: [{ visible: 'session-list' }],
+			expect: [{ visible: { css: '[data-journey="session-list"], [data-journey="session-tiles"]' } }],
 			capture: 'sessions'
 		},
 		{
 			id: 'start',
-			target: 'new',
+			// A docked spawn panel replaces the New button.
+			target: { css: '[data-journey="new"], [data-journey="spawn"]' },
 			say: {
 				title: { en: 'Starting one', fr: 'En démarrer une' },
 				body: {
@@ -94,13 +96,14 @@ export default defineJourney({
 					fr: 'Ceci transforme une instruction en agent actif : choisissez la machine, le dossier et le compte, et il travaille en arrière-plan, que vous gardiez l’onglet ouvert ou non.'
 				}
 			},
-			expect: [{ visible: 'new' }],
+			expect: [{ visible: { css: '[data-journey="new"], [data-journey="spawn"]' } }],
 			capture: 'start'
 		},
 		{
 			id: 'to-accounts',
 			target: 'nav[accounts]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Where does the quota come from?', fr: 'D’où vient le quota ?' },
 				body: {
@@ -126,6 +129,7 @@ export default defineJourney({
 			id: 'to-access',
 			target: 'nav[access]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'And where does it run?', fr: 'Et où cela s’exécute-t-il ?' },
 				body: {
