@@ -725,6 +725,26 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("frame").expect("open")
     }
 
+    /// Start from an empty registry: no open previews and no stream a previous
+    /// test left running against its own server.
+    fn fresh_registry() {
+        forget_all();
+        for (_, handle) in registry().streams.drain() {
+            handle.cancel.cancel();
+        }
+    }
+
+    /// A stream leaves the registry just after its last frame goes up.
+    async fn streams_drained() -> bool {
+        for _ in 0..250 {
+            if registry().streams.is_empty() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
     /// Mark `port` open, as `preview open` would: an inbound request for an
     /// unregistered port is refused before it reaches loopback.
     fn registered(port: u16) -> u16 {
@@ -814,7 +834,7 @@ mod tests {
     #[tokio::test]
     async fn http_request_is_tunnelled_to_loopback_with_host_rewritten() {
         let _serial = SERIAL.lock().await;
-        forget_all();
+        fresh_registry();
         let (port, server) = local_http_server().await;
         let (up_tx, mut up_rx) = mpsc::channel(64);
         handle_down(request("s1", registered(port), "POST", "/hello?x=1", false, true), &up_tx)
@@ -859,14 +879,14 @@ mod tests {
         }
         let body = String::from_utf8(body).unwrap();
         assert_eq!(body, format!("POST /hello?x=1 HTTP/1.1|host: localhost:{port}|payload"));
-        assert!(registry().streams.is_empty());
+        assert!(streams_drained().await, "a finished stream leaves the registry");
         server.abort();
     }
 
     #[tokio::test]
     async fn privileged_ports_and_dead_upstreams_report_errors() {
         let _serial = SERIAL.lock().await;
-        forget_all();
+        fresh_registry();
         let (up_tx, mut up_rx) = mpsc::channel(8);
         handle_down(request("low", 80, "GET", "/", false, false), &up_tx).await;
         assert!(
@@ -884,7 +904,7 @@ mod tests {
     #[tokio::test]
     async fn a_request_for_an_unregistered_port_never_reaches_loopback() {
         let _serial = SERIAL.lock().await;
-        forget_all();
+        fresh_registry();
         let (port, server) = local_http_server().await;
         let (up_tx, mut up_rx) = mpsc::channel(8);
 
@@ -896,18 +916,33 @@ mod tests {
         assert!(error.contains("no open preview"), "{error}");
         assert!(registry().streams.is_empty(), "a refused request starts no stream");
 
-        handle_down(request("ok", registered(port), "GET", "/hello", false, false), &up_tx).await;
+        // `request` advertises a 7-byte body; a bodiless GET must not, or the
+        // test server waits for bytes that never come.
+        let mut ok = request("ok", registered(port), "GET", "/hello", false, false);
+        if let DaemonFrameDown::PreviewRequest { headers, .. } = &mut ok {
+            headers.retain(|h| !h.name.eq_ignore_ascii_case("content-length"));
+        }
+        handle_down(ok, &up_tx).await;
         assert!(
             matches!(recv_up(&mut up_rx).await, DaemonFrameUp::PreviewResponse { status: 201, .. }),
             "the same port is proxied once a session registered it"
         );
+        loop {
+            let DaemonFrameUp::PreviewChunk(chunk) = recv_up(&mut up_rx).await else {
+                panic!("chunk")
+            };
+            if chunk.end {
+                break;
+            }
+        }
+        assert!(streams_drained().await, "the proxied stream finishes and leaves the registry");
         server.abort();
     }
 
     #[tokio::test]
     async fn streams_on_one_port_are_capped() {
         let _serial = SERIAL.lock().await;
-        forget_all();
+        fresh_registry();
         let port = registered(5173);
         for i in 0..MAX_STREAMS_PER_PORT {
             let (tx, _rx) = mpsc::channel(1);
@@ -926,7 +961,7 @@ mod tests {
     #[tokio::test]
     async fn websocket_upgrade_is_passed_through_both_ways() {
         let _serial = SERIAL.lock().await;
-        forget_all();
+        fresh_registry();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let echo = tokio::spawn(async move {
@@ -978,7 +1013,7 @@ mod tests {
     )]
     async fn websocket_upgrade_rewrites_host_and_origin_to_the_loopback_dev_server() {
         let _serial = SERIAL.lock().await;
-        forget_all();
+        fresh_registry();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
@@ -1028,7 +1063,7 @@ mod tests {
     #[tokio::test]
     async fn open_requires_a_link_and_resolves_from_preview_opened() {
         let _serial = SERIAL.lock().await;
-        forget_all();
+        fresh_registry();
         set_uplink(None);
         assert!(open("sess", 5173).await.is_err());
         assert!(open("sess", 80).await.unwrap_err().contains("privileged"));
@@ -1069,7 +1104,7 @@ mod tests {
     async fn a_reconnect_re_announces_open_previews_with_their_existing_ids() {
         let _serial = SERIAL.lock().await;
         set_uplink(None);
-        forget_all();
+        fresh_registry();
 
         let (up_tx, mut up_rx) = mpsc::channel(8);
         set_uplink(Some(up_tx.clone()));
@@ -1104,7 +1139,7 @@ mod tests {
         assert_eq!(preview_id.as_deref(), Some("keepme"), "the id is re-announced, not reminted");
 
         set_uplink(None);
-        forget_all();
+        fresh_registry();
     }
 
     /// A self-update `execve` starts a fresh image with an empty registry; the
