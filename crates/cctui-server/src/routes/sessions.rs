@@ -2558,6 +2558,7 @@ pub async fn switch_account(
                      SELECT 1 FROM resource_shares rs \
                       WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
                         AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
+             ORDER BY (a.user_id = $2) DESC, a.created_at \
              LIMIT 1",
             )
             .bind(req.account.trim())
