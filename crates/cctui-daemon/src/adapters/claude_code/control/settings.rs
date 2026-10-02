@@ -2,9 +2,8 @@ use std::fmt::Write as _;
 
 use super::{PathBuf, json};
 
-/// Decode + stage `bootstrap` file uploads under
-/// `/tmp/cctui-uploads/<session-id>/`, returning their absolute paths in upload
-/// order. Files are written 0600 with sanitized bare names; an empty/null
+/// Decode + stage `bootstrap` file uploads under the upload staging root's
+/// `<session-id>/` dir, returning their absolute paths in upload order. Files are written 0600 with sanitized bare names; an empty/null
 /// bootstrap yields an empty vec. Errors (bad base64, unwritable dir) abort the
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
@@ -870,7 +869,7 @@ mod tests {
 
         let paths = stage_uploads(&session_id, &bootstrap).expect("stage ok");
         assert_eq!(paths.len(), 2);
-        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
+        let dir = crate::adapters::uploads::session_dir(&session_id);
 
         let notes = dir.join("notes.txt");
         assert!(paths.contains(&notes.to_string_lossy().into_owned()));
@@ -881,7 +880,7 @@ mod tests {
         // Traversal collapsed to the bare basename inside the staging dir.
         let evil = dir.join("evil");
         assert!(evil.exists(), "traversal name must be reduced to a basename in-dir");
-        assert!(!std::path::Path::new("/tmp/cctui-uploads").join("../../etc/evil").exists());
+        assert!(!crate::adapters::uploads::staging_root().join("../../etc/evil").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1107,7 +1106,7 @@ mod tests {
 
         let session_id = format!("test-{}", uuid::Uuid::new_v4());
         let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
-        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
+        let dir = crate::adapters::uploads::session_dir(&session_id);
 
         // First upload stages report.pdf.
         let first = stage_mid_chat_files(
