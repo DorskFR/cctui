@@ -218,7 +218,7 @@ fn rules(family: Family) -> &'static [PathRule] {
         rule(&["GET"], "/v1/models", true),
     ];
     const OPENAI: &[PathRule] = &[
-        rule(&["POST", "GET", "DELETE"], "/responses", true),
+        rule(&["POST", "GET"], "/responses", true),
         rule(&["POST"], "/chat/completions", false),
         rule(&["POST"], "/completions", false),
         rule(&["GET"], "/models", true),
@@ -298,11 +298,15 @@ pub fn gateway_path_permitted(
     method: &str,
     tail: &str,
 ) -> Result<(), GatewayPathError> {
-    if !tail.starts_with('/') || tail.bytes().any(|b| b == b'\\' || b.is_ascii_control()) {
+    let unsafe_bytes = |p: &str| p.bytes().any(|b| b == b'\\' || b.is_ascii_control());
+    if !tail.starts_with('/') || unsafe_bytes(tail) {
         return Err(GatewayPathError::NotAllowed);
     }
     normalized_segments(tail)?;
     let decoded = percent_decode(tail);
+    if unsafe_bytes(&decoded) {
+        return Err(GatewayPathError::NotAllowed);
+    }
     normalized_segments(&decoded)?;
 
     let method = method.to_ascii_uppercase();
@@ -414,6 +418,8 @@ mod tests {
             (Family::Anthropic, "GET", "/v1/models"),
             (Family::Anthropic, "GET", "/v1/models/claude-opus-5"),
             (Family::Openai, "POST", "/responses"),
+            (Family::Openai, "POST", "/responses/compact"),
+            (Family::Openai, "GET", "/responses"),
             (Family::Openai, "GET", "/models"),
             (Family::Openai, "POST", "/chat/completions"),
             (Family::Fireworks, "POST", "/chat/completions"),
@@ -465,6 +471,10 @@ mod tests {
             permitted(Family::Anthropic, "GET", "/v1/messages"),
             Err(GatewayPathError::MethodNotAllowed)
         );
+        assert_eq!(
+            permitted(Family::Openai, "DELETE", "/responses/resp_1"),
+            Err(GatewayPathError::MethodNotAllowed)
+        );
     }
 
     #[test]
@@ -475,6 +485,7 @@ mod tests {
             (Family::Anthropic, "GET", "/api/oauth/usage"),
             (Family::Anthropic, "POST", "/v1/organizations/x/invites"),
             (Family::Anthropic, "POST", "/responses"),
+            (Family::Anthropic, "GET", "/v1/files"),
             (Family::Fireworks, "POST", "/v1/messages"),
         ] {
             assert_eq!(
@@ -487,7 +498,13 @@ mod tests {
 
     #[test]
     fn a_malformed_or_control_laden_tail_is_refused() {
-        for tail in ["v1/messages", "/v1/\u{0}messages", "/v1\\messages"] {
+        for tail in [
+            "v1/messages",
+            "/v1/\u{0}messages",
+            "/v1\\messages",
+            "/v1/messages%5c..%5cx",
+            "/v1/messages%00",
+        ] {
             assert_eq!(
                 permitted(Family::Anthropic, "POST", tail),
                 Err(GatewayPathError::NotAllowed)
