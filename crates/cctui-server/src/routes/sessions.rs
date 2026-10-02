@@ -2429,7 +2429,7 @@ pub async fn interrupt_session(
         Some(session_id.clone()),
         None,
     );
-    let _ = crate::bus::dispatch(
+    let dispatch = crate::bus::dispatch(
         &state,
         &session_id,
         cctui_proto::adapter::AdapterCommand::Interrupt {
@@ -2438,6 +2438,21 @@ pub async fn interrupt_session(
         },
     )
     .await;
+    if let Err(err) = dispatch {
+        use crate::bus::BusError;
+        state.pending_commands.remove(&command_id);
+        tracing::warn!(%session_id, %err, "interrupt dispatch failed");
+        let (status, message) = match err {
+            BusError::NotFound => (StatusCode::NOT_FOUND, err.to_string()),
+            BusError::Timeout => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the daemon is not reading its connection; the interrupt was not delivered"
+                    .to_owned(),
+            ),
+            _ => (StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+        };
+        return Err(AppError::new(status, message));
+    }
     tracing::info!(session_id = %session_id, %command_id, "session interrupted");
     Ok((
         StatusCode::ACCEPTED,
