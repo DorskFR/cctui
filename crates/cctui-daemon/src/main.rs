@@ -311,6 +311,45 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     Ok(())
 }
 
+/// Swap in the latest release, then hand the running daemon over to it.
+async fn run_update(path: &std::path::Path) -> anyhow::Result<()> {
+    let cfg = Config::load_from(&path.to_path_buf())?;
+    let channel = cfg.update_channel();
+    if selfupdate::check_and_apply(&cfg.server_url, &cfg.machine_key, channel).await?.is_none() {
+        println!("cctui-daemon already on the latest release");
+        return Ok(());
+    }
+    match runtime::request_reexec() {
+        Ok(runtime::ReexecRequest::Signalled { pid }) => println!(
+            "cctui-daemon upgraded; the running daemon (pid {pid}) re-execs onto \
+             it in place, keeping live sessions"
+        ),
+        Ok(runtime::ReexecRequest::NotRunning) => println!(
+            "cctui-daemon upgraded; no running daemon found — start it \
+             (`cctui-daemon service install`) to apply"
+        ),
+        Ok(runtime::ReexecRequest::Unsupported { version }) => println!(
+            "cctui-daemon upgraded; the running daemon ({version}) cannot re-exec \
+             on request and picks the new binary up at its next auto-update \
+             check. `cctui-daemon service restart` applies it now but ends \
+             live codex and opencode sessions"
+        ),
+        Err(err) => println!(
+            "cctui-daemon upgraded, but signalling the running daemon failed: \
+             {err}\nit picks the new binary up at its next auto-update check"
+        ),
+    }
+    Ok(())
+}
+
+fn restart_service(yes: bool) -> anyhow::Result<()> {
+    if !yes && !confirm_restart()? {
+        println!("not restarted");
+        return Ok(());
+    }
+    service::restart()
+}
+
 /// A restart kills every process in the service's cgroup that the daemon
 /// spawned directly: codex and opencode sessions end; claude sessions live in
 /// their own unit and survive.
@@ -463,50 +502,11 @@ async fn main() -> anyhow::Result<()> {
             selfcheck();
             Ok(())
         }
-        Cmd::Update => {
-            let cfg = Config::load_from(&path)?;
-            let channel = cfg.update_channel();
-            match selfupdate::check_and_apply(&cfg.server_url, &cfg.machine_key, channel).await {
-                Ok(Some(_)) => {
-                    match runtime::request_reexec() {
-                        Ok(runtime::ReexecRequest::Signalled { pid }) => println!(
-                            "cctui-daemon upgraded; the running daemon (pid {pid}) re-execs onto \
-                             it in place, keeping live sessions"
-                        ),
-                        Ok(runtime::ReexecRequest::NotRunning) => println!(
-                            "cctui-daemon upgraded; no running daemon found — start it \
-                             (`cctui-daemon service install`) to apply"
-                        ),
-                        Ok(runtime::ReexecRequest::Unsupported { version }) => println!(
-                            "cctui-daemon upgraded; the running daemon ({version}) cannot re-exec \
-                             on request and picks the new binary up at its next auto-update \
-                             check. `cctui-daemon service restart` applies it now but ends \
-                             live codex and opencode sessions"
-                        ),
-                        Err(err) => println!(
-                            "cctui-daemon upgraded, but signalling the running daemon failed: \
-                             {err}\nit picks the new binary up at its next auto-update check"
-                        ),
-                    }
-                    Ok(())
-                }
-                Ok(None) => {
-                    println!("cctui-daemon already on the latest release");
-                    Ok(())
-                }
-                Err(err) => Err(err),
-            }
-        }
+        Cmd::Update => run_update(&path).await,
         Cmd::Service { cmd } => match cmd {
             ServiceCmd::Install => service::install(),
             ServiceCmd::Uninstall => service::uninstall(),
-            ServiceCmd::Restart { yes } => {
-                if !yes && !confirm_restart()? {
-                    println!("not restarted");
-                    return Ok(());
-                }
-                service::restart()
-            }
+            ServiceCmd::Restart { yes } => restart_service(yes),
             ServiceCmd::Status => service::status(),
             ServiceCmd::Unit => {
                 service::print_unit();
