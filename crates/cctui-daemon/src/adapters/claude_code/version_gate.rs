@@ -114,18 +114,25 @@ impl VersionGate {
         let status = parse_daemon_status(&self.probe(&["daemon", "status"]).await?);
         let local = parse_cli_version(&self.probe(&["--version"]).await?);
         let busy = live_workers(roster_len, status.running_workers).map(|n| n > 0);
-        let mut gate = self.gate();
-        let decision = gate.check(
-            status.version.as_deref(),
-            local.as_deref(),
-            busy,
-            native_live,
-            Instant::now(),
-        );
+        let (decision, first_warning) = {
+            let mut gate = self.gate();
+            let decision = gate.check(
+                status.version.as_deref(),
+                local.as_deref(),
+                busy,
+                native_live,
+                Instant::now(),
+            );
+            let first_warning = match &decision {
+                Decision::Deferred { running, local } => gate.first_warning_for(running, local),
+                _ => false,
+            };
+            (decision, first_warning)
+        };
         match &decision {
             Decision::Nothing => None,
             Decision::Deferred { running, local } => {
-                if gate.first_warning_for(running, local) {
+                if first_warning {
                     tracing::warn!(
                         %running,
                         %local,
@@ -294,7 +301,11 @@ bg sessions:
         let check = |b| g.gate().check(Some("2.1.212"), Some("2.1.220"), b, false, t0);
         assert_eq!(
             check(busy(0, Some(0))),
-            Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into(), escalated: false }
+            Decision::Cycle {
+                running: "2.1.212".into(),
+                local: "2.1.220".into(),
+                escalated: false
+            }
         );
         assert_eq!(check(busy(1, Some(0))), deferred("2.1.212", "2.1.220"));
         assert_eq!(check(busy(0, None)), deferred("2.1.212", "2.1.220"));
@@ -308,9 +319,8 @@ bg sessions:
     fn parked_workers_alone_do_not_hold_off_the_escalation() {
         let g = VersionGate::new("claude".into());
         let t0 = Instant::now();
-        let check = |at| {
-            g.gate().check(Some("2.1.212"), Some("2.1.220"), busy(0, Some(2)), false, at)
-        };
+        let check =
+            |at| g.gate().check(Some("2.1.212"), Some("2.1.220"), busy(0, Some(2)), false, at);
         assert_eq!(check(t0), deferred("2.1.212", "2.1.220"));
         assert_eq!(
             check(t0 + gate::ESCALATE_AFTER),
@@ -322,9 +332,8 @@ bg sessions:
     fn roster_activity_resets_the_escalation_clock() {
         let g = VersionGate::new("claude".into());
         let t0 = Instant::now();
-        let check = |at| {
-            g.gate().check(Some("2.1.212"), Some("2.1.220"), busy(0, Some(2)), false, at)
-        };
+        let check =
+            |at| g.gate().check(Some("2.1.212"), Some("2.1.220"), busy(0, Some(2)), false, at);
         check(t0);
         g.note_roster_busy();
         assert_eq!(check(t0 + gate::ESCALATE_AFTER), deferred("2.1.212", "2.1.220"));
@@ -334,9 +343,7 @@ bg sessions:
     fn a_live_foreign_job_vetoes_the_escalation() {
         let g = VersionGate::new("claude".into());
         let t0 = Instant::now();
-        let check = |at, native| {
-            g.gate().check(Some("2.1.212"), Some("2.1.220"), None, native, at)
-        };
+        let check = |at, native| g.gate().check(Some("2.1.212"), Some("2.1.220"), None, native, at);
         check(t0, true);
         assert_eq!(
             check(t0 + gate::ESCALATE_AFTER, true),
