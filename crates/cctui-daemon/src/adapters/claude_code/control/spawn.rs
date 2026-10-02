@@ -427,7 +427,10 @@ impl Driver {
             what: format!("spawn in {cwd}"),
             session_id: ids.session_id.clone(),
             gate,
-            watchdog: Some(SpawnWatchdog::new(self.cfg.jobs_root.clone())),
+            watchdog: Some(
+                SpawnWatchdog::new(self.cfg.jobs_root.clone())
+                    .with_server(self.server.as_ref().map(|s| s.base_url().to_owned())),
+            ),
         })
     }
 
@@ -612,7 +615,10 @@ impl Driver {
             what: format!("fork of {parent_local_id} in {cwd}"),
             session_id: ids.session_id.clone(),
             gate: self.launch_gate(&ids.session_id, &ids.short, spec.model.as_deref()),
-            watchdog: Some(SpawnWatchdog::new(self.cfg.jobs_root.clone())),
+            watchdog: Some(
+                SpawnWatchdog::new(self.cfg.jobs_root.clone())
+                    .with_server(self.server.as_ref().map(|s| s.base_url().to_owned())),
+            ),
         })
     }
 }
