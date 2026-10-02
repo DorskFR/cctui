@@ -6,7 +6,7 @@
 
 **Open the new-session dialog**
 
-Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile.
+Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile. If you docked it beside the list, it is already open.
 
 ![where](desktop-dark/02-where.png)
 
@@ -44,7 +44,7 @@ Drafts have their own group in the list, switched off until you ask for it — b
 
 **Open the new-session dialog**
 
-Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile.
+Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile. If you docked it beside the list, it is already open.
 
 ![where](mobile-dark/02-where.png)
 
