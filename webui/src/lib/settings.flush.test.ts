@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settings } from "./settings.svelte";
 import { auth } from "./auth.svelte";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 
 let put: ReturnType<typeof vi.spyOn>;
 
@@ -109,6 +109,56 @@ describe("settings resync when the tab comes back", () => {
     resolve(server("created"));
     await vi.advanceTimersByTimeAsync(0);
     expect(settings.state.sessionList.sort).toBe("name");
+  });
+});
+
+describe("settings save from a stale copy", () => {
+  let get: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    get = vi
+      .spyOn(api, "get")
+      .mockResolvedValue({ version: 1, revision: "r1", data: { sessionList: { sort: "name" } } });
+    await settings.load();
+    settings.flush();
+    await vi.runAllTimersAsync();
+    window.dispatchEvent(new Event("focus"));
+    await vi.runAllTimersAsync();
+    put.mockClear();
+  });
+
+  afterEach(() => get.mockRestore());
+
+  it("keeps its own change and adopts what another tab saved, then retries", async () => {
+    put
+      .mockRejectedValueOnce(new ApiError(409, "settings changed since this copy was read"))
+      .mockResolvedValue({ version: 1, revision: "r3", data: {} });
+    get.mockResolvedValue({
+      version: 1,
+      revision: "r2",
+      data: {
+        sessionList: { sort: "name" },
+        onboarding: { seenVersion: { "sessions-list": 1 } },
+      },
+    });
+
+    settings.setSessionList({ sort: "created" });
+    await vi.runAllTimersAsync();
+
+    expect(put).toHaveBeenCalledTimes(2);
+    const [, first] = put.mock.calls[0] as [string, { revision?: string }];
+    expect(first.revision).toBe("r1");
+    const [, retry] = put.mock.calls[1] as [
+      string,
+      {
+        revision?: string;
+        data: { sessionList: { sort: string }; onboarding: { seenVersion: Record<string, number> } };
+      },
+    ];
+    expect(retry.revision).toBe("r2");
+    expect(retry.data.sessionList.sort).toBe("created");
+    expect(retry.data.onboarding.seenVersion).toEqual({ "sessions-list": 1 });
+    expect(settings.saveStatus).toBe("saved");
   });
 });
 
