@@ -127,6 +127,7 @@ export class SpawnForm {
 	private seededDefault = false;
 	private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 	private persistTimer: ReturnType<typeof setTimeout> | null = null;
+	private persistedRest: string | null = null;
 	autosaving = false;
 	private autosaveSnapshot: string | null = null;
 	readonly followupParent: string | null;
@@ -277,13 +278,19 @@ export class SpawnForm {
 				})
 				.catch(() => {});
 		});
-		// Serializing a long prompt costs O(n): never on the keystroke itself.
+		// Serializing a long prompt costs O(n), so prompt typing alone waits for
+		// a pause; any other change (env keys stripped on load, cwd, files)
+		// writes at once.
 		$effect(() => {
-			this.watched();
-			void this.draftId;
-			void this.filesRestored;
+			const { form, keys, names } = this.watched();
+			const { prompt: _prompt, ...rest } = form;
+			const key = JSON.stringify({ rest, keys, names, draftId: this.draftId, restored: this.filesRestored });
+			const typing = key === this.persistedRest;
+			this.persistedRest = key;
 			if (this.persistTimer) clearTimeout(this.persistTimer);
-			this.persistTimer = setTimeout(() => this.flushSlot(), PERSIST_DELAY_MS);
+			this.persistTimer = null;
+			if (typing) this.persistTimer = setTimeout(() => this.flushSlot(), PERSIST_DELAY_MS);
+			else this.flushSlot();
 		});
 		$effect(() => () => {
 			if (this.persistTimer) this.flushSlot();
