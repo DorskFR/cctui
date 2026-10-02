@@ -424,8 +424,8 @@ impl ConversationStore {
         let mut calls: std::collections::HashMap<String, (usize, String)> =
             std::collections::HashMap::new();
         let mut changed = false;
-        for i in 0..self.entries.len() {
-            let line = &self.entries[i].line;
+        for (i, entry) in self.entries.iter_mut().enumerate() {
+            let line = &mut entry.line;
             let Some(id) = line.tool_use_id.clone() else { continue };
             match line.kind {
                 LineKind::Tool { .. } => {
@@ -434,7 +434,6 @@ impl ConversationStore {
                 LineKind::Result { .. } => {
                     let answers =
                         calls.get(&id).filter(|(at, _)| at + 1 != i).map(|(_, tool)| tool.clone());
-                    let line = &mut self.entries[i].line;
                     if line.answers != answers {
                         line.answers = answers;
                         changed = true;
