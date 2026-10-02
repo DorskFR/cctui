@@ -105,6 +105,9 @@ export const SETTINGS_PAGES = [
 	'monitoring',
 	'security',
 	'guides',
+	'users',
+	'accounts',
+	'dispatchers',
 	'instance',
 	'uploads'
 ] as const;
@@ -116,7 +119,13 @@ export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'appearance';
 export const SETTINGS_SCOPES = ['you', 'instance'] as const;
 export type SettingsScope = (typeof SETTINGS_SCOPES)[number];
 
-const INSTANCE_PAGES: readonly SettingsPage[] = ['instance', 'uploads'];
+const INSTANCE_PAGES: readonly SettingsPage[] = [
+	'users',
+	'accounts',
+	'dispatchers',
+	'instance',
+	'uploads'
+];
 
 export function settingsScope(page: SettingsPage): SettingsScope {
 	return INSTANCE_PAGES.includes(page) ? 'instance' : 'you';
@@ -148,7 +157,12 @@ const HASH_ALIASES: Record<string, SettingsPage> = {
 	memory: 'context',
 	skills: 'plugins',
 	onboarding: 'guides',
-	tour: 'guides'
+	tour: 'guides',
+	access: 'users',
+	keys: 'users',
+	machines: 'users',
+	tokens: 'users',
+	pools: 'accounts'
 };
 
 export function isSettingsPage(slug: string | null | undefined): slug is SettingsPage {

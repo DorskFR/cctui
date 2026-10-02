@@ -1,8 +1,12 @@
 <script lang="ts">
+	// Users, their keys, machines and tokens. An admin browses every identity
+	// through the master/detail list; everyone else manages exactly one — their
+	// own — so the list is dropped rather than rendered with a single row.
 	import type { UserRow } from '@bindings/UserRow';
 	import { MasterDetail, Text } from '@dorsk/tsumikit';
-	import AccessDetail from '$lib/components/organisms/access/AccessDetail.svelte';
-	import AccessUserList from '$lib/components/organisms/access/AccessUserList.svelte';
+	import AccessDetail from './AccessDetail.svelte';
+	import AccessUserList from './AccessUserList.svelte';
+	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import SecretReveal from '$lib/components/molecules/SecretReveal.svelte';
 	import { useAccounts, useAllMachines, useMe, useUserActions, useUsers } from '$lib/queries';
@@ -17,28 +21,23 @@
 	const accounts = useAccounts();
 	const actions = useUserActions();
 
-	// A non-admin cannot list users; it manages exactly one identity — its own.
-	const selfRow = $derived<UserRow[]>(
+	const self = $derived<UserRow | null>(
 		me.data?.user_id
-			? [
-					{
-						id: me.data.user_id,
-						name: me.data.user_name ?? me.data.user_id,
-						created_at: '',
-						revoked_at: null,
-						disabled_at: null,
-						can_dispatch: true,
-						last_seen_at: null
-					}
-				]
-			: []
+			? {
+					id: me.data.user_id,
+					name: me.data.user_name ?? me.data.user_id,
+					created_at: '',
+					revoked_at: null,
+					disabled_at: null,
+					can_dispatch: true,
+					last_seen_at: null
+				}
+			: null
 	);
-	const all = $derived(isAdmin ? (users.data ?? []) : selfRow);
+	const all = $derived(users.data ?? []);
 
-	// Until something is picked a non-admin lands on its own row: it is the only
-	// identity it can manage.
 	let picked = $state<string | null>(null);
-	const selectedId = $derived(picked ?? (isAdmin ? '' : (selfRow[0]?.id ?? '')));
+	const selectedId = $derived(picked ?? '');
 	const selected = $derived(all.find((u) => u.id === selectedId) ?? null);
 
 	const accountsOf = (userId: string) => (accounts.data ?? []).filter((a) => a.user_id === userId);
@@ -64,45 +63,60 @@
 	}
 </script>
 
-<MasterDetail
-	listWidth="272px"
-	breakpoint="48rem"
-	selected={!!selected}
-	onback={() => (picked = '')}
-	backLabel={m.access_title()}
-	listLabel={m.access_title()}
->
-	{#snippet list()}
-		<AccessUserList
-			users={all}
-			loading={isAdmin && users.isLoading}
-			{selectedId}
-			canCreate={isAdmin}
-			meta={userMeta}
-			{online}
-			onselect={(id) => (picked = id)}
-			oncreate={() => (createOpen = true)}
-		/>
-	{/snippet}
-
-	{#snippet empty()}
-		<div class="placeholder"><Text tone="faint">{m.access_pick_user()}</Text></div>
-	{/snippet}
-
-	{#snippet detail()}
-		{#if selected}
-			<AccessDetail
-				user={selected}
-				{isAdmin}
-				isSelf={me.data?.user_id === selected.id}
-				accounts={accountsOf(selected.id)}
-				accountsLoading={accounts.isLoading}
-				onsecret={(title, value) => (secret = { title, value })}
-				ongone={() => (picked = '')}
+{#if isAdmin}
+	<MasterDetail
+		listWidth="272px"
+		breakpoint="48rem"
+		selected={!!selected}
+		onback={() => (picked = '')}
+		backLabel={m.access_title()}
+		listLabel={m.access_title()}
+	>
+		{#snippet list()}
+			<AccessUserList
+				users={all}
+				loading={users.isLoading}
+				{selectedId}
+				canCreate
+				meta={userMeta}
+				{online}
+				onselect={(id) => (picked = id)}
+				oncreate={() => (createOpen = true)}
 			/>
-		{/if}
-	{/snippet}
-</MasterDetail>
+		{/snippet}
+
+		{#snippet empty()}
+			<div class="placeholder"><Text tone="faint">{m.access_pick_user()}</Text></div>
+		{/snippet}
+
+		{#snippet detail()}
+			{#if selected}
+				<AccessDetail
+					user={selected}
+					isAdmin
+					isSelf={me.data?.user_id === selected.id}
+					accounts={accountsOf(selected.id)}
+					accountsLoading={accounts.isLoading}
+					onsecret={(title, value) => (secret = { title, value })}
+					ongone={() => (picked = '')}
+				/>
+			{/if}
+		{/snippet}
+	</MasterDetail>
+{:else if self}
+	<div class="solo">
+		<EnrollMachineCard dashed />
+		<AccessDetail
+			user={self}
+			isAdmin={false}
+			isSelf
+			accounts={accountsOf(self.id)}
+			accountsLoading={accounts.isLoading}
+			onsecret={(title, value) => (secret = { title, value })}
+			ongone={() => {}}
+		/>
+	</div>
+{/if}
 
 {#if createOpen}
 	<EditEntityModal
@@ -120,6 +134,11 @@
 {/if}
 
 <style>
+	.solo {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-4);
+	}
 	.placeholder {
 		display: grid;
 		place-items: center;

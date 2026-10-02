@@ -4,9 +4,7 @@ import { m } from '$lib/paraglide/messages';
 export interface NavItemSpec {
 	href: string;
 	label: string;
-	icon: string;
-	/** Set instead of `icon` by plugin entries, whose manifest names a kit icon. */
-	iconName?: IconName;
+	iconName: IconName;
 }
 
 export interface NavGates {
@@ -16,13 +14,11 @@ export interface NavGates {
 
 export function navItems(gates: NavGates = {}): NavItemSpec[] {
 	return [
-		{ href: '/', label: m.nav_overview(), icon: '◧' },
-		{ href: '/sessions', label: m.nav_sessions(), icon: '◰' },
-		{ href: '/bookmarks', label: m.nav_bookmarks(), icon: '◈' },
-		{ href: '/access', label: m.nav_access(), icon: '◍' },
-		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },
-		...(gates.pages ?? []).map((p) => ({ href: p.href, label: p.label, icon: '', iconName: p.iconName })),
-		{ href: '/settings', label: m.nav_settings(), icon: '⚙' }
+		{ href: '/', label: m.nav_overview(), iconName: 'layout-grid' },
+		{ href: '/sessions', label: m.nav_sessions(), iconName: 'list' },
+		{ href: '/bookmarks', label: m.nav_bookmarks(), iconName: 'bookmark' },
+		...(gates.pages ?? []),
+		{ href: '/settings', label: m.nav_settings(), iconName: 'settings' }
 	];
 }
 

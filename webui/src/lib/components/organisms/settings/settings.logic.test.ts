@@ -138,3 +138,20 @@ describe('cross-page search', () => {
 		expect(firstMatchingPage(root)).toBe('appearance');
 	});
 });
+
+describe('the admin screens moved out of the main nav', () => {
+	it('routes users, accounts and dispatchers as instance-scoped settings pages', () => {
+		for (const page of ['users', 'accounts', 'dispatchers'] as const) {
+			expect(isSettingsPage(page)).toBe(true);
+			expect(settingsScope(page)).toBe('instance');
+			expect(settingsHref(page)).toBe(`/settings/${page}`);
+		}
+	});
+
+	it('forwards the old access anchors to the users page', () => {
+		for (const hash of ['#access', '#keys', '#machines', '#tokens']) {
+			expect(pageForHash(hash)).toBe('users');
+		}
+		expect(pageForHash('#pools')).toBe('accounts');
+	});
+});

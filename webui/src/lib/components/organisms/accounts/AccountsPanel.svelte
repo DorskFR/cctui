@@ -14,15 +14,12 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { providerLabel } from '$lib/providers';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
-	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
-	import AccountsBoard from '$lib/components/organisms/accounts/AccountsBoard.svelte';
-	import AccountEditorModal from '$lib/components/organisms/accounts/AccountEditorModal.svelte';
-	import { availableKinds } from '$lib/components/organisms/accounts/account-editor.logic';
-	import { Button, Tabs, Text, type TabItem } from '@dorsk/tsumikit';
+	import AccountsBoard from './AccountsBoard.svelte';
+	import AccountEditorModal from './AccountEditorModal.svelte';
+	import { availableKinds } from './account-editor.logic';
+	import { Button } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { m } from '$lib/paraglide/messages';
-
-	let tab = $state('ai');
 
 	const accounts = useAccounts();
 	const pools = useAccountPools();
@@ -37,13 +34,6 @@
 
 	const rows = $derived([...(accounts.data ?? [])]);
 	const poolList = $derived(pools.data ?? []);
-	const tabs = $derived<TabItem[]>([
-		{
-			id: 'ai',
-			label: `${m.accounts_tab_ai()} ${rows.length} · ${m.accounts_pools_count({ n: poolList.length })}`
-		},
-		{ id: 'dispatchers', label: m.accounts_tab_dispatchers() }
-	]);
 
 	let drafting = $state(false);
 	let editor = $state<AccountEditorModal>();
@@ -95,7 +85,7 @@
 	const isManaged = (a: OAuthAccount) => a.providers.length > 0 && a.providers.every((p) => p.managed);
 </script>
 
-<div class="page">
+<div class="panel">
 	<PageHead title={m.accounts_title()}>
 		<Button data-journey="new-pool" onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
 		<Button variant="primary" data-journey="new-account" onclick={() => editor?.openCreate()}>
@@ -103,52 +93,44 @@
 		</Button>
 	</PageHead>
 
-	<Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
-		{#snippet panel(id)}
-			{#if id === 'ai'}
-				<AccountsBoard
-					accounts={rows}
-					pools={poolList}
-					loading={accounts.isLoading}
-					owners={isAdmin ? activeUsers : []}
-					bind:drafting
-				>
-					{#snippet card(a, pool, onmovepool)}
-						<AccountCard
-							account={a}
-							{pool}
-							pools={poolList}
-							enabled={tab === 'ai'}
-							managed={isManaged(a)}
-							canAddProvider={!isManaged(a) && availableKinds(a).length > 0}
-							canShare={!isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
-							showOwner={isAdmin}
-							redirects={redirectsFor(a.id)}
-							redirectTargets={redirectTargetsFor(a)}
-							onsetredirect={(targetId, untilHours, families) =>
-								setRedirect(a, targetId, untilHours, families)}
-							onclearredirect={clearRedirect}
-							{onmovepool}
-							onedit={() => goto(`/accounts/${a.id}`)}
-							onremove={() => removeAccount(a)}
-							onaddprovider={() => editor?.openAddProvider(a)}
-							oneditprovider={(p) => goto(`/accounts/${a.id}?provider=${p.id}`)}
-							onreauthprovider={(p) => editor?.reauth(a, p)}
-							onremoveprovider={(p) => removeProvider(a, p)}
-						/>
-					{/snippet}
-				</AccountsBoard>
-			{:else if id === 'dispatchers'}
-				<DispatchersPanel heading={false} />
-			{/if}
+	<AccountsBoard
+		accounts={rows}
+		pools={poolList}
+		loading={accounts.isLoading}
+		owners={isAdmin ? activeUsers : []}
+		bind:drafting
+	>
+		{#snippet card(a, pool, onmovepool)}
+			<AccountCard
+				account={a}
+				{pool}
+				pools={poolList}
+				enabled
+				managed={isManaged(a)}
+				canAddProvider={!isManaged(a) && availableKinds(a).length > 0}
+				canShare={!isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
+				showOwner={isAdmin}
+				redirects={redirectsFor(a.id)}
+				redirectTargets={redirectTargetsFor(a)}
+				onsetredirect={(targetId, untilHours, families) =>
+					setRedirect(a, targetId, untilHours, families)}
+				onclearredirect={clearRedirect}
+				{onmovepool}
+				onedit={() => goto(`/accounts/${a.id}`)}
+				onremove={() => removeAccount(a)}
+				onaddprovider={() => editor?.openAddProvider(a)}
+				oneditprovider={(p) => goto(`/accounts/${a.id}?provider=${p.id}`)}
+				onreauthprovider={(p) => editor?.reauth(a, p)}
+				onremoveprovider={(p) => removeProvider(a, p)}
+			/>
 		{/snippet}
-	</Tabs>
+	</AccountsBoard>
 </div>
 
 <AccountEditorModal bind:this={editor} {rows} {isAdmin} {activeUsers} />
 
 <style>
-	.page {
+	.panel {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-4);

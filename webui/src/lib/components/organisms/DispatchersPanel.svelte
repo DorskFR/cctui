@@ -1,7 +1,3 @@
-<!--
-  Dispatcher management, hosted under the Accounts page (the single home for everything that
-  connects to something external) and on its own route.
--->
 <script lang="ts">
 	import { errMessage } from '$lib/api';
 	import {
@@ -20,8 +16,8 @@
 	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	// When embedded under Accounts the page already shows an <h1>, so the panel's
-	// own heading drops a level; standalone it stays an <h1>.
+	// Embedded under a page that already shows an <h1>, the panel's own heading
+	// drops a level; standalone it stays an <h1>.
 	let { heading = true }: { heading?: boolean } = $props();
 
 	const dispatchers = useUserDispatchers();
