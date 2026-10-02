@@ -37,7 +37,7 @@ export default defineConfig({
 		{
 			name: 'drawer-header',
 			testMatch: ['drawer-header-meta.spec.ts', 'drawer-header-actions.spec.ts'],
-			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
+			use: { baseURL: headerUrl }
 		},
 		{
 			name: 'spawn',
@@ -47,11 +47,11 @@ export default defineConfig({
 		{
 			name: 'drawer',
 			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts'],
-			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
+			use: { baseURL: headerUrl }
 		},
-		// The CI project: every request is stubbed through page.route, so it needs
-		// no server, no seeded database and no journeys/.auth/state.json. Keep it
-		// that way — anything needing the local stack belongs in another project.
+		// CI runs this and the two drawer projects: every request is stubbed
+		// through page.route, so they need no server, no seeded database and no
+		// journeys/.auth/state.json. Keep them that way.
 		{
 			name: 'hermetic',
 			// Anchored to the filename: testMatch sees the absolute path, so a bare

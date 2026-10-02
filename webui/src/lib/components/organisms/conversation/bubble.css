@@ -1,8 +1,7 @@
 /* Shared message-bubble + rendered-markdown styling. Imported as a global stylesheet by
-   the components that render a `.bubble` (ConversationLine, and the drawer's
+   the components that render a `.bubble` (MessageBubble, and the drawer's
    ask-preamble), so the base look + markdown/syntax-highlight token colors are
-   defined once. Role tints (`.line.user .bubble`, …) stay scoped in
-   ConversationLine since they key off `.line`. */
+   defined once. Role tints (`.bubble.user`, …) stay scoped in MessageBubble. */
 
 .bubble {
 	padding: var(--sp-2) var(--sp-3);

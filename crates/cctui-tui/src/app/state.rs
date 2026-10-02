@@ -121,6 +121,11 @@ pub struct ConversationLine {
     pub tool_input: Option<serde_json::Value>,
     /// Tool name on [`LineKind::Tool`] and [`LineKind::Result`].
     pub tool: Option<String>,
+    /// The harness call id a tool line and its result share.
+    pub tool_use_id: Option<String>,
+    /// On a result that does not sit right under its call: that call's tool,
+    /// so the reader can tell which call it answers.
+    pub answers: Option<String>,
     pub message_id: Option<String>,
     pub turn_id: Option<uuid::Uuid>,
     /// Sender of a peer message: a display name when one was supplied.

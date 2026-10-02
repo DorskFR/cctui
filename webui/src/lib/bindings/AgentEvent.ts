@@ -19,7 +19,12 @@ turn_id?: string | null, } | { "type": "tool_call", tool: string, input: JsonVal
 /**
  * `server_tool_use` for provider-executed tools.
  */
-kind?: string | null, ts: number, seq?: number | null, } | { "type": "tool_result", 
+kind?: string | null, 
+/**
+ * The harness's call id; its result carries the same one. Absent from
+ * daemons and rows that predate it, where pairing falls back to order.
+ */
+tool_use_id?: string | null, ts: number, seq?: number | null, } | { "type": "tool_result", 
 /**
  * Absent on the wire: a result's tool name lives on the `tool_call`
  * that opened it, and the canonical shape `normalize.rs` serves carries
@@ -29,4 +34,8 @@ tool: string, output_summary: string,
 /**
  * `server_tool_result` for provider-executed tools.
  */
-kind?: string | null, error: boolean, ts: number, seq?: number | null, } | { "type": "heartbeat", tokens_in: number, tokens_out: number, cost_usd: number, ts: number, seq?: number | null, } | { "type": "reply", content: string, ts: number, seq?: number | null, turn_id?: string | null, } | { "type": "context_reset", ts: number, seq?: number | null, } | { "type": "compact_summary", content: string, ts: number, seq?: number | null, } | { "type": "turn_summary", detail: string, status_category?: string | null, needs_action: boolean, ts: number, seq?: number | null, } | { "type": "turn_end", ts: number, seq?: number | null, };
+kind?: string | null, 
+/**
+ * Id of the `tool_call` this result answers.
+ */
+tool_use_id?: string | null, error: boolean, ts: number, seq?: number | null, } | { "type": "heartbeat", tokens_in: number, tokens_out: number, cost_usd: number, ts: number, seq?: number | null, } | { "type": "reply", content: string, ts: number, seq?: number | null, turn_id?: string | null, } | { "type": "context_reset", ts: number, seq?: number | null, } | { "type": "compact_summary", content: string, ts: number, seq?: number | null, } | { "type": "turn_summary", detail: string, status_category?: string | null, needs_action: boolean, ts: number, seq?: number | null, } | { "type": "turn_end", ts: number, seq?: number | null, };

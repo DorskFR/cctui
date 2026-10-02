@@ -9,6 +9,7 @@
 //! otherwise fail the spawn with the tail of those logs.
 
 use std::fmt::{self, Write as _};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ const TAIL_LINES: usize = 40;
 const TAIL_BYTES: u64 = 64 * 1024;
 /// Cap for the whole report: the detail travels over the WS and into a DB row.
 const REPORT_CAP: usize = 8 * 1024;
+const LAN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Deserialize)]
 struct RosterPeek {
@@ -46,6 +48,7 @@ pub(super) struct SpawnWatchdog {
     poll: Duration,
     /// Log files whose tail is attached to a stall report, most relevant first.
     logs: Vec<PathBuf>,
+    server_url: Option<String>,
 }
 
 /// A dispatch the daemon accepted but whose worker never showed up. `Display`
@@ -54,13 +57,31 @@ pub(super) struct SpawnWatchdog {
 pub(super) struct SpawnStall {
     short: String,
     waited: Duration,
-    hint: Option<&'static str>,
+    hint: Option<String>,
     tails: Vec<(PathBuf, String)>,
+}
+
+/// What a TCP connect from cctui-daemon to the server's private address says.
+#[derive(Debug)]
+pub(super) enum LanProbe {
+    Reachable(SocketAddr),
+    Denied(SocketAddr, std::io::Error),
 }
 
 impl SpawnWatchdog {
     pub(super) fn new(jobs_root: PathBuf) -> Self {
-        Self { jobs_root, timeout: DEFAULT_TIMEOUT, poll: DEFAULT_POLL, logs: default_logs() }
+        Self {
+            jobs_root,
+            timeout: DEFAULT_TIMEOUT,
+            poll: DEFAULT_POLL,
+            logs: default_logs(),
+            server_url: None,
+        }
+    }
+
+    pub(super) fn with_server(mut self, server_url: Option<String>) -> Self {
+        self.server_url = server_url;
+        self
     }
 
     #[cfg(test)]
@@ -86,7 +107,11 @@ impl SpawnWatchdog {
             }
             let now = tokio::time::Instant::now();
             if now >= deadline {
-                return Err(self.stall(short, started.elapsed()));
+                let lan = match &self.server_url {
+                    Some(url) if cfg!(target_os = "macos") => probe_lan(url).await,
+                    _ => None,
+                };
+                return Err(self.stall_with(short, started.elapsed(), lan.as_ref()));
             }
             tokio::time::sleep(self.poll.min(deadline - now)).await;
         }
@@ -109,13 +134,19 @@ impl SpawnWatchdog {
         }
     }
 
+    #[cfg(test)]
     fn stall(&self, short: &str, waited: Duration) -> SpawnStall {
+        self.stall_with(short, waited, None)
+    }
+
+    fn stall_with(&self, short: &str, waited: Duration, lan: Option<&LanProbe>) -> SpawnStall {
         let tails: Vec<(PathBuf, String)> = self
             .logs
             .iter()
             .filter_map(|path| read_tail(path, TAIL_LINES).map(|text| (path.clone(), text)))
             .collect();
-        let hint = classify(tails.iter().map(|(_, text)| text.as_str()));
+        let logged = log_shows_denial(tails.iter().map(|(_, text)| text.as_str()));
+        let hint = local_network_hint(cfg!(target_os = "macos"), lan, logged);
         SpawnStall { short: short.to_owned(), waited, hint, tails }
     }
 }
@@ -128,7 +159,7 @@ impl fmt::Display for SpawnStall {
             self.short,
             self.waited.as_secs().max(1),
         );
-        if let Some(hint) = self.hint {
+        if let Some(hint) = &self.hint {
             out.push_str("\nlikely cause: ");
             out.push_str(hint);
         }
@@ -178,11 +209,10 @@ fn read_tail(path: &Path, lines: usize) -> Option<String> {
     Some(all[all.len().saturating_sub(lines)..].join("\n"))
 }
 
-/// Name the macOS privacy denial when a log tail shows its signature. macOS
-/// ties Local Network and folder grants to the binary's code signature, so a
-/// `claude` auto-update or an ad-hoc-signed cctui-daemon self-update drops them
-/// and the worker is denied with no output cctui can see.
-fn classify<'a>(tails: impl Iterator<Item = &'a str>) -> Option<&'static str> {
+/// macOS ties Local Network and folder grants to the binary's code signature,
+/// so a `claude` auto-update or an ad-hoc-signed cctui-daemon self-update drops
+/// them and the worker is denied with no output cctui can see.
+fn log_shows_denial<'a>(tails: impl Iterator<Item = &'a str>) -> bool {
     const MARKERS: [&str; 6] = [
         "operation not permitted",
         "no route to host",
@@ -191,18 +221,73 @@ fn classify<'a>(tails: impl Iterator<Item = &'a str>) -> Option<&'static str> {
         "local network",
         "nslocalnetwork",
     ];
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
-    let hit = tails.flat_map(str::lines).any(|line| {
+    tails.flat_map(str::lines).any(|line| {
         let line = line.to_ascii_lowercase();
         MARKERS.iter().any(|m| line.contains(m))
-    });
-    hit.then_some(
-        "macOS denied the claude harness a privacy-gated capability (Local Network or folder \
-         access). Grant it in System Settings → Privacy & Security → Local Network, and re-grant \
-         after any binary update: an auto-update or ad-hoc codesign change invalidates existing \
-         grants.",
+    })
+}
+
+const GRANT_FIX: &str = "Grant it in System Settings → Privacy & Security → Local Network, and \
+                         re-grant after any binary update: an auto-update or ad-hoc codesign \
+                         change invalidates existing grants.";
+
+/// The grant model is macOS-only; elsewhere the hint would mislead.
+fn local_network_hint(macos: bool, lan: Option<&LanProbe>, logged: bool) -> Option<String> {
+    if !macos {
+        return None;
+    }
+    match (lan, logged) {
+        (Some(LanProbe::Denied(addr, err)), _) => Some(format!(
+            "macOS Local Network permission denied for cctui-daemon: connecting to the server at \
+             {addr} failed ({err}). {GRANT_FIX}"
+        )),
+        (Some(LanProbe::Reachable(addr)), true) => Some(format!(
+            "macOS Local Network permission denied for claude: cctui-daemon reaches the server at \
+             {addr}, but the claude-daemon log shows a network or privacy denial. {GRANT_FIX}"
+        )),
+        (None, true) => Some(format!(
+            "macOS denied the claude harness a privacy-gated capability (Local Network or folder \
+             access). {GRANT_FIX}"
+        )),
+        (_, false) => None,
+    }
+}
+
+/// Only an address on the local network is gated by the macOS grant.
+const fn is_lan(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local(),
+    }
+}
+
+/// `None` when the server is not on the local network or cannot be resolved:
+/// the probe only speaks to the one denial it can see.
+pub(super) async fn probe_lan(server_url: &str) -> Option<LanProbe> {
+    let url = reqwest::Url::parse(server_url).ok()?;
+    let host = url.host_str()?.trim_start_matches('[').trim_end_matches(']').to_owned();
+    let port = url.port_or_known_default()?;
+    let resolve = tokio::net::lookup_host((host.as_str(), port));
+    let addr = tokio::time::timeout(LAN_PROBE_TIMEOUT, resolve)
+        .await
+        .ok()?
+        .ok()?
+        .find(|addr| is_lan(addr.ip()))?;
+    match tokio::time::timeout(LAN_PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
+        Ok(Ok(_)) => Some(LanProbe::Reachable(addr)),
+        Ok(Err(err)) if is_unreachable(&err) => Some(LanProbe::Denied(addr, err)),
+        Ok(Err(err)) => {
+            tracing::debug!(%err, %addr, "spawn watchdog: LAN probe failed");
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+fn is_unreachable(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable
     )
 }
 
@@ -310,15 +395,76 @@ mod tests {
     }
 
     #[test]
-    fn the_local_network_classifier_matches_the_macos_denial_signatures() {
-        let denial = classify(["connect EHOSTUNREACH 192.168.1.10:8443"].into_iter());
-        let benign = classify(["worker exited with code 1"].into_iter());
-        if cfg!(target_os = "macos") {
-            assert!(denial.expect("classified").contains("Local Network"));
-        } else {
-            // The grant model is macOS-only; elsewhere the hint would mislead.
-            assert!(denial.is_none());
+    fn the_log_markers_match_the_macos_denial_signatures() {
+        assert!(log_shows_denial(["connect EHOSTUNREACH 192.168.1.10:8443"].into_iter()));
+        assert!(!log_shows_denial(["worker exited with code 1"].into_iter()));
+    }
+
+    fn addr() -> SocketAddr {
+        "192.168.1.10:8443".parse().unwrap()
+    }
+
+    #[test]
+    fn a_denied_probe_names_cctui_daemon_and_the_fix() {
+        let denied =
+            LanProbe::Denied(addr(), std::io::Error::from(std::io::ErrorKind::HostUnreachable));
+        let hint = local_network_hint(true, Some(&denied), false).expect("a denial is a cause");
+        assert!(hint.contains("Local Network permission denied for cctui-daemon"), "{hint}");
+        assert!(hint.contains("192.168.1.10:8443"), "{hint}");
+        assert!(hint.contains("Privacy & Security → Local Network"), "{hint}");
+    }
+
+    #[test]
+    fn a_reachable_server_with_a_logged_denial_blames_the_worker() {
+        let reachable = LanProbe::Reachable(addr());
+        let hint = local_network_hint(true, Some(&reachable), true).expect("logged denial");
+        assert!(hint.contains("denied for claude"), "{hint}");
+        assert!(local_network_hint(true, Some(&reachable), false).is_none());
+        assert!(local_network_hint(true, None, true).is_some_and(|h| h.contains("Local Network")));
+    }
+
+    #[test]
+    fn no_hint_off_macos() {
+        let denied =
+            LanProbe::Denied(addr(), std::io::Error::from(std::io::ErrorKind::HostUnreachable));
+        assert!(local_network_hint(false, Some(&denied), true).is_none());
+    }
+
+    #[test]
+    fn only_local_network_addresses_are_probed() {
+        for lan in ["192.168.1.10", "10.0.0.1", "172.16.4.2", "169.254.1.1", "fd00::1", "fe80::1"] {
+            assert!(is_lan(lan.parse().unwrap()), "{lan}");
         }
-        assert!(benign.is_none());
+        for wan in ["8.8.8.8", "127.0.0.1", "2001:db8::1", "::1"] {
+            assert!(!is_lan(wan.parse().unwrap()), "{wan}");
+        }
+    }
+
+    #[test]
+    fn unreachable_errors_are_the_denial_signature() {
+        assert!(is_unreachable(&std::io::Error::from(std::io::ErrorKind::HostUnreachable)));
+        assert!(is_unreachable(&std::io::Error::from(std::io::ErrorKind::NetworkUnreachable)));
+        assert!(!is_unreachable(&std::io::Error::from(std::io::ErrorKind::ConnectionRefused)));
+    }
+
+    #[tokio::test]
+    async fn a_public_or_unparsable_server_is_not_probed() {
+        assert!(probe_lan("https://127.0.0.1:1/").await.is_none());
+        assert!(probe_lan("not a url").await.is_none());
+    }
+
+    /// The probe feeds the stall report, which is the `CommandResult` error the
+    /// webui shows as the spawn failure.
+    #[test]
+    fn a_denied_probe_reaches_the_stall_report_on_macos() {
+        let wd = SpawnWatchdog::new(PathBuf::from("/nonexistent/jobs")).with_logs(Vec::new());
+        let denied =
+            LanProbe::Denied(addr(), std::io::Error::from(std::io::ErrorKind::HostUnreachable));
+        let report = wd.stall_with("abcd1234", Duration::from_secs(45), Some(&denied)).to_string();
+        assert_eq!(
+            report.contains("likely cause: macOS Local Network permission denied"),
+            cfg!(target_os = "macos"),
+            "{report}"
+        );
     }
 }

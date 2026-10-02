@@ -39,9 +39,10 @@ export default defineConfig({
 	},
 	out: '../docs/journeys',
 	storageState: 'journeys/.auth/state.json',
-	// The captions ship as markdown beside each image; drawn onto the frame they
-	// would cover the very UI the screenshot exists to record.
-	presenter: 'none',
+	// The captions ship as markdown beside each image, so only the focus ring and
+	// badge are drawn: a step that just points at a control still needs them, or
+	// its capture is identical to the previous step's.
+	presenter: 'spot',
 	variants: {
 		viewport: {
 			desktop: { width: 1280, height: 800 },

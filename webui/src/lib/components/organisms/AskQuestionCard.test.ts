@@ -123,3 +123,42 @@ describe('multi-select options', () => {
 		expect(onsubmit).toHaveBeenCalledWith(expect.any(String), [[0, 1]]);
 	});
 });
+
+describe('two single-select questions with descriptions', () => {
+	const form = [
+		{
+			header: 'Restore',
+			question: 'Restore the backup?',
+			options: [
+				{ label: 'Yes', description: 'restore now' },
+				{ label: 'No', description: 'keep current' }
+			]
+		},
+		{
+			header: 'Fix',
+			question: 'How to fix?',
+			options: [
+				{ label: 'Patch', description: 'small change' },
+				{ label: 'Rewrite', description: 'large change' },
+				{ label: 'Skip', description: 'do nothing' }
+			]
+		}
+	];
+
+	it('stays rendered after the first click on any option', async () => {
+		for (const target of [0, 1, 2, 3, 4]) {
+			await render(form);
+			const labels = document.querySelectorAll<HTMLLabelElement>('[role="radiogroup"] label');
+			expect(labels.length).toBe(5);
+			labels[target].click();
+			await flush();
+			expect(document.querySelector('.ask')).not.toBeNull();
+			expect(document.querySelectorAll('[role="radiogroup"]').length).toBe(2);
+			const radios = document.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+			expect(radios[target].checked).toBe(true);
+			unmount(comp!);
+			comp = null;
+			document.body.innerHTML = '';
+		}
+	});
+});

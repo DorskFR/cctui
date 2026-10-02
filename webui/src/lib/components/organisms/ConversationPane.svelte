@@ -545,6 +545,7 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
+		overflow: clip;
 		background: var(--bg);
 		padding-top: var(--safe-top);
 	}

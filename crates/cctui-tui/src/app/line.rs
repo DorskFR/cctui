@@ -194,6 +194,9 @@ fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
         _ if content.starts_with(transcript::USER_PREFIX) => {
             user_line(content[transcript::USER_PREFIX.len()..].trim_start(), *ts, *meta)?
         }
+        None if content.starts_with(TOOL_BLOCK_PREFIX) => {
+            ConversationLine::new(LineKind::Marker, tool_block_notice(content), *ts)
+        }
         _ => {
             let mut line = ConversationLine::new(LineKind::Assistant, content.clone(), *ts);
             line.footer = usage.as_ref().map(|u| TurnFooter {
@@ -208,6 +211,16 @@ fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
     line.message_id.clone_from(message_id);
     line.turn_id = *turn_id;
     Some(line)
+}
+
+/// What the gateway's tool guard puts in place of a call it refused. The harness
+/// stores it as assistant prose; it is cctui speaking, not the model.
+const TOOL_BLOCK_PREFIX: &str = "⛔ cctui blocked a";
+
+/// The notice without the instruction addressed to the model.
+fn tool_block_notice(content: &str) -> String {
+    let notice = content.split_once(". Rewrite").map_or(content, |(head, _)| head);
+    notice.trim_start_matches('⛔').trim().to_owned()
 }
 
 /// Every marker becomes the chip the webui's `<img>` stands for; a body of
@@ -240,7 +253,7 @@ pub fn agent_event_to_line(event: &AgentEvent) -> Option<ConversationLine> {
 fn line_of(event: &AgentEvent) -> Option<ConversationLine> {
     match event {
         AgentEvent::Text { .. } => text_line(event),
-        AgentEvent::ToolCall { tool, input, kind, ts, .. } => {
+        AgentEvent::ToolCall { tool, input, kind, tool_use_id, ts, .. } => {
             // A historical ask or plan renders as its questions rather than raw
             // JSON; everything else takes the generic one-line summary.
             let detail = super::prompt::historical_tool_text(tool, input)
@@ -251,16 +264,18 @@ fn line_of(event: &AgentEvent) -> Option<ConversationLine> {
                 *ts,
             );
             line.tool = Some(tool.clone());
+            line.tool_use_id.clone_from(tool_use_id);
             // Edit/Write inputs become an inline diff at render time.
             if matches!(tool.as_str(), "Edit" | "Write") {
                 line.tool_input = Some(input.clone());
             }
             Some(line)
         }
-        AgentEvent::ToolResult { tool, output_summary, error, ts, .. } => {
+        AgentEvent::ToolResult { tool, output_summary, error, tool_use_id, ts, .. } => {
             let kind = LineKind::Result { error: *error };
             let mut line = ConversationLine::new(kind, output_summary.clone(), *ts);
             line.tool = (!tool.is_empty()).then(|| tool.clone());
+            line.tool_use_id.clone_from(tool_use_id);
             Some(line)
         }
         AgentEvent::Heartbeat { .. } | AgentEvent::TurnEnd { .. } => None,
@@ -456,12 +471,14 @@ mod tests {
             tool: "Read".to_owned(),
             input: json!({"file_path": "src/parser.rs"}),
             kind: None,
+            tool_use_id: Some("toolu_r".to_owned()),
             ts: 1,
             seq: Some(3),
         };
         let ln = line(&event);
         assert_eq!(ln.kind, LineKind::Tool { category: ToolCategory::Read });
         assert_eq!(ln.tool.as_deref(), Some("Read"));
+        assert_eq!(ln.tool_use_id.as_deref(), Some("toolu_r"));
         assert!(ln.text.contains("src/parser.rs"));
         assert!(ln.tool_input.is_none(), "only Edit/Write keep their input for a diff");
     }
@@ -472,6 +489,7 @@ mod tests {
             tool: "Edit".to_owned(),
             input: json!({"file_path": "a.rs", "old_string": "a", "new_string": "b"}),
             kind: None,
+            tool_use_id: None,
             ts: 1,
             seq: Some(4),
         };
@@ -486,6 +504,7 @@ mod tests {
             tool: "web_search".to_owned(),
             input: json!({}),
             kind: Some("server_tool_use".to_owned()),
+            tool_use_id: None,
             ts: 1,
             seq: Some(5),
         };
@@ -498,6 +517,7 @@ mod tests {
             tool: "Bash".to_owned(),
             output_summary: "exit 101 · 3 failed".to_owned(),
             kind: None,
+            tool_use_id: Some("toolu_b".to_owned()),
             error: true,
             ts: 1,
             seq: Some(6),
@@ -506,7 +526,18 @@ mod tests {
         assert_eq!(ln.kind, LineKind::Result { error: true });
         assert_eq!(ln.tool.as_deref(), Some("Bash"));
         assert_eq!(ln.text, "exit 101 · 3 failed");
+        assert_eq!(ln.tool_use_id.as_deref(), Some("toolu_b"));
         assert!(ln.collapsible());
+    }
+
+    #[test]
+    fn a_gateway_tool_block_is_a_marker_not_assistant_prose() {
+        let ln = line(&text(
+            "⛔ cctui blocked a Bash call: it contains a forbidden term (\"a****e\"). Rewrite it without internal references.",
+            None,
+        ));
+        assert_eq!(ln.kind, LineKind::Marker);
+        assert_eq!(ln.text, "cctui blocked a Bash call: it contains a forbidden term (\"a****e\")");
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { allFilter, defaultFilter } from './filters';
 import { latestTodoLineKey } from './format';
-import { buildLines, type LineBuildCtx } from './lines';
+import { buildLines, resultAnswers, type LineBuildCtx } from './lines';
 import type { MsgCategory } from './types';
 
 const ctx = (overrides: Partial<Record<MsgCategory, boolean>> = {}): LineBuildCtx => {
@@ -1112,5 +1112,93 @@ describe('a queued harness-injected turn is never a user bubble', () => {
 
 	it('hides a harness card when the system category is filtered out', () => {
 		expect(buildLines([user(note, 1, 2)], ctx({ system: false }))).toEqual([]);
+	});
+});
+
+describe('tool result pairing', () => {
+	const call = (tool: string, id: string | null, ts: number): AgentEvent => ({
+		type: 'tool_call',
+		tool,
+		input: {},
+		tool_use_id: id,
+		ts,
+		seq: ts
+	});
+	const result = (id: string | null, output: string, ts: number): AgentEvent => ({
+		type: 'tool_result',
+		tool: '',
+		output_summary: output,
+		tool_use_id: id,
+		error: false,
+		ts,
+		seq: ts
+	});
+	const pairs = (events: AgentEvent[]) =>
+		buildLines(events, ctx())
+			.filter((l) => l.role === 'result')
+			.map((l) => [l.text, l.tool]);
+
+	it('names each interleaved parallel result after the call it answers', () => {
+		const events = [
+			call('Read', 'a', 1),
+			call('Bash', 'b', 2),
+			call('Grep', 'c', 3),
+			result('b', 'bash out', 4),
+			result('c', 'grep out', 5),
+			result('a', 'read out', 6)
+		];
+		expect(pairs(events)).toEqual([
+			['bash out', 'Bash'],
+			['grep out', 'Grep'],
+			['read out', 'Read']
+		]);
+	});
+
+	it('pairs a result whose call is filtered out of view', () => {
+		const events = [call('Read', 'a', 1), call('Bash', 'b', 2), result('a', 'read out', 3)];
+		const lines = buildLines(events, only('result'));
+		expect(lines.map((l) => l.tool)).toEqual(['Read']);
+	});
+
+	it('falls back to the call right before a result without an id', () => {
+		const events = [call('Read', null, 1), result(null, 'read out', 2)];
+		expect(pairs(events)).toEqual([['read out', 'Read']]);
+	});
+
+	it('does not guess by position when the id names a call it never saw', () => {
+		const events = [call('Read', 'a', 1), result('z', 'orphan', 2)];
+		expect(pairs(events)).toEqual([['orphan', '']]);
+	});
+
+	it('only lets the matching call claim a result', () => {
+		const out = result('b', 'x', 1) as AgentEvent & { type: 'tool_result' };
+		expect(resultAnswers({ tool: 'Bash', toolUseId: 'b' }, out)).toBe(true);
+		expect(resultAnswers({ tool: 'Bash', toolUseId: 'a' }, out)).toBe(false);
+		const legacy = { ...out, tool_use_id: null, tool: 'Bash' };
+		expect(resultAnswers({ tool: 'Bash' }, legacy)).toBe(true);
+		expect(resultAnswers({ tool: 'Read' }, legacy)).toBe(false);
+	});
+});
+
+const GUARD_TEXT =
+	'⛔ cctui blocked a Bash call: it contains a forbidden term ("a****e"). Rewrite it without internal references.';
+
+describe('gateway tool block', () => {
+	const block = text(GUARD_TEXT, 2);
+
+	it('turns the guard explanation into a block notice instead of assistant prose', () => {
+		const lines = buildLines([text('working on it', 1), block], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['assistant', 'marker']);
+		expect(lines[1].toolBlock).toEqual({ tool: 'Bash', term: 'a****e' });
+	});
+
+	it('never folds a block notice into a neighbouring marker', () => {
+		const lines = buildLines([text('· mode: plan', 1, 'system_marker'), block], ctx());
+		expect(lines).toHaveLength(2);
+	});
+
+	it('hides with the error filter, not the assistant one', () => {
+		expect(buildLines([block], only('assistant'))).toEqual([]);
+		expect(buildLines([block], only('error'))).toHaveLength(1);
 	});
 });

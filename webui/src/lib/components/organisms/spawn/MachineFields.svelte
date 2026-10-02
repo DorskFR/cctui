@@ -33,7 +33,10 @@
 		machines,
 		recentDirs,
 		onsubmit,
-		onfiles
+		onfiles,
+		onlongpaste,
+		promptEl = $bindable(null),
+		fileLegend = ''
 	}: {
 		form: Form;
 		machines: MachineRow[];
@@ -42,12 +45,16 @@
 		// Files pasted into the prompt (a screenshot, a copied file) go to the
 		// attachments; text pastes are left to the browser.
 		onfiles?: (files: File[]) => void;
+		/** A text paste: true when it was staged as an attachment instead. */
+		onlongpaste?: (text: string) => boolean;
+		promptEl?: HTMLTextAreaElement | null;
+		/** What each `[📎N]` in the prompt points at, shown on hover. */
+		fileLegend?: string;
 	} = $props();
 
 	// `#` session-mention popover on the prompt (see SessionMention).
 	const sessionsQuery = useSessions(() => false);
 	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
-	let promptEl = $state<HTMLTextAreaElement | null>(null);
 
 	const nav = new HistoryNav({
 		list: () => promptHistory.get(),
@@ -58,11 +65,14 @@
 
 	const clipboardFiles = makeClipboardFiles();
 	function onPromptPaste(e: ClipboardEvent) {
-		if (!onfiles || !e.clipboardData) return;
-		const files = clipboardFiles(e.clipboardData);
-		if (files.length === 0) return;
-		e.preventDefault();
-		onfiles(files);
+		if (!e.clipboardData) return;
+		const files = onfiles ? clipboardFiles(e.clipboardData) : [];
+		if (files.length > 0) {
+			e.preventDefault();
+			onfiles?.(files);
+			return;
+		}
+		if (onlongpaste?.(e.clipboardData.getData('text/plain'))) e.preventDefault();
 	}
 
 	// The machine picker and the path share one control; `form.working_dir` is
@@ -174,6 +184,7 @@
 			id="sp-prompt"
 			rows={10}
 			placeholder={m.spawn_prompt_placeholder()}
+			title={fileLegend || undefined}
 			bind:value={form.prompt}
 			bind:el={promptEl}
 			resize="bottom"

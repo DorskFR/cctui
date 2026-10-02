@@ -13,6 +13,8 @@ import { copyText } from '$lib/clipboard';
 import { ws } from '$lib/ws.svelte';
 import { clearSessionStorage } from '$lib/drafts';
 import { downloadConversationHtml, conversationToMarkdown } from '$lib/export';
+import { endpoints } from '$lib/queries';
+import { loadWholeConversation, type ConversationPageFetch } from './wholeConversation';
 import { m } from '$lib/paraglide/messages';
 
 // The slice of useSessionActions() this hook drives. Kept structural so the
@@ -37,6 +39,7 @@ export interface SessionActionsOpts {
 	actions: SessionActionApi;
 	// Close the drawer (archive / resume both dismiss it on success).
 	onclose: () => void;
+	fetchPage?: ConversationPageFetch;
 }
 
 export class SessionActions {
@@ -161,11 +164,28 @@ export class SessionActions {
 		}
 	};
 
+	// Every event of the session, not only the pages loaded in the drawer,
+	// with a running count while a long session is still being fetched.
+	#allEvents = async (): Promise<AgentEvent[]> => {
+		let toast: number | null = null;
+		const fetchPage: ConversationPageFetch =
+			this.#opts.fetchPage ?? ((id, q) => endpoints.conversation(id, q));
+		try {
+			return await loadWholeConversation(this.#opts.id(), this.#opts.events(), fetchPage, (count) => {
+				if (toast !== null) toasts.dismiss(toast);
+				toast = toasts.info(m.conversation_export_loading({ count }), 0);
+			});
+		} finally {
+			if (toast !== null) toasts.dismiss(toast);
+		}
+	};
+
 	// Export the transcript as a self-contained HTML file, gated by the
 	// current view toggles and themed with the active palette.
-	export = () => {
+	export = async () => {
 		try {
-			downloadConversationHtml(this.#opts.session(), this.#opts.events(), this.#opts.view());
+			const events = await this.#allEvents();
+			downloadConversationHtml(this.#opts.session(), events, this.#opts.view());
 			toasts.ok(m.conversation_transcript_downloaded());
 		} catch (e) {
 			toasts.error(errMessage(e));
@@ -176,7 +196,8 @@ export class SessionActions {
 	// current view filters.
 	copyMarkdown = async () => {
 		try {
-			const md = conversationToMarkdown(this.#opts.session(), this.#opts.events(), this.#opts.view());
+			const events = await this.#allEvents();
+			const md = conversationToMarkdown(this.#opts.session(), events, this.#opts.view());
 			await copyText(md, m.conversation_copied_markdown());
 		} catch (e) {
 			toasts.error(m.conversation_copy_failed({ message: errMessage(e) }));

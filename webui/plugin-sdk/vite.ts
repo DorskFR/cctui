@@ -30,6 +30,7 @@ export function cctuiPluginConfig(opts: PluginBuildOptions): UserConfig {
 	const paths = pluginRuntimePaths(opts.runtimeBase);
 	return {
 		plugins: [svelte({ compilerOptions: { css: 'injected' }, emitCss: false })],
+		define: { 'process.env.NODE_ENV': JSON.stringify('production') },
 		build: {
 			outDir: opts.outDir ?? 'dist/web',
 			emptyOutDir: true,

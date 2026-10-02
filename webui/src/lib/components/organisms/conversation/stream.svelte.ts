@@ -20,6 +20,7 @@ import {
 	type ToolBlock
 } from '$lib/ws.svelte';
 import { eventKeys, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
+import { resultAnswers } from './lines';
 import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { endpoints } from '$lib/queries';
@@ -94,6 +95,7 @@ export class ConversationStream {
 	// than the event's daemon `ts`, which is a different clock and would skew
 	// every elapsed reading.
 	currentTool = $state<ActivityTool | null>(null);
+	#currentToolUseId: string | null = null;
 	turnStartedAt = $state<number | null>(null);
 	turnTokensIn = $state(0);
 	turnTokensOut = $state(0);
@@ -275,11 +277,17 @@ export class ConversationStream {
 					summary: toolInvocationSummary(ev.tool, ev.input),
 					startedAt: Date.now()
 				};
+				this.#currentToolUseId = ev.tool_use_id ?? null;
 				break;
 			case 'tool_result':
-				// Only the matching tool clears the banner: a late result for an
+				// Only the matching call clears the banner: a late result for an
 				// earlier call must not blank a tool that has already started.
-				if (this.currentTool?.tool === ev.tool) this.currentTool = null;
+				if (
+					this.currentTool &&
+					resultAnswers({ tool: this.currentTool.tool, toolUseId: this.#currentToolUseId }, ev)
+				) {
+					this.currentTool = null;
+				}
 				break;
 			case 'text': {
 				if (ev.usage) {

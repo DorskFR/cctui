@@ -73,6 +73,29 @@ export function defaultTitle(body: string): string {
 	return `${[...line].slice(0, TITLE_MAX - 1).join('').trimEnd()}…`;
 }
 
+export type BookmarkLine = Pick<Line, 'role' | 'text' | 'tool' | 'lang' | 'mcp'>;
+
+// `lineMarkdown` of a tool call or result: an optional bold `<label> · <tool>`
+// line, then the code fenced with its language.
+const TOOL_FENCE_RE = /^(?:\*\*[^*\n]+ · ([^*\n]+)\*\*\n\n)?```([^\n`]*)\n([\s\S]*)\n```$/;
+
+/** What the drawer would render for the saved message: prose for most roles,
+ * the unfenced code for a tool call or result. */
+export function bookmarkLine(b: Bookmark): BookmarkLine {
+	const role = b.role as Line['role'];
+	if (role !== 'tool' && role !== 'result') return { role, text: b.body };
+	const fence = TOOL_FENCE_RE.exec(b.body.trim());
+	if (!fence) return { role, text: b.body };
+	const tool = fence[1]?.trim() || undefined;
+	return {
+		role,
+		tool,
+		mcp: tool?.startsWith('mcp__') ?? false,
+		lang: fence[2].trim(),
+		text: fence[3]
+	};
+}
+
 /** A bookmark whose source session has been deleted (`ON DELETE SET NULL`). */
 export function isDeadLink(b: Bookmark): boolean {
 	return b.session_id === null;

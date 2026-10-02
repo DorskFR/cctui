@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let (config, pool, auth_config) = bootstrap().await?;
     let state = build_state(&config, pool, auth_config.clone()).await?;
     plugin_store::init(&state.pool, &state.plugins).await;
+    plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins).await;
     start_background_tasks(&state).await;
     let app = build_app(&state, &config, &auth_config);
     spawn_sweeps(&state);

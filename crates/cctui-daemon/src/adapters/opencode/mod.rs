@@ -4,6 +4,7 @@ pub mod client;
 pub mod config;
 pub mod events;
 pub mod normalize;
+pub mod persist;
 mod pty_view;
 pub mod session;
 
@@ -15,6 +16,7 @@ use crate::adapter_runtime::{
     Adapter, AdapterCtx, AdapterFactory, CommandOutcome, Handled, SessionDriver, dispatch_command,
 };
 use crate::client::ServerClient;
+use persist::SessionStore;
 use session::{LiveRegistry, OpenCodeConfig, OpenCodeSession, SessionCommand, SpawnParams};
 
 pub const ADAPTER_ID: &str = "opencode";
@@ -68,10 +70,15 @@ impl Adapter for OpenCodeAdapter {
 }
 
 async fn command_pump(cfg: OpenCodeConfig, ctx: AdapterCtx) {
-    pump(cfg, ctx, LiveRegistry::default()).await;
+    pump(cfg, ctx, LiveRegistry::default(), persist::global()).await;
 }
 
-async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
+async fn pump(
+    cfg: OpenCodeConfig,
+    ctx: AdapterCtx,
+    live: LiveRegistry,
+    store: std::sync::Arc<SessionStore>,
+) {
     let AdapterCtx {
         events,
         mut commands,
@@ -96,7 +103,8 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
         let pump = pty_view::PtyWatchPump::new(live.clone(), events.clone(), shutdown.clone());
         tokio::spawn(pump.run(watches))
     });
-    let mut pump = Pump { cfg, events, shutdown, server, machine_key, live };
+    let mut pump = Pump { cfg, events, shutdown, server, machine_key, live, store };
+    pump.restore_sessions().await;
     let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut connect_closed = false;
 
@@ -145,6 +153,7 @@ struct Pump {
     server: Option<ServerClient>,
     machine_key: Option<String>,
     live: LiveRegistry,
+    store: std::sync::Arc<SessionStore>,
 }
 
 #[async_trait::async_trait]
@@ -367,15 +376,112 @@ impl Pump {
             skill_roots: skills.roots,
             preflight: Some(preflight),
             context: launch.context,
+            permission_mode: spec.permission_mode,
+            resume: Vec::new(),
         };
+        self.run_session(params);
+    }
+
+    fn run_session(&self, params: SpawnParams) {
         let session = OpenCodeSession::new(
             params,
             self.events.clone(),
             self.live.clone(),
             self.shutdown.clone(),
-        );
+        )
+        .with_store(std::sync::Arc::clone(&self.store));
         tokio::spawn(session.run());
     }
+
+    /// Bring back every session a previous daemon process recorded: one
+    /// `opencode serve` per launch key, re-attaching its sessions.
+    async fn restore_sessions(&self) {
+        for (key, sessions) in persist::by_key(self.store.snapshot()) {
+            self.restore_key(key, sessions).await;
+        }
+    }
+
+    async fn restore_key(&self, key: String, sessions: Vec<(String, persist::Record)>) {
+        let Some(first) = sessions.first().map(|(_, r)| r.clone()) else { return };
+        let none = std::collections::BTreeMap::new();
+        let launch = match resolve_launch(
+            self.server.as_ref(),
+            self.machine_key.as_ref(),
+            &key,
+            &none,
+        )
+        .await
+        {
+            Ok(launch) => launch,
+            Err(err) => {
+                let detail = format!("opencode session could not be restored: {err}");
+                for (local_id, _) in sessions {
+                    self.store.remove(&local_id);
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::SessionEnded {
+                            local_id,
+                            reason: cctui_proto::adapter::EndReason::Crashed {
+                                detail: detail.clone(),
+                            },
+                        },
+                    )
+                    .await;
+                }
+                return;
+            }
+        };
+        let skills =
+            crate::plugins::resolve_session_skills(self.server.as_ref(), &key, &launch.plugins)
+                .await;
+        let mut env = launch.env;
+        for (name, value) in &skills.env {
+            env.entry(name.clone()).or_insert_with(|| value.clone());
+        }
+        let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
+            &key,
+            launch.spawn_capability.as_ref(),
+        );
+        tracing::info!(%key, sessions = sessions.len(), "opencode: restoring sessions");
+        self.run_session(SpawnParams {
+            agent: restored_agent(&first, &self.cfg),
+            cfg: self.cfg.clone(),
+            key,
+            cwd: first.cwd,
+            env,
+            prompt: None,
+            name: None,
+            model: first.model,
+            attachments: Vec::new(),
+            command_id: None,
+            parent_local_id: None,
+            agent_mcp,
+            skill_roots: skills.roots,
+            preflight: None,
+            context: Vec::new(),
+            permission_mode: first.permission_mode,
+            resume: sessions,
+        });
+    }
+}
+
+/// The recorded agent passes the permission ceiling again, so an edited
+/// registry file cannot lift a session above the mode it was spawned under.
+fn restored_agent(record: &persist::Record, cfg: &OpenCodeConfig) -> Option<String> {
+    let spec = cctui_proto::adapter::SessionSpec {
+        service_tier: None,
+        adapter_id: ADAPTER_ID.into(),
+        working_dir: Some(record.cwd.clone()),
+        prompt: None,
+        name: None,
+        permission_mode: record.permission_mode,
+        effort: None,
+        model: None,
+        env: record.agent.iter().map(|agent| (AGENT_ENV.to_owned(), agent.clone())).collect(),
+        bootstrap: serde_json::Value::Null,
+        parent_local_id: None,
+    };
+    agent_of(&spec, cfg)
 }
 
 /// Which opencode agent profile the spawn runs under: named by the dispatch
@@ -697,6 +803,81 @@ mod tests {
     }
 
     #[test]
+    fn a_restored_agent_is_capped_by_its_recorded_permission_mode() {
+        use cctui_proto::adapter::PermissionMode;
+        let record = |mode| persist::Record {
+            key: "k".to_owned(),
+            cwd: "/repo".to_owned(),
+            agent: Some(config::BUILDER_AGENT.to_owned()),
+            model: None,
+            permission_mode: mode,
+            parent_local_id: None,
+            started_at_ms: 0,
+        };
+        let cfg = OpenCodeConfig::default();
+        assert_eq!(
+            restored_agent(&record(Some(PermissionMode::Yolo)), &cfg).as_deref(),
+            Some(config::BUILDER_AGENT)
+        );
+        for mode in [None, Some(PermissionMode::Ask), Some(PermissionMode::Auto)] {
+            assert_eq!(
+                restored_agent(&record(mode), &cfg).as_deref(),
+                Some(config::REVIEWER_AGENT),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_recorded_session_whose_serve_cannot_come_back_is_ended_and_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode-sessions.json");
+        let store = std::sync::Arc::new(SessionStore::at(path.clone()));
+        store.upsert(
+            "ses_old",
+            persist::Record {
+                key: "k1".to_owned(),
+                cwd: dir.path().to_string_lossy().into_owned(),
+                agent: None,
+                model: None,
+                permission_mode: None,
+                parent_local_id: None,
+                started_at_ms: 1,
+            },
+        );
+        let (events, mut rx) = mpsc::channel(16);
+        let pump = Pump {
+            cfg: OpenCodeConfig {
+                bin: "/definitely/not/a/binary".to_owned(),
+                state_root: dir.path().join("state"),
+                ..OpenCodeConfig::default()
+            },
+            events,
+            shutdown: tokio_util::sync::CancellationToken::new(),
+            server: None,
+            machine_key: None,
+            live: LiveRegistry::default(),
+            store,
+        };
+
+        pump.restore_sessions().await;
+
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(evt) = rx.recv().await {
+                if let AdapterEvent::SessionEnded { local_id, reason } = evt {
+                    return (local_id, reason);
+                }
+            }
+            panic!("events closed without a SessionEnded");
+        })
+        .await
+        .expect("no SessionEnded within 10s");
+        assert_eq!(ended.0, "ses_old");
+        assert!(matches!(ended.1, cctui_proto::adapter::EndReason::Crashed { .. }));
+        assert!(persist::load_from(&path).is_empty());
+    }
+
+    #[test]
     fn an_adapter_default_agent_is_capped_by_the_permission_mode_too() {
         use cctui_proto::adapter::PermissionMode;
         let cfg = OpenCodeConfig {
@@ -927,6 +1108,7 @@ mod reconnect_tests {
             crate::adapters::opencode::session::OpenCodeConfig::default(),
             ctx,
             live,
+            std::sync::Arc::new(super::persist::SessionStore::default()),
         ));
 
         for connection in 1..=2 {

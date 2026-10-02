@@ -46,6 +46,7 @@ vi.mock('$lib/settings.svelte', () => ({
 vi.mock('$lib/ws.svelte', () => ({ ws: { sessions: [] } }));
 
 const SLOT = spawnSlotKey('m-uuid-1', '/w');
+const settle = () => new Promise((r) => setTimeout(r, 0));
 let stop: (() => void) | undefined;
 
 function open(opts: Partial<SpawnFormOptions> = {}): SpawnForm {
@@ -106,15 +107,108 @@ describe('SpawnForm draft restore', () => {
 	});
 
 	it('keeps the persisted slot current with the form', () => {
+		vi.useFakeTimers();
 		const sf = open();
 		sf.form.working_dir = '/w';
 		sf.form.prompt = 'typed';
 		sf.envRows = [{ key: 'SECRET', value: 'never-on-disk' }];
 		flushSync();
+		vi.advanceTimersByTime(300);
+		vi.useRealTimers();
 		const saved = JSON.parse(drafts.get(SLOT));
 		expect(saved.prompt).toBe('typed');
 		expect(saved.envRows).toEqual([{ key: 'SECRET', value: '' }]);
 		expect(drafts.get(SPAWN_SLOT)).toBe(SLOT);
+	});
+});
+
+describe('SpawnForm draft persistence', () => {
+	afterEach(() => vi.useRealTimers());
+
+	it('writes the slot once typing pauses, not on every keystroke', () => {
+		vi.useFakeTimers();
+		const sf = open();
+		sf.form.working_dir = '/w';
+		flushSync();
+		vi.advanceTimersByTime(300);
+		const set = vi.spyOn(drafts, 'set');
+		for (const ch of 'hello') {
+			sf.form.prompt += ch;
+			flushSync();
+			vi.advanceTimersByTime(50);
+		}
+		expect(set.mock.calls.filter(([k]) => k === SLOT)).toHaveLength(0);
+		vi.advanceTimersByTime(300);
+		expect(set.mock.calls.filter(([k]) => k === SLOT)).toHaveLength(1);
+		expect(JSON.parse(drafts.get(SLOT)).prompt).toBe('hello');
+	});
+
+	it('flushes a pending write when the form closes', () => {
+		vi.useFakeTimers();
+		const sf = open();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'last words';
+		flushSync();
+		stop?.();
+		stop = undefined;
+		expect(JSON.parse(drafts.get(SLOT)).prompt).toBe('last words');
+	});
+});
+
+describe('SpawnForm large paste', () => {
+	it('stages a long paste as a paste-N.txt attachment and keeps it out of the prompt', async () => {
+		const sf = open();
+		await settle();
+		const text = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join('\n');
+		expect(sf.addPaste(text)).toBe(true);
+		await vi.waitFor(() => expect(sf.files.map((f) => f.name)).toEqual(['paste-1.txt']));
+		expect(await sf.files[0].text()).toBe(text);
+		expect(sf.form.prompt).not.toContain('line 0');
+		expect(sf.form.prompt).toContain('[paste-1.txt]');
+	});
+
+	it('leaves a short paste to the field', () => {
+		const sf = open();
+		expect(sf.addPaste('short')).toBe(false);
+		expect(sf.files).toEqual([]);
+	});
+
+	it('clears an oversized restored prompt in one action', () => {
+		drafts.set(SLOT, JSON.stringify({ machine_id: 'm-uuid-1', working_dir: '/w', prompt: 'x\n'.repeat(3000) }));
+		drafts.set(SPAWN_SLOT, SLOT);
+		const sf = open();
+		sf.clearForm();
+		expect(sf.form.prompt).toBe('');
+		expect(drafts.get(SLOT)).toBe('');
+	});
+});
+
+describe('SpawnForm attachment markers', () => {
+	const shot = (name: string) => new File(['x'], name, { type: 'text/plain' });
+
+	it('marks attached files at the prompt caret and sends their names in place', async () => {
+		const sf = open();
+		await settle();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'look here: and there';
+		const el = document.createElement('textarea');
+		el.value = sf.form.prompt;
+		el.setSelectionRange(10, 10);
+		sf.promptEl = el;
+		sf.addFiles([shot('a.txt'), shot('b.txt')]);
+		await vi.waitFor(() => expect(sf.files).toHaveLength(2));
+		expect(sf.form.prompt).toBe('look here: [📎1] [📎2] and there');
+		expect(sf.buildSpawnBody().prompt).toBe('look here: [a.txt] [b.txt] and there');
+	});
+
+	it('renumbers the markers when a file is removed', async () => {
+		const sf = open();
+		await settle();
+		sf.addFiles([shot('a.txt'), shot('b.txt')]);
+		await vi.waitFor(() => expect(sf.files).toHaveLength(2));
+		sf.removeFile('a.txt');
+		expect(sf.form.prompt).toBe('[📎1]');
+		expect(sf.fileLegend).toBe('📎1 b.txt');
 	});
 });
 

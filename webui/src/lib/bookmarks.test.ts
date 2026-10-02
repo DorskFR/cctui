@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Bookmark } from '@bindings/Bookmark';
 import {
+	bookmarkLine,
 	bookmarkMarkdown,
 	defaultTitle,
 	draftFromLine,
@@ -126,5 +127,43 @@ describe('isLineBookmarked', () => {
 	it('does not match an unrelated line', () => {
 		const ln = { role: 'assistant', ts: 1, text: 'a' } as Line;
 		expect(isLineBookmarked([bm()], 's1', ln)).toBeNull();
+	});
+});
+
+describe('bookmarkLine', () => {
+	it('keeps prose roles as the markdown body', () => {
+		expect(bookmarkLine(bm({ body: '## Done\n\n- shipped' }))).toEqual({
+			role: 'assistant',
+			text: '## Done\n\n- shipped'
+		});
+	});
+
+	it('unfences a tool call back to its code, language and tool', () => {
+		const ln = { role: 'tool', ts: 1, tool: 'Bash', lang: 'sh', text: 'ls -la\necho "```"' } as Line;
+		const b = bm({ role: 'tool', body: draftFromLine(ln, 's1', null).body });
+		expect(bookmarkLine(b)).toEqual({
+			role: 'tool',
+			tool: 'Bash',
+			mcp: false,
+			lang: 'sh',
+			text: 'ls -la\necho "```"'
+		});
+	});
+
+	it('flags an mcp tool and reads a result without a tool label', () => {
+		const call = { role: 'tool', ts: 1, tool: 'mcp__gh__issue', mcp: true, lang: 'json', text: '{}' } as Line;
+		expect(bookmarkLine(bm({ role: 'tool', body: draftFromLine(call, 's1', null).body })).mcp).toBe(true);
+		const result = { role: 'result', ts: 1, text: 'ok' } as Line;
+		expect(bookmarkLine(bm({ role: 'result', body: draftFromLine(result, 's1', null).body }))).toEqual({
+			role: 'result',
+			tool: undefined,
+			mcp: false,
+			lang: '',
+			text: 'ok'
+		});
+	});
+
+	it('falls back to the raw body when a tool bookmark is not a fence', () => {
+		expect(bookmarkLine(bm({ role: 'result', body: 'plain' }))).toEqual({ role: 'result', text: 'plain' });
 	});
 });

@@ -1,5 +1,5 @@
 import { del, get, keys, set } from 'idb-keyval';
-import { MAX_TOTAL_BYTES } from './attachments';
+import { MAX_TOTAL_BYTES, renumberClipTokens } from './attachments';
 
 // Draft text lives in localStorage (drafts.ts); File handles cannot, so they
 // go to IndexedDB under a key derived from the draft key. Without IndexedDB
@@ -35,6 +35,8 @@ interface Record {
 export interface RestoredAttachments {
 	files: File[];
 	missing: string[];
+	/** Every recorded name in list order, missing ones included. */
+	names?: string[];
 }
 
 const hasIdb = () => typeof indexedDB !== 'undefined';
@@ -90,7 +92,7 @@ export const attachmentStore = {
 		const files = Array.isArray(rec.files) ? rec.files.filter((f) => f instanceof Blob) : [];
 		const present = new Set(files.map((f) => f.name));
 		const names = Array.isArray(rec.names) ? rec.names : [];
-		return { files, missing: names.filter((n) => !present.has(n)) };
+		return { files, missing: names.filter((n) => !present.has(n)), names };
 	},
 	/** Empty list removes the record. Over-cap lists record names only. */
 	async set(draftKey: string, files: File[]): Promise<void> {
@@ -230,4 +232,18 @@ export function dropMissingTokens(
 		.replace(/[ \t]{2,}/g, ' ')
 		.replace(/[ \t]+$/gm, '');
 	return { text: dropped ? out : text, dropped };
+}
+
+/** The draft as it reads against a restored list: tokens of files that did
+ *  not survive are dropped, and `[📎N]` markers follow the survivors' new
+ *  positions. */
+export function restoreDraftTokens(
+	text: string,
+	restored: RestoredAttachments
+): { text: string; dropped: number } {
+	const kept = restored.files.map((f) => f.name);
+	const named = dropMissingTokens(text, restored.missing);
+	const clips = (t: string) => t.match(/\[📎\d+\]/gu)?.length ?? 0;
+	const out = renumberClipTokens(named.text, restored.names ?? kept, kept);
+	return { text: out, dropped: named.dropped + clips(named.text) - clips(out) };
 }

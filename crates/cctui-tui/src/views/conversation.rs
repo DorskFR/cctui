@@ -471,7 +471,11 @@ fn render_result(
     error: bool,
     expanded: bool,
 ) -> Vec<Line<'static>> {
-    let marker = if error { "└ ✗ " } else { "└ " };
+    let base = if error { "└ ✗ " } else { "└ " };
+    let marker = line.answers.as_deref().map_or_else(
+        || base.to_owned(),
+        |tool| format!("{base}{}: ", transcript::display_tool_name(tool)),
+    );
     let marker_style = if error { theme::error() } else { ARROW };
     let body_style = if error { theme::error() } else { TOOL_RESULT_STYLE };
 
@@ -505,7 +509,7 @@ fn render_result(
     let shown = if expanded { body.len() } else { RESULT_PREVIEW_ROWS.min(body.len()) };
     let mut first = vec![
         Span::raw(ts),
-        Span::styled(marker.to_owned(), marker_style),
+        Span::styled(marker, marker_style),
         Span::styled(body[0].to_owned(), body_style),
     ];
     if shown < body.len() {
@@ -849,6 +853,14 @@ mod tests {
         let mut line = ConversationLine::new(LineKind::Result { error }, text, 0);
         line.tool = Some("Bash".to_owned());
         line
+    }
+
+    #[test]
+    fn a_result_away_from_its_call_names_the_tool_it_answers() {
+        let mut line = result(false, "ok");
+        assert_eq!(rows(&line, false), ["└ ok"]);
+        line.answers = Some("Read".to_owned());
+        assert!(rows(&line, false)[0].starts_with("└ Read: ok"), "{:?}", rows(&line, false));
     }
 
     #[test]
