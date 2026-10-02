@@ -34,6 +34,8 @@ const HEALTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 /// A live turn always emits part/step updates well inside this window, so
 /// silence this long means the upstream stream is dead rather than slow.
+const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 const STREAM_INACTIVITY: std::time::Duration = std::time::Duration::from_mins(2);
 
 pub type LiveRegistry = Arc<Mutex<HashMap<String, LiveSession>>>;
@@ -289,6 +291,7 @@ pub struct OpenCodeSession {
     server_url: Option<String>,
     server_pid: Option<u32>,
     server_version: Option<String>,
+    version_gate: crate::adapters::version_gate::VersionGate,
     pending_permissions: HashSet<String>,
     /// Snapshotted at construction rather than read per turn.
     turn_end_supported: bool,
@@ -327,6 +330,7 @@ impl OpenCodeSession {
             server_url: None,
             server_pid: None,
             server_version: None,
+            version_gate: crate::adapters::version_gate::VersionGate::default(),
             pending_permissions: HashSet::new(),
             turn_end_supported: crate::adapters::turn_end::supported(),
             client: None,
@@ -757,6 +761,10 @@ impl OpenCodeSession {
                         .or_else(|| self.params.cfg.default_model.clone()),
                     permission_mode: self.params.permission_mode,
                     parent_local_id: parent_local_id.clone(),
+                    account_bound: self
+                        .params
+                        .env
+                        .contains_key(crate::adapters::gateway_env::FIREWORKS_GATEWAY_KEYS[1]),
                     started_at_ms,
                 },
             );
@@ -1041,6 +1049,7 @@ impl OpenCodeSession {
     /// done, since `opencode serve` never exits on its own.
     async fn on_idle(&mut self, session_id: &str) -> bool {
         self.in_flight = false;
+        self.check_version().await;
         // Sent before the oneshot bail-out so a child's last turn still
         // reports one.
         crate::adapters::turn_end::emit_gated(&self.events, session_id, self.turn_end_supported)
@@ -1050,6 +1059,34 @@ impl OpenCodeSession {
         }
         let _ = self.events.send(status(session_id, Some("idle".to_owned()), None, None)).await;
         true
+    }
+
+    /// `opencode serve` keeps the binary it started from. Restarting it would
+    /// drop the session's live state, so a mismatch is only reported.
+    async fn check_version(&mut self) {
+        let Some(server) = self.server_version.clone() else { return };
+        if !self.version_gate.due(std::time::Instant::now()) {
+            return;
+        }
+        let local =
+            tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe_version(&self.params.cfg.bin))
+                .await
+                .ok()
+                .and_then(Result::ok);
+        if let Some((running, local)) = version_drift(
+            &mut self.version_gate,
+            &server,
+            local.as_deref(),
+            self.in_flight,
+            std::time::Instant::now(),
+        ) {
+            tracing::warn!(
+                %running,
+                %local,
+                key = %self.params.key,
+                "opencode serve is older than the installed CLI; restart the session to pick it up"
+            );
+        }
     }
 
     async fn on_event(&mut self, client: &OpenCodeClient, evt: OcEvent) -> bool {
@@ -1198,6 +1235,25 @@ impl OpenCodeSession {
                 turn_id: None,
             })
             .await;
+    }
+}
+
+/// The `(running, local)` pair the first time a mismatch is seen.
+fn version_drift(
+    gate: &mut crate::adapters::version_gate::VersionGate,
+    server: &str,
+    local: Option<&str>,
+    in_flight: bool,
+    now: std::time::Instant,
+) -> Option<(String, String)> {
+    use crate::adapters::version_gate::{Decision, parse_cli_version};
+    let running = parse_cli_version(server);
+    let local = local.and_then(parse_cli_version);
+    match gate.check(running.as_deref(), local.as_deref(), Some(in_flight), false, now) {
+        Decision::Nothing => None,
+        Decision::Deferred { running, local } | Decision::Cycle { running, local, .. } => {
+            gate.first_warning_for(&running, &local).then_some((running, local))
+        }
     }
 }
 
@@ -2238,6 +2294,30 @@ mod tests {
     }
 
     #[test]
+    fn a_serve_older_than_the_installed_cli_is_reported_once_per_pair() {
+        let mut gate = crate::adapters::version_gate::VersionGate::default();
+        let now = std::time::Instant::now();
+        assert_eq!(version_drift(&mut gate, "1.18.7", Some("1.18.7\n"), false, now), None);
+        assert_eq!(version_drift(&mut gate, "1.18.7", None, false, now), None);
+        assert_eq!(
+            version_drift(&mut gate, "1.18.7", Some("1.19.0\n"), false, now),
+            Some(("1.18.7".to_owned(), "1.19.0".to_owned()))
+        );
+        assert_eq!(version_drift(&mut gate, "1.18.7", Some("1.19.0\n"), true, now), None);
+        assert_eq!(
+            version_drift(&mut gate, "1.18.7", Some("1.19.1\n"), true, now),
+            Some(("1.18.7".to_owned(), "1.19.1".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_never_reported_a_server_version_is_not_probed() {
+        let (mut session, _rx, _client) = test_session(None);
+        session.check_version().await;
+        assert!(session.version_gate.due(std::time::Instant::now()), "no probe consumed the slot");
+    }
+
+    #[test]
     fn the_stall_detail_names_the_inactivity_window() {
         let detail = stalled_detail();
         assert!(detail.contains(&STREAM_INACTIVITY.as_secs().to_string()), "{detail}");
@@ -2277,6 +2357,7 @@ mod tests {
             model: None,
             permission_mode: None,
             parent_local_id: None,
+            account_bound: false,
             started_at_ms,
         }
     }

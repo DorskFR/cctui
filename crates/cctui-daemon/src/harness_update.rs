@@ -1,9 +1,9 @@
 //! Opt-in periodic `claude update` / `codex update`, then cycle the harness
 //! process when idle.
 //!
-//! Claude's cycle is left to the adapter's `version_gate`,
-//! which already cycles a `claude daemon` older than the CLI; codex goes
-//! through `codex_version_gate`.
+//! Claude's cycle is left to its adapter, which already cycles a `claude
+//! daemon` older than the CLI; codex is cycled from here. Both go through
+//! [`crate::adapters::version_gate`].
 //!
 //! Never restarts `cctui-daemon` or touches its unit. Worker pods report
 //! `managed-by-image` and never update: their harness is the baked image.
@@ -25,8 +25,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::claude_code::version_gate as claude_gate;
-use crate::adapters::codex::codex_version_gate::{self as codex_gate, CodexVersionGate, Decision};
-use crate::adapters::codex::sandbox_probe;
+use crate::adapters::codex::{codex_version_gate as codex_gate, sandbox_probe};
+use crate::adapters::version_gate::{self as gate, Decision, VersionGate};
 
 const TICK: Duration = Duration::from_mins(1);
 const UPDATE_TIMEOUT: Duration = Duration::from_mins(10);
@@ -190,19 +190,19 @@ fn last_line(text: &str) -> Option<&str> {
 }
 
 pub type BusyProbe =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = codex_gate::Busy> + Send>> + Send + Sync>;
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = gate::Busy> + Send>> + Send + Sync>;
 
 pub struct Runner {
     claude_bin: String,
     codex_bin: String,
     codex_busy: BusyProbe,
-    codex_gate: CodexVersionGate,
+    codex_gate: VersionGate,
 }
 
 impl Runner {
     #[must_use]
     pub fn new(claude_bin: String, codex_bin: String, codex_busy: BusyProbe) -> Self {
-        Self { claude_bin, codex_bin, codex_busy, codex_gate: CodexVersionGate::default() }
+        Self { claude_bin, codex_bin, codex_busy, codex_gate: VersionGate::default() }
     }
 
     fn bin(&self, harness: &str) -> &str {
@@ -228,12 +228,7 @@ impl Runner {
 
     async fn cli_version(&self, harness: &str) -> Option<String> {
         let out = run(self.bin(harness), &["--version"], PROBE_TIMEOUT).await.ok()?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        if harness == HARNESS_CODEX {
-            codex_gate::parse_cli_version(&stdout)
-        } else {
-            claude_gate::parse_cli_version(&stdout)
-        }
+        gate::parse_cli_version(&String::from_utf8_lossy(&out.stdout))
     }
 
     async fn update(&self, harness: &str) {
@@ -285,7 +280,7 @@ impl Runner {
             return;
         }
         let busy = (self.codex_busy)().await;
-        match self.codex_gate.check(&versions, busy, std::time::Instant::now()) {
+        match codex_gate::check(&mut self.codex_gate, &versions, busy, std::time::Instant::now()) {
             Decision::Nothing => {}
             Decision::Deferred { .. } => {
                 let already = STATE

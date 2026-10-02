@@ -91,13 +91,6 @@ pub(super) fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> Str
     b
 }
 
-pub(super) fn stage_uploads(
-    session_id: &str,
-    bootstrap: &serde_json::Value,
-) -> anyhow::Result<Vec<String>> {
-    crate::adapters::uploads::stage_bootstrap(session_id, bootstrap)
-}
-
 /// Public entry point for mid-chat attachment staging. Thin wrapper
 /// over [`crate::adapters::uploads::stage_files`] so the supervisor can stage
 /// without reaching into control internals.
@@ -851,44 +844,6 @@ mod tests {
         assert_eq!(merge_account_under_managed(managed.clone(), None), managed);
         // A non-object account blob is treated as absent (never merged).
         assert_eq!(merge_account_under_managed(managed.clone(), Some(&json!("garbage"))), managed);
-    }
-
-    #[test]
-    fn stage_uploads_writes_sanitized_0600_files() {
-        use base64::Engine;
-        use std::os::unix::fs::PermissionsExt;
-
-        let session_id = format!("test-{}", uuid::Uuid::new_v4());
-        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
-        // A normal name and a traversal attempt that must collapse to its basename.
-        let bootstrap = json!({
-            "uploads": [
-                { "name": "notes.txt", "content_b64": b64("hello world") },
-                { "name": "../../etc/evil", "content_b64": b64("nope") },
-            ]
-        });
-
-        let paths = stage_uploads(&session_id, &bootstrap).expect("stage ok");
-        assert_eq!(paths.len(), 2);
-        let dir = crate::adapters::uploads::session_dir(&session_id);
-
-        let notes = dir.join("notes.txt");
-        assert!(paths.contains(&notes.to_string_lossy().into_owned()));
-        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "hello world");
-        let mode = std::fs::metadata(&notes).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "uploaded file must be 0600");
-
-        // Traversal collapsed to the bare basename inside the staging dir.
-        let evil = dir.join("evil");
-        assert!(evil.exists(), "traversal name must be reduced to a basename in-dir");
-        assert!(!crate::adapters::uploads::staging_root().join("../../etc/evil").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn stage_uploads_null_bootstrap_is_empty() {
-        assert!(stage_uploads("sid", &serde_json::Value::Null).unwrap().is_empty());
     }
 
     fn bare_spec() -> cctui_proto::adapter::SessionSpec {

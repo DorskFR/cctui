@@ -49,9 +49,7 @@ mod tests;
 
 pub(super) use settings::ensure_hook_settings;
 pub use settings::stage_mid_chat_files;
-use settings::{
-    agent_relay_config, build_session_context, detect_whip_from_settings, stage_uploads,
-};
+use settings::{agent_relay_config, build_session_context, detect_whip_from_settings};
 
 /// Config knobs read from `adapters_enabled.config`.
 #[derive(Debug, Clone)]

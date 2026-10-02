@@ -2,7 +2,7 @@ use super::{
     AdapterEvent, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
     JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson, agent_relay_config,
     build_session_context, detect_whip_from_settings, dispatch_done, ensure_hook_settings, json,
-    launch, mpsc, resolve_launch_env_for, socket, stage_uploads, transcript,
+    launch, mpsc, resolve_launch_env_for, socket, transcript,
 };
 
 impl Driver {
@@ -395,9 +395,10 @@ impl Driver {
         .map(|p| p.to_string_lossy().into_owned());
         // A staging failure is fatal: silently dropping an attachment the user
         // expects the worker to read would be worse.
-        let staged = stage_uploads(session_id, &spec.bootstrap).inspect_err(|_| {
-            crate::configsweep::remove_session_files(short);
-        })?;
+        let staged = crate::adapters::uploads::stage_bootstrap(session_id, &spec.bootstrap)
+            .inspect_err(|_| {
+                crate::configsweep::remove_session_files(short);
+            })?;
         let session_context = build_session_context(
             spec,
             cwd,

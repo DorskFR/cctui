@@ -35,8 +35,10 @@ describe('welcome spec', () => {
 			'start',
 			'to-settings',
 			'to-accounts',
+			'to-accounts-mobile',
 			'accounts',
 			'to-users',
+			'to-users-mobile',
 			'users',
 			'settings',
 			'guides'
@@ -51,7 +53,13 @@ describe('welcome spec', () => {
 			['to-sessions', 'nav[sessions]'],
 			['to-settings', 'nav[settings]'],
 			['to-accounts', 'settings-nav[accounts]'],
-			['to-users', 'settings-nav[users]']
+			['to-accounts-mobile', 'settings-tab[accounts]'],
+			['to-users', 'settings-nav[users]'],
+			['to-users-mobile', 'settings-tab[users]']
+		]);
+		expect(hops.filter((s) => s.id.endsWith('-mobile')).map((s) => s.when)).toEqual([
+			{ viewport: 'mobile' },
+			{ viewport: 'mobile' }
 		]);
 		for (const hop of hops) expect(hop.do.kind, hop.id).toBe('click');
 		expect(pub.steps.slice(1).filter((s) => s.route !== undefined).map((s) => s.id)).toEqual([

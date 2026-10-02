@@ -1,7 +1,8 @@
 use cctui_proto::chunk::{Accept, Reassembler};
 use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
 
-/// Bound the memory a single in-flight chunked transfer may buffer.
+/// Bound the memory a single in-flight chunked transfer may buffer: a fixed
+/// memory-safety backstop, not a product setting, so it stays unconfigurable.
 pub(super) const MAX_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 
 /// Drop partial chunked transfers idle past this age.
