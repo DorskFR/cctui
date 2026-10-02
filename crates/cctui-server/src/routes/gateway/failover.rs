@@ -101,6 +101,9 @@ pub fn explicit_target(
         .and_then(|r| r.to_account)
 }
 
+/// `(session, account owner, session user, account, family, account name, pool)`.
+type BoundToken = (String, Uuid, Option<Uuid>, Uuid, String, String, Option<Uuid>);
+
 /// The credential the session behind `session_token` may move to, or `None`
 /// when nothing authorises a move — the caller then mirrors / refuses as
 /// before.
@@ -119,21 +122,20 @@ pub async fn pick_failover_target(
     // rules authorise a move. `session_user` is who the session belongs to, and
     // every elected target is re-checked against them: on a shared account the
     // owner's pool holds accounts the grantee was never given.
-    let bound: Option<(String, Uuid, Option<Uuid>, Uuid, String, String, Option<Uuid>)> =
-        sqlx::query_as(
-            "SELECT t.session_id, ap.user_id, COALESCE(s.user_id, t.user_id), \
+    let bound: Option<BoundToken> = sqlx::query_as(
+        "SELECT t.session_id, ap.user_id, COALESCE(s.user_id, t.user_id), \
                     ap.account_id, ap.family, a.name, t.pool_id \
              FROM session_tokens t \
              JOIN account_providers ap ON ap.id = t.account_id \
              JOIN accounts a ON a.id = ap.account_id \
              LEFT JOIN sessions s ON s.id = t.session_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
-        )
-        .bind(&hash)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
+    )
+    .bind(&hash)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
     let (session_id, user_id, session_user, from_account, family, from_account_name, pool_id) =
         bound?;
     let session_user = session_user.unwrap_or(user_id);
