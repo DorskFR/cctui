@@ -474,6 +474,15 @@ jobs:
       - name: The release gate refuses a commit without a green run
         run: bash scripts/check-ci-green.test.sh
 
+  local-seed:
+    name: local-seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The fixture seeds only the stack this checkout started
+        run: bash deploy/local/fixture/seed.test.sh
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
@@ -507,6 +516,7 @@ jobs:
       - comment-refs
       - i18n-messages
       - release-channel
+      - local-seed
       - actionlint
     runs-on: ubuntu-latest
     steps:
