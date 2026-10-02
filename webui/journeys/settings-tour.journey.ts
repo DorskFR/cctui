@@ -7,6 +7,12 @@ import { defineJourney } from '@dorsk/journey';
  * `route` — a no-op once the click arrived, and the fallback if it did not.
  */
 const APPEARANCE = '/settings/appearance';
+/** The link itself on the wide list: Enter clicks the target's centre, and the
+ *  centre of the whole switcher is some other page. The narrow tab strip has no
+ *  per-tab anchor, so there the next step's `route` finishes the hop. */
+const hop = (page: string) => ({
+	css: `.toc [data-journey="settings-nav"][data-journey-key="${page}"], .tabs[data-journey="settings-goto"]`
+});
 
 export default defineJourney({
 	id: 'settings-tour',
@@ -39,7 +45,7 @@ export default defineJourney({
 		},
 		{
 			id: 'to-sessions',
-			target: 'settings-goto',
+			target: hop('sessions'),
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
@@ -60,7 +66,7 @@ export default defineJourney({
 		},
 		{
 			id: 'to-execution',
-			target: 'settings-goto',
+			target: hop('execution'),
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
@@ -81,7 +87,7 @@ export default defineJourney({
 		},
 		{
 			id: 'to-privacy',
-			target: 'settings-goto',
+			target: hop('privacy'),
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
@@ -102,7 +108,7 @@ export default defineJourney({
 		},
 		{
 			id: 'to-guides',
-			target: 'settings-goto',
+			target: hop('guides'),
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
