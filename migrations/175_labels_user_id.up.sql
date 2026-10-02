@@ -2,6 +2,7 @@
 -- other tenant's labels, and the get-or-create upsert collided on a global
 -- lower(name). Labels are per-user vocabulary.
 ALTER TABLE labels ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
+DROP INDEX IF EXISTS labels_name_lower_key;
 
 -- Backfill from the attachments: a label belongs to whoever uses it. The user
 -- with the most sessions carrying it keeps the row; every other user that had
@@ -56,6 +57,5 @@ DELETE FROM labels WHERE user_id IS NULL;
 
 ALTER TABLE labels ALTER COLUMN user_id SET NOT NULL;
 
-DROP INDEX IF EXISTS labels_name_lower_key;
 CREATE UNIQUE INDEX IF NOT EXISTS labels_user_name_lower_key
     ON labels (user_id, lower(name));
