@@ -1580,35 +1580,45 @@ mod tests {
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
-    /// DB-gated: `CctuiAgentArchive` reaches only the caller's own descendants,
-    /// never overrides a pin, cascades down, and hands the slot back so a spawn
-    /// refused at the cap goes through.
-    #[tokio::test]
-    async fn archive_child_releases_only_descendants_and_frees_their_slot() {
-        let Some(url) = crate::routes::gateway::test_db_url(
-            "archive_child_releases_only_descendants_and_frees_their_slot",
-        ) else {
-            return;
-        };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&url)
-            .await
-            .expect("connect test db");
+    /// The tree the `archive-child` tests share: `root` with children `a`
+    /// (itself parent of `a1`), `b`, a pinned child and another user's row, plus
+    /// an `outsider` outside the tree. `root` may hold 4 children.
+    struct ArchiveTree {
+        pool: sqlx::PgPool,
+        state: AppState,
+        uid: Uuid,
+        stranger: Uuid,
+        root_cap: SpawnCapability,
+        root: String,
+        a: String,
+        a1: String,
+        b: String,
+        pinned: String,
+        foreign: String,
+        outsider: String,
+    }
 
-        let uid = Uuid::new_v4();
-        let stranger = Uuid::new_v4();
-        let machine = Uuid::new_v4();
-        for (u, name) in [(uid, "ac-test"), (stranger, "ac-stranger")] {
-            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-                .bind(u)
-                .bind(name)
-                .bind(format!("kh-{u}"))
-                .execute(&pool)
+    impl ArchiveTree {
+        async fn seed(test: &str) -> Option<Self> {
+            let url = crate::routes::gateway::test_db_url(test)?;
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(4)
+                .connect(&url)
                 .await
-                .expect("seed user");
-        }
-        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+                .expect("connect test db");
+            let (uid, stranger, machine) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+            for (u, name) in [(uid, "ac-test"), (stranger, "ac-stranger")] {
+                sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                    .bind(u)
+                    .bind(name)
+                    .bind(format!("kh-{u}"))
+                    .execute(&pool)
+                    .await
+                    .expect("seed user");
+            }
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
             .bind(machine)
             .bind(uid)
             .bind(machine.to_string())
@@ -1616,114 +1626,177 @@ mod tests {
             .execute(&pool)
             .await
             .expect("seed machine");
-
-        let id = || Uuid::new_v4().to_string();
-        let (root, a, a1, b, pinned, foreign, outsider) =
-            (id(), id(), id(), id(), id(), id(), id());
-        for (sid, parent, owner) in [
-            (&root, None::<&str>, uid),
-            (&a, Some(root.as_str()), uid),
-            (&a1, Some(a.as_str()), uid),
-            (&b, Some(root.as_str()), uid),
-            (&pinned, Some(root.as_str()), uid),
-            (&foreign, Some(root.as_str()), stranger),
-            (&outsider, None, uid),
-        ] {
-            sqlx::query(
-                "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, \
-                 machine_uuid, adapter_id) VALUES ($1, $2, $3, '/w', $4, $5, 'claude-code')",
-            )
-            .bind(sid)
-            .bind(parent)
-            .bind(machine.to_string())
-            .bind(owner)
-            .bind(machine)
-            .execute(&pool)
-            .await
-            .expect("seed session");
-        }
-        sqlx::query("UPDATE sessions SET pinned = true WHERE id = $1")
-            .bind(&pinned)
-            .execute(&pool)
-            .await
-            .expect("pin");
-        let root_cap = cap(&["claude-code"], None, Some(4));
-        crate::store::spawn_capabilities::upsert(&pool, &root, &root_cap)
-            .await
-            .expect("seed root capability");
-        let state = crate::state::AppState::for_test(pool.clone());
-        let status = |sid: &str| {
-            let (pool, sid) = (pool.clone(), sid.to_owned());
-            async move {
-                sqlx::query_scalar::<_, String>("SELECT status FROM sessions WHERE id = $1")
-                    .bind(sid)
-                    .fetch_one(&pool)
-                    .await
-                    .expect("status")
+            let id = || Uuid::new_v4().to_string();
+            let (root, a, a1, b, pinned, foreign, outsider) =
+                (id(), id(), id(), id(), id(), id(), id());
+            for (sid, parent, owner) in [
+                (&root, None::<&str>, uid),
+                (&a, Some(root.as_str()), uid),
+                (&a1, Some(a.as_str()), uid),
+                (&b, Some(root.as_str()), uid),
+                (&pinned, Some(root.as_str()), uid),
+                (&foreign, Some(root.as_str()), stranger),
+                (&outsider, None, uid),
+            ] {
+                sqlx::query(
+                    "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, \
+                     machine_uuid, adapter_id) VALUES ($1, $2, $3, '/w', $4, $5, 'claude-code')",
+                )
+                .bind(sid)
+                .bind(parent)
+                .bind(machine.to_string())
+                .bind(owner)
+                .bind(machine)
+                .execute(&pool)
+                .await
+                .expect("seed session");
             }
-        };
-        let not_found = |r: Result<ArchiveChildResponse, AppError>| {
-            r.err().map(|e| e.status()) == Some(StatusCode::NOT_FOUND)
-        };
-
-        for (caller, from, to, why) in [
-            (uid, &a, &b, "a sibling"),
-            (uid, &a, &root, "its parent"),
-            (uid, &a, &a, "itself"),
-            (uid, &root, &outsider, "a session outside the tree"),
-            (uid, &root, &foreign, "another user's session"),
-            (stranger, &root, &a, "a stranger's caller id"),
-        ] {
-            assert!(
-                not_found(archive_descendant(&state, caller, from, to).await),
-                "archiving {why} must be a 404"
-            );
-            assert_ne!(status(to).await, "archived", "{why} was archived anyway");
+            sqlx::query("UPDATE sessions SET pinned = true WHERE id = $1")
+                .bind(&pinned)
+                .execute(&pool)
+                .await
+                .expect("pin");
+            let root_cap = cap(&["claude-code"], None, Some(4));
+            crate::store::spawn_capabilities::upsert(&pool, &root, &root_cap)
+                .await
+                .expect("seed root capability");
+            let state = AppState::for_test(pool.clone());
+            Some(Self {
+                pool,
+                state,
+                uid,
+                stranger,
+                root_cap,
+                root,
+                a,
+                a1,
+                b,
+                pinned,
+                foreign,
+                outsider,
+            })
         }
 
-        assert_eq!(slots_used(&pool, &root).await, 4, "a, b, pinned and foreign count");
+        async fn status(&self, sid: &str) -> String {
+            sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+                .bind(sid)
+                .fetch_one(&self.pool)
+                .await
+                .expect("status")
+        }
+
+        async fn archive(
+            &self,
+            caller: Uuid,
+            from: &str,
+            to: &str,
+        ) -> Result<ArchiveChildResponse, AppError> {
+            archive_descendant(&self.state, caller, from, to).await
+        }
+
+        async fn cleanup(self) {
+            let users = vec![self.uid, self.stranger];
+            sqlx::query("DELETE FROM sessions WHERE user_id = ANY($1)")
+                .bind(&users)
+                .execute(&self.pool)
+                .await
+                .ok();
+            crate::store::spawn_capabilities::delete(&self.pool, &self.root).await.ok();
+            sqlx::query("DELETE FROM machines WHERE user_id = $1")
+                .bind(self.uid)
+                .execute(&self.pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+                .bind(&users)
+                .execute(&self.pool)
+                .await
+                .ok();
+        }
+    }
+
+    /// DB-gated: `CctuiAgentArchive` reaches only the caller's own descendants;
+    /// anything else is a 404 and stays untouched.
+    #[tokio::test]
+    async fn archive_child_is_a_404_outside_the_callers_tree() {
+        let Some(t) = ArchiveTree::seed("archive_child_is_a_404_outside_the_callers_tree").await
+        else {
+            return;
+        };
+        for (caller, from, to, why) in [
+            (t.uid, &t.a, &t.b, "a sibling"),
+            (t.uid, &t.a, &t.root, "its parent"),
+            (t.uid, &t.a, &t.a, "itself"),
+            (t.uid, &t.root, &t.outsider, "a session outside the tree"),
+            (t.uid, &t.root, &t.foreign, "another user's session"),
+            (t.stranger, &t.root, &t.a, "a stranger's caller id"),
+        ] {
+            let status = t.archive(caller, from, to).await.err().map(|e| e.status());
+            assert_eq!(status, Some(StatusCode::NOT_FOUND), "archiving {why} must be a 404");
+            assert_ne!(t.status(to).await, "archived", "{why} was archived anyway");
+        }
+        t.cleanup().await;
+    }
+
+    /// DB-gated: a pin is the human's mark; an agent never overrides it.
+    #[tokio::test]
+    async fn archive_child_refuses_a_pinned_child() {
+        let Some(t) = ArchiveTree::seed("archive_child_refuses_a_pinned_child").await else {
+            return;
+        };
+        let pin = t.archive(t.uid, &t.root, &t.pinned).await;
+        assert_eq!(pin.err().map(|e| e.status()), Some(StatusCode::CONFLICT));
+        assert_ne!(t.status(&t.pinned).await, "archived", "a pin is never overridden");
+        t.cleanup().await;
+    }
+
+    /// DB-gated: a grandparent may release a grandchild, and archiving a child
+    /// cascades to its own children and reports every archived row.
+    #[tokio::test]
+    async fn archive_child_cascades_and_reaches_grandchildren() {
+        let Some(t) = ArchiveTree::seed("archive_child_cascades_and_reaches_grandchildren").await
+        else {
+            return;
+        };
+        let grand = t.archive(t.uid, &t.root, &t.a1).await.expect("grandchild");
+        assert_eq!(grand.archived, vec![t.a1.clone()], "a grandparent may release a grandchild");
+
+        let released = t.archive(t.uid, &t.root, &t.a).await.expect("direct child");
+        let mut expected = vec![t.a.clone(), t.a1.clone()];
+        expected.sort();
+        assert_eq!(released.archived, expected, "the cascade reports every archived row");
+        assert_eq!(t.status(&t.a).await, "archived");
+        t.cleanup().await;
+    }
+
+    /// DB-gated: archiving hands the slot back, so a spawn refused at the cap
+    /// goes through, and `CctuiUsage` reports the same count.
+    #[tokio::test]
+    async fn archive_child_frees_a_slot_for_a_refused_spawn() {
+        let Some(t) = ArchiveTree::seed("archive_child_frees_a_slot_for_a_refused_spawn").await
+        else {
+            return;
+        };
+        assert_eq!(slots_used(&t.pool, &t.root).await, 4, "a, b, pinned and foreign count");
         assert_eq!(
-            authorize(Some(&root_cap), &req("claude-code", None), &usage(4)),
+            authorize(Some(&t.root_cap), &req("claude-code", None), &usage(4)),
             Err(Denied::TooManyChildren { max: 4 }),
         );
 
-        let pin = archive_descendant(&state, uid, &root, &pinned).await;
-        assert_eq!(pin.err().map(|e| e.status()), Some(StatusCode::CONFLICT));
-        assert_ne!(status(&pinned).await, "archived", "a pin is never overridden");
-
-        let grand = archive_descendant(&state, uid, &root, &a1).await.expect("grandchild");
-        assert_eq!(grand.archived, vec![a1.clone()], "a grandparent may release a grandchild");
-
-        let released = archive_descendant(&state, uid, &root, &a).await.expect("direct child");
-        let mut expected = vec![a.clone(), a1.clone()];
-        expected.sort();
-        assert_eq!(released.archived, expected, "the cascade reports every archived row");
-        assert_eq!(status(&a).await, "archived");
+        let released = t.archive(t.uid, &t.root, &t.a).await.expect("direct child");
         assert_eq!(released.children_used, 3);
         assert_eq!(released.max_children, Some(4));
         assert!(
-            authorize(Some(&root_cap), &req("claude-code", None), &usage(released.children_used))
+            authorize(Some(&t.root_cap), &req("claude-code", None), &usage(released.children_used))
                 .is_ok(),
             "the freed slot lets the refused spawn through"
         );
         assert_eq!(
-            child_slots(&state, &root).await,
+            child_slots(&t.state, &t.root).await,
             Some(ChildSlots { used: 3, max: Some(4), depth_left: None }),
             "CctuiUsage reports the same count"
         );
-
-        sqlx::query("DELETE FROM sessions WHERE user_id = ANY($1)")
-            .bind(vec![uid, stranger])
-            .execute(&pool)
-            .await
-            .ok();
-        crate::store::spawn_capabilities::delete(&pool, &root).await.ok();
-        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
-            .bind(vec![uid, stranger])
-            .execute(&pool)
-            .await
-            .ok();
+        t.cleanup().await;
     }
 
     /// The ceiling a child is handed is never larger than the budget it was
