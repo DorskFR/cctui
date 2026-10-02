@@ -32,19 +32,40 @@ pub const MIN_AGE: Duration = Duration::from_hours(1);
 /// `/tmp` is world-writable and shared, so the shared root is only used when it
 /// is absent (we then create it 0700) or is a real directory this uid already
 /// owns. Anything else — another user's dir, a symlink planted ahead of us — is
-/// stepped around with a uid-suffixed root rather than written into.
+/// stepped around with a root under the user's runtime or cache dir, which no
+/// other user can pre-create.
 pub fn staging_root() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         let shared = PathBuf::from(SHARED_ROOT);
-        if usable_root(&shared) {
-            return shared;
+        let private = [
+            dirs::runtime_dir().map(|d| d.join("cctui-uploads")),
+            dirs::cache_dir().map(|d| d.join("cctui").join("uploads")),
+        ];
+        let root = std::iter::once(Some(shared.clone()))
+            .chain(private)
+            .flatten()
+            .find(|r| usable_root(r))
+            .unwrap_or_else(|| shared.clone());
+        if root != shared {
+            tracing::warn!(root = %root.display(), "shared upload root unusable; staging privately");
         }
-        let uid = rustix::process::getuid().as_raw();
-        let private = PathBuf::from(format!("{SHARED_ROOT}-{uid}"));
-        tracing::warn!(root = %private.display(), "shared upload root unusable; staging privately");
-        private
+        tighten(&root);
+        root
     })
+}
+
+/// A root this uid already owns may predate 0700 staging: close it up.
+fn tighten(root: &Path) {
+    #[cfg(unix)]
+    if root.is_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(err) = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)) {
+            tracing::warn!(%err, root = %root.display(), "could not restrict upload root");
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = root;
 }
 
 /// Absolute per-session staging dir. Created on first write, not here.

@@ -148,7 +148,11 @@ fn live_shorts(jobs_root: &Path) -> HashSet<String> {
 
 fn sweep_once() {
     let live = live_shorts(&crate::adapters::claude_code::state::default_jobs_root());
-    crate::adapters::uploads::sweep(&live);
+    // Codex and opencode sessions are only known through the server's list, so
+    // their staged uploads are not swept until that list has arrived.
+    if server_shorts().lock().is_ok_and(|s| s.is_some()) {
+        crate::adapters::uploads::sweep(&live);
+    }
     let Some(dir) = config_dir() else { return };
     if !dir.is_dir() {
         return;
