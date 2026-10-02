@@ -1166,9 +1166,12 @@ mod tests {
              shared or pool-elected, not necessarily your own), its usage windows, this \
              session's spend, and whether each model is currently allowed or soft-limit blocked. \
              Check it before a fan-out and when picking a child's model: a blocked model burns \
-             the whole batch on 429s. Takes no arguments.\nBoth tools are served by an MCP \
-             server that connects as this session starts. If either reports \"No such tool \
-             available\" on your first turn, it lost that race: wait a few seconds and retry the \
+             the whole batch on 429s. Takes no arguments.\nCctuiAgentArchive: \
+             `mcp__cctui__CctuiAgentArchive` archives a child this session spawned, with its \
+             own children, and frees its slot: finished children keep their slot until \
+             archived. A running child is killed; a session the user pinned is refused.\nThese \
+             tools are served by an MCP server that connects as this session starts. If one \
+             reports \"No such tool available\" on your first turn, it lost that race: wait a few seconds and retry the \
              call once before concluding the tool is missing.\n"
         );
         assert_eq!(
@@ -1186,9 +1189,12 @@ mod tests {
              shared or pool-elected, not necessarily your own), its usage windows, this \
              session's spend, and whether each model is currently allowed or soft-limit blocked. \
              Check it before a fan-out and when picking a child's model: a blocked model burns \
-             the whole batch on 429s. Takes no arguments.\nBoth tools are served by an MCP \
-             server that connects as this session starts. If either reports \"No such tool \
-             available\" on your first turn, it lost that race: wait a few seconds and retry the \
+             the whole batch on 429s. Takes no arguments.\nCctuiAgentArchive: \
+             `mcp__cctui__CctuiAgentArchive` archives a child this session spawned, with its \
+             own children, and frees its slot: finished children keep their slot until \
+             archived. A running child is killed; a session the user pinned is refused.\nThese \
+             tools are served by an MCP server that connects as this session starts. If one \
+             reports \"No such tool available\" on your first turn, it lost that race: wait a few seconds and retry the \
              call once before concluding the tool is missing.\n"
         );
     }

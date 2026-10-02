@@ -1,5 +1,5 @@
 //! `cctui-daemon mcp-agent` — the stdio MCP server a claude session is launched
-//! with, exposing the `CctuiAgent` and `CctuiUsage` tools.
+//! with, exposing the `CctuiAgent`, `CctuiAgentArchive` and `CctuiUsage` tools.
 //!
 //! The subcommand is a thin relay, mirroring `ask-hook`: it speaks MCP on
 //! stdio and forwards each `tools/call` to the long-lived daemon over its local
@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 
 pub const TOOL_NAME: &str = "CctuiAgent";
 pub const USAGE_TOOL_NAME: &str = "CctuiUsage";
+pub const ARCHIVE_TOOL_NAME: &str = "CctuiAgentArchive";
 pub const PEERS_TOOL_NAME: &str = "CctuiPeers";
 pub const SEND_TOOL_NAME: &str = "CctuiSend";
 pub const HISTORY_TOOL_NAME: &str = "CctuiHistory";
@@ -39,6 +40,7 @@ const USAGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Socket `kind` of every tool that is a single server round-trip.
 const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (USAGE_TOOL_NAME, "usage"),
+    (ARCHIVE_TOOL_NAME, "archive_child"),
     (PEERS_TOOL_NAME, "peers"),
     (SEND_TOOL_NAME, "send_peer"),
     (HISTORY_TOOL_NAME, "peer_history"),
@@ -160,8 +162,9 @@ pub fn usage_tool_schema() -> Value {
         "name": USAGE_TOOL_NAME,
         "description": "Report the rate limits and budget that apply to THIS session: the \
     account it is pinned to (which may be a shared or pool-elected one, not your own), that \
-    account's usage windows, the caps in force, this session's dollar spend, and whether each \
-    model it could run on is currently allowed or soft-limit blocked. Use it before dispatching \
+    account's usage windows, the caps in force, this session's dollar spend, how many of its \
+    CctuiAgent child slots are used, and whether each model it could run on is currently \
+    allowed or soft-limit blocked. Use it before dispatching \
     a batch of work, and when deciding which model to give a child: a blocked model wastes the \
     whole fan-out on 429s. Returns a one-line summary followed by the full JSON.",
         "inputSchema": {
@@ -174,6 +177,31 @@ pub fn usage_tool_schema() -> Value {
                 },
             },
             "required": [],
+            "additionalProperties": false,
+        },
+    })
+}
+
+#[must_use]
+pub fn archive_tool_schema() -> Value {
+    json!({
+        "name": ARCHIVE_TOOL_NAME,
+        "description": "Archive a subagent session this session spawned (or one spawned \
+    below it), freeing its CctuiAgent slot. A child that is still running is KILLED, and its \
+    own children are archived with it. Only sessions in this session's own spawn tree can be \
+    archived; a session the user pinned is always refused. Use it once you are done with a \
+    child — finished children keep their slot until archived. Returns the archived session \
+    ids and the slots now used.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session id of the child to archive, as returned by \
+    CctuiAgent.",
+                },
+            },
+            "required": ["session_id"],
             "additionalProperties": false,
         },
     })
@@ -422,6 +450,7 @@ pub fn tool_schemas() -> Vec<Value> {
     vec![
         tool_schema(),
         usage_tool_schema(),
+        archive_tool_schema(),
         peers_tool_schema(),
         send_tool_schema(),
         history_tool_schema(),
@@ -731,6 +760,7 @@ mod tests {
             vec![
                 TOOL_NAME,
                 USAGE_TOOL_NAME,
+                ARCHIVE_TOOL_NAME,
                 PEERS_TOOL_NAME,
                 SEND_TOOL_NAME,
                 HISTORY_TOOL_NAME,
@@ -788,6 +818,7 @@ mod tests {
     fn the_peer_tool_kinds_are_the_ones_the_daemon_parses() {
         assert_eq!(tool_kind(TOOL_NAME), Some("spawn_agent"));
         assert_eq!(tool_kind(USAGE_TOOL_NAME), Some("usage"));
+        assert_eq!(tool_kind(ARCHIVE_TOOL_NAME), Some("archive_child"));
         assert_eq!(tool_kind(PEERS_TOOL_NAME), Some("peers"));
         assert_eq!(tool_kind(SEND_TOOL_NAME), Some("send_peer"));
         assert_eq!(tool_kind(HISTORY_TOOL_NAME), Some("peer_history"));
@@ -834,6 +865,7 @@ mod tests {
     #[test]
     fn a_peer_call_reaches_the_daemon_under_its_own_kind() {
         for (tool, kind, args) in [
+            (ARCHIVE_TOOL_NAME, "archive_child", json!({ "session_id": "c1" })),
             (PEERS_TOOL_NAME, "peers", json!({})),
             (SEND_TOOL_NAME, "send_peer", json!({ "session_id": "t", "message": "hi" })),
             (HISTORY_TOOL_NAME, "peer_history", json!({ "session_id": "t", "limit": 10 })),
@@ -867,6 +899,7 @@ mod tests {
     #[test]
     fn a_dead_socket_names_the_peer_tool_that_failed() {
         for (tool, kind) in [
+            (ARCHIVE_TOOL_NAME, "archive_child"),
             (PEERS_TOOL_NAME, "peers"),
             (SEND_TOOL_NAME, "send_peer"),
             (HISTORY_TOOL_NAME, "peer_history"),
@@ -882,6 +915,19 @@ mod tests {
             );
             assert!(is_error);
             assert!(text.starts_with(tool), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_archive_tool_requires_a_session_and_warns_it_kills_and_respects_pins() {
+        let schema = archive_tool_schema();
+        assert_eq!(schema["name"], ARCHIVE_TOOL_NAME);
+        assert_eq!(schema["inputSchema"]["required"], json!(["session_id"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props.keys().collect::<Vec<_>>(), vec!["session_id"]);
+        let desc = schema["description"].as_str().unwrap();
+        for word in ["KILLED", "pinned", "slot", "spawn tree"] {
+            assert!(desc.contains(word), "{word} missing: {desc}");
         }
     }
 

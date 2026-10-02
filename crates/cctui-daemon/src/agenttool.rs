@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cctui_proto::api::{
-    MessageChildRequest, PeerMessageRequest, RoomToolRequest, SpawnChildRequest,
+    ArchiveChildRequest, ArchiveChildResponse, MessageChildRequest, PeerMessageRequest,
+    RoomToolRequest, SpawnChildRequest,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -54,6 +55,8 @@ enum CallKind {
     Usage {
         model: Option<String>,
     },
+    /// `CctuiAgentArchive`: archive a descendant and free its slot.
+    ArchiveChild(ArchiveChildRequest),
     /// `CctuiPeers`: the sessions this one may address.
     Peers,
     /// `CctuiSend`: one message into a peer's turn queue. Unlike
@@ -142,6 +145,10 @@ fn parse_call(line: &str) -> Result<Call, String> {
     let proto = v.get("proto").and_then(Value::as_u64).unwrap_or(1);
     let kind = match v.get("kind").and_then(Value::as_str) {
         Some("usage") => CallKind::Usage { model: string_arg(&args, "model") },
+        Some("archive_child") => match string_arg(&args, "session_id") {
+            Some(session_id) => CallKind::ArchiveChild(ArchiveChildRequest { session_id }),
+            None => return Err("session_id is required: the child to archive".to_owned()),
+        },
         Some("peers") => CallKind::Peers,
         Some("send_peer") => parse_send_peer(&args)?,
         Some("room") => parse_room(&args)?,
@@ -345,6 +352,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             timeout.as_secs(),
         ),
         CallKind::Usage { .. }
+        | CallKind::ArchiveChild(_)
         | CallKind::Peers
         | CallKind::SendPeer(_)
         | CallKind::Room(_)
@@ -682,6 +690,12 @@ fn render_usage(v: &Value) -> String {
             }
         }
     }
+    if let Some(used) = v.pointer("/children/used").and_then(Value::as_u64) {
+        match v.pointer("/children/max").and_then(Value::as_u64) {
+            Some(max) => parts.push(format!("children {used}/{max}")),
+            None => parts.push(format!("children {used}")),
+        }
+    }
     if v.get("stale").and_then(Value::as_bool).unwrap_or(false) {
         parts.push("usage cache stale — numbers may be out of date".to_owned());
     }
@@ -689,6 +703,17 @@ fn render_usage(v: &Value) -> String {
         return "no usage information is available for this session".to_owned();
     }
     parts.join(" · ")
+}
+
+fn render_archived(resp: &ArchiveChildResponse) -> String {
+    let slots = resp.max_children.map_or_else(
+        || format!("{} child slots used", resp.children_used),
+        |max| format!("{}/{max} child slots used", resp.children_used),
+    );
+    if resp.archived.is_empty() {
+        return format!("nothing archived · {slots}");
+    }
+    format!("archived {} · {slots}", resp.archived.join(", "))
 }
 
 async fn run_usage(
@@ -795,6 +820,10 @@ async fn run_unfollowed_call(
     let me = call.session_id.as_str();
     let frame = match &call.kind {
         CallKind::Usage { model } => run_usage(server, machine_key, me, model.as_deref()).await,
+        CallKind::ArchiveChild(req) => match server.archive_child(machine_key, me, req).await {
+            Ok(resp) => json!({ "ok": true, "result": render_archived(&resp) }),
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
         CallKind::Peers => match server.peers(machine_key, me).await {
             Ok(v) => json!({ "ok": true, "result": render_peers(&v) }),
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
@@ -891,6 +920,7 @@ async fn run_call(
             (handle, req.session_id.clone())
         }
         CallKind::Usage { .. }
+        | CallKind::ArchiveChild(_)
         | CallKind::Peers
         | CallKind::SendPeer(_)
         | CallKind::Room(_)
@@ -1835,6 +1865,40 @@ mod tests {
         assert!(stale.contains("shared"), "{stale}");
         assert!(stale.contains("usage cache stale"), "{stale}");
         assert_eq!(render_usage(&json!({})), "no usage information is available for this session");
+    }
+
+    #[test]
+    fn the_usage_line_reports_child_slots() {
+        let capped = render_usage(&json!({ "children": { "used": 3, "max": 16 } }));
+        assert_eq!(capped, "children 3/16");
+        let uncapped = render_usage(&json!({ "children": { "used": 2 } }));
+        assert_eq!(uncapped, "children 2");
+    }
+
+    #[test]
+    fn an_archive_call_needs_a_target_and_parses_into_its_own_kind() {
+        let line =
+            json!({ "kind": "archive_child", "session_id": "p", "args": { "session_id": " c1 " } })
+                .to_string();
+        let call = parse_call(&line).unwrap();
+        let CallKind::ArchiveChild(req) = call.kind else { panic!("expected archive_child") };
+        assert_eq!(req.session_id, "c1");
+        assert!(dispatch_note(&CallKind::ArchiveChild(req), Duration::from_secs(30)).is_empty());
+
+        let missing = json!({ "kind": "archive_child", "session_id": "p", "args": {} }).to_string();
+        assert!(parse_call(&missing).unwrap_err().contains("session_id is required"));
+    }
+
+    #[test]
+    fn an_archive_result_names_the_rows_and_the_slots_left() {
+        let resp = ArchiveChildResponse {
+            archived: vec!["c1".into(), "c1-sub".into()],
+            children_used: 15,
+            max_children: Some(16),
+        };
+        assert_eq!(render_archived(&resp), "archived c1, c1-sub · 15/16 child slots used");
+        let none = ArchiveChildResponse { archived: vec![], children_used: 4, max_children: None };
+        assert_eq!(render_archived(&none), "nothing archived · 4 child slots used");
     }
 
     #[test]

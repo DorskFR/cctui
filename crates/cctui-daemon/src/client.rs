@@ -308,6 +308,21 @@ impl ServerClient {
         Ok(())
     }
 
+    pub async fn archive_child(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        req: &cctui_proto::api::ArchiveChildRequest,
+    ) -> anyhow::Result<cctui_proto::api::ArchiveChildResponse> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/archive-child",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(req).send().await?;
+        Ok(serde_json::from_value(Self::peer_json(resp, "CctuiAgentArchive").await?)?)
+    }
+
     /// The limits that apply to `session_id` itself: its pinned account, that
     /// account's usage windows, the caps in force (including the session's own
     /// `CctuiAgent` dollar budget) and a per-model allow decision.
