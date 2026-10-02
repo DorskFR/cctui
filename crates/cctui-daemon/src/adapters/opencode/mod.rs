@@ -357,17 +357,30 @@ impl Pump {
 /// asked for `yolo` or `whip`, else the adapter default, else the locked-down
 /// reviewer — opencode's own default agent has edit rights, arbitrary bash and
 /// no step bound, which no cctui spawn may fall back to.
+///
+/// The permission mode is a ceiling: below `yolo`/`whip` a named agent is only
+/// honoured when it is one this config locks down, since any other name (a
+/// repo's own `opencode.json` agent included) may grant edits and bash.
 fn agent_of(spec: &cctui_proto::adapter::SessionSpec, cfg: &OpenCodeConfig) -> Option<String> {
     use cctui_proto::adapter::PermissionMode;
-    spec.env
-        .get(AGENT_ENV)
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            matches!(spec.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip))
-                .then(|| config::BUILDER_AGENT.to_owned())
-        })
-        .or_else(|| cfg.default_agent.clone())
+    let may_build =
+        matches!(spec.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip));
+    let within_mode = |agent: String| {
+        if may_build || agent == config::REVIEWER_AGENT || agent == config::STOCK_AGENT {
+            return Some(agent);
+        }
+        tracing::warn!(
+            %agent,
+            mode = ?spec.permission_mode,
+            "opencode agent grants more than the permission mode; using the reviewer"
+        );
+        None
+    };
+    let named = spec.env.get(AGENT_ENV).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    named
+        .and_then(within_mode)
+        .or_else(|| may_build.then(|| config::BUILDER_AGENT.to_owned()))
+        .or_else(|| cfg.default_agent.clone().and_then(within_mode))
         .or_else(|| Some(config::REVIEWER_AGENT.to_owned()))
 }
 
@@ -631,6 +644,42 @@ mod tests {
             agent_of(&spec_with_env(&[(AGENT_ENV, "build")]), &cfg).as_deref(),
             Some("build")
         );
+    }
+
+    #[test]
+    fn a_named_agent_never_lifts_a_spawn_above_its_permission_mode() {
+        use cctui_proto::adapter::PermissionMode;
+        let cfg = OpenCodeConfig::default();
+        for named in [config::BUILDER_AGENT, "repo-agent-with-bash"] {
+            for mode in [None, Some(PermissionMode::Ask), Some(PermissionMode::Auto)] {
+                let mut spec = spec_with_env(&[(AGENT_ENV, named)]);
+                spec.permission_mode = mode;
+                assert_eq!(
+                    agent_of(&spec, &cfg).as_deref(),
+                    Some(config::REVIEWER_AGENT),
+                    "{named} under {mode:?}"
+                );
+            }
+            for mode in [PermissionMode::Yolo, PermissionMode::Whip] {
+                let mut spec = spec_with_env(&[(AGENT_ENV, named)]);
+                spec.permission_mode = Some(mode);
+                assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(named), "{named} under {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_adapter_default_agent_is_capped_by_the_permission_mode_too() {
+        use cctui_proto::adapter::PermissionMode;
+        let cfg = OpenCodeConfig {
+            default_agent: Some(config::BUILDER_AGENT.to_owned()),
+            ..OpenCodeConfig::default()
+        };
+        let mut spec = spec_with_env(&[]);
+        spec.permission_mode = Some(PermissionMode::Ask);
+        assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(config::REVIEWER_AGENT));
+        spec.permission_mode = Some(PermissionMode::Yolo);
+        assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(config::BUILDER_AGENT));
     }
 }
 
