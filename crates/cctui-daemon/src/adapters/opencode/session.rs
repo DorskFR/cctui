@@ -392,9 +392,12 @@ impl OpenCodeSession {
         self.server_url = Some(base.clone());
         let client =
             Arc::new(OpenCodeClient::new(base, password).observed(Arc::clone(&self.rings)));
-        self.await_health(&client).await?;
+        if let Err(err) = self.await_health(&client).await {
+            shutdown_serve(&mut child).await;
+            return Err(err);
+        }
 
-        let session = client
+        let created = client
             .create_session(&CreateSession {
                 title: self.params.name.clone(),
                 agent: self.agent(),
@@ -404,7 +407,14 @@ impl OpenCodeSession {
                 }),
                 parent_id: None,
             })
-            .await?;
+            .await;
+        let session = match created {
+            Ok(session) => session,
+            Err(err) => {
+                shutdown_serve(&mut child).await;
+                return Err(err);
+            }
+        };
 
         let parent = self.params.parent_local_id.clone();
         self.register(&session.id, parent, Some(self.params.cwd.clone())).await;
@@ -1363,6 +1373,47 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_serve_that_never_becomes_healthy_takes_its_process_group_down() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("grandchild.pid");
+        let bin = dir.path().join("fake-opencode");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.0.0; exit 0; fi\n\
+                 sleep 300 &\necho $! > '{}'\nwait\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        session.params.prompt = None;
+        session.params.cfg = OpenCodeConfig {
+            bin: bin.to_string_lossy().into_owned(),
+            state_root: dir.path().join("state"),
+            startup_timeout_ms: 500,
+            ..OpenCodeConfig::default()
+        };
+
+        let err = session.run_inner(None).await.expect_err("an unhealthy serve fails the spawn");
+        assert!(err.to_string().contains("did not become healthy"), "{err}");
+        let grandchild: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        for _ in 0..50 {
+            if !is_alive(grandchild) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("grandchild {grandchild} of a failed spawn is still running");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn shutdown_serve_takes_down_the_whole_process_tree() {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -1493,8 +1544,7 @@ mod tests {
         assert!(turn.contains("House style"), "{turn}");
         assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
 
-        let staged =
-            crate::adapters::uploads::session_dir(&session.params.key).join("context.md");
+        let staged = crate::adapters::uploads::session_dir(&session.params.key).join("context.md");
         assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
         let _ = std::fs::remove_dir_all(staged.parent().unwrap());
     }
