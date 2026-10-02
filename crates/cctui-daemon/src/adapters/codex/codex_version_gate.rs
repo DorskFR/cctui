@@ -135,10 +135,7 @@ mod tests {
         let v = parse_daemon_version(RUNNING);
         let t0 = Instant::now();
         assert_eq!(check(&mut g, &v, None, t0), deferred("0.153.4", "0.155.0"));
-        assert_eq!(
-            check(&mut g, &v, None, t0 + ESCALATE_AFTER),
-            cycle("0.153.4", "0.155.0", true)
-        );
+        assert_eq!(check(&mut g, &v, None, t0 + ESCALATE_AFTER), cycle("0.153.4", "0.155.0", true));
     }
 
     #[test]

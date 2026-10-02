@@ -71,7 +71,7 @@ impl VersionGate {
 
     /// Reset the escalation clock: escalation requires quiescence across the
     /// whole window, not just at check time.
-    pub fn note_busy(&mut self, now: Instant) {
+    pub const fn note_busy(&mut self, now: Instant) {
         if let Some((_, _, since)) = self.deferred.as_mut() {
             *since = now;
         }

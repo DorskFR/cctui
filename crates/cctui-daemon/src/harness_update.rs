@@ -25,9 +25,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::claude_code::version_gate as claude_gate;
-use crate::adapters::codex::codex_version_gate as codex_gate;
+use crate::adapters::codex::{codex_version_gate as codex_gate, sandbox_probe};
 use crate::adapters::version_gate::{self as gate, Decision, VersionGate};
-use crate::adapters::codex::sandbox_probe;
 
 const TICK: Duration = Duration::from_mins(1);
 const UPDATE_TIMEOUT: Duration = Duration::from_mins(10);

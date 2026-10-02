@@ -1068,10 +1068,11 @@ impl OpenCodeSession {
         if !self.version_gate.due(std::time::Instant::now()) {
             return;
         }
-        let local = tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe_version(&self.params.cfg.bin))
-            .await
-            .ok()
-            .and_then(Result::ok);
+        let local =
+            tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe_version(&self.params.cfg.bin))
+                .await
+                .ok()
+                .and_then(Result::ok);
         if let Some((running, local)) = version_drift(
             &mut self.version_gate,
             &server,
