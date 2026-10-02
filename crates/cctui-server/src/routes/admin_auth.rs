@@ -685,7 +685,9 @@ pub async fn mint_user_key(
     let hash = sha256_hex(&token);
     let preview = crate::auth::token_preview(&token);
 
-    // Legacy mirror so the dual-read path also sees it during cutover.
+    // One transaction: a `user_tokens` row without its `auth_keys` mirror is a
+    // credential only the legacy fallback can see, which a revoke would miss.
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO user_tokens (user_id, token_hash, label, expires_at, token_preview) \
          VALUES ($1, $2, $3, $4, $5)",
@@ -695,11 +697,11 @@ pub async fn mint_user_key(
     .bind(req.label.as_deref())
     .bind(req.expires_at)
     .bind(&preview)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     let key_id = crate::auth::register_key(
-        &state.pool,
+        &mut *tx,
         crate::auth::NewKey {
             user_id,
             key_hash: &hash,
@@ -714,6 +716,7 @@ pub async fn mint_user_key(
         granted.clone(),
     )
     .await?;
+    tx.commit().await?;
     tracing::info!(%user_id, %key_id, ?granted, "key minted");
     Ok(Json(MintKeyResponse {
         id: key_id,
