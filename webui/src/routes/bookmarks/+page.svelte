@@ -26,7 +26,7 @@
 	const terms = $derived(queryTerms(debounced));
 	const rows = $derived<Bookmark[]>(bookmarks.data ?? []);
 	const sessions = useSessions(() => false);
-	const machineOf = $derived(new Map((sessions.data ?? []).map((s) => [s.id, s.machine_id])));
+	const machineOf = $derived(new Map((sessions.data?.sessions ?? []).map((s) => [s.id, s.machine_id] as const)));
 
 	let editing = $state<Bookmark | null>(null);
 	let deleting = $state<Bookmark | null>(null);

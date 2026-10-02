@@ -220,7 +220,8 @@
 		overflow: hidden;
 	}
 	.clip.faded {
-		mask-image: linear-gradient(to bottom, #000 75%, transparent);
+		/* A mask reads only alpha: any opaque token works. */
+		mask-image: linear-gradient(to bottom, var(--text) 75%, transparent);
 	}
 	footer {
 		display: flex;
