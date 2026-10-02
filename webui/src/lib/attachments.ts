@@ -52,20 +52,81 @@ export function mergeFiles(current: File[], incoming: File[]): File[] {
 	return mergeFilesRenamed(current, incoming).files;
 }
 
-/** Add `incoming` to `files`. With `tokenize`, each (post-rename) name is also
- *  referenced in `text`; callers that show the staged list elsewhere pass false
- *  and leave `text` to the user. */
+/** Short inline marker for the attachment at `index`: `[📎1]`, `[📎2]`, …
+ *  The number is the file's position in the list, so it stays derivable from
+ *  the persisted list alone. */
+export const clipToken = (index: number) => `[📎${index + 1}]`;
+
+const CLIP_TOKEN = /\[📎(\d+)\]/gu;
+
+/** How attaching marks the draft: a short `[📎N]`, the full `[name]` (a masked
+ *  paste, whose name is already short), or nothing. */
+export type FileTokenMode = 'clip' | 'name' | false;
+
+/** Splice `tokens` into `text` at `caret` (end when omitted), space-separated
+ *  from the words around it. The caret comes back just after the tokens. */
+export function insertTokens(
+	text: string,
+	tokens: string[],
+	caret?: number
+): { text: string; caret: number } {
+	if (!tokens.length) return { text, caret: caret ?? text.length };
+	const at = Math.max(0, Math.min(text.length, caret ?? text.length));
+	const before = text.slice(0, at);
+	const after = text.slice(at);
+	const head = `${before}${before && !/\s$/.test(before) ? ' ' : ''}${tokens.join(' ')}`;
+	const gap = after && !/^\s/.test(after) ? ' ' : '';
+	return { text: head + gap + after, caret: head.length };
+}
+
+/** Add `incoming` to `files`, marking each (post-rename) file in `text` at
+ *  `caret` per `mode`. A `[name]` already in the draft is not repeated. */
 export function attachFiles(
 	files: File[],
 	text: string,
 	incoming: File[],
-	tokenize = true
-): { files: File[]; text: string } {
+	mode: FileTokenMode = 'clip',
+	caret?: number
+): { files: File[]; text: string; caret: number } {
 	const merged = mergeFilesRenamed(files, incoming);
-	return {
-		files: merged.files,
-		text: tokenize ? appendFileTokens(text, merged.added) : text
-	};
+	const base = merged.files.length - merged.added.length;
+	const tokens =
+		mode === 'clip'
+			? merged.added.map((_, i) => clipToken(base + i))
+			: mode === 'name'
+				? merged.added.map((f) => `[${f.name}]`).filter((t) => !text.includes(t))
+				: [];
+	const next = insertTokens(text, tokens, caret);
+	return { files: merged.files, ...next };
+}
+
+/** Follow the list from `before` to `after` (names, in order): each `[📎N]`
+ *  takes its file's new number, and a removed file's token goes with it. */
+export function renumberClipTokens(text: string, before: string[], after: string[]): string {
+	return text
+		.replace(/ ?\[📎(\d+)\]/gu, (tok, n: string) => {
+			const name = before[Number(n) - 1];
+			const j = name === undefined ? -1 : after.indexOf(name);
+			if (j < 0) return name === undefined ? tok : '';
+			return `${tok.startsWith(' ') ? ' ' : ''}${clipToken(j)}`;
+		})
+		.replace(/^ +/, '');
+}
+
+/** Swap each `[📎N]` for `[name]`: the staged name from `paths` when the
+ *  upload returned one, else the file's own. Numbers past the list stay. */
+export function expandClipTokens(text: string, files: File[], paths: string[] = []): string {
+	return text.replace(CLIP_TOKEN, (tok, n: string) => {
+		const i = Number(n) - 1;
+		const file = files[i];
+		if (!file) return tok;
+		return `[${paths[i]?.split('/').pop() || file.name}]`;
+	});
+}
+
+/** `📎1 a.png · 📎2 b.pdf`: what each inline marker points at. */
+export function clipLegend(files: File[]): string {
+	return files.map((f, i) => `📎${i + 1} ${f.name}`).join(' · ');
 }
 
 const PASTE_NAME = /\bpaste-(\d+)\.txt\b/g;

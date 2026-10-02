@@ -46,6 +46,7 @@ vi.mock('$lib/settings.svelte', () => ({
 vi.mock('$lib/ws.svelte', () => ({ ws: { sessions: [] } }));
 
 const SLOT = spawnSlotKey('m-uuid-1', '/w');
+const settle = () => new Promise((r) => setTimeout(r, 0));
 let stop: (() => void) | undefined;
 
 function open(opts: Partial<SpawnFormOptions> = {}): SpawnForm {
@@ -157,6 +158,7 @@ describe('SpawnForm draft persistence', () => {
 describe('SpawnForm large paste', () => {
 	it('stages a long paste as a paste-N.txt attachment and keeps it out of the prompt', async () => {
 		const sf = open();
+		await settle();
 		const text = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join('\n');
 		expect(sf.addPaste(text)).toBe(true);
 		await vi.waitFor(() => expect(sf.files.map((f) => f.name)).toEqual(['paste-1.txt']));
@@ -178,6 +180,35 @@ describe('SpawnForm large paste', () => {
 		sf.clearForm();
 		expect(sf.form.prompt).toBe('');
 		expect(drafts.get(SLOT)).toBe('');
+	});
+});
+
+describe('SpawnForm attachment markers', () => {
+	const shot = (name: string) => new File(['x'], name, { type: 'text/plain' });
+
+	it('marks attached files at the prompt caret and sends their names in place', async () => {
+		const sf = open();
+		await settle();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'look here: and there';
+		const el = document.createElement('textarea');
+		el.value = sf.form.prompt;
+		el.setSelectionRange(10, 10);
+		sf.promptEl = el;
+		sf.addFiles([shot('a.txt'), shot('b.txt')]);
+		await vi.waitFor(() => expect(sf.files).toHaveLength(2));
+		expect(sf.form.prompt).toBe('look here: [📎1] [📎2] and there');
+		expect(sf.buildSpawnBody().prompt).toBe('look here: [a.txt] [b.txt] and there');
+	});
+
+	it('renumbers the markers when a file is removed', async () => {
+		const sf = open();
+		await settle();
+		sf.addFiles([shot('a.txt'), shot('b.txt')]);
+		await vi.waitFor(() => expect(sf.files).toHaveLength(2));
+		sf.removeFile('a.txt');
+		expect(sf.form.prompt).toBe('[📎1]');
+		expect(sf.fileLegend).toBe('📎1 b.txt');
 	});
 });
 

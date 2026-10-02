@@ -29,9 +29,18 @@ import {
 	normalizeDir
 } from '$lib/drafts';
 import { recordProfileUse, PROFILE_USES } from '$lib/spawnMemory';
-import { attachFiles, removeFileByName, fileCapError, maskedPaste } from '$lib/attachments';
+import {
+	attachFiles,
+	clipLegend,
+	expandClipTokens,
+	fileCapError,
+	maskedPaste,
+	removeFileByName,
+	renumberClipTokens,
+	type FileTokenMode
+} from '$lib/attachments';
 import { uploadCaps } from '$lib/uploadCaps.svelte';
-import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
+import { attachmentStore, restoreDraftTokens } from '$lib/attachmentStore';
 import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '$lib/followup';
 import { settings } from '$lib/settings.svelte';
 import { m } from '$lib/paraglide/messages';
@@ -98,6 +107,7 @@ export class SpawnForm {
 	// IndexedDB (attachmentStore), keyed like the draft.
 	envRows = $state<EnvRow[]>([]);
 	files = $state<File[]>([]);
+	promptEl = $state<HTMLTextAreaElement | null>(null);
 	private filesRestored = $state(false);
 	archiveSource = $state(false);
 	busy = $state(false);
@@ -163,6 +173,7 @@ export class SpawnForm {
 
 	badEnvKeys = $derived(this.envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim())));
 	fileError = $derived(fileCapError(this.files, uploadCaps));
+	fileLegend = $derived(clipLegend(this.files));
 	secretsValid = $derived(
 		this.badEnvKeys.length === 0 && !this.fileError && this.images.pending.length === 0
 	);
@@ -344,7 +355,7 @@ export class SpawnForm {
 					new File([this.followupFile], BRIEF_FILE_NAME, { type: 'text/markdown' })
 				];
 			}
-			const { text, dropped } = dropMissingTokens(this.form.prompt, restored.missing);
+			const { text, dropped } = restoreDraftTokens(this.form.prompt, restored);
 			if (dropped) {
 				this.form.prompt = text;
 				toasts.info(m.attachments_missing_dropped({ count: dropped }));
@@ -363,8 +374,9 @@ export class SpawnForm {
 	}
 
 	buildSpawnBody(): SpawnRequest {
+		const f = this.effectiveForm;
 		return buildSpawnBody(
-			this.effectiveForm,
+			{ ...f, prompt: expandClipTokens(f.prompt, this.files) },
 			this.spawnProvider,
 			envMap(this.envRows),
 			this.followupParent,
@@ -419,28 +431,38 @@ export class SpawnForm {
 		this.target = value === 'dispatch' ? 'dispatch' : 'machine';
 	}
 
-	addFiles = (incoming: File[]) => {
+	addFiles = (incoming: File[]) => this.attach(incoming, 'clip');
+
+	private attach(incoming: File[], mode: FileTokenMode) {
 		if (this.busy) return;
+		let caret = this.promptEl ? this.promptEl.selectionStart : undefined;
 		this.images.add(
 			incoming,
 			(file) => {
-				({ files: this.files, text: this.form.prompt } = attachFiles(this.files, this.form.prompt, [file]));
+				const next = attachFiles(this.files, this.form.prompt, [file], mode, caret);
+				caret = next.caret;
+				this.files = next.files;
+				this.form.prompt = next.text;
 			},
 			(file) => toasts.error(m.attachments_compression_failed({ name: file.name }))
 		);
-	};
+	}
+
 	/** A long text paste stages as a `paste-N.txt` attachment; false leaves the
 	 *  paste to the field. */
 	addPaste = (text: string): boolean => {
 		if (this.busy) return false;
 		const paste = maskedPaste(text, this.files, this.form.prompt);
 		if (!paste) return false;
-		this.addFiles([paste]);
+		this.attach([paste], 'name');
 		toasts.ok(m.composer_large_paste({ name: paste.name, lines: text.split('\n').length }));
 		return true;
 	};
 	removeFile = (name: string) => {
+		const before = this.files.map((f) => f.name);
 		this.files = removeFileByName(this.files, name);
+		const prompt = renumberClipTokens(this.form.prompt, before, this.files.map((f) => f.name));
+		if (prompt !== this.form.prompt) this.form.prompt = prompt;
 	};
 
 	rememberProfileUse(p: SessionProfile | null) {

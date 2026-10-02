@@ -23,6 +23,8 @@
 		onsubmit={sf.submit}
 		onfiles={sf.addFiles}
 		onlongpaste={sf.addPaste}
+		bind:promptEl={sf.promptEl}
+		fileLegend={sf.fileLegend}
 	/>
 	<ProfileList
 		profiles={sf.profiles}

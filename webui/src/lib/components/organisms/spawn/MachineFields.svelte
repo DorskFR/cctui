@@ -34,7 +34,9 @@
 		recentDirs,
 		onsubmit,
 		onfiles,
-		onlongpaste
+		onlongpaste,
+		promptEl = $bindable(null),
+		fileLegend = ''
 	}: {
 		form: Form;
 		machines: MachineRow[];
@@ -45,12 +47,14 @@
 		onfiles?: (files: File[]) => void;
 		/** A text paste: true when it was staged as an attachment instead. */
 		onlongpaste?: (text: string) => boolean;
+		promptEl?: HTMLTextAreaElement | null;
+		/** What each `[📎N]` in the prompt points at, shown on hover. */
+		fileLegend?: string;
 	} = $props();
 
 	// `#` session-mention popover on the prompt (see SessionMention).
 	const sessionsQuery = useSessions(() => false);
 	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
-	let promptEl = $state<HTMLTextAreaElement | null>(null);
 
 	const nav = new HistoryNav({
 		list: () => promptHistory.get(),
@@ -180,6 +184,7 @@
 			id="sp-prompt"
 			rows={10}
 			placeholder={m.spawn_prompt_placeholder()}
+			title={fileLegend || undefined}
 			bind:value={form.prompt}
 			bind:el={promptEl}
 			resize="bottom"

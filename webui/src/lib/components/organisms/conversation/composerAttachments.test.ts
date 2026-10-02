@@ -55,39 +55,62 @@ const pasteEvent = (text: string) =>
 	}) as unknown as ClipboardEvent;
 
 describe('ComposerAttachments', () => {
-	it('adds files without touching the draft and persists under the restored key', async () => {
+	it('marks an added file in the draft and persists under the restored key', async () => {
 		const { a, sync, text } = await make({ input: () => 'note' });
 		a.add([file('a.txt')]);
 		await flush();
 		expect(a.files.map((f) => f.name)).toEqual(['a.txt']);
-		expect(text()).toBe('note');
+		expect(text()).toBe('note [📎1]');
 		expect(sync.persist).toHaveBeenLastCalledWith('draft:s1', a.files);
 	});
 
-	it('keeps long screenshot names out of the textarea', async () => {
+	it('keeps long screenshot names out of the textarea behind short markers', async () => {
 		const { a, text } = await make();
 		a.add([1, 2, 3, 4].map((i) => file(`Screenshot 2026-09-25 at 11.3${i}.22.png`)));
 		await flush();
 		expect(a.files).toHaveLength(4);
-		expect(text()).toBe('');
+		expect(text()).toBe('[📎1] [📎2] [📎3] [📎4]');
+		expect(a.legend).toContain('📎1 Screenshot 2026-09-25 at 11.31.22.png');
 	});
 
-	it('still lists every staged path in the sent body with no tokens in the text', async () => {
-		const { a, text } = await make();
+	it('inserts the markers at the caret of the textarea', async () => {
+		const el = document.body.appendChild(document.createElement('textarea'));
+		el.value = 'first point. second point.';
+		el.setSelectionRange(12, 12);
+		let draft = el.value;
+		const { a } = await make({ input: () => draft, setInput: (t) => (draft = t), el: () => el });
+		a.add([file('one.png'), file('two.png')]);
+		await flush();
+		expect(draft).toBe('first point. [📎1] [📎2] second point.');
+		el.remove();
+	});
+
+	it('sends each file reference where its marker sits, in the user\'s order', async () => {
+		const { a } = await make();
 		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
-		const body = await a.stage('look', async () => ({ paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
-		expect(body).toBe('look\n\nAttached files (2):\n- /tmp/a.txt\n- /tmp/b.txt');
-		expect(text()).toBe('');
+		const body = await a.stage('b here [📎2], a here [📎1]', async () => ({
+			paths: ['/tmp/a.txt', '/tmp/b-1.txt']
+		}));
+		expect(body).toBe(
+			'b here [b-1.txt], a here [a.txt]\n\nAttached files (2):\n- /tmp/a.txt\n- /tmp/b-1.txt'
+		);
+	});
+
+	it('still lists a file whose marker the user deleted', async () => {
+		const { a } = await make();
+		a.add([file('a.txt'), file('b.txt')]);
+		await flush();
+		const body = await a.stage('look [📎2]', async () => ({ paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
+		expect(body).toBe('look [b.txt]\n\nAttached files (2):\n- /tmp/a.txt\n- /tmp/b.txt');
 	});
 
 	it('leads the sent body with image names, which Claude keeps once it eats the paths', async () => {
-		const { a, text } = await make();
+		const { a } = await make();
 		a.add([image('shot.png')]);
 		await flush();
 		const body = await a.stage('', async () => ({ paths: ['/tmp/cctui-uploads/s1/shot.png'] }));
 		expect(body).toBe('[shot.png]\n\nAttached file:\n- /tmp/cctui-uploads/s1/shot.png');
-		expect(text()).toBe('');
 	});
 
 	it('tokens the draft for a masked large paste', async () => {
@@ -98,12 +121,13 @@ describe('ComposerAttachments', () => {
 		expect(text()).toContain('[paste-1.txt]');
 	});
 
-	it('removes a file by name', async () => {
-		const { a } = await make();
+	it('removes a file by name and renumbers the markers left', async () => {
+		const { a, text } = await make();
 		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
 		a.remove('a.txt');
 		expect(a.files.map((f) => f.name)).toEqual(['b.txt']);
+		expect(text()).toBe('[📎1]');
 	});
 
 	it('ignores adds while disabled or uploading', async () => {

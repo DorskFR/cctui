@@ -100,7 +100,8 @@
 		enabled: () => supportsAttachments && !archived,
 		input: () => input,
 		setInput: (text) => (input = text),
-		stagedNames: () => (stagedQuery.data ?? []).map((a) => a.name)
+		stagedNames: () => (stagedQuery.data ?? []).map((a) => a.name),
+		el: () => scroll.textarea
 	});
 	onDestroy(() => att.images.reset());
 	export function addFiles(incoming: File[]) {
@@ -370,6 +371,7 @@
 					onsubmit={submit}
 					data-journey="message"
 					aria-label={m.a11y_composer_message()}
+					title={supportsAttachments ? att.legend || undefined : undefined}
 					placeholder={att.dragActive
 						? m.composer_drop_files()
 						: coarsePointer

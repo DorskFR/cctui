@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
 	appendFileTokens,
 	attachFiles,
+	clipLegend,
+	expandClipTokens,
+	insertTokens,
+	renumberClipTokens,
 	DEFAULT_UPLOAD_CAPS,
 	extForType,
 	fileCapError,
@@ -63,7 +67,7 @@ describe('mergeFiles', () => {
 
 describe('attachFiles', () => {
 	it('rewrites the token to the renamed file', () => {
-		const { files, text } = attachFiles([f('a.txt')], '[a.txt]', [f('a.txt')]);
+		const { files, text } = attachFiles([f('a.txt')], '[a.txt]', [f('a.txt')], 'name');
 		expect(files.map((x) => x.name)).toEqual(['a.txt', 'a-2.txt']);
 		expect(text).toBe('[a.txt] [a-2.txt]');
 	});
@@ -72,6 +76,51 @@ describe('attachFiles', () => {
 		const { files, text } = attachFiles([], 'hello', [f('a.txt'), f('b.txt')], false);
 		expect(files.map((x) => x.name)).toEqual(['a.txt', 'b.txt']);
 		expect(text).toBe('hello');
+	});
+});
+
+describe('clip tokens', () => {
+	it('marks each attached file with a short numbered token at the caret', () => {
+		const shots = [1, 2, 3].map((i) => f(`Screenshot 2026-10-02 at 11.3${i}.22.png`));
+		const { files, text, caret } = attachFiles([], 'before after', shots, 'clip', 6);
+		expect(files).toHaveLength(3);
+		expect(text).toBe('before [📎1] [📎2] [📎3] after');
+		expect(caret).toBe('before [📎1] [📎2] [📎3]'.length);
+		expect(text.length).toBeLessThan(40);
+	});
+
+	it('numbers new files after the ones already attached and appends without a caret', () => {
+		const { text } = attachFiles([f('a.png')], 'see [📎1]', [f('b.png')]);
+		expect(text).toBe('see [📎1] [📎2]');
+	});
+
+	it('expands each token to its file at its own position, in any order', () => {
+		const files = [f('a.png'), f('b.png')];
+		expect(expandClipTokens('second [📎2] then first [📎1]', files)).toBe(
+			'second [b.png] then first [a.png]'
+		);
+		expect(
+			expandClipTokens('[📎1] and [📎2]', files, ['/tmp/u/a.png', '/tmp/u/b-1.png'])
+		).toBe('[a.png] and [b-1.png]');
+		expect(expandClipTokens('stray [📎9]', files)).toBe('stray [📎9]');
+	});
+
+	it('renumbers tokens when a file is removed and drops the removed one', () => {
+		const out = renumberClipTokens('a [📎1] b [📎2] c [📎3]', ['x', 'y', 'z'], ['x', 'z']);
+		expect(out).toBe('a [📎1] b c [📎2]');
+		expect(renumberClipTokens('[📎1] text', ['x'], [])).toBe('text');
+	});
+
+	it('lists what each token points at', () => {
+		expect(clipLegend([f('a.png'), f('b.pdf')])).toBe('📎1 a.png · 📎2 b.pdf');
+	});
+});
+
+describe('insertTokens', () => {
+	it('pads the tokens off the words around the caret', () => {
+		expect(insertTokens('ab', ['[t]'], 1)).toEqual({ text: 'a [t] b', caret: 5 });
+		expect(insertTokens('a ', ['[t]'], 2)).toEqual({ text: 'a [t]', caret: 5 });
+		expect(insertTokens('', ['[t]', '[u]'])).toEqual({ text: '[t] [u]', caret: 7 });
 	});
 });
 
@@ -93,7 +142,7 @@ describe('maskedPaste', () => {
 describe('nextPasteIndex', () => {
 	const paste = (files: File[], text: string) => {
 		const name = `paste-${nextPasteIndex(files, text)}.txt`;
-		return attachFiles(files, text, [f(name)]);
+		return attachFiles(files, text, [f(name)], 'name');
 	};
 
 	it('numbers consecutive pastes paste-1, paste-2', () => {
