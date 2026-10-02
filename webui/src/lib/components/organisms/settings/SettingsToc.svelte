@@ -42,7 +42,13 @@
 	);
 
 	// Narrow screens: the same pages as kit tabs; picking one routes.
-	const tabs = $derived<TabItem[]>(entries.map((e) => ({ id: e.page, label: e.label })));
+	const tabs = $derived<TabItem[]>(
+		entries.map((e) => ({
+			id: e.page,
+			label: e.label,
+			attrs: { 'data-journey': 'settings-tab', 'data-journey-key': e.page }
+		}))
+	);
 	let tab = $derived(active as string);
 	$effect(() => {
 		if (tab !== active) void goto(settingsHref(tab as SettingsPage), { noScroll: true });
@@ -50,8 +56,7 @@
 </script>
 
 <!-- `settings-goto` is on whichever of these two is visible at this width, so a
-     guide can ask for "the page switcher" once instead of per viewport. The kit's
-     Tabs exposes no anchor on its triggers, so a tap bubbles to the strip. -->
+     guide can ask for "the page switcher" once instead of per viewport. -->
 <div class="tabs" data-journey="settings-goto">
 	<Tabs {tabs} bind:value={tab} label={m.settings_title()}>
 		{#snippet panel()}{/snippet}
