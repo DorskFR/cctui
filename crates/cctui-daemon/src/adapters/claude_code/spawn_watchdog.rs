@@ -64,7 +64,7 @@ impl SpawnWatchdog {
     }
 
     #[cfg(test)]
-    pub(super) fn with_bounds(mut self, timeout: Duration, poll: Duration) -> Self {
+    pub(super) const fn with_bounds(mut self, timeout: Duration, poll: Duration) -> Self {
         self.timeout = timeout;
         self.poll = poll;
         self
@@ -219,6 +219,8 @@ fn truncate(text: &str, cap: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     fn jobs_root_with(short: &str) -> tempfile::TempDir {
@@ -245,7 +247,10 @@ mod tests {
     async fn a_worker_that_never_appears_stalls_with_the_log_tail() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("claude-daemon.err.log");
-        let mut body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let mut body = (0..60).fold(String::new(), |mut acc, i| {
+            let _ = writeln!(acc, "line {i}");
+            acc
+        });
         body.push_str("Error: spawn claude ENOENT\n");
         std::fs::write(&log, &body).expect("log");
 
@@ -277,7 +282,10 @@ mod tests {
     fn the_report_is_capped() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("big.log");
-        let body: String = (0..TAIL_LINES).map(|i| format!("{i}{}\n", "x".repeat(4096))).collect();
+        let body = (0..TAIL_LINES).fold(String::new(), |mut acc, i| {
+            let _ = writeln!(acc, "{i}{}", "x".repeat(4096));
+            acc
+        });
         std::fs::write(&log, body).expect("log");
         let wd = SpawnWatchdog::new(dir.path().join("jobs")).with_logs(vec![log]);
         assert!(wd.stall("abcd1234", Duration::from_secs(45)).to_string().len() <= REPORT_CAP);
@@ -307,11 +315,10 @@ mod tests {
         let benign = classify(["worker exited with code 1"].into_iter());
         if cfg!(target_os = "macos") {
             assert!(denial.expect("classified").contains("Local Network"));
-            assert!(benign.is_none());
         } else {
             // The grant model is macOS-only; elsewhere the hint would mislead.
             assert!(denial.is_none());
-            assert!(benign.is_none());
         }
+        assert!(benign.is_none());
     }
 }
