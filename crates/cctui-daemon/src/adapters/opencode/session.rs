@@ -1494,7 +1494,7 @@ mod tests {
         assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
 
         let staged =
-            std::path::Path::new("/tmp/cctui-uploads").join(&session.params.key).join("context.md");
+            crate::adapters::uploads::session_dir(&session.params.key).join("context.md");
         assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
         let _ = std::fs::remove_dir_all(staged.parent().unwrap());
     }

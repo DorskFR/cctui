@@ -1,15 +1,165 @@
 //! Shared attachment staging for adapters.
 //!
 //! Both the claude-code and codex adapters stage user-uploaded files under a
-//! per-session dir (`/tmp/cctui-uploads/<session-id>/`) and reference the
-//! resulting absolute paths from the turn/prompt. The staging logic — base64
-//! decode, filename sanitization, 0600 perms, collision-suffixing — lives here
-//! once so the two adapters cannot drift. Claude consumes it at spawn +
-//! mid-chat; codex at spawn + native image turn inputs.
+//! per-session dir ([`session_dir`]) and reference the resulting absolute paths
+//! from the turn/prompt. The staging logic — base64 decode, filename
+//! sanitization, 0700 dirs, 0600 files, collision-suffixing — lives here once so
+//! the two adapters cannot drift. Claude consumes it at spawn + mid-chat; codex
+//! at spawn + native image turn inputs.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 
 use cctui_proto::adapter::{BootstrapFile, BootstrapUploads};
+
+/// The shared root, used when it is absent or already ours.
+const SHARED_ROOT: &str = "/tmp/cctui-uploads";
+
+/// Staged dirs older than this go even if their session still looks live: a
+/// staged attachment is only needed while the turn referencing it is in flight.
+pub const MAX_AGE: Duration = Duration::from_hours(24 * 7);
+
+/// A dir younger than this is never swept — a spawn stages before the session
+/// exists anywhere the sweep can see it.
+pub const MIN_AGE: Duration = Duration::from_hours(1);
+
+/// Root the staged per-session dirs live under, decided once per process.
+///
+/// `/tmp` is world-writable and shared, so the shared root is only used when it
+/// is absent (we then create it 0700) or is a real directory this uid already
+/// owns. Anything else — another user's dir, a symlink planted ahead of us — is
+/// stepped around with a uid-suffixed root rather than written into.
+pub fn staging_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let shared = PathBuf::from(SHARED_ROOT);
+        if usable_root(&shared) {
+            return shared;
+        }
+        let uid = rustix::process::getuid().as_raw();
+        let private = PathBuf::from(format!("{SHARED_ROOT}-{uid}"));
+        tracing::warn!(root = %private.display(), "shared upload root unusable; staging privately");
+        private
+    })
+}
+
+/// Absolute per-session staging dir. Created on first write, not here.
+#[must_use]
+pub fn session_dir(session_id: &str) -> PathBuf {
+    staging_root().join(session_id)
+}
+
+/// Whether `root` can be staged into: absent, or a non-symlink directory owned
+/// by this uid.
+fn usable_root(root: &Path) -> bool {
+    match std::fs::symlink_metadata(root) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+        Ok(meta) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                meta.is_dir() && meta.uid() == rustix::process::getuid().as_raw()
+            }
+            #[cfg(not(unix))]
+            {
+                meta.is_dir()
+            }
+        }
+    }
+}
+
+/// Create `dir` and every missing parent with 0700, so a staged attachment is
+/// never readable by another user on the machine.
+fn create_private_dir(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+    .with_context(|| format!("creating upload dir {}", dir.display()))?;
+    if !usable_root(dir) {
+        anyhow::bail!("upload dir {} is not a directory owned by this user", dir.display());
+    }
+    Ok(())
+}
+
+/// Drop everything staged for `session_id`. Best-effort.
+pub fn remove_session_dir(session_id: &str) {
+    let dir = session_dir(session_id);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => tracing::debug!(%session_id, "removed staged uploads"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => tracing::warn!(%session_id, %err, "could not remove staged uploads"),
+    }
+}
+
+/// Remove staged dirs in `root` whose session is absent from `live`, plus any
+/// past `max_age` regardless. Returns how many were removed.
+pub fn sweep_dir<S: std::hash::BuildHasher>(
+    root: &Path,
+    live: &HashSet<String, S>,
+    now: SystemTime,
+    max_age: Duration,
+) -> std::io::Result<usize> {
+    let mut removed = 0usize;
+    for entry in std::fs::read_dir(root)? {
+        let Ok(entry) = entry else { continue };
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        let age = now.duration_since(modified).unwrap_or_default();
+        if !should_remove(name, age, live, max_age) {
+            continue;
+        }
+        if std::fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Whether the staged dir of `name`, last touched `age` ago, should go: past
+/// `max_age` always, otherwise only when its session is unknown and it is old
+/// enough that a spawn cannot still be staging into it.
+fn should_remove<S: std::hash::BuildHasher>(
+    name: &str,
+    age: Duration,
+    live: &HashSet<String, S>,
+    max_age: Duration,
+) -> bool {
+    if age > max_age {
+        return true;
+    }
+    let known = live.contains(name)
+        || crate::configsweep::short_of(name).is_some_and(|short| live.contains(&short));
+    !known && age >= MIN_AGE
+}
+
+/// Sweep the staging root against the sessions this machine still knows about.
+pub fn sweep<S: std::hash::BuildHasher>(live: &HashSet<String, S>) {
+    let root = staging_root();
+    if !root.is_dir() {
+        return;
+    }
+    match sweep_dir(root, live, SystemTime::now(), MAX_AGE) {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(removed, "swept staged upload dirs"),
+        Err(err) => tracing::warn!(%err, path = %root.display(), "upload sweep failed"),
+    }
+}
 
 /// Decode the opaque [`cctui_proto::adapter::SessionSpec::bootstrap`] payload
 /// and stage its uploads. A null/absent bootstrap stages nothing.
@@ -23,7 +173,7 @@ pub fn stage_bootstrap(session_id: &str, bootstrap: &serde_json::Value) -> Resul
 }
 
 /// Decode + write a batch of uploaded files into the per-session staging dir
-/// (`/tmp/cctui-uploads/<session_id>/`), returning the staged absolute paths.
+/// ([`session_dir`]), returning the staged absolute paths.
 ///
 /// Shared by spawn-time bootstrap uploads ([`stage_bootstrap`]) and mid-chat
 /// attachments. Files are written 0600 (Unix). Name collisions —
@@ -37,9 +187,8 @@ pub fn stage_files(session_id: &str, uploads: &[BootstrapFile]) -> Result<Vec<St
     if uploads.is_empty() {
         return Ok(Vec::new());
     }
-    let dir = std::path::Path::new("/tmp/cctui-uploads").join(session_id);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating upload dir {}", dir.display()))?;
+    let dir = session_dir(session_id);
+    create_private_dir(&dir)?;
     let mut paths = Vec::with_capacity(uploads.len());
     for file in uploads {
         // Defensive re-sanitize: the server already strips path separators, but
@@ -65,9 +214,8 @@ pub fn stage_files(session_id: &str, uploads: &[BootstrapFile]) -> Result<Vec<St
 /// the absolute path. Same dir and permissions as an upload, so anything that
 /// can read a staged attachment can read this.
 pub fn stage_text(session_id: &str, name: &str, body: &str) -> Result<String> {
-    let dir = std::path::Path::new("/tmp/cctui-uploads").join(session_id);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating upload dir {}", dir.display()))?;
+    let dir = session_dir(session_id);
+    create_private_dir(&dir)?;
     let path = dir.join(name);
     cctui_proto::util::write_private(&path, body.as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
@@ -77,7 +225,7 @@ pub fn stage_text(session_id: &str, name: &str, body: &str) -> Result<String> {
 /// Resolve a non-colliding path in `dir` for `name`. If `dir/name` is free use
 /// it; otherwise append `-1`, `-2`, … before the extension until a free path is
 /// found.
-fn unique_staging_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+fn unique_staging_path(dir: &Path, name: &str) -> PathBuf {
     let candidate = dir.join(name);
     if !candidate.exists() {
         return candidate;
@@ -136,7 +284,7 @@ mod tests {
 
         let paths = stage_bootstrap(&session_id, &bootstrap).expect("stage ok");
         assert_eq!(paths.len(), 2);
-        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
+        let dir = session_dir(&session_id);
 
         let notes = dir.join("notes.txt");
         assert!(paths.contains(&notes.to_string_lossy().into_owned()));
@@ -147,7 +295,7 @@ mod tests {
         // Traversal collapsed to the bare basename inside the staging dir.
         let evil = dir.join("evil");
         assert!(evil.exists(), "traversal name must be reduced to a basename in-dir");
-        assert!(!std::path::Path::new("/tmp/cctui-uploads").join("../../etc/evil").exists());
+        assert!(!staging_root().join("../../etc/evil").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -160,7 +308,7 @@ mod tests {
     #[test]
     fn stage_files_suffixes_name_collisions() {
         let session_id = format!("test-{}", uuid::Uuid::new_v4());
-        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
+        let dir = session_dir(&session_id);
 
         // First upload stages report.pdf.
         let first = stage_files(
@@ -209,8 +357,78 @@ mod tests {
         assert_eq!(again, path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# two");
 
-        let _ =
-            std::fs::remove_dir_all(std::path::Path::new("/tmp/cctui-uploads").join(&session_id));
+        remove_session_dir(&session_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_session_staging_dir_is_0700_and_removable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let session_id = format!("test-{}", uuid::Uuid::new_v4());
+        stage_text(&session_id, "context.md", "x").expect("stage ok");
+        let dir = session_dir(&session_id);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "staging dir must not be group/world readable");
+
+        remove_session_dir(&session_id);
+        assert!(!dir.exists(), "cleanup removes the staged dir");
+        remove_session_dir(&session_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_that_is_a_symlink_or_another_users_dir_is_not_usable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("absent");
+        assert!(usable_root(&missing), "an absent root is created by us");
+
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        assert!(usable_root(&real), "a dir we own is usable");
+
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(!usable_root(&link), "a symlinked root must be refused");
+
+        let file = tmp.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(!usable_root(&file), "a plain file is not a usable root");
+    }
+
+    #[test]
+    fn sweep_keeps_live_and_young_dirs_and_drops_unknown_or_expired_ones() {
+        let live: HashSet<String> =
+            ["aaaa0001", "test-plain"].into_iter().map(str::to_owned).collect();
+        let old = Duration::from_hours(6);
+        let live_uuid = "aaaa0001-1111-2222-3333-444444444444";
+        let other_uuid = "bbbb0002-1111-2222-3333-444444444444";
+
+        assert!(!should_remove(live_uuid, old, &live, MAX_AGE), "a live session's dir stays");
+        assert!(!should_remove("test-plain", old, &live, MAX_AGE), "match on the full id too");
+        assert!(should_remove(other_uuid, old, &live, MAX_AGE), "an unknown session's dir goes");
+        assert!(
+            !should_remove(other_uuid, Duration::from_mins(1), &live, MAX_AGE),
+            "a dir a spawn may still be staging into is never swept"
+        );
+        assert!(
+            should_remove(live_uuid, MAX_AGE + Duration::from_hours(1), &live, MAX_AGE),
+            "past the max age even a live session's dir goes"
+        );
+    }
+
+    #[test]
+    fn sweep_walks_only_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("stray.txt"), "x").unwrap();
+        let young = root.join("dddd0004-1111-2222-3333-444444444444");
+        std::fs::create_dir(&young).unwrap();
+
+        let live: HashSet<String> = HashSet::new();
+        assert_eq!(sweep_dir(root, &live, SystemTime::now(), MAX_AGE).unwrap(), 0);
+        assert!(root.join("stray.txt").exists(), "non-directories are left alone");
+        assert!(young.exists(), "a just-created dir survives");
     }
 
     #[test]

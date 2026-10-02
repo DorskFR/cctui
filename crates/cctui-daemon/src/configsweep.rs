@@ -147,11 +147,12 @@ fn live_shorts(jobs_root: &Path) -> HashSet<String> {
 }
 
 fn sweep_once() {
+    let live = live_shorts(&crate::adapters::claude_code::state::default_jobs_root());
+    crate::adapters::uploads::sweep(&live);
     let Some(dir) = config_dir() else { return };
     if !dir.is_dir() {
         return;
     }
-    let live = live_shorts(&crate::adapters::claude_code::state::default_jobs_root());
     match sweep_dir(&dir, &live, SystemTime::now(), MAX_AGE) {
         Ok(0) => {}
         Ok(removed) => tracing::info!(removed, live = live.len(), "swept per-session config files"),
