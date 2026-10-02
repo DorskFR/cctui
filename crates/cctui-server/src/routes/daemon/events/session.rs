@@ -203,6 +203,45 @@ pub(super) async fn on_session_event(
     Ok(())
 }
 
+/// `spawn_key` is attacker-chosen data on a machine-authenticated event, so a
+/// rebind is only run once the key, the target id and the credentials filed
+/// under the key all belong to the announcing machine's user.
+async fn rebind_permitted(
+    state: &AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
+    spawn_key: &str,
+    local_id: &str,
+) -> bool {
+    if !crate::routes::gateway::needs_rebind(spawn_key, local_id) {
+        return false;
+    }
+    match crate::store::tokens::rebind_allowed(
+        &state.pool,
+        spawn_key,
+        local_id,
+        machine_id,
+        user_id,
+    )
+    .await
+    {
+        Ok(true) => true,
+        Ok(false) => {
+            tracing::warn!(
+                %machine_id,
+                %spawn_key,
+                session = %local_id,
+                "refusing a spawn-key rebind that does not belong to this machine's user"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::error!(%spawn_key, session = %local_id, error = %e, "spawn-key rebind check failed");
+            false
+        }
+    }
+}
+
 async fn on_session_started(
     state: &AppState,
     machine_id: Uuid,
@@ -218,7 +257,9 @@ async fn on_session_started(
     let extra = (!meta.extra.is_null()).then(|| meta.extra.clone());
     let spawn_key_hint =
         meta.extra.get("spawn_key").and_then(serde_json::Value::as_str).map(str::to_owned);
-    if let Some(spawn_key) = meta.extra.get("spawn_key").and_then(serde_json::Value::as_str) {
+    if let Some(spawn_key) = meta.extra.get("spawn_key").and_then(serde_json::Value::as_str)
+        && rebind_permitted(state, machine_id, user_id, spawn_key, &local_id).await
+    {
         crate::routes::gateway::rebind_spawn_key(
             state,
             cctui_proto::ids::SpawnKey::from(spawn_key),
