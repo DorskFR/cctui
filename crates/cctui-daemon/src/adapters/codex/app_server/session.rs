@@ -28,23 +28,25 @@ pub(super) struct SpawnAck {
 impl SpawnAck {
     pub(super) async fn ok(&mut self) {
         if let Some(command_id) = self.command_id.take() {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
-                .await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult { command_id, ok: true, error: None },
+            )
+            .await;
         }
     }
 
     pub(super) async fn fail(&mut self, error: &str) {
         if let Some(command_id) = self.command_id.take() {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult {
                     command_id,
                     ok: false,
                     error: Some(error.to_owned()),
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
 }

@@ -189,14 +189,15 @@ impl SessionDriver for Pump {
             route(&self.live, &local_id, SessionCommand::Kill { session_id: local_id.clone() })
                 .await;
         if let Some(command_id) = command_id {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult {
                     command_id,
                     ok: delivered,
                     error: (!delivered).then(|| "no live opencode session".to_owned()),
-                })
-                .await;
+                },
+            )
+            .await;
         }
         Ok(Handled::Deferred)
     }
@@ -244,13 +245,14 @@ impl Pump {
         if !route(&self.live, &local_id, SessionCommand::Kill { session_id: local_id.clone() })
             .await
         {
-            let _ = self
-                .events
-                .send(AdapterEvent::SessionEnded {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::SessionEnded {
                     local_id,
                     reason: cctui_proto::adapter::EndReason::Killed,
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
 
@@ -425,13 +427,11 @@ async fn route(live: &LiveRegistry, local_id: &str, cmd: SessionCommand) -> bool
 async fn fail(events: &mpsc::Sender<AdapterEvent>, command_id: Option<Uuid>, error: &str) {
     tracing::error!(%error, "opencode command failed");
     if let Some(command_id) = command_id {
-        let _ = events
-            .send(AdapterEvent::CommandResult {
-                command_id,
-                ok: false,
-                error: Some(error.to_owned()),
-            })
-            .await;
+        crate::adapters::emit(
+            &events,
+            AdapterEvent::CommandResult { command_id, ok: false, error: Some(error.to_owned()) },
+        )
+        .await;
     }
 }
 

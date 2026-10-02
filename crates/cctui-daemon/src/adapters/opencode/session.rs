@@ -304,14 +304,15 @@ impl OpenCodeSession {
             Err(err) => {
                 tracing::error!(%err, "opencode session ended in error");
                 if let Some(command_id) = command_id {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::CommandResult {
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::CommandResult {
                             command_id,
                             ok: false,
                             error: Some(err.to_string()),
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                 }
                 Some(err.to_string())
             }
@@ -322,10 +323,11 @@ impl OpenCodeSession {
         }
         for id in self.owned.clone() {
             self.live.lock().await.remove(&id);
-            let _ = self
-                .events
-                .send(AdapterEvent::SessionEnded { local_id: id, reason: EndReason::Completed })
-                .await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::SessionEnded { local_id: id, reason: EndReason::Completed },
+            )
+            .await;
         }
     }
 
@@ -419,10 +421,11 @@ impl OpenCodeSession {
         let parent = self.params.parent_local_id.clone();
         self.register(&session.id, parent, Some(self.params.cwd.clone())).await;
         if let Some(command_id) = command_id {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
-                .await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult { command_id, ok: true, error: None },
+            )
+            .await;
         }
         if let Some(m) = model.as_ref() {
             let _ = self
@@ -527,14 +530,15 @@ impl OpenCodeSession {
         while let Ok(cmd) = self.commands.try_recv() {
             if let Some(command_id) = cmd.command_id() {
                 tracing::warn!(?cmd, "opencode: command dropped, session is ending");
-                let _ = self
-                    .events
-                    .send(AdapterEvent::CommandResult {
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::CommandResult {
                         command_id,
                         ok: false,
                         error: Some("opencode session ended before the command ran".to_owned()),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
         }
     }
@@ -677,14 +681,15 @@ impl OpenCodeSession {
     ) -> bool {
         let failure = self.prompt(client, session_id, text, model).await;
         if let Some(command_id) = command_id {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult {
                     command_id,
                     ok: failure.is_none(),
                     error: failure.clone(),
-                })
-                .await;
+                },
+            )
+            .await;
         }
         let Some(detail) = failure else {
             return true;
@@ -714,13 +719,14 @@ impl OpenCodeSession {
         for id in std::mem::take(&mut self.owned) {
             self.emit_error(&id, detail).await;
             self.live.lock().await.remove(&id);
-            let _ = self
-                .events
-                .send(AdapterEvent::SessionEnded {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::SessionEnded {
                     local_id: id,
                     reason: EndReason::Crashed { detail: detail.to_owned() },
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
 
@@ -743,13 +749,11 @@ impl OpenCodeSession {
                 self.in_flight = false;
                 self.owned.remove(&session_id);
                 self.live.lock().await.remove(&session_id);
-                let _ = self
-                    .events
-                    .send(AdapterEvent::SessionEnded {
-                        local_id: session_id,
-                        reason: EndReason::Killed,
-                    })
-                    .await;
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::SessionEnded { local_id: session_id, reason: EndReason::Killed },
+                )
+                .await;
                 if self.owned.is_empty() {
                     return false;
                 }
@@ -815,10 +819,11 @@ impl OpenCodeSession {
                     let _ = self.events.send(status(&child.id, None, None, Some(name))).await;
                 }
                 if let Some(command_id) = command_id {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
-                        .await;
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::CommandResult { command_id, ok: true, error: None },
+                    )
+                    .await;
                 }
                 if let Some(text) = prompt.filter(|p| !p.trim().is_empty()) {
                     self.prompt(client, &child.id, &text, model).await;
@@ -827,14 +832,15 @@ impl OpenCodeSession {
             Err(err) => {
                 tracing::error!(%err, %parent, "opencode fork failed");
                 if let Some(command_id) = command_id {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::CommandResult {
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::CommandResult {
                             command_id,
                             ok: false,
                             error: Some(err.to_string()),
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                 }
             }
         }
@@ -914,13 +920,14 @@ impl OpenCodeSession {
             OcEvent::SessionDeleted { .. } => {
                 self.owned.remove(&session_id);
                 self.live.lock().await.remove(&session_id);
-                let _ = self
-                    .events
-                    .send(AdapterEvent::SessionEnded {
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::SessionEnded {
                         local_id: session_id,
                         reason: EndReason::Completed,
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
             OcEvent::PermissionAsked { properties } => {
                 self.pending_permissions.insert(properties.id.clone());
@@ -953,13 +960,14 @@ impl OpenCodeSession {
     async fn end_crashed(&mut self, session_id: String, detail: String) -> bool {
         self.owned.remove(&session_id);
         self.live.lock().await.remove(&session_id);
-        let _ = self
-            .events
-            .send(AdapterEvent::SessionEnded {
+        crate::adapters::emit(
+            &self.events,
+            AdapterEvent::SessionEnded {
                 local_id: session_id,
                 reason: EndReason::Crashed { detail },
-            })
-            .await;
+            },
+        )
+        .await;
         false
     }
 

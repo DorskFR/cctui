@@ -420,10 +420,11 @@ impl CommandPump {
 
     async fn reject(&self, command_id: Option<uuid::Uuid>, error: String) {
         if let Some(command_id) = command_id {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) })
-                .await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) },
+            )
+            .await;
         }
     }
 
@@ -960,12 +961,14 @@ async fn dispatch(
             if matches!(command, SessionCommand::Kill { .. }) {
                 registry.lock().await.remove(local_id);
                 persist::save(registry).await;
-                let _ = events
-                    .send(AdapterEvent::SessionEnded {
+                crate::adapters::emit(
+                    &events,
+                    AdapterEvent::SessionEnded {
                         local_id: local_id.to_owned(),
                         reason: cctui_proto::adapter::EndReason::Killed,
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
             DispatchOutcome::Handled(false)
         }
@@ -975,13 +978,11 @@ async fn dispatch(
 
 async fn fail_command(events: &mpsc::Sender<AdapterEvent>, cmd: &SessionCommand, error: &str) {
     if let Some(command_id) = cmd.command_id() {
-        let _ = events
-            .send(AdapterEvent::CommandResult {
-                command_id,
-                ok: false,
-                error: Some(error.to_owned()),
-            })
-            .await;
+        crate::adapters::emit(
+            &events,
+            AdapterEvent::CommandResult { command_id, ok: false, error: Some(error.to_owned()) },
+        )
+        .await;
     }
 }
 
@@ -1012,12 +1013,14 @@ async fn emit_missing_failure(
     tracing::warn!(%local_id, ?cmd, "codex: no app-server session for command");
     fail_command(events, cmd, "no codex session for command").await;
     if matches!(cmd, SessionCommand::Kill { .. }) {
-        let _ = events
-            .send(AdapterEvent::SessionEnded {
+        crate::adapters::emit(
+            &events,
+            AdapterEvent::SessionEnded {
                 local_id: local_id.to_owned(),
                 reason: cctui_proto::adapter::EndReason::Killed,
-            })
-            .await;
+            },
+        )
+        .await;
         return;
     }
     let _ = events
