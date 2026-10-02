@@ -349,13 +349,13 @@ jobs:
         working-directory: webui
         run: npx playwright install --with-deps chromium
 
-      # `hermetic` stubs every request; no server, no seeded database, no
+      # These projects stub every request; no server, no seeded database, no
       # journeys/.auth/state.json. The other projects need the local stack.
       - name: Playwright
         working-directory: webui
         env:
           HEADER_E2E_PORT: "5291"
-        run: npx playwright test --project hermetic
+        run: npx playwright test --project hermetic --project drawer --project drawer-header
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
