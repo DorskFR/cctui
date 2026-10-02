@@ -361,6 +361,7 @@ jobs:
         with:
           name: e2e-results
           retention-days: 3
+          if-no-files-found: ignore
           path: webui/test-results/
 
   audit:
