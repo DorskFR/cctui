@@ -12,6 +12,7 @@ pub mod ring_view;
 pub mod traffic_rings;
 pub mod turn_end;
 pub mod uploads;
+pub mod version_gate;
 
 use cctui_proto::adapter::AdapterEvent;
 use tokio::sync::mpsc;

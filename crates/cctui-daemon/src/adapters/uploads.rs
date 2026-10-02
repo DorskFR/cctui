@@ -1,11 +1,10 @@
 //! Shared attachment staging for adapters.
 //!
-//! Both the claude-code and codex adapters stage user-uploaded files under a
-//! per-session dir ([`session_dir`]) and reference the resulting absolute paths
-//! from the turn/prompt. The staging logic — base64 decode, filename
-//! sanitization, 0700 dirs, 0600 files, collision-suffixing — lives here once so
-//! the two adapters cannot drift. Claude consumes it at spawn + mid-chat; codex
-//! at spawn + native image turn inputs.
+//! Every adapter stages user-uploaded files under a per-session dir
+//! ([`session_dir`]) and references the resulting absolute paths from the
+//! turn/prompt. The staging logic — base64 decode, filename sanitization, 0700
+//! dirs, 0600 files, collision-suffixing — lives here once so the adapters
+//! cannot drift.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

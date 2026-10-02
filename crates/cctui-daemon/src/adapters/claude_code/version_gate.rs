@@ -1,15 +1,12 @@
-//! Cycle a `claude daemon` left behind by a CLI auto-update, but only while
-//! nothing is running: the sole remedy, `daemon stop --any`, kills every
+//! Claude's primitives for the neutral [`crate::adapters::version_gate`]:
+//! cycle a `claude daemon` left behind by a CLI auto-update, but only while
+//! nothing is running, since the sole remedy, `daemon stop --any`, kills every
 //! background worker.
 //!
 //! Idle must be agreed by our filtered roster and the daemon's own
-//! `bg workers: N running` count; unknown counts as busy.
-//!
-//! Counts alone can deadlock: a stale daemon breaks its workers, which park
-//! and keep the counts non-zero. So a mismatch deferred [`ESCALATE_AFTER`]
-//! with no roster session seen busy cycles anyway; quiescent sessions survive
-//! as resumable transcripts. A live job cctui did not start vetoes the
-//! escalation outright.
+//! `bg workers: N running` count; unknown counts as busy. Only the roster
+//! resets the escalation clock: a stale daemon's parked workers keep the
+//! counts non-zero. A live job cctui did not start vetoes the escalation.
 //!
 //! Versions cannot come from the control socket: `cliVersion` rides each job,
 //! so an idle daemon reports none.
@@ -17,21 +14,10 @@
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// Each check shells `claude` twice; upgrades land a few times a day at most.
-const CHECK_MIN_INTERVAL: Duration = Duration::from_mins(5);
-
-/// How long a mismatch must stay deferred, with the roster quiescent the
-/// whole time, before cycling over non-zero worker counts.
-const ESCALATE_AFTER: Duration = Duration::from_mins(30);
+pub(super) use crate::adapters::version_gate::Decision;
+use crate::adapters::version_gate::{self as gate, parse_cli_version};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Decision {
-    Nothing,
-    Deferred { running: String, local: String },
-    Cycle { running: String, local: String, escalated: bool },
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CycleMethod {
@@ -46,12 +32,6 @@ pub struct DaemonStatus {
     pub version: Option<String>,
     /// `None` when the count was not reported — treated as busy.
     pub running_workers: Option<usize>,
-}
-
-/// Parse `claude --version`, whose output is `2.1.218 (Claude Code)`.
-pub fn parse_cli_version(stdout: &str) -> Option<String> {
-    let tok = stdout.split_whitespace().next()?;
-    tok.starts_with(|c: char| c.is_ascii_digit()).then(|| tok.to_string())
 }
 
 /// Parse the header of `claude daemon status`. Tolerant by construction: an
@@ -85,149 +65,29 @@ fn parse_running_workers(rest: &str) -> Option<usize> {
     None
 }
 
-/// Decide from the two versions and the idle evidence.
-///
-/// `live_workers` is `None` when the count is unknown — which blocks cycling
-/// just as a non-zero count does.
-pub(super) fn decide(
-    running: Option<&str>,
-    local: Option<&str>,
-    live_workers: Option<usize>,
-) -> Decision {
-    let (Some(running), Some(local)) = (running, local) else {
-        return Decision::Nothing;
-    };
-    if running == local {
-        return Decision::Nothing;
-    }
-    let (running, local) = (running.to_string(), local.to_string());
-    if live_workers == Some(0) {
-        Decision::Cycle { running, local, escalated: false }
-    } else {
-        Decision::Deferred { running, local }
-    }
-}
-
 /// Fold our roster size together with the daemon's own count. Either source
 /// seeing work, or the daemon's count being unknown, means busy.
 pub(super) fn live_workers(roster_len: usize, reported: Option<usize>) -> Option<usize> {
     reported.map(|n| n.max(roster_len))
 }
 
-/// Rate-limited version check driving the idle auto-cycle.
 pub(super) struct VersionGate {
     claude_bin: String,
-    last: Mutex<Option<Instant>>,
-    /// The mismatch most recently logged, so a deferred upgrade warns once per
-    /// version pair rather than on every check for as long as work is running.
-    warned: Mutex<Option<(String, String)>>,
-    /// Escalation clock: the deferred version pair and when the roster was
-    /// last seen busy (or the deferral first seen) — whichever is later.
-    deferred: Mutex<Option<(String, String, Instant)>>,
-    /// The pair whose escalation a live foreign job most recently vetoed, so
-    /// the veto logs once per version pair instead of every check.
-    native_vetoed: Mutex<Option<(String, String)>>,
+    gate: Mutex<gate::VersionGate>,
 }
 
 impl VersionGate {
-    pub(super) const fn new(claude_bin: String) -> Self {
-        Self {
-            claude_bin,
-            last: Mutex::new(None),
-            warned: Mutex::new(None),
-            deferred: Mutex::new(None),
-            native_vetoed: Mutex::new(None),
-        }
+    pub(super) fn new(claude_bin: String) -> Self {
+        Self { claude_bin, gate: Mutex::new(gate::VersionGate::default()) }
     }
 
-    /// Reset the escalation clock. Called from every roster poll that sees a
-    /// busy session, so escalation requires quiescence across the whole
-    /// window, not just at check time.
+    fn gate(&self) -> std::sync::MutexGuard<'_, gate::VersionGate> {
+        self.gate.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Called from every roster poll that sees a busy session.
     pub(super) fn note_roster_busy(&self) {
-        let mut deferred = self.deferred.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((_, _, since)) = deferred.as_mut() {
-            *since = Instant::now();
-        }
-    }
-
-    /// Upgrade a stale [`Decision::Deferred`] to an escalated cycle once the
-    /// same pair has sat quiet for [`ESCALATE_AFTER`]. Any other decision
-    /// clears the clock.
-    ///
-    /// `native_live` vetoes the escalation for as long as it holds: cycling
-    /// runs `daemon stop --any`, which would kill a claude job cctui did not
-    /// start. The clock is left armed so the cycle happens the moment that job
-    /// is gone.
-    fn maybe_escalate(&self, decision: Decision, now: Instant, native_live: bool) -> Decision {
-        let Decision::Deferred { running, local } = decision else {
-            *self.deferred.lock().unwrap_or_else(PoisonError::into_inner) = None;
-            return decision;
-        };
-        let due = {
-            let mut deferred = self.deferred.lock().unwrap_or_else(PoisonError::into_inner);
-            match deferred.as_ref() {
-                Some((r, l, since)) if *r == running && *l == local => {
-                    let due = now.duration_since(*since) >= ESCALATE_AFTER;
-                    if due && !native_live {
-                        *deferred = None;
-                    }
-                    due
-                }
-                _ => {
-                    *deferred = Some((running.clone(), local.clone(), now));
-                    false
-                }
-            }
-        };
-        if !due {
-            return Decision::Deferred { running, local };
-        }
-        if native_live {
-            if self.first_native_veto_for(&running, &local) {
-                tracing::warn!(
-                    %running,
-                    %local,
-                    "version mismatch is past the escalation window but a claude job cctui did \
-                     not start is live; deferring until it is gone"
-                );
-            }
-            return Decision::Deferred { running, local };
-        }
-        Decision::Cycle { running, local, escalated: true }
-    }
-
-    /// Record `now` and report whether the probe interval has elapsed. Pure —
-    /// unit-tested without spawning anything.
-    fn gate(&self, now: Instant) -> bool {
-        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
-        let permit = last.is_none_or(|t| now.duration_since(t) >= CHECK_MIN_INTERVAL);
-        if permit {
-            *last = Some(now);
-        }
-        permit
-    }
-
-    /// True the first time this exact mismatch is seen, so the deferred case
-    /// logs once instead of every check.
-    fn first_warning_for(&self, running: &str, local: &str) -> bool {
-        let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
-        let pair = (running.to_string(), local.to_string());
-        if warned.as_ref() == Some(&pair) {
-            return false;
-        }
-        *warned = Some(pair);
-        true
-    }
-
-    /// True the first time this exact pair is vetoed by a live foreign job.
-    fn first_native_veto_for(&self, running: &str, local: &str) -> bool {
-        let mut vetoed = self.native_vetoed.lock().unwrap_or_else(PoisonError::into_inner);
-        let pair = (running.to_string(), local.to_string());
-        if vetoed.as_ref() == Some(&pair) {
-            return false;
-        }
-        *vetoed = Some(pair);
-        true
+        self.gate().note_busy(Instant::now());
     }
 
     async fn probe(&self, args: &[&str]) -> Option<String> {
@@ -245,25 +105,27 @@ impl VersionGate {
         Some(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// Run one check if the interval has elapsed, returning the decision taken
-    /// and (when cycling) how to bounce the daemon. `None` when the check was
+    /// Run one check if the interval has elapsed. `None` when the check was
     /// skipped or nothing needs doing.
     pub(super) async fn check(&self, roster_len: usize, native_live: bool) -> Option<Decision> {
-        if !self.gate(Instant::now()) {
+        if !self.gate().due(Instant::now()) {
             return None;
         }
         let status = parse_daemon_status(&self.probe(&["daemon", "status"]).await?);
         let local = parse_cli_version(&self.probe(&["--version"]).await?);
-        let decision = decide(
+        let busy = live_workers(roster_len, status.running_workers).map(|n| n > 0);
+        let mut gate = self.gate();
+        let decision = gate.check(
             status.version.as_deref(),
             local.as_deref(),
-            live_workers(roster_len, status.running_workers),
+            busy,
+            native_live,
+            Instant::now(),
         );
-        let decision = self.maybe_escalate(decision, Instant::now(), native_live);
         match &decision {
             Decision::Nothing => None,
             Decision::Deferred { running, local } => {
-                if self.first_warning_for(running, local) {
+                if gate.first_warning_for(running, local) {
                     tracing::warn!(
                         %running,
                         %local,
@@ -388,45 +250,6 @@ bg sessions:
     }
 
     #[test]
-    fn matching_versions_do_nothing() {
-        assert_eq!(decide(Some("2.1.220"), Some("2.1.220"), Some(0)), Decision::Nothing);
-    }
-
-    #[test]
-    fn a_missing_probe_does_nothing() {
-        assert_eq!(decide(None, Some("2.1.220"), Some(0)), Decision::Nothing);
-        assert_eq!(decide(Some("2.1.212"), None, Some(0)), Decision::Nothing);
-    }
-
-    #[test]
-    fn mismatch_with_no_workers_cycles() {
-        assert_eq!(
-            decide(Some("2.1.212"), Some("2.1.220"), Some(0)),
-            Decision::Cycle {
-                running: "2.1.212".into(),
-                local: "2.1.220".into(),
-                escalated: false
-            }
-        );
-    }
-
-    #[test]
-    fn mismatch_with_a_live_worker_defers() {
-        assert_eq!(
-            decide(Some("2.1.212"), Some("2.1.220"), Some(1)),
-            Decision::Deferred { running: "2.1.212".into(), local: "2.1.220".into() }
-        );
-    }
-
-    #[test]
-    fn an_unknown_worker_count_defers_rather_than_cycling() {
-        assert_eq!(
-            decide(Some("2.1.212"), Some("2.1.220"), None),
-            Decision::Deferred { running: "2.1.212".into(), local: "2.1.220".into() }
-        );
-    }
-
-    #[test]
     fn our_roster_can_veto_the_daemons_idle_report() {
         // The daemon says nothing is running but we are tracking a session:
         // busy wins, because either source seeing work means work exists.
@@ -456,13 +279,8 @@ bg sessions:
         assert!(parse_cli_version(&run(&["--version"])).is_some());
     }
 
-    #[test]
-    fn gate_permits_first_then_backs_off() {
-        let g = VersionGate::new("claude".into());
-        let t0 = Instant::now();
-        assert!(g.gate(t0));
-        assert!(!g.gate(t0 + Duration::from_secs(1)));
-        assert!(g.gate(t0 + CHECK_MIN_INTERVAL));
+    fn busy(roster_len: usize, reported: Option<usize>) -> gate::Busy {
+        live_workers(roster_len, reported).map(|n| n > 0)
     }
 
     fn deferred(r: &str, l: &str) -> Decision {
@@ -470,15 +288,32 @@ bg sessions:
     }
 
     #[test]
-    fn deferral_escalates_to_a_cycle_after_the_quiet_window() {
+    fn a_mismatch_cycles_only_when_roster_and_daemon_agree_on_idle() {
         let g = VersionGate::new("claude".into());
         let t0 = Instant::now();
+        let check = |b| g.gate().check(Some("2.1.212"), Some("2.1.220"), b, false, t0);
         assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0, false),
-            deferred("2.1.212", "2.1.220")
+            check(busy(0, Some(0))),
+            Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into(), escalated: false }
         );
+        assert_eq!(check(busy(1, Some(0))), deferred("2.1.212", "2.1.220"));
+        assert_eq!(check(busy(0, None)), deferred("2.1.212", "2.1.220"));
         assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER, false),
+            g.gate().check(Some("2.1.220"), Some("2.1.220"), busy(0, Some(0)), false, t0),
+            Decision::Nothing
+        );
+    }
+
+    #[test]
+    fn parked_workers_alone_do_not_hold_off_the_escalation() {
+        let g = VersionGate::new("claude".into());
+        let t0 = Instant::now();
+        let check = |at| {
+            g.gate().check(Some("2.1.212"), Some("2.1.220"), busy(0, Some(2)), false, at)
+        };
+        assert_eq!(check(t0), deferred("2.1.212", "2.1.220"));
+        assert_eq!(
+            check(t0 + gate::ESCALATE_AFTER),
             Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into(), escalated: true }
         );
     }
@@ -487,75 +322,30 @@ bg sessions:
     fn roster_activity_resets_the_escalation_clock() {
         let g = VersionGate::new("claude".into());
         let t0 = Instant::now();
-        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0, false);
+        let check = |at| {
+            g.gate().check(Some("2.1.212"), Some("2.1.220"), busy(0, Some(2)), false, at)
+        };
+        check(t0);
         g.note_roster_busy();
-        assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER, false),
-            deferred("2.1.212", "2.1.220")
-        );
-    }
-
-    #[test]
-    fn a_new_version_pair_restarts_the_escalation_clock() {
-        let g = VersionGate::new("claude".into());
-        let t0 = Instant::now();
-        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0, false);
-        assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.221"), t0 + ESCALATE_AFTER, false),
-            deferred("2.1.212", "2.1.221")
-        );
-    }
-
-    #[test]
-    fn a_resolved_mismatch_clears_the_escalation_clock() {
-        let g = VersionGate::new("claude".into());
-        let t0 = Instant::now();
-        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0, false);
-        assert_eq!(
-            g.maybe_escalate(Decision::Nothing, t0 + Duration::from_secs(1), false),
-            Decision::Nothing
-        );
-        assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER, false),
-            deferred("2.1.212", "2.1.220")
-        );
-    }
-
-    #[test]
-    fn busy_note_without_an_active_deferral_is_a_no_op() {
-        let g = VersionGate::new("claude".into());
-        g.note_roster_busy();
-        let t0 = Instant::now();
-        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0, false);
-        assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER, false),
-            Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into(), escalated: true }
-        );
+        assert_eq!(check(t0 + gate::ESCALATE_AFTER), deferred("2.1.212", "2.1.220"));
     }
 
     #[test]
     fn a_live_foreign_job_vetoes_the_escalation() {
         let g = VersionGate::new("claude".into());
         let t0 = Instant::now();
-        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0, true);
+        let check = |at, native| {
+            g.gate().check(Some("2.1.212"), Some("2.1.220"), None, native, at)
+        };
+        check(t0, true);
         assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER, true),
+            check(t0 + gate::ESCALATE_AFTER, true),
             deferred("2.1.212", "2.1.220"),
             "a job cctui did not start must never be cycled away"
         );
-        // The clock stays armed: the cycle happens as soon as that job is gone.
         assert_eq!(
-            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER, false),
+            check(t0 + gate::ESCALATE_AFTER, false),
             Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into(), escalated: true }
         );
-    }
-
-    #[test]
-    fn deferred_mismatch_warns_once_per_version_pair() {
-        let g = VersionGate::new("claude".into());
-        assert!(g.first_warning_for("2.1.212", "2.1.220"));
-        assert!(!g.first_warning_for("2.1.212", "2.1.220"));
-        // A newer CLI is a new fact and warns again.
-        assert!(g.first_warning_for("2.1.212", "2.1.221"));
     }
 }
