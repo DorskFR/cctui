@@ -57,12 +57,11 @@ export default defineJourney({
 		{
 			id: 'view',
 			when: { viewport: 'desktop' },
-			target: 'view',
-			do: { kind: 'click' },
-			guide: 'next',
+			// A narrow bar (a docked spawn panel is enough) folds the picker into ⋯.
+			target: { css: '.inline-fold [data-journey="view"], .bar:not(:has(.inline-fold)) [data-journey="options"]' },
 			say: {
 				title: { en: 'Try it: dense rows or roomy cards', fr: 'Essayez : lignes denses ou cartes aérées' },
-				body: { en: 'Click it. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits — click again if you prefer the other.', fr: 'Cliquez. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Votre choix est conservé d’une visite à l’autre — recliquez si vous préférez l’autre.' }
+				body: { en: 'Switch it here — or in the ⋯ menu when the bar is narrow. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits.', fr: 'Changez-le ici — ou dans le menu ⋯ quand la barre est étroite. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Votre choix est conservé d’une visite à l’autre.' }
 			},
 			capture: 'view'
 		},

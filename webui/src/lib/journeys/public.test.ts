@@ -329,6 +329,14 @@ describe('public journey set', () => {
 		}
 	});
 
+	it('finds the view switch whether the bar shows it inline or folds it into the menu', () => {
+		const view = pub('sessions-list').steps.find((s) => s.id === 'view')!;
+		const css = (view.target as { css: string }).css;
+		expect(css).toContain('.inline-fold [data-journey="view"]');
+		expect(css).toContain(':not(:has(.inline-fold)) [data-journey="options"]');
+		expect(view.do.kind).toBe('none');
+	});
+
 	it('gives the density switch a twin for the width that does not have it', () => {
 		const ids = pub('sessions-list').steps;
 		expect(ids.find((s) => s.id === 'view')!.when).toEqual({ viewport: 'desktop' });
