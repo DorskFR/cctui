@@ -35,7 +35,7 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 id = "get_accounts_usage"
 # GET /accounts/usage — Usage windows of every provider credential the caller owns, in one call.
 tui = "handled"
-module = "app/effects.rs"
+module = "app/account_switch.rs"
 
 [[route]]
 id = "get_accounts_by_id_usage"
