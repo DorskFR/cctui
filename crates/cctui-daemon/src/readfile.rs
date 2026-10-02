@@ -127,8 +127,8 @@ fn git_root(dir: &Path) -> Option<PathBuf> {
 /// credential dump.
 fn is_denied(real: &Path) -> bool {
     const DENIED_DIRS: [&str; 6] = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".gcloud"];
-    const DENIED_PARENTS: [&str; 4] =
-        [".config/gh", ".config/cctui", ".config/gcloud", ".config/minio"];
+    const DENIED_PARENTS: [&str; 3] = [".config/gh", ".config/cctui", ".config/gcloud"];
+    const HARNESS_AUTH_DIRS: [&str; 2] = [".codex", ".local/share/opencode"];
     const DENIED_NAMES: [&str; 6] = [
         ".netrc",
         ".credentials.json",
@@ -144,6 +144,7 @@ fn is_denied(real: &Path) -> bool {
         .any(|c| DENIED_DIRS.contains(&c.as_os_str().to_str().unwrap_or_default()))
         || DENIED_PARENTS.iter().any(|d| parent.ends_with(d))
         || daemon_config_dir().is_some_and(|d| parent.starts_with(d))
+        || (name == "auth.json" && HARNESS_AUTH_DIRS.iter().any(|d| parent.ends_with(d)))
     {
         return true;
     }
@@ -517,7 +518,8 @@ mod tests {
             ".npmrc",
             ".pypirc",
             ".config/cctui/daemon.toml",
-            ".config/minio/.env",
+            ".codex/auth.json",
+            ".local/share/opencode/auth.json",
             "project/daemon.toml",
         ] {
             let f = dir.path().join(rel);
