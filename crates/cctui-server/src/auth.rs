@@ -238,13 +238,15 @@ impl AuthConfig {
             return Some(ctx);
         }
 
-        match self.resolve(&hash).await {
+        let mut resolved = self.resolve(&hash).await;
+        if matches!(resolved, Ok(None)) && self.admin_token_hashes.contains(&hash) {
+            resolved = self.reseed_env_admin(&hash).await;
+        }
+        match resolved {
             Ok(Some(ctx)) => {
                 self.cache_put(hash, ctx.clone());
                 Some(ctx)
             }
-            // Final: `seed_admin` gives every env token an `auth_keys` row, so
-            // an env token resolving to nothing has had that row revoked.
             Ok(None) => None,
             // Only here is revocation state unknowable, so only here may an env
             // admin token break the glass.
@@ -258,6 +260,21 @@ impl AuthConfig {
                 })
             }
         }
+    }
+
+    /// An env admin token with no `auth_keys` row at all was never seeded (DB
+    /// unavailable at startup): seed it and retry. A revoked row is final.
+    async fn reseed_env_admin(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
+        let seeded: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM auth_keys WHERE key_hash = $1)")
+                .bind(hash)
+                .fetch_one(&self.pool)
+                .await?;
+        if seeded {
+            return Ok(None);
+        }
+        self.seed_admin().await;
+        self.resolve(hash).await
     }
 
     /// The unified `auth_keys` table first, then the legacy tables so a
@@ -736,6 +753,37 @@ mod tests {
             after.validate(&token).await.is_none(),
             "a revoked env admin token must not resolve"
         );
+
+        sqlx::query("DELETE FROM auth_keys WHERE key_hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unseeded_env_admin_token_seeds_itself_on_first_use() {
+        let name = "an_unseeded_env_admin_token_seeds_itself_on_first_use";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let token = format!("env-admin-{}", Uuid::new_v4());
+        let cfg = AuthConfig::new(vec![token.clone()], pool.clone());
+        assert!(
+            cfg.validate(&token).await.is_some_and(|c| c.is_admin()),
+            "an env token whose seeding never happened still authenticates"
+        );
+        let hash = sha256_hex(&token);
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM auth_keys WHERE key_hash = $1")
+            .bind(&hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1, "first use seeds the revocable row");
 
         sqlx::query("DELETE FROM auth_keys WHERE key_hash = $1")
             .bind(&hash)

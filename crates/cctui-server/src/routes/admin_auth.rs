@@ -148,9 +148,6 @@ async fn rotate_primary_key(pool: &sqlx::PgPool, id: Uuid) -> Result<String, App
     let ceiling = crate::store::acls::user_ceiling(pool, id).await?;
 
     let mut tx = pool.begin().await?;
-    // Auth resolves `auth_keys` before `users.key_hash`: without revoking the
-    // mirror the old secret keeps working and the new one only resolves through
-    // the legacy fallback.
     sqlx::query(
         "UPDATE auth_keys SET revoked_at = now() WHERE key_hash = $1 AND revoked_at IS NULL",
     )
@@ -439,10 +436,7 @@ async fn user_token_hash(
     row.map(|(h,)| h).ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "token not found"))
 }
 
-/// Revoke a single token. Mirrors `revoke_user`; purges the
-/// auth cache so the token stops working immediately. Idempotent: re-revoking an
-/// already-revoked token is a no-op 204, since the point is that every row the
-/// secret resolves through ends up retired.
+/// Revoke a single token everywhere auth would accept it. Idempotent.
 pub async fn revoke_user_token(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -474,9 +468,6 @@ pub async fn delete_user_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Both rows the secret resolves through, in one transaction. Nothing but
-/// `key_acls` (ON DELETE CASCADE) references `auth_keys`, so the mirror can go
-/// rather than linger as a live credential.
 async fn delete_token_rows(
     pool: &sqlx::PgPool,
     user_id: Uuid,
@@ -685,8 +676,6 @@ pub async fn mint_user_key(
     let hash = sha256_hex(&token);
     let preview = crate::auth::token_preview(&token);
 
-    // One transaction: a `user_tokens` row without its `auth_keys` mirror is a
-    // credential only the legacy fallback can see, which a revoke would miss.
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO user_tokens (user_id, token_hash, label, expires_at, token_preview) \

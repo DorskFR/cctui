@@ -255,13 +255,14 @@ pub async fn delete_dispatcher(
         (s, Json(serde_json::json!({ "error": "the enroll scope is required to delete dispatchers" })))
     })?;
 
+    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
     let res = sqlx::query(
         "UPDATE dispatchers SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND deleted_at IS NULL",
     )
     .bind(id)
     .bind(ctx.owner_filter())
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| db_err(&e))?;
 
@@ -271,9 +272,8 @@ pub async fn delete_dispatcher(
             Json(serde_json::json!({ "error": "dispatcher not found" })),
         ));
     }
-    // The enrollment key lives in `auth_keys` too, and auth resolves that table
-    // first — leaving the row live makes the key outlive the dispatcher.
-    let revoked = revoke_dispatcher_keys(&state.pool, id).await.map_err(|e| db_err(&e))?;
+    let revoked = revoke_dispatcher_keys(&mut *tx, id).await.map_err(|e| db_err(&e))?;
+    tx.commit().await.map_err(|e| db_err(&e))?;
     for hash in &revoked {
         state.auth_config.purge(hash);
     }
@@ -287,7 +287,7 @@ pub async fn delete_dispatcher(
 /// Retire a dispatcher's `auth_keys` rows, returning their hashes so the caller
 /// can evict them from the positive-auth cache.
 async fn revoke_dispatcher_keys(
-    pool: &sqlx::PgPool,
+    exec: impl sqlx::PgExecutor<'_>,
     dispatcher_id: Uuid,
 ) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
@@ -295,7 +295,7 @@ async fn revoke_dispatcher_keys(
          WHERE dispatcher_id = $1 AND revoked_at IS NULL RETURNING key_hash",
     )
     .bind(dispatcher_id)
-    .fetch_all(pool)
+    .fetch_all(exec)
     .await?;
     Ok(rows.into_iter().map(|(h,)| h).collect())
 }
