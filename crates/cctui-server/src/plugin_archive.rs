@@ -120,7 +120,10 @@ pub fn check_catalog_archive(bytes: &[u8], id: &str, version: &str) -> Result<()
     let plugin = load_archive(bytes, false).map_err(|e| e.to_string())?;
     let manifest = &plugin.manifest;
     if manifest.id != id {
-        return Err(format!("plugin.json id `{}` does not match the catalog id `{id}`", manifest.id));
+        return Err(format!(
+            "plugin.json id `{}` does not match the catalog id `{id}`",
+            manifest.id
+        ));
     }
     if manifest.version != version {
         return Err(format!(
@@ -219,8 +222,8 @@ mod tests {
 
     #[test]
     fn catalog_check_refuses_a_wrong_top_folder_with_the_installer_error() {
-        let err = check_catalog_archive(&demo_tgz(Some("plugin"), "1.0.0"), "demo", "1.0.0")
-            .unwrap_err();
+        let err =
+            check_catalog_archive(&demo_tgz(Some("plugin"), "1.0.0"), "demo", "1.0.0").unwrap_err();
         let installer = load_archive(&demo_tgz(Some("plugin"), "1.0.0"), false).unwrap_err();
         assert_eq!(err, installer.to_string());
         assert!(err.contains("does not match its folder"), "{err}");
