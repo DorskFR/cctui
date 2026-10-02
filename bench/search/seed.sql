@@ -47,7 +47,7 @@ SELECT
   now() - ((3000 - s) || ' minutes')::interval + (e || ' seconds')::interval
 FROM generate_series(1, 3000) s, generate_series(1, 200) e;
 
-INSERT INTO labels (id, name, color) SELECT gen_random_uuid(), 'tag' || g, '#abcdef' FROM generate_series(1, 20) g;
+INSERT INTO labels (id, user_id, name, color) SELECT gen_random_uuid(), '11111111-1111-1111-1111-111111111111', 'tag' || g, '#abcdef' FROM generate_series(1, 20) g;
 INSERT INTO session_labels (session_id, label_id)
 SELECT s.id, l.id FROM sessions s JOIN labels l ON l.name = 'tag' || (1 + (abs(hashtext(s.id)) % 20))
 WHERE s.id LIKE 'bench-sess-%';
