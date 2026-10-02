@@ -403,33 +403,29 @@ impl Pump {
 
     async fn restore_key(&self, key: String, sessions: Vec<(String, persist::Record)>) {
         let Some(first) = sessions.first().map(|(_, r)| r.clone()) else { return };
-        let launch = match resolve_restore(
-            self.server.as_ref(),
-            self.machine_key.as_ref(),
-            &key,
-            &sessions,
-        )
-        .await
-        {
-            Ok(launch) => launch,
-            Err(err) => {
-                let detail = format!("opencode session could not be restored: {err}");
-                for (local_id, _) in sessions {
-                    self.store.remove(&local_id);
-                    crate::adapters::emit(
-                        &self.events,
-                        AdapterEvent::SessionEnded {
-                            local_id,
-                            reason: cctui_proto::adapter::EndReason::Crashed {
-                                detail: detail.clone(),
+        let launch =
+            match resolve_restore(self.server.as_ref(), self.machine_key.as_ref(), &key, &sessions)
+                .await
+            {
+                Ok(launch) => launch,
+                Err(err) => {
+                    let detail = format!("opencode session could not be restored: {err}");
+                    for (local_id, _) in sessions {
+                        self.store.remove(&local_id);
+                        crate::adapters::emit(
+                            &self.events,
+                            AdapterEvent::SessionEnded {
+                                local_id,
+                                reason: cctui_proto::adapter::EndReason::Crashed {
+                                    detail: detail.clone(),
+                                },
                             },
-                        },
-                    )
-                    .await;
+                        )
+                        .await;
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         let skills =
             crate::plugins::resolve_session_skills(self.server.as_ref(), &key, &launch.plugins)
                 .await;
@@ -873,10 +869,9 @@ mod tests {
         });
 
         let server = ServerClient::new(format!("http://{addr}"));
-        let launch =
-            resolve_restore(Some(&server), Some(&"mk".to_owned()), "spawn-key", sessions)
-                .await
-                .expect("a routed env");
+        let launch = resolve_restore(Some(&server), Some(&"mk".to_owned()), "spawn-key", sessions)
+            .await
+            .expect("a routed env");
         let request_line = requested.join().unwrap();
         assert!(
             request_line.contains("/api/v1/daemon/sessions/ses_root/gateway-env"),
