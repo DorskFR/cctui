@@ -98,13 +98,13 @@ fn usable_root(root: &Path) -> bool {
 /// never readable by another user on the machine.
 fn create_private_dir(dir: &Path) -> Result<()> {
     #[cfg(unix)]
-    {
+    let created = {
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
-    }
+    };
     #[cfg(not(unix))]
-    { std::fs::create_dir_all(dir) }
-        .with_context(|| format!("creating upload dir {}", dir.display()))?;
+    let created = std::fs::create_dir_all(dir);
+    created.with_context(|| format!("creating upload dir {}", dir.display()))?;
     if !usable_root(dir) {
         anyhow::bail!("upload dir {} is not a directory owned by this user", dir.display());
     }
