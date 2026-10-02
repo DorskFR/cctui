@@ -172,5 +172,8 @@ pub async fn revoke_share(
     if res.rows_affected() == 0 {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such share"));
     }
+    if resource_type == "account" {
+        crate::routes::accounts::revoke_grantee_session_tokens(&state.pool, id, user_id).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }

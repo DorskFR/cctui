@@ -160,24 +160,40 @@ async fn session_context(
         .collect()
 }
 
-/// Whether a daemon may resolve `session_id`'s gateway env: the row is missing
-/// (spawn-time race before register; the account resolves via the freshly
-/// minted token row) or owned by `user_id`, and by `machine_id` when the row
-/// names a machine. A NULL owner is foreign.
+/// Whether a daemon may resolve `session_id`'s gateway env: the row is owned by
+/// `user_id`, and by `machine_id` when it names a machine. A NULL owner is
+/// foreign. An `archived` session is parked and never relaunched, so it mints
+/// nothing — unlike `ended`, which the caller un-sticks.
+///
+/// A MISSING row is the spawn-time race before register, and is allowed only
+/// while nothing yet contradicts the caller: a token already minted for another
+/// user means this id belongs to that user's session, and a machine key that
+/// knows the id is not thereby entitled to its credential.
 async fn gateway_env_allowed(
     pool: &sqlx::PgPool,
     user_id: Uuid,
     machine_id: Uuid,
     session_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let row: Option<(Option<Uuid>, Option<Uuid>)> =
-        sqlx::query_as("SELECT user_id, machine_uuid FROM sessions WHERE id = $1")
+    let row: Option<(Option<Uuid>, Option<Uuid>, Option<String>)> =
+        sqlx::query_as("SELECT user_id, machine_uuid, status FROM sessions WHERE id = $1")
             .bind(session_id)
             .fetch_optional(pool)
             .await?;
-    Ok(row.is_none_or(|(owner, machine)| {
-        owner == Some(user_id) && machine.is_none_or(|m| m == machine_id)
-    }))
+    let Some((owner, machine, status)) = row else {
+        let foreign_token: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM session_tokens \
+                             WHERE session_id = $1 AND user_id IS NOT NULL AND user_id <> $2)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
+        return Ok(!foreign_token);
+    };
+    Ok(owner == Some(user_id)
+        && machine.is_none_or(|m| m == machine_id)
+        && status.as_deref() != Some("archived"))
 }
 
 /// The session's `CctuiAgent` capability, as recorded by the spawn/dispatch that
@@ -411,6 +427,59 @@ mod tests {
         assert!(!allowed(ua, ma2, &owned).await, "another machine's session is refused");
         assert!(!allowed(ub, mb, &ownerless).await, "a NULL-owner session is refused");
         assert!(!allowed(ua, ma, &ownerless).await);
+
+        // An unregistered id whose token was already minted for someone else is
+        // that user's session: a machine key that merely knows the id is not
+        // entitled to its credential.
+        let claimed = format!("ses-claimed-{}", Uuid::new_v4());
+        let acct: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(ua)
+                .bind(format!("acct-{claimed}"))
+                .fetch_one(&pool)
+                .await
+                .expect("seed account");
+        let prov: Uuid = sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider) \
+             VALUES ($1, $2, 'anthropic') RETURNING id",
+        )
+        .bind(ua)
+        .bind(acct)
+        .fetch_one(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id, user_id) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(format!("kh-{claimed}"))
+        .bind(&claimed)
+        .bind(prov)
+        .bind(ua)
+        .execute(&pool)
+        .await
+        .expect("seed token");
+        assert!(allowed(ua, ma, &claimed).await, "the token's own user is let through");
+        assert!(
+            !allowed(ub, mb, &claimed).await,
+            "an unregistered id already claimed by another user's token is refused"
+        );
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(acct).execute(&pool).await.ok();
+
+        // Archiving is an explicit park: un-archiving is a user action, so an
+        // archived session must not re-mint behind the user's back.
+        sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+            .bind(&owned)
+            .execute(&pool)
+            .await
+            .expect("archive");
+        assert!(!allowed(ua, ma, &owned).await, "an archived session mints nothing");
+        sqlx::query("UPDATE sessions SET status = 'ended' WHERE id = $1")
+            .bind(&owned)
+            .execute(&pool)
+            .await
+            .expect("end");
+        assert!(allowed(ua, ma, &owned).await, "an ended session is still relaunchable");
 
         sqlx::query("DELETE FROM machines WHERE id = $1").bind(ma2).execute(&pool).await.ok();
         drop_machines(&pool, &[owned, ownerless], &[(ua, ma), (ub, mb)]).await;

@@ -123,7 +123,8 @@ pub async fn resolve_account(
 }
 
 /// A live session token's account, unless the session's owner is revoked or
-/// disabled.
+/// disabled, or the token was minted for a user who may no longer use the
+/// account — a share revoked since the mint.
 async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
@@ -138,7 +139,14 @@ async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRo
                  LEFT JOIN machines m ON m.id = s.machine_uuid \
                  JOIN users u ON u.id = COALESCE(s.user_id, m.user_id) \
                  WHERE s.id = t.session_id \
-                   AND (u.revoked_at IS NOT NULL OR u.disabled_at IS NOT NULL))",
+                   AND (u.revoked_at IS NOT NULL OR u.disabled_at IS NOT NULL)) \
+               AND (t.user_id IS NULL OR EXISTS ( \
+                 SELECT 1 FROM accounts acc \
+                  WHERE acc.id = a.account_id \
+                    AND (acc.user_id = t.user_id OR EXISTS ( \
+                        SELECT 1 FROM resource_shares rs \
+                         WHERE rs.resource_type = 'account' AND rs.resource_id = acc.id \
+                           AND rs.grantee_id = t.user_id AND rs.revoked_at IS NULL))))",
     )
     .bind(hash)
     .fetch_optional(pool)

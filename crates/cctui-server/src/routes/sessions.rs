@@ -2491,12 +2491,18 @@ pub async fn switch_account(
     .bind(&session_id)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((owner_id, adapter_id)) = meta else {
+    let Some((bound_account_owner, adapter_id)) = meta else {
         return Err(AppError::new(
             StatusCode::NOT_FOUND,
             "session has no active gateway account binding to switch",
         ));
     };
+    // The session's OWN user, not the bound account's owner: on a shared account
+    // the two differ, and resolving the target against the owner lets a grantee
+    // move their session onto accounts of the sharer's that were never shared.
+    let acting_user = crate::routes::gateway::acting_user(&state, &session_id, None)
+        .await
+        .unwrap_or(bound_account_owner);
     let default_family = match req.family.as_deref().map(str::trim) {
         None | Some("") => Family::from_adapter(adapter_id.as_deref().unwrap_or("claude-code")),
         Some(label) => match Family::from_label(label) {
@@ -2515,10 +2521,15 @@ pub async fn switch_account(
     let target: Option<(uuid::Uuid, String)> =
         if let Ok(tid) = uuid::Uuid::parse_str(req.account.trim()) {
             let direct: Option<(uuid::Uuid, String)> = sqlx::query_as(
-                "SELECT id, family FROM account_providers WHERE id = $1 AND user_id = $2",
+                "SELECT ap.id, ap.family \
+                 FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+                 WHERE ap.id = $1 AND (a.user_id = $2 OR EXISTS ( \
+                     SELECT 1 FROM resource_shares rs \
+                      WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                        AND rs.grantee_id = $2 AND rs.revoked_at IS NULL))",
             )
             .bind(tid)
-            .bind(owner_id)
+            .bind(acting_user)
             .fetch_optional(&state.pool)
             .await?;
             if direct.is_some() {
@@ -2527,11 +2538,14 @@ pub async fn switch_account(
                 sqlx::query_as(
                     "SELECT ap.id, ap.family \
                  FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-                 WHERE a.id = $1 AND ap.user_id = $2 AND ap.family = $3 \
+                 WHERE a.id = $1 AND ap.family = $3 AND (a.user_id = $2 OR EXISTS ( \
+                     SELECT 1 FROM resource_shares rs \
+                      WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                        AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
                  LIMIT 1",
                 )
                 .bind(tid)
-                .bind(owner_id)
+                .bind(acting_user)
                 .bind(default_family.label())
                 .fetch_optional(&state.pool)
                 .await?
@@ -2540,11 +2554,14 @@ pub async fn switch_account(
             sqlx::query_as(
                 "SELECT ap.id, ap.family \
              FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-             WHERE a.name = $1 AND ap.user_id = $2 AND ap.family = $3 \
+             WHERE a.name = $1 AND ap.family = $3 AND (a.user_id = $2 OR EXISTS ( \
+                     SELECT 1 FROM resource_shares rs \
+                      WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                        AND rs.grantee_id = $2 AND rs.revoked_at IS NULL)) \
              LIMIT 1",
             )
             .bind(req.account.trim())
-            .bind(owner_id)
+            .bind(acting_user)
             .bind(default_family.label())
             .fetch_optional(&state.pool)
             .await?
@@ -2552,7 +2569,7 @@ pub async fn switch_account(
     let Some((target_id, target_family)) = target else {
         return Err(AppError::new(
             StatusCode::NOT_FOUND,
-            "no such account for this session's owner",
+            "no such account available to this session's user",
         ));
     };
 
