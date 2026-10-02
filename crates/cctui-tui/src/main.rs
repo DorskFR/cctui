@@ -299,7 +299,6 @@ async fn run(
     app.permissions.fetch_started();
     effects.dispatch(app::action::Effect::FetchPendingPermissions);
     effects.dispatch(app::action::Effect::LoadDraftIndex);
-    effects.dispatch(app::action::Effect::FetchDispatchers);
     // The status line counts machines, so it cannot wait for the slice's visit.
     effects.dispatch(app::action::Effect::FetchMachines);
     // The one clock in the app. Delivery deadlines are the reducer's and the

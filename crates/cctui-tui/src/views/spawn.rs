@@ -47,27 +47,6 @@ fn clip(text: &str, width: u16) -> String {
     text.chars().take(usize::from(width)).collect()
 }
 
-/// The dialog's two tabs. A dispatch is a different route with a different
-/// body, so which one is in front decides what a launch even sends.
-fn target_line(form: &SpawnForm, width: u16) -> Line<'static> {
-    use crate::app::spawn::SpawnTarget;
-
-    let machine = form.target == SpawnTarget::Machine;
-    let on = |yes: bool| if yes { theme::selected() } else { theme::dim() };
-    let text = |label: &str, yes: bool| {
-        Span::styled(if yes { format!(" [{label}] ") } else { format!("  {label}  ") }, on(yes))
-    };
-    let spans = vec![
-        Span::styled(" ".to_owned(), theme::dim()),
-        text("Machine", machine),
-        text("Dispatch", !machine),
-        Span::styled("  Ctrl-D switches".to_owned(), theme::dim()),
-    ];
-    crate::app::spawn::clamp_rows(vec![Line::from(spans)], width)
-        .pop()
-        .unwrap_or_else(|| Line::from(""))
-}
-
 /// The hint under the Model row: why a model is annotated, and whether the
 /// catalog is being re-read.
 fn model_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
@@ -120,11 +99,7 @@ fn cwd_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
 fn body_lines(form: &SpawnForm, width: u16) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let core = form.core_index();
-    out.push(target_line(form, width));
     for (index, section) in form.sections.iter().enumerate() {
-        if !form.shows(index) {
-            continue;
-        }
         let focused = (form.focus.section == index).then_some(form.focus.row);
         if Some(index) != core {
             out.push(Line::from(Span::styled(

@@ -22,18 +22,6 @@ pub use crate::config::uistate::UiState;
 pub enum View {
     /// The machines slice's table.
     Machines,
-    /// The accounts slice: identities, their providers and the pools pane.
-    Accounts,
-    /// The dispatchers admin panel.
-    Dispatchers,
-    /// The admin Access slice's table.
-    Access,
-    /// The instance panel: server version and its own self-update.
-    Instance,
-    /// The usage panel: pool and credential quota windows.
-    Usage,
-    /// The spend panel: token windows, per-model dollars, daily sparkline.
-    Spend,
     /// The `l` label picker for one session.
     LabelPicker,
     /// The `L` any-of label filter.
@@ -49,12 +37,10 @@ pub enum View {
     Diagnose,
     Terminal,
     ModelPicker,
-    ForkDialog,
     Sidebar,
     /// The new-session dialog.
     Spawn,
     /// Slice roots: the switcher resets the router to one of these.
-    Bookmarks,
     Overview,
     HarnessMode,
     AccountSwitch,
@@ -303,8 +289,6 @@ pub struct App {
     pub auth: AuthState,
     pub drafts: super::drafts::DraftState,
     pub pins: super::pins::PinState,
-    pub bookmarks: super::bookmarks::BookmarkState,
-    pub spawn_drafts: super::spawn_drafts::SpawnDraftState,
     pub mentions: super::mentions::MentionState,
     pub macros: super::macros::MacroState,
     /// Sends that have left the composer but are not confirmed delivered.
@@ -339,21 +323,6 @@ pub struct App {
     pub slice: Slice,
     /// The machines slice's table and cursor.
     pub machines: super::machines::Machines,
-    /// The admin Access slice: users, tokens, machines and keys.
-    pub access: super::admin::Access,
-    /// The instance panel's version reply and hook run.
-    pub instance: super::instance::Instance,
-    /// The accounts slice's list, detail and modals.
-    pub accounts: super::accounts::Accounts,
-    /// The pools pane inside the accounts slice.
-    pub pools: super::pools::Pools,
-
-    /// The spend panel's windows, model dollars and sparkline series.
-    pub spend: super::spend::Spend,
-    /// The dispatchers panel, open only while it is.
-    pub dispatchers: super::dispatchers::Dispatchers,
-    /// The usage panel's two panes, their cursors and its poll clock.
-    pub usage: super::usage::Usage,
     /// The machine a spawn should aim at, set by `Enter` in the machines table.
     /// The spawn dialog reads it; nothing else does.
     pub spawn_target: Option<String>,
@@ -388,8 +357,6 @@ pub struct App {
     pub account_switch: Option<AccountSwitchPicker>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
-    /// The open fork dialog, if one is.
-    pub fork: Option<super::forkform::ForkForm>,
     /// Cursor state of the todo/subagent sidebar.
     pub sidebar: super::sidebar::Sidebar,
     /// Mark-seen debounce state; the counts themselves live on the rows.
@@ -490,8 +457,6 @@ impl App {
             auth: AuthState::Unknown,
             drafts: super::drafts::DraftState::default(),
             pins: super::pins::PinState::default(),
-            bookmarks: super::bookmarks::BookmarkState::default(),
-            spawn_drafts: super::spawn_drafts::SpawnDraftState::default(),
             mentions: super::mentions::MentionState::default(),
             macros: super::macros::MacroState::default(),
             outbox: super::send::Outbox::default(),
@@ -512,13 +477,6 @@ impl App {
             slice: Slice::Sessions,
             slice_cursors: HashMap::new(),
             machines: super::machines::Machines::default(),
-            access: super::admin::Access::default(),
-            accounts: super::accounts::Accounts::default(),
-            pools: super::pools::Pools::default(),
-            spend: super::spend::Spend::default(),
-            dispatchers: super::dispatchers::Dispatchers::default(),
-            instance: super::instance::Instance::default(),
-            usage: super::usage::Usage::default(),
             spawn_target: None,
             stats: None,
             overview_scroll: 0,
@@ -532,7 +490,6 @@ impl App {
             harness_picker: None,
             account_switch: None,
             controls: super::controls::Controls::default(),
-            fork: None,
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),
             watch: super::attention::Watch::default(),
@@ -603,31 +560,6 @@ impl App {
         }
         if self.list_search.open {
             return Some(Context::ListSearch);
-        }
-        // Last: every strip above belongs to the sessions slice, these two to
-        // the bookmarks slice, so no pair of them is ever open together.
-        if let Some(form) = self.spawn.as_ref().and_then(super::spawn::SpawnForm::profiles) {
-            if form.prompt.is_some() {
-                return Some(Context::SpawnProfileName);
-            }
-            if form.confirm.is_some() {
-                return Some(Context::SpawnProfileConfirm);
-            }
-        }
-        if self.spawn_drafts.env_prompt.is_some() {
-            return Some(Context::DraftEnv);
-        }
-        if self.spawn_drafts.confirm.is_some() {
-            return Some(Context::DraftConfirm);
-        }
-        if self.bookmarks.prompt.is_some() {
-            return Some(Context::BookmarkPrompt);
-        }
-        if self.bookmarks.confirm.is_some() {
-            return Some(Context::BookmarkConfirm);
-        }
-        if let Some(context) = super::accounts::key_context(self) {
-            return Some(context);
         }
         None
     }
