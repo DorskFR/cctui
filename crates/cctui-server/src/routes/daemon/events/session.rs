@@ -203,9 +203,10 @@ pub(super) async fn on_session_event(
     Ok(())
 }
 
-/// `spawn_key` is attacker-chosen data on a machine-authenticated event, so a
-/// rebind is only run once the key, the target id and the credentials filed
-/// under the key all belong to the announcing machine's user.
+/// `spawn_key` is attacker-chosen data on a machine-authenticated event, so
+/// neither the rebind nor the claim of the intents filed under the key runs
+/// until the key, the target id and the credentials filed under the key all
+/// belong to the announcing machine's user.
 async fn rebind_permitted(
     state: &AppState,
     machine_id: Uuid,
@@ -255,8 +256,7 @@ async fn on_session_started(
     let working_dir = meta.working_dir.clone();
     let observed_at = meta.extra.get("observed_at").and_then(serde_json::Value::as_i64);
     let extra = (!meta.extra.is_null()).then(|| meta.extra.clone());
-    let spawn_key_hint =
-        meta.extra.get("spawn_key").and_then(serde_json::Value::as_str).map(str::to_owned);
+    let mut spawn_key_hint = None;
     if let Some(spawn_key) = meta.extra.get("spawn_key").and_then(serde_json::Value::as_str)
         && rebind_permitted(state, machine_id, user_id, spawn_key, &local_id).await
     {
@@ -266,6 +266,7 @@ async fn on_session_started(
             cctui_proto::ids::SessionId::from(local_id.as_str()),
         )
         .await;
+        spawn_key_hint = Some(spawn_key.to_owned());
     }
     let Some(first_registration) = upsert_session(
         &state.pool,

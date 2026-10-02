@@ -67,10 +67,8 @@ pub async fn rebind_session_id(
 /// The event is machine-authenticated but its `spawn_key` is attacker-chosen,
 /// so three things must hold: the key names no registered session, the target
 /// id is either free or already this machine's own session, and every gateway
-/// token filed under the key sits on an account that user owns or holds a live
-/// share on. Without the last check a daemon could name another tenant's
-/// pending spawn key and pull their token, metered usage and staged
-/// attachments onto a session of its own.
+/// token filed under the key was minted for that user. A token without a
+/// recorded user must sit on an account the user owns or holds a live share on.
 pub async fn rebind_allowed(
     pool: &sqlx::PgPool,
     spawn_key: &str,
@@ -85,14 +83,16 @@ pub async fn rebind_allowed(
                                    OR user_id IS DISTINCT FROM $4)) \
             AND NOT EXISTS ( \
                   SELECT 1 FROM session_tokens st \
-                    JOIN account_providers ap ON ap.id = st.account_id \
+                    LEFT JOIN account_providers ap ON ap.id = st.account_id \
                    WHERE st.session_id = $1 \
-                     AND ap.user_id <> $4 \
-                     AND NOT EXISTS (SELECT 1 FROM resource_shares rs \
-                                      WHERE rs.resource_type = 'account' \
-                                        AND rs.resource_id = ap.account_id \
-                                        AND rs.grantee_id = $4 \
-                                        AND rs.revoked_at IS NULL))",
+                     AND CASE WHEN st.user_id IS NOT NULL THEN st.user_id <> $4 \
+                              ELSE ap.user_id <> $4 \
+                                   AND NOT EXISTS (SELECT 1 FROM resource_shares rs \
+                                                    WHERE rs.resource_type = 'account' \
+                                                      AND rs.resource_id = ap.account_id \
+                                                      AND rs.grantee_id = $4 \
+                                                      AND rs.revoked_at IS NULL) \
+                         END)",
     )
     .bind(spawn_key)
     .bind(session_id)
@@ -355,6 +355,49 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(moved, 1);
+    }
+
+    /// A grantee of the account cannot claim a spawn key whose token was
+    /// minted for the owner.
+    #[tokio::test]
+    async fn rebind_follows_the_token_user_not_the_share() {
+        let Some(pool) = test_pool("rebind_follows_the_token_user_not_the_share").await else {
+            return;
+        };
+        let (owner, owner_machine, account, provider) = tenant(&pool).await;
+        let (grantee, grantee_machine, _, _) = tenant(&pool).await;
+        sqlx::query(
+            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+             VALUES ('account', $1, $2)",
+        )
+        .bind(account)
+        .bind(grantee)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let spawn_key = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id, user_id) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(format!("hash-{}", Uuid::new_v4()))
+        .bind(&spawn_key)
+        .bind(provider)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let target = Uuid::new_v4().to_string();
+
+        assert!(
+            !super::rebind_allowed(&pool, &spawn_key, &target, grantee_machine, grantee)
+                .await
+                .unwrap(),
+            "a live share does not hand over the owner's pending spawn"
+        );
+        assert!(
+            super::rebind_allowed(&pool, &spawn_key, &target, owner_machine, owner).await.unwrap()
+        );
     }
 
     /// A registered session id is never a spawn key: neither the gate nor the
