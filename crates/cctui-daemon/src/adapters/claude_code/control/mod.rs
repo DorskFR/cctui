@@ -939,7 +939,9 @@ impl Driver {
             Ok(()) => (true, None),
             Err(err) => (false, Some(err.to_string())),
         };
-        let _ = events.send(AdapterEvent::CommandResult { command_id, ok, error }).await;
+        if events.send(AdapterEvent::CommandResult { command_id, ok, error }).await.is_err() {
+            tracing::warn!(%command_id, ok, "command result dropped: adapter event channel closed");
+        }
     }
 
     fn resolve_short(&self, local_id: &str) -> anyhow::Result<String> {
