@@ -103,10 +103,8 @@ fn create_private_dir(dir: &Path) -> Result<()> {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
     }
     #[cfg(not(unix))]
-    {
-        std::fs::create_dir_all(dir)
-    }
-    .with_context(|| format!("creating upload dir {}", dir.display()))?;
+    { std::fs::create_dir_all(dir) }
+        .with_context(|| format!("creating upload dir {}", dir.display()))?;
     if !usable_root(dir) {
         anyhow::bail!("upload dir {} is not a directory owned by this user", dir.display());
     }

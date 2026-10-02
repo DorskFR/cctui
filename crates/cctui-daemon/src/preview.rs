@@ -387,9 +387,7 @@ pub async fn handle_down(frame: DaemonFrameDown, up: &mpsc::Sender<DaemonFrameUp
         } => {
             if let Err(error) = accept_request(port) {
                 tracing::warn!(%stream_id, port, %error, "preview request refused");
-                if let Err(err) =
-                    up.send(DaemonFrameUp::PreviewError { stream_id, error }).await
-                {
+                if let Err(err) = up.send(DaemonFrameUp::PreviewError { stream_id, error }).await {
                     tracing::warn!(%err, "could not report a refused preview request");
                 }
                 return;

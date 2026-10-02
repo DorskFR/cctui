@@ -316,18 +316,16 @@ impl Supervisor {
         let url = self.client.daemon_ws_url();
         tracing::info!(%url, "connecting to daemon WS");
         let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
-        let (ws, _) = match tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            tokio_tungstenite::connect_async(request),
-        )
-        .await
-        {
-            Ok(res) => res?,
-            Err(_) => anyhow::bail!(
-                "daemon WS connect did not complete within {}s",
-                CONNECT_TIMEOUT.as_secs()
-            ),
-        };
+        let (ws, _) =
+            match tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request))
+                .await
+            {
+                Ok(res) => res?,
+                Err(_) => anyhow::bail!(
+                    "daemon WS connect did not complete within {}s",
+                    CONNECT_TIMEOUT.as_secs()
+                ),
+            };
         let (mut sink, mut stream) = ws.split();
 
         // Out-of-band frames the supervisor itself produces (currently the

@@ -129,14 +129,8 @@ fn is_denied(real: &Path) -> bool {
     const DENIED_DIRS: [&str; 6] = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".gcloud"];
     const DENIED_PARENTS: [&str; 3] = [".config/gh", ".config/cctui", ".config/gcloud"];
     const HARNESS_AUTH_DIRS: [&str; 2] = [".codex", ".local/share/opencode"];
-    const DENIED_NAMES: [&str; 6] = [
-        ".netrc",
-        ".credentials.json",
-        ".git-credentials",
-        ".npmrc",
-        ".pypirc",
-        "daemon.toml",
-    ];
+    const DENIED_NAMES: [&str; 6] =
+        [".netrc", ".credentials.json", ".git-credentials", ".npmrc", ".pypirc", "daemon.toml"];
     let name = real.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let Some(parent) = real.parent() else { return true };
     if parent
