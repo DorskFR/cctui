@@ -46,6 +46,7 @@ for (const viewport of [NARROW, TINY]) {
 		await expect(row.getByRole('button', { name: /info/i })).toHaveCount(0);
 
 		await page.locator('[data-journey="head-details"]').click();
-		await expect(page.locator('.metapop .tokens')).toBeAttached();
+		await expect(page.locator('.metapop .mp-grid')).toBeVisible();
+		await expect(page.locator('.metapop .mp-grid .mp-num')).not.toHaveCount(0);
 	});
 }
