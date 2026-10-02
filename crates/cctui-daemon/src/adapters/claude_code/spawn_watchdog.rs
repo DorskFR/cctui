@@ -97,7 +97,8 @@ impl SpawnWatchdog {
         if StateJson::read(&self.jobs_root, short).is_some() {
             return true;
         }
-        let peek = socket::call::<RosterPeek>(sock, &json!({"proto": 1, "op": "list"}));
+        let req = json!({"proto": 1, "op": "list"});
+        let peek = socket::call::<RosterPeek>(sock, &req);
         match tokio::time::timeout_at(deadline, peek).await {
             Ok(Ok(resp)) => resp.jobs.iter().any(|job| job.short == short),
             Ok(Err(err)) => {
@@ -165,9 +166,10 @@ fn read_tail(path: &Path, lines: usize) -> Option<String> {
     file.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES))).ok()?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
+    let lossy = String::from_utf8_lossy(&buf);
+    let text: &str = &lossy;
     let text =
-        if len > TAIL_BYTES { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+        if len > TAIL_BYTES { text.split_once('\n').map_or("", |(_, rest)| rest) } else { text };
     let text = text.trim_end();
     if text.is_empty() {
         return None;
