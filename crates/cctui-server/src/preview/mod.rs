@@ -470,7 +470,15 @@ pub async fn on_frame(state: &AppState, machine_id: Uuid, daemon_user: Uuid, fra
             send_down(state, machine_id, &session_id, reply).await;
         }
         DaemonFrameUp::PreviewClose { session_id, port } => {
-            registry.close_port(&state.pool, &session_id, port).await;
+            match session_owner_on_machine(state, &session_id, machine_id).await {
+                Ok(Some(_)) => {
+                    registry.close_port(&state.pool, &session_id, port).await;
+                }
+                Ok(None) => {
+                    tracing::warn!(%machine_id, %session_id, "preview close for a session not on this machine");
+                }
+                Err(e) => tracing::error!("db error (preview close): {e}"),
+            }
         }
         DaemonFrameUp::PreviewResponse { stream_id, status, headers } => {
             let Some(stream) = registry.stream(&stream_id) else { return };
