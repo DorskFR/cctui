@@ -47,10 +47,6 @@ pub fn status_spans(app: &App) -> Vec<Span<'static>> {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(chip, theme::cost()));
     }
-    if let Some((chip, burning)) = crate::app::usage::summary_chip(app) {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(chip, if burning { theme::cost() } else { theme::dim() }));
-    }
     if let Some(chip) = app.auth.chip() {
         spans.push(Span::raw("  "));
         let style = if chip.rejected { theme::error() } else { theme::dim() };

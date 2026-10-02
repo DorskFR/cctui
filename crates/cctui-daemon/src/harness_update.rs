@@ -105,9 +105,17 @@ struct State {
     versions: HarnessVersions,
 }
 
+/// Unit tests never touch the state file the machine's live daemon reads.
+fn state_paths() -> Vec<std::path::PathBuf> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    crate::runtime::state_candidates(STATE_FILE)
+}
+
 impl State {
     fn load() -> Self {
-        crate::runtime::state_candidates(STATE_FILE)
+        state_paths()
             .iter()
             .find_map(|p| std::fs::read_to_string(p).ok())
             .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -116,8 +124,7 @@ impl State {
 
     fn persist(&self) {
         let Ok(json) = serde_json::to_string_pretty(self) else { return };
-        if crate::runtime::record_at(&crate::runtime::state_candidates(STATE_FILE), &json).is_none()
-        {
+        if crate::runtime::record_at(&state_paths(), &json).is_none() {
             tracing::debug!("failed to persist harness update state");
         }
     }
@@ -435,6 +442,11 @@ Check permissions on /home/you/.local/share/claude
     }
 
     #[test]
+    fn tests_never_resolve_the_live_state_file() {
+        assert!(state_paths().is_empty());
+    }
+
+    #[test]
     fn interval_gates_reruns() {
         let t0 = Utc::now();
         assert!(due(None, t0, 24));
@@ -472,7 +484,7 @@ esac
 
     #[cfg(unix)]
     #[tokio::test]
-    #[ignore = "spawns fake harness shims and writes the shared harness-update state file"]
+    #[ignore = "spawns fake harness shims"]
     async fn update_then_cycle_only_when_idle() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let dir = tempfile::tempdir().unwrap();

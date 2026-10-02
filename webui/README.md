@@ -41,7 +41,7 @@ held in `localStorage`; the server allows the cross-origin calls via CORS.
 
 The GitHub review center is no longer built in: it ships as the **ghreview**
 plugin (https://github.com/DorskFR/ghreview), installed from the plugin catalog
-and mounted at `/apps/ghreview`. `/github` and `/review` redirect there.
+and mounted at `/apps/ghreview`.
 
 ## Deploy
 

@@ -70,6 +70,10 @@ const DIAGNOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 /// `registry.rs` broadcast) and of the server event channel.
 const CHANNEL_CAPACITY: usize = 256;
 
+/// How long an interrupt may wait for room on a connection's priority lane,
+/// which only fills while the socket itself is not draining.
+const PRIORITY_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Delivery failures surfaced by the bus. Superset of the retired
 /// `daemon_dispatch::Error` so existing error-handling match arms keep
 /// working; display strings are preserved verbatim where they reach clients.
@@ -283,6 +287,9 @@ struct Inner {
     /// Every live daemon WS this pod terminates, keyed by its own connection
     /// id, with the machine it authenticated as.
     conns: DashMap<Uuid, (Uuid, mpsc::Sender<DaemonFrameDown>)>,
+    /// Each connection's priority lane, keyed by connection id: frames its
+    /// outbound pump sends before anything queued on the ordinary channel.
+    priority: DashMap<Uuid, mpsc::Sender<DaemonFrameDown>>,
     /// Connection ids per machine, so a shared identity can be recognised as
     /// ambiguous instead of silently resolving to whichever pod connected last.
     machine_conns: DashMap<Uuid, std::collections::HashSet<Uuid>>,
@@ -334,6 +341,7 @@ impl Bus {
             inner: Arc::new(Inner {
                 daemons: DashMap::new(),
                 conns: DashMap::new(),
+                priority: DashMap::new(),
                 machine_conns: DashMap::new(),
                 session_conn: DashMap::new(),
                 dispatchers: DashMap::new(),
@@ -363,6 +371,10 @@ impl Bus {
         self.inner.daemons.insert(machine, tx);
     }
 
+    pub fn register_daemon_priority(&self, conn_id: Uuid, tx: mpsc::Sender<DaemonFrameDown>) {
+        self.inner.priority.insert(conn_id, tx);
+    }
+
     /// Drop a closing connection: its own entry and its session bindings
     /// unconditionally (nothing else can own them), but `machine`'s entry only
     /// if it is STILL `tx` — during a reconnect race the daemon's new
@@ -377,6 +389,7 @@ impl Bus {
         tx: &mpsc::Sender<DaemonFrameDown>,
     ) -> bool {
         self.inner.conns.remove(&conn_id);
+        self.inner.priority.remove(&conn_id);
         self.inner.machine_conns.remove_if_mut(&machine, |_, conns| {
             conns.remove(&conn_id);
             conns.is_empty()
@@ -449,6 +462,41 @@ impl Bus {
             return None;
         }
         self.session_channel(machine, session_id)
+    }
+
+    /// The priority lane of the connection whose ordinary channel is `tx`.
+    fn priority_lane(
+        &self,
+        tx: &mpsc::Sender<DaemonFrameDown>,
+    ) -> Option<mpsc::Sender<DaemonFrameDown>> {
+        let conn_id =
+            self.inner.conns.iter().find(|e| e.value().1.same_channel(tx)).map(|e| *e.key())?;
+        self.inner.priority.get(&conn_id).map(|r| r.clone())
+    }
+
+    /// Put `frame` on `tx`'s connection. An interrupt takes the priority lane
+    /// when the connection has one, so it never queues behind the commands
+    /// already waiting on `tx`.
+    async fn deliver(
+        &self,
+        tx: mpsc::Sender<DaemonFrameDown>,
+        frame: DaemonFrameDown,
+    ) -> Result<(), BusError> {
+        if is_interrupt(&frame)
+            && let Some(lane) = self.priority_lane(&tx)
+        {
+            return match lane.try_send(frame) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(frame)) => {
+                    tokio::time::timeout(PRIORITY_SEND_TIMEOUT, lane.send(frame))
+                        .await
+                        .map_err(|_| BusError::Timeout)?
+                        .map_err(|_| BusError::Closed)
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(BusError::Closed),
+            };
+        }
+        tx.send(frame).await.map_err(|_| BusError::Closed)
     }
 
     /// Whether THIS pod terminates `machine`'s daemon WS.
@@ -532,7 +580,7 @@ impl Bus {
         let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
             return self.inner.transport.forward_daemon(machine, frame).await;
         };
-        tx.send(frame).await.map_err(|_| BusError::Closed)
+        self.deliver(tx, frame).await
     }
 
     /// [`Self::command_daemon`] for a frame that belongs to ONE session:
@@ -546,7 +594,7 @@ impl Bus {
         let Some(tx) = self.routable_session_channel(machine, session_id).await else {
             return self.inner.transport.forward_daemon(machine, frame).await;
         };
-        tx.send(frame).await.map_err(|_| BusError::Closed)
+        self.deliver(tx, frame).await
     }
 
     /// [`Self::request_daemon`] for a round-trip that belongs to ONE session.
@@ -572,7 +620,7 @@ impl Bus {
         let Some(tx) = self.session_channel(machine, session_id) else {
             return Err(BusError::NoDaemon(machine));
         };
-        tx.send(frame).await.map_err(|_| BusError::Closed)
+        self.deliver(tx, frame).await
     }
 
     /// [`Self::request_daemon_local`] for a round-trip that belongs to ONE
@@ -601,7 +649,7 @@ impl Bus {
         let Some(tx) = self.inner.daemons.get(&machine).map(|r| r.clone()) else {
             return Err(BusError::NoDaemon(machine));
         };
-        tx.send(frame).await.map_err(|_| BusError::Closed)
+        self.deliver(tx, frame).await
     }
 
     /// Fire-and-forget a [`DispatcherFrameDown`] toward the enrolled
@@ -1028,6 +1076,11 @@ pub async fn dispatch(
         .await
 }
 
+fn is_interrupt(frame: &DaemonFrameDown) -> bool {
+    matches!(frame, DaemonFrameDown::Command { command, .. }
+        if matches!(command.as_ref(), AdapterCommand::Interrupt { .. }))
+}
+
 /// Rebuild and live-push a fresh [`DaemonFrameDown::Reconcile`] to `machine_id`'s
 /// connected daemon. Used when a per-user setting the reconcile derives
 /// from (e.g. `harnessMode`) changes, so a daemon picks up the new config without
@@ -1206,6 +1259,76 @@ mod tests {
                 turn_id: None,
             }),
         }
+    }
+
+    fn interrupt(local_id: &str) -> DaemonFrameDown {
+        DaemonFrameDown::Command {
+            adapter_id: "claude-code".into(),
+            command: Box::new(AdapterCommand::Interrupt {
+                local_id: local_id.into(),
+                command_id: None,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_takes_the_priority_lane_past_a_full_queue() {
+        let bus = bus();
+        let (machine, conn) = (Uuid::new_v4(), Uuid::new_v4());
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(reply("s1")).unwrap();
+        let (priority_tx, mut priority_rx) = mpsc::channel(4);
+        bus.register_daemon(machine, conn, tx);
+        bus.register_daemon_priority(conn, priority_tx);
+        bus.bind_session_conn("s1", conn);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            bus.command_daemon_for_session(machine, "s1", interrupt("s1")),
+        )
+        .await
+        .expect("an interrupt must not wait for the ordinary queue")
+        .unwrap();
+        assert!(matches!(
+            priority_rx.try_recv(),
+            Ok(DaemonFrameDown::Command { command, .. })
+                if matches!(*command, AdapterCommand::Interrupt { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn without_a_priority_lane_an_interrupt_keeps_the_ordinary_channel() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(4);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
+        bus.command_daemon(machine, interrupt("s1")).await.unwrap();
+        assert!(matches!(rx.try_recv(), Ok(DaemonFrameDown::Command { .. })));
+    }
+
+    #[tokio::test]
+    async fn only_interrupts_take_the_priority_lane() {
+        let bus = bus();
+        let (machine, conn) = (Uuid::new_v4(), Uuid::new_v4());
+        let (tx, mut rx) = mpsc::channel(4);
+        let (priority_tx, mut priority_rx) = mpsc::channel(4);
+        bus.register_daemon(machine, conn, tx);
+        bus.register_daemon_priority(conn, priority_tx);
+        bus.command_daemon(machine, reply("s1")).await.unwrap();
+        assert!(priority_rx.try_recv().is_err());
+        assert_eq!(replied_to(&rx.try_recv().unwrap()), "s1");
+    }
+
+    #[tokio::test]
+    async fn closing_a_connection_drops_its_priority_lane() {
+        let bus = bus();
+        let (machine, conn) = (Uuid::new_v4(), Uuid::new_v4());
+        let (tx, _rx) = mpsc::channel(4);
+        let (priority_tx, _priority_rx) = mpsc::channel(4);
+        bus.register_daemon(machine, conn, tx.clone());
+        bus.register_daemon_priority(conn, priority_tx);
+        bus.unregister_daemon(machine, conn, &tx);
+        assert!(bus.priority_lane(&tx).is_none());
     }
 
     fn replied_to(frame: &DaemonFrameDown) -> String {

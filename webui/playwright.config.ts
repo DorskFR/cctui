@@ -49,8 +49,11 @@ export default defineConfig({
 			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts'],
 			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
 		},
+		// The CI project: every request is stubbed through page.route, so it needs
+		// no server, no seeded database and no journeys/.auth/state.json. Keep it
+		// that way — anything needing the local stack belongs in another project.
 		{
-			name: 'tiles',
+			name: 'hermetic',
 			// Anchored to the filename: testMatch sees the absolute path, so a bare
 			// `tiles-` also matches every spec under a worktree named for the branch.
 			testMatch: /(^|[\\/])tiles-[^\\/]*\.spec\.ts$/,

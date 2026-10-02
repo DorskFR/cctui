@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use super::config::launch_overrides;
 use super::diagnose::{DiagnoseRings, stderr_tail};
-use super::registry::{CodexLiveSnapshot, SessionCommand, SessionRecord};
+use super::registry::{
+    CodexLiveSnapshot, SessionCommand, SessionRecord, forget_interrupts, register_interrupts,
+};
 use super::requests::{
     ThreadConfig, ThreadInfo, initialize_req, initialized_notification, record_codex_version,
     thread_info, turn_interrupt_req, turn_start_req, turn_steer_req,
@@ -33,6 +35,7 @@ use super::thread_state::{
     PromptDispatch, SteerRecovery, ThreadState, TurnLifecycle, prompt_dispatch, steer_recovery,
     turn_lifecycle,
 };
+use crate::adapter_runtime::InterruptQueue;
 use crate::adapters::codex::model_list;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,11 +81,25 @@ impl CodexSession {
         let mut sweep = tokio::time::interval(Duration::from_secs(1));
         sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let reexec = crate::selfupdate::reexec_prep();
+        let interrupts = pump.interrupts.clone();
 
         loop {
+            // Checked before every select so a pending interrupt runs ahead of
+            // whatever command or line is ready next.
+            if pump.registered
+                && let Some(pending) = interrupts.try_next()
+            {
+                if pump.on_interrupts(pending.command_ids).await == Flow::Break {
+                    break;
+                }
+                continue;
+            }
             let flow = tokio::select! {
                 () = self.shutdown.cancelled() => pump.on_shutdown(),
                 () = reexec.cancelled() => pump.on_reexec(),
+                pending = interrupts.next(), if pump.registered => {
+                    pump.on_interrupts(pending.command_ids).await
+                }
                 _ = sweep.tick() => pump.on_sweep().await,
                 cmd = cmd_rx.recv(), if pump.registered => pump.on_command(cmd).await,
                 line = lines.next_line() => pump.on_line(line).await?,
@@ -186,6 +203,7 @@ struct EventLoop<'a> {
     handshake_deadline: Instant,
     next_id: i64,
     cmd_tx: mpsc::Sender<SessionCommand>,
+    interrupts: InterruptQueue,
     registered: bool,
     stop: Option<Stop>,
     retry_after_hibernate: Option<SessionCommand>,
@@ -214,6 +232,7 @@ impl<'a> EventLoop<'a> {
             handshake_deadline: Instant::now() + HANDSHAKE_TIMEOUT,
             next_id: RUN_BASE,
             cmd_tx,
+            interrupts: InterruptQueue::default(),
             registered: false,
             stop: None,
             retry_after_hibernate: None,
@@ -475,6 +494,23 @@ impl<'a> EventLoop<'a> {
         }
         self.stop = Some(Stop::Killed);
         Flow::Break
+    }
+
+    /// Stop presses coalesced while one was pending share its `turn/interrupt`.
+    async fn on_interrupts(&mut self, command_ids: Vec<Uuid>) -> Flow {
+        if self.thread.active_turn.id().is_none() {
+            for command_id in command_ids {
+                self.command_result(Some(command_id), Some(NO_TURN_IN_FLIGHT.to_owned())).await;
+            }
+            return Flow::Continue;
+        }
+        let mut ids = command_ids.into_iter();
+        let flow = self.on_interrupt(ids.next()).await;
+        let error = (flow == Flow::Break).then(|| "codex: turn/interrupt write failed".to_owned());
+        for command_id in ids {
+            self.command_result(Some(command_id), error.clone()).await;
+        }
+        flow
     }
 
     /// Keep-alive interrupt: abort the turn but leave the app-server running
@@ -910,6 +946,7 @@ impl<'a> EventLoop<'a> {
             },
         );
         crate::adapters::codex::persist::save(&session.registry).await;
+        register_interrupts(&local_id, &self.interrupts);
         session.live.lock().await.insert(local_id, self.cmd_tx.clone());
         self.registered = true;
         self.ack.ok().await;
@@ -1013,6 +1050,13 @@ impl<'a> EventLoop<'a> {
         // whatever was already buffered.
         if !self.thread.local_id.is_empty() {
             self.session.live.lock().await.remove(&self.thread.local_id);
+            forget_interrupts(&self.thread.local_id, &self.interrupts);
+        }
+        for pending in self.interrupts.drain() {
+            for command_id in pending.command_ids {
+                let error = "codex session ended before the interrupt ran".to_owned();
+                self.command_result(Some(command_id), Some(error)).await;
+            }
         }
         cmd_rx.close();
         let mut drained: Vec<SessionCommand> = Vec::new();
@@ -1388,6 +1432,92 @@ done
         let (ok, error) = spawn_result(&mut rx).await;
         shutdown.cancel();
         assert!(ok, "a delivered send must confirm, not stay unconfirmed: {error:?}");
+    }
+
+    /// Logs each request's method to `$LOG`; thread `t-interrupt`, and a
+    /// `turn/start` that leaves `turn-1` running.
+    const FAKE_TURN_LOGGER: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed 's/^[^}]*"id":\([0-9]*\).*$/\1/')
+  method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+  printf '%s\n' "$method" >> "$LOG"
+  case "$method" in
+    initialize) echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"userAgent\":\"codex/0.144.1\"}}" ;;
+    thread/start) echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"t-interrupt\",\"cwd\":\"/tmp\"}}}" ;;
+    turn/start)
+      echo '{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-1"}}}'
+      echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    turn/interrupt) echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+  esac
+done
+"#;
+
+    async fn command_result_for(rx: &mut mpsc::Receiver<AdapterEvent>, want: Uuid) -> bool {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(evt) = rx.recv().await {
+                if let AdapterEvent::CommandResult { command_id, ok, .. } = evt
+                    && command_id == want
+                {
+                    return ok;
+                }
+            }
+            panic!("no CommandResult for {want}");
+        })
+        .await
+        .expect("command result within 10s")
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_overtakes_the_commands_queued_ahead_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("methods.log");
+        let (_bin_dir, bin) = fake_codex(
+            &FAKE_TURN_LOGGER.replace("\"$LOG\"", &format!("'{}'", log.to_string_lossy())),
+        );
+        let (tx, mut rx) = mpsc::channel(256);
+        let shutdown = CancellationToken::new();
+        let live = LiveSessionRegistry::default();
+        let session = CodexSession::new_fresh(
+            AppServerConfig { bin, ..AppServerConfig::default() },
+            "/tmp".to_string(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+            Vec::new(),
+            Some(Uuid::new_v4()),
+            None,
+            None,
+            tx,
+            live.clone(),
+            SessionRegistry::default(),
+            shutdown.clone(),
+        );
+        tokio::spawn(session.run());
+        let (ok, error) = spawn_result(&mut rx).await;
+        assert!(ok, "spawn failed: {error:?}");
+        let sender = live.lock().await.get("t-interrupt").cloned().expect("registered on ack");
+
+        let send = Uuid::new_v4();
+        sender
+            .send(SessionCommand::Send { text: "go".to_owned(), command_id: Some(send) })
+            .await
+            .unwrap();
+        assert!(command_result_for(&mut rx, send).await, "the turn must start");
+
+        for i in 0..20 {
+            sender.try_send(SessionCommand::Rename { name: format!("n{i}") }).unwrap();
+        }
+        let interrupt = Uuid::new_v4();
+        assert!(super::super::registry::raise_interrupt("t-interrupt", &[interrupt]));
+        assert!(command_result_for(&mut rx, interrupt).await, "turn/interrupt must be answered");
+        shutdown.cancel();
+
+        let methods = std::fs::read_to_string(&log).unwrap();
+        let after_turn: Vec<&str> =
+            methods.lines().skip_while(|m| *m != "turn/start").skip(1).collect();
+        // At most the one command the loop had already picked runs first.
+        let at = after_turn.iter().position(|m| *m == "turn/interrupt");
+        assert!(at.is_some_and(|at| at <= 1), "{methods}");
     }
 
     #[tokio::test]

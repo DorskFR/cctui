@@ -2,31 +2,23 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PromptFocus;
 use crate::app::account_switch::AccountSwitchAction;
-use crate::app::accounts::AccountAction;
 use crate::app::action::{Action, CopyWhat};
-use crate::app::admin::AccessAction;
 use crate::app::attach::AttachAction;
 use crate::app::attention::{AttentionAction, Decision};
-use crate::app::bookmarks::BookmarkAction;
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
 use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
-use crate::app::dispatchers::DispatcherAction;
 use crate::app::drafts::DraftAction;
 use crate::app::fileview::FileViewAction;
-use crate::app::forkform::ForkAction;
 use crate::app::harness_mode::HarnessModeAction;
 use crate::app::images::ImagesAction;
-use crate::app::instance::InstanceAction;
 use crate::app::labels::LabelAction;
 use crate::app::list_search::ListSearchAction;
 use crate::app::list_shape_reduce::ListShapeAction;
 use crate::app::machines::MachineAction;
 use crate::app::macros::MacroAction;
 use crate::app::pins::PinAction;
-use crate::app::pools::PoolAction;
-use crate::app::profiles::ProfileAction;
 use crate::app::prompt::PromptAction;
 use crate::app::row_actions::RowAction;
 use crate::app::send::SendAction;
@@ -34,12 +26,9 @@ use crate::app::session_live::SessionLiveAction;
 use crate::app::sidebar::SidebarAction;
 use crate::app::slice::SliceAction;
 use crate::app::spawn::SpawnAction;
-use crate::app::spawn_drafts::SpawnDraftAction;
-use crate::app::spend::SpendAction;
 use crate::app::state::View;
 use crate::app::terminal::TerminalAction;
 use crate::app::unread::UnreadAction;
-use crate::app::usage::UsageAction;
 use crate::config::chord::Chord;
 use crate::config::keymap::{ActionId, Context, Keymap};
 
@@ -106,16 +95,9 @@ pub const fn context_for(
     match view {
         View::Spawn => Context::Spawn,
         View::SessionList => Context::SessionList,
-        View::Bookmarks => Context::Bookmarks,
         View::Conversation => Context::Conversation,
         View::FileViewer => Context::FileViewer,
         View::Machines => Context::Machines,
-        View::Accounts => Context::Accounts,
-        View::Dispatchers => Context::Dispatchers,
-        View::Access => Context::Access,
-        View::Instance => Context::Instance,
-        View::Usage => Context::Usage,
-        View::Spend => Context::Spend,
         View::LabelPicker => Context::LabelPicker,
         View::LabelFilter => Context::LabelFilter,
         View::Help => Context::Help,
@@ -125,7 +107,6 @@ pub const fn context_for(
         View::Diagnose => Context::Diagnose,
         View::Terminal => Context::Terminal,
         View::ModelPicker => Context::ModelPicker,
-        View::ForkDialog => Context::ForkDialog,
         // Not modal: it takes the keyboard but leaves the strips, the composer
         // and the cards ahead of it, and falls through to the transcript.
         View::Sidebar => Context::Sidebar,
@@ -145,14 +126,9 @@ const fn modal_context(view: View) -> Option<Context> {
         View::Diagnose => Some(Context::Diagnose),
         View::Terminal => Some(Context::Terminal),
         View::FileViewer => Some(Context::FileViewer),
-        View::Dispatchers => Some(Context::Dispatchers),
-        View::Access => Some(Context::Access),
-        View::Instance => Some(Context::Instance),
-        View::Usage => Some(Context::Usage),
         View::LabelPicker => Some(Context::LabelPicker),
         View::LabelFilter => Some(Context::LabelFilter),
         View::ModelPicker => Some(Context::ModelPicker),
-        View::ForkDialog => Some(Context::ForkDialog),
         _ => None,
     }
 }
@@ -209,18 +185,7 @@ pub fn map_input(
         InputEvent::ScrollDown if view == View::Machines => {
             Some(Action::Machines(MachineAction::SelectNext))
         }
-        InputEvent::ScrollUp if view == View::Accounts => {
-            Some(Action::Accounts(AccountAction::SelectPrev))
-        }
-        InputEvent::ScrollDown if view == View::Accounts => {
-            Some(Action::Accounts(AccountAction::SelectNext))
-        }
-        InputEvent::ScrollUp if view == View::Usage => Some(Action::Usage(UsageAction::SelectPrev)),
-        InputEvent::ScrollDown if view == View::Usage => {
-            Some(Action::Usage(UsageAction::SelectNext))
-        }
         InputEvent::ScrollUp => match view {
-            View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewUp)),
             View::Conversation | View::Sidebar => {
                 Some(Action::Scroll { lines: -3, release_follow: true })
             }
@@ -237,19 +202,11 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
-            | View::ForkDialog
             | View::LabelPicker
             | View::LabelFilter
-            | View::Machines
-            | View::Accounts
-            | View::Dispatchers
-            | View::Access
-            | View::Instance
-            | View::Usage
-            | View::Spend => None,
+            | View::Machines => None,
         },
         InputEvent::ScrollDown => match view {
-            View::Bookmarks => Some(Action::Bookmarks(BookmarkAction::PreviewDown)),
             View::Conversation | View::Sidebar => {
                 Some(Action::Scroll { lines: 3, release_follow: false })
             }
@@ -266,16 +223,9 @@ pub fn map_input(
             | View::Pins
             | View::Macros
             | View::ModelPicker
-            | View::ForkDialog
             | View::LabelPicker
             | View::LabelFilter
-            | View::Machines
-            | View::Accounts
-            | View::Dispatchers
-            | View::Access
-            | View::Instance
-            | View::Usage
-            | View::Spend => None,
+            | View::Machines => None,
         },
     }
 }
@@ -317,7 +267,6 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SpawnDirPrev => Action::Spawn(SpawnAction::DirPick(-1)),
         ActionId::SpawnDirAccept => Action::Spawn(SpawnAction::DirAccept),
         ActionId::SpawnRefreshModels => Action::Spawn(SpawnAction::RefreshModels),
-        ActionId::SpawnToggleTarget => Action::Spawn(SpawnAction::ToggleTarget),
         ActionId::OpenInEditor => Action::OpenInEditor,
         ActionId::ListSections => Action::ListShape(ListShapeAction::ToggleSectionsMenu),
         ActionId::ListSortCycle => Action::ListShape(ListShapeAction::CycleSort),
@@ -339,83 +288,12 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::LineCursor => Action::Conversation(ConversationAction::ToggleLineCursor),
 
         ActionId::OpenMachines => Action::Machines(MachineAction::Open),
-        ActionId::OpenAccounts => Action::Accounts(AccountAction::Open),
-        ActionId::AccountsNext => Action::Accounts(AccountAction::SelectNext),
-        ActionId::AccountsPrev => Action::Accounts(AccountAction::SelectPrev),
-        ActionId::AccountsDetail => Action::Accounts(AccountAction::ToggleDetail),
-        ActionId::AccountsFocus => Action::Accounts(AccountAction::ToggleFocus),
-        ActionId::AccountsEligible => Action::Accounts(AccountAction::ToggleEligible),
-        ActionId::AccountsWeightUp => Action::Accounts(AccountAction::Weight { up: true }),
-        ActionId::AccountsWeightDown => Action::Accounts(AccountAction::Weight { up: false }),
-        ActionId::AccountsReset => Action::Accounts(AccountAction::StartReset),
-        ActionId::AccountsRedirect => Action::Accounts(AccountAction::StartRedirect),
-        ActionId::AccountsRefresh => Action::Accounts(AccountAction::Refresh),
-        ActionId::AccountsClose => Action::Accounts(AccountAction::Close),
-        ActionId::AccountsCommit => Action::Accounts(AccountAction::Commit),
-        ActionId::AccountsCancel => Action::Accounts(AccountAction::Cancel),
-        ActionId::AccountsField => Action::Pools(PoolAction::NextField),
-        ActionId::AccountsPickNext => Action::Accounts(AccountAction::PickNext),
-        ActionId::AccountsPickPrev => Action::Accounts(AccountAction::PickPrev),
-        ActionId::PoolsNext => Action::Pools(PoolAction::SelectNext),
-        ActionId::PoolsPrev => Action::Pools(PoolAction::SelectPrev),
-        ActionId::PoolsAddMember => Action::Pools(PoolAction::StartAddMember),
-        ActionId::PoolsRemoveMember => Action::Pools(PoolAction::RemoveMember),
-        ActionId::PoolsMoveDown => Action::Pools(PoolAction::Move { down: true }),
-        ActionId::PoolsMoveUp => Action::Pools(PoolAction::Move { down: false }),
-        ActionId::PoolsNew => Action::Pools(PoolAction::StartNew),
-        ActionId::PoolsDelete => Action::Pools(PoolAction::StartDelete),
-        ActionId::OpenSpend => Action::Spend(SpendAction::Open),
-        ActionId::SpendRefresh => Action::Spend(SpendAction::Refresh),
-        ActionId::SpendClose => Action::Spend(SpendAction::Close),
-        ActionId::OpenDispatchers => Action::Dispatchers(DispatcherAction::Open),
-        ActionId::DispatchersNext => Action::Dispatchers(DispatcherAction::SelectNext),
-        ActionId::DispatchersPrev => Action::Dispatchers(DispatcherAction::SelectPrev),
-        ActionId::DispatchersEnroll => Action::Dispatchers(DispatcherAction::StartEnroll),
-        ActionId::DispatchersEdit => Action::Dispatchers(DispatcherAction::StartEdit),
-        ActionId::DispatchersDelete => Action::Dispatchers(DispatcherAction::StartDelete),
-        ActionId::DispatchersRefresh => Action::Dispatchers(DispatcherAction::Refresh),
-        ActionId::DispatchersField => Action::Dispatchers(DispatcherAction::NextField),
-        ActionId::DispatchersCommit => Action::Dispatchers(DispatcherAction::Commit),
-        ActionId::DispatchersCancel => Action::Dispatchers(DispatcherAction::Cancel),
-        ActionId::DispatchersCopyKey => Action::Dispatchers(DispatcherAction::CopyKey),
 
-        ActionId::OpenAccess => Action::Access(AccessAction::Open),
-        ActionId::AccessNext => Action::Access(AccessAction::SelectNext),
-        ActionId::AccessPrev => Action::Access(AccessAction::SelectPrev),
-        ActionId::AccessNextTab => Action::Access(AccessAction::NextTab),
-        ActionId::AccessPrevTab => Action::Access(AccessAction::PrevTab),
-        ActionId::AccessRefresh => Action::Access(AccessAction::Refresh),
-        ActionId::AccessRevealRevoked => Action::Access(AccessAction::ToggleRevoked),
-        ActionId::AccessNew => Action::Access(AccessAction::StartNew),
-        ActionId::AccessRename => Action::Access(AccessAction::StartRename),
-        ActionId::AccessDisable => Action::Access(AccessAction::ToggleDisable),
-        ActionId::AccessRevoke => Action::Access(AccessAction::StartRevoke),
-        ActionId::AccessRotate => Action::Access(AccessAction::StartRotate),
-        ActionId::AccessPurge => Action::Access(AccessAction::StartPurge),
-        ActionId::AccessScope => Action::Access(AccessAction::ToggleScope),
-        ActionId::AccessKeyScopes => Action::Access(AccessAction::StartKeyScopes),
-        ActionId::AccessDispatchers => Action::Access(AccessAction::OpenDispatchers),
-        ActionId::AccessCommit => Action::Access(AccessAction::Commit),
-        ActionId::AccessCancel => Action::Access(AccessAction::Cancel),
-        ActionId::AccessCopySecret => Action::Access(AccessAction::CopySecret),
-        ActionId::OpenInstance => Action::Instance(InstanceAction::Open),
-        ActionId::InstanceRefresh => Action::Instance(InstanceAction::Refresh),
-        ActionId::InstanceProbe => Action::Instance(InstanceAction::Probe),
-        ActionId::InstanceUpdate => Action::Instance(InstanceAction::StartUpdate),
-        ActionId::InstanceConfirm => Action::Instance(InstanceAction::Confirm),
-        ActionId::InstanceCancel => Action::Instance(InstanceAction::Cancel),
         ActionId::MachinesNext => Action::Machines(MachineAction::SelectNext),
         ActionId::MachinesPrev => Action::Machines(MachineAction::SelectPrev),
         ActionId::MachinesRefresh => Action::Machines(MachineAction::Refresh),
         ActionId::MachinesSpawn => Action::Machines(MachineAction::SpawnHere),
         ActionId::MachinesClose => Action::Machines(MachineAction::Close),
-        ActionId::OpenUsage => Action::Usage(UsageAction::Open),
-        ActionId::UsageNext => Action::Usage(UsageAction::SelectNext),
-        ActionId::UsagePrev => Action::Usage(UsageAction::SelectPrev),
-        ActionId::UsagePane => Action::Usage(UsageAction::SwitchPane),
-        ActionId::UsageRefresh => Action::Usage(UsageAction::Refresh),
-        ActionId::UsageOpenAccount => Action::Usage(UsageAction::OpenAccount),
-        ActionId::UsageClose => Action::Usage(UsageAction::Close),
 
         ActionId::OpenLabels => Action::Labels(LabelAction::OpenPicker),
         ActionId::OpenLabelFilter => Action::Labels(LabelAction::OpenFilter),
@@ -451,14 +329,8 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::ToggleExpand => Action::Conversation(ConversationAction::ToggleExpand),
         ActionId::ToggleExpandAll => Action::Conversation(ConversationAction::ToggleExpandAll),
         ActionId::Interrupt => Action::Controls(ControlsAction::Interrupt),
-        ActionId::Fork => Action::Fork(ForkAction::Open),
-        ActionId::Resume => Action::Fork(ForkAction::Resume),
-        ActionId::ForkSubmit => Action::Fork(ForkAction::Submit),
-        ActionId::ForkCancel => Action::Fork(ForkAction::Close),
-        ActionId::ForkNextField => Action::Fork(ForkAction::FocusNext),
-        ActionId::ForkPrevField => Action::Fork(ForkAction::FocusPrev),
-        ActionId::ForkCycleNext => Action::Fork(ForkAction::Cycle(1)),
-        ActionId::ForkCyclePrev => Action::Fork(ForkAction::Cycle(-1)),
+        ActionId::Fork => Action::Controls(ControlsAction::Fork),
+        ActionId::Resume => Action::Controls(ControlsAction::Resume),
 
         ActionId::ModelPicker => Action::Controls(ControlsAction::OpenModelPicker),
         ActionId::PickerClose => Action::Controls(ControlsAction::ClosePicker),
@@ -546,44 +418,12 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::PinsJump => Action::Pins(PinAction::Jump),
         ActionId::PinsUnpin => Action::Pins(PinAction::UnpinSelected),
 
-        ActionId::BookmarkLine => Action::Bookmarks(BookmarkAction::Save(chord.event())),
-        ActionId::BookmarksSelectNext => Action::Bookmarks(BookmarkAction::SelectNext),
-        ActionId::BookmarksSelectPrev => Action::Bookmarks(BookmarkAction::SelectPrev),
-        ActionId::BookmarksSelectFirst => Action::Bookmarks(BookmarkAction::SelectFirst),
-        ActionId::BookmarksSelectLast => Action::Bookmarks(BookmarkAction::SelectLast),
-        ActionId::BookmarksPreviewDown => Action::Bookmarks(BookmarkAction::PreviewDown),
-        ActionId::BookmarksPreviewUp => Action::Bookmarks(BookmarkAction::PreviewUp),
-        ActionId::BookmarksSearch => Action::Bookmarks(BookmarkAction::SearchOpen),
-        ActionId::DraftLaunch => Action::SpawnDrafts(SpawnDraftAction::Launch),
-        ActionId::DraftEdit => Action::SpawnDrafts(SpawnDraftAction::Edit),
-        ActionId::DraftDiscard => Action::SpawnDrafts(SpawnDraftAction::Discard),
-        ActionId::SpawnFromConfig => Action::SpawnDrafts(SpawnDraftAction::NewFromConfig),
-        ActionId::ProfileNameCommit => Action::Profiles(ProfileAction::PromptCommit),
-        ActionId::ProfileNameCancel => Action::Profiles(ProfileAction::PromptCancel),
-        ActionId::ProfileDeleteConfirm => Action::Profiles(ProfileAction::DeleteConfirm),
-        ActionId::ProfileDeleteCancel => Action::Profiles(ProfileAction::DeleteCancel),
-        ActionId::DraftEnvNext => Action::SpawnDrafts(SpawnDraftAction::EnvNext),
-        ActionId::DraftEnvCommit => Action::SpawnDrafts(SpawnDraftAction::EnvCommit),
-        ActionId::DraftEnvCancel => Action::SpawnDrafts(SpawnDraftAction::EnvCancel),
-        ActionId::DraftDiscardConfirm => Action::SpawnDrafts(SpawnDraftAction::DiscardConfirm),
-        ActionId::DraftDiscardCancel => Action::SpawnDrafts(SpawnDraftAction::DiscardCancel),
-        ActionId::BookmarksOpenSource => Action::Bookmarks(BookmarkAction::OpenSource),
-        ActionId::BookmarksCopy => Action::Bookmarks(BookmarkAction::CopyMarkdown),
-        ActionId::BookmarksEdit => Action::Bookmarks(BookmarkAction::EditOpen),
-        ActionId::BookmarksDelete => Action::Bookmarks(BookmarkAction::DeleteAsk),
-        ActionId::BookmarksPromptCommit => Action::Bookmarks(BookmarkAction::PromptCommit),
-        ActionId::BookmarksPromptCancel => Action::Bookmarks(BookmarkAction::PromptCancel),
-        ActionId::BookmarksPromptSwitch => Action::Bookmarks(BookmarkAction::PromptSwitch),
-        ActionId::BookmarksDeleteConfirm => Action::Bookmarks(BookmarkAction::DeleteConfirm),
-        ActionId::BookmarksDeleteCancel => Action::Bookmarks(BookmarkAction::DeleteCancel),
-
         ActionId::MentionAccept => Action::AcceptMention(chord.event()),
         ActionId::MacrosOpen => Action::Macros(MacroAction::Open),
         ActionId::MacrosClose => Action::Macros(MacroAction::Close),
         ActionId::MacrosSelectNext => Action::Macros(MacroAction::SelectNext),
         ActionId::MacrosSelectPrev => Action::Macros(MacroAction::SelectPrev),
         ActionId::MacrosInsert => Action::Macros(MacroAction::Insert),
-        ActionId::MacrosRun => Action::SpawnDrafts(SpawnDraftAction::RunSelectedMacro),
 
         ActionId::PermissionAllow => Action::Attention(AttentionAction::Respond(Decision::Allow)),
         ActionId::PermissionDeny => Action::Attention(AttentionAction::Respond(Decision::Deny)),
@@ -652,16 +492,9 @@ const fn unbound(context: Context, key: KeyEvent) -> Option<Action> {
         Context::Conversation | Context::Permission => Some(Action::ActivateInputWith(key)),
         Context::Composer => Some(Action::InputKey(key)),
         Context::LabelPicker => Some(Action::Labels(LabelAction::Key(key))),
-        Context::Dispatchers => Some(Action::Dispatchers(DispatcherAction::Key(key))),
-        Context::Access => Some(Action::Access(AccessAction::Key(key))),
-        Context::AccountsForm => Some(Action::Pools(PoolAction::Key(key))),
         Context::History => Some(Action::Drafts(DraftAction::PickerKey(key))),
         Context::Macros => Some(Action::Macros(MacroAction::FilterKey(key))),
-        Context::BookmarkPrompt => Some(Action::Bookmarks(BookmarkAction::PromptKey(key))),
-        Context::DraftEnv => Some(Action::SpawnDrafts(SpawnDraftAction::EnvKey(key))),
-        Context::SpawnProfileName => Some(Action::Profiles(ProfileAction::PromptKey(key))),
         Context::AskText | Context::PlanText => Some(Action::Prompt(PromptAction::TextKey(key))),
-        Context::ForkDialog => Some(Action::Fork(ForkAction::Key(key))),
         _ => None,
     }
 }
@@ -672,8 +505,8 @@ mod tests {
 
     use super::{
         Action, AttentionAction, ControlsAction, Decision, DiagnoseAction, DiagnoseMode,
-        DraftAction, ForkAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus,
-        SliceAction, View, map_input,
+        DraftAction, InputEvent, Keymap, ListShapeAction, PickerColumn, PromptFocus, SliceAction,
+        View, map_input,
     };
     use crate::app::macros::MacroAction;
     use crate::app::pins::PinAction;
@@ -928,11 +761,11 @@ mod tests {
         ));
         assert!(matches!(
             map_event(View::Conversation, false, ctrl('f')),
-            Some(Action::Fork(ForkAction::Open))
+            Some(Action::Controls(ControlsAction::Fork))
         ));
         assert!(matches!(
             map(View::Conversation, false, KeyCode::Char('r')),
-            Some(Action::Fork(ForkAction::Resume))
+            Some(Action::Controls(ControlsAction::Resume))
         ));
     }
 

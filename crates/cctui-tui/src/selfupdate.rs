@@ -8,9 +8,7 @@
 //!      the asset's `.minisig` from the matching GitHub release, verify
 //!      checksum and release signature, stage it, require `--version` to
 //!      succeed, then rename over `current_exe()` keeping a `.bak`.
-//!   3. If `install::SETTINGS_SCHEMA_VERSION` exceeds the marker file, run
-//!      the settings migration that clears cctui's retired hooks.
-//!   4. `exec()` into the freshly-written binary with `CCTUI_UPDATED=1` so we
+//!   3. `exec()` into the freshly-written binary with `CCTUI_UPDATED=1` so we
 //!      don't recurse on the next launch.
 //!
 //! Any failure before the rename is silent and non-fatal — the old binary
@@ -22,8 +20,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use cctui_proto::release_sig::Channel;
-
-use crate::install;
 
 pub const UPDATED_ENV: &str = "CCTUI_UPDATED";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -208,19 +204,6 @@ fn install_staged(staging: &Path, current: &Path, backup: &Path) -> Result<()> {
     Ok(())
 }
 
-fn migrate_settings_if_behind() {
-    if install::SETTINGS_SCHEMA_VERSION <= install::read_schema_marker() {
-        return;
-    }
-    if let Err(e) = install::migrate_legacy_hooks() {
-        eprintln!("[cctui] settings migration failed: {e}");
-        return;
-    }
-    if let Err(e) = install::write_schema_marker(install::SETTINGS_SCHEMA_VERSION) {
-        eprintln!("[cctui] writing schema marker failed: {e}");
-    }
-}
-
 /// Replace the current process with the binary at `exe`, forwarding CLI args
 /// and setting `CCTUI_UPDATED=1` so the new process skips the update check.
 #[cfg(unix)]
@@ -242,7 +225,6 @@ fn exec_new(_: &Path) -> ! {
 
 async fn update_inner(target_tag: Option<&str>) -> Result<()> {
     let new_exe = swap_binary(target_tag).await?;
-    migrate_settings_if_behind();
     exec_new(&new_exe);
 }
 
@@ -266,7 +248,6 @@ pub async fn maybe_update(server_url: &str) {
     }
     let Ok(server_version) = fetch_server_version(server_url).await else { return };
     if !should_update(CURRENT_VERSION, &server_version, update_channel()) {
-        migrate_settings_if_behind();
         return;
     }
     eprintln!("[cctui] updating {CURRENT_VERSION} -> {server_version}…");
@@ -323,11 +304,6 @@ pub async fn force_update(server_url: &str, force: bool) -> Result<()> {
         ),
     }
     let new_exe = swap_binary(target.as_deref()).await?;
-    if let Err(e) = install::migrate_legacy_hooks() {
-        eprintln!("[cctui] settings migration failed: {e}");
-    } else {
-        let _ = install::write_schema_marker(install::SETTINGS_SCHEMA_VERSION);
-    }
     eprintln!("[cctui] update complete -> {}", new_exe.display());
     Ok(())
 }

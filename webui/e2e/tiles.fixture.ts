@@ -8,7 +8,7 @@ export function session(i: number) {
 		machine_id: 'm1',
 		machine_name: 'workbench',
 		machine_kind: 'personal',
-		working_dir: `/home/dorsk/Documents/proj-${i}`,
+		working_dir: `/home/user/Documents/proj-${i}`,
 		status: 'active',
 		liveness: 'online',
 		bucket: i % 3 === 0 ? 'working' : i % 3 === 1 ? 'blocked' : 'done',
@@ -45,12 +45,12 @@ const WIDE_TABLE = [
 	...Array.from(
 		{ length: 12 },
 		(_, i) =>
-			`| session ${i} | workbench-with-a-long-hostname | /home/dorsk/Documents/some/deeply/nested/project-${i} | claude_code | claude-opus-5 | working | Edit | 1234567 |`
+			`| session ${i} | workbench-with-a-long-hostname | /home/user/Documents/some/deeply/nested/project-${i} | claude_code | claude-opus-5 | working | Edit | 1234567 |`
 	)
 ].join('\n');
 
 const UNBREAKABLE =
-	'/home/dorsk/Documents/a/really/long/path/that/never/breaks/because/it/has/no/spaces/at/all/and/keeps/going/' +
+	'/home/user/Documents/a/really/long/path/that/never/breaks/because/it/has/no/spaces/at/all/and/keeps/going/' +
 	'x'.repeat(400);
 
 /** A transcript shaped like the ones that really overflow a pane: an unbreakable

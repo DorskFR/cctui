@@ -6,43 +6,11 @@ use super::action::Effect;
 use super::state::{App, View};
 use super::toast::Level;
 
-/// One entry of `data.macros.items`. Only the fields a composer recall needs;
-/// the knobs that spawn a session belong to the spawn form.
+/// One entry of `data.macros.items`: the fields a composer recall needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Macro {
-    pub id: String,
     pub title: String,
     pub prompt: String,
-    pub adapter: String,
-    /// Where it launches. A macro missing these can be read into the composer
-    /// but cannot be run as a session.
-    pub machine_id: Option<String>,
-    pub working_dir: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub pool_id: Option<String>,
-    pub permission_mode: Option<String>,
-    pub confirm: bool,
-}
-
-impl Macro {
-    /// The shared shape the launch rules read.
-    #[must_use]
-    pub fn spec(&self) -> cctui_clientcore::macros::MacroSpec {
-        cctui_clientcore::macros::MacroSpec {
-            id: self.id.clone(),
-            title: self.title.clone(),
-            prompt: self.prompt.clone(),
-            adapter: self.adapter.clone(),
-            machine_id: self.machine_id.clone(),
-            working_dir: self.working_dir.clone(),
-            model: self.model.clone(),
-            effort: self.effort.clone(),
-            pool_id: self.pool_id.clone(),
-            permission_mode: self.permission_mode.clone(),
-            confirm: self.confirm,
-        }
-    }
 }
 
 #[derive(Debug, Default)]
@@ -95,34 +63,12 @@ pub fn from_settings(data: &Value) -> MacroState {
 
 fn parse_macro(raw: &Value) -> Option<Macro> {
     let text = |key: &str| raw.get(key).and_then(Value::as_str).unwrap_or("").trim().to_owned();
-    let id = text("id");
     let title = text("title");
     let prompt = raw.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
-    if id.is_empty() || title.is_empty() || prompt.trim().is_empty() {
+    if text("id").is_empty() || title.is_empty() || prompt.trim().is_empty() {
         return None;
     }
-    let adapter = text("adapter");
-    let adapter = if adapter.is_empty() { "claude-code".to_owned() } else { adapter };
-    let opt = |key: &str| {
-        raw.get(key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_owned)
-    };
-    Some(Macro {
-        id,
-        title,
-        prompt,
-        adapter,
-        machine_id: opt("machine_id"),
-        working_dir: opt("working_dir"),
-        model: opt("model"),
-        effort: opt("effort"),
-        pool_id: opt("pool_id"),
-        permission_mode: opt("permission_mode"),
-        confirm: raw.get("confirm").and_then(Value::as_bool) != Some(false),
-    })
+    Some(Macro { title, prompt })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -275,8 +221,6 @@ mod tests {
         assert!(state.enabled);
         let titles: Vec<&str> = state.items.iter().map(|m| m.title.as_str()).collect();
         assert_eq!(titles, vec!["Triage", "Release"], "id, title and prompt are all required");
-        assert_eq!(state.items[0].adapter, "claude-code", "the default harness");
-        assert_eq!(state.items[1].adapter, "codex");
     }
 
     #[test]
@@ -339,7 +283,7 @@ mod tests {
             );
         }
         assert_eq!(app.macros.matches("rel").len(), 1);
-        assert_eq!(app.macros.selected().expect("a macro").id, "m2");
+        assert_eq!(app.macros.selected().expect("a macro").title, "Release");
 
         reduce(
             &mut app,
@@ -351,7 +295,11 @@ mod tests {
         assert_eq!(app.macros.picker.as_ref().expect("picker").filter, "re");
 
         reduce(&mut app, Action::Macros(MacroAction::SelectPrev));
-        assert_eq!(app.macros.selected().expect("a macro").id, "m2", "one match, no wrap away");
+        assert_eq!(
+            app.macros.selected().expect("a macro").title,
+            "Release",
+            "one match, no wrap away"
+        );
 
         reduce(&mut app, Action::Macros(MacroAction::Close));
         assert!(app.macros.picker.is_none());

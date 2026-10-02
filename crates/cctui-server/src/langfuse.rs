@@ -12,6 +12,9 @@
 //! - **Config-gated.** [`LangfuseConfig::from_env`] returns `None` unless host +
 //!   both keys are set. Absent => the gateway never touches this module => zero
 //!   overhead, no behaviour change.
+//! - **Redacted by default.** One Langfuse project receives every tenant's
+//!   traces, so prompts and completions are stripped unless
+//!   `CCTUI_LANGFUSE_CAPTURE_CONTENT` is set; model, usage and ids always go.
 //! - **Fail-open.** [`LangfuseClient::trace`] spawns a detached task and returns
 //!   immediately; it never blocks the proxied call. A Langfuse outage, timeout,
 //!   or error is logged at `debug` and dropped. Backpressure is shed by simply
@@ -38,6 +41,10 @@ pub struct LangfuseConfig {
     pub secret_key: String,
     /// Fraction of calls to trace, `0.0..=1.0`. Defaults to `1.0` (trace all).
     pub sample_rate: f64,
+    /// Whether prompts and completions are sent to Langfuse. One Langfuse
+    /// project receives every tenant's traces, so content capture is opt-in:
+    /// unset, traces carry model, usage and ids only.
+    pub capture_content: bool,
 }
 
 impl LangfuseConfig {
@@ -53,12 +60,15 @@ impl LangfuseConfig {
         let sample_rate = nonempty("CCTUI_LANGFUSE_SAMPLE_RATE")
             .and_then(|s| s.parse::<f64>().ok())
             .map_or(1.0, |r| r.clamp(0.0, 1.0));
+        let capture_content = nonempty("CCTUI_LANGFUSE_CAPTURE_CONTENT")
+            .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"));
         Some(Self {
             host: host.trim_end_matches('/').to_string(),
             public_host: public_host.trim_end_matches('/').to_string(),
             public_key,
             secret_key,
             sample_rate,
+            capture_content,
         })
     }
 
@@ -213,6 +223,38 @@ impl LangfuseClient {
     }
 }
 
+/// Strip prompt and completion content from a trace unless content capture is
+/// on, keeping the request's non-content shape (`model`, `stream`, counts) so a
+/// redacted trace is still diagnosable.
+fn redact_unless_captured(mut payload: TracePayload, capture_content: bool) -> TracePayload {
+    const KEEP: [&str; 6] =
+        ["model", "stream", "max_tokens", "temperature", "service_tier", "thinking"];
+    if capture_content {
+        return payload;
+    }
+    payload.request = payload.request.map(|req| {
+        let mut out = serde_json::Map::new();
+        if let Some(obj) = req.as_object() {
+            for k in KEEP {
+                if let Some(v) = obj.get(k) {
+                    out.insert(k.to_owned(), v.clone());
+                }
+            }
+            for k in ["messages", "system", "tools"] {
+                if let Some(n) = obj.get(k).and_then(|v| v.as_array()).map(Vec::len) {
+                    out.insert(format!("{k}_count"), json!(n));
+                } else if obj.contains_key(k) {
+                    out.insert(format!("{k}_count"), json!(1));
+                }
+            }
+        }
+        out.insert("redacted".into(), json!(true));
+        Value::Object(out)
+    });
+    payload.output = payload.output.map(|o| format!("[redacted: {} chars]", o.chars().count()));
+    payload
+}
+
 /// Build the ingestion batch (one `trace-create` + one `generation-create`) and
 /// POST it. Errors are returned to the caller, which logs+drops them.
 async fn post_ingestion(
@@ -223,6 +265,7 @@ async fn post_ingestion(
     let trace_id = uuid::Uuid::new_v4().to_string();
     let gen_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+    let payload = redact_unless_captured(payload, config.capture_content);
     let ctx = &payload.ctx;
 
     let mut metadata = serde_json::Map::new();
@@ -548,6 +591,7 @@ mod tests {
             public_key: "pk".into(),
             secret_key: "sk".into(),
             sample_rate: 1.0,
+            capture_content: false,
         };
         assert!(cfg.basic_auth().starts_with("Basic "));
     }
@@ -700,6 +744,7 @@ mod tests {
                 public_key: "p".into(),
                 secret_key: "s".into(),
                 sample_rate: 1.0,
+                capture_content: false,
             },
             crate::build_http_client(),
         );
@@ -711,6 +756,7 @@ mod tests {
                 public_key: "p".into(),
                 secret_key: "s".into(),
                 sample_rate: 0.0,
+                capture_content: false,
             },
             crate::build_http_client(),
         );
@@ -734,6 +780,7 @@ mod tests {
                 public_key: "p".into(),
                 secret_key: "s".into(),
                 sample_rate: 1.0,
+                capture_content: false,
             },
             crate::build_http_client(),
         );
@@ -760,5 +807,49 @@ mod tests {
         })));
         assert_eq!(evaluate_soft_limit(&windows, &allow_caps, None, now), Decision::Allow);
         assert!(client.usage_cache.is_empty(), "allowed eval must not warm the trace cache");
+    }
+
+    fn secret_payload() -> TracePayload {
+        TracePayload {
+            ctx: TraceContext {
+                session_id: Some("s1".into()),
+                account_id: Some("a1".into()),
+                model: Some("claude-opus-5".into()),
+            },
+            request: Some(json!({
+                "model": "claude-opus-5",
+                "max_tokens": 64,
+                "system": "secret system prompt",
+                "messages": [{"role": "user", "content": "my api key is sk-abc"}],
+            })),
+            output: Some("here is the secret".into()),
+            usage: Some(json!({"input": 10, "output": 5})),
+            level: None,
+            status_message: None,
+        }
+    }
+
+    #[test]
+    fn prompts_and_completions_are_redacted_by_default() {
+        let p = redact_unless_captured(secret_payload(), false);
+        let req = p.request.unwrap();
+        let rendered = req.to_string();
+        assert!(!rendered.contains("sk-abc"), "{rendered}");
+        assert!(!rendered.contains("secret system prompt"), "{rendered}");
+        assert_eq!(req["model"], json!("claude-opus-5"));
+        assert_eq!(req["max_tokens"], json!(64));
+        assert_eq!(req["messages_count"], json!(1));
+        assert_eq!(req["system_count"], json!(1));
+        assert_eq!(req["redacted"], json!(true));
+        assert_eq!(p.output.as_deref(), Some("[redacted: 18 chars]"));
+        assert_eq!(p.usage, Some(json!({"input": 10, "output": 5})));
+        assert_eq!(p.ctx.model.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn opting_in_captures_content_verbatim() {
+        let p = redact_unless_captured(secret_payload(), true);
+        assert!(p.request.unwrap().to_string().contains("sk-abc"));
+        assert_eq!(p.output.as_deref(), Some("here is the secret"));
     }
 }

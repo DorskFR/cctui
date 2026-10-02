@@ -86,7 +86,7 @@ tui = "required"
 [[journey.step]]
 id = "line-actions"
 tui = "waived"
-reason = "per-line buttons appear on hover; the TUI acts on the focused line through keys (`m` pin, `y` copy, `b` bookmark), so there is no per-line widget to point at."
+reason = "per-line buttons appear on hover; the TUI acts on the focused line through keys (`m` pin, `y` copy), so there is no per-line widget to point at."
 
 [[journey.step]]
 id = "filters"
@@ -121,17 +121,17 @@ reason = "its box/fill/clear steps are the same list search `sessions-list` alre
 [[journey]]
 id = "spawn-session"
 tui = "waived"
-reason = "the dialog exists now (`Ctrl+n`), but the journey clicks and fills individual fields — a name box, a draft button — which the TUI reaches by tab order rather than by name, so a mapping would encode focus arithmetic instead of the view."
+reason = "the journey clicks and fills individual fields by name, which the TUI's dialog (`Ctrl+n`) reaches by tab order, so a mapping would encode focus arithmetic instead of the view."
 
 [[journey]]
 id = "accounts-pools"
 tui = "waived"
-reason = "the board exists now (the `@` slice), but the journey's targets are the web's card anatomy and the runner's fixture carries no account payload, so every step would assert against an empty table."
+reason = "account and pool administration lives in the webui; the TUI only switches a running session's account."
 
 [[journey]]
 id = "usage-overview"
 tui = "waived"
-reason = "the panel exists now (`Ctrl+u`), but its steps name the web's individual tiles and period chips, and the runner's fixture loads no usage windows for them to read."
+reason = "the usage panel lives in the webui; the TUI shows the day's spend on its status line."
 
 [[journey]]
 id = "enroll-machine"

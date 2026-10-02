@@ -22,7 +22,7 @@ const HOME = '/';
 
 export default defineJourney({
 	id: 'welcome',
-	version: 4,
+	version: 5,
 	title: { en: 'What cctui is', fr: 'Ce qu’est cctui' },
 	description: {
 		en: 'A walk through every screen, pointing at the real thing on each one.',
@@ -62,18 +62,19 @@ export default defineJourney({
 			id: 'to-sessions',
 			target: 'nav[sessions]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'The nav is the whole app', fr: 'La navigation, c’est toute l’application' },
 				body: {
-					en: 'Six destinations, and you will live in the second one. Open Sessions.',
-					fr: 'Six destinations, et vous vivrez dans la deuxième. Ouvrez Sessions.'
+					en: 'Every page hangs off this rail. Sessions is where most of the work happens — open it.',
+					fr: 'Toutes les pages partent de cette barre. C’est dans Sessions que se passe l’essentiel du travail — ouvrez-la.'
 				}
 			},
 			capture: 'nav'
 		},
 		{
 			id: 'sessions',
-			target: 'session-list',
+			target: { css: '[data-journey="session-list"], [data-journey="session-tiles"]' },
 			say: {
 				title: { en: 'Sessions — where the work happens', fr: 'Sessions — là où le travail se fait' },
 				body: {
@@ -81,12 +82,13 @@ export default defineJourney({
 					fr: 'Chaque exécution lancée, regroupée selon ce qu’elle attend de vous. Celles bloquées sur une réponse remontent en tête : une longue flotte se lit toujours d’un coup d’œil.'
 				}
 			},
-			expect: [{ visible: 'session-list' }],
+			expect: [{ visible: { css: '[data-journey="session-list"], [data-journey="session-tiles"]' } }],
 			capture: 'sessions'
 		},
 		{
 			id: 'start',
-			target: 'new',
+			// A docked spawn panel replaces the New button.
+			target: { css: '[data-journey="new"], [data-journey="spawn"]' },
 			say: {
 				title: { en: 'Starting one', fr: 'En démarrer une' },
 				body: {
@@ -94,62 +96,77 @@ export default defineJourney({
 					fr: 'Ceci transforme une instruction en agent actif : choisissez la machine, le dossier et le compte, et il travaille en arrière-plan, que vous gardiez l’onglet ouvert ou non.'
 				}
 			},
-			expect: [{ visible: 'new' }],
+			expect: [{ visible: { css: '[data-journey="new"], [data-journey="spawn"]' } }],
 			capture: 'start'
 		},
 		{
-			id: 'to-accounts',
-			target: 'nav[accounts]',
+			id: 'to-settings',
+			target: 'nav[settings]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Where does the quota come from?', fr: 'D’où vient le quota ?' },
 				body: {
-					en: 'An agent spends somebody’s tokens. Open Accounts to see whose.',
-					fr: 'Un agent dépense les jetons de quelqu’un. Ouvrez Comptes pour voir ceux de qui.'
+					en: 'An agent spends somebody’s tokens, on somebody’s machine. Both are set up in Settings — open it.',
+					fr: 'Un agent dépense les jetons de quelqu’un, sur la machine de quelqu’un. Les deux se configurent dans Réglages — ouvrez-les.'
+				}
+			}
+		},
+		{
+			id: 'to-accounts',
+			target: 'settings-nav[accounts]',
+			do: { kind: 'click' },
+			guide: 'next',
+			say: {
+				title: { en: 'Whose tokens?', fr: 'Les jetons de qui ?' },
+				body: {
+					en: 'Open AI accounts to see whose.',
+					fr: 'Ouvrez Comptes IA pour voir ceux de qui.'
 				}
 			}
 		},
 		{
 			id: 'accounts',
-			target: 'accounts',
+			target: 'page[accounts]',
 			say: {
-				title: { en: 'Accounts — the credentials work runs on', fr: 'Comptes — les identifiants sur lesquels le travail tourne' },
+				title: { en: 'AI accounts — the credentials work runs on', fr: 'Comptes IA — les identifiants sur lesquels le travail tourne' },
 				body: {
 					en: 'Provider accounts can be grouped into pools, and a session can draw from a pool rather than one fixed account, so one hitting a rate limit steps aside instead of stalling the queue.',
 					fr: 'Les comptes fournisseurs peuvent être regroupés en pools, et une session peut puiser dans un pool plutôt que dans un compte fixe : celui qui atteint sa limite s’efface au lieu de bloquer la file.'
 				}
 			},
-			expect: [{ visible: 'accounts' }],
+			expect: [{ visible: 'page[accounts]' }],
 			capture: 'accounts'
 		},
 		{
-			id: 'to-access',
-			target: 'nav[access]',
+			id: 'to-users',
+			target: 'settings-nav[users]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'And where does it run?', fr: 'Et où cela s’exécute-t-il ?' },
 				body: {
-					en: 'Not here — cctui runs nothing itself. Open Access to meet the machines that do.',
-					fr: 'Pas ici — cctui n’exécute rien lui-même. Ouvrez Accès pour rencontrer les machines qui le font.'
+					en: 'Not here — cctui runs nothing itself. Open Users & keys to meet the machines that do.',
+					fr: 'Pas ici — cctui n’exécute rien lui-même. Ouvrez Utilisateurs et clés pour rencontrer les machines qui le font.'
 				}
 			}
 		},
 		{
-			id: 'access',
-			target: 'enroll',
+			id: 'users',
+			target: 'page[users]',
 			say: {
-				title: { en: 'Access — what may run work', fr: 'Accès — ce qui peut exécuter le travail' },
+				title: { en: 'Users & keys — who may run work', fr: 'Utilisateurs et clés — qui peut exécuter le travail' },
 				body: {
 					en: 'Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open.',
 					fr: 'Les machines fournissent la puissance de calcul et rejoignent la flotte ici, via une unique commande d’enrôlement. Si une session ne trouve nulle part où tourner, ouvrez cette page.'
 				}
 			},
-			expect: [{ visible: 'enroll' }],
+			expect: [{ visible: 'page[users]' }],
 			capture: 'access'
 		},
 		{
 			id: 'settings',
-			target: 'nav[settings]',
+			target: 'settings-goto',
 			say: {
 				title: { en: 'Everything else lives in Settings', fr: 'Tout le reste vit dans Réglages' },
 				body: {
@@ -157,7 +174,7 @@ export default defineJourney({
 					fr: 'L’apparence de l’application, la latitude laissée aux agents, ce qui ne quitte jamais cette machine — et les guides eux-mêmes, où nous allons maintenant.'
 				}
 			},
-			expect: [{ visible: 'nav[settings]' }]
+			expect: [{ visible: 'settings-goto' }]
 		},
 		{
 			id: 'guides',

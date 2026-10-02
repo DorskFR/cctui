@@ -36,19 +36,22 @@
 	});
 
 	const entries = $derived<TocEntry[]>([
-		{ page: 'appearance', icon: '◐', label: m.settings_nav_appearance() },
-		{ page: 'sessions', icon: '◰', label: m.settings_nav_sessions() },
-		{ page: 'macros', icon: '⚡', label: m.settings_nav_macros() },
-		{ page: 'context', icon: '❖', label: m.settings_nav_context() },
-		{ page: 'plugins', icon: '⧉', label: m.settings_nav_plugins() },
-		{ page: 'execution', icon: '▶', label: m.settings_nav_execution() },
-		{ page: 'privacy', icon: '◈', label: m.settings_nav_privacy() },
-		{ page: 'notifications', icon: '🔔', label: m.settings_notifications_title() },
-		{ page: 'monitoring', icon: '▥', label: m.settings_nav_monitoring() },
-		{ page: 'security', icon: '⚿', label: m.settings_nav_security() },
-		{ page: 'guides', icon: '◇', label: m.settings_nav_guides() },
-		{ page: 'instance', icon: '⚙', label: m.settings_nav_instance(), admin: true },
-		{ page: 'uploads', icon: '⇪', label: m.settings_nav_uploads(), admin: true }
+		{ page: 'appearance', icon: 'palette', label: m.settings_nav_appearance() },
+		{ page: 'sessions', icon: 'list', label: m.settings_nav_sessions() },
+		{ page: 'macros', icon: 'zap', label: m.settings_nav_macros() },
+		{ page: 'context', icon: 'book', label: m.settings_nav_context() },
+		{ page: 'plugins', icon: 'grid', label: m.settings_nav_plugins() },
+		{ page: 'execution', icon: 'play', label: m.settings_nav_execution() },
+		{ page: 'privacy', icon: 'eye-off', label: m.settings_nav_privacy() },
+		{ page: 'notifications', icon: 'bell', label: m.settings_notifications_title() },
+		{ page: 'monitoring', icon: 'live', label: m.settings_nav_monitoring() },
+		{ page: 'security', icon: 'lock', label: m.settings_nav_security() },
+		{ page: 'guides', icon: 'life-buoy', label: m.settings_nav_guides() },
+		{ page: 'users', icon: 'users', label: m.settings_nav_users() },
+		{ page: 'accounts', icon: 'key-round', label: m.settings_nav_accounts() },
+		{ page: 'dispatchers', icon: 'send', label: m.settings_nav_dispatchers() },
+		{ page: 'instance', icon: 'settings', label: m.settings_nav_instance(), admin: true },
+		{ page: 'uploads', icon: 'upload', label: m.settings_nav_uploads(), admin: true }
 	]);
 
 	// The filter reads the rendered rows back instead of keeping a parallel

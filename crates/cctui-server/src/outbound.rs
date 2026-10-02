@@ -31,8 +31,17 @@ fn ipv4_is_internal(ip: Ipv4Addr) -> bool {
         || ip.is_link_local()
         || ip.is_unspecified()
         || ip.is_broadcast()
+        || ip.is_multicast()
         // CGNAT 100.64.0.0/10; `Ipv4Addr::is_shared` is still unstable.
         || (a == 100 && (64..=127).contains(&b))
+        // "this network" 0.0.0.0/8: many stacks route 0.x.y.z to 127.x.y.z.
+        || a == 0
+        // IETF protocol assignments 192.0.0.0/24 (includes the NAT64 well-known
+        // prefix's v4 side) and benchmarking 198.18.0.0/15.
+        || (a == 192 && b == 0 && ip.octets()[2] == 0)
+        || (a == 198 && (b == 18 || b == 19))
+        // Reserved 240.0.0.0/4, which no public host can legitimately be.
+        || a >= 240
 }
 
 fn ipv6_is_internal(ip: Ipv6Addr) -> bool {
@@ -44,8 +53,30 @@ fn ipv6_is_internal(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4() {
         return ipv4_is_internal(v4);
     }
-    let seg0 = ip.segments()[0];
-    (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfe80
+    if let Some(v4) = embedded_ipv4(ip) {
+        return ipv4_is_internal(v4);
+    }
+    let seg = ip.segments();
+    ip.is_multicast()
+        || (seg[0] & 0xfe00) == 0xfc00
+        || (seg[0] & 0xffc0) == 0xfe80
+        // Deprecated site-local fec0::/10, still routed by some stacks.
+        || (seg[0] & 0xffc0) == 0xfec0
+}
+
+/// IPv4 carried inside an IPv6 address by a translation prefix: NAT64's
+/// well-known `64:ff9b::/96` and 6to4's `2002::/16`. The transport decodes these
+/// to the embedded v4 target, so the guard must classify it too.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let seg = ip.segments();
+    let from = |hi: u16, lo: u16| Ipv4Addr::from(((u32::from(hi)) << 16) | u32::from(lo));
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6] == [0, 0, 0, 0] {
+        return Some(from(seg[6], seg[7]));
+    }
+    if seg[0] == 0x2002 {
+        return Some(from(seg[1], seg[2]));
+    }
+    None
 }
 
 pub fn ip_is_internal(ip: IpAddr) -> bool {
@@ -377,10 +408,30 @@ mod tests {
             "fe80::1",
             "fc00::1",
             "::ffff:169.254.169.254",
+            "0.1.2.3",
+            "198.18.0.1",
+            "198.19.255.255",
+            "192.0.0.1",
+            "240.0.0.1",
+            "255.1.2.3",
+            "224.0.0.1",
+            "fec0::1",
+            "ff02::1",
+            // NAT64 and 6to4 wrappers around an internal v4 target.
+            "64:ff9b::169.254.169.254",
+            "64:ff9b::7f00:1",
+            "2002:a00:1::",
         ] {
             assert!(ip_is_internal(ip.parse().unwrap()), "{ip} must be internal");
         }
-        for ip in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"] {
+        for ip in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "93.184.216.34",
+            "2606:4700:4700::1111",
+            "2002:101:101::",
+            "64:ff9b::8.8.8.8",
+        ] {
             assert!(!ip_is_internal(ip.parse().unwrap()), "{ip} must be public");
         }
     }

@@ -4,16 +4,11 @@
 use std::path::PathBuf;
 
 use super::action::Effect;
-use super::export::Format;
 use super::state::App;
 use super::toast::Level;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Export {
-        format: Format,
-        path: Option<PathBuf>,
-    },
     Attach {
         path: PathBuf,
     },
@@ -25,20 +20,12 @@ pub enum Command {
     Harness(Option<super::harness_mode::HarnessMode>),
 }
 
-/// `export md|html [path]`, `attach <path>`, `fork` or
-/// `harness [bg|oneshot|sdk]`, without the leading colon.
+/// `attach <path>`, `fork`, `resume` or `harness [bg|oneshot|sdk]`, without the
+/// leading colon.
 pub fn parse(input: &str) -> Result<Command, String> {
     let mut words = input.split_whitespace();
     let verb = words.next().ok_or_else(|| "type a command".to_owned())?;
     match verb {
-        "export" | "e" => {
-            let word = words.next().ok_or_else(|| "usage: :export md|html [path]".to_owned())?;
-            let format =
-                Format::parse(word).ok_or_else(|| format!("`{word}` is not md or html"))?;
-            let rest: Vec<&str> = words.collect();
-            let path = (!rest.is_empty()).then(|| PathBuf::from(rest.join(" ")));
-            Ok(Command::Export { format, path })
-        }
         "attach" | "a" => {
             let rest: Vec<&str> = words.collect();
             if rest.is_empty() {
@@ -76,18 +63,6 @@ pub fn parse(input: &str) -> Result<Command, String> {
     }
 }
 
-/// `~/Downloads/cctui-<slug>-<date>.<ext>`, the webui's download name.
-#[must_use]
-pub fn default_path(stem: &str, format: Format, clock_ms: i64) -> PathBuf {
-    let date = chrono::DateTime::from_timestamp_millis(clock_ms)
-        .unwrap_or_default()
-        .format("%Y-%m-%d")
-        .to_string();
-    let name = format!("cctui-{stem}-{date}.{}", format.extension());
-    let Some(home) = dirs::home_dir() else { return PathBuf::from(name) };
-    home.join("Downloads").join(name)
-}
-
 pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
     let command = match parse(input) {
         Ok(command) => command,
@@ -99,7 +74,7 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
     match command {
         Command::Fork => return super::controls::fork_now(app),
         Command::Resume => {
-            return super::forkform::reduce_fork(app, super::forkform::ForkAction::Resume);
+            return super::controls::reduce_controls(app, super::controls::ControlsAction::Resume);
         }
         _ => {}
     }
@@ -116,28 +91,13 @@ pub fn run(app: &mut App, input: &str) -> Vec<Effect> {
             let path = super::cmdline::expand_home(&path.to_string_lossy());
             vec![Effect::ReadAttachment { session_id: session.id, path }]
         }
-        Command::Export { format, path } => {
-            let meta = super::export::Meta::of(&session);
-            let path =
-                path.unwrap_or_else(|| default_path(&meta.file_stem(), format, app.clock_ms));
-            vec![Effect::ExportConversation {
-                session_id: session.id,
-                meta: Box::new(meta),
-                filter: Box::new(app.filter.clone()),
-                format,
-                path,
-            }]
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::{Command, default_path, parse, run};
+    use super::{Command, parse, run};
     use crate::app::action::Effect;
-    use crate::app::export::Format;
     use crate::app::state::App;
     use crate::testsupport::session;
 
@@ -172,65 +132,17 @@ mod tests {
     }
 
     #[test]
-    fn export_takes_a_format_and_an_optional_path() {
-        assert_eq!(
-            parse("export md"),
-            Ok(Command::Export { format: Format::Markdown, path: None })
-        );
-        assert_eq!(
-            parse("  export html /tmp/out.html "),
-            Ok(Command::Export {
-                format: Format::Html,
-                path: Some(PathBuf::from("/tmp/out.html")),
-            })
-        );
-        assert_eq!(parse("e md"), Ok(Command::Export { format: Format::Markdown, path: None }));
-    }
-
-    #[test]
-    fn a_path_with_spaces_survives_the_split() {
-        let Ok(Command::Export { path, .. }) = parse("export md /tmp/my notes.md") else {
-            panic!("expected an export");
-        };
-        assert_eq!(path, Some(PathBuf::from("/tmp/my notes.md")));
-    }
-
-    #[test]
     fn every_way_of_getting_it_wrong_explains_itself() {
         assert!(parse("").is_err());
-        assert!(parse("export").unwrap_err().contains("usage"));
-        assert!(parse("export pdf").unwrap_err().contains("not md or html"));
+        assert!(parse("resume now").unwrap_err().contains("usage"));
         assert!(parse("frobnicate").unwrap_err().contains("not a command"));
     }
 
     #[test]
-    fn the_default_path_lands_in_downloads_with_the_date() {
-        let path = default_path("cctui", Format::Markdown, 1_700_000_000_000);
-        let name = path.file_name().expect("a file name").to_string_lossy().to_string();
-        assert_eq!(name, "cctui-cctui-2023-11-14.md");
-        assert!(path.to_string_lossy().contains("Downloads"));
-    }
-
-    #[test]
-    fn a_good_command_becomes_one_export_effect() {
+    fn a_bad_command_toasts_instead_of_running() {
         let mut app = app();
-        let effects = run(&mut app, "export md /tmp/t.md");
-        match effects.as_slice() {
-            [Effect::ExportConversation { session_id, format, path, .. }] => {
-                assert_eq!(session_id, "s-a");
-                assert_eq!(*format, Format::Markdown);
-                assert_eq!(path, &PathBuf::from("/tmp/t.md"));
-            }
-            _ => panic!("expected one export effect"),
-        }
-        assert!(app.toasts.latest().is_none(), "a good command says nothing");
-    }
-
-    #[test]
-    fn a_bad_command_toasts_instead_of_exporting() {
-        let mut app = app();
-        assert!(run(&mut app, "export pdf").is_empty());
-        assert!(app.toasts.latest().expect("a toast").text.contains("not md or html"));
+        assert!(run(&mut app, "export md").is_empty());
+        assert!(app.toasts.latest().expect("a toast").text.contains("not a command"));
     }
 }
 

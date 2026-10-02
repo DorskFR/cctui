@@ -107,6 +107,36 @@ pub async fn register(
     }
 }
 
+/// A claimed row stays invisible to other sweeps for this long, past a full
+/// pass; a pass that dies mid-row leaves it to be retried after the lease.
+const CLAIM_LEASE_SECS: i64 = 300;
+
+const CLAIM_SQL: &str = "\
+    WITH claimed AS ( \
+        UPDATE session_webhooks q \
+        SET next_attempt_at = now() + ($1 || ' seconds')::interval \
+        WHERE q.id IN ( \
+            SELECT id FROM session_webhooks \
+            WHERE state = 'pending' AND next_attempt_at <= now() \
+            ORDER BY next_attempt_at \
+            LIMIT $2 \
+            FOR UPDATE SKIP LOCKED) \
+        RETURNING q.id, q.session_id, q.user_id, q.notify_url, q.secret, q.task_id, \
+                  q.attempts, q.payload) \
+    SELECT c.id, c.session_id, c.user_id, c.notify_url, c.secret, c.task_id, c.attempts, \
+           s.status AS session_status, dh.dispatcher_name, dh.handle, c.payload \
+    FROM claimed c \
+    LEFT JOIN sessions s ON s.id = c.session_id \
+    LEFT JOIN dispatch_handles dh ON dh.session_id = c.session_id";
+
+async fn claim_due(pool: &sqlx::PgPool) -> sqlx::Result<Vec<PendingRow>> {
+    sqlx::query_as(CLAIM_SQL)
+        .bind(CLAIM_LEASE_SECS.to_string())
+        .bind(SWEEP_LIMIT)
+        .fetch_all(pool)
+        .await
+}
+
 /// A pending webhook joined to its session's current status and dispatch handle.
 #[derive(sqlx::FromRow)]
 struct PendingRow {
@@ -221,23 +251,8 @@ async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
 /// death payload and POSTs it (2xx → `sent`, else backoff/dead-letter);
 /// `Supersede` closes the row (the worker's own callback owns the verdict);
 /// `Wait` re-polls on the next sweep. Best-effort and self-healing.
-// Linear per-row outbox processing with per-outcome handling; complexity is
-// per-branch, not nesting.
-#[allow(clippy::cognitive_complexity)]
 pub async fn sweep(state: &AppState) {
-    let rows: Vec<PendingRow> = match sqlx::query_as(
-        "SELECT w.id, w.session_id, w.user_id, w.notify_url, w.secret, w.task_id, w.attempts, \
-                s.status AS session_status, dh.dispatcher_name, dh.handle, w.payload \
-         FROM session_webhooks w \
-         LEFT JOIN sessions s ON s.id = w.session_id \
-         LEFT JOIN dispatch_handles dh ON dh.session_id = w.session_id \
-         WHERE w.state = 'pending' AND w.next_attempt_at <= now() \
-         LIMIT $1",
-    )
-    .bind(SWEEP_LIMIT)
-    .fetch_all(&state.pool)
-    .await
-    {
+    let rows = match claim_due(&state.pool).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("completion-webhook sweep query failed: {e}");
@@ -382,7 +397,7 @@ async fn schedule_retry(state: &AppState, id: uuid::Uuid, attempts: i32, err: &s
 mod tests {
     use super::{
         DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, MAX_ATTEMPTS, NotifyUrlError, SWEEP_LIMIT,
-        build_payload, for_each_bounded, retry_schedule, sign, validate_notify_url,
+        build_payload, claim_due, for_each_bounded, retry_schedule, sign, validate_notify_url,
     };
 
     /// Sum of the superseded fixed table (10/30/120/300/900/1800/3600). The
@@ -490,5 +505,48 @@ mod tests {
         assert_eq!(sig.len(), 64);
         assert_eq!(sig, sign("key", b"body"));
         assert_ne!(sig, sign("other", b"body"));
+    }
+
+    #[tokio::test]
+    async fn a_due_webhook_is_claimed_by_one_sweep_only() {
+        let name = "webhook_claim_once";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let due = format!("{name}-{}", uuid::Uuid::new_v4());
+        let later = format!("{name}-{}", uuid::Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO session_webhooks (session_id, notify_url, task_id, next_attempt_at) \
+             VALUES ($1, 'https://example.com/hook', $1, now() - interval '1 second'), \
+                    ($2, 'https://example.com/hook', $2, now() + interval '1 hour')",
+        )
+        .bind(&due)
+        .bind(&later)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (a, b) = tokio::join!(claim_due(&pool), claim_due(&pool));
+        let mine: Vec<String> = a
+            .unwrap()
+            .into_iter()
+            .chain(b.unwrap())
+            .map(|r| r.session_id)
+            .filter(|id| id == &due || id == &later)
+            .collect();
+        assert_eq!(mine, vec![due.clone()], "the due row is claimed once, the future one not");
+        assert!(
+            claim_due(&pool).await.unwrap().iter().all(|r| r.session_id != due),
+            "a claimed row is leased"
+        );
+
+        sqlx::query("DELETE FROM session_webhooks WHERE session_id = ANY($1)")
+            .bind(vec![due, later])
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }

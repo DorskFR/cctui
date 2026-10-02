@@ -222,11 +222,20 @@ pub async fn sweep(state: &AppState) {
     }
 }
 
-/// Send nudge number `attempt` and record it, whatever the dispatch outcome:
-/// a daemon that is away right now gets the next attempt after the backoff,
+/// Record nudge number `attempt`, then send it. Recording first is the claim:
+/// a sweep that loses the race to record the same attempt sends nothing. A
+/// daemon that is away right now gets the next attempt after the backoff,
 /// exactly like a nudge that reached the worker but did not wake it.
 async fn fire(state: &AppState, row: &StuckRow, attempt: i32, now: DateTime<Utc>) {
     let session_id = &row.session_id;
+    match claim_attempt(&state.pool, session_id, row.event_id, attempt).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            tracing::warn!(%session_id, "auto-resume row update failed: {e}");
+            return;
+        }
+    }
     // Carry re-minted gateway env so a reply-driven cold-resume revives a
     // hibernated worker with a fresh token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(state, session_id).await;
@@ -243,36 +252,56 @@ async fn fire(state: &AppState, row: &StuckRow, attempt: i32, now: DateTime<Utc>
         },
     )
     .await;
-    let last_error = match dispatch {
+    match dispatch {
         Ok(()) => {
             tracing::info!(%session_id, attempt, "auto-resume nudge sent after connection loss");
-            None
         }
         Err(err) => {
             tracing::warn!(%session_id, attempt, %err, "auto-resume nudge could not be dispatched");
-            Some(err.to_string())
+            let _ = sqlx::query(
+                "UPDATE session_auto_resume SET last_error = $3, updated_at = now() \
+                 WHERE session_id = $1 AND error_event_id = $2",
+            )
+            .bind(session_id)
+            .bind(row.event_id)
+            .bind(err.to_string())
+            .execute(&state.pool)
+            .await
+            .map_err(|e| tracing::warn!(%session_id, "auto-resume row update failed: {e}"));
         }
-    };
-    let _ = sqlx::query(
+    }
+}
+
+/// Write nudge `attempt` for `error_event_id`, unless this attempt (or a later
+/// one) is already recorded for that error. `false` means another sweep owns it.
+async fn claim_attempt(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    error_event_id: i64,
+    attempt: i32,
+) -> sqlx::Result<bool> {
+    sqlx::query_scalar::<_, String>(
         "INSERT INTO session_auto_resume \
             (session_id, error_event_id, attempts, state, next_attempt_at, last_error, updated_at) \
-         VALUES ($1, $2, $3, 'pending', now() + ($4 || ' seconds')::interval, $5, now()) \
+         VALUES ($1, $2, $3, 'pending', now() + ($4 || ' seconds')::interval, NULL, now()) \
          ON CONFLICT (session_id) DO UPDATE SET \
             error_event_id = EXCLUDED.error_event_id, \
             attempts = EXCLUDED.attempts, \
             state = EXCLUDED.state, \
             next_attempt_at = EXCLUDED.next_attempt_at, \
-            last_error = EXCLUDED.last_error, \
-            updated_at = now()",
+            last_error = NULL, \
+            updated_at = now() \
+         WHERE session_auto_resume.error_event_id <> EXCLUDED.error_event_id \
+            OR session_auto_resume.attempts < EXCLUDED.attempts \
+         RETURNING session_id",
     )
     .bind(session_id)
-    .bind(row.event_id)
+    .bind(error_event_id)
     .bind(attempt)
     .bind(backoff_after(attempt).to_string())
-    .bind(last_error)
-    .execute(&state.pool)
+    .fetch_optional(pool)
     .await
-    .map_err(|e| tracing::warn!(%session_id, "auto-resume row update failed: {e}"));
+    .map(|claimed| claimed.is_some())
 }
 
 /// Mark the row exhausted and tell a human, once.
@@ -309,8 +338,8 @@ mod tests {
     use chrono::{Duration, TimeZone, Utc};
 
     use super::{
-        Action, MAX_ATTEMPTS, STUCK_SELECT, backoff_after, first_delay_secs, is_connection_loss,
-        plan,
+        Action, MAX_ATTEMPTS, STUCK_SELECT, backoff_after, claim_attempt, first_delay_secs,
+        is_connection_loss, plan,
     };
 
     const MIGRATION_115: &str =
@@ -419,5 +448,63 @@ mod tests {
     fn first_delay_is_stable_and_unjittered() {
         assert_eq!(first_delay_secs(), 60);
         assert_eq!(first_delay_secs(), 60);
+    }
+
+    async fn seed_session(pool: &sqlx::PgPool, name: &str) -> String {
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{name}-{uid}"))
+            .bind(format!("h-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mk-{machine}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        let sid = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             adapter_id) VALUES ($1, $2, $2, $3, '/w', 'active', 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(machine)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .unwrap();
+        sid
+    }
+
+    #[tokio::test]
+    async fn each_nudge_is_claimed_by_one_sweep_only() {
+        let name = "auto_resume_claim";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let sid = seed_session(&pool, name).await;
+
+        let (a, b) =
+            tokio::join!(claim_attempt(&pool, &sid, 10, 1), claim_attempt(&pool, &sid, 10, 1));
+        assert_eq!(
+            [a.unwrap(), b.unwrap()].iter().filter(|won| **won).count(),
+            1,
+            "two sweeps racing on the first nudge send it once"
+        );
+        assert!(!claim_attempt(&pool, &sid, 10, 1).await.unwrap(), "already recorded");
+        assert!(claim_attempt(&pool, &sid, 10, 2).await.unwrap(), "the next nudge is free");
+        assert!(!claim_attempt(&pool, &sid, 10, 1).await.unwrap(), "never goes backwards");
+        assert!(
+            claim_attempt(&pool, &sid, 11, 1).await.unwrap(),
+            "a new error restarts the budget"
+        );
     }
 }

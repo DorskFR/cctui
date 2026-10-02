@@ -41,6 +41,7 @@ jobs:
       prerelease: ${{ steps.channel.outputs.prerelease }}
       make_latest: ${{ steps.channel.outputs.make_latest }}
       floating_tag: ${{ steps.channel.outputs.floating_tag }}
+      minor_tag: ${{ steps.channel.outputs.minor_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,13 +52,19 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # vX.Y.Z-beta.N publishes a pre-release that never becomes latest and
-      # moves the :beta image tags instead of :latest.
+      # moves the :beta image tags instead of :latest. A stable tag takes
+      # :latest only when no higher stable release exists.
       - name: Resolve release channel
         id: channel
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
           MODE: ${{ inputs.candidate && 'candidate' || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          CCTUI_STABLE_TAGS="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' | tr '\n' ' ')"
+          export CCTUI_STABLE_TAGS
+          echo "published stable tags: $CCTUI_STABLE_TAGS"
           args=("$TAG"); [ -n "$MODE" ] && args+=("$MODE")
           out="$(bash scripts/release-channel.sh "${args[@]}")"
           echo "$out"
@@ -272,7 +279,7 @@ jobs:
           MAKE_LATEST: ${{ needs.meta.outputs.make_latest }}
         run: |
           case "$CHANNEL/$PRERELEASE/$MAKE_LATEST" in
-            stable/false/true | stable/true/false | beta/true/false) ;;
+            stable/false/true | stable/false/false | stable/true/false | beta/true/false) ;;
             *) echo "unresolved release channel: '$CHANNEL/$PRERELEASE/$MAKE_LATEST'" >&2; exit 1 ;;
           esac
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -409,6 +416,22 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
+      - name: Compose image tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/dorskfr/${{ matrix.image }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          FLOATING: ${{ needs.meta.outputs.floating_tag }}
+          MINOR: ${{ needs.meta.outputs.minor_tag }}
+        run: |
+          {
+            echo 'tags<<TAGS_EOF'
+            for t in "$VERSION" "$FLOATING" "$MINOR"; do
+              [ -n "$t" ] && echo "$IMAGE:$t"
+            done
+            echo TAGS_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Log in to ghcr
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -429,6 +452,4 @@ jobs:
             CCTUI_GIT_HASH=${{ needs.meta.outputs.sha }}
             CLIENT_VERSION=${{ needs.meta.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.image }}
-          tags: |
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.meta.outputs.version }}
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.meta.outputs.floating_tag }}
+          tags: ${{ steps.tags.outputs.tags }}

@@ -11,8 +11,6 @@ const SESSIONS = Array.from({ length: N }, (_, i) => ({
 	todos: [{ content: 'wire the cap', status: 'in_progress' }]
 }));
 
-const SHOTS = '/home/dorsk/.claude/artifacts/cctui-tiles-chrome';
-
 const DOCKED = {
 	spawnDock: { enabled: true, side: 'right' },
 	statsDock: { enabled: true, side: 'left' }
@@ -34,7 +32,7 @@ for (const nav of ['bottom', 'top'] as const) {
 	for (const { w, h, tag, panes, grid } of VIEWPORTS) {
 		test(`tiles hide both docks and never scroll the page — ${nav} nav, ${tag}`, async ({
 			page
-		}) => {
+		}, testInfo) => {
 			test.setTimeout(180_000);
 			const errors = watch(page);
 			await page.setViewportSize({ width: w, height: h });
@@ -47,7 +45,7 @@ for (const nav of ['bottom', 'top'] as const) {
 
 			const m = await metrics(page);
 			console.log(`tiles ${nav}-nav ${tag} ${JSON.stringify(m)}`);
-			await page.screenshot({ path: `${SHOTS}/tiles-docks-${nav}-${tag}.png` });
+			await page.screenshot({ path: testInfo.outputPath(`tiles-docks-${nav}-${tag}.png`) });
 
 			expect(errors, 'no uncaught error').toEqual([]);
 			expect(m.view).toBe('tiles');

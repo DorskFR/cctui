@@ -1,4 +1,4 @@
-//! The one modal list overlay: prompt history, pins, macros.
+//! The one modal list overlay: prompt history and pins.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin};

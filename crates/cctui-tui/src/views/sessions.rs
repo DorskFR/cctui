@@ -28,14 +28,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // One bottom line, in the order the keyboard resolves: a row-action prompt
     // is modal and owns it, then the search prompt, then the hotkeys.
     if !super::row_actions::draw_strip(frame, app, hotkeys_area) {
-        if let Some(text) = app.spawn_drafts.strip() {
-            frame.render_widget(
-                ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                    ratatui::text::Span::styled(text, crate::theme::attention()),
-                )),
-                hotkeys_area,
-            );
-        } else if app.list_search.is_active() {
+        if app.list_search.is_active() {
             draw_search_prompt(frame, app, hotkeys_area);
         } else {
             crate::widgets::hotkeys::draw_session_hotkeys(frame, hotkeys_area, &app.config.keys);

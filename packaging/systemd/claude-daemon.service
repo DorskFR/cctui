@@ -26,7 +26,7 @@ ExitType=cgroup
 # regardless of the (possibly minimal) inherited environment.
 Environment=PATH=__CLAUDE_DAEMON_PATH__
 
-# Separate unit so a cctui-daemon restart (KillMode=control-group) never kills
+# Separate unit so a cctui-daemon stop or restart, which kills its own cgroup, never kills
 # the claude supervisor.
 
 [Install]

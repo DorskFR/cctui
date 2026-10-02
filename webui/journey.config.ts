@@ -55,16 +55,15 @@ export default defineConfig({
 	pages: [
 		'/',
 		'/sessions',
-		'/access',
-		'/accounts',
-		'/users',
-		'/dispatchers',
 		'/settings/appearance',
 		'/settings/sessions',
 		'/settings/execution',
 		'/settings/privacy',
 		'/settings/notifications',
 		'/settings/security',
-		'/settings/instance'
+		'/settings/instance',
+		'/settings/users',
+		'/settings/accounts',
+		'/settings/dispatchers'
 	]
 });

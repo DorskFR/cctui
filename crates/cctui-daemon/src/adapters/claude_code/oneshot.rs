@@ -488,7 +488,8 @@ impl SessionDriver for OneshotDriver {
     ) -> CommandOutcome {
         // Headless: the only carrier is the bidirectional PreToolUse hook
         // long-polling in the listener; there is no PTY keystroke fallback.
-        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut m| m.remove(&local_id));
+        let key = (local_id.clone(), request_id.clone());
+        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut m| m.remove(&key));
         if let Some(tx) = hook {
             if tx.send(allow).is_ok() {
                 tracing::info!(%local_id, %request_id, allow, "oneshot answered permission via hook");

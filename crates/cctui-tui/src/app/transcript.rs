@@ -3,7 +3,7 @@
 
 use std::sync::OnceLock;
 
-use regex_lite::Regex;
+use regex::Regex;
 
 /// How history stores a user turn.
 pub const USER_PREFIX: &str = "▷ User:";

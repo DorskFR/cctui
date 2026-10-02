@@ -11,6 +11,7 @@
 //! allowlist and the "Quiet defaults" preset. Both are embedded at compile time.
 
 pub mod codex;
+pub mod shared;
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;

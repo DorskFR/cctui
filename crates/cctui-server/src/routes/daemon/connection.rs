@@ -10,7 +10,7 @@ use axum::response::IntoResponse;
 use cctui_proto::adapter::AdapterEvent;
 use cctui_proto::chunk::Reassembler;
 use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
-use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::stream::SplitStream;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -36,6 +36,9 @@ const DAEMON_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(
 const DAEMON_LIVENESS_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
 const BUMP_FLUSH: Duration = Duration::from_secs(1);
+
+/// Interrupts are coalesced upstream and drained first, so a handful is plenty.
+const PRIORITY_CAPACITY: usize = 16;
 
 // ---- /api/v1/daemon/ws ----
 
@@ -141,10 +144,11 @@ async fn handle(
 ) {
     let (sink, mut stream) = socket.split();
     let (tx, rx) = mpsc::channel::<DaemonFrameDown>(64);
+    let (priority_tx, priority_rx) = mpsc::channel::<DaemonFrameDown>(PRIORITY_CAPACITY);
     let mut conn = Conn::new(state, machine_id, user_id);
-    conn.register(&tx).await;
+    conn.register(&tx, priority_tx).await;
     send_initial_frames(&conn.state, machine_id, &tx).await;
-    let outbound = tokio::spawn(outbound_pump(sink, rx));
+    let outbound = tokio::spawn(outbound_pump(sink, rx, priority_rx));
     let flusher = spawn_bump_flusher(&conn.bumps, &conn.state.pool);
     tokio::select! {
         () = conn.read_loop(&mut stream, &tx) => {}
@@ -198,11 +202,16 @@ impl Conn {
         }
     }
 
-    async fn register(&self, tx: &mpsc::Sender<DaemonFrameDown>) {
+    async fn register(
+        &self,
+        tx: &mpsc::Sender<DaemonFrameDown>,
+        priority_tx: mpsc::Sender<DaemonFrameDown>,
+    ) {
         let (state, machine_id) = (&self.state, self.machine_id);
         // Register the daemon for command fan-out with the bus. If a
         // stale entry exists, overwrite it (newest connection wins).
         state.bus.register_daemon(machine_id, self.id, tx.clone());
+        state.bus.register_daemon_priority(self.id, priority_tx);
         PENDING_DAEMON_LOST.cancel(machine_id);
         // Replica-aware presence: record this pod as the WS owner so a
         // peer replica can forward daemon-targeted requests here.
@@ -391,15 +400,31 @@ async fn send_initial_frames(
 /// half-open detector tears the WS down every 60s and flaps forever.
 /// The interval mirrors the daemon's 20s ping cadence and stays
 /// well under both sides' 60s timeouts.
-async fn outbound_pump(
-    mut sink: SplitSink<WebSocket, Message>,
+async fn outbound_pump<S>(
+    mut sink: S,
     mut rx: mpsc::Receiver<DaemonFrameDown>,
-) {
+    mut priority: mpsc::Receiver<DaemonFrameDown>,
+) where
+    S: futures_util::Sink<Message> + Unpin,
+{
     let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(20));
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     keepalive.tick().await; // discard the immediate first tick
+    let mut priority_open = true;
     loop {
         tokio::select! {
+            // Biased so an interrupt never waits behind the ordinary queue.
+            biased;
+            frame = priority.recv(), if priority_open => {
+                let Some(frame) = frame else {
+                    priority_open = false;
+                    continue;
+                };
+                let Ok(json) = serde_json::to_string(&frame) else { continue };
+                if sink.send(Message::Text(json.into())).await.is_err() {
+                    break;
+                }
+            }
             frame = rx.recv() => {
                 let Some(frame) = frame else { break };
                 let Ok(json) = serde_json::to_string(&frame) else { continue };
@@ -598,6 +623,46 @@ mod tests {
                 term @ (Inbound::Done | Inbound::Idle) => return term,
             }
         }
+    }
+
+    fn command(command: cctui_proto::adapter::AdapterCommand) -> DaemonFrameDown {
+        DaemonFrameDown::Command { adapter_id: "codex".into(), command: Box::new(command) }
+    }
+
+    #[tokio::test]
+    async fn the_pump_sends_a_priority_frame_before_the_queued_ones() {
+        use cctui_proto::adapter::AdapterCommand;
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+        let sink = Box::pin(futures_util::sink::unfold(out_tx, |tx, msg: Message| async move {
+            tx.send(msg).map_err(|_| ())?;
+            Ok::<_, ()>(tx)
+        }));
+        let (tx, rx) = mpsc::channel(8);
+        let (priority_tx, priority_rx) = mpsc::channel(8);
+        for name in ["a", "b", "c"] {
+            tx.try_send(command(AdapterCommand::Rename {
+                local_id: "s1".into(),
+                name: name.into(),
+            }))
+            .unwrap();
+        }
+        priority_tx
+            .try_send(command(AdapterCommand::Interrupt {
+                local_id: "s1".into(),
+                command_id: None,
+            }))
+            .unwrap();
+        let pump = tokio::spawn(outbound_pump(sink, rx, priority_rx));
+        let first = tokio::time::timeout(Duration::from_secs(1), out_rx.recv()).await.unwrap();
+        let Some(Message::Text(text)) = first else { panic!("expected a text frame") };
+        assert!(text.as_str().contains("interrupt"), "{}", text.as_str());
+        for _ in 0..3 {
+            let next = tokio::time::timeout(Duration::from_secs(1), out_rx.recv()).await.unwrap();
+            assert!(matches!(next, Some(Message::Text(t)) if t.as_str().contains("rename")));
+        }
+        drop(tx);
+        drop(priority_tx);
+        tokio::time::timeout(Duration::from_secs(1), pump).await.unwrap().unwrap();
     }
 
     #[tokio::test]

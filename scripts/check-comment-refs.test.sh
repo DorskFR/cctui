@@ -4,6 +4,11 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 guard="$here/check-comment-refs.sh"
+
+# Inherited git env would point `git init`/`git config` below at the caller's
+# real repository instead of the scratch one.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

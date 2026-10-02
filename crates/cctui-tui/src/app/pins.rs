@@ -53,14 +53,6 @@ impl PinState {
         self.by_session.get(session_id).into_iter().flatten().copied()
     }
 
-    #[cfg(test)]
-    pub const fn jump_target(&self) -> Option<i64> {
-        match self.pending_jump {
-            Some(jump) => Some(jump.seq),
-            None => None,
-        }
-    }
-
     pub fn count(&self, session_id: &str) -> usize {
         self.by_session.get(session_id).map_or(0, BTreeSet::len)
     }
@@ -309,12 +301,6 @@ pub fn jump_to_seq(app: &mut App, seq: i64) -> Vec<Effect> {
         page,
         etag: None,
     }]
-}
-
-/// Arm a jump before the transcript is loaded: the first page that lands
-/// resolves it, and [`after_page`] keeps paging back until it does.
-pub const fn arm_jump(app: &mut App, seq: i64) {
-    app.pins.pending_jump = Some(PendingJump { seq, steps: 0 });
 }
 
 /// An older page landed: resume a jump that was waiting for it.

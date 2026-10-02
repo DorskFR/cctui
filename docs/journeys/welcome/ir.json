@@ -1,6 +1,6 @@
 {
 	"id": "welcome",
-	"version": 4,
+	"version": 5,
 	"route": "/",
 	"level": "checked",
 	"steps": [
@@ -59,7 +59,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": "nav[sessions]",
 			"say": {
@@ -68,8 +68,8 @@
 					"fr": "La navigation, c’est toute l’application"
 				},
 				"body": {
-					"en": "Six destinations, and you will live in the second one. Open Sessions.",
-					"fr": "Six destinations, et vous vivrez dans la deuxième. Ouvrez Sessions."
+					"en": "Every page hangs off this rail. Sessions is where most of the work happens — open it.",
+					"fr": "Toutes les pages partent de cette barre. C’est dans Sessions que se passe l’essentiel du travail — ouvrez-la."
 				}
 			},
 			"capture": {
@@ -83,7 +83,9 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"target": "session-list",
+			"target": {
+				"css": "[data-journey=\"session-list\"], [data-journey=\"session-tiles\"]"
+			},
 			"say": {
 				"title": {
 					"en": "Sessions — where the work happens",
@@ -96,7 +98,9 @@
 			},
 			"expect": [
 				{
-					"visible": "session-list"
+					"visible": {
+						"css": "[data-journey=\"session-list\"], [data-journey=\"session-tiles\"]"
+					}
 				}
 			],
 			"capture": {
@@ -110,7 +114,9 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"target": "new",
+			"target": {
+				"css": "[data-journey=\"new\"], [data-journey=\"spawn\"]"
+			},
 			"say": {
 				"title": {
 					"en": "Starting one",
@@ -123,7 +129,9 @@
 			},
 			"expect": [
 				{
-					"visible": "new"
+					"visible": {
+						"css": "[data-journey=\"new\"], [data-journey=\"spawn\"]"
+					}
 				}
 			],
 			"capture": {
@@ -131,21 +139,40 @@
 			}
 		},
 		{
-			"id": "to-accounts",
+			"id": "to-settings",
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
-			"target": "nav[accounts]",
+			"target": "nav[settings]",
 			"say": {
 				"title": {
 					"en": "Where does the quota come from?",
 					"fr": "D’où vient le quota ?"
 				},
 				"body": {
-					"en": "An agent spends somebody’s tokens. Open Accounts to see whose.",
-					"fr": "Un agent dépense les jetons de quelqu’un. Ouvrez Comptes pour voir ceux de qui."
+					"en": "An agent spends somebody’s tokens, on somebody’s machine. Both are set up in Settings — open it.",
+					"fr": "Un agent dépense les jetons de quelqu’un, sur la machine de quelqu’un. Les deux se configurent dans Réglages — ouvrez-les."
+				}
+			}
+		},
+		{
+			"id": "to-accounts",
+			"do": {
+				"kind": "click"
+			},
+			"guide": "next",
+			"timeout": 10000,
+			"target": "settings-nav[accounts]",
+			"say": {
+				"title": {
+					"en": "Whose tokens?",
+					"fr": "Les jetons de qui ?"
+				},
+				"body": {
+					"en": "Open AI accounts to see whose.",
+					"fr": "Ouvrez Comptes IA pour voir ceux de qui."
 				}
 			}
 		},
@@ -156,11 +183,11 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"target": "accounts",
+			"target": "page[accounts]",
 			"say": {
 				"title": {
-					"en": "Accounts — the credentials work runs on",
-					"fr": "Comptes — les identifiants sur lesquels le travail tourne"
+					"en": "AI accounts — the credentials work runs on",
+					"fr": "Comptes IA — les identifiants sur lesquels le travail tourne"
 				},
 				"body": {
 					"en": "Provider accounts can be grouped into pools, and a session can draw from a pool rather than one fixed account, so one hitting a rate limit steps aside instead of stalling the queue.",
@@ -169,7 +196,7 @@
 			},
 			"expect": [
 				{
-					"visible": "accounts"
+					"visible": "page[accounts]"
 				}
 			],
 			"capture": {
@@ -177,36 +204,36 @@
 			}
 		},
 		{
-			"id": "to-access",
+			"id": "to-users",
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
-			"target": "nav[access]",
+			"target": "settings-nav[users]",
 			"say": {
 				"title": {
 					"en": "And where does it run?",
 					"fr": "Et où cela s’exécute-t-il ?"
 				},
 				"body": {
-					"en": "Not here — cctui runs nothing itself. Open Access to meet the machines that do.",
-					"fr": "Pas ici — cctui n’exécute rien lui-même. Ouvrez Accès pour rencontrer les machines qui le font."
+					"en": "Not here — cctui runs nothing itself. Open Users & keys to meet the machines that do.",
+					"fr": "Pas ici — cctui n’exécute rien lui-même. Ouvrez Utilisateurs et clés pour rencontrer les machines qui le font."
 				}
 			}
 		},
 		{
-			"id": "access",
+			"id": "users",
 			"do": {
 				"kind": "none"
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"target": "enroll",
+			"target": "page[users]",
 			"say": {
 				"title": {
-					"en": "Access — what may run work",
-					"fr": "Accès — ce qui peut exécuter le travail"
+					"en": "Users & keys — who may run work",
+					"fr": "Utilisateurs et clés — qui peut exécuter le travail"
 				},
 				"body": {
 					"en": "Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open.",
@@ -215,7 +242,7 @@
 			},
 			"expect": [
 				{
-					"visible": "enroll"
+					"visible": "page[users]"
 				}
 			],
 			"capture": {
@@ -229,7 +256,7 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"target": "nav[settings]",
+			"target": "settings-goto",
 			"say": {
 				"title": {
 					"en": "Everything else lives in Settings",
@@ -242,7 +269,7 @@
 			},
 			"expect": [
 				{
-					"visible": "nav[settings]"
+					"visible": "settings-goto"
 				}
 			]
 		},

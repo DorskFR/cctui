@@ -72,12 +72,16 @@
 	let ceilingOpen = $state(false);
 	let confirmKind = $state<'revoke' | 'purge' | null>(null);
 
-	// Machines and tokens are admin-only endpoints: a non-admin sees the tabs
-	// but cannot open them.
+	// Machines and tokens are admin-only endpoints, so a non-admin is not shown
+	// tabs it could never open.
 	const tabs = $derived([
 		{ id: 'keys', label: m.access_tab_keys() },
-		{ id: 'machines', label: m.access_tab_machines({ count: machineCount }), disabled: !isAdmin },
-		{ id: 'tokens', label: m.access_tab_tokens({ count: tokenCount }), disabled: !isAdmin },
+		...(isAdmin
+			? [
+					{ id: 'machines', label: m.access_tab_machines({ count: machineCount }) },
+					{ id: 'tokens', label: m.access_tab_tokens({ count: tokenCount }) }
+				]
+			: []),
 		{ id: 'accounts', label: m.access_tab_accounts({ count: accounts.length }) }
 	]);
 

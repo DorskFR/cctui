@@ -27,10 +27,11 @@ use super::discovery::Discovery;
 use super::dispatch_done::{self, DispatchDoneTracker};
 use super::kickstart::Kickstarter;
 use super::launch::{self, JobIds, LaunchArgs};
+use super::spawn_watchdog::SpawnWatchdog;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
-use crate::adapter_runtime::{CommandOutcome, Handled, SessionDriver};
+use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver};
 
 mod delivered;
 mod diagnose;
@@ -310,6 +311,34 @@ pub struct DeferredDispatch {
     what: String,
     session_id: String,
     gate: Option<crate::preflight::Preflight>,
+    /// `None` skips the post-dispatch confirmation: the dispatch reply alone
+    /// becomes the ack, which is what tests against a fake daemon want.
+    watchdog: Option<SpawnWatchdog>,
+}
+
+/// ESC into the worker's PTY straight from the shared roster. No kickstart
+/// wait: with no live claude daemon there is no turn to stop.
+pub(super) struct ControlInterrupter {
+    discovery: Discovery,
+    roster: super::roster::SessionRoster,
+}
+
+#[async_trait::async_trait]
+impl Interrupter for ControlInterrupter {
+    async fn interrupt(&self, local_id: &str, _command_ids: &[uuid::Uuid]) -> CommandOutcome {
+        let short = self
+            .roster
+            .get(local_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown session {local_id}"))?;
+        let sock = self
+            .discovery
+            .locate_live()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no claude daemon running, nothing to interrupt"))?;
+        socket::attach_interrupt(&sock, &short).await?;
+        tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
+        Ok(Handled::Done)
+    }
 }
 
 pub struct Driver {
@@ -752,6 +781,13 @@ impl Driver {
         self.hook_log.clone()
     }
 
+    pub(super) fn interrupter(&self) -> ControlInterrupter {
+        ControlInterrupter {
+            discovery: self.cfg.discovery.clone(),
+            roster: self.short_by_session.clone(),
+        }
+    }
+
     /// Clone handles the pty-watch pump needs to serve a `WatchPty` without
     /// going through this driver's serial command loop.
     pub(super) fn pty_watch_pump(
@@ -883,7 +919,8 @@ impl Driver {
         // decision to Claude Code, so the tool runs/skips with no attach
         // and no keystroke at all. `take`n so a duplicate response can't
         // double-fire on an already-resolved (and dropped) channel.
-        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(local_id));
+        let key = (local_id.to_owned(), request_id.to_owned());
+        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(&key));
         if let Some(tx) = hook {
             if tx.send(allow).is_ok() {
                 tracing::info!(%local_id, %request_id, allow, "answered permission prompt via PreToolUse hook");
@@ -934,7 +971,9 @@ impl Driver {
             Ok(()) => (true, None),
             Err(err) => (false, Some(err.to_string())),
         };
-        let _ = events.send(AdapterEvent::CommandResult { command_id, ok, error }).await;
+        if events.send(AdapterEvent::CommandResult { command_id, ok, error }).await.is_err() {
+            tracing::warn!(%command_id, ok, "command result dropped: adapter event channel closed");
+        }
     }
 
     fn resolve_short(&self, local_id: &str) -> anyhow::Result<String> {

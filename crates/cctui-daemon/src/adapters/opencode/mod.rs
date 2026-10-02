@@ -80,8 +80,18 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
         machine_key,
         mut connected,
         pty_watch,
+        interrupts,
         ..
     } = ctx;
+    let _interrupt_handle = interrupts.map(|queue| {
+        crate::adapter_runtime::spawn_interrupt_pump(
+            ADAPTER_ID,
+            queue,
+            std::sync::Arc::new(OpenCodeInterrupter),
+            events.clone(),
+            shutdown.clone(),
+        )
+    });
     let _watch_handle = pty_watch.map(|watches| {
         let pump = pty_view::PtyWatchPump::new(live.clone(), events.clone(), shutdown.clone());
         tokio::spawn(pump.run(watches))
@@ -109,6 +119,20 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                 let events = pump.events.clone();
                 dispatch_command(&mut pump, &events, cmd).await;
             }
+        }
+    }
+}
+
+struct OpenCodeInterrupter;
+
+#[async_trait::async_trait]
+impl crate::adapter_runtime::Interrupter for OpenCodeInterrupter {
+    async fn interrupt(&self, local_id: &str, _command_ids: &[Uuid]) -> CommandOutcome {
+        if session::interrupt_live(local_id).await {
+            Ok(Handled::Done)
+        } else {
+            tracing::warn!(%local_id, "opencode: no live session to interrupt");
+            Err(anyhow::anyhow!("no live opencode session"))
         }
     }
 }
@@ -189,14 +213,15 @@ impl SessionDriver for Pump {
             route(&self.live, &local_id, SessionCommand::Kill { session_id: local_id.clone() })
                 .await;
         if let Some(command_id) = command_id {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult {
                     command_id,
                     ok: delivered,
                     error: (!delivered).then(|| "no live opencode session".to_owned()),
-                })
-                .await;
+                },
+            )
+            .await;
         }
         Ok(Handled::Deferred)
     }
@@ -244,13 +269,14 @@ impl Pump {
         if !route(&self.live, &local_id, SessionCommand::Kill { session_id: local_id.clone() })
             .await
         {
-            let _ = self
-                .events
-                .send(AdapterEvent::SessionEnded {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::SessionEnded {
                     local_id,
                     reason: cctui_proto::adapter::EndReason::Killed,
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
 
@@ -357,17 +383,30 @@ impl Pump {
 /// asked for `yolo` or `whip`, else the adapter default, else the locked-down
 /// reviewer — opencode's own default agent has edit rights, arbitrary bash and
 /// no step bound, which no cctui spawn may fall back to.
+///
+/// The permission mode is a ceiling: below `yolo`/`whip` a named agent is only
+/// honoured when it is one this config locks down, since any other name (a
+/// repo's own `opencode.json` agent included) may grant edits and bash.
 fn agent_of(spec: &cctui_proto::adapter::SessionSpec, cfg: &OpenCodeConfig) -> Option<String> {
     use cctui_proto::adapter::PermissionMode;
-    spec.env
-        .get(AGENT_ENV)
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            matches!(spec.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip))
-                .then(|| config::BUILDER_AGENT.to_owned())
-        })
-        .or_else(|| cfg.default_agent.clone())
+    let may_build =
+        matches!(spec.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip));
+    let within_mode = |agent: String| {
+        if may_build || agent == config::REVIEWER_AGENT || agent == config::STOCK_AGENT {
+            return Some(agent);
+        }
+        tracing::warn!(
+            %agent,
+            mode = ?spec.permission_mode,
+            "opencode agent grants more than the permission mode; using the reviewer"
+        );
+        None
+    };
+    let named = spec.env.get(AGENT_ENV).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    named
+        .and_then(within_mode)
+        .or_else(|| may_build.then(|| config::BUILDER_AGENT.to_owned()))
+        .or_else(|| cfg.default_agent.clone().and_then(within_mode))
         .or_else(|| Some(config::REVIEWER_AGENT.to_owned()))
 }
 
@@ -412,13 +451,11 @@ async fn route(live: &LiveRegistry, local_id: &str, cmd: SessionCommand) -> bool
 async fn fail(events: &mpsc::Sender<AdapterEvent>, command_id: Option<Uuid>, error: &str) {
     tracing::error!(%error, "opencode command failed");
     if let Some(command_id) = command_id {
-        let _ = events
-            .send(AdapterEvent::CommandResult {
-                command_id,
-                ok: false,
-                error: Some(error.to_owned()),
-            })
-            .await;
+        crate::adapters::emit(
+            events,
+            AdapterEvent::CommandResult { command_id, ok: false, error: Some(error.to_owned()) },
+        )
+        .await;
     }
 }
 
@@ -551,6 +588,10 @@ impl AdapterFactory for OpenCodeFactory {
     fn pty_watch(&self, _config: &serde_json::Value) -> bool {
         true
     }
+
+    fn interrupts(&self, _config: &serde_json::Value) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -631,6 +672,42 @@ mod tests {
             agent_of(&spec_with_env(&[(AGENT_ENV, "build")]), &cfg).as_deref(),
             Some("build")
         );
+    }
+
+    #[test]
+    fn a_named_agent_never_lifts_a_spawn_above_its_permission_mode() {
+        use cctui_proto::adapter::PermissionMode;
+        let cfg = OpenCodeConfig::default();
+        for named in [config::BUILDER_AGENT, "repo-agent-with-bash"] {
+            for mode in [None, Some(PermissionMode::Ask), Some(PermissionMode::Auto)] {
+                let mut spec = spec_with_env(&[(AGENT_ENV, named)]);
+                spec.permission_mode = mode;
+                assert_eq!(
+                    agent_of(&spec, &cfg).as_deref(),
+                    Some(config::REVIEWER_AGENT),
+                    "{named} under {mode:?}"
+                );
+            }
+            for mode in [PermissionMode::Yolo, PermissionMode::Whip] {
+                let mut spec = spec_with_env(&[(AGENT_ENV, named)]);
+                spec.permission_mode = Some(mode);
+                assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(named), "{named} under {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_adapter_default_agent_is_capped_by_the_permission_mode_too() {
+        use cctui_proto::adapter::PermissionMode;
+        let cfg = OpenCodeConfig {
+            default_agent: Some(config::BUILDER_AGENT.to_owned()),
+            ..OpenCodeConfig::default()
+        };
+        let mut spec = spec_with_env(&[]);
+        spec.permission_mode = Some(PermissionMode::Ask);
+        assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(config::REVIEWER_AGENT));
+        spec.permission_mode = Some(PermissionMode::Yolo);
+        assert_eq!(agent_of(&spec, &cfg).as_deref(), Some(config::BUILDER_AGENT));
     }
 }
 
@@ -839,6 +916,7 @@ mod reconnect_tests {
             events,
             commands,
             pty_watch: None,
+            interrupts: None,
             shutdown: shutdown.clone(),
             config: serde_json::Value::Null,
             server: None,

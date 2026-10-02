@@ -394,7 +394,7 @@ async fn usage_for_account(
     if matches!(acct.provider.as_str(), "anthropic-compatible" | "openai-compatible")
         && let Some(id) = usage_probe_id(state, account_id).await
     {
-        return probe_usage_windows(state, &acct, &id).await;
+        return probe_usage_windows(&acct, &id).await;
     }
     if acct.provider != "anthropic" {
         // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
@@ -459,7 +459,6 @@ async fn usage_probe_id(state: &AppState, account_id: Uuid) -> Option<String> {
 /// usage payload, so the cache, the history samples and the soft limit consume
 /// it unchanged.
 async fn probe_usage_windows(
-    state: &AppState,
     acct: &Account,
     probe_id: &str,
 ) -> Result<Option<serde_json::Value>, StatusCode> {
@@ -470,10 +469,19 @@ async fn probe_usage_windows(
     let Some(token) = acct.access_token.as_deref() else {
         return Err(StatusCode::BAD_GATEWAY);
     };
+    // The probe's base comes off the credential row, so it is as user-supplied as
+    // the proxy's `base_url`: same guard, same redirect-less resolver-checked client.
+    let base = acct.base_url.as_deref().filter(|u| !u.trim().is_empty());
+    if let Some(base) = base
+        && let Err(e) = crate::outbound::upstream_url_permitted(base)
+    {
+        tracing::warn!(account = %acct.id, probe_id, "usage probe base_url refused ({e})");
+        return Err(StatusCode::BAD_GATEWAY);
+    }
     match crate::usage_probe::run(
-        &state.http_client,
+        crate::outbound::upstream_client(),
         probe,
-        acct.base_url.as_deref(),
+        base,
         token,
         chrono::Utc::now(),
     )

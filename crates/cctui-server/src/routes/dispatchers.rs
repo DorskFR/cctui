@@ -255,13 +255,14 @@ pub async fn delete_dispatcher(
         (s, Json(serde_json::json!({ "error": "the enroll scope is required to delete dispatchers" })))
     })?;
 
+    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
     let res = sqlx::query(
         "UPDATE dispatchers SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND deleted_at IS NULL",
     )
     .bind(id)
     .bind(ctx.owner_filter())
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| db_err(&e))?;
 
@@ -271,15 +272,37 @@ pub async fn delete_dispatcher(
             Json(serde_json::json!({ "error": "dispatcher not found" })),
         ));
     }
+    let revoked = revoke_dispatcher_keys(&mut *tx, id).await.map_err(|e| db_err(&e))?;
+    tx.commit().await.map_err(|e| db_err(&e))?;
+    for hash in &revoked {
+        state.auth_config.purge(hash);
+    }
+
     // Drop any live connection so the dispatcher can't keep operating under a
     // removed identity (it'll fail to re-auth on reconnect).
     state.bus.evict_dispatcher(id);
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Retire a dispatcher's `auth_keys` rows, returning their hashes so the caller
+/// can evict them from the positive-auth cache.
+async fn revoke_dispatcher_keys(
+    exec: impl sqlx::PgExecutor<'_>,
+    dispatcher_id: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "UPDATE auth_keys SET revoked_at = now() \
+         WHERE dispatcher_id = $1 AND revoked_at IS NULL RETURNING key_hash",
+    )
+    .bind(dispatcher_id)
+    .fetch_all(exec)
+    .await?;
+    Ok(rows.into_iter().map(|(h,)| h).collect())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Change, parse_change};
+    use super::{Change, Scope, Uuid, parse_change, revoke_dispatcher_keys};
 
     #[test]
     fn an_absent_field_keeps_a_binding_and_a_blank_one_clears_it() {
@@ -289,5 +312,86 @@ mod tests {
         assert_eq!(parse_change(Some("")), Change::Clear);
         assert_eq!(parse_change(Some("   ")), Change::Clear);
         assert_eq!(parse_change(Some(" work ")), Change::Set("work"));
+    }
+
+    /// Delete marks `dispatchers.revoked_at`, but auth resolves `auth_keys`
+    /// first — the enrollment key outlives the dispatcher unless that row is
+    /// revoked too.
+    #[tokio::test]
+    async fn deleting_a_dispatcher_kills_its_enrollment_key() {
+        let name = "deleting_a_dispatcher_kills_its_enrollment_key";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(user_id)
+            .bind(format!("dispatcher-revoke-test-{user_id}"))
+            .bind(format!("not-a-sha-{}", Uuid::new_v4()))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'dispatch')")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let dispatcher_id = Uuid::new_v4();
+        let token = crate::auth::machine_token(&crate::auth::mint_secret());
+        let hash = crate::auth::sha256_hex(&token);
+        sqlx::query(
+            "INSERT INTO dispatchers (id, user_id, name, kind, key_hash, key_preview) \
+             VALUES ($1, $2, $3, 'http', $4, 'prev')",
+        )
+        .bind(dispatcher_id)
+        .bind(user_id)
+        .bind(format!("d-{dispatcher_id}"))
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+        crate::auth::register_key(
+            &pool,
+            crate::auth::NewKey {
+                user_id,
+                key_hash: &hash,
+                key_preview: Some("prev"),
+                label: Some("d"),
+                kind: "dispatcher",
+                machine_id: None,
+                dispatcher_id: Some(dispatcher_id),
+                expires_at: None,
+                passkey_id: None,
+            },
+            std::iter::once(Scope::Dispatch),
+        )
+        .await
+        .unwrap();
+
+        let before = crate::auth::AuthConfig::new(vec![], pool.clone());
+        assert!(before.validate(&token).await.is_some(), "the key works before delete");
+
+        sqlx::query("UPDATE dispatchers SET revoked_at = now(), deleted_at = now() WHERE id = $1")
+            .bind(dispatcher_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let hashes = revoke_dispatcher_keys(&pool, dispatcher_id).await.unwrap();
+        assert_eq!(hashes, vec![hash], "the caller gets the hash to evict from cache");
+
+        let after = crate::auth::AuthConfig::new(vec![], pool.clone());
+        assert!(
+            after.validate(&token).await.is_none(),
+            "a deleted dispatcher's key must not authenticate"
+        );
+        assert!(
+            revoke_dispatcher_keys(&pool, dispatcher_id).await.unwrap().is_empty(),
+            "deleting twice is a no-op"
+        );
     }
 }

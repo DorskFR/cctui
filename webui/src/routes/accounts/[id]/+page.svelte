@@ -22,6 +22,7 @@
 	import ProvidersSection from '$lib/components/organisms/accounts/account-page/ProvidersSection.svelte';
 	import ToolPolicySection from '$lib/components/organisms/accounts/account-page/ToolPolicySection.svelte';
 	import DangerSection from '$lib/components/organisms/accounts/account-page/DangerSection.svelte';
+	import { MOVED_ROUTES } from '../../movedRoutes';
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
@@ -86,7 +87,7 @@
 		guard(
 			actions.remove(account.id).then(() => {
 				toasts.ok(m.accounts_deleted());
-				goto('/accounts');
+				goto(MOVED_ROUTES['/accounts']);
 			})
 		);
 	}
@@ -95,7 +96,7 @@
 <div class="page">
 	<Breadcrumb
 		items={[
-			{ label: m.accounts_title(), href: '/accounts' },
+			{ label: m.accounts_title(), href: MOVED_ROUTES['/accounts'] },
 			{ label: account?.name ?? m.common_loading() }
 		]}
 	/>

@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
     plugin_store::init(&state.pool, &state.plugins).await;
     start_background_tasks(&state).await;
     let app = build_app(&state, &config, &auth_config);
-    spawn_sweeps(state);
+    spawn_sweeps(&state);
     serve(&config, app).await
 }
 
@@ -97,10 +97,18 @@ fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// No whole-request `timeout`: this client carries long gateway streams.
 fn build_http_client() -> reqwest::Client {
     install_crypto_provider();
-    reqwest::Client::new()
+    reqwest::Client::builder()
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .read_timeout(HTTP_READ_TIMEOUT)
+        .build()
+        .expect("build http client")
 }
+
+const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const HTTP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -333,6 +341,7 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
 fn outer_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/readyz", get(readyz))
         // Prometheus scrape. Self-authenticating (same token scheme as
         // `/api/v1`, unless `CCTUI_METRICS_PUBLIC` opts out), so it sits here
         // rather than under the `/api/v1` auth layer: a scrape config expects
@@ -393,6 +402,10 @@ fn outer_routes() -> Router<AppState> {
             "/api/v1/daemon/sessions/{id}/message-child",
             post(routes::spawn_child::message_child),
         )
+        .route(
+            "/api/v1/daemon/sessions/{id}/archive-child",
+            post(routes::spawn_child::archive_child),
+        )
         // Agent-posted image upload: the daemon POSTs raw image bytes
         // it detected as a marker in an assistant message. Self-auths via the
         // machine-key Bearer like the sibling daemon endpoints, so it sits here
@@ -450,7 +463,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
 }
 
-fn spawn_sweeps(state: AppState) {
+fn spawn_sweeps(state: &AppState) {
     spawn_periodic(REAPER_PERIOD, {
         let state = state.clone();
         move || webhook_sweep(state.clone())
@@ -483,17 +496,94 @@ fn spawn_sweeps(state: AppState) {
             async move { plugin_store::sync_or_warn(&state.pool, &state.plugins).await }
         }
     });
-    tokio::spawn(reaper_task(state));
+    spawn_reaper_sweeps(state);
 }
+
+/// Fits inside Kubernetes' default 30 s termination grace period.
+const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_secs(20);
+const READY_DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!("listening on {}", config.bind_addr());
+    serve_until(listener, app, shutdown_signal(), SHUTDOWN_DRAIN).await
+}
+
+/// The drain is bounded: `WebSockets` and streams can outlast any wait.
+async fn serve_until(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    signal: impl std::future::Future<Output = ()>,
+    drain: std::time::Duration,
+) -> anyhow::Result<()> {
+    use std::future::IntoFuture;
+    let stop = Arc::new(tokio::sync::Notify::new());
     // With connect info, so a handler that must identify its caller can use the
     // peer address rather than believing a header.
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await?;
+    let server =
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+            .with_graceful_shutdown({
+                let stop = stop.clone();
+                async move { stop.notified().await }
+            })
+            .into_future();
+    let mut server = std::pin::pin!(server);
+    tokio::select! {
+        res = &mut server => return Ok(res?),
+        () = signal => {}
+    }
+    tracing::info!("shutdown signal received, draining connections");
+    stop.notify_one();
+    if let Ok(res) = tokio::time::timeout(drain, server).await {
+        res?;
+    } else {
+        tracing::warn!(?drain, "connections still open after the drain window; exiting");
+    }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+}
+
+/// Readiness, unlike `/health` liveness: 503 while the database is unreachable.
+async fn readyz(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, &'static str) {
+    if db_ready(&state.pool).await {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
+    }
+}
+
+async fn db_ready(pool: &sqlx::PgPool) -> bool {
+    matches!(
+        tokio::time::timeout(READY_DB_TIMEOUT, sqlx::query("SELECT 1").execute(pool)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// Build the `/api/v1` route table from the descriptor list. Every
@@ -648,106 +738,115 @@ async fn keepalive_sweep(state: AppState) {
     keepalive::sweep(&state).await;
 }
 
-async fn reaper_task(state: AppState) {
-    let mut interval = tokio::time::interval(REAPER_PERIOD);
-    loop {
-        interval.tick().await;
-        let demoted = {
-            let mut registry = state.registry.write().await;
-            registry.mark_stale(state.config.inactive_after_secs)
-        };
-        if !demoted.is_empty() {
-            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = ANY($1)")
-                .bind(&demoted)
-                .execute(&state.pool)
-                .await;
-            tracing::info!(session_ids = ?demoted, "sessions demoted to inactive");
-        }
-
+/// Each sweep runs on its own task so a slow pass delays only itself.
+fn spawn_reaper_sweeps(state: &AppState) {
+    spawn_sweep(state, |state| async move {
+        demote_idle_registered(&state).await;
         auto_archive_stale(&state).await;
         auto_archive::sweep(&state).await;
-        spawn_labels::sweep(&state.pool).await;
-        usage_history::sweep(&state);
-        followup::sweep(&state.pool).await;
-
-        // Soft-delete ephemeral (dispatch/worker) machines that have gone
-        // quiet past the TTL — pods that died before self-deenroll.
-        // Mirrors the self-deenroll write (revoked_at + deleted_at) so the row
-        // survives for historical session FKs but drops out of every listing.
-        if state.config.ephemeral_machine_ttl_secs > 0 {
-            let cutoff = chrono::Utc::now()
-                - chrono::Duration::seconds(
-                    i64::try_from(state.config.ephemeral_machine_ttl_secs).unwrap_or(i64::MAX),
-                );
-            match sqlx::query(
-                "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
-                 WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1",
-            )
-            .bind(cutoff)
-            .execute(&state.pool)
-            .await
-            {
-                Ok(res) if res.rows_affected() > 0 => {
-                    tracing::info!(count = res.rows_affected(), "reaped stale ephemeral machines");
-                }
-                Ok(_) => {}
-                Err(err) => tracing::warn!(%err, "ephemeral machine reap failed"),
-            }
-        }
-
-        // Ephemeral dispatch keys: per-session credentials handed to
-        // worker pods. Revoke a key once its bound session reaches the terminal
-        // `archived` state (blast radius dies with the session, ahead of TTL),
-        // and hard-delete keys past their `expires_at` so the table stays clean.
-        // The auth path already rejects revoked/expired keys; this just keeps
-        // the rows from accumulating and tightens revocation to session end.
-        match sqlx::query(
-            "UPDATE auth_keys SET revoked_at = now() \
-             WHERE kind = 'ephemeral' AND revoked_at IS NULL AND session_id IN \
-               (SELECT id FROM sessions WHERE status = 'archived')",
-        )
-        .execute(&state.pool)
-        .await
-        {
-            Ok(res) if res.rows_affected() > 0 => {
-                tracing::info!(
-                    count = res.rows_affected(),
-                    "revoked ephemeral dispatch keys for archived sessions"
-                );
-            }
-            Ok(_) => {}
-            Err(err) => tracing::warn!(%err, "ephemeral key revoke sweep failed"),
-        }
-        match sqlx::query(
-            "DELETE FROM auth_keys \
-             WHERE kind = 'ephemeral' AND expires_at IS NOT NULL AND expires_at < now()",
-        )
-        .execute(&state.pool)
-        .await
-        {
-            Ok(res) if res.rows_affected() > 0 => {
-                tracing::info!(
-                    count = res.rows_affected(),
-                    "deleted expired ephemeral dispatch keys"
-                );
-            }
-            Ok(_) => {}
-            Err(err) => tracing::warn!(%err, "expired ephemeral key delete sweep failed"),
-        }
-
-        // Machine liveness: re-derive every machine's tier from its
-        // `last_seen_at` and broadcast any transitions. The 30s cadence means a
-        // daemon that stops heartbeating ages online → stale → offline on its
-        // own — the acceptance case "killing a daemon flips it offline within
-        // one liveness window without a dispatch attempt".
+    });
+    spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
+    spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
+    spawn_sweep(state, |state| async move {
+        reap_ephemeral_machines(&state).await;
+        reap_ephemeral_keys(&state).await;
+    });
+    spawn_sweep(state, |state| async move {
         machine_liveness::sweep(&state).await;
         machine_liveness::sweep_dispatchers(&state).await;
-
-        auto_resume::sweep(&state).await;
-        scheduled_messages::sweep(&state).await;
-        scheduled_spawns::sweep(&state).await;
-
+    });
+    spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
+    spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
+    spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
+    spawn_sweep(state, |state| async move {
         state.permission_store.write().await.reap_stale(300); // seconds
+    });
+}
+
+fn spawn_sweep<F, Fut>(state: &AppState, job: F)
+where
+    F: Fn(AppState) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let state = state.clone();
+    spawn_periodic(REAPER_PERIOD, move || job(state.clone()));
+}
+
+async fn demote_idle_registered(state: &AppState) {
+    let demoted = {
+        let mut registry = state.registry.write().await;
+        registry.mark_stale(state.config.inactive_after_secs)
+    };
+    if !demoted.is_empty() {
+        let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = ANY($1)")
+            .bind(&demoted)
+            .execute(&state.pool)
+            .await;
+        tracing::info!(session_ids = ?demoted, "sessions demoted to inactive");
+    }
+}
+
+/// Soft-delete ephemeral (dispatch/worker) machines that have gone quiet past
+/// the TTL — pods that died before self-deenroll. Mirrors the self-deenroll
+/// write (`revoked_at` + `deleted_at`) so the row survives for historical session
+/// FKs but drops out of every listing.
+async fn reap_ephemeral_machines(state: &AppState) {
+    if state.config.ephemeral_machine_ttl_secs == 0 {
+        return;
+    }
+    let cutoff = chrono::Utc::now()
+        - chrono::Duration::seconds(
+            i64::try_from(state.config.ephemeral_machine_ttl_secs).unwrap_or(i64::MAX),
+        );
+    match sqlx::query(
+        "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
+         WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1",
+    )
+    .bind(cutoff)
+    .execute(&state.pool)
+    .await
+    {
+        Ok(res) if res.rows_affected() > 0 => {
+            tracing::info!(count = res.rows_affected(), "reaped stale ephemeral machines");
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(%err, "ephemeral machine reap failed"),
+    }
+}
+
+/// Ephemeral dispatch keys are per-session credentials handed to worker pods:
+/// revoke one once its session is archived, and delete keys past `expires_at`.
+async fn reap_ephemeral_keys(state: &AppState) {
+    match sqlx::query(
+        "UPDATE auth_keys SET revoked_at = now() \
+         WHERE kind = 'ephemeral' AND revoked_at IS NULL AND session_id IN \
+           (SELECT id FROM sessions WHERE status = 'archived')",
+    )
+    .execute(&state.pool)
+    .await
+    {
+        Ok(res) if res.rows_affected() > 0 => {
+            tracing::info!(
+                count = res.rows_affected(),
+                "revoked ephemeral dispatch keys for archived sessions"
+            );
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(%err, "ephemeral key revoke sweep failed"),
+    }
+    match sqlx::query(
+        "DELETE FROM auth_keys \
+         WHERE kind = 'ephemeral' AND expires_at IS NOT NULL AND expires_at < now()",
+    )
+    .execute(&state.pool)
+    .await
+    {
+        Ok(res) if res.rows_affected() > 0 => {
+            tracing::info!(count = res.rows_affected(), "deleted expired ephemeral dispatch keys");
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(%err, "expired ephemeral key delete sweep failed"),
     }
 }
 
@@ -756,7 +855,65 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::{REAPER_PERIOD, spawn_periodic};
+    use super::{REAPER_PERIOD, db_ready, serve_until, spawn_periodic};
+
+    #[tokio::test]
+    async fn shutdown_does_not_wait_forever_on_a_hung_request() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route("/hang", axum::routing::get(std::future::pending::<&'static str>));
+        let (fire, signal) = tokio::sync::oneshot::channel::<()>();
+        let drain = std::time::Duration::from_millis(200);
+        let server = tokio::spawn(serve_until(
+            listener,
+            app,
+            async move {
+                let _ = signal.await;
+            },
+            drain,
+        ));
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(b"GET /hang HTTP/1.1\r\nHost: test\r\n\r\n").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        fire.send(()).unwrap();
+
+        let finished = tokio::time::timeout(drain * 10, server).await;
+        assert!(matches!(finished, Ok(Ok(Ok(())))), "server exits after the drain window");
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn shutdown_returns_promptly_when_idle() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "ok" }));
+        let drain = std::time::Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        serve_until(listener, app, async {}, drain).await.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn readiness_fails_when_the_database_is_unreachable() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(500))
+            .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+            .unwrap();
+        assert!(!db_ready(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn readiness_passes_against_a_live_database() {
+        let Some(url) = crate::routes::gateway::test_db_url("readiness_live_db") else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        assert!(db_ready(&pool).await);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_hung_periodic_job_does_not_stall_the_others() {

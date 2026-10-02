@@ -312,9 +312,6 @@ pub fn on_quit(app: &mut App) -> Vec<Effect> {
                 .map(|(owner, path)| crate::config::recovery::Target { owner, path }),
         });
     }
-    // The spawn form's debounce is just as abandoned, so its save skips it; its
-    // row may not exist yet either.
-    effects.extend(super::spawn_drafts::autosave_now(app));
     effects
 }
 
@@ -585,21 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn quitting_saves_the_spawn_form_without_waiting_for_its_debounce() {
-        let mut app = app();
-        reduce(&mut app, Action::Spawn(crate::app::spawn::SpawnAction::Open));
-        let form = app.spawn.as_mut().expect("the dialog");
-        form.fields.machine_id = "m-1".to_owned();
-        form.fields.working_dir = "/w".to_owned();
-        form.fields.prompt = "half a plan".to_owned();
-
-        let effects = reduce(&mut app, Action::Quit);
-        let immediate =
-            effects.iter().any(|e| matches!(e, Effect::AutosaveDraft { immediate: true, .. }));
-        assert!(immediate, "a 700 ms debounce does not survive the exit");
-    }
-
-    #[test]
     fn a_send_the_server_already_acked_is_not_copied_back() {
         use crate::app::send::SendAction;
         let mut app = app();
@@ -744,8 +726,7 @@ mod tests {
         typing(&mut app, "typed before the server answered");
         let effects = reduce(&mut app, Action::Quit);
         assert!(
-            effects.iter().all(|e| matches!(e, Effect::SaveDraftNow { recovery: None, .. })
-                | matches!(e, Effect::AutosaveDraft { .. })),
+            effects.iter().all(|e| matches!(e, Effect::SaveDraftNow { recovery: None, .. })),
             "there is no identity to scope a file to"
         );
     }

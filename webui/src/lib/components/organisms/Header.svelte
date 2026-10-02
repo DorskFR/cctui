@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { updated } from '$app/state';
 	import { ws } from '$lib/ws.svelte';
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
@@ -20,14 +19,7 @@
 import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	import ProviderStatusDot from '$lib/components/molecules/ProviderStatusDot.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
-	import {
-		DEFAULT_SETTINGS_PAGE,
-		settingsHref
-	} from '$lib/components/organisms/settings/settings.logic';
 	import { m } from '$lib/paraglide/messages';
-
-	const GUIDES_HREF = settingsHref('guides');
-	const SETTINGS_HREF = settingsHref(DEFAULT_SETTINGS_PAGE);
 
 	const version = useVersion();
 	const me = useMe();
@@ -128,12 +120,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 			pressed: notify.enabled,
 			onselect: () => void toggleNotify()
 		},
-		{
-			label: m.nav_getting_started(),
-			icon: 'life-buoy' as const,
-			onselect: () => void goto(GUIDES_HREF)
-		},
-		{ label: m.nav_settings(), icon: 'settings' as const, onselect: () => void goto(SETTINGS_HREF) },
 		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
 	]);
 </script>

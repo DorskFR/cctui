@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 1083
+assertion_line: 911
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                       Accounts                                       │
-▸ │  @           Accounts and pools                 j / ↓       Next account                     │
-  │  Ctrl+u      Usage: pool and account windows    k / ↑       Previous account                 │
-  │  $           Spend: token windows and cost      Enter       Show or hide the detail pane     │
-  │  Ctrl+g      Jump to the next session needin…   Tab         Switch between the accounts and …│
-  │Anywhere a view does not rebind it               e           Allow or withhold this account f…│
-  │  ?           Toggle this cheat sheet            +           Give this account more of a pool │
-  │  q           Quit cctui                         -           Deprioritise this account in its…│
-  │  1-9         Switch view                        R           Claim a usage-limit reset        │
-  │  /           Search the current view            x           Redirect launches elsewhere, or …│
-  │  n           Next search hit                    r           Refresh the accounts and pools   │
-  │  N           Previous search hit                Esc         Back                             │
-  │  D           Diagnose the selected session    Accounts — pools pane                          │
-  │  i           Session info                       Tab         Switch between the accounts and …│
-  │  M           Machines and daemons               r           Refresh the accounts and pools   │
-  │  Ctrl+d      Dispatchers                        Esc         Back                             │
-  │  U           Access: users, tokens, machines…   j / ↓       Next pool or member              │
-  │  V           Instance status                    k / ↑       Previous pool or member          │
-  │Session list                                     a           Add an account to this pool      │
-  │  j / ↓       Next session                       d           Remove this member               │
+  │Anywhere                                         Enter       Put this prompt in the composer  │
+▸ │  /           Search the current view          File viewer                                    │
+  │  D           Diagnose the selected session      j / ↓       Scroll down                      │
+  │  Ctrl+g      Jump to the next session needin…   k / ↑       Scroll up                        │
+  │Anywhere a view does not rebind it               PgDn        Page down                        │
+  │  ?           Toggle this cheat sheet            PgUp        Page up                          │
+  │  q           Quit cctui                         g           Jump to the top                  │
+  │  1-9         Switch view                        i           Draw images inline, or describe …│
+  │  n           Next search hit                    q / Esc     Close the file viewer            │
+  │  N           Previous search hit                o           Open in the desktop viewer       │
+  │  i           Session info                     Machines                                       │
+  │  M           Machines and daemons               j / ↓       Next machine                     │
+  │Session list                                     k / ↑       Previous machine                 │
+  │  j / ↓       Next session                       r           Refresh the machine list         │
+  │  k / ↑       Previous session                   Enter       Aim a spawn at this machine      │
+  │  g           First session                      Esc         Back to the sessions             │
+  │  G           Last session                     Labels                                         │
+  │  Enter       Open the conversation              Esc         Close the label list             │
+  │  z / Tab     Fold or open the subagent group    Ctrl+n / ↓  Next label                       │
+  │  S           Fold or open the section           Ctrl+p / ↑  Previous label                   │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

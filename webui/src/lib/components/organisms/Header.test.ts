@@ -91,13 +91,10 @@ describe('the system bar carries neither the ? nor the bell', () => {
 		expect(tail.querySelector('a[href="/settings/guides"]')).toBeNull();
 	});
 
-	it('keeps Getting started reachable from the user menu', async () => {
+	it('leaves Getting started to Settings › Guides, not the user menu', async () => {
 		render();
 		await openUserMenu();
-		const row = rowByText('Getting started');
-		expect(row).not.toBeNull();
-		row?.click();
-		expect(goto).toHaveBeenCalledWith('/settings/guides');
+		expect(rowByText('Getting started')).toBeNull();
 	});
 
 	it('offers the notification toggle in the menu and reflects its pressed state', async () => {
@@ -109,20 +106,18 @@ describe('the system bar carries neither the ? nor the bell', () => {
 		expect(row?.getAttribute('aria-checked')).toBe('false');
 	});
 
-	it('gives every menu row an icon, Settings included', async () => {
+	it('gives every menu row an icon', async () => {
 		render();
 		await openUserMenu();
 		const rows = menuRows();
 		expect(rows.length).toBeGreaterThan(0);
 		for (const r of rows) expect(r.querySelector('svg')).not.toBeNull();
-		expect(rowByText('Settings')?.querySelector('svg')).not.toBeNull();
 	});
 
-	it('routes Settings through the canonical settings href', async () => {
+	it('leaves Settings to the main nav, which is the one way in', async () => {
 		render();
 		await openUserMenu();
-		rowByText('Settings')?.click();
-		expect(goto).toHaveBeenCalledWith('/settings/appearance');
+		expect(rowByText('Settings')).toBeNull();
 	});
 });
 
