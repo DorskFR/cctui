@@ -402,6 +402,10 @@ fn outer_routes() -> Router<AppState> {
             "/api/v1/daemon/sessions/{id}/message-child",
             post(routes::spawn_child::message_child),
         )
+        .route(
+            "/api/v1/daemon/sessions/{id}/archive-child",
+            post(routes::spawn_child::archive_child),
+        )
         // Agent-posted image upload: the daemon POSTs raw image bytes
         // it detected as a marker in an assistant message. Self-auths via the
         // machine-key Bearer like the sibling daemon endpoints, so it sits here

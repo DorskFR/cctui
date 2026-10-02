@@ -209,6 +209,21 @@ pub struct MessageChildRequest {
     pub prompt: String,
 }
 
+/// Body for `POST /api/v1/daemon/sessions/{id}/archive-child`: `session_id` is a
+/// descendant of the caller in its spawn tree.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ArchiveChildRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ArchiveChildResponse {
+    pub archived: Vec<String>,
+    pub children_used: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_children: Option<u32>,
+}
+
 /// `session_id` is pre-minted and is the `local_id` the daemon waits on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpawnChildResponse {
