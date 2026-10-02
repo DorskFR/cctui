@@ -1,8 +1,7 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
-import { localToken } from '../scripts/local-token.mjs';
+import type { Locator, Page } from '@playwright/test';
+import { adminToken, expect, test } from './local-token.fixture';
 
 const APP = process.env.SPAWN_E2E_URL ?? 'http://localhost:5311';
-const TOKEN: string = process.env.SPAWN_E2E_TOKEN ?? localToken();
 const SHOTS = process.env.SPAWN_E2E_SHOTS ?? 'test-results/spawn-prompt-history';
 
 const WIDTHS = [
@@ -11,7 +10,7 @@ const WIDTHS = [
 ];
 
 async function login(page: Page) {
-	const res = await page.request.post(`${APP}/api/v1/auth/login`, { data: { token: TOKEN } });
+	const res = await page.request.post(`${APP}/api/v1/auth/login`, { data: { token: adminToken() } });
 	expect(res.ok(), `login failed with ${res.status()}`).toBe(true);
 }
 

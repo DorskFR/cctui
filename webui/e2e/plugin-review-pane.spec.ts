@@ -1,17 +1,16 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { cctuiPluginConfig } from '../plugin-sdk/vite';
-import { localToken } from '../scripts/local-token.mjs';
+import { adminToken, expect, test } from './local-token.fixture';
 
 // Runtime plugins end to end: a demo plugin is built with the SDK helper into a
 // temp plugins dir and served under /plugins/ by request interception, along
 // with GET /api/v1/plugins (the server half is mocked; the webui is real).
 
-const TOKEN: string = process.env.PLUGIN_E2E_TOKEN ?? localToken();
 const SHOTS = process.env.PLUGIN_E2E_SHOTS ?? 'test-results/plugin-review-pane';
 const webui = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = join(webui, 'e2e/fixtures/demo-plugin');
@@ -62,7 +61,7 @@ async function serveFakePluginServer(page: Page, enabled: boolean) {
 }
 
 async function login(page: Page) {
-	const res = await page.request.post('/api/v1/auth/login', { data: { token: TOKEN } });
+	const res = await page.request.post('/api/v1/auth/login', { data: { token: adminToken() } });
 	expect(res.ok(), `login failed with ${res.status()}`).toBe(true);
 }
 
