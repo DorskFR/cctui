@@ -175,6 +175,15 @@ export function scheduledAtOf(e: AgentEvent, ctx: LineBuildCtx): string | null {
 	return (turnId && ctx.scheduledTurns?.get(turnId)) || null;
 }
 
+// A result names its call by id; without one only a matching tool name will do.
+export function resultAnswers(
+	call: { tool: string; toolUseId?: string | null },
+	result: AgentEvent & { type: 'tool_result' }
+): boolean {
+	if (result.tool_use_id && call.toolUseId) return result.tool_use_id === call.toolUseId;
+	return call.tool === result.tool;
+}
+
 // Errors win so one toggle isolates every failed result, server or client.
 export function resultCategory(e: AgentEvent & { type: 'tool_result' }): MsgCategory {
 	return e.error ? 'error' : e.kind === 'server_tool_result' ? 'server_result' : 'result';
@@ -271,6 +280,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 				role: 'tool',
 				ts: Number(e.ts),
 				tool: e.tool,
+				toolUseId: e.tool_use_id ?? undefined,
 				mcp: isMcp,
 				text,
 				lang,
@@ -283,6 +293,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 				role: 'result',
 				ts: Number(e.ts),
 				tool: e.tool,
+				toolUseId: e.tool_use_id ?? undefined,
 				text: e.output_summary,
 				htmlCode: ctx.renderCode(e.output_summary, '')
 			};
@@ -499,8 +510,13 @@ export function buildLines(
 	const closes: QueueClose[] = [];
 	let prevKey = '';
 	let hiddenTick = false;
+	const callTools = new Map<string, string>();
+	let prevCallTool: string | null = null;
 	for (const e of events) {
 		if (breaksPollRun(e)) poll.last = null;
+		const posCallTool = prevCallTool;
+		prevCallTool = e.type === 'tool_call' ? e.tool : null;
+		if (e.type === 'tool_call' && e.tool_use_id) callTools.set(e.tool_use_id, e.tool);
 		if (
 			e.type === 'text' &&
 			e.content.startsWith(USER_PREFIX) &&
@@ -556,6 +572,10 @@ export function buildLines(
 		}
 		const ln = toLine(e, ctx, poll);
 		if (!ln) continue;
+		if (e.type === 'tool_result' && !ln.tool) {
+			const call = e.tool_use_id ? callTools.get(e.tool_use_id) : posCallTool;
+			if (call) ln.tool = call;
+		}
 		if (hiddenTick && (ln.role === 'assistant' || ln.role === 'thinking')) continue;
 		hiddenTick = false;
 		// The three encodings Claude stores ONE human turn in share its `turn_id`,

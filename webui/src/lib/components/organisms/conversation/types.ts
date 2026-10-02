@@ -160,6 +160,8 @@ export interface Line {
 	// copy-as-Markdown output.
 	lang?: string;
 	tool?: string;
+	// The harness call id a tool line and its result share.
+	toolUseId?: string;
 	// Tool calls under the mcp__ prefix get the distinct MCP role hue.
 	mcp?: boolean;
 	// Thinking whose content the provider withheld: same brown treatment, dimmed.

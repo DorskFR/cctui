@@ -412,7 +412,40 @@ impl ConversationStore {
         }
         self.entries.insert(at, Entry { seq, sequenced, line, expanded: false });
         self.close_queued(at);
+        self.pair_tool_lines();
         true
+    }
+
+    /// Ties every result that names its call to that call. A result directly
+    /// under its call reads as its answer already; one that is not, because
+    /// parallel calls interleave, is labelled with its call's tool. A result
+    /// without an id keeps answering whatever sits above it.
+    fn pair_tool_lines(&mut self) {
+        let mut calls: std::collections::HashMap<String, (usize, String)> =
+            std::collections::HashMap::new();
+        let mut changed = false;
+        for i in 0..self.entries.len() {
+            let line = &self.entries[i].line;
+            let Some(id) = line.tool_use_id.clone() else { continue };
+            match line.kind {
+                LineKind::Tool { .. } => {
+                    calls.insert(id, (i, line.tool.clone().unwrap_or_default()));
+                }
+                LineKind::Result { .. } => {
+                    let answers =
+                        calls.get(&id).filter(|(at, _)| at + 1 != i).map(|(_, tool)| tool.clone());
+                    let line = &mut self.entries[i].line;
+                    if line.answers != answers {
+                        line.answers = answers;
+                        changed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if changed {
+            self.epoch += 1;
+        }
     }
 
     /// The prompt the agent finally ran, or the human withdrew, retires the
@@ -911,6 +944,71 @@ mod tests {
         assert_eq!(store.etag(), Some("etag-2"));
         assert!(!store.has_more_older, "a later page already proved the start was reached");
         assert_eq!(texts(&store), ["older", "a", "b", "c", "d"]);
+    }
+
+    fn call(id: &str, tool: &str) -> ConversationLine {
+        let mut ln = ConversationLine::new(
+            LineKind::Tool { category: crate::app::state::ToolCategory::Other },
+            tool,
+            0,
+        );
+        ln.tool = Some(tool.to_owned());
+        ln.tool_use_id = Some(id.to_owned());
+        ln
+    }
+
+    fn result(id: Option<&str>, text: &str) -> ConversationLine {
+        let mut ln = ConversationLine::new(LineKind::Result { error: false }, text, 0);
+        ln.tool_use_id = id.map(str::to_owned);
+        ln
+    }
+
+    fn answers(store: &ConversationStore) -> Vec<Option<String>> {
+        store.entries().iter().map(|e| e.line.answers.clone()).collect()
+    }
+
+    #[test]
+    fn interleaved_parallel_results_name_the_call_they_answer() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), call("a", "Read"));
+        store.push_live(Some(2), call("b", "Bash"));
+        store.push_live(Some(3), result(Some("a"), "file"));
+        store.push_live(Some(4), result(Some("b"), "ok"));
+        assert_eq!(answers(&store), [None, None, Some("Read".to_owned()), Some("Bash".to_owned())]);
+    }
+
+    #[test]
+    fn a_result_right_under_its_call_needs_no_label() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), call("a", "Read"));
+        store.push_live(Some(2), result(Some("a"), "file"));
+        assert_eq!(answers(&store), [None, None]);
+    }
+
+    #[test]
+    fn an_out_of_order_page_still_pairs_by_id() {
+        let mut store = ConversationStore::new();
+        store.merge(
+            PageKind::Latest,
+            vec![
+                (4, result(Some("a"), "file")),
+                (3, result(Some("b"), "ok")),
+                (2, call("b", "Bash")),
+                (1, call("a", "Read")),
+            ],
+            None,
+            false,
+        );
+        assert_eq!(answers(&store), [None, None, None, Some("Read".to_owned())]);
+    }
+
+    #[test]
+    fn a_result_without_an_id_falls_back_to_position() {
+        let mut store = ConversationStore::new();
+        store.push_live(Some(1), call("a", "Read"));
+        store.push_live(Some(2), call("b", "Bash"));
+        store.push_live(Some(3), result(None, "ok"));
+        assert_eq!(answers(&store), [None, None, None]);
     }
 
     #[test]

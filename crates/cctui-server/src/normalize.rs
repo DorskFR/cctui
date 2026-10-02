@@ -5,8 +5,8 @@
 //!
 //! Canonical client shapes:
 //! - `{ "type": "text",        "content", "ts"?, "role"? }`
-//! - `{ "type": "tool_call",   "tool", "input", "ts"? }`
-//! - `{ "type": "tool_result", "output_summary", "ts"? }`
+//! - `{ "type": "tool_call",   "tool", "input", "tool_use_id"?, "ts"? }`
+//! - `{ "type": "tool_result", "output_summary", "tool_use_id"?, "ts"? }`
 //! - `{ "type": "reply",       "content", "ts"? }`
 //!
 //! Returning `None` drops the row from the conversation view (e.g.
@@ -56,6 +56,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     tool: String::new(),
                     output_summary: summary,
                     kind: kind.filter(|k| *k == "server_tool_result").map(str::to_owned),
+                    tool_use_id: str_field(payload, "tool_use_id"),
                     error: payload.get("is_error").and_then(Value::as_bool).unwrap_or(false),
                     ts,
                     seq: None,
@@ -67,12 +68,17 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                 tool,
                 input,
                 kind: kind.filter(|k| *k == "server_tool_use").map(str::to_owned),
+                tool_use_id: str_field(payload, "id"),
                 ts,
                 seq: None,
             })
         }
         _ => None,
     }
+}
+
+fn str_field(payload: &Value, key: &str) -> Option<String> {
+    payload.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
 /// The `message` payload dialect: one role per canonical client shape. Split
@@ -274,6 +280,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
             tool: v.get("tool").and_then(Value::as_str).unwrap_or_default().to_owned(),
             input: v.get("input").cloned().unwrap_or(Value::Null),
             kind: v.get("kind").and_then(Value::as_str).map(str::to_owned),
+            tool_use_id: str_field(v, "tool_use_id"),
             ts,
             seq: None,
         }),
@@ -285,6 +292,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
                 .unwrap_or_default()
                 .to_owned(),
             kind: v.get("kind").and_then(Value::as_str).map(str::to_owned),
+            tool_use_id: str_field(v, "tool_use_id"),
             error: v.get("error").and_then(Value::as_bool).unwrap_or(false),
             ts,
             seq: None,
@@ -546,7 +554,7 @@ fn codex_response_item(inner: &Value) -> Option<Value> {
                 .and_then(|s| serde_json::from_str::<Value>(s).ok())
                 .or_else(|| inner.get("arguments").cloned())
                 .unwrap_or(Value::Null);
-            Some(json!({ "type": "tool_call", "tool": tool, "input": input }))
+            Some(with_call_id(json!({ "type": "tool_call", "tool": tool, "input": input }), inner))
         }
         "custom_tool_call" => {
             let tool = inner.get("name").and_then(Value::as_str).unwrap_or_default();
@@ -555,11 +563,12 @@ fn codex_response_item(inner: &Value) -> Option<Value> {
                 Some(other) => other.clone(),
                 None => Value::Null,
             };
-            Some(json!({ "type": "tool_call", "tool": tool, "input": input }))
+            Some(with_call_id(json!({ "type": "tool_call", "tool": tool, "input": input }), inner))
         }
-        "function_call_output" | "custom_tool_call_output" => Some(
+        "function_call_output" | "custom_tool_call_output" => Some(with_call_id(
             json!({ "type": "tool_result", "output_summary": codex_output_summary(inner.get("output")) }),
-        ),
+            inner,
+        )),
         "reasoning" => {
             let text = codex_content_text(inner.get("summary"));
             if text.is_empty() {
@@ -569,6 +578,14 @@ fn codex_response_item(inner: &Value) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+/// A Responses-API item's `call_id`, shared by a call and its output.
+fn with_call_id(mut out: Value, item: &Value) -> Value {
+    if let Some(id) = str_field(item, "call_id") {
+        out["tool_use_id"] = json!(id);
+    }
+    out
 }
 
 /// Flatten a tool-call output into a capped summary string. Outputs are either a
@@ -670,6 +687,9 @@ fn map_daemon_tool(payload: &Value) -> Option<Value> {
         if kind == Some("server_tool_result") {
             out["kind"] = json!("server_tool_result");
         }
+        if let Some(id) = str_field(payload, "tool_use_id") {
+            out["tool_use_id"] = json!(id);
+        }
         return Some(out);
     }
     let tool = payload.get("tool")?.clone();
@@ -677,6 +697,9 @@ fn map_daemon_tool(payload: &Value) -> Option<Value> {
     let mut out = json!({ "type": "tool_call", "tool": tool, "input": input });
     if kind == Some("server_tool_use") {
         out["kind"] = json!("server_tool_use");
+    }
+    if let Some(id) = str_field(payload, "id") {
+        out["tool_use_id"] = json!(id);
     }
     Some(out)
 }
@@ -1506,6 +1529,63 @@ mod tests {
             "type": "function_call_output", "call_id": "call_b", "output": "running\n" } });
         let m = for_client("codex", "tool_use", str_out).unwrap();
         assert_eq!(m["output_summary"], "running\n");
+    }
+
+    #[test]
+    fn codex_response_items_carry_the_call_id_on_call_and_output() {
+        let call = json!({ "type": "response_item", "payload": {
+            "type": "function_call", "name": "wait", "call_id": "call_b", "arguments": "{}" } });
+        let out = json!({ "type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "call_b", "output": "ok" } });
+        assert_eq!(for_client("codex", "tool_use", call.clone()).unwrap()["tool_use_id"], "call_b");
+        assert_eq!(for_client("codex", "tool_use", out.clone()).unwrap()["tool_use_id"], "call_b");
+        match to_agent_event("codex", "tool_use", &out) {
+            Some(AgentEvent::ToolResult { tool_use_id, .. }) => {
+                assert_eq!(tool_use_id.as_deref(), Some("call_b"));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claude_tool_call_and_result_carry_the_tool_use_id_on_both_paths() {
+        let call = json!({ "id": "toolu_1", "tool": "Bash", "input": {} });
+        let result = json!({ "kind": "tool_result", "tool_use_id": "toolu_1", "content": "ok" });
+        assert_eq!(
+            for_client("claude-code", "tool_use", call.clone()).unwrap()["tool_use_id"],
+            "toolu_1"
+        );
+        assert_eq!(
+            for_client("claude-code", "tool_use", result.clone()).unwrap()["tool_use_id"],
+            "toolu_1"
+        );
+        match to_agent_event("claude-code", "tool_use", &call) {
+            Some(AgentEvent::ToolCall { tool_use_id, .. }) => {
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_1"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+        match to_agent_event("claude-code", "tool_use", &result) {
+            Some(AgentEvent::ToolResult { tool_use_id, .. }) => {
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_1"));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tool_payload_without_an_id_maps_without_one() {
+        let call = json!({ "tool": "Bash", "input": {} });
+        assert!(
+            for_client("claude-code", "tool_use", call.clone())
+                .unwrap()
+                .get("tool_use_id")
+                .is_none()
+        );
+        assert!(matches!(
+            to_agent_event("claude-code", "tool_use", &call),
+            Some(AgentEvent::ToolCall { tool_use_id: None, .. })
+        ));
     }
 
     #[test]
