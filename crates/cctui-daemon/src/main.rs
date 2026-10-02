@@ -120,8 +120,8 @@ enum Cmd {
         #[arg(long)]
         sock: Option<PathBuf>,
     },
-    /// Check for a newer release, swap the binary in place, and restart
-    /// the daemon service (if one is running) so it picks up the new binary.
+    /// Check for a newer release, swap the binary in place, and have the
+    /// running daemon re-exec onto it (same process, live sessions kept).
     Update,
     /// Exercise start-up paths that `--version` skips (TLS client setup) and
     /// exit 0; release builds run it before publishing.
@@ -164,8 +164,13 @@ enum ServiceCmd {
     Install,
     /// Stop + disable the unit and remove the user-systemd file.
     Uninstall,
-    /// Restart the running cctui-daemon service.
-    Restart,
+    /// Restart the running cctui-daemon service. Ends every live codex and
+    /// opencode session on this machine; `update` swaps binaries without that.
+    Restart {
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Show the service manager status and the most recent daemon logs.
     Status,
     /// Print the embedded unit content to stdout (for manual install).
@@ -252,6 +257,8 @@ where
 async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Result<()> {
     let cfg = Config::load_or_env(&path.to_path_buf()).map_err(fatal::mark)?;
     let _run_lock = runlock::acquire()?;
+    #[cfg(unix)]
+    spawn_reexec_on_hangup();
     // Record this process as the running service so `status` /
     // `service status` can report the version actually serving.
     runtime::record();
@@ -302,6 +309,50 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     cctui_daemon::harness_update::spawn_loop(shutdown.clone());
     supervisor.run(shutdown).await;
     Ok(())
+}
+
+/// A restart kills every process in the service's cgroup that the daemon
+/// spawned directly: codex and opencode sessions end; claude sessions live in
+/// their own unit and survive.
+fn confirm_restart() -> anyhow::Result<bool> {
+    use std::io::{BufRead, IsTerminal, Write};
+    eprintln!(
+        "Restarting cctui-daemon ends every live codex and opencode session on this machine \
+         (claude sessions survive). To move to a new binary without that, run \
+         `cctui-daemon update`."
+    );
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!("refusing to restart without confirmation; pass --yes");
+    }
+    eprint!("Restart anyway? [y/N] ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
+/// Re-exec in place on SIGHUP: `cctui-daemon update` swaps the binary from a
+/// separate process and asks the service to move onto it this way.
+#[cfg(unix)]
+fn spawn_reexec_on_hangup() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let Some(exe) = selfupdate::install_path() else {
+        tracing::warn!("install path unknown; SIGHUP will not re-exec");
+        return;
+    };
+    let mut hup = match signal(SignalKind::hangup()) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::warn!(%err, "cannot install SIGHUP handler");
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        if hup.recv().await.is_some() {
+            tracing::info!(exe = %exe.display(), "SIGHUP: re-execing onto the installed binary");
+            selfupdate::reexec_after_grace(&exe).await;
+        }
+    });
 }
 
 /// Resolve the first of SIGINT (Ctrl-C) or SIGTERM (`kill`, pod teardown).
@@ -417,17 +468,24 @@ async fn main() -> anyhow::Result<()> {
             let channel = cfg.update_channel();
             match selfupdate::check_and_apply(&cfg.server_url, &cfg.machine_key, channel).await {
                 Ok(Some(_)) => {
-                    // The running service is a separate process still on the
-                    // old binary — restart it so the swap takes effect now.
-                    match service::restart_if_active() {
-                        Ok(true) => println!("cctui-daemon upgraded and service restarted"),
-                        Ok(false) => println!(
-                            "cctui-daemon upgraded; no running service found — \
-                             start it (`cctui-daemon service install`) or restart to apply"
+                    match runtime::request_reexec() {
+                        Ok(runtime::ReexecRequest::Signalled { pid }) => println!(
+                            "cctui-daemon upgraded; the running daemon (pid {pid}) re-execs onto \
+                             it in place, keeping live sessions"
+                        ),
+                        Ok(runtime::ReexecRequest::NotRunning) => println!(
+                            "cctui-daemon upgraded; no running daemon found — start it \
+                             (`cctui-daemon service install`) to apply"
+                        ),
+                        Ok(runtime::ReexecRequest::Unsupported { version }) => println!(
+                            "cctui-daemon upgraded; the running daemon ({version}) cannot re-exec \
+                             on request and picks the new binary up at its next auto-update \
+                             check. `cctui-daemon service restart` applies it now but ends \
+                             live codex and opencode sessions"
                         ),
                         Err(err) => println!(
-                            "cctui-daemon upgraded, but restarting the service failed: {err}\n\
-                             restart it manually (`cctui-daemon service restart`) to apply"
+                            "cctui-daemon upgraded, but signalling the running daemon failed: \
+                             {err}\nit picks the new binary up at its next auto-update check"
                         ),
                     }
                     Ok(())
@@ -442,7 +500,13 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Service { cmd } => match cmd {
             ServiceCmd::Install => service::install(),
             ServiceCmd::Uninstall => service::uninstall(),
-            ServiceCmd::Restart => service::restart(),
+            ServiceCmd::Restart { yes } => {
+                if !yes && !confirm_restart()? {
+                    println!("not restarted");
+                    return Ok(());
+                }
+                service::restart()
+            }
             ServiceCmd::Status => service::status(),
             ServiceCmd::Unit => {
                 service::print_unit();

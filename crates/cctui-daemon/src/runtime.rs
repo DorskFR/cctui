@@ -23,6 +23,9 @@ pub struct Runtime {
     pub pid: u32,
     /// RFC3339 timestamp of when the process recorded this state.
     pub started_at: String,
+    /// The process re-execs in place on SIGHUP; older daemons die on it.
+    #[serde(default)]
+    pub reexec_on_hup: bool,
 }
 
 const FILE_NAME: &str = "daemon-runtime.json";
@@ -82,6 +85,7 @@ pub fn record() {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         pid: std::process::id(),
         started_at: chrono::Utc::now().to_rfc3339(),
+        reexec_on_hup: cfg!(unix),
     };
     match serde_json::to_string_pretty(&rt) {
         Ok(json) => {
@@ -112,6 +116,35 @@ pub fn pid_alive(pid: u32) -> bool {
         .ok()
         .and_then(rustix::process::Pid::from_raw)
         .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
+}
+
+/// Outcome of asking the running daemon to re-exec onto the installed binary.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReexecRequest {
+    /// SIGHUP sent; the daemon re-execs in place and keeps its sessions.
+    Signalled { pid: u32 },
+    /// No live daemon recorded on this machine.
+    NotRunning,
+    /// The running daemon predates in-place re-exec on SIGHUP.
+    Unsupported { version: String },
+}
+
+/// Ask the running daemon to re-exec onto the binary now installed. Never
+/// signals a daemon that would treat SIGHUP as fatal.
+pub fn request_reexec() -> anyhow::Result<ReexecRequest> {
+    let Some(rt) = read().filter(|rt| pid_alive(rt.pid)) else {
+        return Ok(ReexecRequest::NotRunning);
+    };
+    if !rt.reexec_on_hup {
+        return Ok(ReexecRequest::Unsupported { version: rt.version });
+    }
+    let pid = i32::try_from(rt.pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .context("recorded daemon pid is not a valid pid")?;
+    rustix::process::kill_process(pid, rustix::process::Signal::HUP)
+        .with_context(|| format!("signalling daemon pid {}", rt.pid))?;
+    Ok(ReexecRequest::Signalled { pid: rt.pid })
 }
 
 /// Default path for a local IPC socket: `$XDG_RUNTIME_DIR/<name>`, otherwise
@@ -234,8 +267,16 @@ mod tests {
             version: "0.0.0-test".into(),
             pid: std::process::id(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            reexec_on_hup: true,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn a_daemon_that_never_recorded_hup_support_is_not_signalled() {
+        let old: Runtime =
+            serde_json::from_str(r#"{"version":"0.23.0","pid":1,"started_at":"x"}"#).unwrap();
+        assert!(!old.reexec_on_hup, "a pre-reload daemon dies on SIGHUP");
     }
 
     #[test]

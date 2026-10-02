@@ -7,6 +7,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/cctui-daemon run
+# SIGHUP re-execs the daemon in place onto the installed binary: same PID and
+# cgroup, so live sessions are kept. Prefer this to a restart.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 # Coding agents run their tools (builds, Gradle/Kotlin daemons, test
@@ -16,10 +19,11 @@ RestartSec=5s
 # and keep the daemon running.
 OOMPolicy=continue
 
-# The default (control-group) SIGTERMs every process in the unit's cgroup on
-# stop/restart — which includes the `claude daemon` and every worker session the
-# daemon spawned, so a routine restart killed all live sessions. `mixed` signals
-# only the main process; the sessions survive and the daemon re-adopts them.
+# `mixed` sends SIGTERM to the daemon alone, so it can hibernate the codex and
+# opencode children it drives before systemd SIGKILLs whatever is left in the
+# cgroup. A stop or restart therefore still ends those sessions; claude sessions
+# live in claude-daemon.service and survive. Use `reload` (above) or
+# `cctui-daemon update` to move to a new binary.
 KillMode=mixed
 
 # The daemon talks to the user's claude daemon control socket and reads

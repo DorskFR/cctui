@@ -469,6 +469,14 @@ mod tests {
     }
 
     #[test]
+    fn reload_re_execs_in_place_instead_of_restarting() {
+        assert!(
+            UNIT_TEMPLATE.lines().any(|l| l.trim() == "ExecReload=/bin/kill -HUP $MAINPID"),
+            "`systemctl --user reload` must hand off to the SIGHUP re-exec:\n{UNIT_TEMPLATE}"
+        );
+    }
+
+    #[test]
     fn plist_keepalive_only_respawns_on_failure() {
         assert!(PLIST_TEMPLATE.contains("<key>SuccessfulExit</key>"));
         assert!(PLIST_TEMPLATE.contains("<key>ThrottleInterval</key>"));
