@@ -2,8 +2,10 @@ name: ci
 
 on:
   pull_request: {}
+  # Version branches too: release.yml refuses to publish a tag whose commit has
+  # no green ci run, and a tag push does not trigger ci.yml.
   push:
-    branches: [main]
+    branches: [main, "0.*", "1.*", "release/**"]
   workflow_dispatch: {}
 
 permissions:
@@ -320,6 +322,47 @@ jobs:
             exit 1
           }
 
+  e2e:
+    name: webui e2e (hermetic)
+    needs: changes
+    if: needs.changes.outputs.webui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Build
+        working-directory: webui
+        run: npm run build
+
+      - name: Install chromium
+        working-directory: webui
+        run: npx playwright install --with-deps chromium
+
+      # `hermetic` stubs every request; no server, no seeded database, no
+      # journeys/.auth/state.json. The other projects need the local stack.
+      - name: Playwright
+        working-directory: webui
+        env:
+          HEADER_E2E_PORT: "5291"
+        run: npx playwright test --project hermetic
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: failure()
+        with:
+          name: e2e-results
+          retention-days: 3
+          path: webui/test-results/
+
   audit:
     name: audit
     needs: changes
@@ -374,6 +417,9 @@ jobs:
       - name: Test the guard itself
         run: bash scripts/no-css-global.test.sh
 
+      - name: Guard tests did not leak into this checkout
+        run: bash scripts/check-git-untouched.sh
+
       - name: Reject new :global(...) overrides in webui Svelte files
         run: |
           base="${{ github.event.pull_request.base.sha }}"
@@ -395,6 +441,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Test the guard itself
+        run: bash scripts/check-comment-refs.test.sh
+
+      - name: Guard tests did not leak into this checkout
+        run: bash scripts/check-git-untouched.sh
 
       - name: Reject ticket references in added comments
         run: bash scripts/check-comment-refs.sh "origin/${{ github.base_ref }}"
@@ -441,11 +493,15 @@ jobs:
       - biome
       - clippy
       - test
+      - release-cache
+      - release-cache-server
       - webui
+      - e2e
       - audit
       - no-css-global
       - comment-refs
       - i18n-messages
+      - release-channel
       - actionlint
     runs-on: ubuntu-latest
     steps:
