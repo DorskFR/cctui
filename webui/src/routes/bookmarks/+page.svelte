@@ -8,7 +8,7 @@
 	import { bookmarkMarkdown, queryTerms, sourceHref } from '$lib/bookmarks';
 	import { copyText } from '$lib/clipboard';
 	import { errMessage } from '$lib/api';
-	import { useBookmarkActions, useBookmarks } from '$lib/queries';
+	import { useBookmarkActions, useBookmarks, useSessions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -25,6 +25,8 @@
 	const actions = useBookmarkActions();
 	const terms = $derived(queryTerms(debounced));
 	const rows = $derived<Bookmark[]>(bookmarks.data ?? []);
+	const sessions = useSessions(() => false);
+	const machineOf = $derived(new Map((sessions.data ?? []).map((s) => [s.id, s.machine_id])));
 
 	let editing = $state<Bookmark | null>(null);
 	let deleting = $state<Bookmark | null>(null);
@@ -89,6 +91,7 @@
 				<BookmarkCard
 					bookmark={b}
 					{terms}
+					machineId={b.session_id ? machineOf.get(b.session_id) : null}
 					onopen={open}
 					oncopy={copy}
 					onedit={(x) => (editing = x)}

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import ConversationLine from './ConversationLine.svelte';
 import lineSource from './ConversationLine.svelte?raw';
+import bubbleSource from './MessageBubble.svelte?raw';
 import type { Line } from './types';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -59,7 +60,7 @@ describe('role badge and tint', () => {
 	it('gives peer its own --bc and bubble tint, distinct from user and system', () => {
 		const css = lineSource;
 		expect(css).toMatch(/\.line\.peer\s*\{\s*--bc:\s*var\(--role-peer\);/);
-		expect(css).toMatch(/\.line\.peer\s+\.bubble\s*\{/);
+		expect(bubbleSource).toMatch(/\.bubble\.peer\s*\{/);
 		expect(css).not.toMatch(/\.line\.peer\s*\{\s*--bc:\s*var\(--role-(user|system)\)/);
 	});
 
@@ -98,10 +99,10 @@ describe('queue state on the message itself', () => {
 	});
 
 	it('gives queued and cancelled bubbles their own rules, distinct from pending', () => {
-		expect(lineSource).toMatch(/\.line\.user\.queued\s+\.bubble\s*\{/);
-		expect(lineSource).toMatch(/\.line\.user\.cancelled\s+\.bubble\s*\{/);
-		expect(lineSource).toMatch(/--role-queued/);
-		expect(lineSource).not.toMatch(/\.line\.user\.queued\s+\.bubble\s*\{[^}]*--warn/);
+		expect(bubbleSource).toMatch(/\.bubble\.user\.queued\s*\{/);
+		expect(bubbleSource).toMatch(/\.bubble\.user\.cancelled\s*\{/);
+		expect(bubbleSource).toMatch(/--role-queued/);
+		expect(bubbleSource).not.toMatch(/\.bubble\.user\.queued\s*\{[^}]*--warn/);
 	});
 
 	it('leaves an ordinary user line with no queue class or label', async () => {
