@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Re-verifies each entry's pinned sha256 against the live release asset, so a
+# Re-verifies each entry's pinned sha256 against the live release asset, and
+# runs it through the installer's own validation (cctui-server), so a
 # bad bump is caught before a release rather than at an admin's install. Runs in
 # the release job only: on every PR a network blip would block unrelated work.
 # CCTUI_CATALOG_CHECK_OFFLINE=1 checks the schema and skips every download.
@@ -36,6 +37,9 @@ jq -e . "$catalog" >/dev/null 2>&1 || fail "$catalog is not valid JSON"
 count="$(jq '.plugins | length' "$catalog")"
 [ "$count" -gt 0 ] || fail "$catalog lists no plugins"
 echo "checking $count catalog entr$([ "$count" = 1 ] && echo y || echo ies) in $catalog"
+
+# The installer's own validation; CCTUI_ARCHIVE_CHECK overrides the command.
+archive_check="${CCTUI_ARCHIVE_CHECK:-cargo run -q --manifest-path $repo_root/Cargo.toml -p cctui-server -- check-plugin-archive}"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -75,11 +79,8 @@ while IFS=$'\t' read -r id version url want; do
     problems=$((problems + 1))
     continue
   fi
-  # Read the whole listing first: `grep -q` exits on the first match, and under
-  # pipefail the SIGPIPE it deals `tar` would fail a correct archive at random.
-  listing=$(tar tzf "$tmp/$id.tgz")
-  if ! grep -qx "$id/plugin.json" <<<"$listing"; then
-    echo "::error::$id archive has no $id/plugin.json (an npm tarball puts files under package/)"
+  if ! verdict="$($archive_check "$tmp/$id.tgz" "$id" "$version" 2>&1)"; then
+    echo "::error::$id archive would be refused at install: $verdict"
     problems=$((problems + 1))
     continue
   fi

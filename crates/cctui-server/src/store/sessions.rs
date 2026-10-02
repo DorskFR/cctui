@@ -153,9 +153,11 @@ pub async fn fetch_by_id(
         "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
                 s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
                 COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
+                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind, \
+                s.room_id, rm.name AS room_name \
          FROM sessions s \
          LEFT JOIN machines m ON m.id = s.machine_uuid \
+         LEFT JOIN rooms rm ON rm.id = s.room_id \
          WHERE s.id = $1",
     )
     .bind(id)
@@ -235,7 +237,9 @@ pub fn job_children<'a>(children: &'a [Child], archived: &[String]) -> Vec<&'a s
 
 #[cfg(test)]
 mod tests {
-    use super::{Child, SessionRowStatus, descendants, job_children, upsert_registered};
+    use super::{
+        Child, SessionRowStatus, descendants, fetch_by_id, job_children, upsert_registered,
+    };
 
     #[test]
     fn row_status_round_trips_through_text() {
@@ -382,6 +386,55 @@ mod tests {
         ] {
             sqlx::query(sql).bind(uid).execute(&pool).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn fetch_by_id_reads_a_non_uuid_opencode_id() {
+        let name = "fetch_by_id_non_uuid";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{name}-{uid}"))
+            .bind(format!("h-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mk-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let id = format!("ses_{}", uid.simple());
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             metadata, adapter_id) VALUES ($1, $2, $2, $3, '/w', 'ended', '{}', 'opencode')",
+        )
+        .bind(&id)
+        .bind(machine)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let got = fetch_by_id(&pool, &id).await;
+
+        for sql in [
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(&pool).await.unwrap();
+        }
+        assert!(got.expect("fetch_by_id must decode the row").is_some());
     }
 
     #[tokio::test]
