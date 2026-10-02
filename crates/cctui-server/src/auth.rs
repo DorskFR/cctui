@@ -241,24 +241,23 @@ impl AuthConfig {
         match self.resolve(&hash).await {
             Ok(Some(ctx)) => {
                 self.cache_put(hash, ctx.clone());
-                return Some(ctx);
+                Some(ctx)
             }
-            Ok(None) => {}
-            Err(e) => tracing::warn!("auth lookup failed: {e}"),
+            // Final: `seed_admin` gives every env token an `auth_keys` row, so
+            // an env token resolving to nothing has had that row revoked.
+            Ok(None) => None,
+            // Only here is revocation state unknowable, so only here may an env
+            // admin token break the glass.
+            Err(e) => {
+                tracing::warn!("auth lookup failed: {e}");
+                self.admin_token_hashes.contains(&hash).then(|| AuthContext {
+                    user_id: Uuid::nil(),
+                    key_id: Uuid::nil(),
+                    machine_id: None,
+                    scopes: Scope::all().into_iter().collect(),
+                })
+            }
         }
-
-        // Last resort: an env admin token whose seeded auth_keys row hasn't
-        // landed yet (DB hiccup at startup). Resolve to the seeded admin user.
-        if self.admin_token_hashes.contains(&hash) {
-            return Some(AuthContext {
-                user_id: Uuid::nil(),
-                key_id: Uuid::nil(),
-                machine_id: None,
-                scopes: Scope::all().into_iter().collect(),
-            });
-        }
-
-        None
     }
 
     /// The unified `auth_keys` table first, then the legacy tables so a
@@ -703,6 +702,46 @@ mod tests {
         assert!(admin.is_admin());
         assert!(cfg.cache_get(&sha256_hex("admin-secret")).is_none());
         assert!(cfg.validate("admin-secre").await.is_none());
+    }
+
+    /// The env token is a real identity with a revocable `auth_keys` row; the
+    /// implicit all-scopes fallback must not resurrect it once revoked.
+    #[tokio::test]
+    async fn a_revoked_env_admin_token_stops_authenticating() {
+        let name = "a_revoked_env_admin_token_stops_authenticating";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let token = format!("env-admin-{}", Uuid::new_v4());
+        let cfg = AuthConfig::new(vec![token.clone()], pool.clone());
+        cfg.seed_admin().await;
+        assert!(
+            cfg.validate(&token).await.is_some_and(|c| c.is_admin()),
+            "the env token authenticates as admin once seeded"
+        );
+
+        let hash = sha256_hex(&token);
+        sqlx::query("UPDATE auth_keys SET revoked_at = now() WHERE key_hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let after = AuthConfig::new(vec![token.clone()], pool.clone());
+        assert!(
+            after.validate(&token).await.is_none(),
+            "a revoked env admin token must not resolve"
+        );
+
+        sqlx::query("DELETE FROM auth_keys WHERE key_hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

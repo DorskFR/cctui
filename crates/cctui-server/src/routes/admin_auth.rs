@@ -10,9 +10,7 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::auth::{
-    AuthConfig, AuthContext, Scope, machine_token, mint_secret, sha256_hex, user_token,
-};
+use crate::auth::{AuthContext, Scope, machine_token, mint_secret, sha256_hex, user_token};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -124,10 +122,21 @@ pub async fn rotate_user(
     Path(id): Path<Uuid>,
 ) -> Result<Json<RotateResponse>, AppError> {
     forbid_or(&ctx)?;
+    let token = rotate_primary_key(&state.pool, id).await?;
+    state.auth_config.purge_all();
+    tracing::info!(user_id = %id, "user key rotated");
+    Ok(Json(RotateResponse { id, key: token }))
+}
+
+/// Replace a user's primary credential: retire the old secret everywhere auth
+/// would accept it, then mint the replacement with the owner's current ceiling
+/// as its grant. One transaction, so the user is never left with two live keys
+/// or none. Returns the new plaintext token.
+async fn rotate_primary_key(pool: &sqlx::PgPool, id: Uuid) -> Result<String, AppError> {
     let old_hash: Option<(String,)> =
         sqlx::query_as("SELECT key_hash FROM users WHERE id = $1 AND revoked_at IS NULL")
             .bind(id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(pool)
             .await?;
     let Some((old_hash,)) = old_hash else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "user not found"));
@@ -135,14 +144,42 @@ pub async fn rotate_user(
     let secret = mint_secret();
     let token = user_token(&secret);
     let hash = sha256_hex(&token);
+    let preview = crate::auth::token_preview(&token);
+    let ceiling = crate::store::acls::user_ceiling(pool, id).await?;
+
+    let mut tx = pool.begin().await?;
+    // Auth resolves `auth_keys` before `users.key_hash`: without revoking the
+    // mirror the old secret keeps working and the new one only resolves through
+    // the legacy fallback.
+    sqlx::query(
+        "UPDATE auth_keys SET revoked_at = now() WHERE key_hash = $1 AND revoked_at IS NULL",
+    )
+    .bind(&old_hash)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE users SET key_hash = $1 WHERE id = $2")
         .bind(&hash)
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
-    state.auth_config.purge(&old_hash);
-    tracing::info!(user_id = %id, "user key rotated");
-    Ok(Json(RotateResponse { id, key: token }))
+    crate::auth::register_key(
+        &mut *tx,
+        crate::auth::NewKey {
+            user_id: id,
+            key_hash: &hash,
+            key_preview: Some(&preview),
+            label: Some("primary"),
+            kind: "user",
+            machine_id: None,
+            dispatcher_id: None,
+            expires_at: None,
+            passkey_id: None,
+        },
+        ceiling,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(token)
 }
 
 pub async fn list_user_machines(
@@ -292,7 +329,7 @@ pub async fn update_user(
     }
     // Disabling must take effect immediately, not after the auth-cache TTL.
     if req.disabled == Some(true) {
-        purge_user_cache(&state.auth_config, id, &state.pool).await;
+        state.auth_config.purge_all();
     }
     tracing::info!(user_id = %id, name, can_dispatch = ?req.can_dispatch, disabled = ?req.disabled, "user updated");
     Ok(StatusCode::NO_CONTENT)
@@ -310,10 +347,6 @@ pub async fn purge_user(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
-    // Gather hashes up-front so we can evict them from the auth cache after the
-    // row is gone (the rows themselves are about to be deleted).
-    purge_user_cache(&state.auth_config, id, &state.pool).await;
-
     let mut tx = state.pool.begin().await?;
     let revoked: Option<(Option<DateTime<Utc>>,)> =
         sqlx::query_as("SELECT revoked_at FROM users WHERE id = $1 FOR UPDATE")
@@ -344,6 +377,7 @@ pub async fn purge_user(
         return Err(AppError::new(StatusCode::NOT_FOUND, "user not found"));
     }
     tx.commit().await?;
+    state.auth_config.purge_all();
     tracing::info!(user_id = %id, "user purged");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -388,26 +422,36 @@ pub async fn relabel_user_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Look up the secret behind a `user_tokens` row. Revocation keys off the hash,
+/// not the row id: the same secret also has an `auth_keys` row under a different
+/// id, and auth resolves that one first.
+async fn user_token_hash(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    token_id: Uuid,
+) -> Result<String, AppError> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT token_hash FROM user_tokens WHERE id = $1 AND user_id = $2")
+            .bind(token_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    row.map(|(h,)| h).ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "token not found"))
+}
+
 /// Revoke a single token. Mirrors `revoke_user`; purges the
-/// auth cache so the token stops working immediately.
+/// auth cache so the token stops working immediately. Idempotent: re-revoking an
+/// already-revoked token is a no-op 204, since the point is that every row the
+/// secret resolves through ends up retired.
 pub async fn revoke_user_token(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((user_id, token_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
-    let outcome = sqlx::query(
-        "UPDATE user_tokens SET revoked_at = now() \
-         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
-    )
-    .bind(token_id)
-    .bind(user_id)
-    .execute(&state.pool)
-    .await?;
-    if outcome.rows_affected() == 0 {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "token not found"));
-    }
-    purge_user_cache(&state.auth_config, user_id, &state.pool).await;
+    let hash = user_token_hash(&state.pool, user_id, token_id).await?;
+    crate::routes::me::revoke_by_hash(&state.pool, &hash).await?;
+    state.auth_config.purge_all();
     tracing::info!(%user_id, %token_id, "token revoked");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -423,17 +467,34 @@ pub async fn delete_user_token(
     Path((user_id, token_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
-    let outcome = sqlx::query("DELETE FROM user_tokens WHERE id = $1 AND user_id = $2")
-        .bind(token_id)
-        .bind(user_id)
-        .execute(&state.pool)
-        .await?;
-    if outcome.rows_affected() == 0 {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "token not found"));
-    }
-    purge_user_cache(&state.auth_config, user_id, &state.pool).await;
+    let hash = user_token_hash(&state.pool, user_id, token_id).await?;
+    delete_token_rows(&state.pool, user_id, token_id, &hash).await?;
+    state.auth_config.purge_all();
     tracing::info!(%user_id, %token_id, "token purged");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Both rows the secret resolves through, in one transaction. Nothing but
+/// `key_acls` (ON DELETE CASCADE) references `auth_keys`, so the mirror can go
+/// rather than linger as a live credential.
+async fn delete_token_rows(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    token_id: Uuid,
+    hash: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM user_tokens WHERE id = $1 AND user_id = $2")
+        .bind(token_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM auth_keys WHERE key_hash = $1 AND user_id = $2")
+        .bind(hash)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
 }
 
 pub async fn rotate_machine(
@@ -503,28 +564,6 @@ pub async fn rotate_machine(
     state.auth_config.purge(&old_hash);
     tracing::info!(machine_id = %id, "machine key rotated");
     Ok(Json(RotateResponse { id, key: token }))
-}
-
-/// After revoking a user, purge all of that user's machine hashes from cache
-/// so machine keys stop working immediately rather than after TTL.
-async fn purge_user_cache(auth: &AuthConfig, user_id: Uuid, pool: &sqlx::PgPool) {
-    let hashes: Vec<(String,)> = sqlx::query_as("SELECT key_hash FROM machines WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-    for (h,) in hashes {
-        auth.purge(&h);
-    }
-    // Also purge the user key itself — need to fetch.
-    let user_hash: Option<(String,)> = sqlx::query_as("SELECT key_hash FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
-    if let Some((h,)) = user_hash {
-        auth.purge(&h);
-    }
 }
 
 // ===========================================================================
@@ -823,5 +862,171 @@ mod tests {
             panic!("expected a status error");
         };
         assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown scope is rejected");
+    }
+
+    // ---- revocation against a real database ----
+    //
+    // Auth resolves `auth_keys` BEFORE the legacy `user_tokens` /
+    // `users.key_hash` rows, so a revoke that touches only the legacy row leaves
+    // the credential working. These drive the handlers' DB cores and assert
+    // through `AuthConfig::validate`, which is the exact call whose `None` the
+    // middleware turns into a 401.
+
+    async fn test_pool(name: &str) -> Option<sqlx::PgPool> {
+        let url = crate::routes::gateway::test_db_url(name)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    async fn seed_user(pool: &sqlx::PgPool, key_hash: &str) -> Uuid {
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(user_id)
+            .bind(format!("revocation-test-{user_id}"))
+            .bind(key_hash)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'read')")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        user_id
+    }
+
+    /// The shape `mint_user_key` / `mint_user_token` produce: a `user_tokens`
+    /// row and an `auth_keys` row for one secret, each with its own id.
+    async fn mint_dual_written_token(pool: &sqlx::PgPool, user_id: Uuid) -> (String, Uuid) {
+        let token = user_token(&mint_secret());
+        let hash = sha256_hex(&token);
+        let token_id: (Uuid,) = sqlx::query_as(
+            "INSERT INTO user_tokens (user_id, token_hash, label, token_preview) \
+             VALUES ($1, $2, 'test', 'prev') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        crate::auth::register_key(
+            pool,
+            crate::auth::NewKey {
+                user_id,
+                key_hash: &hash,
+                key_preview: Some("prev"),
+                label: Some("test"),
+                kind: "user",
+                machine_id: None,
+                dispatcher_id: None,
+                expires_at: None,
+                passkey_id: None,
+            },
+            std::iter::once(Scope::Read),
+        )
+        .await
+        .unwrap();
+        (token, token_id.0)
+    }
+
+    /// A fresh config, so the answer comes from the database and not the cache.
+    async fn resolves(pool: &sqlx::PgPool, token: &str) -> bool {
+        crate::auth::AuthConfig::new(vec![], pool.clone()).validate(token).await.is_some()
+    }
+
+    #[tokio::test]
+    async fn a_revoked_user_token_stops_authenticating() {
+        let name = "a_revoked_user_token_stops_authenticating";
+        let Some(pool) = test_pool(name).await else { return };
+        let user_id = seed_user(&pool, &format!("not-a-sha-{}", Uuid::new_v4())).await;
+        let (token, token_id) = mint_dual_written_token(&pool, user_id).await;
+        assert!(resolves(&pool, &token).await, "the token works before revoke");
+
+        let hash = user_token_hash(&pool, user_id, token_id).await.unwrap();
+        crate::routes::me::revoke_by_hash(&pool, &hash).await.unwrap();
+
+        assert!(!resolves(&pool, &token).await, "a revoked token must not authenticate");
+        let live: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT revoked_at FROM auth_keys WHERE key_hash = $1")
+                .bind(&hash)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(live.is_some(), "the auth_keys row auth reads first is revoked too");
+    }
+
+    #[tokio::test]
+    async fn a_deleted_user_token_stops_authenticating() {
+        let name = "a_deleted_user_token_stops_authenticating";
+        let Some(pool) = test_pool(name).await else { return };
+        let user_id = seed_user(&pool, &format!("not-a-sha-{}", Uuid::new_v4())).await;
+        let (token, token_id) = mint_dual_written_token(&pool, user_id).await;
+        assert!(resolves(&pool, &token).await, "the token works before delete");
+
+        let hash = user_token_hash(&pool, user_id, token_id).await.unwrap();
+        delete_token_rows(&pool, user_id, token_id, &hash).await.unwrap();
+
+        assert!(!resolves(&pool, &token).await, "a deleted token must not authenticate");
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM user_tokens WHERE token_hash = $1) \
+                  + (SELECT count(*) FROM auth_keys WHERE key_hash = $1)",
+        )
+        .bind(&hash)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0, "neither row survives the purge");
+
+        let again = user_token_hash(&pool, user_id, token_id).await;
+        assert_eq!(
+            again.err().map(|e| e.status()),
+            Some(StatusCode::NOT_FOUND),
+            "a second delete is a 404, not a 500"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_a_user_key_retires_the_old_secret() {
+        let name = "rotating_a_user_key_retires_the_old_secret";
+        let Some(pool) = test_pool(name).await else { return };
+        // The pre-rotation state `create_user` leaves behind: the primary secret
+        // in `users.key_hash` AND in an `auth_keys` row.
+        let old = user_token(&mint_secret());
+        let old_hash = sha256_hex(&old);
+        let user_id = seed_user(&pool, &old_hash).await;
+        crate::auth::register_key(
+            &pool,
+            crate::auth::NewKey {
+                user_id,
+                key_hash: &old_hash,
+                key_preview: Some("prev"),
+                label: Some("primary"),
+                kind: "user",
+                machine_id: None,
+                dispatcher_id: None,
+                expires_at: None,
+                passkey_id: None,
+            },
+            std::iter::once(Scope::Read),
+        )
+        .await
+        .unwrap();
+        assert!(resolves(&pool, &old).await, "the old key works before rotation");
+
+        let new = rotate_primary_key(&pool, user_id).await.unwrap();
+
+        assert!(!resolves(&pool, &old).await, "the rotated-out key must not authenticate");
+        let ctx = crate::auth::AuthConfig::new(vec![], pool.clone())
+            .validate(&new)
+            .await
+            .expect("the replacement key authenticates");
+        assert_eq!(ctx.user_id, user_id);
+        assert!(ctx.has(Scope::Read), "the replacement carries the owner's ceiling");
+        assert!(!ctx.has(Scope::Admin));
     }
 }
