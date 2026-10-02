@@ -82,7 +82,8 @@ export default defineJourney({
 				title: { en: 'Draft it rather than launch it', fr: 'L’enregistrer plutôt que le lancer' },
 				body: { en: 'Launch would start the agent now — it would begin reading and editing the folder you chose. Draft, beside it, saves all of this and runs nothing. Press Draft: you can launch it whenever you like.', fr: 'Lancer démarrerait l’agent maintenant — il commencerait à lire et modifier le dossier choisi. Brouillon, à côté, enregistre tout et n’exécute rien. Appuyez sur Brouillon : vous pourrez le lancer quand vous voudrez.' }
 			},
-			expect: [{ hidden: 'spawn' }],
+			// Only the modal closes on a draft; a docked panel stays put.
+			expect: [{ hidden: { css: 'dialog[open] [data-journey="spawn"]' } }],
 			capture: 'saved'
 		},
 		{

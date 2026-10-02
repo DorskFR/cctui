@@ -17,7 +17,7 @@ import {
 	type Strings,
 	translator
 } from '@dorsk/journey/runtime';
-import { withActionHint } from './guideHint';
+import { guided, withActionHint, withFieldEnter } from './guideHint';
 import { showConclusion } from './guideConclusion.svelte';
 import journeys from './journeys.generated.json';
 import { isLive } from './journeys/live';
@@ -317,9 +317,8 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			return api;
 		};
 		const fallback = () =>
-			(overlay ??= withActionHint(
-				guidePresenter(self().overlay, translator(() => self().strings())),
-				self().overlay
+			(overlay ??= withFieldEnter(
+				withActionHint(guidePresenter(self().overlay, translator(() => self().strings())), self().overlay)
 			));
 		const deck = deckPresenter({
 			cards: () => deckCards(self()),
@@ -349,7 +348,7 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 		// The driver hands the runtime its IR itself.
 		if (!driver) {
 			forgetProgress();
-			await api.register(publicJourneys);
+			await api.register(publicJourneys.map(guided));
 		}
 		watchLocale(api);
 		watchViewport(api);
