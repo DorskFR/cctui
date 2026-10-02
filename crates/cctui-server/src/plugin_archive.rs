@@ -114,6 +114,23 @@ pub fn load_archive(bytes: &[u8], enabled: bool) -> Result<Plugin, ArchiveError>
         .map_err(|e| ArchiveError::Invalid(format!("{e:#}")))
 }
 
+/// The installer's verdict on a catalog entry's archive, plus the catalog's own
+/// pins: the manifest must carry the entry's `id` and `version`.
+pub fn check_catalog_archive(bytes: &[u8], id: &str, version: &str) -> Result<(), String> {
+    let plugin = load_archive(bytes, false).map_err(|e| e.to_string())?;
+    let manifest = &plugin.manifest;
+    if manifest.id != id {
+        return Err(format!("plugin.json id `{}` does not match the catalog id `{id}`", manifest.id));
+    }
+    if manifest.version != version {
+        return Err(format!(
+            "plugin.json version `{}` does not match the catalog version `{version}`",
+            manifest.version
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub mod test_support {
     use flate2::Compression;
@@ -159,7 +176,9 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{MANIFEST, demo_tgz, tgz};
-    use super::{ArchiveError, MAX_ARCHIVE_BYTES, MAX_ENTRIES, extract, load_archive};
+    use super::{
+        ArchiveError, MAX_ARCHIVE_BYTES, MAX_ENTRIES, check_catalog_archive, extract, load_archive,
+    };
     use crate::plugins::{PluginSource, resolve_static};
     use flate2::Compression;
     use flate2::write::GzEncoder;
@@ -189,6 +208,30 @@ mod tests {
             matches!(err, ArchiveError::Invalid(ref m) if m.contains("does not match its folder")),
             "{err}"
         );
+    }
+
+    #[test]
+    fn catalog_check_accepts_what_the_installer_accepts() {
+        for folder in [None, Some("demo")] {
+            assert_eq!(check_catalog_archive(&demo_tgz(folder, "1.0.0"), "demo", "1.0.0"), Ok(()));
+        }
+    }
+
+    #[test]
+    fn catalog_check_refuses_a_wrong_top_folder_with_the_installer_error() {
+        let err = check_catalog_archive(&demo_tgz(Some("plugin"), "1.0.0"), "demo", "1.0.0")
+            .unwrap_err();
+        let installer = load_archive(&demo_tgz(Some("plugin"), "1.0.0"), false).unwrap_err();
+        assert_eq!(err, installer.to_string());
+        assert!(err.contains("does not match its folder"), "{err}");
+    }
+
+    #[test]
+    fn catalog_check_refuses_an_id_or_version_mismatch() {
+        let err = check_catalog_archive(&demo_tgz(None, "1.0.0"), "other", "1.0.0").unwrap_err();
+        assert!(err.contains("catalog id `other`"), "{err}");
+        let err = check_catalog_archive(&demo_tgz(None, "1.0.0"), "demo", "1.1.0").unwrap_err();
+        assert!(err.contains("catalog version `1.1.0`"), "{err}");
     }
 
     #[test]

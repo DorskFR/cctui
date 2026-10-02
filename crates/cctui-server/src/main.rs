@@ -81,6 +81,12 @@ use store::sessions::SessionRowStatus;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((cmd, rest)) = args.split_first()
+        && cmd == "check-plugin-archive"
+    {
+        return check_plugin_archive(rest);
+    }
     install_crypto_provider();
     init_tracing();
     let (config, pool, auth_config) = bootstrap().await?;
@@ -91,6 +97,16 @@ async fn main() -> anyhow::Result<()> {
     let app = build_app(&state, &config, &auth_config);
     spawn_sweeps(&state);
     serve(&config, app).await
+}
+
+/// `check-plugin-archive <archive.tgz> <id> <version>`: the catalog check's
+/// hook into the installer's own validation.
+fn check_plugin_archive(args: &[String]) -> anyhow::Result<()> {
+    let [path, id, version] = args else {
+        anyhow::bail!("usage: cctui-server check-plugin-archive <archive.tgz> <id> <version>");
+    };
+    let bytes = std::fs::read(path)?;
+    plugin_archive::check_catalog_archive(&bytes, id, version).map_err(anyhow::Error::msg)
 }
 
 /// `reqwest` has no built-in provider: a `Client` built before this panics.
