@@ -66,9 +66,9 @@ impl SessionStore {
             return;
         }
         let Some(path) = &self.path else { return };
-        if let Err(err) = save_to(path, &records) {
-            tracing::warn!(%err, path = %path.display(), "opencode: session registry persist failed");
-        }
+        let Err(err) = save_to(path, &records) else { return };
+        drop(records);
+        tracing::warn!(%err, path = %path.display(), "opencode: session registry persist failed");
     }
 }
 
@@ -79,6 +79,7 @@ pub fn store_path() -> Option<PathBuf> {
 
 /// The daemon-wide store. Unit tests get a pathless one so they never touch
 /// the developer's real state file.
+#[must_use]
 pub fn global() -> Arc<SessionStore> {
     static STORE: LazyLock<Arc<SessionStore>> = LazyLock::new(|| {
         Arc::new(match store_path() {
