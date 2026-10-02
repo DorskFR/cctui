@@ -519,7 +519,7 @@ pub fn reexec(exe: &Path) -> ! {
 }
 
 /// Let adapters hibernate their stateful children, then [`reexec`].
-pub async fn reexec_after_grace(exe: &Path) -> ! {
+pub async fn reexec_after_grace(exe: &Path) {
     REEXEC_PREP.cancel();
     tokio::time::sleep(REEXEC_GRACE).await;
     reexec(exe)
