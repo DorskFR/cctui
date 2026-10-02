@@ -761,9 +761,10 @@ impl OpenCodeSession {
                         .or_else(|| self.params.cfg.default_model.clone()),
                     permission_mode: self.params.permission_mode,
                     parent_local_id: parent_local_id.clone(),
-                    account_bound: self.params.env.contains_key(
-                        crate::adapters::gateway_env::FIREWORKS_GATEWAY_KEYS[1],
-                    ),
+                    account_bound: self
+                        .params
+                        .env
+                        .contains_key(crate::adapters::gateway_env::FIREWORKS_GATEWAY_KEYS[1]),
                     started_at_ms,
                 },
             );
