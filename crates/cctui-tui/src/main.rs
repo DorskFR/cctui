@@ -3,7 +3,6 @@ mod auth;
 mod clipboard;
 mod config;
 mod editor;
-mod install;
 #[cfg(test)]
 mod journeys;
 mod keys;

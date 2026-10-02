@@ -770,11 +770,11 @@ pub fn edit_diff(
         return None;
     }
 
-    let diff = similar::TextDiff::from_lines(old, new);
-    let unified = diff
-        .unified_diff()
-        .context_radius(2)
-        .header(&format!("a/{file_path}"), &format!("b/{file_path}"))
+    let unified = diffy::DiffOptions::new()
+        .set_context_len(2)
+        .set_original_filename(format!("a/{file_path}"))
+        .set_modified_filename(format!("b/{file_path}"))
+        .create_patch(old, new)
         .to_string();
 
     if unified.is_empty() {
