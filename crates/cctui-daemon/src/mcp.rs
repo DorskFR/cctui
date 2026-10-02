@@ -109,9 +109,8 @@ pub fn tool_schema() -> Value {
                 "model": {
                     "type": "string",
                     "description": "REQUIRED. Model id to run the child on — there is no \
-    account default, and a call without one is rejected. Known claude_code ids: \
-    \"claude-opus-5[1m]\", \"claude-opus-5\", \"claude-sonnet-5\", \"claude-haiku-4-5\", \
-    \"claude-fable-5\"; codex: \"gpt-5.6-sol\", \"gpt-5.6-terra\". An alias from the \
+    account default, and a call without one is rejected. Use your own model id (your \
+    environment names it) or one CctuiUsage lists under per_model; an alias from the \
     account's own catalog also works. Ignored when session_id is set, but still name the \
     child's model so the call records what it is talking to.",
                 },
@@ -712,7 +711,10 @@ mod tests {
         let model_doc =
             schema["inputSchema"]["properties"]["model"]["description"].as_str().unwrap();
         assert!(model_doc.contains("REQUIRED"), "{model_doc}");
-        assert!(model_doc.contains("claude-opus-5[1m]"), "{model_doc}");
+        assert!(model_doc.contains("per_model"), "{model_doc}");
+        for stale in ["claude-opus", "claude-sonnet", "claude-haiku", "claude-fable", "gpt-5"] {
+            assert!(!model_doc.contains(stale), "compiled-in model id {stale:?} in: {model_doc}");
+        }
         assert!(model_doc.contains("no account default"), "{model_doc}");
         let props = schema["inputSchema"]["properties"].as_object().unwrap();
         for key in [

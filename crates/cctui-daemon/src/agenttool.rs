@@ -96,38 +96,18 @@ struct Call {
     proto: u64,
 }
 
-/// A signpost, not an allowlist: an account catalog may alias other ids, and
-/// the daemon never rejects an id it does not recognise.
-const KNOWN_MODELS: &[(&str, &str)] = &[
-    (
-        "claude-code",
-        "claude-opus-5[1m], claude-opus-5, claude-sonnet-5, claude-haiku-4-5, claude-fable-5",
-    ),
-    ("codex", "gpt-5.6-sol, gpt-5.6-terra"),
-];
+/// Where a caller finds a current model id. Concrete ids are never compiled in:
+/// they go stale and steer every caller onto a superseded model.
+const MODEL_ID_HINT: &str = "use your own model id (your environment names it) or one \
+    CctuiUsage lists under per_model; an alias from the account's own catalog is also \
+    accepted";
 
-fn known_models_for(adapter: &str) -> String {
-    let normalized = normalize_adapter(adapter);
-    KNOWN_MODELS.iter().find(|(id, _)| *id == normalized).map_or_else(
-        || {
-            KNOWN_MODELS
-                .iter()
-                .map(|(id, models)| format!("{id}: {models}"))
-                .collect::<Vec<_>>()
-                .join("; ")
-        },
-        |(_, models)| (*models).to_owned(),
-    )
-}
-
-fn missing_model_error(adapter: &str) -> String {
+fn missing_model_error() -> String {
     format!(
         "model is required and was not given. CctuiAgent never falls back to the account \
          default: that silently spends a different budget than the caller intended, and a \
          whole fan-out can die on 429 minutes later without the cause being visible. Pass \
-         model explicitly — known ids: {}. An alias from the account's own catalog is also \
-         accepted.",
-        known_models_for(adapter),
+         model explicitly — {MODEL_ID_HINT}."
     )
 }
 
@@ -262,7 +242,7 @@ fn parse_spawn_agent(args: &Value) -> Result<CallKind, String> {
     }
     let adapter = normalize_adapter(args.get("adapter").and_then(Value::as_str).unwrap_or(""));
     let Some(model) = string_arg(args, "model") else {
-        return Err(missing_model_error(&adapter));
+        return Err(missing_model_error());
     };
     Ok(CallKind::Spawn(SpawnChildRequest {
         adapter,
@@ -1278,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spawn_without_a_model_is_rejected_and_the_error_names_the_ids() {
+    fn a_spawn_without_a_model_is_rejected_and_the_error_says_where_to_find_one() {
         for args in [
             json!({ "adapter": "claude-code", "prompt": "go" }),
             json!({ "adapter": "claude-code", "prompt": "go", "model": "   " }),
@@ -1288,20 +1268,31 @@ mod tests {
                 json!({ "kind": "spawn_agent", "session_id": "p", "args": args }).to_string();
             let Err(err) = parse_call(&line) else { panic!("a spawn without a model must fail") };
             assert!(err.contains("model is required"), "{err}");
-            assert!(err.contains("claude-opus-5[1m]"), "{err}");
-            assert!(err.contains("claude-fable-5"), "{err}");
             assert!(err.contains("never falls back"), "{err}");
+            assert!(err.contains("per_model"), "{err}");
         }
     }
 
     #[test]
-    fn the_missing_model_error_lists_the_ids_of_the_named_adapter() {
-        let codex = missing_model_error("codex-cli");
-        assert!(codex.contains("gpt-5.6-sol"), "{codex}");
-        assert!(!codex.contains("claude-opus-5"), "{codex}");
-        let unknown = missing_model_error("opencode");
-        assert!(unknown.contains("claude-code:"), "{unknown}");
-        assert!(unknown.contains("codex:"), "{unknown}");
+    fn the_missing_model_error_names_no_concrete_model_id() {
+        let err = missing_model_error();
+        for stale in ["claude-opus", "claude-sonnet", "claude-haiku", "claude-fable", "gpt-5"] {
+            assert!(!err.contains(stale), "compiled-in model id {stale:?} in: {err}");
+        }
+    }
+
+    #[test]
+    fn a_model_id_absent_from_any_list_still_parses() {
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "p",
+            "args": { "adapter": "claude-code", "prompt": "go", "model": "claude-opus-9-9[1m]" },
+        })
+        .to_string();
+        let CallKind::Spawn(req) = parse_call(&line).expect("parses").kind else {
+            panic!("expected a spawn")
+        };
+        assert_eq!(req.model.as_deref(), Some("claude-opus-9-9[1m]"));
     }
 
     #[test]
