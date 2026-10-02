@@ -129,8 +129,9 @@ pub enum ReexecRequest {
     Unsupported { version: String },
 }
 
-/// Ask the running daemon to re-exec onto the binary now installed. Never
-/// signals a daemon that would treat SIGHUP as fatal.
+/// Ask the running daemon to re-exec onto the binary now installed.
+///
+/// Never signals a daemon that would treat SIGHUP as fatal.
 pub fn request_reexec() -> anyhow::Result<ReexecRequest> {
     let Some(rt) = read().filter(|rt| pid_alive(rt.pid)) else {
         return Ok(ReexecRequest::NotRunning);

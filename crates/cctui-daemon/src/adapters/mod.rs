@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use crate::adapter_runtime::AdapterFactory;
 
 /// Send an event the server is waiting on (a command result, a session end).
+///
 /// A failure means the supervisor is gone, so it can only be logged — but a
 /// silent drop leaves the server's waiter to time out with no trace here.
 pub async fn emit(events: &mpsc::Sender<AdapterEvent>, event: AdapterEvent) {

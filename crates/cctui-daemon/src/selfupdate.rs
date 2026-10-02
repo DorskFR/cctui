@@ -525,8 +525,9 @@ pub async fn reexec_after_grace(exe: &Path) {
     reexec(exe)
 }
 
-/// This binary's install path, captured at start-up: after an in-place swap
-/// `current_exe()` names the unlinked old inode (see [`reexec`]).
+/// This binary's install path, captured at start-up.
+///
+/// After an in-place swap `current_exe()` names the unlinked old inode (see [`reexec`]).
 #[must_use]
 pub fn install_path() -> Option<PathBuf> {
     static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
