@@ -992,7 +992,7 @@ async fn dispatch(
                 registry.lock().await.remove(local_id);
                 persist::save(registry).await;
                 crate::adapters::emit(
-                    &events,
+                    events,
                     AdapterEvent::SessionEnded {
                         local_id: local_id.to_owned(),
                         reason: cctui_proto::adapter::EndReason::Killed,
@@ -1009,7 +1009,7 @@ async fn dispatch(
 async fn fail_command(events: &mpsc::Sender<AdapterEvent>, cmd: &SessionCommand, error: &str) {
     if let Some(command_id) = cmd.command_id() {
         crate::adapters::emit(
-            &events,
+            events,
             AdapterEvent::CommandResult { command_id, ok: false, error: Some(error.to_owned()) },
         )
         .await;
@@ -1044,7 +1044,7 @@ async fn emit_missing_failure(
     fail_command(events, cmd, "no codex session for command").await;
     if matches!(cmd, SessionCommand::Kill { .. }) {
         crate::adapters::emit(
-            &events,
+            events,
             AdapterEvent::SessionEnded {
                 local_id: local_id.to_owned(),
                 reason: cctui_proto::adapter::EndReason::Killed,

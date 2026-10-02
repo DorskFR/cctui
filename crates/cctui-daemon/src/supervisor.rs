@@ -659,7 +659,7 @@ impl Supervisor {
                 if let Some((command_id, error)) = error {
                     let event =
                         AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) };
-                    if let Err(err) = event_tx.try_send((adapter_id.clone(), event)) {
+                    if let Err(err) = event_tx.try_send((adapter_id, event)) {
                         let (mpsc::error::TrySendError::Full((adapter_id, event))
                         | mpsc::error::TrySendError::Closed((adapter_id, event))) = err;
                         if let Err(err) =

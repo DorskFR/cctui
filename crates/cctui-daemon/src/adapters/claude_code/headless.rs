@@ -66,6 +66,7 @@ async fn write_line(stdin: &SharedStdin, frame: &serde_json::Value) -> std::io::
     let mut stdin = stdin.lock().await;
     stdin.write_all(&buf).await?;
     stdin.flush().await.ok();
+    drop(stdin);
     Ok(())
 }
 
@@ -480,18 +481,14 @@ impl SdkDriver {
     }
 
     /// Write a `{"type":"user",…}` turn envelope to the child's stdin.
-    async fn send_user_turn(&mut self, local_id: &str, text: &str) -> anyhow::Result<()> {
+    async fn send_user_turn(&self, local_id: &str, text: &str) -> anyhow::Result<()> {
         let frame = streamjson::user_message_envelope(&json!(text));
         self.write_frame(local_id, &frame).await
     }
 
     /// Serialize `frame` + newline to the child's stdin. Backpressure is
     /// natural: the write `.await`s until the child drains.
-    async fn write_frame(
-        &mut self,
-        local_id: &str,
-        frame: &serde_json::Value,
-    ) -> anyhow::Result<()> {
+    async fn write_frame(&self, local_id: &str, frame: &serde_json::Value) -> anyhow::Result<()> {
         let stdin = self
             .children
             .get(local_id)

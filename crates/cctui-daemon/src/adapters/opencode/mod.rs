@@ -452,7 +452,7 @@ async fn fail(events: &mpsc::Sender<AdapterEvent>, command_id: Option<Uuid>, err
     tracing::error!(%error, "opencode command failed");
     if let Some(command_id) = command_id {
         crate::adapters::emit(
-            &events,
+            events,
             AdapterEvent::CommandResult { command_id, ok: false, error: Some(error.to_owned()) },
         )
         .await;

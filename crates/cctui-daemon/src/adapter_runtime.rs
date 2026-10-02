@@ -44,21 +44,17 @@ struct InterruptState {
 
 impl InterruptQueue {
     pub fn push(&self, local_id: &str, command_ids: impl IntoIterator<Item = Uuid>) {
-        {
-            let mut pending =
-                self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let i = pending.iter().position(|p| p.local_id == local_id).unwrap_or_else(|| {
-                pending
-                    .push(PendingInterrupt { local_id: local_id.to_owned(), command_ids: vec![] });
-                pending.len() - 1
-            });
-            let entry = &mut pending[i];
-            for id in command_ids {
-                if entry.command_ids.len() < MAX_COALESCED_IDS {
-                    entry.command_ids.push(id);
-                }
-            }
-        }
+        let ids: Vec<Uuid> = command_ids.into_iter().collect();
+        let mut pending =
+            self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let i = pending.iter().position(|p| p.local_id == local_id).unwrap_or_else(|| {
+            pending.push(PendingInterrupt { local_id: local_id.to_owned(), command_ids: vec![] });
+            pending.len() - 1
+        });
+        let kept = &mut pending[i].command_ids;
+        let room = MAX_COALESCED_IDS.saturating_sub(kept.len());
+        kept.extend(ids.into_iter().take(room));
+        drop(pending);
         // Stores a permit when nobody waits yet, so a push racing ahead of
         // `next` still wakes it.
         self.inner.notify.notify_one();
