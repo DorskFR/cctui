@@ -13,7 +13,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled push run leaves its commit without the green run release.yml requires.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.

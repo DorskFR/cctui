@@ -70,7 +70,6 @@ jobs:
           echo "$out"
           { echo "tag=$TAG"; echo "$out"; } >> "$GITHUB_OUTPUT"
 
-
   # Only the publish steps (GitHub Release, image pushes) wait on this; builds
   # start right away and run alongside the ci.yml run for the same commit.
   ci-green:
