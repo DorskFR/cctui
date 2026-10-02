@@ -7,6 +7,12 @@ import { defineJourney } from '@dorsk/journey';
  * `route` — a no-op once the click arrived, and the fallback if it did not.
  */
 const APPEARANCE = '/settings/appearance';
+/** The link itself on the wide list: Enter clicks the target's centre, and the
+ *  centre of the whole switcher is some other page. The narrow tab strip has no
+ *  per-tab anchor, so there the next step's `route` finishes the hop. */
+const hop = (page: string) => ({
+	css: `.toc [data-journey="settings-nav"][data-journey-key="${page}"], .tabs[data-journey="settings-goto"]`
+});
 
 export default defineJourney({
 	id: 'settings-tour',
@@ -39,8 +45,9 @@ export default defineJourney({
 		},
 		{
 			id: 'to-sessions',
-			target: 'settings-goto',
+			target: hop('sessions'),
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Settings are one page per subject', fr: 'Les réglages : une page par sujet' },
 				body: { en: 'The highlighted switcher is how you move between them — a list beside the page on a wide screen, a strip of tabs along the top on a narrow one. Pick “Sessions” from it, not from the app’s own nav.', fr: 'Le sélecteur en surbrillance permet de passer de l’une à l’autre — une liste à côté de la page sur grand écran, une rangée d’onglets en haut sur écran étroit. Choisissez « Sessions » dedans, pas dans la navigation de l’application.' }
@@ -59,8 +66,9 @@ export default defineJourney({
 		},
 		{
 			id: 'to-execution',
-			target: 'settings-goto',
+			target: hop('execution'),
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Now the one that matters most', fr: 'Passons au plus important' },
 				body: { en: 'Pick “Execution” from the highlighted switcher.', fr: 'Choisissez « Exécution » dans le sélecteur en surbrillance.' }
@@ -79,8 +87,9 @@ export default defineJourney({
 		},
 		{
 			id: 'to-privacy',
-			target: 'settings-goto',
+			target: hop('privacy'),
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'And what never leaves', fr: 'Et ce qui ne sort jamais' },
 				body: { en: 'Pick “Privacy” from the highlighted switcher.', fr: 'Choisissez « Confidentialité » dans le sélecteur en surbrillance.' }
@@ -99,8 +108,9 @@ export default defineJourney({
 		},
 		{
 			id: 'to-guides',
-			target: 'settings-goto',
+			target: hop('guides'),
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'One page left', fr: 'Reste une page' },
 				body: { en: 'Pick “Guides” from the highlighted switcher — the page you started this from.', fr: 'Choisissez « Guides » dans le sélecteur en surbrillance — la page d’où vous avez lancé ceci.' }

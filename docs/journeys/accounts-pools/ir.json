@@ -1,7 +1,7 @@
 {
 	"id": "accounts-pools",
 	"version": 1,
-	"route": "/accounts",
+	"route": "/settings/accounts",
 	"level": "checked",
 	"steps": [
 		{
@@ -11,7 +11,7 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"route": "/accounts",
+			"route": "/settings/accounts",
 			"target": "accounts",
 			"say": {
 				"title": {
@@ -86,7 +86,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": "new-account",
 			"say": {
@@ -108,7 +108,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": {
 				"role": "button",

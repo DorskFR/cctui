@@ -13,6 +13,11 @@ use crate::api::uploads::UploadCaps;
 pub struct SettingsPayload {
     pub version: i32,
     pub data: Value,
+    /// Opaque marker of the stored row this copy was read from. A `PUT` carrying
+    /// one is refused with `409` once another write has landed since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub revision: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

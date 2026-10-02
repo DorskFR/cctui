@@ -1,7 +1,7 @@
 {
 	"id": "enroll-machine",
 	"version": 1,
-	"route": "/access",
+	"route": "/settings/users",
 	"level": "checked",
 	"steps": [
 		{
@@ -11,7 +11,7 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"route": "/access",
+			"route": "/settings/users",
 			"target": "enroll",
 			"say": {
 				"title": {
@@ -64,7 +64,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": "enroll-copy",
 			"say": {
@@ -108,7 +108,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": "user[{fixture.me}]",
 			"say": {
@@ -163,8 +163,8 @@
 		"fr": "Enrôler une machine dans la flotte"
 	},
 	"description": {
-		"en": "Access holds the people, their keys and the machines that run their agents.",
-		"fr": "Accès regroupe les personnes, leurs clés et les machines qui exécutent leurs agents."
+		"en": "Users & keys holds the people, their keys and the machines that run their agents.",
+		"fr": "Utilisateurs et clés regroupe les personnes, leurs clés et les machines qui exécutent leurs agents."
 	},
 	"variants": {
 		"viewport": [

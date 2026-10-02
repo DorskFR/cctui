@@ -1,5 +1,5 @@
 import { browser } from "$app/environment";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { auth } from "./auth.svelte";
 import {
   clampLocale,
@@ -701,11 +701,19 @@ function migrate(data: unknown, version: number): Partial<SettingsState> {
   return d;
 }
 
+function snapshot(state: object): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+}
+
 class Settings {
   state = $state<SettingsState>(mergeDefaults(null));
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private loading: Promise<void> | null = null;
+  private edits = 0;
+  /** The server row this tab last read or wrote, and what it held then. */
+  private revision: string | undefined;
+  private base: Record<string, unknown> | null = null;
   // Save indicator for the Settings screen: `pending` while a debounced PUT is
   // queued or in flight, `saved` once the server acknowledged it (with the
   // time), `error` when the PUT failed (the local cache still holds the value).
@@ -729,9 +737,11 @@ class Settings {
       }
       const flush = () => this.flush();
       window.addEventListener("pagehide", flush);
+      window.addEventListener("focus", () => this.resync());
       // Mobile browsers may never fire `pagehide` before killing the tab.
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") flush();
+        else this.resync();
       });
     }
   }
@@ -745,14 +755,24 @@ class Settings {
     return this.loading;
   }
 
-  private async fetchServerCopy(): Promise<void> {
+  /** A save PUTs the whole blob, so a tab still holding what it loaded earlier
+   *  would write that back over another tab's changes. Coming back to a tab
+   *  re-reads the server copy, unless this tab has a write of its own pending. */
+  private resync() {
+    if (!auth.isAuthed || !this.loading || this.saveStatus === "pending") return;
+    void this.fetchServerCopy(this.edits);
+  }
+
+  private async fetchServerCopy(edits?: number): Promise<void> {
     try {
       const payload = await api.get<SettingsPayload>("/settings");
+      if (edits !== undefined && (edits !== this.edits || this.saveStatus === "pending")) return;
       const migrated = migrate(
         payload.data,
         payload.version ?? CURRENT_VERSION,
       );
       this.state = mergeDefaults(migrated);
+      this.agree(payload.revision);
       this.writeCache();
       this.applyDisplay();
       if (this.state.locale) localeStore.set(this.state.locale);
@@ -771,15 +791,44 @@ class Settings {
     }
   }
 
-  private sendSave(keepalive = false) {
+  private agree(revision: string | undefined) {
+    this.revision = revision;
+    this.base = snapshot(this.state);
+  }
+
+  /** Another tab saved since this one read. Keep this tab's own changes, take
+   *  the server's copy of every section this tab left alone. */
+  private async rebase(): Promise<void> {
+    const payload = await api.get<SettingsPayload>("/settings");
+    const server = snapshot(
+      mergeDefaults(migrate(payload.data, payload.version ?? CURRENT_VERSION)),
+    );
+    const local = snapshot(this.state);
+    const base = this.base ?? {};
+    const merged: Record<string, unknown> = { ...server };
+    for (const key of Object.keys(local)) {
+      if (JSON.stringify(local[key]) !== JSON.stringify(base[key])) merged[key] = local[key];
+    }
+    this.state = mergeDefaults(merged as Partial<SettingsState>);
+    this.revision = payload.revision;
+    this.base = server;
+    this.writeCache();
+    this.applyDisplay();
+  }
+
+  private sendSave(keepalive = false, rebased = false) {
+    const sent = snapshot(this.state);
     const body: SettingsPayload = {
       version: CURRENT_VERSION,
-      data: this.state as unknown as SettingsPayload["data"],
+      data: sent as SettingsPayload["data"],
+      revision: this.revision,
     };
     // Fire-and-forget; the cache already holds the value if the PUT drops.
     void api
-      .put("/settings", body, keepalive ? { keepalive: true } : undefined)
-      .then(() => {
+      .put<SettingsPayload | undefined>("/settings", body, keepalive ? { keepalive: true } : undefined)
+      .then((saved) => {
+        this.revision = saved?.revision;
+        this.base = sent;
         // A later mutation re-armed the timer: stay pending for that one.
         if (this.saveTimer) return;
         this.saveStatus = "saved";
@@ -787,6 +836,15 @@ class Settings {
         this.saveError = null;
       })
       .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 409 && !rebased) {
+          void this.rebase()
+            .then(() => this.sendSave(keepalive, true))
+            .catch((err: unknown) => {
+              this.saveStatus = "error";
+              this.saveError = saveErrorMessage(err);
+            });
+          return;
+        }
         if (this.saveTimer) return;
         this.saveStatus = "error";
         this.saveError = saveErrorMessage(e);
@@ -815,6 +873,7 @@ class Settings {
 
   /** Persist after a mutation: cache immediately, debounce the server PUT. */
   private persist() {
+    this.edits++;
     this.writeCache();
     this.scheduleSave();
   }

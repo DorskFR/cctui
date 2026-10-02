@@ -8,8 +8,7 @@ const api = vi.hoisted(() => ({
 	accountPools: vi.fn(),
 	allMachines: vi.fn(),
 	machines: vi.fn(),
-	sessions: vi.fn(),
-	sessionStats: vi.fn()
+	sessions: vi.fn()
 }));
 vi.mock('$lib/queries/endpoints', () => ({ endpoints: api }));
 
@@ -37,7 +36,6 @@ beforeEach(() => {
 	api.allMachines.mockResolvedValue([]);
 	api.machines.mockResolvedValue([]);
 	api.sessions.mockResolvedValue({ sessions: [] });
-	api.sessionStats.mockResolvedValue({ total: 0, live: 0, needs_input: 0, archived: 0 });
 	probes = createProbes(new QueryClient({ defaultOptions: { queries: { retry: false } } }));
 });
 
@@ -80,8 +78,8 @@ describe('probes', () => {
 		expect(await probes['sessions.live']()).toBe(false);
 	});
 
-	it('reads live from the stats endpoint, accounts and pools from their lists', async () => {
-		api.sessionStats.mockResolvedValue({ total: 1, live: 1, needs_input: 0, archived: 0 });
+	it('reads live by the same rule the guide picks its session with, not the stats counter', async () => {
+		api.sessions.mockResolvedValue({ sessions: [session(), session({ id: 's2', status: 'inactive', liveness: 'dead' })] });
 		api.accounts.mockResolvedValue([{ id: 'a', name: 'main' }]);
 		api.accountPools.mockResolvedValue([{ id: 'p', name: 'prod', members: [] }]);
 		expect(await probes['sessions.live']()).toBe(true);

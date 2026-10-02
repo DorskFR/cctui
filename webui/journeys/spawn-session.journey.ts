@@ -20,11 +20,13 @@ export default defineJourney({
 		{
 			id: 'open',
 			route: SESSIONS,
-			target: 'new',
+			// A docked spawn panel replaces the New button.
+			target: { css: '[data-journey="new"], [data-journey="spawn"]' },
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Open the new-session dialog', fr: 'Ouvrir la fenêtre de nouvelle session' },
-				body: { en: 'Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile.', fr: 'Tout ce dont un run a besoin tient dans cette fenêtre : la machine, le dossier, l’instruction et le profil.' }
+				body: { en: 'Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile. If you docked it beside the list, it is already open.', fr: 'Tout ce dont un run a besoin tient dans cette fenêtre : la machine, le dossier, l’instruction et le profil. Si vous l’avez ancrée à côté de la liste, elle est déjà ouverte.' }
 			},
 			expect: [{ visible: 'spawn' }, { visible: 'spawn/prompt' }],
 			capture: 'dialog'
@@ -33,6 +35,7 @@ export default defineJourney({
 			id: 'where',
 			target: 'where',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Pick where it runs', fr: 'Choisir où le run s’exécute' },
 				body: { en: 'Choose the machine, then the folder. That folder is the agent’s whole world — it reads and edits what is inside it and nothing else, so point it at the project you actually mean. Set them now.', fr: 'Choisissez la machine, puis le dossier. Ce dossier est tout l’univers de l’agent — il y lit et modifie les fichiers, et rien d’autre : visez donc le bon projet. Réglez-les maintenant.' }
@@ -62,6 +65,7 @@ export default defineJourney({
 			id: 'profiles',
 			target: 'profiles',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'The profile decides how it thinks', fr: 'Le profil décide de sa façon de penser' },
 				body: { en: 'A profile bundles four things: the harness, the model, how hard it reasons, and how much it may do without asking. Pick one rather than setting all four every launch — keep a cheap one for throwaway work and a careful one for the rest.', fr: 'Un profil regroupe quatre choses : le harnais, le modèle, l’intensité du raisonnement et ce qu’il peut faire sans demander. Choisissez-en un plutôt que de régler les quatre à chaque lancement — gardez-en un bon marché pour le jetable et un prudent pour le reste.' }
@@ -78,7 +82,8 @@ export default defineJourney({
 				title: { en: 'Draft it rather than launch it', fr: 'L’enregistrer plutôt que le lancer' },
 				body: { en: 'Launch would start the agent now — it would begin reading and editing the folder you chose. Draft, beside it, saves all of this and runs nothing. Press Draft: you can launch it whenever you like.', fr: 'Lancer démarrerait l’agent maintenant — il commencerait à lire et modifier le dossier choisi. Brouillon, à côté, enregistre tout et n’exécute rien. Appuyez sur Brouillon : vous pourrez le lancer quand vous voudrez.' }
 			},
-			expect: [{ hidden: 'spawn' }],
+			// Only the modal closes on a draft; a docked panel stays put.
+			expect: [{ hidden: { css: 'dialog[open] [data-journey="spawn"]' } }],
 			capture: 'saved'
 		},
 		{

@@ -114,19 +114,21 @@
 		{
 			"id": "view",
 			"do": {
-				"kind": "click"
+				"kind": "none"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
-			"target": "view",
+			"target": {
+				"css": ".inline-fold [data-journey=\"view\"], .bar:not(:has(.inline-fold)) [data-journey=\"options\"]"
+			},
 			"say": {
 				"title": {
 					"en": "Try it: dense rows or roomy cards",
 					"fr": "Essayez : lignes denses ou cartes aérées"
 				},
 				"body": {
-					"en": "Click it. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits — click again if you prefer the other.",
-					"fr": "Cliquez. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Votre choix est conservé d’une visite à l’autre — recliquez si vous préférez l’autre."
+					"en": "Switch it here — or in the ⋯ menu when the bar is narrow. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits.",
+					"fr": "Changez-le ici — ou dans le menu ⋯ quand la barre est étroite. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Votre choix est conservé d’une visite à l’autre."
 				}
 			},
 			"capture": {
@@ -161,12 +163,9 @@
 		{
 			"id": "search",
 			"do": {
-				"kind": "fill",
-				"value": {
-					"$param": "var.query"
-				}
+				"kind": "none"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": {
 				"label": "Search sessions",
@@ -194,7 +193,7 @@
 					"$param": "var.blank"
 				}
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": {
 				"label": "Search sessions",

@@ -24,6 +24,7 @@ export default defineJourney({
 			// session ends, is archived, or scrolls out of view.
 			target: FIRST_SESSION_TITLE,
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Open a session', fr: 'Ouvrir une session' },
 				body: {
@@ -151,6 +152,7 @@ export default defineJourney({
 			id: 'tools-only',
 			target: 'filters/quick[assistant]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Try it: leave only what it touched', fr: 'Essayez : ne gardez que ce qu’elle a touché' },
 				body: {
@@ -165,6 +167,7 @@ export default defineJourney({
 			id: 'tools-restore',
 			target: 'filters/quick[assistant]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'And put it back', fr: 'Et remettez-la' },
 				body: {

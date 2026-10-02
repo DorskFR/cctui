@@ -21,6 +21,7 @@ import {
 	requiredParams
 } from '../journey';
 import { createProbes } from './probes';
+import { MOVED_ROUTES } from '../../routes/movedRoutes';
 
 const SPECS: Journey[] = [
 	welcome,
@@ -174,6 +175,21 @@ describe('public journey set', () => {
 		}
 	});
 
+	it('routes no step through a page that only redirects', () => {
+		for (const id of PUBLIC_JOURNEYS) {
+			const ir = pub(id);
+			for (const route of [ir.route, ...ir.steps.map((s) => s.route)]) {
+				if (route !== undefined) expect(Object.keys(MOVED_ROUTES), `${id} ${route}`).not.toContain(route);
+			}
+		}
+	});
+
+	it('never waits on the New button alone, which a docked spawn panel removes', () => {
+		for (const id of PUBLIC_JOURNEYS) {
+			for (const step of pub(id).steps) expect(step.target, `${id}/${step.id}`).not.toBe('new');
+		}
+	});
+
 	it('can open every anchored guide from the guides page', () => {
 		for (const id of PUBLIC_JOURNEYS) {
 			const ir = pub(id);
@@ -229,6 +245,21 @@ describe('public journey set', () => {
 				}
 			}
 		}
+	});
+
+	it('lets Enter advance every click step, except the one that saves for real', () => {
+		const clickOnly = PUBLIC_JOURNEYS.flatMap((id) =>
+			pub(id)
+				.steps.filter((s) => s.do.kind === 'click' && s.guide !== 'next')
+				.map((s) => `${id}/${s.id}`)
+		);
+		expect(clickOnly).toEqual(['spawn-session/save']);
+	});
+
+	it('lets the user try the sessions search without the step ending under them', () => {
+		const search = pub('sessions-list').steps.find((s) => s.id === 'search')!;
+		expect(search.do.kind).toBe('none');
+		expect(search.guide).toBe('next');
 	});
 
 	it('marks no public step optional, which guide mode cannot honour', () => {
@@ -296,6 +327,14 @@ describe('public journey set', () => {
 		for (const step of pub('sessions-list').steps) {
 			expect(JSON.stringify(step.target ?? ''), step.id).not.toMatch(/data-tsu|theme/i);
 		}
+	});
+
+	it('finds the view switch whether the bar shows it inline or folds it into the menu', () => {
+		const view = pub('sessions-list').steps.find((s) => s.id === 'view')!;
+		const css = (view.target as { css: string }).css;
+		expect(css).toContain('.inline-fold [data-journey="view"]');
+		expect(css).toContain(':not(:has(.inline-fold)) [data-journey="options"]');
+		expect(view.do.kind).toBe('none');
 	});
 
 	it('gives the density switch a twin for the width that does not have it', () => {

@@ -1,4 +1,4 @@
-import type { Interaction } from '@dorsk/journey';
+import type { IR, Interaction } from '@dorsk/journey';
 import type { Overlay, Presenter, ShowCtx } from '@dorsk/journey/runtime';
 import { m } from './paraglide/messages';
 
@@ -33,6 +33,55 @@ export function withActionHint(inner: Presenter, overlay: Overlay): Presenter {
 		},
 		settle: (step) => inner.settle(step),
 		hide: () => inner.hide(),
+		message: inner.message ? (...args) => inner.message?.(...args) : undefined,
+		moveCursor: inner.moveCursor ? (el) => inner.moveCursor?.(el) ?? Promise.resolve() : undefined,
+		ripple: inner.ripple ? (el) => inner.ripple?.(el) : undefined
+	};
+}
+
+/** A guide step always offers Next. A fill would end on the first keystroke, so a
+ *  guide only points at the field and lets the user type; the book still fills. */
+export function guided(ir: IR): IR {
+	return {
+		...ir,
+		steps: ir.steps.map((step) =>
+			step.do.kind === 'fill' ? { ...step, do: { kind: 'none' }, guide: 'next' } : { ...step, guide: 'next' }
+		)
+	};
+}
+
+/** The runtime ignores Enter while focus is in a field, which strands a step that
+ *  points at one: typing is done, and Next may sit behind a modal. Enter in the
+ *  step's own single-line field is the user saying so. */
+export function withFieldEnter(inner: Presenter): Presenter {
+	let detach: (() => void) | null = null;
+	const off = () => {
+		detach?.();
+		detach = null;
+	};
+	return {
+		show(step, el, ctx) {
+			off();
+			inner.show(step, el, ctx);
+			const next = ctx.next;
+			if (!el || !next || !ctx.human) return;
+			const onKey = (e: KeyboardEvent) => {
+				if (e.key !== 'Enter' || e.isComposing || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+				const t = e.target;
+				if (!(t instanceof HTMLInputElement) || !(t === el || el.contains(t))) return;
+				e.preventDefault();
+				e.stopPropagation();
+				off();
+				next();
+			};
+			window.addEventListener('keydown', onKey, true);
+			detach = () => window.removeEventListener('keydown', onKey, true);
+		},
+		settle: (step) => inner.settle(step),
+		hide() {
+			off();
+			inner.hide();
+		},
 		message: inner.message ? (...args) => inner.message?.(...args) : undefined,
 		moveCursor: inner.moveCursor ? (el) => inner.moveCursor?.(el) ?? Promise.resolve() : undefined,
 		ripple: inner.ripple ? (el) => inner.ripple?.(el) : undefined

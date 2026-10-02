@@ -429,8 +429,8 @@ pub async fn get_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<SettingsPayload>, StatusCode> {
-    let row = sqlx::query_as::<_, (i32, Value)>(
-        "SELECT version, data FROM user_settings WHERE user_id = $1",
+    let row = sqlx::query_as::<_, (i32, Value, String)>(
+        "SELECT version, data, updated_at::text FROM user_settings WHERE user_id = $1",
     )
     .bind(ctx.user_id)
     .fetch_optional(&state.pool)
@@ -443,12 +443,12 @@ pub async fn get_settings(
     let payload = match row {
         // Upgrade in memory only — do NOT persist on read (lazy persistence; the
         // upgraded shape is written on the next PUT).
-        Some((version, data)) => {
+        Some((version, data, revision)) => {
             let mut data = migrate(data, version);
             crate::plugin_host_token::strip(&mut data);
-            SettingsPayload { version: CURRENT_VERSION, data }
+            SettingsPayload { version: CURRENT_VERSION, data, revision: Some(revision) }
         }
-        None => SettingsPayload { version: CURRENT_VERSION, data: json!({}) },
+        None => SettingsPayload { version: CURRENT_VERSION, data: json!({}), revision: None },
     };
 
     Ok(Json(payload))
@@ -485,11 +485,19 @@ pub async fn put_settings(
     // Snapshot the stored harnessMode before the upsert so we only push a fresh
     // Reconcile when it actually changes — unrelated settings edits must not
     // trigger a reconcile storm across the user's machines.
-    let prev: Option<Value> =
-        sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
+    let stored: Option<(Value, String)> =
+        sqlx::query_as("SELECT data, updated_at::text FROM user_settings WHERE user_id = $1")
             .bind(ctx.user_id)
             .fetch_optional(&state.pool)
             .await?;
+    // A blob is saved whole, so a copy read before another tab's write would
+    // erase that write. Refuse it before anything below acts on it.
+    if let (Some(expected), Some((_, current))) = (&body.revision, &stored)
+        && expected != current
+    {
+        return Err(stale_copy());
+    }
+    let prev = stored.map(|(data, _)| data);
     let prev_mode = prev.as_ref().map_or(DEFAULT_HARNESS_MODE, |d| harness_mode_of(d));
     let prev_scrub = prev
         .as_ref()
@@ -506,18 +514,23 @@ pub async fn put_settings(
     )
     .await?;
 
-    let (version, mut data) = sqlx::query_as::<_, (i32, Value)>(
+    // The revision check above can race a concurrent write; the conditional
+    // update closes it. Without a revision the write is unconditional.
+    let (version, mut data, revision) = sqlx::query_as::<_, (i32, Value, String)>(
         "INSERT INTO user_settings (user_id, version, data, updated_at) \
          VALUES ($1, $2, $3, now()) \
          ON CONFLICT (user_id) DO UPDATE \
          SET version = EXCLUDED.version, data = EXCLUDED.data, updated_at = now() \
-         RETURNING version, data",
+         WHERE $4::text IS NULL OR user_settings.updated_at::text = $4 \
+         RETURNING version, data, updated_at::text",
     )
     .bind(ctx.user_id)
     .bind(CURRENT_VERSION)
     .bind(data)
-    .fetch_one(&state.pool)
-    .await?;
+    .bind(body.revision.as_deref())
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(stale_copy)?;
 
     // Live-push a fresh Reconcile to every machine the user owns the instant the
     // harness mode changes, so connected daemons pick up the new mode without a
@@ -540,7 +553,11 @@ pub async fn put_settings(
     }
 
     crate::plugin_host_token::strip(&mut data);
-    Ok(Json(SettingsPayload { version, data }))
+    Ok(Json(SettingsPayload { version, data, revision: Some(revision) }))
+}
+
+fn stale_copy() -> AppError {
+    AppError::new(StatusCode::CONFLICT, "settings changed since this copy was read")
 }
 
 #[cfg(test)]
@@ -553,8 +570,9 @@ mod tests {
     use super::{
         AppState, AuthContext, Extension, Json, SettingsPayload, State, StatusCode,
         clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_plugins,
-        clamp_secret_scrub, clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
-        harness_mode_to_adapter_token, put_settings, secret_scrub_of, whip_stop_phrases_of,
+        clamp_secret_scrub, clamp_session_emoji_prefix, clamp_whip_stop_phrases, get_settings,
+        harness_mode_of, harness_mode_to_adapter_token, put_settings, secret_scrub_of,
+        whip_stop_phrases_of,
     };
 
     #[test]
@@ -857,6 +875,7 @@ mod tests {
     async fn put_settings_rejects_a_bad_regex_with_the_parse_error() {
         let pool = sqlx::PgPool::connect_lazy("postgres://unused@localhost/none").unwrap();
         let body = SettingsPayload {
+            revision: None,
             version: 1,
             data: json!({
                 "secretScrubPatterns": [{ "name": "custom", "regex": "*_token", "enabled": true }]
@@ -870,5 +889,53 @@ mod tests {
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
         assert!(err.message().contains("*_token"), "{}", err.message());
         assert!(err.message().starts_with("invalid scrub regex"), "{}", err.message());
+    }
+
+    #[tokio::test]
+    async fn put_settings_refuses_a_copy_read_before_another_write() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "put_settings_refuses_a_copy_read_before_another_write",
+        ) else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+        let user_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO users (id, name, key_hash) VALUES ($1, 'settings revision test', $2)",
+        )
+        .bind(user_id)
+        .bind(user_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = || State(AppState::for_test(pool.clone()));
+        let put = |data: serde_json::Value, revision: Option<String>| {
+            put_settings(
+                state(),
+                Extension(ctx(user_id)),
+                Json(SettingsPayload { version: 1, data, revision }),
+            )
+        };
+
+        let first = put(json!({ "nav": "top" }), None).await.unwrap().0;
+        let read_by_stale_tab = get_settings(state(), Extension(ctx(user_id))).await.unwrap().0;
+        assert_eq!(read_by_stale_tab.revision, first.revision);
+
+        let second = put(json!({ "nav": "side" }), first.revision.clone()).await.unwrap().0;
+        assert_ne!(second.revision, first.revision);
+
+        let Err(refused) = put(json!({ "nav": "top" }), read_by_stale_tab.revision).await else {
+            panic!("a copy read before the second write must not overwrite it");
+        };
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let kept = get_settings(state(), Extension(ctx(user_id))).await.unwrap().0;
+        assert_eq!(kept.data["nav"], json!("side"));
+        assert_eq!(kept.revision, second.revision);
+
+        let unconditional = put(json!({ "nav": "top" }), None).await.unwrap().0;
+        assert_eq!(unconditional.data["nav"], json!("top"));
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(user_id).execute(&pool).await.unwrap();
     }
 }
