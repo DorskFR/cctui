@@ -20,12 +20,13 @@ export default defineJourney({
 		{
 			id: 'open',
 			route: SESSIONS,
-			target: 'new',
+			// A docked spawn panel replaces the New button.
+			target: { css: '[data-journey="new"], [data-journey="spawn"]' },
 			do: { kind: 'click' },
 			guide: 'next',
 			say: {
 				title: { en: 'Open the new-session dialog', fr: 'Ouvrir la fenêtre de nouvelle session' },
-				body: { en: 'Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile.', fr: 'Tout ce dont un run a besoin tient dans cette fenêtre : la machine, le dossier, l’instruction et le profil.' }
+				body: { en: 'Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile. If you docked it beside the list, it is already open.', fr: 'Tout ce dont un run a besoin tient dans cette fenêtre : la machine, le dossier, l’instruction et le profil. Si vous l’avez ancrée à côté de la liste, elle est déjà ouverte.' }
 			},
 			expect: [{ visible: 'spawn' }, { visible: 'spawn/prompt' }],
 			capture: 'dialog'

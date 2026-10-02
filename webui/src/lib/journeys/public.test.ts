@@ -184,6 +184,12 @@ describe('public journey set', () => {
 		}
 	});
 
+	it('never waits on the New button alone, which a docked spawn panel removes', () => {
+		for (const id of PUBLIC_JOURNEYS) {
+			for (const step of pub(id).steps) expect(step.target, `${id}/${step.id}`).not.toBe('new');
+		}
+	});
+
 	it('can open every anchored guide from the guides page', () => {
 		for (const id of PUBLIC_JOURNEYS) {
 			const ir = pub(id);
