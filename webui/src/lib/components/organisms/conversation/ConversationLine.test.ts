@@ -247,3 +247,16 @@ describe('fork select checkbox', () => {
 		expect(document.querySelector('.fork-check')).toBeNull();
 	});
 });
+
+describe('gateway tool block', () => {
+	it('renders a refused call as a danger notice, not an assistant bubble', async () => {
+		const el = await render(
+			line({ role: 'marker', html: undefined, text: 'x', toolBlock: { tool: 'Bash', term: 'a****e' } })
+		);
+		expect(el.classList.contains('blocked')).toBe(true);
+		expect(el.classList.contains('assistant')).toBe(false);
+		const notice = el.querySelector('.tool-block');
+		expect(notice?.textContent).toContain('Bash');
+		expect(notice?.textContent).toContain('a****e');
+	});
+});

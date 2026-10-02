@@ -90,6 +90,15 @@ function isPeerPreamble(line: string): boolean {
 	return PEER_PREAMBLES.some((p) => t.startsWith(p));
 }
 
+// The text the gateway's tool guard puts in place of a call it refused
+// (`toolguard::explanation`). The harness stores it as assistant prose.
+const TOOL_BLOCK_RE = /^⛔ cctui blocked an? (.+?) call: it contains a forbidden term \("([^"]*)"\)/;
+
+export function parseToolBlock(text: string): { tool: string; term: string } | null {
+	const m = TOOL_BLOCK_RE.exec(text.trimStart());
+	return m ? { tool: m[1], term: m[2] } : null;
+}
+
 export function parsePeerMessage(text: string): PeerMessage | null {
 	const tag = PEER_TAG_RE.exec(text);
 	if (!tag) return null;

@@ -189,6 +189,9 @@ export interface Line {
 	todos?: TodoItem[];
 	// Parsed `<task-notification>` — rendered as a system card, never as XML.
 	notification?: TaskNotification;
+	// A call the gateway's tool guard refused, in place of the assistant prose
+	// that announced it.
+	toolBlock?: { tool: string; term: string };
 	// Parsed `<command-*>` / `<local-command-*>` wrapper block.
 	command?: HarnessCommand;
 	// Turn summary attached to this (assistant) line, rendered under its bubble.

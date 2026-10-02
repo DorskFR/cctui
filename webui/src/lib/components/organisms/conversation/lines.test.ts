@@ -1179,3 +1179,26 @@ describe('tool result pairing', () => {
 		expect(resultAnswers({ tool: 'Read' }, legacy)).toBe(false);
 	});
 });
+
+const GUARD_TEXT =
+	'⛔ cctui blocked a Bash call: it contains a forbidden term ("a****e"). Rewrite it without internal references.';
+
+describe('gateway tool block', () => {
+	const block = text(GUARD_TEXT, 2);
+
+	it('turns the guard explanation into a block notice instead of assistant prose', () => {
+		const lines = buildLines([text('working on it', 1), block], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['assistant', 'marker']);
+		expect(lines[1].toolBlock).toEqual({ tool: 'Bash', term: 'a****e' });
+	});
+
+	it('never folds a block notice into a neighbouring marker', () => {
+		const lines = buildLines([text('· mode: plan', 1, 'system_marker'), block], ctx());
+		expect(lines).toHaveLength(2);
+	});
+
+	it('hides with the error filter, not the assistant one', () => {
+		expect(buildLines([block], only('assistant'))).toEqual([]);
+		expect(buildLines([block], only('error'))).toHaveLength(1);
+	});
+});

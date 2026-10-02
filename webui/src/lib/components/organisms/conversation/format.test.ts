@@ -6,6 +6,7 @@ import {
 	parseHarnessCommand,
 	parseTaskNotification,
 	parseTodos,
+	parseToolBlock,
 	quoteMarkdown,
 	stripAttachmentDecorations,
 	taskNotificationText,
@@ -301,5 +302,17 @@ describe('parseHarnessCommand', () => {
 			parseHarnessCommand('what does this mean?\n<command-name>/release</command-name>')
 		).toBeNull();
 		expect(parseHarnessCommand('')).toBeNull();
+	});
+});
+
+describe('parseToolBlock', () => {
+	it('reads the tool and masked term from the guard explanation', () => {
+		const text =
+			'⛔ cctui blocked a Bash call: it contains a forbidden term ("a****e"). Rewrite it without internal references.';
+		expect(parseToolBlock(text)).toEqual({ tool: 'Bash', term: 'a****e' });
+	});
+
+	it('ignores prose that merely mentions a block', () => {
+		expect(parseToolBlock('cctui blocked a Bash call earlier')).toBeNull();
 	});
 });

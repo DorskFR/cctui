@@ -107,6 +107,7 @@
 	class:failed={!!ln.failed}
 	class:queued={queueWaiting}
 	class:cancelled={ln.cancelled}
+	class:blocked={!!ln.toolBlock}
 >
 	<div class="lmeta row">
 		{#if selectMode && forkAnchor}
@@ -157,6 +158,10 @@
 	</div>
 	{#if ln.role === 'thinking'}
 		<ThinkingBubble html={ln.html} redacted={ln.redacted} />
+	{:else if ln.toolBlock}
+		<div class="bubble tool-block" role="note">
+			{m.conversation_tool_call_blocked({ tool: ln.toolBlock.tool, rule: ln.toolBlock.term })}
+		</div>
 	{:else if ln.role === 'marker'}
 		<MarkerBody texts={ln.markerTexts ?? [ln.text ?? '']} />
 	{:else if ln.notification}
@@ -212,6 +217,9 @@
 	}
 	.line.marker {
 		--bc: var(--text-faint);
+	}
+	.line.blocked {
+		--bc: var(--danger);
 	}
 	.line.tool,
 	.line.result {
@@ -310,6 +318,12 @@
 		border-color: var(--border);
 		color: var(--text-faint);
 		font-size: var(--fs-xs);
+	}
+	.line.marker .bubble.tool-block {
+		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+		color: var(--text);
+		font-size: var(--fs-sm);
 	}
 	/* The marker timestamp shows only on hover so a burst of them cannot
 	   dominate the log. */

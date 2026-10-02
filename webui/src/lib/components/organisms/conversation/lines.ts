@@ -15,6 +15,7 @@ import {
 	parseRoomJoined,
 	parsePlan,
 	parseTaskNotification,
+	parseToolBlock,
 	taskNotificationText,
 	parseTodos,
 	stampTurns,
@@ -241,6 +242,11 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 					e.turn_id,
 					scheduledAt
 				);
+			}
+			const toolBlock = e.kind ? null : parseToolBlock(e.content);
+			if (toolBlock) {
+				if (!ctx.visible('error')) return null;
+				return { role: 'marker', ts: Number(e.ts), text: e.content, toolBlock };
 			}
 			if (!ctx.visible(e.kind === 'attachment' ? 'attachment' : 'assistant')) return null;
 			return {
@@ -602,7 +608,7 @@ export function buildLines(
 			}
 			continue;
 		}
-		if (ln.role === 'marker' && prevLine?.role === 'marker') {
+		if (ln.role === 'marker' && prevLine?.role === 'marker' && !ln.toolBlock && !prevLine.toolBlock) {
 			prevLine.keepalive = prevLine.keepalive || ln.keepalive;
 			prevLine.markerTexts = [...(prevLine.markerTexts ?? []), ...(ln.markerTexts ?? [])];
 			prevLine.text = prevLine.markerTexts.join(' · ');

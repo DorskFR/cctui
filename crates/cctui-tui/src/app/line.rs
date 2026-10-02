@@ -194,6 +194,9 @@ fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
         _ if content.starts_with(transcript::USER_PREFIX) => {
             user_line(content[transcript::USER_PREFIX.len()..].trim_start(), *ts, *meta)?
         }
+        None if content.starts_with(TOOL_BLOCK_PREFIX) => {
+            ConversationLine::new(LineKind::Marker, tool_block_notice(content), *ts)
+        }
         _ => {
             let mut line = ConversationLine::new(LineKind::Assistant, content.clone(), *ts);
             line.footer = usage.as_ref().map(|u| TurnFooter {
@@ -208,6 +211,16 @@ fn text_line(event: &AgentEvent) -> Option<ConversationLine> {
     line.message_id.clone_from(message_id);
     line.turn_id = *turn_id;
     Some(line)
+}
+
+/// What the gateway's tool guard puts in place of a call it refused. The harness
+/// stores it as assistant prose; it is cctui speaking, not the model.
+const TOOL_BLOCK_PREFIX: &str = "⛔ cctui blocked a";
+
+/// The notice without the instruction addressed to the model.
+fn tool_block_notice(content: &str) -> String {
+    let notice = content.split_once(". Rewrite").map_or(content, |(head, _)| head);
+    notice.trim_start_matches('⛔').trim().to_owned()
 }
 
 /// Every marker becomes the chip the webui's `<img>` stands for; a body of
@@ -515,6 +528,16 @@ mod tests {
         assert_eq!(ln.text, "exit 101 · 3 failed");
         assert_eq!(ln.tool_use_id.as_deref(), Some("toolu_b"));
         assert!(ln.collapsible());
+    }
+
+    #[test]
+    fn a_gateway_tool_block_is_a_marker_not_assistant_prose() {
+        let ln = line(&text(
+            "⛔ cctui blocked a Bash call: it contains a forbidden term (\"a****e\"). Rewrite it without internal references.",
+            None,
+        ));
+        assert_eq!(ln.kind, LineKind::Marker);
+        assert_eq!(ln.text, "cctui blocked a Bash call: it contains a forbidden term (\"a****e\")");
     }
 
     #[test]
