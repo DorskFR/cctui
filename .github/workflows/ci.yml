@@ -470,6 +470,9 @@ jobs:
       - name: Map release tags to channels
         run: bash scripts/release-channel.test.sh
 
+      - name: The release gate refuses a commit without a green run
+        run: bash scripts/check-ci-green.test.sh
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
