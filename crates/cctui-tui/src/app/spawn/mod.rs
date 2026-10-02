@@ -397,9 +397,9 @@ impl SpawnForm {
     /// The provider behind the remembered account, which decides whether the
     /// model follows the account's declared models or the family lists.
     #[must_use]
-    pub fn provider(&self) -> Option<&str> {
+    pub const fn provider(&self) -> Option<&str> {
         let provider = self.fields.account_provider.as_str();
-        (!provider.is_empty()).then_some(provider)
+        if provider.is_empty() { None } else { Some(provider) }
     }
 
     /// Everything stopping a launch: the core rules plus each section's own.

@@ -26,7 +26,6 @@ use super::machines::MachineAction;
 use super::pins::PinAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
-use super::spawn::SpawnAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 

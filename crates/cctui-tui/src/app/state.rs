@@ -539,7 +539,7 @@ impl App {
     /// The modal strip or panel holding the keyboard, if any. A feature with
     /// its own context adds an arm here.
     #[must_use]
-    pub fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
+    pub const fn key_overlay(&self) -> Option<crate::config::keymap::Context> {
         use crate::config::keymap::Context;
         // A row-action prompt is modal over the list: it answers one key and
         // closes, so it outranks the strips that stay open while you work.
