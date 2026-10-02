@@ -1,6 +1,6 @@
 ---
 source: crates/cctui-tui/src/journeys.rs
-assertion_line: 497
+assertion_line: 496
 expression: "replay(\"follow-session\")"
 ---
 journey follow-session v1
@@ -20,7 +20,7 @@ step activity
 step actions WAIVED: a more-actions menu; every action behind it is a key in the TUI, enumerated by the `?` help overlay rather than a widget on the conversation.
 step kinds
   visible css:[data-journey="conversation"] [data-journey="line"]#0
-step line-actions WAIVED: per-line buttons appear on hover; the TUI acts on the focused line through keys (`m` pin, `y` copy, `b` bookmark), so there is no per-line widget to point at.
+step line-actions WAIVED: per-line buttons appear on hover; the TUI acts on the focused line through keys (`m` pin, `y` copy), so there is no per-line widget to point at.
 step filters
   visible filters/quick[assistant]
 step filter-menu

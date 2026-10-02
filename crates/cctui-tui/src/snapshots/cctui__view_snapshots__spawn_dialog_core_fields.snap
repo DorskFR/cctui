@@ -1,13 +1,13 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 365
+assertion_line: 265
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0┌ New session ─────────────────────────────────────────────────────────┐
- 1 Sessions  2│  [Machine]   Dispatch    Ctrl-D switches                             │tus
-   ▾ Needs inp│ Profile                                                              │
-▸    ● [claude│   no profiles yet — press + to save this setup                       │
-   ▾ Working (│  Machine  orion                                                      │
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1 Sessions  2 Overview  3 Machines   starred · live · dispatched  sort: activity ↓  group: status
+   ▾ Needs input (1)
+▸    ● [claude┌ New session ─────────────────────────────────────────────────────────┐
+   ▾ Working (│❯ Machine  orion                                                      │
      ● [claude│  Dir      /home/dev/infra                                            │
      ▾ subagen│  Name     —                                                          │
        ↳ ● [cl│  Harness  claude-code                                                │
@@ -16,8 +16,6 @@ expression: render_screen(&mut app)
               │  Mode     default                                                    │
               │           the account's own setting                                  │
               │  Prompt   —                                                          │
-              │ Account                                                              │
-              │   [auto (most allocation left)]                                      │
               │ Labels                                                               │
               │   no labels yet                                                      │
               │ Env                                                                  │
@@ -26,4 +24,6 @@ expression: render_screen(&mut app)
               │   none  (o add path)                                                 │
               │  Ctrl-S launch   Tab next   Esc cancel                               │
               └──────────────────────────────────────────────────────────────────────┘
+
+
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

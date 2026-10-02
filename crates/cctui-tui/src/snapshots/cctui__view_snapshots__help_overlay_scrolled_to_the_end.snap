@@ -1,29 +1,29 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 1091
+assertion_line: 919
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │  r           Refresh                          Row glyphs                                     │
-▸ │  a           Show or hide revoked rows          ●           working                          │
-  │  n           Create a user, token or key        ◐           stale or asleep                  │
-  │  e           Rename or relabel                  ○           idle                             │
-  │  d           Disable or enable this user        ☾           hibernated                       │
-  │  x           Revoke this credential             ↳           subagent                         │
-  │  R           Rotate this machine's key          ▸ / ▾       folded / open group              │
-  │  P           Hard-delete, typing the name       [name]      a label, tinted by its hue       │
-  │  Space       Grant or drop the scope            +N          more labels than fit             │
-  │  s           Re-grant this key's scopes         !           permission waiting on you        │
-  │  G           The dispatchers panel              ?           question waiting on you          │
-  │  Enter       Confirm                            P           plan waiting for approval        │
-  │  Esc         Back                               ●N          unread messages                  │
-  │  y           Copy the new secret                ⚡           auto-approve on                  │
-  │Instance                                         ⏸           account soft-limited             │
-  │  Ctrl+r      Refresh the instance status        ⚠           account traffic never seen       │
-  │  p           Check upstream for a release       ❄           cache cold, next turn re-reads   │
-  │  U           Update this server                 ⌂           a job cctui did not start        │
-  │  Enter       Confirm                            ✕reason     how it ended                     │
-  │  Esc         Back                               ⚙N age      tool calls, age of the last      │
+  │  Tab         Complete the field or value      Row glyphs                                     │
+▸ │  Enter       Open the result                    ●           working                          │
+  │  Esc         Clear the search                   ◐           stale or asleep                  │
+  │  Ctrl+a      Include archived sessions          ○           idle                             │
+  │  Ctrl+m      Load more results                  ☾           hibernated                       │
+  │Search and commands                              ↳           subagent                         │
+  │  Enter       Run it                             ▸ / ▾       folded / open group              │
+  │  Esc         Abandon it                         [name]      a label, tinted by its hue       │
+  │  Tab         Complete the path                  +N          more labels than fit             │
+  │Filter menu                                      !           permission waiting on you        │
+  │  F / q / Esc Choose which lines to show         ?           question waiting on you          │
+  │  a           Show every category                P           plan waiting for approval        │
+  │  r           Back to the default filter         ●N          unread messages                  │
+  │  Space / En… Show or hide this category         ⚡           auto-approve on                  │
+  │  j / ↓       Next category                      ⏸           account soft-limited             │
+  │  k / ↑       Previous category                  ⚠           account traffic never seen       │
+  │Prompt history                                   ❄           cache cold, next turn re-reads   │
+  │  Esc         Close the prompt list              ⌂           a job cctui did not start        │
+  │  Ctrl+n / ↓  Next prompt                        ✕reason     how it ended                     │
+  │  Ctrl+p / ↑  Previous prompt                    ⚙N age      tool calls, age of the last      │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit
