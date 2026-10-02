@@ -71,3 +71,44 @@ describe("settings debounced write", () => {
     expect(body.data.sessionList.sort).toBe("created");
   });
 });
+
+describe("settings resync when the tab comes back", () => {
+  let get: ReturnType<typeof vi.spyOn>;
+  const server = (sort: string) => ({ version: 1, data: { sessionList: { sort } } });
+
+  beforeEach(async () => {
+    get = vi.spyOn(api, "get").mockResolvedValue(server("name"));
+    await settings.load();
+    settings.flush();
+    await vi.runAllTimersAsync();
+    expect(settings.saveStatus).not.toBe("pending");
+  });
+
+  afterEach(() => get.mockRestore());
+
+  it("re-reads what another tab saved before this one can write it back", async () => {
+    get.mockResolvedValue(server("created"));
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(settings.state.sessionList.sort).toBe("created"));
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("keeps this tab's pending write instead of re-reading over it", async () => {
+    settings.setSessionList({ sort: "name" });
+    get.mockClear();
+    window.dispatchEvent(new Event("focus"));
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("drops a re-read that lands after a local edit", async () => {
+    let resolve: (v: unknown) => void = () => {};
+    get.mockReturnValue(new Promise((r) => (resolve = r)));
+    window.dispatchEvent(new Event("focus"));
+    expect(get).toHaveBeenCalled();
+    settings.setSessionList({ sort: "name" });
+    resolve(server("created"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settings.state.sessionList.sort).toBe("name");
+  });
+});
+

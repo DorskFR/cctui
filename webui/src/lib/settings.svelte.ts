@@ -706,6 +706,7 @@ class Settings {
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private loading: Promise<void> | null = null;
+  private edits = 0;
   // Save indicator for the Settings screen: `pending` while a debounced PUT is
   // queued or in flight, `saved` once the server acknowledged it (with the
   // time), `error` when the PUT failed (the local cache still holds the value).
@@ -729,9 +730,11 @@ class Settings {
       }
       const flush = () => this.flush();
       window.addEventListener("pagehide", flush);
+      window.addEventListener("focus", () => this.resync());
       // Mobile browsers may never fire `pagehide` before killing the tab.
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") flush();
+        else this.resync();
       });
     }
   }
@@ -745,9 +748,18 @@ class Settings {
     return this.loading;
   }
 
-  private async fetchServerCopy(): Promise<void> {
+  /** A save PUTs the whole blob, so a tab still holding what it loaded earlier
+   *  would write that back over another tab's changes. Coming back to a tab
+   *  re-reads the server copy, unless this tab has a write of its own pending. */
+  private resync() {
+    if (!auth.isAuthed || !this.loading || this.saveStatus === "pending") return;
+    void this.fetchServerCopy(this.edits);
+  }
+
+  private async fetchServerCopy(edits?: number): Promise<void> {
     try {
       const payload = await api.get<SettingsPayload>("/settings");
+      if (edits !== undefined && (edits !== this.edits || this.saveStatus === "pending")) return;
       const migrated = migrate(
         payload.data,
         payload.version ?? CURRENT_VERSION,
@@ -815,6 +827,7 @@ class Settings {
 
   /** Persist after a mutation: cache immediately, debounce the server PUT. */
   private persist() {
+    this.edits++;
     this.writeCache();
     this.scheduleSave();
   }
