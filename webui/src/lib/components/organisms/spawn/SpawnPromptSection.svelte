@@ -22,6 +22,7 @@
 		recentDirs={sf.recentDirs}
 		onsubmit={sf.submit}
 		onfiles={sf.addFiles}
+		onlongpaste={sf.addPaste}
 	/>
 	<ProfileList
 		profiles={sf.profiles}

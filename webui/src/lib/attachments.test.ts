@@ -9,6 +9,8 @@ import {
 	mergeFiles,
 	mergeFilesRenamed,
 	nextPasteIndex,
+	maskedPaste,
+	PASTE_MASK_CHARS,
 	prefixImageTokens,
 	rewriteFileTokens
 } from './attachments';
@@ -70,6 +72,21 @@ describe('attachFiles', () => {
 		const { files, text } = attachFiles([], 'hello', [f('a.txt'), f('b.txt')], false);
 		expect(files.map((x) => x.name)).toEqual(['a.txt', 'b.txt']);
 		expect(text).toBe('hello');
+	});
+});
+
+describe('maskedPaste', () => {
+	it('collapses a long paste into the next paste-N.txt', async () => {
+		const text = 'y'.repeat(PASTE_MASK_CHARS);
+		const file = maskedPaste(text, [f('paste-1.txt')], '');
+		expect(file?.name).toBe('paste-2.txt');
+		expect(file?.type).toBe('text/plain');
+		expect(await file?.text()).toBe(text);
+	});
+
+	it('leaves a short or empty paste alone', () => {
+		expect(maskedPaste('y'.repeat(PASTE_MASK_CHARS - 1), [], '')).toBeNull();
+		expect(maskedPaste('', [], '')).toBeNull();
 	});
 });
 

@@ -7,7 +7,7 @@ import {
 	attachFiles,
 	fileCapError,
 	makeClipboardFiles,
-	nextPasteIndex,
+	maskedPaste,
 	prefixImageTokens,
 	removeFileByName,
 	rewriteFileTokens
@@ -17,10 +17,6 @@ import { uploadCaps } from '$lib/uploadCaps.svelte';
 import { imageAttachments } from '$lib/imageAttachments.svelte';
 import { toasts } from '$lib/toast.svelte';
 import { m } from '$lib/paraglide/messages';
-
-// Pasted text at least this long collapses into a `paste-N.txt` attachment
-// (the Claude Code trick) instead of flooding the textarea.
-const PASTE_MASK_CHARS = 2000;
 
 export interface ComposerAttachmentsOpts {
 	draftKey: () => string;
@@ -108,12 +104,11 @@ export class ComposerAttachments {
 			return;
 		}
 		const text = cd.getData('text/plain');
-		if (!text || text.length < PASTE_MASK_CHARS) return;
+		const paste = maskedPaste(text, this.files, this.#o.input(), this.#o.stagedNames());
+		if (!paste) return;
 		e.preventDefault();
-		const name = `paste-${nextPasteIndex(this.files, this.#o.input(), this.#o.stagedNames())}.txt`;
-		this.add([new File([text], name, { type: 'text/plain' })], true);
-		const lines = text.split('\n').length;
-		toasts.ok(m.composer_large_paste({ name, lines }));
+		this.add([paste], true);
+		toasts.ok(m.composer_large_paste({ name: paste.name, lines: text.split('\n').length }));
 	}
 
 	/** Upload the staged files and fold their paths under `text`. Returns the

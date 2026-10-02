@@ -29,7 +29,7 @@ import {
 	normalizeDir
 } from '$lib/drafts';
 import { recordProfileUse, PROFILE_USES } from '$lib/spawnMemory';
-import { attachFiles, removeFileByName, fileCapError } from '$lib/attachments';
+import { attachFiles, removeFileByName, fileCapError, maskedPaste } from '$lib/attachments';
 import { uploadCaps } from '$lib/uploadCaps.svelte';
 import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
 import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '$lib/followup';
@@ -50,6 +50,7 @@ import {
 } from './spawnSubmit';
 
 const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
+const PERSIST_DELAY_MS = 300;
 
 export interface SpawnFormOptions {
 	onclose: () => void;
@@ -115,6 +116,7 @@ export class SpawnForm {
 	private profileMachineApplied: string | null = null;
 	private seededDefault = false;
 	private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+	private persistTimer: ReturnType<typeof setTimeout> | null = null;
 	autosaving = false;
 	private autosaveSnapshot: string | null = null;
 	readonly followupParent: string | null;
@@ -264,22 +266,48 @@ export class SpawnForm {
 				})
 				.catch(() => {});
 		});
-		$effect(() => this.persistSlot());
+		// Serializing a long prompt costs O(n): never on the keystroke itself.
+		$effect(() => {
+			this.watched();
+			void this.draftId;
+			void this.filesRestored;
+			if (this.persistTimer) clearTimeout(this.persistTimer);
+			this.persistTimer = setTimeout(() => this.flushSlot(), PERSIST_DELAY_MS);
+		});
+		$effect(() => () => {
+			if (this.persistTimer) this.flushSlot();
+		});
 		$effect(() => this.restoreFiles());
 		$effect(() => {
-			const snapshot = JSON.stringify({
-				form: this.form,
-				keys: this.envRows.map((r) => r.key),
-				names: this.files.map((f) => f.name)
-			});
-			if (snapshot === this.autosaveSnapshot) return;
-			const first = this.autosaveSnapshot === null;
-			this.autosaveSnapshot = snapshot;
-			if (first) return;
+			const state = this.watched();
+			if (this.autosaveSnapshot === null) {
+				this.autosaveSnapshot = JSON.stringify(state);
+				return;
+			}
 			if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
-			this.autosaveTimer = setTimeout(() => void autosave(this), this.autosaveDelay());
+			this.autosaveTimer = setTimeout(() => {
+				this.autosaveTimer = null;
+				const snapshot = JSON.stringify(state);
+				if (snapshot === this.autosaveSnapshot) return;
+				this.autosaveSnapshot = snapshot;
+				void autosave(this);
+			}, this.autosaveDelay());
 		});
 		$effect(() => () => this.cancelAutosave());
+	}
+
+	private watched() {
+		return {
+			form: $state.snapshot(this.form),
+			keys: this.envRows.map((r) => r.key),
+			names: this.files.map((f) => f.name)
+		};
+	}
+
+	private flushSlot() {
+		if (this.persistTimer) clearTimeout(this.persistTimer);
+		this.persistTimer = null;
+		this.persistSlot();
 	}
 
 	private persistSlot() {
@@ -363,6 +391,8 @@ export class SpawnForm {
 
 	private resetForm() {
 		this.cancelAutosave();
+		if (this.persistTimer) clearTimeout(this.persistTimer);
+		this.persistTimer = null;
 		this.draftId = null;
 		drafts.clear(this.slotKey);
 		drafts.clear(SPAWN_SLOT);
@@ -398,6 +428,16 @@ export class SpawnForm {
 			},
 			(file) => toasts.error(m.attachments_compression_failed({ name: file.name }))
 		);
+	};
+	/** A long text paste stages as a `paste-N.txt` attachment; false leaves the
+	 *  paste to the field. */
+	addPaste = (text: string): boolean => {
+		if (this.busy) return false;
+		const paste = maskedPaste(text, this.files, this.form.prompt);
+		if (!paste) return false;
+		this.addFiles([paste]);
+		toasts.ok(m.composer_large_paste({ name: paste.name, lines: text.split('\n').length }));
+		return true;
 	};
 	removeFile = (name: string) => {
 		this.files = removeFileByName(this.files, name);

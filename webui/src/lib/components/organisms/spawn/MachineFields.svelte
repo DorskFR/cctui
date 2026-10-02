@@ -33,7 +33,8 @@
 		machines,
 		recentDirs,
 		onsubmit,
-		onfiles
+		onfiles,
+		onlongpaste
 	}: {
 		form: Form;
 		machines: MachineRow[];
@@ -42,6 +43,8 @@
 		// Files pasted into the prompt (a screenshot, a copied file) go to the
 		// attachments; text pastes are left to the browser.
 		onfiles?: (files: File[]) => void;
+		/** A text paste: true when it was staged as an attachment instead. */
+		onlongpaste?: (text: string) => boolean;
 	} = $props();
 
 	// `#` session-mention popover on the prompt (see SessionMention).
@@ -58,11 +61,14 @@
 
 	const clipboardFiles = makeClipboardFiles();
 	function onPromptPaste(e: ClipboardEvent) {
-		if (!onfiles || !e.clipboardData) return;
-		const files = clipboardFiles(e.clipboardData);
-		if (files.length === 0) return;
-		e.preventDefault();
-		onfiles(files);
+		if (!e.clipboardData) return;
+		const files = onfiles ? clipboardFiles(e.clipboardData) : [];
+		if (files.length > 0) {
+			e.preventDefault();
+			onfiles?.(files);
+			return;
+		}
+		if (onlongpaste?.(e.clipboardData.getData('text/plain'))) e.preventDefault();
 	}
 
 	// The machine picker and the path share one control; `form.working_dir` is

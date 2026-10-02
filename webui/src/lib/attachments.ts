@@ -86,6 +86,23 @@ export function nextPasteIndex(files: File[], text: string, used: Iterable<strin
 	return max + 1;
 }
 
+/** Pasted text at least this long collapses into a `paste-N.txt` attachment
+ *  (the Claude Code trick) instead of flooding the textarea. */
+export const PASTE_MASK_CHARS = 2000;
+
+/** The `paste-N.txt` file a long text paste collapses into, or null when the
+ *  paste is short enough to land in the field. */
+export function maskedPaste(
+	text: string,
+	files: File[],
+	draft: string,
+	used: Iterable<string> = []
+): File | null {
+	if (!text || text.length < PASTE_MASK_CHARS) return null;
+	const name = `paste-${nextPasteIndex(files, draft, used)}.txt`;
+	return new File([text], name, { type: 'text/plain' });
+}
+
 /** Point each `[name]` token at the name staging actually gave the file.
  *  `paths` is the staged absolute path per entry of `files`, in order; a clash
  *  is renamed server-side (`paste-1.txt` → `paste-1-1.txt`) and a token left
