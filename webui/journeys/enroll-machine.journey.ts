@@ -36,6 +36,7 @@ export default defineJourney({
 			id: 'copy',
 			target: 'enroll-copy',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Copy it, then run it over there', fr: 'Copiez-la, puis exécutez-la là-bas' },
 				body: { en: 'Take the copy now. It has to run on the computer that will host your agents, not in this browser. Install it as a service afterwards and the machine rejoins the fleet by itself after a reboot.', fr: 'Copiez-la maintenant. Elle doit s’exécuter sur l’ordinateur qui hébergera vos agents, pas dans ce navigateur. Installez-la ensuite comme service et la machine rejoindra seule la flotte après un redémarrage.' }
@@ -55,6 +56,7 @@ export default defineJourney({
 			id: 'user',
 			target: 'user[{fixture.me}]',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Open your own user', fr: 'Ouvrez votre utilisateur' },
 				body: { en: 'Everything attached to an identity lives here: the keys it signs in with, the machines it enrolled, its tokens, and the AI accounts its agents spend.', fr: 'Tout ce qui est rattaché à une identité se trouve ici : ses clés de connexion, les machines qu’elle a enrôlées, ses jetons, et les comptes IA que ses agents dépensent.' }

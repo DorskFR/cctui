@@ -48,6 +48,7 @@ export default defineJourney({
 			id: 'add',
 			target: 'new-account',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Add your first account', fr: 'Ajoutez votre premier compte' },
 				body: { en: 'Open the dialog. You will name the credential, pick its provider and paste the key — nothing leaves this instance, and the key is encrypted before it is stored.', fr: 'Ouvrez la boîte de dialogue. Vous nommerez l’identifiant, choisirez son fournisseur et collerez la clé — rien ne quitte cette instance, et la clé est chiffrée avant d’être stockée.' }
@@ -58,6 +59,7 @@ export default defineJourney({
 			id: 'close',
 			target: CLOSE,
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Close it for now', fr: 'Fermez-la pour l’instant' },
 				body: { en: 'Nothing is saved until you submit, so dismissing it changes nothing. Come back with a real key and the board will have its first card — then a session has something to run on.', fr: 'Rien n’est enregistré avant validation : fermer ne change rien. Revenez avec une vraie clé et le tableau aura sa première carte — une session aura alors de quoi tourner.' }

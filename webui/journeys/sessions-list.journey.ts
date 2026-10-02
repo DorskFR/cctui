@@ -59,6 +59,7 @@ export default defineJourney({
 			when: { viewport: 'desktop' },
 			target: 'view',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Try it: dense rows or roomy cards', fr: 'Essayez : lignes denses ou cartes aérées' },
 				body: { en: 'Click it. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits — click again if you prefer the other.', fr: 'Cliquez. Les lignes affichent plus de la flotte ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Votre choix est conservé d’une visite à l’autre — recliquez si vous préférez l’autre.' }
@@ -76,8 +77,8 @@ export default defineJourney({
 		},
 		{
 			id: 'search',
+			// Pointing only: a fill step ends on the first keystroke, before the user has seen the list narrow.
 			target: BOX,
-			do: { kind: 'fill', value: { $param: 'var.query' } },
 			say: {
 				title: { en: 'And you can always just type', fr: 'Et vous pouvez toujours taper' },
 				body: { en: 'Type anything here and the list narrows as you go. There is a whole query language behind this box — conditions on machine, label and status — and a later guide is devoted to it.', fr: 'Tapez n’importe quoi ici et la liste se réduit à mesure. Il y a tout un langage de requête derrière cette boîte — conditions sur machine, libellé et statut — et un guide ultérieur y est consacré.' }
@@ -88,6 +89,7 @@ export default defineJourney({
 			id: 'clear',
 			target: BOX,
 			do: { kind: 'fill', value: { $param: 'var.blank' } },
+			guide: 'next',
 			say: {
 				title: { en: 'Empty it to get everyone back', fr: 'Videz-la pour tout retrouver' },
 				body: { en: 'Clear the box and the whole fleet returns, grouped as before. Nothing you did here changed a single session — this screen is a lens, never a lever.', fr: 'Videz la boîte et toute la flotte revient, regroupée comme avant. Rien de ce que vous avez fait ici n’a modifié une session — cet écran est une lentille, jamais un levier.' }

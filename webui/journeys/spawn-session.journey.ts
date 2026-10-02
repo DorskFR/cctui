@@ -22,6 +22,7 @@ export default defineJourney({
 			route: SESSIONS,
 			target: 'new',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Open the new-session dialog', fr: 'Ouvrir la fenêtre de nouvelle session' },
 				body: { en: 'Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile.', fr: 'Tout ce dont un run a besoin tient dans cette fenêtre : la machine, le dossier, l’instruction et le profil.' }
@@ -33,6 +34,7 @@ export default defineJourney({
 			id: 'where',
 			target: 'where',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Pick where it runs', fr: 'Choisir où le run s’exécute' },
 				body: { en: 'Choose the machine, then the folder. That folder is the agent’s whole world — it reads and edits what is inside it and nothing else, so point it at the project you actually mean. Set them now.', fr: 'Choisissez la machine, puis le dossier. Ce dossier est tout l’univers de l’agent — il y lit et modifie les fichiers, et rien d’autre : visez donc le bon projet. Réglez-les maintenant.' }
@@ -62,6 +64,7 @@ export default defineJourney({
 			id: 'profiles',
 			target: 'profiles',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'The profile decides how it thinks', fr: 'Le profil décide de sa façon de penser' },
 				body: { en: 'A profile bundles four things: the harness, the model, how hard it reasons, and how much it may do without asking. Pick one rather than setting all four every launch — keep a cheap one for throwaway work and a careful one for the rest.', fr: 'Un profil regroupe quatre choses : le harnais, le modèle, l’intensité du raisonnement et ce qu’il peut faire sans demander. Choisissez-en un plutôt que de régler les quatre à chaque lancement — gardez-en un bon marché pour le jetable et un prudent pour le reste.' }

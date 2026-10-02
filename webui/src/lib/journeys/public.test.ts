@@ -231,6 +231,21 @@ describe('public journey set', () => {
 		}
 	});
 
+	it('lets Enter advance every click step, except the one that saves for real', () => {
+		const clickOnly = PUBLIC_JOURNEYS.flatMap((id) =>
+			pub(id)
+				.steps.filter((s) => s.do.kind === 'click' && s.guide !== 'next')
+				.map((s) => `${id}/${s.id}`)
+		);
+		expect(clickOnly).toEqual(['spawn-session/save']);
+	});
+
+	it('lets the user try the sessions search without the step ending under them', () => {
+		const search = pub('sessions-list').steps.find((s) => s.id === 'search')!;
+		expect(search.do.kind).toBe('none');
+		expect(search.guide).toBe('next');
+	});
+
 	it('marks no public step optional, which guide mode cannot honour', () => {
 		// `optional` is only consulted when resolving a target times out, and the
 		// human actor resolves without a timeout — so it skips nothing and the
