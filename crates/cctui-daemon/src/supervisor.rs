@@ -47,6 +47,20 @@ const PING_INTERVAL: Duration = Duration::from_secs(20);
 /// "daemon offline" until a manual restart.
 const LIVENESS_TIMEOUT: Duration = Duration::from_mins(1);
 
+/// Ceiling on one WS send. A send blocking longer than the liveness window is a
+/// dead peer whose socket buffer filled: without this bound it starves the ping
+/// arm of the same `select!`, and half-open detection — which only runs on that
+/// arm — never fires.
+const SEND_TIMEOUT: Duration = LIVENESS_TIMEOUT;
+
+/// Ceiling on the TLS handshake and WS upgrade. A stalled connect otherwise
+/// hangs the reconnect loop forever, with no backoff attempt to show for it.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Shutdown is already past the point of useful work: a dead socket must not
+/// hold teardown open until SIGKILL.
+const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Micro-batch window: adapter events queued within this window are
 /// coalesced into one frame before compress+chunk, so cross-event redundancy
 /// compresses far better. Heartbeats and control frames bypass it.
@@ -74,6 +88,26 @@ const ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_SIGNAL_BUFFER: usize = 8;
 
 /// Sleep until `deadline`, or never when there's nothing buffered to flush.
+/// One WS send, bounded by [`SEND_TIMEOUT`]. An expiry is an error so the
+/// caller tears the connection down and the reconnect loop takes over.
+async fn send_bounded(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
+    match tokio::time::timeout(SEND_TIMEOUT, sink.send(msg)).await {
+        Ok(res) => res.map_err(anyhow::Error::new),
+        Err(_) => anyhow::bail!(
+            "WS send blocked for {}s — treating the connection as dead",
+            SEND_TIMEOUT.as_secs()
+        ),
+    }
+}
+
+/// Same, on the shorter shutdown budget.
+async fn send_shutdown(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
+    match tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, sink.send(msg)).await {
+        Ok(res) => res.map_err(anyhow::Error::new),
+        Err(_) => anyhow::bail!("send did not complete within {SHUTDOWN_FLUSH_TIMEOUT:?}"),
+    }
+}
+
 async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(d) => tokio::time::sleep_until(d).await,
@@ -282,7 +316,18 @@ impl Supervisor {
         let url = self.client.daemon_ws_url();
         tracing::info!(%url, "connecting to daemon WS");
         let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
-        let (ws, _) = tokio_tungstenite::connect_async(request).await?;
+        let (ws, _) = match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        {
+            Ok(res) => res?,
+            Err(_) => anyhow::bail!(
+                "daemon WS connect did not complete within {}s",
+                CONNECT_TIMEOUT.as_secs()
+            ),
+        };
         let (mut sink, mut stream) = ws.split();
 
         // Out-of-band frames the supervisor itself produces (currently the
@@ -347,12 +392,12 @@ impl Supervisor {
                             let subsystem =
                                 if retransmit { Subsystem::Retransmit } else { Subsystem::Forward };
                             self.counters.add(subsystem, payload.len() as u64);
-                            sink.send(Message::Text(payload.into())).await?;
+                            send_bounded(&mut sink, Message::Text(payload.into())).await?;
                         }
                     }
                     Some(frame) = frame_up_rx.recv() => {
                         let payload = serde_json::to_string(&frame)?;
-                        sink.send(Message::Text(payload.into())).await?;
+                        send_bounded(&mut sink, Message::Text(payload.into())).await?;
                     }
                     // Pause new events while a chunked transfer is in flight so a
                     // single WS carries one large transfer at a time.
@@ -411,9 +456,13 @@ impl Supervisor {
             && let Some(msg) = prepare_serialized(coalesce(frames)).into_message()
         {
             self.counters.add(Subsystem::Forward, msg.len() as u64);
-            let _ = sink.send(msg).await;
+            if let Err(err) = send_shutdown(sink, msg).await {
+                tracing::warn!(%err, "shutdown tail did not reach the wire");
+            }
         }
-        let _ = sink.send(Message::Close(None)).await;
+        if let Err(err) = send_shutdown(sink, Message::Close(None)).await {
+            tracing::debug!(%err, "WS close frame not sent");
+        }
     }
 
     fn record_chunk_ack(
@@ -459,11 +508,11 @@ impl Supervisor {
             }
             Prepared::Frame(text) => {
                 self.counters.add(Subsystem::Forward, text.len() as u64);
-                sink.send(Message::Text(text.into())).await?;
+                send_bounded(sink, Message::Text(text.into())).await?;
             }
             Prepared::Binary(bytes) => {
                 self.counters.add(Subsystem::Forward, bytes.len() as u64);
-                sink.send(Message::Binary(bytes.into())).await?;
+                send_bounded(sink, Message::Binary(bytes.into())).await?;
             }
             Prepared::Oversized(len) => {
                 tracing::warn!(
@@ -491,7 +540,7 @@ impl Supervisor {
                 last_rx.elapsed().as_secs()
             );
         }
-        sink.send(Message::Ping(Vec::new().into())).await?;
+        send_bounded(sink, Message::Ping(Vec::new().into())).await?;
         // The WS Ping above keeps the socket warm, but the server only
         // advances `machines.last_seen_at` on an application frame; this
         // Heartbeat gives it a per-cadence signal to derive the machine
@@ -512,7 +561,7 @@ impl Supervisor {
         };
         let payload = serde_json::to_string(&hb)?;
         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
-        sink.send(Message::Text(payload.into())).await?;
+        send_bounded(sink, Message::Text(payload.into())).await?;
         self.counters.persist();
         Ok(())
     }
@@ -597,14 +646,24 @@ impl Supervisor {
                     tracing::warn!(%adapter_id, reason, "rejecting command");
                     command.command_id().map(|id| (id, format!("adapter {adapter_id} {reason}")))
                 });
-                // Silent drop would leave the server-side waiter hanging.
-                // Best-effort for the same reason as above: the event channel
-                // is drained by this very loop.
+                // A silent drop leaves the server-side waiter hanging, so a full
+                // event channel falls through to the WS lane rather than giving
+                // up. Neither path may block: this runs in the transport loop.
                 if let Some((command_id, error)) = error {
-                    let _ = event_tx.try_send((
-                        adapter_id,
-                        AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) },
-                    ));
+                    let event =
+                        AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) };
+                    if let Err(err) = event_tx.try_send((adapter_id.clone(), event)) {
+                        let (mpsc::error::TrySendError::Full((adapter_id, event))
+                        | mpsc::error::TrySendError::Closed((adapter_id, event))) = err;
+                        if let Err(err) =
+                            frame_up_tx.try_send(DaemonFrameUp::Event { adapter_id, event })
+                        {
+                            tracing::error!(
+                                %err,
+                                "command rejection reached neither lane; the caller will time out"
+                            );
+                        }
+                    }
                 }
             }
             DaemonFrameDown::ResumeMarks { session_marks, archived } => {
@@ -2035,6 +2094,35 @@ mod tests {
 
     /// A `ResumeMarks` archiving more jobs than the 64-deep command channel
     /// holds must not block the transport loop: pings keep flowing.
+    /// The paused clock makes the connect ceiling deterministic: nothing else
+    /// can make progress, so time advances to the timeout rather than elapsing.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_ws_upgrade_fails_the_connect_instead_of_hanging() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stall = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+            drop(sock);
+        });
+
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        let err = supervisor
+            .run_once(CancellationToken::new(), &mut running, &event_tx, &mut event_rx)
+            .await
+            .expect_err("a stalled upgrade must fail the connect");
+        assert!(err.to_string().contains("did not complete within"), "{err}");
+        stall.abort();
+    }
+
     #[tokio::test]
     async fn resume_marks_backlog_does_not_starve_pings() {
         use futures_util::{SinkExt, StreamExt};
