@@ -9,18 +9,20 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"route": "/sessions",
-			"target": "new",
+			"target": {
+				"css": "[data-journey=\"new\"], [data-journey=\"spawn\"]"
+			},
 			"say": {
 				"title": {
 					"en": "Open the new-session dialog",
 					"fr": "Ouvrir la fenêtre de nouvelle session"
 				},
 				"body": {
-					"en": "Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile.",
-					"fr": "Tout ce dont un run a besoin tient dans cette fenêtre : la machine, le dossier, l’instruction et le profil."
+					"en": "Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile. If you docked it beside the list, it is already open.",
+					"fr": "Tout ce dont un run a besoin tient dans cette fenêtre : la machine, le dossier, l’instruction et le profil. Si vous l’avez ancrée à côté de la liste, elle est déjà ouverte."
 				}
 			},
 			"expect": [
@@ -40,7 +42,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": "where",
 			"say": {
@@ -109,7 +111,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": "profiles",
 			"say": {
@@ -151,7 +153,9 @@
 			},
 			"expect": [
 				{
-					"hidden": "spawn"
+					"hidden": {
+						"css": "dialog[open] [data-journey=\"spawn\"]"
+					}
 				}
 			],
 			"capture": {
