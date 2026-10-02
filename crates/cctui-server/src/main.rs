@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
     plugin_store::init(&state.pool, &state.plugins).await;
     start_background_tasks(&state).await;
     let app = build_app(&state, &config, &auth_config);
-    spawn_sweeps(state);
+    spawn_sweeps(&state);
     serve(&config, app).await
 }
 
@@ -108,7 +108,7 @@ fn build_http_client() -> reqwest::Client {
 }
 
 const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const HTTP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const HTTP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -463,7 +463,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
 }
 
-fn spawn_sweeps(state: AppState) {
+fn spawn_sweeps(state: &AppState) {
     spawn_periodic(REAPER_PERIOD, {
         let state = state.clone();
         move || webhook_sweep(state.clone())
@@ -496,7 +496,7 @@ fn spawn_sweeps(state: AppState) {
             async move { plugin_store::sync_or_warn(&state.pool, &state.plugins).await }
         }
     });
-    spawn_reaper_sweeps(&state);
+    spawn_reaper_sweeps(state);
 }
 
 /// Fits inside Kubernetes' default 30 s termination grace period.
@@ -509,7 +509,7 @@ async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
     serve_until(listener, app, shutdown_signal(), SHUTDOWN_DRAIN).await
 }
 
-/// The drain is bounded: WebSockets and streams can outlast any wait.
+/// The drain is bounded: `WebSockets` and streams can outlast any wait.
 async fn serve_until(
     listener: tokio::net::TcpListener,
     app: Router,
@@ -534,9 +534,10 @@ async fn serve_until(
     }
     tracing::info!("shutdown signal received, draining connections");
     stop.notify_one();
-    match tokio::time::timeout(drain, server).await {
-        Ok(res) => res?,
-        Err(_) => tracing::warn!(?drain, "connections still open after the drain window; exiting"),
+    if let Ok(res) = tokio::time::timeout(drain, server).await {
+        res?;
+    } else {
+        tracing::warn!(?drain, "connections still open after the drain window; exiting");
     }
     Ok(())
 }
@@ -788,7 +789,7 @@ async fn demote_idle_registered(state: &AppState) {
 
 /// Soft-delete ephemeral (dispatch/worker) machines that have gone quiet past
 /// the TTL — pods that died before self-deenroll. Mirrors the self-deenroll
-/// write (revoked_at + deleted_at) so the row survives for historical session
+/// write (`revoked_at` + `deleted_at`) so the row survives for historical session
 /// FKs but drops out of every listing.
 async fn reap_ephemeral_machines(state: &AppState) {
     if state.config.ephemeral_machine_ttl_secs == 0 {
