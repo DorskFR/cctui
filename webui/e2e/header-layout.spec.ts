@@ -28,7 +28,7 @@ async function openSessions(page: Page, viewport: { width: number; height: numbe
 	await page.waitForTimeout(500);
 }
 
-test('desktop: the version block clears every control in the tail (CCT-1013)', async ({ page }) => {
+test('desktop: the version block clears every control in the tail (CCT-1013)', async ({ page }, testInfo) => {
 	await openSessions(page, DESKTOP);
 
 	const vers = page.locator('header.hd .vers');
@@ -50,12 +50,12 @@ test('desktop: the version block clears every control in the tail (CCT-1013)', a
 	expect(hits.map((h) => h.label)).toEqual([]);
 
 	await page.screenshot({
-		path: `${process.env.HEADER_E2E_SHOTS}/desktop-1280.png`,
+		path: testInfo.outputPath('desktop-1280.png'),
 		clip: { x: 0, y: 0, width: DESKTOP.width, height: 80 }
 	});
 });
 
-test('mobile: the version block yields instead of overlapping (CCT-1013)', async ({ page }) => {
+test('mobile: the version block yields instead of overlapping (CCT-1013)', async ({ page }, testInfo) => {
 	await openSessions(page, MOBILE);
 
 	const vers = page.locator('header.hd .vers');
@@ -67,7 +67,7 @@ test('mobile: the version block yields instead of overlapping (CCT-1013)', async
 	for (const v of all) for (const n of neighbours) expect(intersects(v.box, n.box)).toBe(false);
 
 	await page.screenshot({
-		path: `${process.env.HEADER_E2E_SHOTS}/mobile-390.png`,
+		path: testInfo.outputPath('mobile-390.png'),
 		clip: { x: 0, y: 0, width: MOBILE.width, height: 80 }
 	});
 });

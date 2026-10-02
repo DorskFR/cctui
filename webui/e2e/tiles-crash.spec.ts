@@ -11,8 +11,6 @@ const SESSIONS = Array.from({ length: N }, (_, i) => ({
 	todos: [{ content: 'wire the cap', status: 'in_progress' }]
 }));
 
-const SHOTS = '/home/dorsk/.claude/artifacts/cctui-wave-023/tiles-crash';
-
 // Deliberately re-derives paneCapacity rather than importing it: the cap must
 // hold against the area the browser really laid out, not against the same
 // numbers the app reasoned from.
@@ -83,7 +81,7 @@ for (const [w, h, tag, want] of [
 	[3440, 1440, '3440x1440-ultrawide', 10],
 	[3840, 2160, '3840x2160', 10]
 ] as [number, number, string, number][]) {
-	test(`the cap is ${want} panes at ${tag}`, async ({ page }) => {
+	test(`the cap is ${want} panes at ${tag}`, async ({ page }, testInfo) => {
 		test.setTimeout(120_000);
 		const errors = watch(page);
 		await page.setViewportSize({ width: w, height: h });
@@ -96,7 +94,7 @@ for (const [w, h, tag, want] of [
 
 		const m = await metrics(page);
 		console.log(`${tag} ${JSON.stringify(m)} historyFetches=${seen.size}`);
-		await page.screenshot({ path: `${SHOTS}/tiles-${tag}.png` });
+		await page.screenshot({ path: testInfo.outputPath(`tiles-${tag}.png`) });
 
 		expect(errors, 'no uncaught error').toEqual([]);
 		expect(m.docScrollH).toBe(m.winH);
