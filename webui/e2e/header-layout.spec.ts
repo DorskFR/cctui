@@ -28,7 +28,7 @@ async function openSessions(page: Page, viewport: { width: number; height: numbe
 	await page.waitForTimeout(500);
 }
 
-test('desktop: the version block clears every control in the tail (CCT-1013)', async ({ page }, testInfo) => {
+test('desktop: the version block clears every control in the tail', async ({ page }, testInfo) => {
 	await openSessions(page, DESKTOP);
 
 	const vers = page.locator('header.hd .vers');
@@ -55,7 +55,7 @@ test('desktop: the version block clears every control in the tail (CCT-1013)', a
 	});
 });
 
-test('mobile: the version block yields instead of overlapping (CCT-1013)', async ({ page }, testInfo) => {
+test('mobile: the version block yields instead of overlapping', async ({ page }, testInfo) => {
 	await openSessions(page, MOBILE);
 
 	const vers = page.locator('header.hd .vers');
