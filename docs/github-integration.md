@@ -13,7 +13,7 @@
 > **ghreview now lives outside this repo**, at
 > <https://github.com/DorskFR/ghreview>, and installs into cctui as the
 > `ghreview` plugin (Settings → Plugins, or `plugins/catalog.json`). It mounts
-> at `/apps/ghreview`; `/github` and `/review` redirect there. Every
+> at `/apps/ghreview`. Every
 > `ghreview/` or `ghreview-ui/` path mentioned below is a path in that repo.
 
 ## 1. Goals
