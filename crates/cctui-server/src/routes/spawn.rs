@@ -1156,19 +1156,96 @@ pub async fn stage_session_files(
 
 /// Poll endpoint superseded by WS push; answers an empty list so polling
 /// clients don't get a 404.
+/// Draining the queue consumes it, so only the machine's owner may poll it.
 pub async fn get_machine_commands(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(machine_id): Path<String>,
-) -> Json<Vec<MachineCommand>> {
+) -> Result<Json<Vec<MachineCommand>>, AppError> {
+    let owned = match Uuid::parse_str(&machine_id) {
+        Ok(id) => {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM machines WHERE id = $1 AND user_id = $2)",
+            )
+            .bind(id)
+            .bind(ctx.user_id)
+            .fetch_one(&state.pool)
+            .await?
+        }
+        Err(_) => false,
+    };
+    if !owned {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
+    }
     let commands = {
         let mut registry = state.registry.write().await;
         registry.take_machine_commands(&machine_id)
     };
-    Json(commands)
+    Ok(Json(commands))
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn only_the_owner_drains_a_machine_queue() {
+        use axum::extract::{Path, State};
+        use axum::{Extension, Json};
+
+        let Some(url) =
+            crate::routes::gateway::test_db_url("only_the_owner_drains_a_machine_queue")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let (owner, other, machine) =
+            (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for uid in [owner, other] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("mq-{uid}"))
+                .bind(format!("hmq-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(owner)
+            .bind(format!("mkmq-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state = crate::state::AppState::for_test(pool);
+        state.registry.write().await.queue_machine_command(
+            &machine.to_string(),
+            "noop",
+            serde_json::Value::Null,
+        );
+        let caller = |user_id| crate::auth::AuthContext {
+            user_id,
+            key_id: uuid::Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::iter::once(crate::auth::Scope::Read).collect(),
+        };
+
+        let denied = super::get_machine_commands(
+            State(state.clone()),
+            Extension(caller(other)),
+            Path(machine.to_string()),
+        )
+        .await;
+        assert!(denied.is_err(), "another user must not drain the queue");
+
+        let Json(drained) = super::get_machine_commands(
+            State(state),
+            Extension(caller(owner)),
+            Path(machine.to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(drained.len(), 1, "the refused poll left the command queued");
+    }
+
     #[test]
     fn every_spawn_hands_the_daemon_the_key_its_token_is_bound_to() {
         let command_id = uuid::Uuid::new_v4();
