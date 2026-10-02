@@ -8,7 +8,7 @@
 //! `state.json`, which also covers a worker that exits inside the window), and
 //! otherwise fail the spawn with the tail of those logs.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -136,7 +136,7 @@ impl fmt::Display for SpawnStall {
             out.push_str("\n(no claude-daemon log was readable on this machine)");
         }
         for (path, text) in &self.tails {
-            out.push_str(&format!("\n--- {} (last {TAIL_LINES} lines) ---\n", path.display()));
+            let _ = write!(out, "\n--- {} (last {TAIL_LINES} lines) ---\n", path.display());
             out.push_str(text);
         }
         f.write_str(truncate(&out, REPORT_CAP))
@@ -174,8 +174,8 @@ fn read_tail(path: &Path, lines: usize) -> Option<String> {
     if text.is_empty() {
         return None;
     }
-    let kept: Vec<&str> = text.lines().rev().take(lines).collect();
-    Some(kept.into_iter().rev().collect::<Vec<_>>().join("\n"))
+    let all: Vec<&str> = text.lines().collect();
+    Some(all[all.len().saturating_sub(lines)..].join("\n"))
 }
 
 /// Name the macOS privacy denial when a log tail shows its signature. macOS
