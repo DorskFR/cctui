@@ -3,8 +3,9 @@ use std::fmt::Write as _;
 use super::{PathBuf, json};
 
 /// Decode + stage `bootstrap` file uploads under the upload staging root's
-/// `<session-id>/` dir, returning their absolute paths in upload order. Files are written 0600 with sanitized bare names; an empty/null
-/// bootstrap yields an empty vec. Errors (bad base64, unwritable dir) abort the
+/// `<session-id>/` dir, returning their absolute paths in upload order. Files
+/// are written 0600 with sanitized bare names; an empty/null bootstrap yields
+/// an empty vec. Errors (bad base64, unwritable dir) abort the
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
 /// Build the spawn-time `<session-context>` block prepended to the
