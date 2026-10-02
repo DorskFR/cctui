@@ -3,6 +3,8 @@ import header from './DrawerHeader.svelte?raw';
 import toolbar from './DrawerToolbar.svelte?raw';
 import keys from './headerKeys.ts?raw';
 import pane from '../ConversationPane.svelte?raw';
+import meta from './HeaderMeta.svelte?raw';
+import footer from '../sessioncard/Footer.svelte?raw';
 
 const items = () => {
 	const start = header.indexOf('const overflowItems');
@@ -89,31 +91,12 @@ describe('drawer header ⋯ menu', () => {
 	});
 });
 
-describe('linked-issue entries', () => {
-	it('offers Link issue… when nothing is linked and Change/Unlink when one is', () => {
-		const src = items();
-		expect(src).toContain('m.plugin_issue_menu_link()');
-		expect(src).toContain('m.plugin_issue_menu_change()');
-		expect(src).toContain('m.plugin_issue_menu_unlink()');
-		expect(src).toContain('issueLinked ?');
-	});
-
-	it('labels the entry with an issue glyph, never the labels tag', () => {
-		const src = items();
-		const entry = src.slice(src.indexOf('plugin_issue_menu_link'));
-		expect(entry).toContain("icon: 'bookmark' as const");
-		expect(src).not.toContain("icon: 'tag' as const");
-	});
-
-	it('opens the modal rather than an inline editor, and unlinks in place', () => {
-		const src = items();
-		expect(src).toContain('issueLinkOpen = true');
-		expect(src).toContain('setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, null)');
-		expect(markup()).toContain('<IssueLinkModal');
-	});
-
-	it('hands the detected id to the chip row and the modal', () => {
-		expect(markup()).toContain('{detectedIssue}');
-		expect(markup()).toContain('detected={detectedIssue}');
+describe('issue linking', () => {
+	it('is gone: no menu entry, link modal, or detected-id chip; labels are the only tagging', () => {
+		expect(items()).not.toContain('plugin_issue_menu');
+		expect(header).not.toContain('IssueLinkModal');
+		expect(header).not.toContain('detectedIssue');
+		expect(meta).not.toContain('PluginChips');
+		expect(footer).not.toContain('PluginChips');
 	});
 });

@@ -11,14 +11,11 @@
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
-	import PluginChips from '$lib/components/molecules/PluginChips.svelte';
-	import { YOUTRACK_PLUGIN_ID, resolveIssueSlot } from '$lib/plugins/issueLink';
 	import { Badge, Icon, IconButton, Popover, Select, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { harnessModelsFallback } from '$lib/domainTables';
 	import {
 		useCapabilities,
 		useHarnessModels,
-		useSessionActions,
 		useSessionLangfuse
 	} from '$lib/queries';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
@@ -31,8 +28,7 @@
 		isCodexSession,
 		showStatusBadge,
 		onsetmodel,
-		onfork,
-		detectedIssue = null
+		onfork
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -40,9 +36,6 @@
 		showStatusBadge: boolean;
 		onsetmodel: (model: string, effort: string) => void;
 		onfork: () => void;
-		/** An issue id detected for this session, offered as a one-click link
-		 *  while nothing is stored. */
-		detectedIssue?: string | null;
 	} = $props();
 
 	const end = $derived(sessionEnd(session));
@@ -60,12 +53,6 @@
 		}
 	});
 	const branch = $derived(branchOf(session));
-
-	const actions = useSessionActions();
-	async function linkIssue(issue: string) {
-		const data = await resolveIssueSlot(issue);
-		if (data) await actions.setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, data);
-	}
 
 	// The details panel is the only place the full readout lives, so its Langfuse
 	// figures are fetched on open rather than with the header.
@@ -197,14 +184,6 @@
 	<div class="meta-trail">
 	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
 	<span class="langfuse"><LangfuseChip id={session.id} /></span>
-	<span class="plugins">
-		<PluginChips
-			metadata={session.metadata}
-			detected={detectedIssue}
-			suggestable={!archived}
-			onlink={(issue) => void linkIssue(issue)}
-		/>
-	</span>
 	{@render modelMeta('drawer')}
 	<Popover
 		label={m.drawer_meta_details()}
@@ -313,7 +292,6 @@
 		min-width: 0;
 	}
 	.langfuse,
-	.plugins,
 	.tokens {
 		display: contents;
 	}

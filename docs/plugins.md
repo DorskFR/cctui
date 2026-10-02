@@ -477,14 +477,7 @@ rather than the `plugins` table alone because first-party connectors have no
 plugin bundle, and because uninstalling a bundle must not make a slot the UI
 still renders unwritable.
 
-In the webui, `PluginChips` renders every slot through a per-plugin renderer
-registry (`src/lib/plugins/sessionSlots.ts`); a slot with no registered renderer
-draws nothing. The YouTrack renderer shows the issue id, hovers its summary and
-state, and links `url` when the slot carries one. The drawer header also lets a
-user set or clear the issue by hand, offering any `[A-Z]+-\d+` found in the
-spawn prompt, the session name or the git branch. Summary and state come from
-`lookupYouTrackIssue`, which resolves to the bare id until the YouTrack
-connector installs a lookup through `setYouTrackLookup`.
+The webui does not render slots; session labels are its only tagging UI.
 
 ## Skills and env in agent sessions
 
