@@ -106,7 +106,7 @@ fn declared_body_len(headers: &HeaderMap) -> Option<usize> {
 }
 
 /// 403 for a path or method outside the provider's allowlist.
-fn path_refused(reason: &super::GatewayPathError, is_anthropic: bool) -> Response {
+fn path_refused(reason: super::GatewayPathError, is_anthropic: bool) -> Response {
     let message = format!(
         "cctui gateway refused this request: the path {reason}. Only the provider's \
          inference endpoints are forwarded."
@@ -438,7 +438,7 @@ async fn resolve_upstream(
     let tail = path.strip_prefix(prefix).unwrap_or(path);
     if let Err(e) = super::gateway_path_permitted(family, req_method.as_str(), tail) {
         tracing::warn!(account = %acct.id, %tail, method = %req_method, "gateway refused path: {e}");
-        return Err(Ok(path_refused(&e, is_anthropic)));
+        return Err(Ok(path_refused(e, is_anthropic)));
     }
 
     // The session token is valid (resolved already); a failure to obtain an

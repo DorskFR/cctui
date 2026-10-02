@@ -227,11 +227,11 @@ impl LangfuseClient {
 /// on, keeping the request's non-content shape (`model`, `stream`, counts) so a
 /// redacted trace is still diagnosable.
 fn redact_unless_captured(mut payload: TracePayload, capture_content: bool) -> TracePayload {
+    const KEEP: [&str; 6] =
+        ["model", "stream", "max_tokens", "temperature", "service_tier", "thinking"];
     if capture_content {
         return payload;
     }
-    const KEEP: [&str; 6] =
-        ["model", "stream", "max_tokens", "temperature", "service_tier", "thinking"];
     payload.request = payload.request.map(|req| {
         let mut out = serde_json::Map::new();
         if let Some(obj) = req.as_object() {

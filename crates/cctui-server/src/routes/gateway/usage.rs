@@ -394,7 +394,7 @@ async fn usage_for_account(
     if matches!(acct.provider.as_str(), "anthropic-compatible" | "openai-compatible")
         && let Some(id) = usage_probe_id(state, account_id).await
     {
-        return probe_usage_windows(state, &acct, &id).await;
+        return probe_usage_windows(&acct, &id).await;
     }
     if acct.provider != "anthropic" {
         // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
@@ -459,7 +459,6 @@ async fn usage_probe_id(state: &AppState, account_id: Uuid) -> Option<String> {
 /// usage payload, so the cache, the history samples and the soft limit consume
 /// it unchanged.
 async fn probe_usage_windows(
-    state: &AppState,
     acct: &Account,
     probe_id: &str,
 ) -> Result<Option<serde_json::Value>, StatusCode> {

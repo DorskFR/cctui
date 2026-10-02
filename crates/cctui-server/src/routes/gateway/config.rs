@@ -210,7 +210,7 @@ const fn rule(methods: &'static [&'static str], path: &'static str, subpaths: bo
 /// base url. Anything else is refused rather than forwarded with the account's
 /// credential: the upstreams behind these routes also serve account
 /// administration, and a worker holds only a session token.
-fn rules(family: Family) -> &'static [PathRule] {
+const fn rules(family: Family) -> &'static [PathRule] {
     const ANTHROPIC: &[PathRule] = &[
         rule(&["POST"], "/v1/messages", false),
         rule(&["POST"], "/v1/messages/count_tokens", false),
