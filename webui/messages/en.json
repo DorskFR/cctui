@@ -1937,18 +1937,6 @@
 	"keepalive_ticks_n": "{n} ticks without a reply",
 	"keepalive_title": "Keep prompt cache warm",
 	"drawer_plugin_toggle": "Toggle the {name} pane",
-	"plugin_chip_issue_placeholder": "CCT-123 or issue URL",
-	"plugin_issue_menu_link": "Link issue…",
-	"plugin_issue_menu_change": "Change issue…",
-	"plugin_issue_menu_unlink": "Unlink issue",
-	"plugin_issue_menu_title": "Link this session to a tracker issue",
-	"plugin_issue_modal_title": "Linked issue",
-	"plugin_issue_modal_help": "Paste an issue id or its URL. Clear the field to unlink.",
-	"plugin_issue_modal_field": "Issue",
-	"plugin_issue_modal_current": "Currently linked to {issue}",
-	"plugin_issue_invalid": "That does not look like an issue id (e.g. CCT-123) or an issue URL.",
-	"plugin_chip_issue_aria": "Issue id for this session",
-	"plugin_chip_link_detected_title": "Link {issue} to this session",
 	"plugins_pane_failed": "This plugin's pane could not be loaded.",
 	"plugins_page_loading": "Loading this plugin…",
 	"plugins_page_failed": "{name} could not be loaded.",
@@ -2072,5 +2060,7 @@
 	"sessions_dim_room": "Room",
 	"rooms_archive_confirm": "Archive “{room}” and the {count} session(s) in it? They stop running; unarchive them individually afterwards.",
 	"rooms_archive_confirm_empty": "Archive “{room}”? Nothing in it is still running.",
-	"rooms_archive_skipped_pinned": "{count} pinned session(s) were left running."
+	"rooms_archive_skipped_pinned": "{count} pinned session(s) were left running.",
+	"conversation_crashed": "The conversation panel crashed.",
+	"conversation_export_loading": "Loading the whole conversation… {count} messages so far"
 }
