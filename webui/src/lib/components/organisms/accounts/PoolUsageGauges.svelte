@@ -5,6 +5,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import { countdown } from '$lib/components/molecules/usage-battery.logic';
+	import { isDenseWidth } from '$lib/components/molecules/cap-bar.logic';
 	import {
 		familyLabel,
 		fmtDemand,
@@ -22,6 +23,8 @@
 	let { usage, compact = false }: { usage: PoolUsageView; compact?: boolean } = $props();
 
 	const now = Date.now();
+	let width = $state(0);
+	const dense = $derived(isDenseWidth(width));
 
 	function reading(w: PoolUsageWindow): string {
 		const state = projectionState(w, now);
@@ -40,7 +43,7 @@
 	}
 </script>
 
-<div class="gauges" class:compact data-journey="pool-usage">
+<div class="gauges" class:compact data-journey="pool-usage" bind:clientWidth={width}>
 	{#each usage.families as fam (fam.family)}
 		{@const weights = weightsNote(fam.members)}
 		<section class="family">
@@ -63,6 +66,7 @@
 							resets={w.next_reset_at}
 							pace={poolWindowPace(w)}
 							note={reading(w)}
+							{dense}
 						/>
 					{/each}
 				</div>
