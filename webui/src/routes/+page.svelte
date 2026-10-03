@@ -6,8 +6,7 @@
 	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
 	import WindowsTable from '$lib/components/molecules/WindowsTable.svelte';
 	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
-	import { RANGES } from '$lib/components/organisms/overview/usage-analytics';
-	import { Card, SegmentedControl, Stack } from '@dorsk/tsumikit';
+	import { Card, Stack } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { buildMetricTiles, machinesOnline, type MetricKey } from './home.logic';
 
@@ -15,9 +14,6 @@
 	const tokens = useTokenStats();
 	const machines = useAllMachines(() => true);
 	const accounts = useAccounts();
-
-	let rangeKey = $state('30d');
-	const rangeOptions = RANGES.map((r) => ({ value: r.key, label: r.key }));
 
 	const machineRows = $derived(machines.data ?? []);
 
@@ -34,11 +30,7 @@
 </script>
 
 <Stack gap="var(--sp-5)">
-	<PageHead title={m.home_usage_page_title()}>
-		<span data-journey="range">
-			<SegmentedControl bind:value={rangeKey} options={rangeOptions} label={m.home_usage_range_label()} />
-		</span>
-	</PageHead>
+	<PageHead title={m.home_usage_page_title()} />
 
 	<div class="tiles" data-journey="tiles">
 		{#each tiles as t (t.key)}
@@ -57,7 +49,7 @@
 
 	<Card padding="none" data-journey="windows"><WindowsTable windows={tokens.data} /></Card>
 
-	<div data-journey="analytics"><UsageAnalyticsSection {rangeKey} /></div>
+	<div data-journey="analytics"><UsageAnalyticsSection /></div>
 </Stack>
 
 <style>
