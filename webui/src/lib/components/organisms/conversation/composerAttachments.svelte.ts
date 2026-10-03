@@ -79,7 +79,7 @@ export class ComposerAttachments {
 		});
 	}
 
-	/** Stage `incoming`, marking each file at the caret: a short `[📎N]` the
+	/** Stage `incoming`, marking each file at the caret: a short `[#N]` the
 	 *  user can move next to what they say about it, or a masked paste's own
 	 *  name. */
 	add(incoming: File[], mode: FileTokenMode = 'clip'): void {

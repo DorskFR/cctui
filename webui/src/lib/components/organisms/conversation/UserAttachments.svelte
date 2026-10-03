@@ -7,6 +7,7 @@
 	import { apiBlob } from '$lib/api';
 	import { attachmentStore } from '$lib/attachmentStore';
 	import { copyText } from '$lib/clipboard';
+	import { shortFileName } from '$lib/filename';
 	import { refusalMessage, tryOpenLocalFile } from '$lib/fileviewer';
 	import { localFileHref } from '$lib/markdown';
 	import { m } from '$lib/paraglide/messages';
@@ -175,6 +176,7 @@
 						loading="lazy"
 						onerror={() => (brokenThumb[a.id] = true)}
 					/>
+					<span class="caption mono">{shortFileName(a.name)}</span>
 				</button>
 			{:else}
 				<FileChip
@@ -224,14 +226,16 @@
 	}
 	.thumb {
 		display: inline-flex;
-		align-items: center;
-		justify-content: center;
+		flex-direction: column;
+		align-items: stretch;
 		min-width: 2rem;
 		min-height: 2rem;
+		max-width: 12rem;
 		padding: 0;
 		background: none;
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
+		color: var(--text-muted);
 		cursor: zoom-in;
 		overflow: hidden;
 	}
@@ -240,5 +244,16 @@
 		max-width: 12rem;
 		max-height: 8rem;
 		object-fit: contain;
+		margin: 0 auto;
+	}
+	.caption {
+		display: block;
+		padding: 1px var(--sp-1);
+		font-size: var(--fs-xs);
+		line-height: 1.4;
+		text-align: center;
+		white-space: nowrap;
+		border-top: 1px solid var(--border);
+		background: var(--bg-elevated-2);
 	}
 </style>

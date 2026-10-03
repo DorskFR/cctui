@@ -84,35 +84,36 @@ describe('clip tokens', () => {
 		const shots = [1, 2, 3].map((i) => f(`Screenshot 2026-10-02 at 11.3${i}.22.png`));
 		const { files, text, caret } = attachFiles([], 'before after', shots, 'clip', 6);
 		expect(files).toHaveLength(3);
-		expect(text).toBe('before [📎1] [📎2] [📎3] after');
-		expect(caret).toBe('before [📎1] [📎2] [📎3]'.length);
+		expect(text).toBe('before [#1] [#2] [#3] after');
+		expect(caret).toBe('before [#1] [#2] [#3]'.length);
 		expect(text.length).toBeLessThan(40);
 	});
 
 	it('numbers new files after the ones already attached and appends without a caret', () => {
-		const { text } = attachFiles([f('a.png')], 'see [📎1]', [f('b.png')]);
-		expect(text).toBe('see [📎1] [📎2]');
+		const { text } = attachFiles([f('a.png')], 'see [#1]', [f('b.png')]);
+		expect(text).toBe('see [#1] [#2]');
 	});
 
 	it('expands each token to its file at its own position, in any order', () => {
 		const files = [f('a.png'), f('b.png')];
-		expect(expandClipTokens('second [📎2] then first [📎1]', files)).toBe(
+		expect(expandClipTokens('second [#2] then first [#1]', files)).toBe(
 			'second [b.png] then first [a.png]'
 		);
 		expect(
-			expandClipTokens('[📎1] and [📎2]', files, ['/tmp/u/a.png', '/tmp/u/b-1.png'])
+			expandClipTokens('[#1] and [#2]', files, ['/tmp/u/a.png', '/tmp/u/b-1.png'])
 		).toBe('[a.png] and [b-1.png]');
-		expect(expandClipTokens('stray [📎9]', files)).toBe('stray [📎9]');
+		expect(expandClipTokens('stray [#9] here', files)).toBe('stray here');
+		expect(expandClipTokens('legacy [📎2]', files)).toBe('legacy [b.png]');
 	});
 
 	it('renumbers tokens when a file is removed and drops the removed one', () => {
-		const out = renumberClipTokens('a [📎1] b [📎2] c [📎3]', ['x', 'y', 'z'], ['x', 'z']);
-		expect(out).toBe('a [📎1] b c [📎2]');
-		expect(renumberClipTokens('[📎1] text', ['x'], [])).toBe('text');
+		const out = renumberClipTokens('a [#1] b [#2] c [#3]', ['x', 'y', 'z'], ['x', 'z']);
+		expect(out).toBe('a [#1] b c [#2]');
+		expect(renumberClipTokens('[#1] text', ['x'], [])).toBe('text');
 	});
 
 	it('lists what each token points at', () => {
-		expect(clipLegend([f('a.png'), f('b.pdf')])).toBe('📎1 a.png · 📎2 b.pdf');
+		expect(clipLegend([f('a.png'), f('b.pdf')])).toBe('#1 a.png · #2 b.pdf');
 	});
 });
 

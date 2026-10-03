@@ -48,7 +48,7 @@
 		/** A text paste: true when it was staged as an attachment instead. */
 		onlongpaste?: (text: string) => boolean;
 		promptEl?: HTMLTextAreaElement | null;
-		/** What each `[📎N]` in the prompt points at, shown on hover. */
+		/** What each `[#N]` in the prompt points at, shown on hover. */
 		fileLegend?: string;
 	} = $props();
 

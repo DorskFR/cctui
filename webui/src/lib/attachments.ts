@@ -52,14 +52,14 @@ export function mergeFiles(current: File[], incoming: File[]): File[] {
 	return mergeFilesRenamed(current, incoming).files;
 }
 
-/** Short inline marker for the attachment at `index`: `[📎1]`, `[📎2]`, …
+/** Short inline marker for the attachment at `index`: `[#1]`, `[#2]`, …
  *  The number is the file's position in the list, so it stays derivable from
- *  the persisted list alone. */
-export const clipToken = (index: number) => `[📎${index + 1}]`;
+ *  the persisted list alone. Drafts saved before still carry `[📎N]`. */
+export const clipToken = (index: number) => `[#${index + 1}]`;
 
-const CLIP_TOKEN = /\[📎(\d+)\]/gu;
+export const CLIP_TOKEN = /\[(?:#|📎)(\d+)\]/gu;
 
-/** How attaching marks the draft: a short `[📎N]`, the full `[name]` (a masked
+/** How attaching marks the draft: a short `[#N]`, the full `[name]` (a masked
  *  paste, whose name is already short), or nothing. */
 export type FileTokenMode = 'clip' | 'name' | false;
 
@@ -100,11 +100,11 @@ export function attachFiles(
 	return { files: merged.files, ...next };
 }
 
-/** Follow the list from `before` to `after` (names, in order): each `[📎N]`
+/** Follow the list from `before` to `after` (names, in order): each `[#N]`
  *  takes its file's new number, and a removed file's token goes with it. */
 export function renumberClipTokens(text: string, before: string[], after: string[]): string {
 	return text
-		.replace(/ ?\[📎(\d+)\]/gu, (tok, n: string) => {
+		.replace(/ ?\[(?:#|📎)(\d+)\]/gu, (tok, n: string) => {
 			const name = before[Number(n) - 1];
 			const j = name === undefined ? -1 : after.indexOf(name);
 			if (j < 0) return name === undefined ? tok : '';
@@ -113,20 +113,23 @@ export function renumberClipTokens(text: string, before: string[], after: string
 		.replace(/^ +/, '');
 }
 
-/** Swap each `[📎N]` for `[name]`: the staged name from `paths` when the
- *  upload returned one, else the file's own. Numbers past the list stay. */
+/** Swap each `[#N]` for `[name]`: the staged name from `paths` when the
+ *  upload returned one, else the file's own. A number past the list points at
+ *  nothing the agent will receive, so it is dropped. */
 export function expandClipTokens(text: string, files: File[], paths: string[] = []): string {
-	return text.replace(CLIP_TOKEN, (tok, n: string) => {
-		const i = Number(n) - 1;
-		const file = files[i];
-		if (!file) return tok;
-		return `[${paths[i]?.split('/').pop() || file.name}]`;
-	});
+	return text
+		.replace(/ ?\[(?:#|📎)(\d+)\]/gu, (tok, n: string) => {
+			const i = Number(n) - 1;
+			const file = files[i];
+			if (!file) return '';
+			return `${tok.startsWith(' ') ? ' ' : ''}[${paths[i]?.split('/').pop() || file.name}]`;
+		})
+		.replace(/^ +/, '');
 }
 
-/** `📎1 a.png · 📎2 b.pdf`: what each inline marker points at. */
+/** `#1 a.png · #2 b.pdf`: what each inline marker points at. */
 export function clipLegend(files: File[]): string {
-	return files.map((f, i) => `📎${i + 1} ${f.name}`).join(' · ');
+	return files.map((f, i) => `#${i + 1} ${f.name}`).join(' · ');
 }
 
 const PASTE_NAME = /\bpaste-(\d+)\.txt\b/g;

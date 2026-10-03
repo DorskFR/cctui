@@ -206,7 +206,7 @@ describe('SpawnForm attachment markers', () => {
 		sf.promptEl = el;
 		sf.addFiles([shot('a.txt'), shot('b.txt')]);
 		await vi.waitFor(() => expect(sf.files).toHaveLength(2));
-		expect(sf.form.prompt).toBe('look here: [📎1] [📎2] and there');
+		expect(sf.form.prompt).toBe('look here: [#1] [#2] and there');
 		expect(sf.buildSpawnBody().prompt).toBe('look here: [a.txt] [b.txt] and there');
 	});
 
@@ -216,8 +216,8 @@ describe('SpawnForm attachment markers', () => {
 		sf.addFiles([shot('a.txt'), shot('b.txt')]);
 		await vi.waitFor(() => expect(sf.files).toHaveLength(2));
 		sf.removeFile('a.txt');
-		expect(sf.form.prompt).toBe('[📎1]');
-		expect(sf.fileLegend).toBe('📎1 b.txt');
+		expect(sf.form.prompt).toBe('[#1]');
+		expect(sf.fileLegend).toBe('#1 b.txt');
 	});
 });
 

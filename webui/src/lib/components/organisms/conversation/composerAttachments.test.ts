@@ -60,7 +60,7 @@ describe('ComposerAttachments', () => {
 		a.add([file('a.txt')]);
 		await flush();
 		expect(a.files.map((f) => f.name)).toEqual(['a.txt']);
-		expect(text()).toBe('note [📎1]');
+		expect(text()).toBe('note [#1]');
 		expect(sync.persist).toHaveBeenLastCalledWith('draft:s1', a.files);
 	});
 
@@ -69,8 +69,8 @@ describe('ComposerAttachments', () => {
 		a.add([1, 2, 3, 4].map((i) => file(`Screenshot 2026-09-25 at 11.3${i}.22.png`)));
 		await flush();
 		expect(a.files).toHaveLength(4);
-		expect(text()).toBe('[📎1] [📎2] [📎3] [📎4]');
-		expect(a.legend).toContain('📎1 Screenshot 2026-09-25 at 11.31.22.png');
+		expect(text()).toBe('[#1] [#2] [#3] [#4]');
+		expect(a.legend).toContain('#1 Screenshot 2026-09-25 at 11.31.22.png');
 	});
 
 	it('inserts the markers at the caret of the textarea', async () => {
@@ -81,7 +81,7 @@ describe('ComposerAttachments', () => {
 		const { a } = await make({ input: () => draft, setInput: (t) => (draft = t), el: () => el });
 		a.add([file('one.png'), file('two.png')]);
 		await flush();
-		expect(draft).toBe('first point. [📎1] [📎2] second point.');
+		expect(draft).toBe('first point. [#1] [#2] second point.');
 		el.remove();
 	});
 
@@ -89,7 +89,7 @@ describe('ComposerAttachments', () => {
 		const { a } = await make();
 		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
-		const body = await a.stage('b here [📎2], a here [📎1]', async () => ({
+		const body = await a.stage('b here [#2], a here [#1]', async () => ({
 			paths: ['/tmp/a.txt', '/tmp/b-1.txt']
 		}));
 		expect(body).toBe(
@@ -101,7 +101,7 @@ describe('ComposerAttachments', () => {
 		const { a } = await make();
 		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
-		const body = await a.stage('look [📎2]', async () => ({ paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
+		const body = await a.stage('look [#2]', async () => ({ paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
 		expect(body).toBe('look [b.txt]\n\nAttached files (2):\n- /tmp/a.txt\n- /tmp/b.txt');
 	});
 
@@ -127,7 +127,7 @@ describe('ComposerAttachments', () => {
 		await flush();
 		a.remove('a.txt');
 		expect(a.files.map((f) => f.name)).toEqual(['b.txt']);
-		expect(text()).toBe('[📎1]');
+		expect(text()).toBe('[#1]');
 	});
 
 	it('ignores adds while disabled or uploading', async () => {

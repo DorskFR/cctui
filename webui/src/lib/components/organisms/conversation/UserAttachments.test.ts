@@ -62,6 +62,16 @@ describe('a user-uploaded image', () => {
 		expect(document.querySelector('.chip')).toBeNull();
 	});
 
+	it('captions the thumbnail with a middle-ellipsized name that keeps the tail', async () => {
+		await render(png({ name: 'Screenshot 2026-10-03 at 12.21.15.png' }));
+		const caption = document.querySelector('.thumb .caption');
+		expect(caption?.textContent).toMatch(/…/);
+		expect(caption?.textContent?.endsWith('12.21.15.png')).toBe(true);
+		expect(document.querySelector('.thumb')?.getAttribute('title')).toContain(
+			'Screenshot 2026-10-03 at 12.21.15.png'
+		);
+	});
+
 	it('falls back to a file chip only once the blob itself fails to load', async () => {
 		await render(png());
 		const img = document.querySelector('.thumb img') as HTMLImageElement;

@@ -1,5 +1,5 @@
 import { del, get, keys, set } from 'idb-keyval';
-import { MAX_TOTAL_BYTES, renumberClipTokens } from './attachments';
+import { CLIP_TOKEN, MAX_TOTAL_BYTES, renumberClipTokens } from './attachments';
 
 // Draft text lives in localStorage (drafts.ts); File handles cannot, so they
 // go to IndexedDB under a key derived from the draft key. Without IndexedDB
@@ -235,7 +235,7 @@ export function dropMissingTokens(
 }
 
 /** The draft as it reads against a restored list: tokens of files that did
- *  not survive are dropped, and `[📎N]` markers follow the survivors' new
+ *  not survive are dropped, and `[#N]` markers follow the survivors' new
  *  positions. */
 export function restoreDraftTokens(
 	text: string,
@@ -243,7 +243,7 @@ export function restoreDraftTokens(
 ): { text: string; dropped: number } {
 	const kept = restored.files.map((f) => f.name);
 	const named = dropMissingTokens(text, restored.missing);
-	const clips = (t: string) => t.match(/\[📎\d+\]/gu)?.length ?? 0;
+	const clips = (t: string) => t.match(CLIP_TOKEN)?.length ?? 0;
 	const out = renumberClipTokens(named.text, restored.names ?? kept, kept);
 	return { text: out, dropped: named.dropped + clips(named.text) - clips(out) };
 }

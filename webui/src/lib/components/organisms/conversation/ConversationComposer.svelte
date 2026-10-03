@@ -324,7 +324,7 @@
 		<ImageCompressionStatus pending={att.images.pending} />
 		{#if supportsAttachments && att.files.length}
 			<div class="attachments">
-				<AttachmentList files={att.files} onremove={(name) => att.remove(name)} compact />
+				<AttachmentList files={att.files} onremove={(name) => att.remove(name)} />
 			</div>
 		{/if}
 		{#if coldOffer && !folded}
