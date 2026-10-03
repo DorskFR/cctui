@@ -1128,6 +1128,7 @@ mod tests {
             r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/discard Bearer Resource(Session, Write, Path("id"))"#,
             r#"PUT /sessions/{id}/draft Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/draft-attachments Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/files Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/images/{image_id} Bearer Resource(Session, Read, Path("id"))"#,

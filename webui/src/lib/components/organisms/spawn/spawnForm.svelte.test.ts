@@ -3,13 +3,16 @@ import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { drafts, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '$lib/drafts';
 import { FOLLOWUP_RELATION } from '$lib/followup';
+import { attachmentStore } from '$lib/attachmentStore';
 import { SpawnForm, type SpawnFormOptions } from './spawnForm.svelte';
+import { saveDraft } from './spawnSubmit';
 import { NO_ACCOUNT } from './options';
 
 const machineList = [{ id: 'm-uuid-1', name: 'box', display_name: 'box', kind: 'persistent', hue: null }];
 let dispatcherList: string[] = [];
 const spawn = vi.fn();
 const updateDraft = vi.fn();
+const setDraftAttachments = vi.fn();
 
 vi.mock('$lib/queries', () => {
 	const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
@@ -28,7 +31,12 @@ vi.mock('$lib/queries', () => {
 			remove: async () => {}
 		}),
 		useAllAccountsUsage: () => q([]),
-		useSessionActions: () => ({ spawn, updateDraft, discardDraft: async () => {} }),
+		useSessionActions: () => ({
+			spawn,
+			updateDraft,
+			setDraftAttachments,
+			discardDraft: async () => {}
+		}),
 		endpoints: { machineDirs: async () => [], sessions: async () => ({ sessions: [] }) }
 	};
 });
@@ -68,6 +76,7 @@ beforeEach(() => {
 	dispatcherList = [];
 	spawn.mockReset();
 	updateDraft.mockReset();
+	setDraftAttachments.mockReset();
 });
 afterEach(() => {
 	stop?.();
@@ -326,5 +335,69 @@ describe('SpawnForm spawn body', () => {
 		expect(body.env).toEqual({});
 		expect(body.env_keys).toEqual(['K1']);
 		expect(body.attachment_names).toEqual(['notes.md']);
+	});
+});
+
+describe('SpawnForm draft attachments', () => {
+	const settle = () => new Promise((r) => setTimeout(r, 0));
+
+	it('ships the files with the draft and re-sends them only when the set changes', async () => {
+		spawn.mockResolvedValue({ command_id: 'draft-1', status: 'draft' });
+		updateDraft.mockResolvedValue({ command_id: 'draft-1', status: 'draft' });
+		setDraftAttachments.mockResolvedValue([]);
+		const sf = open();
+		sf.form.working_dir = '/w';
+		sf.form.prompt = 'see [shot.png]';
+		const shot = new File(['png'], 'shot.png');
+		const notes = new File(['md'], 'notes.md');
+		sf.files = [shot, notes];
+
+		await saveDraft(sf);
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0]).toMatchObject({
+			save_draft: true,
+			attachment_names: ['shot.png', 'notes.md']
+		});
+		expect(spawn.mock.calls[0][1]).toEqual([shot, notes]);
+		expect(setDraftAttachments).not.toHaveBeenCalled();
+	});
+
+	it('replaces the stored set when a file is removed and skips unchanged sets', async () => {
+		updateDraft.mockResolvedValue({ command_id: 'draft-1', status: 'draft' });
+		setDraftAttachments.mockResolvedValue([]);
+		const sf = open({ prefill: { machine_id: 'm-uuid-1', working_dir: '/w', draft_id: 'draft-1' } });
+		sf.form.prompt = 'p';
+		const shot = new File(['png'], 'shot.png');
+		const notes = new File(['md'], 'notes.md');
+		sf.files = [shot, notes];
+		flushSync();
+
+		expect(await sf.flushDraft()).toBe(true);
+		expect(spawn).not.toHaveBeenCalled();
+		expect(updateDraft).toHaveBeenCalledTimes(1);
+		expect(setDraftAttachments).toHaveBeenCalledTimes(1);
+		expect(setDraftAttachments.mock.calls[0]).toEqual(['draft-1', [shot, notes]]);
+
+		expect(await sf.flushDraft()).toBe(true);
+		expect(updateDraft).toHaveBeenCalledTimes(2);
+		expect(setDraftAttachments).toHaveBeenCalledTimes(1);
+
+		sf.removeFile('notes.md');
+		expect(await sf.flushDraft()).toBe(true);
+		expect(setDraftAttachments).toHaveBeenCalledTimes(2);
+		expect(setDraftAttachments.mock.calls[1]).toEqual(['draft-1', [shot]]);
+	});
+
+	it('keeps a file attached while the stored set was still restoring', async () => {
+		const restored = new File(['old'], 'restored.png');
+		await attachmentStore.set(SLOT, [restored]);
+		localStorage.setItem('cctui_spawn_slot', SLOT);
+		drafts.set(SLOT, JSON.stringify({ machine_id: 'm-uuid-1', working_dir: '/w', prompt: '[restored.png] [pasted.txt]', attachmentNames: ['restored.png', 'pasted.txt'] }));
+		const sf = open();
+		const pasted = new File(['new'], 'pasted.txt');
+		sf.files = [pasted];
+		await settle();
+		expect(sf.files.map((f) => f.name)).toEqual(['restored.png', 'pasted.txt']);
+		expect(sf.form.prompt).toBe('[restored.png] [pasted.txt]');
 	});
 });

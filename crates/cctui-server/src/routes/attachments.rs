@@ -4,7 +4,9 @@
 //! `POST /sessions/spawn` and `POST /sessions/{id}/files` both, through
 //! [`record_uploads`], keep a copy in the content-addressed blob store with a
 //! `session_attachments` row per file, before the bytes are staged on the
-//! daemon. `GET /api/v1/sessions/{id}/attachments`
+//! daemon. A draft keeps its files the same way under the draft id
+//! (`PUT /sessions/{id}/draft-attachments` replaces them) until its launch
+//! re-reads them into the spawn. `GET /api/v1/sessions/{id}/attachments`
 //! lists those rows (session-read authz via the `api_router` layer); the bytes
 //! come from the existing `GET /sessions/{id}/blobs/{hash}`.
 
@@ -13,7 +15,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use cctui_proto::media::sniff_media_type;
 
-use crate::routes::blobs::store_blob;
+use crate::routes::blobs::store_blob_in;
 use crate::state::AppState;
 use crate::uploads::RawUpload;
 
@@ -37,10 +39,22 @@ pub async fn record_uploads(
     uploads: &[RawUpload],
     staged_names: &[String],
 ) -> Result<Vec<SessionAttachment>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    record_uploads_in(&mut conn, session_id, uploads, staged_names).await
+}
+
+/// [`record_uploads`] on an explicit connection, so a caller can pair it with
+/// other writes in one transaction.
+pub async fn record_uploads_in(
+    conn: &mut sqlx::PgConnection,
+    session_id: &str,
+    uploads: &[RawUpload],
+    staged_names: &[String],
+) -> Result<Vec<SessionAttachment>, sqlx::Error> {
     let mut out = Vec::with_capacity(uploads.len());
     for (i, upload) in uploads.iter().enumerate() {
         let media_type = media_type_for(upload);
-        let stored = store_blob(pool, &upload.bytes, Some(&media_type)).await?;
+        let stored = store_blob_in(&mut *conn, &upload.bytes, Some(&media_type)).await?;
         let name = staged_names.get(i).map_or(upload.name.as_str(), String::as_str);
         let row: SessionAttachment = sqlx::query_as(
             "INSERT INTO session_attachments (session_id, name, hash, size, content_type) \
@@ -54,7 +68,7 @@ pub async fn record_uploads(
         .bind(&stored.hash)
         .bind(i64::try_from(upload.bytes.len()).unwrap_or(i64::MAX))
         .bind(&media_type)
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await?;
         out.push(row);
     }

@@ -109,6 +109,8 @@ export class SpawnForm {
 	files = $state<File[]>([]);
 	promptEl = $state<HTMLTextAreaElement | null>(null);
 	private filesRestored = $state(false);
+	/** `fileSetKey` of the files the draft row holds; '' = none. */
+	syncedFileSet = '';
 	archiveSource = $state(false);
 	busy = $state(false);
 	selectedProfileId = $state<string | null>(null);
@@ -355,14 +357,19 @@ export class SpawnForm {
 		(async () => {
 			const restored = await attachmentStore.get(this.loadKey);
 			if (!live) return;
-			this.files = restored.files;
+			// Anything attached while the restore was in flight stays.
+			const restoredNames = new Set(restored.files.map((f) => f.name));
+			const added = this.files.filter((f) => !restoredNames.has(f.name));
+			this.files = [...restored.files, ...added];
 			if (this.followupFile && !this.files.some((f) => f.name === BRIEF_FILE_NAME)) {
 				this.files = [
 					...this.files,
 					new File([this.followupFile], BRIEF_FILE_NAME, { type: 'text/markdown' })
 				];
 			}
-			const { text, dropped } = restoreDraftTokens(this.form.prompt, restored);
+			const present = new Set(this.files.map((f) => f.name));
+			const missing = restored.missing.filter((n) => !present.has(n));
+			const { text, dropped } = restoreDraftTokens(this.form.prompt, { ...restored, missing });
 			if (dropped) {
 				this.form.prompt = text;
 				toasts.info(m.attachments_missing_dropped({ count: dropped }));
@@ -413,6 +420,7 @@ export class SpawnForm {
 		if (this.persistTimer) clearTimeout(this.persistTimer);
 		this.persistTimer = null;
 		this.draftId = null;
+		this.syncedFileSet = '';
 		drafts.clear(this.slotKey);
 		drafts.clear(SPAWN_SLOT);
 		this.form = { ...blank, machine_id: this.form.machine_id, dispatcher: this.form.dispatcher };

@@ -19,25 +19,46 @@ import { attachLabelsTo } from './labelAttach';
 import { envMap } from './spawnBody';
 import type { SpawnForm } from './spawnForm.svelte';
 
-/** Server autosave: the form mirrored to its draft row (created on first
- * save, updated in place after). False when it can't be a draft yet. */
+/** Identity of the form's file set: what decides whether a save has to ship
+ *  the bytes again. */
+export function fileSetKey(files: File[]): string {
+	return files.map((f) => `${f.name}\u0000${f.size}\u0000${f.lastModified}`).join('\n');
+}
+
+/** Write the form to its draft row (created on first save, updated in place
+ *  after) and returns the draft id. Files travel with the creating spawn and
+ *  are re-sent only when the set changed since the last successful save. */
+async function persistDraft(sf: SpawnForm): Promise<string> {
+	const body = sf.draftBody();
+	const files = [...sf.files];
+	const key = fileSetKey(files);
+	if (sf.draftId) {
+		try {
+			await sf.actions.updateDraft(sf.draftId, body);
+			if (key !== sf.syncedFileSet) {
+				await sf.actions.setDraftAttachments(sf.draftId, files);
+				sf.syncedFileSet = key;
+			}
+			return sf.draftId;
+		} catch (e) {
+			if (!(e instanceof ApiError && e.status === 404)) throw e;
+			sf.draftId = null;
+		}
+	}
+	const res = await sf.actions.spawn({ ...body, save_draft: true }, files);
+	sf.draftId = String(res.command_id);
+	sf.syncedFileSet = key;
+	return sf.draftId;
+}
+
+/** Server autosave: the form mirrored to its draft row. False when it can't
+ * be a draft yet. */
 export async function autosave(sf: SpawnForm): Promise<boolean> {
 	sf.cancelAutosave();
 	if (sf.busy || sf.autosaving || !sf.autosaveReady) return false;
 	sf.autosaving = true;
 	try {
-		const body = sf.draftBody();
-		if (sf.draftId) {
-			try {
-				await sf.actions.updateDraft(sf.draftId, body);
-				return true;
-			} catch (e) {
-				if (!(e instanceof ApiError && e.status === 404)) throw e;
-				sf.draftId = null;
-			}
-		}
-		const res = await sf.actions.spawn({ ...body, save_draft: true }, []);
-		sf.draftId = String(res.command_id);
+		await persistDraft(sf);
 		return true;
 	} catch (e) {
 		toasts.error(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
@@ -49,9 +70,7 @@ export async function autosave(sf: SpawnForm): Promise<boolean> {
 
 export async function saveDraft(sf: SpawnForm) {
 	sf.cancelAutosave();
-	const body = sf.draftBody();
-	if (sf.draftId) await sf.actions.updateDraft(sf.draftId, body);
-	else await sf.actions.spawn({ ...body, save_draft: true }, []);
+	await persistDraft(sf);
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
 	toasts.ok(m.spawn_toast_saved_draft());
@@ -63,14 +82,7 @@ export async function saveDraft(sf: SpawnForm) {
  *  and a failed launch leaves it in place. */
 export async function scheduleLaunch(sf: SpawnForm, at: Date) {
 	sf.cancelAutosave();
-	const body = sf.draftBody();
-	let draftId = sf.draftId;
-	if (draftId) await sf.actions.updateDraft(draftId, body);
-	else {
-		const res = await sf.actions.spawn({ ...body, save_draft: true }, []);
-		draftId = String(res.command_id);
-		sf.draftId = draftId;
-	}
+	const draftId = await persistDraft(sf);
 	await sf.actions.scheduleDraftLaunch(draftId, at.toISOString());
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
