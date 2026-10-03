@@ -1,63 +1,81 @@
 <script lang="ts">
 	import { useUsageAnalytics } from '$lib/queries';
 	import { m } from '$lib/paraglide/messages';
-	import { Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
+	import { Card, Cluster, SegmentedControl, Stack, Text } from '@dorsk/tsumikit';
 	import TokensOverTime from './TokensOverTime.svelte';
 	import ModelBreakdown from './ModelBreakdown.svelte';
 	import ActivityHeatmap from './ActivityHeatmap.svelte';
 	import CacheLossCard from './CacheLossCard.svelte';
 	import { RANGES, hasUsage, type Granularity } from './usage-analytics';
 
-	let { rangeKey = '30d' }: { rangeKey?: string } = $props();
+	// The range drives every card in this section and nothing above it (the
+	// tiles and the windows table are fixed windows), so the selector lives
+	// here, right above the charts it changes.
+	let { rangeKey = $bindable('30d') }: { rangeKey?: string } = $props();
 
+	const rangeOptions = RANGES.map((r) => ({ value: r.key, label: r.key }));
 	const range = $derived(RANGES.find((r) => r.key === rangeKey) ?? RANGES[2]);
 	const q = useUsageAnalytics(() => range.days);
 	const data = $derived(q.data);
 	const show = $derived(hasUsage(data));
 </script>
 
-{#if q.isLoading}
-	<Card><Text tone="faint">{m.common_loading()}</Text></Card>
-{:else if !show}
-	<Card><Text tone="faint">{m.home_usage_no_data()}</Text></Card>
-{:else if data}
-	<Stack gap="var(--sp-3)">
-		<div class="charts">
-			<div class="split">
-				<Card>
-					<Stack gap="var(--sp-3)">
-						<Text size="sm" weight="semibold">{m.home_usage_tokens_per_day()}</Text>
-						<TokensOverTime
-							buckets={data.buckets}
-							days={range.days}
-							granularity={data.granularity as Granularity}
-						/>
-					</Stack>
-				</Card>
-				<Card>
-					<Stack gap="var(--sp-3)">
-						<Text size="sm" weight="semibold">{m.home_usage_models_output()}</Text>
-						{#if data.models.length}
-							<ModelBreakdown models={data.models} />
-						{:else}
-							<Text tone="faint" size="sm">{m.home_usage_no_data()}</Text>
-						{/if}
-					</Stack>
-				</Card>
+<Stack gap="var(--sp-3)">
+	<Cluster gap="var(--sp-3)" justify="space-between">
+		<Text size="sm" weight="semibold">{m.home_usage_title()}</Text>
+		<span data-journey="range">
+			<SegmentedControl
+				bind:value={rangeKey}
+				options={rangeOptions}
+				label={m.home_usage_range_label()}
+			/>
+		</span>
+	</Cluster>
+	{#if q.isLoading}
+		<Card><Text tone="faint">{m.common_loading()}</Text></Card>
+	{:else if !show}
+		<Card><Text tone="faint">{m.home_usage_no_data()}</Text></Card>
+	{:else if data}
+		<Stack gap="var(--sp-3)">
+			<div class="charts">
+				<div class="split">
+					<Card>
+						<Stack gap="var(--sp-3)">
+							<Text size="sm" weight="semibold">
+								{data.granularity === 'hour' ? m.home_usage_tokens_per_hour() : m.home_usage_tokens_per_day()}
+							</Text>
+							<TokensOverTime
+								buckets={data.buckets}
+								days={range.days}
+								granularity={data.granularity as Granularity}
+							/>
+						</Stack>
+					</Card>
+					<Card>
+						<Stack gap="var(--sp-3)">
+							<Text size="sm" weight="semibold">{m.home_usage_models_output()}</Text>
+							{#if data.models.length}
+								<ModelBreakdown models={data.models} />
+							{:else}
+								<Text tone="faint" size="sm">{m.home_usage_no_data()}</Text>
+							{/if}
+						</Stack>
+					</Card>
+				</div>
 			</div>
-		</div>
-		<Card>
-			<Stack gap="var(--sp-3)">
-				<Cluster gap="var(--sp-3)" align="baseline">
-					<Text size="sm" weight="semibold">{m.home_usage_heatmap()}</Text>
-					<Text size="xs" tone="faint">{m.home_usage_heatmap_caption()}</Text>
-				</Cluster>
-				<ActivityHeatmap cells={data.heatmap} />
-			</Stack>
-		</Card>
-		<CacheLossCard />
-	</Stack>
-{/if}
+			<Card>
+				<Stack gap="var(--sp-3)">
+					<Cluster gap="var(--sp-3)" align="baseline">
+						<Text size="sm" weight="semibold">{m.home_usage_heatmap()}</Text>
+						<Text size="xs" tone="faint">{m.home_usage_heatmap_caption()}</Text>
+					</Cluster>
+					<ActivityHeatmap cells={data.heatmap} />
+				</Stack>
+			</Card>
+			<CacheLossCard days={range.days} />
+		</Stack>
+	{/if}
+</Stack>
 
 <style>
 	.charts {
