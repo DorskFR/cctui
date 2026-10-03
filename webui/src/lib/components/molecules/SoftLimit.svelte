@@ -79,9 +79,9 @@
 	const showReset = $derived(!usd && pct !== null && resetShort !== null);
 
 	// Label and readout columns are fixed so every track in a list lines up
-	// whatever the window reads; below the density threshold the window name
-	// gives way to the track and survives in the tooltip. Measured rather than
-	// a media query — the stats panel is drag-resizable.
+	// whatever the window reads; below the density threshold the row stacks,
+	// label and readout above a full-width track. Measured rather than a media
+	// query — the stats panel is drag-resizable.
 	let width = $state(0);
 	const isDense = $derived(dense ?? isDenseWidth(width));
 
@@ -100,7 +100,6 @@
 	const wallMs = $derived(paceKind ? wallInMs(pace, resets, now) : null);
 	const rowTitle = $derived.by(() => {
 		const parts: string[] = [];
-		if (isDense) parts.push(label);
 		if (resetText) parts.push(m.capbar_caption_resets({ time: resetText }));
 		if (paceKind && expectedPct !== null) {
 			parts.push(
@@ -130,13 +129,14 @@
 
 <div class="soft-limit" bind:clientWidth={width} title={rowTitle || undefined}>
 	<CapBar
-		label={isDense ? undefined : label}
+		{label}
+		layout={isDense ? 'stacked' : 'row'}
 		value={pct ?? 0}
 		bind:cap={barCap}
 		step={5}
 		warnAt={75}
-		labelWidth={isDense ? '0px' : USAGE_LABEL_W}
-		readoutWidth={USAGE_READOUT_W}
+		labelWidth={USAGE_LABEL_W}
+		readoutWidth={isDense ? 'auto' : USAGE_READOUT_W}
 		readout={showReset || paceKind === 'flame' ? readoutSnippet : readoutText}
 		{readonly}
 		tooltip={readonly

@@ -39,13 +39,14 @@ describe('SoftLimit column widths', () => {
 		}
 	});
 
-	it('takes density from the list rather than measuring itself', () => {
+	it('stacks a dense row so its track spans the full width under label and readout', () => {
 		const dense = render({ utilization: 42, dense: true });
-		expect(dense.querySelector('.label')).toBeNull();
-		expect(col(dense, 'label-w')).toBe('0px');
-		expect(col(dense, 'readout-w')).toBe(USAGE_READOUT_W);
+		expect(dense.classList.contains('stacked')).toBe(true);
+		expect(dense.querySelector('.label')?.textContent).toBe('Weekly');
+		expect(col(dense, 'readout-w')).toBe('auto');
 
 		const wide = render({ utilization: 42, dense: false });
+		expect(wide.classList.contains('stacked')).toBe(false);
 		expect(wide.querySelector('.label')?.textContent).toBe('Weekly');
 	});
 });
