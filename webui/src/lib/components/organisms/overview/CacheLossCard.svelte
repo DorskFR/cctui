@@ -28,7 +28,9 @@
 <Card>
 	<Stack gap="var(--sp-3)">
 		<Cluster gap="var(--sp-3)" align="baseline">
-			<Text size="sm" weight="semibold">{m.home_cache_loss_title_7d()}</Text>
+			<Text size="sm" weight="semibold">
+				{windowDays === 1 ? m.home_cache_loss_title_24h() : m.home_cache_loss_title_7d()}
+			</Text>
 			<Text size="xs" tone="faint" numeric>{compact(totals.tokens.total)}</Text>
 			{#if totals.busts > 0}
 				<Text size="xs" tone="faint" numeric>{m.home_cache_loss_busts({ count: totals.busts })}</Text>
