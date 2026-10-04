@@ -70,7 +70,7 @@
 	}
 	/* Everything else in the row is at its floor by here, so the space between the
 	   chips is the last slack before the time chip spills past the card edge. */
-	@container sess-row (max-width: 34rem) {
+	@container sess-row (max-width: 36.25em) {
 		.gaps {
 			--row-gap: var(--sp-1);
 		}
@@ -82,7 +82,7 @@
 	}
 	/* Below this the row cannot seat both a snippet and a legible title, and the
 	   title is what identifies the session. */
-	@container sess-row (max-width: 34rem) {
+	@container sess-row (max-width: 36.25em) {
 		.snippet {
 			display: none;
 		}
@@ -106,7 +106,7 @@
 		white-space: nowrap;
 		text-overflow: ellipsis;
 	}
-	@container sess-row (max-width: 48rem) {
+	@container sess-row (max-width: 51.25em) {
 		.cwd,
 		.branch {
 			display: none;

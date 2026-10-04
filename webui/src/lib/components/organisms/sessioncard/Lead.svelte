@@ -135,7 +135,7 @@
 	/* The surrounding chips have degraded by here, so the title takes the slack
 	   instead of being the first thing squeezed: a capped, shrinkable title goes
 	   to zero width on a phone, which is both unreadable and untappable. */
-	@container sess-row (max-width: 34rem) {
+	@container sess-row (max-width: 36.25em) {
 		.title.capped {
 			flex: 1 1 auto;
 			max-width: none;
@@ -153,7 +153,7 @@
 		color: var(--text-faint);
 		white-space: nowrap;
 	}
-	@container sess-row (max-width: 40rem) {
+	@container sess-row (max-width: 42.75em) {
 		.activity {
 			display: none;
 		}

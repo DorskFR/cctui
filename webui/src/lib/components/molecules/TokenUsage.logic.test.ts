@@ -119,7 +119,7 @@ describe('cramped-container degradation', () => {
 	});
 
 	it('drops the $ cost as the last step, keeping only Σ', () => {
-		const block = svelte.match(/@container sess-card \(max-width: 16rem\) \{[\s\S]*?\n\t\}/)?.[0] ?? '';
+		const block = svelte.match(/@container sess-card \(max-width: 17em\) \{[\s\S]*?\n\t\}/)?.[0] ?? '';
 		expect(block).toMatch(/\.cost \{\s*display: none;/);
 		expect(block).not.toContain('.sum-compact-only');
 	});
