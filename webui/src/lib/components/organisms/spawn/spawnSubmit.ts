@@ -26,16 +26,17 @@ export function fileSetKey(files: File[]): string {
 }
 
 /** Write the form to its draft row (created on first save, updated in place
- *  after) and returns the draft id. Files travel with the creating spawn and
- *  are re-sent only when the set changed since the last successful save. */
-async function persistDraft(sf: SpawnForm): Promise<string> {
+ *  after) and returns the draft id. With `withFiles` the files go up too,
+ *  re-sent only when the set changed since the last upload; autosave leaves
+ *  them in the browser until the user saves, schedules or launches. */
+async function persistDraft(sf: SpawnForm, withFiles: boolean): Promise<string> {
 	const body = sf.draftBody();
-	const files = [...sf.files];
+	const files = withFiles ? [...sf.files] : [];
 	const key = fileSetKey(files);
 	if (sf.draftId) {
 		try {
 			await sf.actions.updateDraft(sf.draftId, body);
-			if (key !== sf.syncedFileSet) {
+			if (withFiles && key !== sf.syncedFileSet) {
 				await sf.actions.setDraftAttachments(sf.draftId, files);
 				sf.syncedFileSet = key;
 			}
@@ -47,7 +48,7 @@ async function persistDraft(sf: SpawnForm): Promise<string> {
 	}
 	const res = await sf.actions.spawn({ ...body, save_draft: true }, files);
 	sf.draftId = String(res.command_id);
-	sf.syncedFileSet = key;
+	if (withFiles) sf.syncedFileSet = key;
 	return sf.draftId;
 }
 
@@ -58,7 +59,7 @@ export async function autosave(sf: SpawnForm): Promise<boolean> {
 	if (sf.busy || sf.autosaving || !sf.autosaveReady) return false;
 	sf.autosaving = true;
 	try {
-		await persistDraft(sf);
+		await persistDraft(sf, false);
 		return true;
 	} catch (e) {
 		toasts.error(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
@@ -70,7 +71,7 @@ export async function autosave(sf: SpawnForm): Promise<boolean> {
 
 export async function saveDraft(sf: SpawnForm) {
 	sf.cancelAutosave();
-	await persistDraft(sf);
+	await persistDraft(sf, true);
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());
 	toasts.ok(m.spawn_toast_saved_draft());
@@ -82,7 +83,7 @@ export async function saveDraft(sf: SpawnForm) {
  *  and a failed launch leaves it in place. */
 export async function scheduleLaunch(sf: SpawnForm, at: Date) {
 	sf.cancelAutosave();
-	const draftId = await persistDraft(sf);
+	const draftId = await persistDraft(sf, true);
 	await sf.actions.scheduleDraftLaunch(draftId, at.toISOString());
 	drafts.set(LAST_MACHINE, sf.form.machine_id);
 	drafts.set(LAST_SPAWN_NAME, sf.form.name.trim());

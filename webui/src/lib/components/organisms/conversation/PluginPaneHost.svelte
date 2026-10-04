@@ -41,6 +41,7 @@
 	const composer = $derived(composerFor(session.id));
 	const Pane = $derived(module.sessionPane);
 	const me = useMe();
+	// svelte-ignore state_referenced_locally
 	setContext<HostContext>(HOST_CONTEXT_KEY, {
 		...hostContext({ pluginId: plugin.id }),
 		get user() {

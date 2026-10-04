@@ -18,3 +18,12 @@ describe('plugin pane resize grip', () => {
 		expect(hostSource).toContain('cctui_plugin_pane_width:');
 	});
 });
+
+describe('plugin host context', () => {
+	it('remounts per plugin, since the host context captures the plugin id once', async () => {
+		const pane = (await import('../ConversationPane.svelte?raw')).default;
+		const page = (await import('../../../../routes/apps/[id]/[...path]/+page.svelte?raw')).default;
+		expect(pane).toMatch(/\{#key plugins\.current\.info\.id\}\s*<PluginPaneHost/);
+		expect(page).toMatch(/\{#key state\.info\.id\}\s*<PluginPageHost/);
+	});
+});

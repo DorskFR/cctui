@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { mount, unmount, type ComponentProps } from 'svelte';
 import AttachmentList from './AttachmentList.svelte';
 
 const previewFile = vi.fn();
@@ -22,17 +22,20 @@ const files = [
 function render(onremove = (_name: string) => {}) {
 	URL.createObjectURL = vi.fn(() => 'blob:thumb');
 	URL.revokeObjectURL = vi.fn();
-	comp = mount(AttachmentList, { target: document.body, props: { files, onremove } });
+	const att = { files, remove: onremove, images: { pending: [] } } as unknown as ComponentProps<
+		typeof AttachmentList
+	>['att'];
+	comp = mount(AttachmentList, { target: document.body, props: { att } });
 	const list = document.querySelector('[data-tsu="AttachmentList"]');
 	if (!list) throw new Error('list not found');
 	return list;
 }
 
 describe('AttachmentList', () => {
-	it('renders auto tiles, numbered to match the [#N] prompt markers', () => {
+	it('renders auto tiles with no numbers', () => {
 		const list = render();
 		expect(list.classList.contains('auto')).toBe(true);
-		expect([...list.querySelectorAll('li.chip .num')].map((n) => n.textContent)).toEqual(['1', '2']);
+		expect(list.querySelectorAll('.num').length).toBe(0);
 		expect(list.querySelectorAll('li.tile').length).toBe(2);
 	});
 

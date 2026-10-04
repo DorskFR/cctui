@@ -352,13 +352,15 @@
 
 <div class="conv-pane" data-chrome={chrome}>
 		{#if plugins.current && plugins.open}
-			<PluginPaneHost
-				plugin={plugins.current.info}
-				module={plugins.current.module}
-				{session}
-				params={plugins.open.params}
-				onclose={() => plugins.close()}
-			/>
+			{#key plugins.current.info.id}
+				<PluginPaneHost
+					plugin={plugins.current.info}
+					module={plugins.current.module}
+					{session}
+					params={plugins.open.params}
+					onclose={() => plugins.close()}
+				/>
+			{/key}
 		{/if}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div

@@ -22,6 +22,24 @@ export function isSubmitChord(e: KeyboardEvent): boolean {
 	return e.key === 'Enter' && (e.metaKey || e.ctrlKey);
 }
 
+/** Run `submit` on a submit chord pressed anywhere inside `node`; it returns
+ *  whether it acted, which decides whether the key is consumed. */
+export function submitChord(node: HTMLElement, submit: () => boolean) {
+	let current = submit;
+	const onKey = (e: KeyboardEvent) => {
+		if (isSubmitChord(e) && current()) e.preventDefault();
+	};
+	node.addEventListener('keydown', onKey);
+	return {
+		update(next: () => boolean) {
+			current = next;
+		},
+		destroy() {
+			node.removeEventListener('keydown', onKey);
+		}
+	};
+}
+
 /** True when a keydown carries the platform "archive" chord — ⌘+E on Mac,
  *  Ctrl+E elsewhere (Beeper/Slack-style). Deliberately platform-EXCLUSIVE (not
  *  "either modifier" like the submit chord) so it doesn't clobber the other

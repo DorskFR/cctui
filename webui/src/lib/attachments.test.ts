@@ -2,10 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
 	appendFileTokens,
 	attachFiles,
-	clipLegend,
-	expandClipTokens,
 	insertTokens,
-	renumberClipTokens,
+	legacyMarkersToNames,
+	removeFileToken,
 	DEFAULT_UPLOAD_CAPS,
 	extForType,
 	fileCapError,
@@ -79,41 +78,31 @@ describe('attachFiles', () => {
 	});
 });
 
-describe('clip tokens', () => {
-	it('marks each attached file with a short numbered token at the caret', () => {
-		const shots = [1, 2, 3].map((i) => f(`Screenshot 2026-10-02 at 11.3${i}.22.png`));
-		const { files, text, caret } = attachFiles([], 'before after', shots, 'clip', 6);
-		expect(files).toHaveLength(3);
-		expect(text).toBe('before [#1] [#2] [#3] after');
-		expect(caret).toBe('before [#1] [#2] [#3]'.length);
-		expect(text.length).toBeLessThan(40);
+describe('file name tokens', () => {
+	it('marks each attached file with its name at the caret', () => {
+		const shots = [1, 2].map((i) => f(`Screenshot 2026-10-02 at 11.3${i}.22.png`));
+		const { files, text, caret } = attachFiles([], 'before after', shots, 'name', 6);
+		expect(files).toHaveLength(2);
+		const tokens = '[Screenshot 2026-10-02 at 11.31.22.png] [Screenshot 2026-10-02 at 11.32.22.png]';
+		expect(text).toBe(`before ${tokens} after`);
+		expect(caret).toBe(`before ${tokens}`.length);
 	});
 
-	it('numbers new files after the ones already attached and appends without a caret', () => {
-		const { text } = attachFiles([f('a.png')], 'see [#1]', [f('b.png')]);
-		expect(text).toBe('see [#1] [#2]');
+	it('names a renamed duplicate by its new name and appends without a caret', () => {
+		const { text } = attachFiles([f('a.png')], 'see [a.png]', [f('a.png')]);
+		expect(text).toBe('see [a.png] [a-2.png]');
 	});
 
-	it('expands each token to its file at its own position, in any order', () => {
-		const files = [f('a.png'), f('b.png')];
-		expect(expandClipTokens('second [#2] then first [#1]', files)).toBe(
-			'second [b.png] then first [a.png]'
+	it("drops a removed file's token and leaves the others", () => {
+		expect(removeFileToken('a [x.png] b [y.png]', 'x.png')).toBe('a b [y.png]');
+		expect(removeFileToken('[x.png] text', 'x.png')).toBe('text');
+	});
+
+	it("turns an older draft's numbered markers into names", () => {
+		expect(legacyMarkersToNames('second [#2] then [📎1]', ['a.png', 'b.png'])).toBe(
+			'second [b.png] then [a.png]'
 		);
-		expect(
-			expandClipTokens('[#1] and [#2]', files, ['/tmp/u/a.png', '/tmp/u/b-1.png'])
-		).toBe('[a.png] and [b-1.png]');
-		expect(expandClipTokens('stray [#9] here', files)).toBe('stray here');
-		expect(expandClipTokens('legacy [📎2]', files)).toBe('legacy [b.png]');
-	});
-
-	it('renumbers tokens when a file is removed and drops the removed one', () => {
-		const out = renumberClipTokens('a [#1] b [#2] c [#3]', ['x', 'y', 'z'], ['x', 'z']);
-		expect(out).toBe('a [#1] b c [#2]');
-		expect(renumberClipTokens('[#1] text', ['x'], [])).toBe('text');
-	});
-
-	it('lists what each token points at', () => {
-		expect(clipLegend([f('a.png'), f('b.pdf')])).toBe('#1 a.png · #2 b.pdf');
+		expect(legacyMarkersToNames('stray [#9] here', ['a.png'])).toBe('stray here');
 	});
 });
 

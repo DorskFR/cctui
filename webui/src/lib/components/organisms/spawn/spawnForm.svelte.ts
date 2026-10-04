@@ -1,4 +1,3 @@
-import { imageAttachments } from '$lib/imageAttachments.svelte';
 import { errMessage } from '$lib/api';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SessionProfile } from '@bindings/SessionProfile';
@@ -29,18 +28,8 @@ import {
 	normalizeDir
 } from '$lib/drafts';
 import { recordProfileUse, PROFILE_USES } from '$lib/spawnMemory';
-import {
-	attachFiles,
-	clipLegend,
-	expandClipTokens,
-	fileCapError,
-	maskedPaste,
-	removeFileByName,
-	renumberClipTokens,
-	type FileTokenMode
-} from '$lib/attachments';
-import { uploadCaps } from '$lib/uploadCaps.svelte';
-import { attachmentStore, restoreDraftTokens } from '$lib/attachmentStore';
+import { attachmentStore } from '$lib/attachmentStore';
+import { PromptAttachments } from '$lib/promptAttachments.svelte';
 import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '$lib/followup';
 import { settings } from '$lib/settings.svelte';
 import { m } from '$lib/paraglide/messages';
@@ -77,7 +66,6 @@ export interface SpawnFormOptions {
  * queries and effects).
  */
 export class SpawnForm {
-	readonly images = imageAttachments();
 	readonly onclose: () => void;
 	readonly onspawned: (sessionId: string | null) => void;
 	private readonly autosaveDelay: () => number;
@@ -106,8 +94,19 @@ export class SpawnForm {
 	// never reach disk; only env keys go into the draft. Files live in
 	// IndexedDB (attachmentStore), keyed like the draft.
 	envRows = $state<EnvRow[]>([]);
-	files = $state<File[]>([]);
 	promptEl = $state<HTMLTextAreaElement | null>(null);
+	readonly att = new PromptAttachments({
+		input: () => this.form.prompt,
+		setInput: (text) => (this.form.prompt = text),
+		el: () => this.promptEl,
+		enabled: () => !this.busy
+	});
+	get files(): File[] {
+		return this.att.files;
+	}
+	set files(files: File[]) {
+		this.att.files = files;
+	}
 	private filesRestored = $state(false);
 	/** `fileSetKey` of the files the draft row holds; '' = none. */
 	syncedFileSet = '';
@@ -175,10 +174,8 @@ export class SpawnForm {
 	);
 
 	badEnvKeys = $derived(this.envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim())));
-	fileError = $derived(fileCapError(this.files, uploadCaps));
-	fileLegend = $derived(clipLegend(this.files));
 	secretsValid = $derived(
-		this.badEnvKeys.length === 0 && !this.fileError && this.images.pending.length === 0
+		this.badEnvKeys.length === 0 && !this.att.error && this.att.images.pending.length === 0
 	);
 	spawnValid = $derived(!!this.form.machine_id && !!this.form.working_dir.trim() && this.harnessValid);
 	dispatchValid = $derived(
@@ -191,7 +188,7 @@ export class SpawnForm {
 	// Drafts are a machine-spawn concept: valid whenever the spawn form is;
 	// secrets needn't be valid yet (entered at launch).
 	draftValid = $derived(
-		this.target === 'machine' && this.spawnValid && this.images.pending.length === 0
+		this.target === 'machine' && this.spawnValid && this.att.images.pending.length === 0
 	);
 	spawnLabel = $derived(
 		`${this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
@@ -228,7 +225,6 @@ export class SpawnForm {
 	}
 
 	private effects() {
-		$effect(() => () => this.images.reset());
 		$effect(() => {
 			const list = this.machineList;
 			if (this.form.machine_id || !list.length) return;
@@ -354,32 +350,19 @@ export class SpawnForm {
 
 	private restoreFiles() {
 		let live = true;
-		(async () => {
-			const restored = await attachmentStore.get(this.loadKey);
-			if (!live) return;
-			// Anything attached while the restore was in flight stays.
-			const restoredNames = new Set(restored.files.map((f) => f.name));
-			const added = this.files.filter((f) => !restoredNames.has(f.name));
-			this.files = [...restored.files, ...added];
-			if (this.followupFile && !this.files.some((f) => f.name === BRIEF_FILE_NAME)) {
-				this.files = [
-					...this.files,
-					new File([this.followupFile], BRIEF_FILE_NAME, { type: 'text/markdown' })
-				];
-			}
-			const present = new Set(this.files.map((f) => f.name));
-			const missing = restored.missing.filter((n) => !present.has(n));
-			const { text, dropped } = restoreDraftTokens(this.form.prompt, { ...restored, missing });
-			if (dropped) {
-				this.form.prompt = text;
-				toasts.info(m.attachments_missing_dropped({ count: dropped }));
-			}
+		void this.att.restore(this.loadKey, (files) => this.withFollowupBrief(files)).then((ok) => {
+			if (!live || !ok) return;
 			this.filesRestored = true;
 			if (this.loadKey !== this.slotKey) void attachmentStore.clear(this.loadKey);
-		})();
+		});
 		return () => {
 			live = false;
 		};
+	}
+
+	private withFollowupBrief(files: File[]): File[] {
+		if (!this.followupFile || files.some((f) => f.name === BRIEF_FILE_NAME)) return files;
+		return [...files, new File([this.followupFile], BRIEF_FILE_NAME, { type: 'text/markdown' })];
 	}
 
 	cancelAutosave() {
@@ -388,9 +371,8 @@ export class SpawnForm {
 	}
 
 	buildSpawnBody(): SpawnRequest {
-		const f = this.effectiveForm;
 		return buildSpawnBody(
-			{ ...f, prompt: expandClipTokens(f.prompt, this.files) },
+			this.effectiveForm,
 			this.spawnProvider,
 			envMap(this.envRows),
 			this.followupParent,
@@ -426,7 +408,7 @@ export class SpawnForm {
 		this.form = { ...blank, machine_id: this.form.machine_id, dispatcher: this.form.dispatcher };
 		this.envRows = [];
 		this.files = [];
-		this.images.reset();
+		this.att.images.reset();
 		this.oneOff = null;
 	}
 	discardMirror() {
@@ -445,40 +427,6 @@ export class SpawnForm {
 	setTarget(value: string) {
 		this.target = value === 'dispatch' ? 'dispatch' : 'machine';
 	}
-
-	addFiles = (incoming: File[]) => this.attach(incoming, 'clip');
-
-	private attach(incoming: File[], mode: FileTokenMode) {
-		if (this.busy) return;
-		let caret = this.promptEl ? this.promptEl.selectionStart : undefined;
-		this.images.add(
-			incoming,
-			(file) => {
-				const next = attachFiles(this.files, this.form.prompt, [file], mode, caret);
-				caret = next.caret;
-				this.files = next.files;
-				this.form.prompt = next.text;
-			},
-			(file) => toasts.error(m.attachments_compression_failed({ name: file.name }))
-		);
-	}
-
-	/** A long text paste stages as a `paste-N.txt` attachment; false leaves the
-	 *  paste to the field. */
-	addPaste = (text: string): boolean => {
-		if (this.busy) return false;
-		const paste = maskedPaste(text, this.files, this.form.prompt);
-		if (!paste) return false;
-		this.attach([paste], 'name');
-		toasts.ok(m.composer_large_paste({ name: paste.name, lines: text.split('\n').length }));
-		return true;
-	};
-	removeFile = (name: string) => {
-		const before = this.files.map((f) => f.name);
-		this.files = removeFileByName(this.files, name);
-		const prompt = renumberClipTokens(this.form.prompt, before, this.files.map((f) => f.name));
-		if (prompt !== this.form.prompt) this.form.prompt = prompt;
-	};
 
 	rememberProfileUse(p: SessionProfile | null) {
 		if (!p) return;

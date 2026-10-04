@@ -52,16 +52,11 @@ export function mergeFiles(current: File[], incoming: File[]): File[] {
 	return mergeFilesRenamed(current, incoming).files;
 }
 
-/** Short inline marker for the attachment at `index`: `[#1]`, `[#2]`, …
- *  The number is the file's position in the list, so it stays derivable from
- *  the persisted list alone. Drafts saved before still carry `[📎N]`. */
-export const clipToken = (index: number) => `[#${index + 1}]`;
+/** Numbered markers drafts saved by older builds carry in place of `[name]`. */
+const LEGACY_MARKER = / ?\[(?:#|📎)(\d+)\]/gu;
 
-export const CLIP_TOKEN = /\[(?:#|📎)(\d+)\]/gu;
-
-/** How attaching marks the draft: a short `[#N]`, the full `[name]` (a masked
- *  paste, whose name is already short), or nothing. */
-export type FileTokenMode = 'clip' | 'name' | false;
+/** How attaching marks the draft: the file's `[name]`, or nothing. */
+export type FileTokenMode = 'name' | false;
 
 /** Splice `tokens` into `text` at `caret` (end when omitted), space-separated
  *  from the words around it. The caret comes back just after the tokens. */
@@ -85,51 +80,30 @@ export function attachFiles(
 	files: File[],
 	text: string,
 	incoming: File[],
-	mode: FileTokenMode = 'clip',
+	mode: FileTokenMode = 'name',
 	caret?: number
 ): { files: File[]; text: string; caret: number } {
 	const merged = mergeFilesRenamed(files, incoming);
-	const base = merged.files.length - merged.added.length;
 	const tokens =
-		mode === 'clip'
-			? merged.added.map((_, i) => clipToken(base + i))
-			: mode === 'name'
-				? merged.added.map((f) => `[${f.name}]`).filter((t) => !text.includes(t))
-				: [];
+		mode === 'name' ? merged.added.map((f) => `[${f.name}]`).filter((t) => !text.includes(t)) : [];
 	const next = insertTokens(text, tokens, caret);
 	return { files: merged.files, ...next };
 }
 
-/** Follow the list from `before` to `after` (names, in order): each `[#N]`
- *  takes its file's new number, and a removed file's token goes with it. */
-export function renumberClipTokens(text: string, before: string[], after: string[]): string {
+/** Rewrite an older draft's `[#N]` markers as the `[name]` of the N-th entry
+ *  of `names`; a marker past the list is dropped. */
+export function legacyMarkersToNames(text: string, names: string[]): string {
 	return text
-		.replace(/ ?\[(?:#|📎)(\d+)\]/gu, (tok, n: string) => {
-			const name = before[Number(n) - 1];
-			const j = name === undefined ? -1 : after.indexOf(name);
-			if (j < 0) return name === undefined ? tok : '';
-			return `${tok.startsWith(' ') ? ' ' : ''}${clipToken(j)}`;
+		.replace(LEGACY_MARKER, (tok, n: string) => {
+			const name = names[Number(n) - 1];
+			return name === undefined ? '' : `${tok.startsWith(' ') ? ' ' : ''}[${name}]`;
 		})
 		.replace(/^ +/, '');
 }
 
-/** Swap each `[#N]` for `[name]`: the staged name from `paths` when the
- *  upload returned one, else the file's own. A number past the list points at
- *  nothing the agent will receive, so it is dropped. */
-export function expandClipTokens(text: string, files: File[], paths: string[] = []): string {
-	return text
-		.replace(/ ?\[(?:#|📎)(\d+)\]/gu, (tok, n: string) => {
-			const i = Number(n) - 1;
-			const file = files[i];
-			if (!file) return '';
-			return `${tok.startsWith(' ') ? ' ' : ''}[${paths[i]?.split('/').pop() || file.name}]`;
-		})
-		.replace(/^ +/, '');
-}
-
-/** `#1 a.png · #2 b.pdf`: what each inline marker points at. */
-export function clipLegend(files: File[]): string {
-	return files.map((f, i) => `#${i + 1} ${f.name}`).join(' · ');
+/** Drop the `[name]` token of a removed file from the draft. */
+export function removeFileToken(text: string, name: string): string {
+	return text.split(` [${name}]`).join('').split(`[${name}]`).join('').replace(/^ +/, '');
 }
 
 const PASTE_NAME = /\bpaste-(\d+)\.txt\b/g;

@@ -56,6 +56,7 @@
 	// grants it this user's permissions, so it must take a deliberate action on
 	// this page — a single click from a link the attacker sent is exactly the
 	// device-code phishing flow.
+	// svelte-ignore state_referenced_locally
 	const prefilled = isCompleteUserCode(code);
 </script>
 

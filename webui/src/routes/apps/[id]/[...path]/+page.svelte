@@ -42,7 +42,9 @@
 	{:else if plugins.isPending || state.status === 'loading'}
 		<EmptyState loading title={m.plugins_page_loading()} data-journey="plugin-page-loading" />
 	{:else if state.status === 'ready' && ready?.status === 'ready'}
-		<PluginPageHost plugin={state.info} module={ready.module} {basePath} {path} {navigate} />
+		{#key state.info.id}
+			<PluginPageHost plugin={state.info} module={ready.module} {basePath} {path} {navigate} />
+		{/key}
 	{:else if state.status === 'failed'}
 		<EmptyState
 			tone="danger"

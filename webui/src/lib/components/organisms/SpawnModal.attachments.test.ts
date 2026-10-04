@@ -113,13 +113,13 @@ describe("SpawnModal attachment persistence", () => {
     prompt().dispatchEvent(new Event("input", { bubbles: true }));
     await tick();
     await pick([file("a.txt"), file("b.txt")]);
-    expect(prompt().value).toBe("do it [#1] [#2]");
+    expect(prompt().value).toBe("do it [a.txt] [b.txt]");
     expect(chips()).toEqual(["a.txt", "b.txt"]);
     await close();
 
     await open();
     expect(chips()).toEqual(["a.txt", "b.txt"]);
-    expect(prompt().value).toBe("do it [#1] [#2]");
+    expect(prompt().value).toBe("do it [a.txt] [b.txt]");
   });
 
   it("drops tokens whose file is missing", async () => {

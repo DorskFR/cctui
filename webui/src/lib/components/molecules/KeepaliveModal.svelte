@@ -16,13 +16,16 @@
 	const actions = useSessionActions();
 	const current = $derived(session.keepalive ?? null);
 
+	// svelte-ignore state_referenced_locally
 	let enabled = $state(!!session.keepalive);
+	// svelte-ignore state_referenced_locally
 	let intervalSecs = $state(
 		String(
 			session.keepalive?.interval_secs ??
 				defaultIntervalSecs(session.adapter_id, session.model ?? null)
 		)
 	);
+	// svelte-ignore state_referenced_locally
 	let maxTicks = $state(String(session.keepalive?.max_ticks ?? DEFAULT_MAX_TICKS));
 	let saving = $state(false);
 	let error = $state<string | null>(null);
