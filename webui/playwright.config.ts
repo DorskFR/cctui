@@ -56,7 +56,7 @@ export default defineConfig({
 			name: 'hermetic',
 			// Anchored to the filename: testMatch sees the absolute path, so a bare
 			// `tiles-` also matches every spec under a worktree named for the branch.
-			testMatch: /(^|[\\/])tiles-[^\\/]*\.spec\.ts$/,
+			testMatch: /(^|[\\/])(tiles-|fontscale-)[^\\/]*\.spec\.ts$/,
 			use: { baseURL: headerUrl }
 		},
 		{

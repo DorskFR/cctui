@@ -1,27 +1,27 @@
 <script lang="ts">
-	// Pending attachments for the spawn modal and the composer: the kit list
-	// (tiles once `compact` and narrow) plus the upload cap error.
 	import { fileCapError } from '$lib/attachments';
+	import { previewFile } from '$lib/fileviewer';
 	import { uploadCaps } from '$lib/uploadCaps.svelte';
+	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
 	import { AttachmentList } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
+	import ImageCompressionStatus from './ImageCompressionStatus.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	let {
-		files,
-		onremove,
-		compact = false
-	}: { files: File[]; onremove: (name: string) => void; compact?: boolean } = $props();
+	let { att }: { att: Pick<PromptAttachments, 'files' | 'images' | 'remove'> } = $props();
 
-	const error = $derived(fileCapError(files, uploadCaps));
+	const error = $derived(fileCapError(att.files, uploadCaps));
 </script>
 
-{#if files.length}
+<ImageCompressionStatus pending={att.images.pending} />
+{#if att.files.length}
 	<AttachmentList
-		{files}
-		tiles={compact ? 'auto' : false}
+		files={att.files}
+		tiles="auto"
 		removeLabel={m.common_remove()}
-		onremove={(i) => onremove(files[i].name)}
+		openLabel={m.common_open()}
+		onremove={(i) => att.remove(att.files[i].name)}
+		onopen={(i) => previewFile(att.files[i])}
 	/>
 {/if}
 {#if error}<Error>{error}</Error>{/if}

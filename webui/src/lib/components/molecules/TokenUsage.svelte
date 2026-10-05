@@ -167,7 +167,7 @@
 	   flex:none, so the molecule's own inline size always equals its content size
 	   and a self-query could never fire. They come last so they win the
 	   equal-specificity tie against the defaults above. */
-	@container sess-card (max-width: 26rem) {
+	@container sess-card (max-width: 27.75em) {
 		.detail {
 			display: none;
 		}
@@ -175,12 +175,12 @@
 			display: contents;
 		}
 	}
-	@container sess-card (max-width: 16rem) {
+	@container sess-card (max-width: 17em) {
 		.cost {
 			display: none;
 		}
 	}
-	@container sess-row (max-width: 40rem) {
+	@container sess-row (max-width: 42.75em) {
 		.detail {
 			display: none;
 		}
@@ -188,7 +188,7 @@
 			display: contents;
 		}
 	}
-	@container sess-row (max-width: 20rem) {
+	@container sess-row (max-width: 21.25em) {
 		.cost {
 			display: none;
 		}

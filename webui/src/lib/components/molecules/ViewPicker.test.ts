@@ -34,13 +34,13 @@ describe('square toolbar pickers ride the kit Button control/square contract', (
 		expect(row).not.toBeNull();
 		expect(row.className).toContain('btn-block');
 		expect(document.querySelectorAll('button')).toHaveLength(1);
+		expect(row.textContent).toContain('List');
+		row.click();
+		flushSync();
 		expect(row.textContent).toContain('Cards');
 		row.click();
 		flushSync();
 		expect(row.textContent).toContain('Tiles');
-		row.click();
-		flushSync();
-		expect(row.textContent).toContain('List');
 	});
 	it('menu rows stay plain full-width rows without a Button', () => {
 		comp = mount(DimensionPicker, {

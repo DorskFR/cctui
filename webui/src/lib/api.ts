@@ -118,18 +118,21 @@ export function apiBlob(href: string): Promise<Response> {
 	return apiFetch(href);
 }
 
-/** POST a `multipart/form-data` body (file uploads). The browser sets
+/** Send a `multipart/form-data` body (file uploads). The browser sets
  *  the `Content-Type` boundary itself, so we must NOT set it here. Shares the
  *  auth + error handling of {@link request}. */
-async function postForm<T>(path: string, form: FormData): Promise<T> {
-	const res = await apiFetch(buildUrl(apiBase(), path), { method: 'POST', body: form });
+async function sendForm<T>(method: 'POST' | 'PUT', path: string, form: FormData): Promise<T> {
+	const res = await apiFetch(buildUrl(apiBase(), path), { method, body: form });
 	return handle<T>(res);
 }
+const postForm = <T>(path: string, form: FormData) => sendForm<T>('POST', path, form);
+const putForm = <T>(path: string, form: FormData) => sendForm<T>('PUT', path, form);
 
 export const api = {
 	get: <T>(path: string, query?: RequestOpts['query']) => request<T>(apiBase(), path, { query }),
 	post: <T>(path: string, body?: unknown) => request<T>(apiBase(), path, { method: 'POST', body }),
 	postForm,
+	putForm,
 	patch: <T>(path: string, body?: unknown) =>
 		request<T>(apiBase(), path, { method: 'PATCH', body }),
 	put: <T>(path: string, body?: unknown, opts?: { keepalive?: boolean }) =>

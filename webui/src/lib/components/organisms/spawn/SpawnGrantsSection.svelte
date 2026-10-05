@@ -8,16 +8,13 @@
 </script>
 
 <SpawnAddons
-	pending={sf.images.pending}
 	bind:labelIds={sf.form.labels}
 	bind:envRows={sf.envRows}
-	files={sf.files}
+	att={sf.att}
 	allLabels={sf.allLabels}
 	envInvalid={sf.badEnvKeys.length > 0}
 	attachments={sf.target === 'machine'}
 	labelActions={sf.actions}
-	onfiles={sf.addFiles}
-	onremovefile={sf.removeFile}
 />
 {#if sf.followupParent}
 	<Checkbox bind:checked={sf.archiveSource} label={m.followup_archive_source()} />

@@ -164,6 +164,7 @@ export const ROUTES = [
   { id: "post_sessions_by_id_schedule_launch", method: "POST", path: "/sessions/{id}/schedule-launch", summary: "Queue a draft session to launch later.", request: null, response: null },
   { id: "post_sessions_by_id_cancel_launch", method: "POST", path: "/sessions/{id}/cancel-launch", summary: "Cancel a draft session's queued launch.", request: null, response: null },
   { id: "put_sessions_by_id_draft", method: "PUT", path: "/sessions/{id}/draft", summary: "Replace a draft session's stored spawn payload in place.", request: null, response: null },
+  { id: "put_sessions_by_id_draft_attachments", method: "PUT", path: "/sessions/{id}/draft-attachments", summary: "Replace a draft session's stored attachments.", request: null, response: null },
   { id: "post_sessions_by_id_interrupt", method: "POST", path: "/sessions/{id}/interrupt", summary: "Interrupt a session's current turn.", request: null, response: null },
   { id: "post_sessions_by_id_resume", method: "POST", path: "/sessions/{id}/resume", summary: "Resume an exited session.", request: null, response: null },
   { id: "post_sessions_by_id_set_model", method: "POST", path: "/sessions/{id}/set-model", summary: "Change a session's model.", request: null, response: null },

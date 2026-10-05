@@ -135,18 +135,18 @@ describe('totalBytes', () => {
 describe('restoreDraftTokens', () => {
 	const file = (name: string) => new File(['x'], name);
 
-	it('drops the markers of files that did not survive and renumbers the rest', () => {
-		const r = restoreDraftTokens('a [📎1] b [📎2] c [📎3] [paste-1.txt]', {
+	it("names an older draft's markers and drops the tokens of files that did not survive", () => {
+		const r = restoreDraftTokens('a [#1] b [y.png] c [📎3] [paste-1.txt]', {
 			files: [file('x.png'), file('z.png')],
 			missing: ['y.png', 'paste-1.txt'],
 			names: ['x.png', 'y.png', 'z.png', 'paste-1.txt']
 		});
-		expect(r.text).toBe('a [📎1] b c [📎2]');
+		expect(r.text).toBe('a [x.png] b c [z.png]');
 		expect(r.dropped).toBe(2);
 	});
 
 	it('leaves the draft alone when every file came back', () => {
-		const text = 'see [📎1]';
+		const text = 'see [x.png]';
 		expect(restoreDraftTokens(text, { files: [file('x.png')], missing: [], names: ['x.png'] })).toEqual({
 			text,
 			dropped: 0

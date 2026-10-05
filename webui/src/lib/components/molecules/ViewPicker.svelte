@@ -33,8 +33,8 @@
 	const modes: ViewMode[] = $derived(tiles ? ['list', 'grid', 'tiles'] : ['list', 'grid']);
 	const options = $derived(modes.map((value) => ({ value, icon: ICONS[value] })));
 	const next = $derived(modes[(modes.indexOf(view) + 1) % modes.length] ?? 'list');
-	// The menu row is an action, so it names the view it switches TO.
-	const target = $derived(m.sessions_view_title({ view: LABELS[next]() }));
+	// Named like the Color by / Group by rows: the view on screen now.
+	const current = $derived(m.sessions_view_title({ view: LABELS[view]() }));
 </script>
 
 {#if menu}
@@ -44,11 +44,11 @@
 		block
 		style={MENU_ROW}
 		data-journey="view"
-		title={target}
+		title={current}
 		onclick={() => (view = next)}
 	>
-		<span style={MENU_ROW_ICON}><Icon name={ICONS[next]} size={18} /></span>
-		<span>{target}</span>
+		<span style={MENU_ROW_ICON}><Icon name={ICONS[view]} size={18} /></span>
+		<span>{current}</span>
 	</Button>
 {:else}
 	<span class="vp" data-journey="view">

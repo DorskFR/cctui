@@ -1,6 +1,16 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { capFromBar, capToBar, resetIn, resetInShort, usdPct, usdReadout, withCap } from './cap-bar.logic';
+import {
+	capFromBar,
+	capToBar,
+	isDenseWidth,
+	resetIn,
+	resetInShort,
+	USAGE_DENSE_BELOW_PX,
+	usdPct,
+	usdReadout,
+	withCap
+} from './cap-bar.logic';
 
 describe('cap ↔ bar', () => {
 	it('treats 100 as no cap and rounds otherwise', () => {
@@ -68,5 +78,13 @@ describe('resetInShort', () => {
 	it('is null once the window has reset', () => {
 		expect(resetInShort('2026-09-05T09:00:00Z', now)).toBeNull();
 		expect(resetInShort(null, now)).toBeNull();
+	});
+});
+
+describe('isDenseWidth', () => {
+	it('is dense only once a measured width drops under the threshold', () => {
+		expect(isDenseWidth(0)).toBe(false);
+		expect(isDenseWidth(USAGE_DENSE_BELOW_PX)).toBe(false);
+		expect(isDenseWidth(USAGE_DENSE_BELOW_PX - 1)).toBe(true);
 	});
 });

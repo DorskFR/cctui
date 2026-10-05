@@ -8,6 +8,8 @@ import {
 	classify,
 	deniedRoots,
 	installFileViewer,
+	previewFile,
+	previewable,
 	refusalMessage,
 	retargetHref
 } from './fileviewer';
@@ -219,5 +221,39 @@ describe('fileviewer inline refusals', () => {
 
 		click(a);
 		await vi.waitFor(() => expect(document.querySelector('.md-file-error')).toBeNull());
+	});
+});
+
+describe('fileviewer previewFile', () => {
+	afterEach(() => {
+		document.body.innerHTML = '';
+	});
+
+	it('only previews what the overlay can show', () => {
+		expect(previewable('image/png')).toBe(true);
+		expect(previewable('text/plain')).toBe(true);
+		expect(previewable('text/markdown')).toBe(true);
+		expect(previewable('application/pdf')).toBe(false);
+		expect(previewable('')).toBe(false);
+	});
+
+	it('opens a local image in the lightbox overlay and revokes its URL on close', async () => {
+		URL.createObjectURL = vi.fn(() => 'blob:local');
+		const revoke = vi.fn();
+		URL.revokeObjectURL = revoke;
+		await previewFile(new File([new Uint8Array(4)], 'shot 12.21.15.png', { type: 'image/png' }));
+		const overlay = document.querySelector('.md-fileviewer');
+		expect(overlay?.getAttribute('aria-label')).toBe('shot 12.21.15.png');
+		expect(overlay?.querySelector('img.md-lightbox-img')?.getAttribute('src')).toBe('blob:local');
+		document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(document.querySelector('.md-fileviewer')).toBeNull();
+		expect(revoke).toHaveBeenCalledWith('blob:local');
+	});
+
+	it('opens a local text file as preformatted text', async () => {
+		URL.createObjectURL = vi.fn(() => 'blob:text');
+		URL.revokeObjectURL = vi.fn();
+		await previewFile(new File(['hello\nworld'], 'paste-1.txt', { type: 'text/plain' }));
+		expect(document.querySelector('.md-fileviewer-pre')?.textContent).toBe('hello\nworld');
 	});
 });

@@ -59,12 +59,12 @@
 	.abbr {
 		display: none;
 	}
-	@container sess-card (max-width: 26rem) {
+	@container sess-card (max-width: 27.75em) {
 		.effort {
 			display: none;
 		}
 	}
-	@container sess-card (max-width: 16rem) {
+	@container sess-card (max-width: 17em) {
 		.full {
 			display: none;
 		}
@@ -72,7 +72,7 @@
 			display: inline;
 		}
 	}
-	@container sess-card (max-width: 14rem) {
+	@container sess-card (max-width: 15em) {
 		.fam {
 			display: none;
 		}
@@ -80,12 +80,12 @@
 			display: inline;
 		}
 	}
-	@container sess-row (max-width: 40rem) {
+	@container sess-row (max-width: 42.75em) {
 		.effort {
 			display: none;
 		}
 	}
-	@container sess-row (max-width: 34rem) {
+	@container sess-row (max-width: 36.25em) {
 		.full {
 			display: none;
 		}
@@ -98,7 +98,7 @@
 			display: none;
 		}
 	}
-	@container sess-row (max-width: 30rem) {
+	@container sess-row (max-width: 32em) {
 		.fam {
 			display: none;
 		}

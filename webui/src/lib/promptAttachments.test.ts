@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
-import Host from './ComposerAttachments.host.test.svelte';
-import type { ComposerAttachments, ComposerAttachmentsOpts } from './composerAttachments.svelte';
+import Host from './PromptAttachments.host.test.svelte';
+import type { PromptAttachments, PromptAttachmentsOpts } from './promptAttachments.svelte';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -22,9 +22,9 @@ function fakeSync(
 	};
 }
 
-async function make(over: Partial<ComposerAttachmentsOpts> = {}) {
+async function make(over: Partial<PromptAttachmentsOpts> = {}) {
 	let input = over.input?.() ?? '';
-	let ready: ComposerAttachments | undefined;
+	let ready: PromptAttachments | undefined;
 	const sync = over.sync ?? fakeSync();
 	comp = mount(Host, {
 		target: document.body,
@@ -42,7 +42,7 @@ async function make(over: Partial<ComposerAttachmentsOpts> = {}) {
 		}
 	});
 	await flush();
-	return { a: ready as ComposerAttachments, sync, text: () => input };
+	return { a: ready as PromptAttachments, sync, text: () => input };
 }
 
 const file = (name: string, body = 'x') => new File([body], name, { type: 'text/plain' });
@@ -54,26 +54,17 @@ const pasteEvent = (text: string) =>
 		clipboardData: { items: [], files: [], getData: () => text }
 	}) as unknown as ClipboardEvent;
 
-describe('ComposerAttachments', () => {
+describe('PromptAttachments', () => {
 	it('marks an added file in the draft and persists under the restored key', async () => {
 		const { a, sync, text } = await make({ input: () => 'note' });
 		a.add([file('a.txt')]);
 		await flush();
 		expect(a.files.map((f) => f.name)).toEqual(['a.txt']);
-		expect(text()).toBe('note [📎1]');
+		expect(text()).toBe('note [a.txt]');
 		expect(sync.persist).toHaveBeenLastCalledWith('draft:s1', a.files);
 	});
 
-	it('keeps long screenshot names out of the textarea behind short markers', async () => {
-		const { a, text } = await make();
-		a.add([1, 2, 3, 4].map((i) => file(`Screenshot 2026-09-25 at 11.3${i}.22.png`)));
-		await flush();
-		expect(a.files).toHaveLength(4);
-		expect(text()).toBe('[📎1] [📎2] [📎3] [📎4]');
-		expect(a.legend).toContain('📎1 Screenshot 2026-09-25 at 11.31.22.png');
-	});
-
-	it('inserts the markers at the caret of the textarea', async () => {
+	it('inserts the file names at the caret of the textarea', async () => {
 		const el = document.body.appendChild(document.createElement('textarea'));
 		el.value = 'first point. second point.';
 		el.setSelectionRange(12, 12);
@@ -81,15 +72,15 @@ describe('ComposerAttachments', () => {
 		const { a } = await make({ input: () => draft, setInput: (t) => (draft = t), el: () => el });
 		a.add([file('one.png'), file('two.png')]);
 		await flush();
-		expect(draft).toBe('first point. [📎1] [📎2] second point.');
+		expect(draft).toBe('first point. [one.png] [two.png] second point.');
 		el.remove();
 	});
 
-	it('sends each file reference where its marker sits, in the user\'s order', async () => {
+	it('sends each file reference where the user put it, under its staged name', async () => {
 		const { a } = await make();
 		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
-		const body = await a.stage('b here [📎2], a here [📎1]', async () => ({
+		const body = await a.stage('b here [b.txt], a here [a.txt]', async () => ({
 			paths: ['/tmp/a.txt', '/tmp/b-1.txt']
 		}));
 		expect(body).toBe(
@@ -97,11 +88,11 @@ describe('ComposerAttachments', () => {
 		);
 	});
 
-	it('still lists a file whose marker the user deleted', async () => {
+	it('still lists a file whose name the user deleted from the text', async () => {
 		const { a } = await make();
 		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
-		const body = await a.stage('look [📎2]', async () => ({ paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
+		const body = await a.stage('look [b.txt]', async () => ({ paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
 		expect(body).toBe('look [b.txt]\n\nAttached files (2):\n- /tmp/a.txt\n- /tmp/b.txt');
 	});
 
@@ -121,13 +112,13 @@ describe('ComposerAttachments', () => {
 		expect(text()).toContain('[paste-1.txt]');
 	});
 
-	it('removes a file by name and renumbers the markers left', async () => {
+	it('removes a file and its name from the text', async () => {
 		const { a, text } = await make();
 		a.add([file('a.txt'), file('b.txt')]);
 		await flush();
 		a.remove('a.txt');
 		expect(a.files.map((f) => f.name)).toEqual(['b.txt']);
-		expect(text()).toBe('[📎1]');
+		expect(text()).toBe('[b.txt]');
 	});
 
 	it('ignores adds while disabled or uploading', async () => {
@@ -143,6 +134,18 @@ describe('ComposerAttachments', () => {
 		expect(a.files.map((f) => f.name)).toEqual(['kept.txt']);
 		expect(text()).not.toContain('gone.txt');
 		expect(text()).toContain('[kept.txt]');
+	});
+
+	it('keeps a file attached while the list was still restoring', async () => {
+		let resolve!: (r: { files: File[]; missing: string[] }) => void;
+		const sync = fakeSync();
+		sync.restore.mockImplementation(() => new Promise((r) => (resolve = r)));
+		const { a } = await make({ sync });
+		a.add([file('pasted.txt')]);
+		await flush();
+		resolve({ files: [file('restored.txt')], missing: [] });
+		await flush();
+		expect(a.files.map((f) => f.name)).toEqual(['restored.txt', 'pasted.txt']);
 	});
 
 	it('stages uploads, folds the paths under the text and clears the list', async () => {

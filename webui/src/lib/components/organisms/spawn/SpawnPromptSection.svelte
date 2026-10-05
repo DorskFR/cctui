@@ -21,10 +21,8 @@
 		machines={sf.machineList}
 		recentDirs={sf.recentDirs}
 		onsubmit={sf.submit}
-		onfiles={sf.addFiles}
-		onlongpaste={sf.addPaste}
+		att={sf.att}
 		bind:promptEl={sf.promptEl}
-		fileLegend={sf.fileLegend}
 	/>
 	<ProfileList
 		profiles={sf.profiles}

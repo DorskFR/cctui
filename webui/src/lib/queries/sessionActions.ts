@@ -223,6 +223,8 @@ export function useSessionActions() {
       inval();
       return res;
     },
+    setDraftAttachments: (id: string, files: File[]) =>
+      endpoints.setDraftAttachments(id, files),
     // Fork a conversation into a new session. Optionally overrides
     // model/effort (the "fork to change model" path for claude). The new
     // session links back to the parent and registers shortly after; refetch.

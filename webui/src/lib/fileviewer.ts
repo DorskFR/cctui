@@ -237,13 +237,27 @@ export async function openLocalFile(
 }
 
 async function present(res: Response, name: string): Promise<void> {
-	const kind = classify(res.headers.get('content-type'));
+	await presentBlob(await res.blob(), res.headers.get('content-type'), name);
+}
+
+/** Whether `previewFile` opens an overlay for a file of this type. */
+export function previewable(contentType: string | null): boolean {
+	return classify(contentType) !== 'download';
+}
+
+/** A not-yet-uploaded `File` in the same overlay a fetched one gets. */
+export async function previewFile(file: File): Promise<void> {
+	await presentBlob(file, file.type, file.name);
+}
+
+async function presentBlob(blob: Blob, contentType: string | null, name: string): Promise<void> {
+	const kind = classify(contentType);
 	if (kind === 'download') {
-		download(await res.blob(), name);
+		download(blob, name);
 		return;
 	}
 	if (kind === 'image') {
-		const url = URL.createObjectURL(await res.blob());
+		const url = URL.createObjectURL(blob);
 		openOverlay(name, url, () => URL.revokeObjectURL(url), (body) => {
 			const img = document.createElement('img');
 			img.className = 'md-lightbox-img';
@@ -253,7 +267,7 @@ async function present(res: Response, name: string): Promise<void> {
 		});
 		return;
 	}
-	const text = await res.text();
+	const text = await blob.text();
 	const blobUrl = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
 	openOverlay(name, blobUrl, () => URL.revokeObjectURL(blobUrl), (body) => {
 		if (kind === 'markdown') {

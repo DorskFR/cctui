@@ -950,6 +950,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "put_sessions_by_id_draft_attachments"
+# PUT /sessions/{id}/draft-attachments — Replace a draft session's stored attachments.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "post_sessions_by_id_interrupt"
 # POST /sessions/{id}/interrupt — Interrupt a session's current turn.
 tui = "handled"

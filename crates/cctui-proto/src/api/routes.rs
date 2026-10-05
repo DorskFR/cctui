@@ -1384,6 +1384,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "put_sessions_by_id_draft_attachments",
+        method: Method::Put,
+        path: "/sessions/{id}/draft-attachments",
+        summary: "Replace a draft session's stored attachments.",
+        request: None,
+        response: None,
+    },
+    Route {
         id: "post_sessions_by_id_interrupt",
         method: Method::Post,
         path: "/sessions/{id}/interrupt",
