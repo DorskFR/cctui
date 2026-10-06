@@ -1755,6 +1755,79 @@ mod tests {
         assert_eq!(mask("acme/secret-repository#1234"), "a********4");
     }
 
+    async fn seed_exempt_policy(
+        pool: &sqlx::PgPool,
+        uid: Uuid,
+        session_id: &str,
+        hash: &str,
+    ) -> Uuid {
+        let acct = Uuid::new_v4();
+        let prov = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("toolguard-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("toolguard-acct-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO account_tool_policies (account_id, terms, exempt_roots) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(acct)
+        .bind(vec![TERM.to_owned()])
+        .bind(vec!["/work/exempt".to_owned()])
+        .execute(pool)
+        .await
+        .expect("seed policy");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(hash)
+        .bind(session_id)
+        .bind(prov)
+        .execute(pool)
+        .await
+        .expect("seed token");
+        prov
+    }
+
+    async fn cleanup_seeded(pool: &sqlx::PgPool, uid: Uuid, session_id: &str) {
+        sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .expect("cleanup tokens");
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .execute(pool)
+            .await
+            .expect("cleanup sessions");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(uid)
+            .execute(pool)
+            .await
+            .expect("cleanup");
+    }
+
     #[tokio::test]
     async fn a_session_row_landing_after_the_first_request_is_exempted_at_once() {
         let Some(url) = crate::routes::gateway::test_db_url(
@@ -1770,55 +1843,10 @@ mod tests {
         let state = AppState::for_test(pool.clone());
 
         let uid = Uuid::new_v4();
-        let acct = Uuid::new_v4();
-        let prov = Uuid::new_v4();
         let session_id = format!("toolguard-{uid}");
         let token = format!("tok-{uid}");
         let hash = crate::auth::sha256_hex(&token);
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-            .bind(uid)
-            .bind(format!("toolguard-{uid}"))
-            .bind(format!("kh-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
-            .bind(acct)
-            .bind(uid)
-            .bind(format!("toolguard-acct-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed account");
-        sqlx::query(
-            "INSERT INTO account_providers \
-                 (id, user_id, provider, encrypted_refresh_token, account_id) \
-             VALUES ($1, $2, 'anthropic', 'x', $3)",
-        )
-        .bind(prov)
-        .bind(uid)
-        .bind(acct)
-        .execute(&pool)
-        .await
-        .expect("seed provider");
-        sqlx::query(
-            "INSERT INTO account_tool_policies (account_id, terms, exempt_roots) \
-             VALUES ($1, $2, $3)",
-        )
-        .bind(acct)
-        .bind(vec![TERM.to_owned()])
-        .bind(vec!["/work/exempt".to_owned()])
-        .execute(&pool)
-        .await
-        .expect("seed policy");
-        sqlx::query(
-            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
-        )
-        .bind(&hash)
-        .bind(&session_id)
-        .bind(prov)
-        .execute(&pool)
-        .await
-        .expect("seed token");
+        let prov = seed_exempt_policy(&pool, uid, &session_id, &hash).await;
 
         let (_, sid, cwd) = session_for_token(&state, &token).await;
         assert_eq!(sid.as_deref(), Some(session_id.as_str()));
@@ -1855,20 +1883,6 @@ mod tests {
         );
 
         SESSION_CACHE.remove(&hash);
-        sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
-            .bind(&session_id)
-            .execute(&pool)
-            .await
-            .expect("cleanup tokens");
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-            .bind(uid)
-            .execute(&pool)
-            .await
-            .expect("cleanup sessions");
-        sqlx::query("DELETE FROM users WHERE id = $1")
-            .bind(uid)
-            .execute(&pool)
-            .await
-            .expect("cleanup");
+        cleanup_seeded(&pool, uid, &session_id).await;
     }
 }
