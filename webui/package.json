@@ -31,7 +31,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
-    "@dorsk/journey": "^0.8.1",
+    "@dorsk/journey": "^0.8.2",
     "@inlang/paraglide-js": "^2.25.4",
     "@playwright/test": "^1.63.0",
     "@sveltejs/adapter-static": "^3.0.8",
@@ -47,7 +47,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@dorsk/journey": "^0.8.1",
+    "@dorsk/journey": "^0.8.2",
     "@dorsk/tsumikit": "^0.67.0",
     "@tanstack/query-async-storage-persister": "^5.103.2",
     "@tanstack/svelte-query": "^6.2.4",
