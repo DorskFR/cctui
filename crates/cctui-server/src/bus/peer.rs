@@ -114,12 +114,24 @@ pub enum RouteRequest {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum RouteResponse {
     Ok,
-    StagedFiles { paths: Vec<String> },
-    Dirs { dirs: Vec<String> },
-    GitInfo { info: GitInfo },
-    File { file: ReadFileOk },
-    Diagnose { report: Box<cctui_proto::diagnose::SessionDiagnose> },
-    DispatcherReply { frame: DispatcherFrameUp },
+    StagedFiles {
+        paths: Vec<String>,
+    },
+    Dirs {
+        dirs: Vec<String>,
+    },
+    GitInfo {
+        info: GitInfo,
+    },
+    File {
+        file: ReadFileOk,
+    },
+    Diagnose {
+        report: Box<cctui_proto::diagnose::SessionDiagnose>,
+    },
+    DispatcherReply {
+        frame: DispatcherFrameUp,
+    },
     Err {
         code: WireErrorCode,
         message: String,

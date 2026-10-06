@@ -197,27 +197,28 @@ async fn serve_read(
     cwd: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    let file =
-        match bus::read_file(state, machine_uuid, path.to_owned(), READ_FILE_MAX_BYTES, cwd).await {
-            Ok(file) => file,
-            Err(bus::BusError::NoDaemon(_)) => {
-                return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon offline"));
-            }
-            Err(bus::BusError::Timeout) => {
-                return Err(AppError::new(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "timed out waiting for the daemon",
-                ));
-            }
-            Err(bus::BusError::ReadFile(refusal)) => {
-                tracing::warn!(
-                    %machine_uuid, %path, kind = ?refusal.kind, msg = %refusal.message,
-                    "read-file refused"
-                );
-                return Ok(refusal_response(&refusal));
-            }
-            Err(e) => return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-        };
+    let file = match bus::read_file(state, machine_uuid, path.to_owned(), READ_FILE_MAX_BYTES, cwd)
+        .await
+    {
+        Ok(file) => file,
+        Err(bus::BusError::NoDaemon(_)) => {
+            return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon offline"));
+        }
+        Err(bus::BusError::Timeout) => {
+            return Err(AppError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "timed out waiting for the daemon",
+            ));
+        }
+        Err(bus::BusError::ReadFile(refusal)) => {
+            tracing::warn!(
+                %machine_uuid, %path, kind = ?refusal.kind, msg = %refusal.message,
+                "read-file refused"
+            );
+            return Ok(refusal_response(&refusal));
+        }
+        Err(e) => return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    };
 
     if let Some(hash) = file.blob_hash.as_deref() {
         record_blob_link(&state.pool, sid, hash).await?;
@@ -858,16 +859,25 @@ mod tests {
 
     #[tokio::test]
     async fn the_linked_file_proxy_refuses_what_the_caller_cannot_read() {
-        let Some(f) = fixture("linked_file_proxy_authz").await else { return };
+        let Some(f) = fixture("linked_file_proxy_gates").await else { return };
         let path = "/home/u/proj/out/report.md";
         record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(path))).await.unwrap();
+        let theirs = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(theirs)
+            .bind(f.stranger.user_id)
+            .bind("linked_file_proxy_gates-theirs")
+            .bind("linked_file_proxy_gates-theirs-mkey")
+            .execute(&f.pool)
+            .await
+            .unwrap();
         let viewer = format!("{}-viewer", f.session);
         sqlx::query(
             "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
              VALUES ($1, $2, $2, $3, '/home/u/other', 'active')",
         )
         .bind(&viewer)
-        .bind(f.machine)
+        .bind(theirs)
         .bind(f.stranger.user_id)
         .execute(&f.pool)
         .await
@@ -878,25 +888,29 @@ mod tests {
         assert_eq!(owner, LinkedFileOwner { session_id: f.session.clone(), machine_id: f.machine });
         assert_eq!(cwd.as_deref(), Some("/home/u/proj"));
 
-        let err =
-            authorize_linked_read(&f.pool, &f.stranger, &f.session, path).await.unwrap_err();
-        assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "another user's session");
+        let err = authorize_linked_read(&f.pool, &f.stranger, &f.session, path).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "another user's session: {err:?}");
         let err = authorize_linked_read(&f.pool, &f.stranger, &viewer, path).await.unwrap_err();
         assert_eq!(
             status_of(&err),
             StatusCode::NOT_FOUND,
-            "a readable viewer does not reach an owner the caller cannot read"
+            "a readable viewer does not reach an owner the caller cannot read: {err:?}"
         );
         record_links(&f.pool, &viewer, &extract_links(&serde_json::json!(path))).await.unwrap();
-        let err = authorize_linked_read(&f.pool, &f.stranger, &viewer, path).await.unwrap_err();
+        let (owner, _) = authorize_linked_read(&f.pool, &f.stranger, &viewer, path).await.unwrap();
         assert_eq!(
-            status_of(&err),
-            StatusCode::FORBIDDEN,
-            "linking a path in one's own session does not grant someone else's machine"
+            owner,
+            LinkedFileOwner { session_id: viewer.clone(), machine_id: theirs },
+            "linking the same path serves it from the caller's own machine, never the owner's"
         );
 
         sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(&viewer)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(theirs)
             .execute(&f.pool)
             .await
             .unwrap();
