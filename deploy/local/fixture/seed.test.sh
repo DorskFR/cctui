@@ -68,7 +68,7 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(reply));
   });
 });
-server.listen(0, '127.0.0.1', () => console.log(server.address().port));
+server.listen(0, '127.0.0.1', () => process.stdout.write(`${server.address().port}\n`));
 FAKE
 
 FAKE_PUT="$tmp/put.json" node "$tmp/fake-api.mjs" > "$tmp/port" &
