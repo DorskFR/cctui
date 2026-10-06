@@ -1220,6 +1220,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_sessions_by_id_linked_file"
+# GET /sessions/{id}/linked-file — Read a path linked in this session or the one that linked it, on its machine.
+tui = "waived"
+reason = "the TUI resolves the owner through linked-file-owner and reads via fs/file"
+
+[[route]]
 id = "get_sessions_by_id_linked_file_owner"
 # GET /sessions/{id}/linked-file-owner — Which session and machine linked a path, when this session did not.
 tui = "handled"
