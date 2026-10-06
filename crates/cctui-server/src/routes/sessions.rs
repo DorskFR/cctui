@@ -2519,7 +2519,15 @@ pub async fn switch_account(
         .await
         .unwrap_or(bound_account_owner);
     let default_family = match req.family.as_deref().map(str::trim) {
-        None | Some("") => Family::from_adapter(adapter_id.as_deref().unwrap_or("claude-code")),
+        None | Some("") => {
+            let adapter = adapter_id.as_deref().unwrap_or("claude-code");
+            Family::try_from_adapter(adapter).ok_or_else(|| {
+                AppError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("adapter {adapter:?} has no provider family; name one"),
+                )
+            })?
+        }
         Some(label) => match Family::from_label(label) {
             Some(f) => f,
             None => {

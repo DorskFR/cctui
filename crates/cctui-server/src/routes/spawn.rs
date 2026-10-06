@@ -134,6 +134,14 @@ fn spawn_ids(adapter_id: &str, command_id: Uuid) -> (Option<Uuid>, Uuid) {
     (pre_session_id, pre_session_id.unwrap_or(command_id))
 }
 
+fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
+    let id = requested.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("claude-code");
+    if crate::routes::gateway::Family::try_from_adapter(id).is_none() {
+        return Err(format!("unknown adapter {id:?}"));
+    }
+    Ok(id.to_owned())
+}
+
 async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -151,7 +159,7 @@ async fn validate_spawn(
 
     let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
-    let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
+    let adapter_id = spawn_adapter(req.adapter_id.as_deref()).map_err(bad_request)?;
     let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
@@ -1475,6 +1483,16 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn spawn_refuses_an_adapter_with_no_family() {
+        assert_eq!(super::spawn_adapter(None).unwrap(), "claude-code");
+        assert_eq!(super::spawn_adapter(Some(" ")).unwrap(), "claude-code");
+        for adapter in ["claude-code", "codex", "opencode"] {
+            assert_eq!(super::spawn_adapter(Some(adapter)).unwrap(), adapter);
+        }
+        assert!(super::spawn_adapter(Some("gemini")).is_err());
     }
 
     #[test]
