@@ -434,6 +434,17 @@ pub async fn authorize_session_read(
     authorize_resource(ResourceKind::Session, ctx, Action::Read, Some(id), pool).await
 }
 
+/// In-handler machine-read gate, the same decision the `Resource(Machine, Read)`
+/// guard makes, for routes that only learn the machine after a lookup.
+pub async fn authorize_machine_read(
+    ctx: &AuthContext,
+    machine: Uuid,
+    pool: &PgPool,
+) -> Result<(), StatusCode> {
+    let id = machine.to_string();
+    authorize_resource(ResourceKind::Machine, ctx, Action::Read, Some(&id), pool).await
+}
+
 /// The session owner lookup shared by the HTTP guard and the WS path.
 pub async fn session_owner(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
     SessionResource::owner_of(id, pool).await

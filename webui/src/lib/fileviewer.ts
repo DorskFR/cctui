@@ -71,38 +71,17 @@ export function deniedRoots(detail: string, allowedFolders: string[] = []): stri
 		.filter(Boolean);
 }
 
-/** The session and machine that linked a path, as `linked-file-owner` reports. */
-export interface LinkedFileOwner {
-	session_id: string;
-	machine_id: string;
-}
-
-/** The same read aimed at the machine that owns the link. `null` when `href`
- *  is not a machine file href, so a blob href is never rewritten. */
-export function retargetHref(href: string, owner: LinkedFileOwner): string | null {
+/** The same read through the server's linked-file route, which serves the
+ *  path from the machine of whichever readable session linked it. `null` when
+ *  `href` is not a machine file href, so a blob href is never rewritten. */
+export function linkedFileHref(href: string): string | null {
 	const url = new URL(href, 'http://cctui.invalid');
-	const path = url.pathname.replace(
-		/\/machines\/[^/]+\/fs\/file$/,
-		`/machines/${encodeURIComponent(owner.machine_id)}/fs/file`
-	);
-	if (path === url.pathname) return null;
-	url.pathname = path;
-	url.searchParams.set('session_id', owner.session_id);
-	return url.pathname + url.search;
-}
-
-/** Which session and machine linked `path`, or `null` when none the viewer can
- *  read did. */
-async function linkOwner(sessionId: string, path: string): Promise<LinkedFileOwner | null> {
-	const url = `/api/v1/sessions/${encodeURIComponent(sessionId)}/linked-file-owner?path=${encodeURIComponent(path)}`;
-	try {
-		const res = await apiBlob(url);
-		if (!res.ok) return null;
-		const owner = (await res.json()) as LinkedFileOwner;
-		return owner.machine_id && owner.session_id ? owner : null;
-	} catch {
-		return null;
-	}
+	if (!/\/machines\/[^/]+\/fs\/file$/.test(url.pathname)) return null;
+	const path = url.searchParams.get('path');
+	const sessionId = url.searchParams.get('session_id');
+	if (!path || !sessionId) return null;
+	const prefix = url.pathname.replace(/\/machines\/[^/]+\/fs\/file$/, '');
+	return `${prefix}/sessions/${encodeURIComponent(sessionId)}/linked-file?path=${encodeURIComponent(path)}`;
 }
 
 /** A refusal the owning machine might not give: the path may simply belong to
@@ -184,20 +163,16 @@ export async function attemptOpen(href: string, name: string): Promise<Refusal |
 	return retried === undefined ? first : retried;
 }
 
-/** Re-ask the machine that linked the path. `undefined` means there was nobody
- *  else to ask, so the original refusal stands. */
+/** Re-ask through the linked-file route. `undefined` means no other session
+ *  the viewer can read linked the path, so the original refusal stands. */
 async function retryOnOwningMachine(
 	href: string,
 	name: string
 ): Promise<Refusal | null | undefined> {
-	const url = new URL(href, 'http://cctui.invalid');
-	const path = url.searchParams.get('path');
-	const sessionId = url.searchParams.get('session_id');
-	if (!path || !sessionId) return undefined;
-	const owner = await linkOwner(sessionId, path);
-	if (!owner) return undefined;
-	const next = retargetHref(href, owner);
-	return next ? await readOnce(next, name) : undefined;
+	const next = linkedFileHref(href);
+	if (!next) return undefined;
+	const refusal = await readOnce(next, name);
+	return refusal?.status === 404 ? undefined : refusal;
 }
 
 async function readOnce(href: string, name: string): Promise<Refusal | null> {

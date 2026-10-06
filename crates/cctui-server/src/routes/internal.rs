@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::bus::peer::{RouteRequest, RouteResponse, WireBusEvent, encode_error};
+use crate::bus::peer::{RouteRequest, RouteResponse, WireBusEvent};
 use crate::bus::{BusError, DaemonRequest, DaemonResponse};
 use crate::routes::permissions::{PendingAsk, PendingPermission, PendingPlan};
 use crate::state::AppState;
@@ -150,10 +150,7 @@ pub async fn bus_route(
             .await
             .map(|frame| RouteResponse::DispatcherReply { frame }),
     };
-    Ok(Json(outcome.unwrap_or_else(|err| {
-        let (code, message) = encode_error(&err);
-        RouteResponse::Err { code, message }
-    })))
+    Ok(Json(outcome.unwrap_or_else(|err| RouteResponse::from_error(&err))))
 }
 
 /// `POST /internal/bus/publish` — ingest a batch of relayed events into THIS

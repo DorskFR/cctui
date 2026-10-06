@@ -120,7 +120,23 @@ pub enum RouteResponse {
     File { file: ReadFileOk },
     Diagnose { report: Box<cctui_proto::diagnose::SessionDiagnose> },
     DispatcherReply { frame: DispatcherFrameUp },
-    Err { code: WireErrorCode, message: String },
+    Err {
+        code: WireErrorCode,
+        message: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allowed_folders: Vec<String>,
+    },
+}
+
+impl RouteResponse {
+    pub fn from_error(err: &BusError) -> Self {
+        let (code, message) = encode_error(err);
+        let allowed_folders = match err {
+            BusError::ReadFile(r) => r.allowed_folders.clone(),
+            _ => Vec::new(),
+        };
+        Self::Err { code, message, allowed_folders }
+    }
 }
 
 /// [`BusError`] variants that must survive the wire with their meaning intact
@@ -165,7 +181,12 @@ pub fn encode_error(err: &BusError) -> (WireErrorCode, String) {
 
 /// Reconstruct a [`BusError`] from a peer's error response. `target` is the
 /// machine/dispatcher uuid the caller addressed (the wire doesn't re-carry it).
-pub fn decode_error(code: WireErrorCode, message: String, target: Uuid) -> BusError {
+pub fn decode_error(
+    code: WireErrorCode,
+    message: String,
+    allowed_folders: Vec<String>,
+    target: Uuid,
+) -> BusError {
     match code {
         WireErrorCode::NoDaemon => BusError::NoDaemon(target),
         WireErrorCode::NoDispatcher => BusError::NoDispatcher(target),
@@ -175,13 +196,9 @@ pub fn decode_error(code: WireErrorCode, message: String, target: Uuid) -> BusEr
         WireErrorCode::Staging => BusError::Staging(message),
         WireErrorCode::ListDirs => BusError::ListDirs(message),
         WireErrorCode::GitInfo => BusError::GitInfo(message),
-        // The folder list does not ride this wire; a peer-relayed denial falls
-        // back to the message alone.
-        WireErrorCode::ReadFile { kind } => BusError::ReadFile(cctui_proto::ws::ReadFileRefusal {
-            kind,
-            message,
-            allowed_folders: Vec::new(),
-        }),
+        WireErrorCode::ReadFile { kind } => {
+            BusError::ReadFile(cctui_proto::ws::ReadFileRefusal { kind, message, allowed_folders })
+        }
         // An unclassified peer-side failure still means the frame was not
         // delivered; surface the peer's message verbatim.
         WireErrorCode::Other => BusError::Transport(message),
@@ -343,7 +360,9 @@ impl PeerHttpTransport {
             return Err(Self::miss(kind, target));
         }
         match response.json::<RouteResponse>().await {
-            Ok(RouteResponse::Err { code, message }) => Err(decode_error(code, message, target)),
+            Ok(RouteResponse::Err { code, message, allowed_folders }) => {
+                Err(decode_error(code, message, allowed_folders, target))
+            }
             Ok(ok) => Ok(ok),
             Err(err) => {
                 tracing::warn!(%err, %owner, "peer bus route response unreadable");
@@ -677,7 +696,7 @@ mod tests {
         ];
         for err in cases {
             let (code, message) = encode_error(&err);
-            let back = decode_error(code, message, machine);
+            let back = decode_error(code, message, Vec::new(), machine);
             assert_eq!(
                 std::mem::discriminant(&err),
                 std::mem::discriminant(&back),
@@ -691,7 +710,7 @@ mod tests {
     fn dispatcher_miss_decodes_with_target() {
         let dispatcher = Uuid::new_v4();
         let (code, message) = encode_error(&BusError::NoDispatcher(dispatcher));
-        let back = decode_error(code, message, dispatcher);
+        let back = decode_error(code, message, Vec::new(), dispatcher);
         assert!(matches!(back, BusError::NoDispatcher(d) if d == dispatcher));
     }
 
@@ -699,7 +718,7 @@ mod tests {
     fn unclassified_errors_collapse_to_transport() {
         let (code, message) = encode_error(&BusError::Reconcile("boom".into()));
         assert_eq!(code, WireErrorCode::Other);
-        let back = decode_error(code, message, Uuid::new_v4());
+        let back = decode_error(code, message, Vec::new(), Uuid::new_v4());
         assert!(matches!(back, BusError::Transport(m) if m.contains("boom")));
     }
 
@@ -746,10 +765,44 @@ mod tests {
         let resp = RouteResponse::Err {
             code: WireErrorCode::NoDaemon,
             message: "no daemon connected".into(),
+            allowed_folders: Vec::new(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""outcome":"err""#));
         assert!(json.contains(r#""code":"no_daemon""#));
         let _back: RouteResponse = serde_json::from_str(&json).unwrap();
+        assert!(!json.contains("allowed_folders"), "an empty list stays off the wire: {json}");
+    }
+
+    #[test]
+    fn forwarded_read_denial_keeps_allowed_folders() {
+        let machine = Uuid::new_v4();
+        let err = BusError::ReadFile(cctui_proto::ws::ReadFileRefusal {
+            kind: ReadFileErrorKind::Denied,
+            message: "outside allowed folders".into(),
+            allowed_folders: vec!["/tmp".into(), "/srv/app".into()],
+        });
+        let json = serde_json::to_string(&RouteResponse::from_error(&err)).unwrap();
+        let RouteResponse::Err { code, message, allowed_folders } =
+            serde_json::from_str(&json).unwrap()
+        else {
+            panic!("not an err: {json}")
+        };
+        let back = decode_error(code, message, allowed_folders, machine);
+        assert!(matches!(back, BusError::ReadFile(r)
+            if r.kind == ReadFileErrorKind::Denied && r.allowed_folders == ["/tmp", "/srv/app"]));
+    }
+
+    #[test]
+    fn read_denial_from_an_older_peer_still_decodes() {
+        let json = r#"{"outcome":"err","code":{"read_file":{"kind":"denied"}},"message":"no"}"#;
+        let RouteResponse::Err { code, message, allowed_folders } =
+            serde_json::from_str(json).unwrap()
+        else {
+            panic!("not an err")
+        };
+        assert!(allowed_folders.is_empty());
+        let back = decode_error(code, message, allowed_folders, Uuid::new_v4());
+        assert!(matches!(back, BusError::ReadFile(r) if r.message == "no"));
     }
 }
