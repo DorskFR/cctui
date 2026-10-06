@@ -889,8 +889,9 @@ async fn policy_for_provider(
     Ok(policy)
 }
 
-/// The token's session id and cwd. A lookup failure yields "unknown", which is
-/// scanned, and is not cached.
+/// The token's session id and cwd. An unknown cwd (lookup failure, missing
+/// session row or NULL `working_dir`) is scanned and not cached, so a session
+/// whose row lands after its first request is resolved on the next one.
 async fn session_for_token(state: &AppState, session_token: &str) -> CachedSession {
     let hash = crate::auth::sha256_hex(session_token);
     if let Some(c) = SESSION_CACHE.get(&hash)
@@ -907,10 +908,13 @@ async fn session_for_token(state: &AppState, session_token: &str) -> CachedSessi
     .await;
     let Ok(row) = row else { return (Instant::now(), None, None) };
     let (session_id, cwd) = row.map_or((None, None), |(s, c)| (Some(s), c));
+    let entry = (Instant::now(), session_id, cwd);
+    if entry.2.is_none() {
+        return entry;
+    }
     if SESSION_CACHE.len() >= SESSION_CACHE_MAX {
         SESSION_CACHE.retain(|_, c| c.0.elapsed() < SESSION_TTL);
     }
-    let entry = (Instant::now(), session_id, cwd);
     SESSION_CACHE.insert(hash, entry.clone());
     entry
 }
@@ -1749,5 +1753,122 @@ mod tests {
         assert_eq!(mask("acmecorp"), "a******p");
         assert_eq!(mask("ab"), "**");
         assert_eq!(mask("acme/secret-repository#1234"), "a********4");
+    }
+
+    #[tokio::test]
+    async fn a_session_row_landing_after_the_first_request_is_exempted_at_once() {
+        let Some(url) = crate::routes::gateway::test_db_url(
+            "a_session_row_landing_after_the_first_request_is_exempted_at_once",
+        ) else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+
+        let uid = Uuid::new_v4();
+        let acct = Uuid::new_v4();
+        let prov = Uuid::new_v4();
+        let session_id = format!("toolguard-{uid}");
+        let token = format!("tok-{uid}");
+        let hash = crate::auth::sha256_hex(&token);
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("toolguard-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("toolguard-acct-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO account_tool_policies (account_id, terms, exempt_roots) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(acct)
+        .bind(vec![TERM.to_owned()])
+        .bind(vec!["/work/exempt".to_owned()])
+        .execute(&pool)
+        .await
+        .expect("seed policy");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(&hash)
+        .bind(&session_id)
+        .bind(prov)
+        .execute(&pool)
+        .await
+        .expect("seed token");
+
+        let (_, sid, cwd) = session_for_token(&state, &token).await;
+        assert_eq!(sid.as_deref(), Some(session_id.as_str()));
+        assert!(cwd.is_none(), "no session row yet");
+        assert!(!SESSION_CACHE.contains_key(&hash), "an unknown cwd must not be cached");
+        assert!(
+            guard_for(&state, prov, &token).await.unwrap().is_some(),
+            "an unknown cwd is scanned"
+        );
+
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, status) \
+             VALUES ($1, 'm1', '/work/exempt/repo', $2, 'active')",
+        )
+        .bind(&session_id)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+        assert!(
+            guard_for(&state, prov, &token).await.unwrap().is_none(),
+            "the next request sees the exempt cwd"
+        );
+        assert!(SESSION_CACHE.contains_key(&hash), "a resolved cwd is cached");
+
+        sqlx::query("UPDATE sessions SET working_dir = '/elsewhere' WHERE id = $1")
+            .bind(&session_id)
+            .execute(&pool)
+            .await
+            .expect("move session");
+        assert!(
+            guard_for(&state, prov, &token).await.unwrap().is_none(),
+            "a cached cwd is served without another lookup"
+        );
+
+        SESSION_CACHE.remove(&hash);
+        sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+            .bind(&session_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup tokens");
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("cleanup sessions");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }
