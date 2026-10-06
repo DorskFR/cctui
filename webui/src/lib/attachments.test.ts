@@ -3,6 +3,7 @@ import {
 	appendFileTokens,
 	attachFiles,
 	insertTokens,
+	supportsAttachments,
 	legacyMarkersToNames,
 	removeFileToken,
 	DEFAULT_UPLOAD_CAPS,
@@ -280,5 +281,13 @@ describe('prefixImageTokens', () => {
 
 	it('leaves a body without images untouched', () => {
 		expect(prefixImageTokens('hi', [f('a.txt')], ['/tmp/a.txt'])).toBe('hi');
+	});
+});
+
+describe('supportsAttachments', () => {
+	it('accepts every staging harness and refuses unknown ones', () => {
+		for (const a of ['claude-code', 'codex', 'opencode']) expect(supportsAttachments(a)).toBe(true);
+		expect(supportsAttachments('gemini')).toBe(false);
+		expect(supportsAttachments(null)).toBe(false);
 	});
 });

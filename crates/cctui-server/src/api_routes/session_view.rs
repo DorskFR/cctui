@@ -72,6 +72,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/{id}/linked-file",
+            "Read a path linked in this session or the one that linked it, on its machine.",
+            get(routes::fs::read_linked_file),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
             "/sessions/{id}/linked-file-owner",
             "Which session and machine linked a path, when this session did not.",
             get(routes::fs::linked_file_owner),

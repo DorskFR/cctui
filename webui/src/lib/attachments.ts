@@ -5,6 +5,12 @@ import type { UploadCaps } from '@bindings/UploadCaps';
 // derivation, and size formatting. The caps are the server's own, served on
 // `GET /version`; rejecting here only fails fast, the server is the gate.
 
+const ATTACH_ADAPTERS = ['claude-code', 'codex', 'opencode'];
+
+/** Harnesses whose daemon stages mid-chat files to disk. */
+export const supportsAttachments = (adapter: string | null | undefined): boolean =>
+	ATTACH_ADAPTERS.includes(adapter ?? '');
+
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 export const MAX_FILES = 10;

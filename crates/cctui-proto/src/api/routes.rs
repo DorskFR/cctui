@@ -1744,6 +1744,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_sessions_by_id_linked_file",
+        method: Method::Get,
+        path: "/sessions/{id}/linked-file",
+        summary: "Read a path linked in this session or the one that linked it, on its machine.",
+        request: None,
+        response: None,
+    },
+    Route {
         id: "get_sessions_by_id_linked_file_owner",
         method: Method::Get,
         path: "/sessions/{id}/linked-file-owner",

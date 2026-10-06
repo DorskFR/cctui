@@ -205,8 +205,12 @@ impl Runner {
         Self { claude_bin, codex_bin, codex_busy, codex_gate: VersionGate::default() }
     }
 
-    fn bin(&self, harness: &str) -> &str {
-        if harness == HARNESS_CODEX { &self.codex_bin } else { &self.claude_bin }
+    fn bin(&self, harness: &str) -> Option<&str> {
+        match harness {
+            HARNESS_CLAUDE_CODE => Some(&self.claude_bin),
+            HARNESS_CODEX => Some(&self.codex_bin),
+            _ => None,
+        }
     }
 
     /// One pass: update every due harness in turn (never two at once), then
@@ -227,16 +231,20 @@ impl Runner {
     }
 
     async fn cli_version(&self, harness: &str) -> Option<String> {
-        let out = run(self.bin(harness), &["--version"], PROBE_TIMEOUT).await.ok()?;
+        let out = run(self.bin(harness)?, &["--version"], PROBE_TIMEOUT).await.ok()?;
         gate::parse_cli_version(&String::from_utf8_lossy(&out.stdout))
     }
 
     async fn update(&self, harness: &str) {
+        let Some(bin) = self.bin(harness) else {
+            record(harness, "unsupported harness".to_owned());
+            return;
+        };
         let Some(before) = self.cli_version(harness).await else {
             record(harness, "not installed".to_owned());
             return;
         };
-        let outcome = match run(self.bin(harness), &["update"], UPDATE_TIMEOUT).await {
+        let outcome = match run(bin, &["update"], UPDATE_TIMEOUT).await {
             Ok(out) => {
                 let after = self.cli_version(harness).await;
                 classify(
@@ -523,5 +531,14 @@ esac
             1,
             "not due, in sync: nothing"
         );
+    }
+
+    #[test]
+    fn unknown_harness_has_no_updater() {
+        let busy: BusyProbe = Arc::new(|| Box::pin(async { None }));
+        let runner = Runner::new("claude".to_owned(), "codex".to_owned(), busy);
+        assert_eq!(runner.bin(HARNESS_CLAUDE_CODE), Some("claude"));
+        assert_eq!(runner.bin(HARNESS_CODEX), Some("codex"));
+        assert_eq!(runner.bin("opencode"), None);
     }
 }

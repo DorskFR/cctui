@@ -55,4 +55,36 @@ check "  …and names them" grep -q "(a b )" "$tmp/out"
 check "an explicit COMPOSE_PROJECT_NAME wins" run "[]" picked
 check "  …through that project" execs_project picked
 
+cat > "$tmp/fake-api.mjs" <<'FAKE'
+import { createServer } from 'node:http';
+import { writeFileSync } from 'node:fs';
+const settings = { version: 3, data: { plugins: { enabled: { other: true }, config: { other: { k: 'v' } } } } };
+const server = createServer((req, res) => {
+  let body = '';
+  req.on('data', (c) => (body += c)).on('end', () => {
+    const path = req.url.replace('/api/v1', '');
+    if (req.method === 'PUT' && path === '/settings') writeFileSync(process.env.FAKE_PUT, body);
+    const reply = req.method === 'GET' && path === '/settings' ? settings : req.method === 'GET' ? [] : {};
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(reply));
+  });
+});
+server.listen(0, '127.0.0.1', () => process.stdout.write(`${server.address().port}\n`));
+FAKE
+
+FAKE_PUT="$tmp/put.json" node "$tmp/fake-api.mjs" > "$tmp/port" &
+fake=$!
+trap 'kill "$fake" 2>/dev/null; rm -rf "${tmp:?}"' EXIT
+for _ in $(seq 50); do [[ -s "$tmp/port" ]] && break; sleep 0.1; done
+
+seeds_plugin() {
+  CCTUI_TOKEN=t CCTUI_API_URL="http://127.0.0.1:$(cat "$tmp/port")" node "$here/seed-api.mjs" >/dev/null
+}
+put_has() {
+  node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1])).data; process.exit(eval(process.argv[2]) ? 0 : 1)' "$tmp/put.json" "$1"
+}
+
+check "seed-api enables the pagedemo plugin for the seeded user" seeds_plugin
+check "  …in the settings the plugin page reads" put_has 'd.plugins.enabled.pagedemo === true'
+check "  …keeping the user's other plugin toggles" put_has 'd.plugins.enabled.other === true && d.plugins.config.other.k === "v"'
+
 exit "$failures"

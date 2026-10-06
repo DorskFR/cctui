@@ -191,8 +191,13 @@ export function accountPickOptions(args: {
 export const isCompatibleProvider = (provider: string): boolean =>
 	provider.endsWith('-compatible');
 
-export const adapterLabel = (adapter: string): string =>
-	adapter === 'codex' ? 'Codex' : 'Claude Code';
+const ADAPTER_LABELS: Record<string, string> = {
+	'claude-code': 'Claude Code',
+	codex: 'Codex',
+	opencode: 'OpenCode'
+};
+
+export const adapterLabel = (adapter: string): string => ADAPTER_LABELS[adapter] ?? adapter;
 
 // Context-pack form fields → the env vars the worker entrypoint reads. Keys are
 // fixed and match ENV_KEY_RE by construction.

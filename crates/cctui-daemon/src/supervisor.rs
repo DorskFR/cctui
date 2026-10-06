@@ -1162,10 +1162,7 @@ fn stage_files_result(
     local_id: &str,
     uploads: &[cctui_proto::adapter::BootstrapFile],
 ) -> DaemonFrameUp {
-    // Staging is filesystem-only (writes to /tmp/cctui-uploads/<id>/ and returns
-    // absolute paths the message text references), so it's adapter-agnostic —
-    // codex reads staged file paths just like claude does.
-    let result = if adapter_id == "claude-code" || adapter_id == "codex" {
+    let result = if matches!(adapter_id, "claude-code" | "codex" | "opencode") {
         crate::adapters::claude_code::stage_mid_chat_files(local_id, uploads)
     } else {
         Err(anyhow::anyhow!("adapter {adapter_id} does not support mid-chat file staging"))
@@ -2856,5 +2853,30 @@ mod tests {
         drop(running);
         assert!(token.is_cancelled(), "dropping the map must cancel, not orphan, the adapter");
         wait_until(|| tracker.live() == 0).await;
+    }
+
+    #[test]
+    fn mid_chat_staging_accepts_every_harness_and_refuses_unknown() {
+        use base64::Engine;
+        let file = cctui_proto::adapter::BootstrapFile {
+            name: "note.txt".into(),
+            content_b64: base64::engine::general_purpose::STANDARD.encode(b"hi"),
+        };
+        for adapter in ["claude-code", "codex", "opencode"] {
+            let local_id = format!("test-{}", uuid::Uuid::new_v4());
+            let up = super::stage_files_result(
+                uuid::Uuid::new_v4(),
+                adapter,
+                &local_id,
+                std::slice::from_ref(&file),
+            );
+            let DaemonFrameUp::StageFilesResult { ok, paths, .. } = up else { panic!() };
+            assert!(ok, "{adapter}");
+            assert_eq!(paths.len(), 1, "{adapter}");
+            let _ = std::fs::remove_dir_all(crate::adapters::uploads::session_dir(&local_id));
+        }
+        let up = super::stage_files_result(uuid::Uuid::new_v4(), "gemini", "test-x", &[file]);
+        let DaemonFrameUp::StageFilesResult { ok, .. } = up else { panic!() };
+        assert!(!ok);
     }
 }

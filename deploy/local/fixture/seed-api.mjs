@@ -111,6 +111,12 @@ for (const n of ['1', '2', '5']) {
 console.log('fixture: registered 3 running sessions');
 
 data.secretScrubEnabled = true;
+// The per-user toggle the settings page writes; without it /apps/pagedemo
+// shows the off state.
+data.plugins = {
+	...(data.plugins ?? {}),
+	enabled: { ...(data.plugins?.enabled ?? {}), pagedemo: true }
+};
 
 if (themeArg) {
 	data.display = { ...(data.display ?? {}), theme: themeArg };

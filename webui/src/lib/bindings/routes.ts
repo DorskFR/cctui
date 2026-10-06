@@ -209,6 +209,7 @@ export const ROUTES = [
   { id: "get_sessions_by_id_images_by_image", method: "GET", path: "/sessions/{id}/images/{image_id}", summary: "Fetch an agent-posted image blob.", request: null, response: null },
   { id: "get_sessions_by_id_blobs_by_hash", method: "GET", path: "/sessions/{id}/blobs/{hash}", summary: "Resolve a content-addressed embedded-attachment blob.", request: null, response: null },
   { id: "get_sessions_by_id_attachments", method: "GET", path: "/sessions/{id}/attachments", summary: "List the files the user uploaded into a session (served via blobs).", request: null, response: null },
+  { id: "get_sessions_by_id_linked_file", method: "GET", path: "/sessions/{id}/linked-file", summary: "Read a path linked in this session or the one that linked it, on its machine.", request: null, response: null },
   { id: "get_sessions_by_id_linked_file_owner", method: "GET", path: "/sessions/{id}/linked-file-owner", summary: "Which session and machine linked a path, when this session did not.", request: null, response: null },
   { id: "get_sessions_by_id_diagnose", method: "GET", path: "/sessions/{id}/diagnose", summary: "Snapshot everything the daemon knows about a session, dated.", request: null, response: null },
   { id: "get_sessions_by_id_langfuse", method: "GET", path: "/sessions/{id}/langfuse", summary: "Langfuse cost/usage rollup for a session.", request: null, response: null },
