@@ -299,7 +299,10 @@
 		/* Keep vertical scroll native; we handle horizontal swipes. */
 		touch-action: pan-y;
 	}
+	/* The containing block of every positioned descendant, so none escapes the
+	   scroller and stretches the panel around it. */
 	.conv {
+		position: relative;
 		flex: 1;
 		overflow-y: auto;
 		overflow-x: hidden;

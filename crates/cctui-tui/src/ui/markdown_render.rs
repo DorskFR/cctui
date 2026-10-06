@@ -8,7 +8,7 @@ use dirs::home_dir;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use regex_lite::Regex;
+use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use url::Url;

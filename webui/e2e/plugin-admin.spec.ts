@@ -1,12 +1,10 @@
-import { expect, test, type Page } from '@playwright/test';
-import { localToken } from '../scripts/local-token.mjs';
+import type { Page } from '@playwright/test';
+import { adminToken, expect, test } from './local-token.fixture';
 
 // Settings › Plugins: the admin Manage block and the user list on the same page,
 // against a mocked admin plugin API: install from URL, instance toggle,
 // uninstall, and the user-side rule that only instance-enabled plugins show
 // with their settings form gated behind the personal switch.
-
-const TOKEN: string = process.env.PLUGIN_E2E_TOKEN ?? localToken();
 
 type AdminPlugin = {
 	id: string;
@@ -111,7 +109,7 @@ function mockAdminApi(page: Page, initial: AdminPlugin[]) {
 }
 
 async function login(page: Page) {
-	const res = await page.request.post('/api/v1/auth/login', { data: { token: TOKEN } });
+	const res = await page.request.post('/api/v1/auth/login', { data: { token: adminToken() } });
 	expect(res.ok(), `login failed with ${res.status()}`).toBe(true);
 }
 

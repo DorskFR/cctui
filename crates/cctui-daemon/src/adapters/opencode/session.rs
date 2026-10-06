@@ -23,6 +23,8 @@ use super::client::{
 use super::config::{ModelRef, SessionHome, session_config};
 use super::events::{OcEvent, SseDecoder, StatusKind, status_kind};
 use super::normalize::{self, Kind};
+use super::persist::{self, SessionStore};
+use crate::adapter_runtime::InterruptQueue;
 use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TRANSPORT_SSE, TrafficRings};
 
 /// A just-started server accepts the connection before its handlers are wired
@@ -32,9 +34,37 @@ const HEALTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 /// A live turn always emits part/step updates well inside this window, so
 /// silence this long means the upstream stream is dead rather than slow.
+const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 const STREAM_INACTIVITY: std::time::Duration = std::time::Duration::from_mins(2);
 
 pub type LiveRegistry = Arc<Mutex<HashMap<String, LiveSession>>>;
+
+/// What an interrupt needs to reach a live session without its command loop.
+struct LiveInterrupt {
+    client: Arc<OpenCodeClient>,
+    queue: InterruptQueue,
+}
+
+static LIVE_INTERRUPTS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, LiveInterrupt>>> =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
+fn live_interrupts() -> std::sync::MutexGuard<'static, HashMap<String, LiveInterrupt>> {
+    LIVE_INTERRUPTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Aborts the turn over HTTP right away, even with the driver busy in another
+/// request, then queues the driver's own teardown ahead of its commands.
+/// `false` when `local_id` has no live driver.
+pub async fn interrupt_live(local_id: &str) -> bool {
+    let entry = live_interrupts().get(local_id).map(|l| (Arc::clone(&l.client), l.queue.clone()));
+    let Some((client, queue)) = entry else { return false };
+    if let Err(err) = client.abort(local_id).await {
+        tracing::warn!(%err, session = %local_id, "opencode abort failed");
+    }
+    queue.push(local_id, std::iter::empty());
+    true
+}
 
 /// `meta` is retained so a reconnect can replay the original `SessionStarted`.
 #[derive(Debug, Clone)]
@@ -226,6 +256,9 @@ pub struct SpawnParams {
     /// Limit hold + MCP-readiness wait, awaited between session creation and
     /// the first turn. `None` outside a real daemon run.
     pub preflight: Option<crate::preflight::Preflight>,
+    pub permission_mode: Option<cctui_proto::adapter::PermissionMode>,
+    /// Sessions this serve re-attaches instead of creating one.
+    pub resume: Vec<(String, persist::Record)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,9 +291,14 @@ pub struct OpenCodeSession {
     server_url: Option<String>,
     server_pid: Option<u32>,
     server_version: Option<String>,
+    version_gate: crate::adapters::version_gate::VersionGate,
     pending_permissions: HashSet<String>,
     /// Snapshotted at construction rather than read per turn.
     turn_end_supported: bool,
+    client: Option<Arc<OpenCodeClient>>,
+    interrupts: InterruptQueue,
+    store: Arc<SessionStore>,
+    reexeced: bool,
 }
 
 impl OpenCodeSession {
@@ -292,9 +330,20 @@ impl OpenCodeSession {
             server_url: None,
             server_pid: None,
             server_version: None,
+            version_gate: crate::adapters::version_gate::VersionGate::default(),
             pending_permissions: HashSet::new(),
             turn_end_supported: crate::adapters::turn_end::supported(),
+            client: None,
+            interrupts: InterruptQueue::default(),
+            store: persist::global(),
+            reexeced: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<SessionStore>) -> Self {
+        self.store = store;
+        self
     }
 
     pub async fn run(mut self) {
@@ -304,28 +353,34 @@ impl OpenCodeSession {
             Err(err) => {
                 tracing::error!(%err, "opencode session ended in error");
                 if let Some(command_id) = command_id {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::CommandResult {
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::CommandResult {
                             command_id,
                             ok: false,
                             error: Some(err.to_string()),
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                 }
                 Some(err.to_string())
             }
         };
         if let Some(detail) = failure {
             self.crash_all(&detail).await;
+            self.end_unattached(&detail).await;
+            return;
+        }
+        if self.reexeced {
             return;
         }
         for id in self.owned.clone() {
-            self.live.lock().await.remove(&id);
-            let _ = self
-                .events
-                .send(AdapterEvent::SessionEnded { local_id: id, reason: EndReason::Completed })
-                .await;
+            self.unlist(&id).await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::SessionEnded { local_id: id, reason: EndReason::Completed },
+            )
+            .await;
         }
     }
 
@@ -392,37 +447,28 @@ impl OpenCodeSession {
         self.server_url = Some(base.clone());
         let client =
             Arc::new(OpenCodeClient::new(base, password).observed(Arc::clone(&self.rings)));
-        self.await_health(&client).await?;
-
-        let session = client
-            .create_session(&CreateSession {
-                title: self.params.name.clone(),
-                agent: self.agent(),
-                model: model.as_ref().map(|m| SessionModelRef {
-                    id: m.model_id.clone(),
-                    provider_id: m.provider_id.clone(),
-                }),
-                parent_id: None,
-            })
-            .await?;
-
-        let parent = self.params.parent_local_id.clone();
-        self.register(&session.id, parent, Some(self.params.cwd.clone())).await;
-        if let Some(command_id) = command_id {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
-                .await;
+        self.client = Some(Arc::clone(&client));
+        if let Err(err) = self.await_health(&client).await {
+            shutdown_serve(&mut child).await;
+            return Err(err);
         }
-        if let Some(m) = model.as_ref() {
-            let _ = self
-                .events
-                .send(AdapterEvent::SessionModel {
-                    local_id: session.id.clone(),
-                    model: m.qualified(),
-                })
-                .await;
-        }
+
+        let created = if self.params.resume.is_empty() {
+            match self.create(&client, model.as_ref(), command_id).await {
+                Ok(id) => Some(id),
+                Err(err) => {
+                    shutdown_serve(&mut child).await;
+                    return Err(err);
+                }
+            }
+        } else {
+            self.reattach(&client, model.as_ref()).await;
+            if self.owned.is_empty() {
+                shutdown_serve(&mut child).await;
+                return Ok(());
+            }
+            None
+        };
 
         let (evt_tx, mut evt_rx) = mpsc::channel(256);
         let mut stream = tokio::spawn(pump_sse(
@@ -432,12 +478,15 @@ impl OpenCodeSession {
             Arc::clone(&self.sse),
         ));
 
-        if let Some(preflight) = &self.params.preflight {
-            preflight.run_bound(&session.id).await;
+        if let Some(id) = &created
+            && let Some(preflight) = &self.params.preflight
+        {
+            preflight.run_bound(id).await;
         }
 
-        if let Some(text) = self.first_turn(&session.id)
-            && !self.prompt_or_crash(&client, &session.id, &text, model.as_ref(), None).await
+        if let Some(id) = &created
+            && let Some(text) = self.first_turn(id)
+            && !self.prompt_or_crash(&client, id, &text, model.as_ref(), None).await
         {
             stream.abort();
             shutdown_serve(&mut child).await;
@@ -446,12 +495,24 @@ impl OpenCodeSession {
 
         let mut reattached = false;
         let reexec = crate::selfupdate::reexec_prep();
+        let interrupts = self.interrupts.clone();
         loop {
             if !self.in_flight {
                 reattached = false;
             }
+            if let Some(pending) = interrupts.try_next() {
+                if !self.on_interrupt(&client, pending.local_id).await {
+                    break;
+                }
+                continue;
+            }
             tokio::select! {
                 () = self.shutdown.cancelled() => break,
+                pending = interrupts.next() => {
+                    if !self.on_interrupt(&client, pending.local_id).await {
+                        break;
+                    }
+                }
                 () = reexec.cancelled() => {
                     self.on_reexec(&stream, &mut child).await;
                     return Ok(());
@@ -496,17 +557,92 @@ impl OpenCodeSession {
         Ok(())
     }
 
+    async fn create(
+        &mut self,
+        client: &OpenCodeClient,
+        model: Option<&ModelRef>,
+        command_id: Option<Uuid>,
+    ) -> Result<String> {
+        let session = client
+            .create_session(&CreateSession {
+                title: self.params.name.clone(),
+                agent: self.agent(),
+                model: model.map(|m| SessionModelRef {
+                    id: m.model_id.clone(),
+                    provider_id: m.provider_id.clone(),
+                }),
+                parent_id: None,
+            })
+            .await?;
+        let parent = self.params.parent_local_id.clone();
+        self.register(&session.id, parent, Some(self.params.cwd.clone())).await;
+        if let Some(command_id) = command_id {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult { command_id, ok: true, error: None },
+            )
+            .await;
+        }
+        self.announce_model(&session.id, model).await;
+        Ok(session.id)
+    }
+
+    /// Re-register the sessions a previous daemon process drove on this key.
+    /// One opencode no longer knows ends here rather than lingering as live.
+    async fn reattach(&mut self, client: &OpenCodeClient, model: Option<&ModelRef>) {
+        for (local_id, record) in self.params.resume.clone() {
+            match client.messages(&local_id).await {
+                Ok(_) => {
+                    self.register(&local_id, record.parent_local_id, Some(record.cwd)).await;
+                    self.announce_model(&local_id, model).await;
+                    tracing::info!(%local_id, "opencode: session re-attached after daemon restart");
+                }
+                Err(err) => {
+                    tracing::warn!(%err, %local_id, "opencode: session lost across daemon restart");
+                    self.unlist(&local_id).await;
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::SessionEnded {
+                            local_id,
+                            reason: EndReason::Crashed {
+                                detail: format!(
+                                    "opencode no longer knows this session after the daemon \
+                                     restarted: {err}"
+                                ),
+                            },
+                        },
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    async fn announce_model(&self, local_id: &str, model: Option<&ModelRef>) {
+        if let Some(m) = model {
+            let _ = self
+                .events
+                .send(AdapterEvent::SessionModel {
+                    local_id: local_id.to_owned(),
+                    model: m.qualified(),
+                })
+                .await;
+        }
+    }
+
     /// The execve does not kill `opencode serve`: it leads its own process
     /// group, so an unhandled re-exec leaves it running — and spending — with
     /// no daemon reading its output. No `abort_owned` here; the server it would
     /// be told about is about to be `SIGTERMed` anyway, and the round trip does
-    /// not fit in the re-exec grace.
+    /// not fit in the re-exec grace. The sessions stay recorded: the next
+    /// process brings serve back and re-attaches them.
     async fn on_reexec(
         &mut self,
         stream: &tokio::task::JoinHandle<()>,
         child: &mut tokio::process::Child,
     ) {
         tracing::info!("opencode: daemon re-exec, taking `opencode serve` down");
+        self.reexeced = true;
         stream.abort();
         self.fail_buffered_commands().await;
         shutdown_serve(child).await;
@@ -517,14 +653,15 @@ impl OpenCodeSession {
         while let Ok(cmd) = self.commands.try_recv() {
             if let Some(command_id) = cmd.command_id() {
                 tracing::warn!(?cmd, "opencode: command dropped, session is ending");
-                let _ = self
-                    .events
-                    .send(AdapterEvent::CommandResult {
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::CommandResult {
                         command_id,
                         ok: false,
                         error: Some("opencode session ended before the command ran".to_owned()),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
         }
     }
@@ -602,19 +739,55 @@ impl OpenCodeSession {
         if !self.params.key.is_empty() && self.params.key != local_id {
             crate::agenttool::bind_session_alias(&self.params.key, local_id);
         }
+        let started_at_ms = self
+            .params
+            .resume
+            .iter()
+            .find(|(id, _)| id == local_id)
+            .map_or_else(crate::neighbours::now_ms, |(_, r)| r.started_at_ms);
+        if !self.oneshot
+            && let Some(cwd) = working_dir.clone()
+        {
+            self.store.upsert(
+                local_id,
+                persist::Record {
+                    key: self.params.key.clone(),
+                    cwd,
+                    agent: self.agent(),
+                    model: self
+                        .params
+                        .model
+                        .clone()
+                        .or_else(|| self.params.cfg.default_model.clone()),
+                    permission_mode: self.params.permission_mode,
+                    parent_local_id: parent_local_id.clone(),
+                    account_bound: self
+                        .params
+                        .env
+                        .contains_key(crate::adapters::gateway_env::FIREWORKS_GATEWAY_KEYS[1]),
+                    started_at_ms,
+                },
+            );
+        }
         let meta = SessionMeta {
             working_dir,
             parent_local_id,
             extra: serde_json::json!({
                 "harness": "opencode",
                 "spawn_key": self.params.key,
-                "started_at_ms": crate::neighbours::now_ms(),
+                "started_at_ms": started_at_ms,
             }),
         };
         self.live.lock().await.insert(
             local_id.to_owned(),
             LiveSession { commands: self.commands_tx.clone(), meta: meta.clone() },
         );
+        if let Some(client) = &self.client {
+            live_interrupts().insert(
+                local_id.to_owned(),
+                LiveInterrupt { client: Arc::clone(client), queue: self.interrupts.clone() },
+            );
+        }
         let _ = self
             .events
             .send(AdapterEvent::SessionStarted { local_id: local_id.to_owned(), meta })
@@ -667,14 +840,15 @@ impl OpenCodeSession {
     ) -> bool {
         let failure = self.prompt(client, session_id, text, model).await;
         if let Some(command_id) = command_id {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult {
                     command_id,
                     ok: failure.is_none(),
                     error: failure.clone(),
-                })
-                .await;
+                },
+            )
+            .await;
         }
         let Some(detail) = failure else {
             return true;
@@ -699,18 +873,57 @@ impl OpenCodeSession {
         Stall::Reattach
     }
 
+    async fn unlist(&self, local_id: &str) {
+        self.live.lock().await.remove(local_id);
+        self.store.remove(local_id);
+        let mut interrupts = live_interrupts();
+        if interrupts.get(local_id).is_some_and(|l| l.queue.same_queue(&self.interrupts)) {
+            interrupts.remove(local_id);
+        }
+    }
+
+    /// Stop presses end the session, as the command-path interrupt always has;
+    /// the HTTP abort already went out from [`interrupt_live`].
+    async fn on_interrupt(&mut self, client: &OpenCodeClient, session_id: String) -> bool {
+        if !self.owned.contains(&session_id) {
+            return true;
+        }
+        self.on_command(client, SessionCommand::Kill { session_id }, None).await
+    }
+
+    /// A serve that never came back takes the sessions it was to re-attach
+    /// with it; leaving their records would retry them on every restart.
+    async fn end_unattached(&mut self, detail: &str) {
+        let recorded = self.store.snapshot();
+        for (id, _) in std::mem::take(&mut self.params.resume) {
+            if !recorded.contains_key(&id) {
+                continue;
+            }
+            self.unlist(&id).await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::SessionEnded {
+                    local_id: id,
+                    reason: EndReason::Crashed { detail: detail.to_owned() },
+                },
+            )
+            .await;
+        }
+    }
+
     /// Report every still-owned session as crashed.
     async fn crash_all(&mut self, detail: &str) {
         for id in std::mem::take(&mut self.owned) {
             self.emit_error(&id, detail).await;
-            self.live.lock().await.remove(&id);
-            let _ = self
-                .events
-                .send(AdapterEvent::SessionEnded {
+            self.unlist(&id).await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::SessionEnded {
                     local_id: id,
                     reason: EndReason::Crashed { detail: detail.to_owned() },
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
 
@@ -732,14 +945,12 @@ impl OpenCodeSession {
                 }
                 self.in_flight = false;
                 self.owned.remove(&session_id);
-                self.live.lock().await.remove(&session_id);
-                let _ = self
-                    .events
-                    .send(AdapterEvent::SessionEnded {
-                        local_id: session_id,
-                        reason: EndReason::Killed,
-                    })
-                    .await;
+                self.unlist(&session_id).await;
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::SessionEnded { local_id: session_id, reason: EndReason::Killed },
+                )
+                .await;
                 if self.owned.is_empty() {
                     return false;
                 }
@@ -805,10 +1016,11 @@ impl OpenCodeSession {
                     let _ = self.events.send(status(&child.id, None, None, Some(name))).await;
                 }
                 if let Some(command_id) = command_id {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
-                        .await;
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::CommandResult { command_id, ok: true, error: None },
+                    )
+                    .await;
                 }
                 if let Some(text) = prompt.filter(|p| !p.trim().is_empty()) {
                     self.prompt(client, &child.id, &text, model).await;
@@ -817,14 +1029,15 @@ impl OpenCodeSession {
             Err(err) => {
                 tracing::error!(%err, %parent, "opencode fork failed");
                 if let Some(command_id) = command_id {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::CommandResult {
+                    crate::adapters::emit(
+                        &self.events,
+                        AdapterEvent::CommandResult {
                             command_id,
                             ok: false,
                             error: Some(err.to_string()),
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                 }
             }
         }
@@ -836,6 +1049,7 @@ impl OpenCodeSession {
     /// done, since `opencode serve` never exits on its own.
     async fn on_idle(&mut self, session_id: &str) -> bool {
         self.in_flight = false;
+        self.check_version().await;
         // Sent before the oneshot bail-out so a child's last turn still
         // reports one.
         crate::adapters::turn_end::emit_gated(&self.events, session_id, self.turn_end_supported)
@@ -845,6 +1059,34 @@ impl OpenCodeSession {
         }
         let _ = self.events.send(status(session_id, Some("idle".to_owned()), None, None)).await;
         true
+    }
+
+    /// `opencode serve` keeps the binary it started from. Restarting it would
+    /// drop the session's live state, so a mismatch is only reported.
+    async fn check_version(&mut self) {
+        let Some(server) = self.server_version.clone() else { return };
+        if !self.version_gate.due(std::time::Instant::now()) {
+            return;
+        }
+        let local =
+            tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe_version(&self.params.cfg.bin))
+                .await
+                .ok()
+                .and_then(Result::ok);
+        if let Some((running, local)) = version_drift(
+            &mut self.version_gate,
+            &server,
+            local.as_deref(),
+            self.in_flight,
+            std::time::Instant::now(),
+        ) {
+            tracing::warn!(
+                %running,
+                %local,
+                key = %self.params.key,
+                "opencode serve is older than the installed CLI; restart the session to pick it up"
+            );
+        }
     }
 
     async fn on_event(&mut self, client: &OpenCodeClient, evt: OcEvent) -> bool {
@@ -903,14 +1145,15 @@ impl OpenCodeSession {
             }
             OcEvent::SessionDeleted { .. } => {
                 self.owned.remove(&session_id);
-                self.live.lock().await.remove(&session_id);
-                let _ = self
-                    .events
-                    .send(AdapterEvent::SessionEnded {
+                self.unlist(&session_id).await;
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::SessionEnded {
                         local_id: session_id,
                         reason: EndReason::Completed,
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
             OcEvent::PermissionAsked { properties } => {
                 self.pending_permissions.insert(properties.id.clone());
@@ -942,14 +1185,15 @@ impl OpenCodeSession {
 
     async fn end_crashed(&mut self, session_id: String, detail: String) -> bool {
         self.owned.remove(&session_id);
-        self.live.lock().await.remove(&session_id);
-        let _ = self
-            .events
-            .send(AdapterEvent::SessionEnded {
+        self.unlist(&session_id).await;
+        crate::adapters::emit(
+            &self.events,
+            AdapterEvent::SessionEnded {
                 local_id: session_id,
                 reason: EndReason::Crashed { detail },
-            })
-            .await;
+            },
+        )
+        .await;
         false
     }
 
@@ -991,6 +1235,25 @@ impl OpenCodeSession {
                 turn_id: None,
             })
             .await;
+    }
+}
+
+/// The `(running, local)` pair the first time a mismatch is seen.
+fn version_drift(
+    gate: &mut crate::adapters::version_gate::VersionGate,
+    server: &str,
+    local: Option<&str>,
+    in_flight: bool,
+    now: std::time::Instant,
+) -> Option<(String, String)> {
+    use crate::adapters::version_gate::{Decision, parse_cli_version};
+    let running = parse_cli_version(server);
+    let local = local.and_then(parse_cli_version);
+    match gate.check(running.as_deref(), local.as_deref(), Some(in_flight), false, now) {
+        Decision::Nothing => None,
+        Decision::Deferred { running, local } | Decision::Cycle { running, local, .. } => {
+            gate.first_warning_for(&running, &local).then_some((running, local))
+        }
     }
 }
 
@@ -1328,6 +1591,8 @@ mod tests {
             preflight: None,
             skill_roots: Vec::new(),
             context: Vec::new(),
+            permission_mode: None,
+            resume: Vec::new(),
         };
         let live = LiveRegistry::default();
         let handle =
@@ -1363,6 +1628,47 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_serve_that_never_becomes_healthy_takes_its_process_group_down() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("grandchild.pid");
+        let bin = dir.path().join("fake-opencode");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.0.0; exit 0; fi\n\
+                 sleep 300 &\necho $! > '{}'\nwait\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        session.params.prompt = None;
+        session.params.cfg = OpenCodeConfig {
+            bin: bin.to_string_lossy().into_owned(),
+            state_root: dir.path().join("state"),
+            startup_timeout_ms: 500,
+            ..OpenCodeConfig::default()
+        };
+
+        let err = session.run_inner(None).await.expect_err("an unhealthy serve fails the spawn");
+        assert!(err.to_string().contains("did not become healthy"), "{err}");
+        let grandchild: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        for _ in 0..50 {
+            if !is_alive(grandchild) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("grandchild {grandchild} of a failed spawn is still running");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn shutdown_serve_takes_down_the_whole_process_tree() {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -1386,6 +1692,78 @@ mod tests {
         panic!("grandchild {grandchild} survived shutdown_serve");
     }
 
+    /// Answers one HTTP request with `true` and reports its request line.
+    async fn one_shot_http() -> (String, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request_line = lines.next_line().await.unwrap().unwrap_or_default();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.is_empty() {
+                    break;
+                }
+            }
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "content-type: application/json\r\n",
+                "content-length: 4\r\n",
+                "connection: close\r\n\r\n",
+                "true",
+            );
+            write.write_all(response.as_bytes()).await.unwrap();
+            let _ = seen_tx.send(request_line);
+        });
+        (base, seen_rx)
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_aborts_over_http_without_the_driver_loop() {
+        let (base, seen) = one_shot_http().await;
+        let local_id = format!("ses_{}", Uuid::new_v4().simple());
+        let queue = InterruptQueue::default();
+        live_interrupts().insert(
+            local_id.clone(),
+            LiveInterrupt {
+                client: Arc::new(OpenCodeClient::new(base, "pw".to_owned())),
+                queue: queue.clone(),
+            },
+        );
+        assert!(interrupt_live(&local_id).await);
+        let request_line =
+            tokio::time::timeout(std::time::Duration::from_secs(5), seen).await.unwrap().unwrap();
+        assert!(
+            request_line.starts_with(&format!("POST /session/{local_id}/abort ")),
+            "{request_line}"
+        );
+        assert_eq!(queue.try_next().map(|p| p.local_id), Some(local_id.clone()));
+        live_interrupts().remove(&local_id);
+        assert!(!interrupt_live(&local_id).await, "no live driver, no interrupt");
+    }
+
+    #[tokio::test]
+    async fn a_queued_interrupt_ends_the_owned_session_like_the_command_path() {
+        let (mut session, mut rx, client) = test_session(None);
+        assert!(session.on_interrupt(&client, "ses_other".to_owned()).await);
+        assert!(!session.on_interrupt(&client, "ses_1".to_owned()).await, "last owned session");
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(evt) = rx.recv().await {
+                if let AdapterEvent::SessionEnded { local_id, reason } = evt {
+                    return (local_id, reason);
+                }
+            }
+            panic!("no SessionEnded");
+        })
+        .await
+        .unwrap();
+        assert_eq!(ended.0, "ses_1");
+        assert!(matches!(ended.1, EndReason::Killed));
+    }
+
     fn test_session(
         parent_local_id: Option<String>,
     ) -> (OpenCodeSession, mpsc::Receiver<AdapterEvent>, Arc<OpenCodeClient>) {
@@ -1406,6 +1784,8 @@ mod tests {
             preflight: None,
             skill_roots: Vec::new(),
             context: Vec::new(),
+            permission_mode: None,
+            resume: Vec::new(),
         };
         let mut session =
             OpenCodeSession::new(params, tx, LiveRegistry::default(), CancellationToken::new());
@@ -1493,8 +1873,7 @@ mod tests {
         assert!(turn.contains("House style"), "{turn}");
         assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
 
-        let staged =
-            std::path::Path::new("/tmp/cctui-uploads").join(&session.params.key).join("context.md");
+        let staged = crate::adapters::uploads::session_dir(&session.params.key).join("context.md");
         assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
         let _ = std::fs::remove_dir_all(staged.parent().unwrap());
     }
@@ -1901,6 +2280,8 @@ mod tests {
             preflight: None,
             skill_roots: Vec::new(),
             context: Vec::new(),
+            permission_mode: None,
+            resume: Vec::new(),
         };
         params.cfg.bin = "/definitely/not/a/binary".to_owned();
         let mut session =
@@ -1910,6 +2291,30 @@ mod tests {
         let ended = ended_events(&mut rx);
         assert_eq!(ended.len(), 1, "{ended:?}");
         assert!(matches!(ended[0].1, EndReason::Crashed { .. }), "{:?}", ended[0].1);
+    }
+
+    #[test]
+    fn a_serve_older_than_the_installed_cli_is_reported_once_per_pair() {
+        let mut gate = crate::adapters::version_gate::VersionGate::default();
+        let now = std::time::Instant::now();
+        assert_eq!(version_drift(&mut gate, "1.18.7", Some("1.18.7\n"), false, now), None);
+        assert_eq!(version_drift(&mut gate, "1.18.7", None, false, now), None);
+        assert_eq!(
+            version_drift(&mut gate, "1.18.7", Some("1.19.0\n"), false, now),
+            Some(("1.18.7".to_owned(), "1.19.0".to_owned()))
+        );
+        assert_eq!(version_drift(&mut gate, "1.18.7", Some("1.19.0\n"), true, now), None);
+        assert_eq!(
+            version_drift(&mut gate, "1.18.7", Some("1.19.1\n"), true, now),
+            Some(("1.18.7".to_owned(), "1.19.1".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_never_reported_a_server_version_is_not_probed() {
+        let (mut session, _rx, _client) = test_session(None);
+        session.check_version().await;
+        assert!(session.version_gate.due(std::time::Instant::now()), "no probe consumed the slot");
     }
 
     #[test]
@@ -1942,6 +2347,150 @@ mod tests {
             stream.await.unwrap_err().is_cancelled(),
             "the SSE pump must not outlive the re-exec"
         );
+    }
+
+    fn recorded(key: &str, started_at_ms: u64) -> persist::Record {
+        persist::Record {
+            key: key.to_owned(),
+            cwd: "/repo".to_owned(),
+            agent: None,
+            model: None,
+            permission_mode: None,
+            parent_local_id: None,
+            account_bound: false,
+            started_at_ms,
+        }
+    }
+
+    fn temp_store() -> (tempfile::TempDir, std::path::PathBuf, Arc<SessionStore>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode-sessions.json");
+        let store = Arc::new(SessionStore::at(path.clone()));
+        (dir, path, store)
+    }
+
+    /// Serves `GET /session/{known}/message` with an empty transcript and
+    /// answers everything else 404, like a serve that lost the session.
+    async fn serve_knowing(known: &'static str) -> String {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let (read, mut write) = stream.into_split();
+                    let mut lines = BufReader::new(read).lines();
+                    let request_line = lines.next_line().await.unwrap().unwrap_or_default();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if line.is_empty() {
+                            break;
+                        }
+                    }
+                    let hit = request_line.starts_with(&format!("GET /session/{known}/message "));
+                    let response = if hit {
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                         content-length: 2\r\nconnection: close\r\n\r\n[]"
+                    } else {
+                        "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    };
+                    let _ = write.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn a_registered_session_is_recorded_and_a_kill_forgets_it() {
+        let (_dir, path, store) = temp_store();
+        let (session, _rx, client) = test_session(None);
+        let mut session = session.with_store(Arc::clone(&store));
+        session.params.permission_mode = Some(cctui_proto::adapter::PermissionMode::Yolo);
+        session.register("ses_1", None, Some("/repo".to_owned())).await;
+
+        let on_disk = persist::load_from(&path);
+        let record = on_disk.get("ses_1").expect("a live session must be recorded");
+        assert_eq!(record.key, "key-1");
+        assert_eq!(record.cwd, "/repo");
+        assert_eq!(record.permission_mode, Some(cctui_proto::adapter::PermissionMode::Yolo));
+
+        session
+            .on_command(&client, SessionCommand::Kill { session_id: "ses_1".to_owned() }, None)
+            .await;
+        assert!(persist::load_from(&path).is_empty(), "a killed session must not be restored");
+    }
+
+    #[tokio::test]
+    async fn a_oneshot_child_is_never_recorded() {
+        let (_dir, path, store) = temp_store();
+        let (session, _rx, _client) = test_session(Some("parent-1".to_owned()));
+        let mut session = session.with_store(store);
+        session.register("ses_child", Some("parent-1".to_owned()), Some("/repo".to_owned())).await;
+        assert!(persist::load_from(&path).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reexec_keeps_the_session_recorded_for_the_next_process() {
+        let (_dir, path, store) = temp_store();
+        let (session, _rx, _client) = test_session(None);
+        let mut session = session.with_store(store);
+        session.register("ses_1", None, Some("/repo".to_owned())).await;
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 300")
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let stream = tokio::spawn(std::future::pending::<()>());
+        session.on_reexec(&stream, &mut child).await;
+
+        assert!(session.reexeced, "run() must not report the session ended");
+        assert!(persist::load_from(&path).contains_key("ses_1"));
+    }
+
+    #[tokio::test]
+    async fn reattach_restores_live_sessions_and_ends_lost_ones() {
+        let (_dir, path, store) = temp_store();
+        store.upsert("ses_live", recorded("key-1", 1_784_143_530_428));
+        store.upsert("ses_gone", recorded("key-1", 1_784_143_530_429));
+        let (session, mut rx, _client) = test_session(None);
+        let mut session = session.with_store(store);
+        session.owned.clear();
+        session.params.resume = vec![
+            ("ses_live".to_owned(), recorded("key-1", 1_784_143_530_428)),
+            ("ses_gone".to_owned(), recorded("key-1", 1_784_143_530_429)),
+        ];
+        let client = OpenCodeClient::new(serve_knowing("ses_live").await, "pw".to_owned());
+
+        session.reattach(&client, None).await;
+
+        assert!(session.owned.contains("ses_live"));
+        assert!(!session.owned.contains("ses_gone"));
+        assert!(session.live.lock().await.contains_key("ses_live"));
+        let mut started = None;
+        let mut ended = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                AdapterEvent::SessionStarted { local_id, meta } => started = Some((local_id, meta)),
+                AdapterEvent::SessionEnded { local_id, reason } => ended.push((local_id, reason)),
+                _ => {}
+            }
+        }
+        let (local_id, meta) = started.expect("the surviving session must be announced");
+        assert_eq!(local_id, "ses_live");
+        assert_eq!(
+            meta.extra["started_at_ms"], 1_784_143_530_428_u64,
+            "a restored session keeps its original start time"
+        );
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0].0, "ses_gone");
+        assert!(matches!(ended[0].1, EndReason::Crashed { .. }));
+        let on_disk = persist::load_from(&path);
+        assert!(on_disk.contains_key("ses_live"));
+        assert!(!on_disk.contains_key("ses_gone"), "a lost session must not be retried forever");
     }
 
     #[cfg(unix)]

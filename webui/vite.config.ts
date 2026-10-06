@@ -47,6 +47,18 @@ export function devProxy(target: string | undefined) {
 					if (Array.isArray(set)) res.headers['set-cookie'] = set.map((c) => toDevCookie(stripSecure(c)));
 				});
 			}
+		},
+		'/plugins/': {
+			target,
+			changeOrigin: true,
+			secure: true,
+			headers: { origin },
+			configure: (proxy: DevProxyServer) => {
+				proxy.on('proxyReq', (req: ProxiedRequest) => {
+					const cookie = req.getHeader('cookie');
+					if (typeof cookie === 'string') req.setHeader('cookie', toUpstreamCookies(cookie));
+				});
+			}
 		}
 	};
 }

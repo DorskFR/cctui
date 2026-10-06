@@ -1,26 +1,25 @@
 <script lang="ts">
-	import { onDestroy, tick, untrack } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { insertBlock } from './insertText';
 	import { insertAtCaret, quoteMarkdown } from './format';
-	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
 	import { errMessage } from '$lib/api';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
-	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
+	import PromptField from '$lib/components/organisms/PromptField.svelte';
 	import {
 		pendingScheduled,
 		useScheduledActions,
 		useScheduledMessages,
-		useSessionAttachments,
-		useSessions
+		useSessionAttachments
 	} from '$lib/queries';
-	import { Button, FileButton, IconButton, InputGroup, Text, Textarea, formatTimestamp } from '@dorsk/tsumikit';
+	import { Button, FileButton, IconButton, InputGroup, Text, formatTimestamp } from '@dorsk/tsumikit';
 	import ArchivedActions from './ArchivedActions.svelte';
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
 	import SendButton from './SendButton.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
-	import { ComposerAttachments } from './composerAttachments.svelte';
+	import { PromptAttachments } from '$lib/promptAttachments.svelte';
+	import { scheduleBody } from './scheduleBody';
 	import { scheduleMenuItems } from './scheduleMenu';
 	import { parseCustom, toLocalInput } from './scheduleTimes';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
@@ -67,10 +66,6 @@
 	// Folded: a tile's composer before it takes focus — the input line alone.
 	const folded = $derived(compact && !focused);
 
-	// `#` mention popover source: the shared (cached) session list.
-	const sessionsQuery = useSessions(() => false);
-	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
-
 	// Composer draft, persisted per session in localStorage. Initialized once (the
 	// drawer instance persists across session switches; matching the original we do
 	// NOT reload input on switch — only the history-nav cursor resets, below).
@@ -95,19 +90,19 @@
 		() => session.id,
 		() => supportsAttachments && !archived
 	);
-	const att = new ComposerAttachments({
+	const att = new PromptAttachments({
 		draftKey: () => composerKey(session.id),
 		enabled: () => supportsAttachments && !archived,
 		input: () => input,
 		setInput: (text) => (input = text),
-		stagedNames: () => (stagedQuery.data ?? []).map((a) => a.name)
+		stagedNames: () => (stagedQuery.data ?? []).map((a) => a.name),
+		el: () => scroll.textarea
 	});
-	onDestroy(() => att.images.reset());
 	export function addFiles(incoming: File[]) {
 		att.add(incoming);
 	}
 	export function setDragActive(active: boolean) {
-		att.dragActive = active;
+		att.setDragActive(active);
 	}
 
 	const cache = new CacheColdClock({
@@ -126,7 +121,7 @@
 	let customOpen = $state(false);
 	let customValue = $state('');
 	const canSchedule = $derived(
-		!!input.trim() && att.files.length === 0 && !att.uploading && att.images.pending.length === 0
+		(!!input.trim() || att.files.length > 0) && !att.uploading && att.images.pending.length === 0
 	);
 	const scheduleItems = $derived(
 		scheduleMenuItems({
@@ -144,11 +139,19 @@
 
 	async function scheduleAt(at: Date) {
 		const text = input.trim();
-		if (!text || archived || att.files.length) return;
-		try {
-			await scheduledActions.schedule(text, at);
-		} catch (e) {
-			toasts.error(m.composer_schedule_failed({ message: errMessage(e) }));
+		if ((!text && !att.files.length) || archived || att.uploading) return;
+		if (att.error) {
+			toasts.error(att.error);
+			return;
+		}
+		const out = await scheduleBody(
+			text,
+			(t) => att.stage(t, stageFiles),
+			(body) => scheduledActions.schedule(body, at)
+		);
+		if (!out.ok) {
+			if (out.restore !== null) input = out.restore;
+			if (out.error) toasts.error(m.composer_schedule_failed({ message: errMessage(out.error) }));
 			return;
 		}
 		toasts.info(
@@ -320,10 +323,9 @@
 		<!-- Failed sends surface inline on the message bubble itself (red +
 		     Retry), so there's no separate composer banner. -->
 		<div class="scheduled" class:hidden={folded} bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
-		<ImageCompressionStatus pending={att.images.pending} />
-		{#if supportsAttachments && att.files.length}
+		{#if supportsAttachments && (att.files.length || att.images.pending.length)}
 			<div class="attachments">
-				<AttachmentList files={att.files} onremove={(name) => att.remove(name)} compact />
+				<AttachmentList {att} />
 			</div>
 		{/if}
 		{#if coldOffer && !folded}
@@ -354,34 +356,26 @@
 		<!-- The `#` session-mention panel opens as a dropup above the field
 		     (the composer is pinned to the bottom of the drawer). -->
 		<InputGroup leading={supportsAttachments && !folded ? attach : undefined}>
-			<SessionMention
+			<PromptField
+				att={supportsAttachments ? att : undefined}
 				bind:value={input}
-				el={scroll.textarea}
-				sessions={mentionSessions}
+				bind:el={scroll.textarea}
 				excludeId={session.id}
 				placement="up"
-			>
-				<Textarea
-					rows={1}
-					autoresize
-					resize="top"
-					maxHeight="40vh"
-					submitOn={coarsePointer ? 'mod-enter' : 'enter'}
-					onsubmit={submit}
-					data-journey="message"
-					aria-label={m.a11y_composer_message()}
-					placeholder={att.dragActive
-						? m.composer_drop_files()
-						: coarsePointer
-							? m.composer_placeholder_message()
-							: m.composer_placeholder_message_enter()}
-					bind:value={input}
-					bind:el={scroll.textarea}
-					onkeydown={onKey}
-					oninput={() => resetHistoryNav()}
-					onpaste={(e) => att.onPaste(e)}
-				/>
-			</SessionMention>
+				rows={1}
+				autoresize
+				resize="top"
+				maxHeight="40vh"
+				submitOn={coarsePointer ? 'mod-enter' : 'enter'}
+				onsubmit={submit}
+				data-journey="message"
+				aria-label={m.a11y_composer_message()}
+				placeholder={coarsePointer
+					? m.composer_placeholder_message()
+					: m.composer_placeholder_message_enter()}
+				onkeydown={onKey}
+				oninput={() => resetHistoryNav()}
+			/>
 			{#snippet trailing()}
 				<SendButton
 					items={scheduleItems}

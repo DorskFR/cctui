@@ -8,8 +8,10 @@ import {
 	classify,
 	deniedRoots,
 	installFileViewer,
-	refusalMessage,
-	retargetHref
+	previewFile,
+	previewable,
+	linkedFileHref,
+	refusalMessage
 } from './fileviewer';
 
 describe('fileviewer classify', () => {
@@ -89,24 +91,18 @@ describe('routing a linked path to the machine that owns it', () => {
 
 	const HREF = '/api/v1/machines/m1/fs/file?path=%2Fx%2Fnote.md&session_id=s1';
 
-	it('rewrites only a machine file href, keeping the path', () => {
-		expect(retargetHref(HREF, { session_id: 's2', machine_id: 'm2' })).toBe(
-			'/api/v1/machines/m2/fs/file?path=%2Fx%2Fnote.md&session_id=s2'
-		);
-		expect(retargetHref('/api/v1/sessions/s1/blobs/abc', { session_id: 's2', machine_id: 'm2' })).toBeNull();
+	it('rewrites only a machine file href into the session linked-file route', () => {
+		expect(linkedFileHref(HREF)).toBe('/api/v1/sessions/s1/linked-file?path=%2Fx%2Fnote.md');
+		expect(linkedFileHref('/api/v1/sessions/s1/blobs/abc')).toBeNull();
 	});
 
-	it('retries the read on the owning machine after a refusal', async () => {
+	it('retries the read through the server proxy after a refusal', async () => {
 		const seen: string[] = [];
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(async (url: string) => {
 				seen.push(url);
-				if (url.includes('linked-file-owner'))
-					return new Response(JSON.stringify({ session_id: 's2', machine_id: 'm2' }), {
-						status: 200
-					});
-				if (url.includes('/machines/m2/'))
+				if (url.includes('/linked-file?'))
 					return new Response('hello', {
 						status: 200,
 						headers: { 'content-type': 'text/plain' }
@@ -120,16 +116,33 @@ describe('routing a linked path to the machine that owns it', () => {
 		URL.revokeObjectURL = vi.fn();
 		expect(await attemptOpen(HREF, 'note.md')).toBeNull();
 		expect(seen[0]).toBe(HREF);
-		expect(seen[1]).toContain('/api/v1/sessions/s1/linked-file-owner?path=%2Fx%2Fnote.md');
-		expect(seen[2]).toContain('/machines/m2/fs/file');
+		expect(seen[1]).toContain('/api/v1/sessions/s1/linked-file?path=%2Fx%2Fnote.md');
+		expect(seen).toHaveLength(2);
 		document.body.innerHTML = '';
+	});
+
+	it('shows the owning daemon denial with its structured folders', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) =>
+				url.includes('/linked-file?')
+					? new Response(
+							JSON.stringify({ error: 'outside the allowed roots', allowed_folders: ['/srv'] }),
+							{ status: 403 }
+						)
+					: new Response(JSON.stringify({ error: 'not linked' }), { status: 403 })
+			)
+		);
+		const refusal = await attemptOpen(HREF, 'note.md');
+		expect(refusal?.status).toBe(403);
+		expect(refusal?.allowedFolders).toEqual(['/srv']);
 	});
 
 	it('keeps the original refusal when no other session owns the path', async () => {
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(async (url: string) =>
-				url.includes('linked-file-owner')
+				url.includes('/linked-file?')
 					? new Response(JSON.stringify({ error: 'not linked' }), { status: 404 })
 					: new Response(
 							JSON.stringify({
@@ -198,13 +211,13 @@ describe('fileviewer inline refusals', () => {
 	});
 
 	it('clears a previous refusal when a retry succeeds', async () => {
-		// Keyed by URL, not by call order: a refused read also asks
-		// linked-file-owner whether another machine holds the path.
+		// Keyed by URL, not by call order: a refused read is retried through
+		// the linked-file route.
 		let reads = 0;
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(async (url: string) => {
-				if (url.includes('linked-file-owner'))
+				if (url.includes('/linked-file?'))
 					return new Response(JSON.stringify({ error: 'not linked' }), { status: 404 });
 				reads += 1;
 				return reads === 1
@@ -219,5 +232,39 @@ describe('fileviewer inline refusals', () => {
 
 		click(a);
 		await vi.waitFor(() => expect(document.querySelector('.md-file-error')).toBeNull());
+	});
+});
+
+describe('fileviewer previewFile', () => {
+	afterEach(() => {
+		document.body.innerHTML = '';
+	});
+
+	it('only previews what the overlay can show', () => {
+		expect(previewable('image/png')).toBe(true);
+		expect(previewable('text/plain')).toBe(true);
+		expect(previewable('text/markdown')).toBe(true);
+		expect(previewable('application/pdf')).toBe(false);
+		expect(previewable('')).toBe(false);
+	});
+
+	it('opens a local image in the lightbox overlay and revokes its URL on close', async () => {
+		URL.createObjectURL = vi.fn(() => 'blob:local');
+		const revoke = vi.fn();
+		URL.revokeObjectURL = revoke;
+		await previewFile(new File([new Uint8Array(4)], 'shot 12.21.15.png', { type: 'image/png' }));
+		const overlay = document.querySelector('.md-fileviewer');
+		expect(overlay?.getAttribute('aria-label')).toBe('shot 12.21.15.png');
+		expect(overlay?.querySelector('img.md-lightbox-img')?.getAttribute('src')).toBe('blob:local');
+		document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(document.querySelector('.md-fileviewer')).toBeNull();
+		expect(revoke).toHaveBeenCalledWith('blob:local');
+	});
+
+	it('opens a local text file as preformatted text', async () => {
+		URL.createObjectURL = vi.fn(() => 'blob:text');
+		URL.revokeObjectURL = vi.fn();
+		await previewFile(new File(['hello\nworld'], 'paste-1.txt', { type: 'text/plain' }));
+		expect(document.querySelector('.md-fileviewer-pre')?.textContent).toBe('hello\nworld');
 	});
 });

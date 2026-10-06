@@ -133,33 +133,97 @@ pub async fn read_file(
     }
 
     let cwd = authorize_read(&state.pool, &ctx, machine_uuid, &sid, &path).await?;
+    serve_read(&state, machine_uuid, &sid, &path, cwd, &headers).await
+}
 
-    let file =
-        match bus::read_file(&state, machine_uuid, path.clone(), READ_FILE_MAX_BYTES, cwd).await {
-            Ok(file) => file,
-            Err(bus::BusError::NoDaemon(_)) => {
-                return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon offline"));
-            }
-            Err(bus::BusError::Timeout) => {
-                return Err(AppError::new(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "timed out waiting for the daemon",
-                ));
-            }
-            Err(bus::BusError::ReadFile(refusal)) => {
-                tracing::warn!(
-                    %machine_id, %path, kind = ?refusal.kind, msg = %refusal.message,
-                    "read-file refused"
-                );
-                return Ok(refusal_response(&refusal));
-            }
-            Err(e) => return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-        };
+/// `GET /sessions/{id}/linked-file?path=…`. Reads a path linked in this session
+/// or, failing that, in the live session that linked it, from whichever machine
+/// that session runs on. The daemon may be connected to any replica; the bus
+/// forwards. The caller passes the same gates as `fs/file` against the owner.
+pub async fn read_linked_file(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Query(params): Query<LinkedFileOwnerParams>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let path = params.path.trim().to_owned();
+    if path.is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "path is required"));
+    }
+    let (owner, cwd) = authorize_linked_read(&state.pool, &ctx, &session_id, &path).await?;
+    serve_read(&state, owner.machine_id, &owner.session_id, &path, cwd, &headers).await
+}
+
+async fn authorize_linked_read(
+    pool: &sqlx::PgPool,
+    ctx: &AuthContext,
+    sid: &str,
+    path: &str,
+) -> Result<(LinkedFileOwner, Option<String>), AppError> {
+    crate::authz::authorize_session_read(ctx, sid, pool)
+        .await
+        .map_err(|status| AppError::new(status, "not allowed to read this session"))?;
+    let owner = if path_is_linked(pool, sid, path).await? {
+        let machine: Option<Option<Uuid>> =
+            sqlx::query_scalar("SELECT machine_uuid FROM sessions WHERE id = $1")
+                .bind(sid)
+                .fetch_optional(pool)
+                .await?;
+        machine
+            .flatten()
+            .map(|machine_id| LinkedFileOwner { session_id: sid.to_owned(), machine_id })
+    } else {
+        find_link_owner(pool, ctx, path, sid).await?
+    };
+    let Some(owner) = owner else {
+        return Err(AppError::new(
+            StatusCode::NOT_FOUND,
+            "path is not linked in any session you can read",
+        ));
+    };
+    crate::authz::authorize_machine_read(ctx, owner.machine_id, pool)
+        .await
+        .map_err(|status| AppError::new(status, "not allowed to read this machine"))?;
+    let cwd = authorize_read(pool, ctx, owner.machine_id, &owner.session_id, path).await?;
+    Ok((owner, cwd))
+}
+
+async fn serve_read(
+    state: &AppState,
+    machine_uuid: Uuid,
+    sid: &str,
+    path: &str,
+    cwd: Option<String>,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    let file = match bus::read_file(state, machine_uuid, path.to_owned(), READ_FILE_MAX_BYTES, cwd)
+        .await
+    {
+        Ok(file) => file,
+        Err(bus::BusError::NoDaemon(_)) => {
+            return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon offline"));
+        }
+        Err(bus::BusError::Timeout) => {
+            return Err(AppError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "timed out waiting for the daemon",
+            ));
+        }
+        Err(bus::BusError::ReadFile(refusal)) => {
+            tracing::warn!(
+                %machine_uuid, %path, kind = ?refusal.kind, msg = %refusal.message,
+                "read-file refused"
+            );
+            return Ok(refusal_response(&refusal));
+        }
+        Err(e) => return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    };
 
     if let Some(hash) = file.blob_hash.as_deref() {
-        record_blob_link(&state.pool, &sid, hash).await?;
+        record_blob_link(&state.pool, sid, hash).await?;
     }
-    file_response(&file, Some(sid.as_str()), &headers)
+    file_response(&file, Some(sid), headers)
 }
 
 /// The three gates that make `fs/file` conversation-scoped, in the order that
@@ -787,6 +851,66 @@ mod tests {
 
         sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(&viewer)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        cleanup(&f).await;
+    }
+
+    #[tokio::test]
+    async fn the_linked_file_proxy_refuses_what_the_caller_cannot_read() {
+        let Some(f) = fixture("linked_file_proxy_gates").await else { return };
+        let path = "/home/u/proj/out/report.md";
+        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(path))).await.unwrap();
+        let theirs = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(theirs)
+            .bind(f.stranger.user_id)
+            .bind("linked_file_proxy_gates-theirs")
+            .bind("linked_file_proxy_gates-theirs-mkey")
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        let viewer = format!("{}-viewer", f.session);
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
+             VALUES ($1, $2, $2, $3, '/home/u/other', 'active')",
+        )
+        .bind(&viewer)
+        .bind(theirs)
+        .bind(f.stranger.user_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+        let (owner, cwd) =
+            authorize_linked_read(&f.pool, &f.owner, &f.session, path).await.unwrap();
+        assert_eq!(owner, LinkedFileOwner { session_id: f.session.clone(), machine_id: f.machine });
+        assert_eq!(cwd.as_deref(), Some("/home/u/proj"));
+
+        let err = authorize_linked_read(&f.pool, &f.stranger, &f.session, path).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "another user's session: {err:?}");
+        let err = authorize_linked_read(&f.pool, &f.stranger, &viewer, path).await.unwrap_err();
+        assert_eq!(
+            status_of(&err),
+            StatusCode::NOT_FOUND,
+            "a readable viewer does not reach an owner the caller cannot read: {err:?}"
+        );
+        record_links(&f.pool, &viewer, &extract_links(&serde_json::json!(path))).await.unwrap();
+        let (owner, _) = authorize_linked_read(&f.pool, &f.stranger, &viewer, path).await.unwrap();
+        assert_eq!(
+            owner,
+            LinkedFileOwner { session_id: viewer.clone(), machine_id: theirs },
+            "linking the same path serves it from the caller's own machine, never the owner's"
+        );
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&viewer)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(theirs)
             .execute(&f.pool)
             .await
             .unwrap();

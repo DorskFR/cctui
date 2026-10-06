@@ -1,4 +1,3 @@
-import { imageAttachments } from '$lib/imageAttachments.svelte';
 import { errMessage } from '$lib/api';
 import type { SpawnRequest } from '@bindings/SpawnRequest';
 import type { SessionProfile } from '@bindings/SessionProfile';
@@ -29,9 +28,8 @@ import {
 	normalizeDir
 } from '$lib/drafts';
 import { recordProfileUse, PROFILE_USES } from '$lib/spawnMemory';
-import { attachFiles, removeFileByName, fileCapError } from '$lib/attachments';
-import { uploadCaps } from '$lib/uploadCaps.svelte';
-import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
+import { attachmentStore } from '$lib/attachmentStore';
+import { PromptAttachments } from '$lib/promptAttachments.svelte';
 import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '$lib/followup';
 import { settings } from '$lib/settings.svelte';
 import { m } from '$lib/paraglide/messages';
@@ -50,6 +48,7 @@ import {
 } from './spawnSubmit';
 
 const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
+const PERSIST_DELAY_MS = 300;
 
 export interface SpawnFormOptions {
 	onclose: () => void;
@@ -67,7 +66,6 @@ export interface SpawnFormOptions {
  * queries and effects).
  */
 export class SpawnForm {
-	readonly images = imageAttachments();
 	readonly onclose: () => void;
 	readonly onspawned: (sessionId: string | null) => void;
 	private readonly autosaveDelay: () => number;
@@ -96,8 +94,22 @@ export class SpawnForm {
 	// never reach disk; only env keys go into the draft. Files live in
 	// IndexedDB (attachmentStore), keyed like the draft.
 	envRows = $state<EnvRow[]>([]);
-	files = $state<File[]>([]);
+	promptEl = $state<HTMLTextAreaElement | null>(null);
+	readonly att = new PromptAttachments({
+		input: () => this.form.prompt,
+		setInput: (text) => (this.form.prompt = text),
+		el: () => this.promptEl,
+		enabled: () => !this.busy
+	});
+	get files(): File[] {
+		return this.att.files;
+	}
+	set files(files: File[]) {
+		this.att.files = files;
+	}
 	private filesRestored = $state(false);
+	/** `fileSetKey` of the files the draft row holds; '' = none. */
+	syncedFileSet = '';
 	archiveSource = $state(false);
 	busy = $state(false);
 	selectedProfileId = $state<string | null>(null);
@@ -115,6 +127,8 @@ export class SpawnForm {
 	private profileMachineApplied: string | null = null;
 	private seededDefault = false;
 	private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+	private persistTimer: ReturnType<typeof setTimeout> | null = null;
+	private persistedRest: string | null = null;
 	autosaving = false;
 	private autosaveSnapshot: string | null = null;
 	readonly followupParent: string | null;
@@ -160,9 +174,8 @@ export class SpawnForm {
 	);
 
 	badEnvKeys = $derived(this.envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim())));
-	fileError = $derived(fileCapError(this.files, uploadCaps));
 	secretsValid = $derived(
-		this.badEnvKeys.length === 0 && !this.fileError && this.images.pending.length === 0
+		this.badEnvKeys.length === 0 && !this.att.error && this.att.images.pending.length === 0
 	);
 	spawnValid = $derived(!!this.form.machine_id && !!this.form.working_dir.trim() && this.harnessValid);
 	dispatchValid = $derived(
@@ -175,7 +188,7 @@ export class SpawnForm {
 	// Drafts are a machine-spawn concept: valid whenever the spawn form is;
 	// secrets needn't be valid yet (entered at launch).
 	draftValid = $derived(
-		this.target === 'machine' && this.spawnValid && this.images.pending.length === 0
+		this.target === 'machine' && this.spawnValid && this.att.images.pending.length === 0
 	);
 	spawnLabel = $derived(
 		`${this.target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
@@ -212,7 +225,6 @@ export class SpawnForm {
 	}
 
 	private effects() {
-		$effect(() => () => this.images.reset());
 		$effect(() => {
 			const list = this.machineList;
 			if (this.form.machine_id || !list.length) return;
@@ -264,22 +276,54 @@ export class SpawnForm {
 				})
 				.catch(() => {});
 		});
-		$effect(() => this.persistSlot());
+		// Serializing a long prompt costs O(n), so prompt typing alone waits for
+		// a pause; any other change (env keys stripped on load, cwd, files)
+		// writes at once.
+		$effect(() => {
+			const { form, keys, names } = this.watched();
+			const { prompt: _prompt, ...rest } = form;
+			const key = JSON.stringify({ rest, keys, names, draftId: this.draftId, restored: this.filesRestored });
+			const typing = key === this.persistedRest;
+			this.persistedRest = key;
+			if (this.persistTimer) clearTimeout(this.persistTimer);
+			this.persistTimer = null;
+			if (typing) this.persistTimer = setTimeout(() => this.flushSlot(), PERSIST_DELAY_MS);
+			else this.flushSlot();
+		});
+		$effect(() => () => {
+			if (this.persistTimer) this.flushSlot();
+		});
 		$effect(() => this.restoreFiles());
 		$effect(() => {
-			const snapshot = JSON.stringify({
-				form: this.form,
-				keys: this.envRows.map((r) => r.key),
-				names: this.files.map((f) => f.name)
-			});
-			if (snapshot === this.autosaveSnapshot) return;
-			const first = this.autosaveSnapshot === null;
-			this.autosaveSnapshot = snapshot;
-			if (first) return;
+			const state = this.watched();
+			if (this.autosaveSnapshot === null) {
+				this.autosaveSnapshot = JSON.stringify(state);
+				return;
+			}
 			if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
-			this.autosaveTimer = setTimeout(() => void autosave(this), this.autosaveDelay());
+			this.autosaveTimer = setTimeout(() => {
+				this.autosaveTimer = null;
+				const snapshot = JSON.stringify(state);
+				if (snapshot === this.autosaveSnapshot) return;
+				this.autosaveSnapshot = snapshot;
+				void autosave(this);
+			}, this.autosaveDelay());
 		});
 		$effect(() => () => this.cancelAutosave());
+	}
+
+	private watched() {
+		return {
+			form: $state.snapshot(this.form),
+			keys: this.envRows.map((r) => r.key),
+			names: this.files.map((f) => f.name)
+		};
+	}
+
+	private flushSlot() {
+		if (this.persistTimer) clearTimeout(this.persistTimer);
+		this.persistTimer = null;
+		this.persistSlot();
 	}
 
 	private persistSlot() {
@@ -306,27 +350,19 @@ export class SpawnForm {
 
 	private restoreFiles() {
 		let live = true;
-		(async () => {
-			const restored = await attachmentStore.get(this.loadKey);
-			if (!live) return;
-			this.files = restored.files;
-			if (this.followupFile && !this.files.some((f) => f.name === BRIEF_FILE_NAME)) {
-				this.files = [
-					...this.files,
-					new File([this.followupFile], BRIEF_FILE_NAME, { type: 'text/markdown' })
-				];
-			}
-			const { text, dropped } = dropMissingTokens(this.form.prompt, restored.missing);
-			if (dropped) {
-				this.form.prompt = text;
-				toasts.info(m.attachments_missing_dropped({ count: dropped }));
-			}
+		void this.att.restore(this.loadKey, (files) => this.withFollowupBrief(files)).then((ok) => {
+			if (!live || !ok) return;
 			this.filesRestored = true;
 			if (this.loadKey !== this.slotKey) void attachmentStore.clear(this.loadKey);
-		})();
+		});
 		return () => {
 			live = false;
 		};
+	}
+
+	private withFollowupBrief(files: File[]): File[] {
+		if (!this.followupFile || files.some((f) => f.name === BRIEF_FILE_NAME)) return files;
+		return [...files, new File([this.followupFile], BRIEF_FILE_NAME, { type: 'text/markdown' })];
 	}
 
 	cancelAutosave() {
@@ -363,13 +399,16 @@ export class SpawnForm {
 
 	private resetForm() {
 		this.cancelAutosave();
+		if (this.persistTimer) clearTimeout(this.persistTimer);
+		this.persistTimer = null;
 		this.draftId = null;
+		this.syncedFileSet = '';
 		drafts.clear(this.slotKey);
 		drafts.clear(SPAWN_SLOT);
 		this.form = { ...blank, machine_id: this.form.machine_id, dispatcher: this.form.dispatcher };
 		this.envRows = [];
 		this.files = [];
-		this.images.reset();
+		this.att.images.reset();
 		this.oneOff = null;
 	}
 	discardMirror() {
@@ -388,20 +427,6 @@ export class SpawnForm {
 	setTarget(value: string) {
 		this.target = value === 'dispatch' ? 'dispatch' : 'machine';
 	}
-
-	addFiles = (incoming: File[]) => {
-		if (this.busy) return;
-		this.images.add(
-			incoming,
-			(file) => {
-				({ files: this.files, text: this.form.prompt } = attachFiles(this.files, this.form.prompt, [file]));
-			},
-			(file) => toasts.error(m.attachments_compression_failed({ name: file.name }))
-		);
-	};
-	removeFile = (name: string) => {
-		this.files = removeFileByName(this.files, name);
-	};
 
 	rememberProfileUse(p: SessionProfile | null) {
 		if (!p) return;

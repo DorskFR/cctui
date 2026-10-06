@@ -102,6 +102,8 @@ pub struct SessionLimits {
     pub per_model: BTreeMap<String, DecisionView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block: Option<BlockView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<crate::routes::spawn_child::ChildSlots>,
     pub age_secs: u64,
     pub stale: bool,
 }
@@ -251,6 +253,7 @@ pub async fn session_limits(
         })
         .collect();
 
+    let children = crate::routes::spawn_child::child_slots(&state, &session_id).await;
     Ok(Json(SessionLimits {
         session_id,
         account: AccountView {
@@ -267,6 +270,7 @@ pub async fn session_limits(
         decision,
         per_model,
         block: soft_limit_reason.map(|reason| BlockView { reason, key: soft_limit_key }),
+        children,
         age_secs,
         stale: cache_stale,
     }))

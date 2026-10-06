@@ -5,6 +5,7 @@
 //! than pushing, so each slice keeps its own cursor and the overlay stack
 //! never spans two of them.
 
+use cctui_clientcore::spend::SessionSpend;
 use cctui_proto::api::SessionStats;
 use cctui_proto::models::MachineLiveness;
 
@@ -15,12 +16,8 @@ use super::state::{App, View};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Slice {
     Sessions,
-    Bookmarks,
     Overview,
     Machines,
-    Spend,
-    Accounts,
-    Access,
 }
 
 impl Slice {
@@ -28,39 +25,29 @@ impl Slice {
     pub const fn root(self) -> View {
         match self {
             Self::Sessions => View::SessionList,
-            Self::Bookmarks => View::Bookmarks,
             Self::Overview => View::Overview,
             Self::Machines => View::Machines,
-            Self::Accounts => View::Accounts,
-            Self::Spend => View::Spend,
-            Self::Access => View::Access,
         }
     }
 }
 
-/// One tab. `slice: None` is a nav item the web UI has and the TUI does not
-/// yet: it holds its number so the built ones never renumber under the user.
+/// One tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tab {
     pub label: &'static str,
-    pub slice: Option<Slice>,
+    pub slice: Slice,
 }
 
-const fn tab(label: &'static str, slice: Option<Slice>) -> Tab {
+const fn tab(label: &'static str, slice: Slice) -> Tab {
     Tab { label, slice }
 }
 
-/// The tab bar, mirroring the web UI's nav minus the slices that are whole
-/// features of their own.
+/// The tab bar. Administration lives in the web UI; the TUI keeps the
+/// operator's slices.
 pub const TABS: &[Tab] = &[
-    tab("Sessions", Some(Slice::Sessions)),
-    tab("Bookmarks", Some(Slice::Bookmarks)),
-    tab("Overview", Some(Slice::Overview)),
-    tab("Machines", Some(Slice::Machines)),
-    tab("Access", Some(Slice::Access)),
-    tab("Accounts", Some(Slice::Accounts)),
-    tab("Settings", None),
-    tab("Spend", Some(Slice::Spend)),
+    tab("Sessions", Slice::Sessions),
+    tab("Overview", Slice::Overview),
+    tab("Machines", Slice::Machines),
 ];
 
 /// Where a slice's cursor was when it was last left.
@@ -103,10 +90,30 @@ pub fn machines(app: &App) -> (usize, usize) {
 ///
 /// No endpoint reports spend per day, so this is what the session list can
 /// answer: the lifetime cost of today's sessions, not spend incurred today on
-/// older ones. The Spend panel's `today` column is the same figure.
+/// older ones.
 #[must_use]
 pub fn today_cost_usd(app: &App) -> f64 {
-    super::spend::today_cost_usd(app)
+    let Some(cutoff) = local_midnight_ms(app.clock_ms) else { return 0.0 };
+    let sessions: Vec<SessionSpend> = app
+        .sessions
+        .iter()
+        .map(|s| SessionSpend {
+            model: s.model.clone(),
+            registered_at_ms: s.registered_at.map(|at| at.timestamp_millis()),
+            cost_usd: s.token_usage.cost_usd,
+            tokens: s.token_usage.tokens_in + s.token_usage.tokens_out,
+        })
+        .collect();
+    cctui_clientcore::spend::spend_since(&sessions, cutoff)
+}
+
+/// Local midnight preceding `at_ms`, in unix ms.
+#[must_use]
+pub fn local_midnight_ms(at_ms: i64) -> Option<i64> {
+    use chrono::TimeZone;
+    let at = chrono::DateTime::from_timestamp_millis(at_ms)?.with_timezone(&chrono::Local);
+    let date = at.date_naive().and_hms_opt(0, 0, 0)?;
+    chrono::Local.from_local_datetime(&date).single().map(|dt| dt.timestamp_millis())
 }
 
 #[must_use]
@@ -184,11 +191,7 @@ pub fn reduce_slice(app: &mut App, action: SliceAction) -> Vec<Effect> {
 
 fn switch(app: &mut App, number: usize) -> Vec<Effect> {
     let Some(tab) = number.checked_sub(1).and_then(|i| TABS.get(i)) else { return Vec::new() };
-    let Some(target) = tab.slice.filter(|slice| permitted(app, *slice)) else {
-        app.toast(super::toast::Level::Info, format!("{} is not in the TUI yet", tab.label));
-        return Vec::new();
-    };
-    go_to(app, target)
+    go_to(app, tab.slice)
 }
 
 /// Switch to `target`, keeping each slice's cursor where it was. The one path a
@@ -208,27 +211,8 @@ pub fn go_to(app: &mut App, target: Slice) -> Vec<Effect> {
     app.router.reset(target.root());
     match target {
         Slice::Overview => vec![Effect::FetchSessionStats],
-        Slice::Bookmarks => super::bookmarks::on_enter(app),
-        Slice::Access => super::admin::on_enter(app),
-        Slice::Accounts => super::accounts::on_enter(app),
         Slice::Machines => super::machines::on_enter(app),
-        Slice::Spend => super::spend::on_enter(app),
         Slice::Sessions => Vec::new(),
-    }
-}
-
-/// Whether the key may enter a slice at all. The admin surfaces gate on the
-/// same `/me` scope the server checks, so a non-admin is never shown one.
-#[must_use]
-pub fn permitted(app: &App, slice: Slice) -> bool {
-    match slice {
-        Slice::Access => super::admin::is_admin(app),
-        Slice::Sessions
-        | Slice::Bookmarks
-        | Slice::Overview
-        | Slice::Machines
-        | Slice::Spend
-        | Slice::Accounts => true,
     }
 }
 
@@ -237,9 +221,11 @@ mod tests {
     use cctui_proto::api::SessionStats;
     use cctui_proto::models::{Attention, MachineLiveness};
 
-    use super::{Slice, SliceAction, TABS, machines, summary, today_cost_usd, zone_from_path};
+    use super::{
+        Slice, SliceAction, TABS, local_midnight_ms, machines, summary, today_cost_usd,
+        zone_from_path,
+    };
     use crate::app::action::Effect;
-    use crate::app::spend::local_midnight_ms;
     use crate::app::state::{App, View};
     use crate::app::{Action, reduce};
     use crate::testsupport::{CLOCK_MS, ms_ago, session};
@@ -273,29 +259,23 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_numbers_are_stable_and_the_unbuilt_ones_hold_their_place() {
-        assert_eq!(TABS[0].slice, Some(Slice::Sessions));
-        assert_eq!(TABS[1].slice, Some(Slice::Bookmarks));
-        assert_eq!(TABS[2].slice, Some(Slice::Overview));
-        assert_eq!(TABS[3].slice, Some(Slice::Machines));
-        assert_eq!(TABS[4].slice, Some(Slice::Access));
-        assert_eq!(TABS[5].slice, Some(Slice::Accounts));
-        assert_eq!(TABS[6].slice, None, "Settings is not in the TUI yet and holds its number");
-        assert_eq!(TABS[7].slice, Some(Slice::Spend));
+    fn the_tab_numbers_are_stable() {
+        let slices: Vec<Slice> = TABS.iter().map(|t| t.slice).collect();
+        assert_eq!(slices, [Slice::Sessions, Slice::Overview, Slice::Machines]);
     }
 
     #[test]
     fn switching_resets_the_router_to_the_slices_root() {
         let mut app = app();
         assert_eq!(app.slice, Slice::Sessions);
-        let effects = dispatch(&mut app, SliceAction::Switch(3));
+        let effects = dispatch(&mut app, SliceAction::Switch(2));
         assert!(matches!(effects.as_slice(), [Effect::FetchSessionStats]));
         assert_eq!(app.slice, Slice::Overview);
         assert_eq!(app.view(), View::Overview);
         assert_eq!(app.view(), app.slice.root());
 
-        dispatch(&mut app, SliceAction::Switch(2));
-        assert_eq!(app.view(), View::Bookmarks);
+        dispatch(&mut app, SliceAction::Switch(3));
+        assert_eq!(app.view(), View::Machines);
         dispatch(&mut app, SliceAction::Switch(1));
         assert_eq!(app.view(), View::SessionList);
     }
@@ -304,7 +284,7 @@ mod tests {
     /// or the view sits on "loading…" for ever.
     #[test]
     fn entering_a_slice_by_number_loads_it_like_its_own_key() {
-        for (number, slice) in [(4, Slice::Machines), (6, Slice::Accounts), (8, Slice::Spend)] {
+        for (number, slice) in [(2, Slice::Overview), (3, Slice::Machines)] {
             let mut by_number = app();
             let numbered = dispatch(&mut by_number, SliceAction::Switch(number));
             assert_eq!(by_number.slice, slice, "tab {number} must reach {slice:?}");
@@ -339,14 +319,14 @@ mod tests {
         app.selected_index = 1;
         app.scroll_offset = 7;
 
-        dispatch(&mut app, SliceAction::Switch(3));
+        dispatch(&mut app, SliceAction::Switch(2));
         assert_eq!((app.selected_index, app.scroll_offset), (0, 0), "a fresh slice starts at top");
         app.selected_index = 4;
         app.scroll_offset = 2;
 
         dispatch(&mut app, SliceAction::Switch(1));
         assert_eq!((app.selected_index, app.scroll_offset), (1, 7), "the list cursor came back");
-        dispatch(&mut app, SliceAction::Switch(3));
+        dispatch(&mut app, SliceAction::Switch(2));
         assert_eq!((app.selected_index, app.scroll_offset), (4, 2), "so did the overview's");
     }
 
@@ -354,7 +334,7 @@ mod tests {
     fn an_overlay_opened_over_a_slice_does_not_survive_the_switch() {
         let mut app = app();
         app.router.push(View::Help);
-        dispatch(&mut app, SliceAction::Switch(3));
+        dispatch(&mut app, SliceAction::Switch(2));
         assert_eq!(app.view(), View::Overview, "the stack is reset, not pushed onto");
     }
 
@@ -363,15 +343,6 @@ mod tests {
         let mut app = app();
         assert!(dispatch(&mut app, SliceAction::Switch(1)).is_empty());
         assert_eq!(app.slice, Slice::Sessions);
-    }
-
-    #[test]
-    fn an_unbuilt_tab_says_so_instead_of_switching() {
-        let mut app = app();
-        // 7 is Settings: the built slices lead the bar, the unbuilt ones trail it.
-        assert!(dispatch(&mut app, SliceAction::Switch(7)).is_empty());
-        assert_eq!(app.slice, Slice::Sessions);
-        assert!(app.toasts.latest().is_some());
     }
 
     #[test]

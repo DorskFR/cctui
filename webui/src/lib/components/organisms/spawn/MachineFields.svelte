@@ -3,8 +3,9 @@
 	// branch), the session name, and the prompt. The harness / account / model /
 	// effort / permission knobs come from the selected profile (ProfileList).
 	import type { MachineRow } from '@bindings/MachineRow';
-	import { useGitInfo, useSessions } from '$lib/queries';
-	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
+	import { useGitInfo } from '$lib/queries';
+	import PromptField from '$lib/components/organisms/PromptField.svelte';
+	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
 	import {
@@ -15,13 +16,11 @@
 		Input,
 		Kbd,
 		Link,
-		Textarea,
 		WorkingDir,
 		type Query
 	} from '@dorsk/tsumikit';
 	import { makeCwdSchema, dirFromQuery } from './cwdSchema';
 	import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
-	import { makeClipboardFiles } from '$lib/attachments';
 	import type { Form } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import { promptHistory } from '$lib/drafts';
@@ -33,21 +32,16 @@
 		machines,
 		recentDirs,
 		onsubmit,
-		onfiles
+		att,
+		promptEl = $bindable(null)
 	}: {
 		form: Form;
 		machines: MachineRow[];
 		recentDirs: string[];
 		onsubmit?: () => void;
-		// Files pasted into the prompt (a screenshot, a copied file) go to the
-		// attachments; text pastes are left to the browser.
-		onfiles?: (files: File[]) => void;
+		att?: PromptAttachments;
+		promptEl?: HTMLTextAreaElement | null;
 	} = $props();
-
-	// `#` session-mention popover on the prompt (see SessionMention).
-	const sessionsQuery = useSessions(() => false);
-	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
-	let promptEl = $state<HTMLTextAreaElement | null>(null);
 
 	const nav = new HistoryNav({
 		list: () => promptHistory.get(),
@@ -55,15 +49,6 @@
 		setValue: (v) => (form.prompt = v),
 		el: () => promptEl
 	});
-
-	const clipboardFiles = makeClipboardFiles();
-	function onPromptPaste(e: ClipboardEvent) {
-		if (!onfiles || !e.clipboardData) return;
-		const files = clipboardFiles(e.clipboardData);
-		if (files.length === 0) return;
-		e.preventDefault();
-		onfiles(files);
-	}
 
 	// The machine picker and the path share one control; `form.working_dir` is
 	// the source of truth and the field's bare value mirrors it both ways,
@@ -168,23 +153,21 @@
 		/>
 		<label class="prompt-label" for="sp-prompt">{m.spawn_prompt_label()}</label>
 	</div>
-	<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
-		<Textarea
-			data-journey="prompt"
-			id="sp-prompt"
-			rows={10}
-			placeholder={m.spawn_prompt_placeholder()}
-			bind:value={form.prompt}
-			bind:el={promptEl}
-			resize="bottom"
-			submitOn="mod-enter"
-			onsubmit={() => onsubmit?.()}
-			onpaste={onPromptPaste}
-			onkeydown={(e: KeyboardEvent) => {
-				nav.handleKey(e);
-			}}
-		/>
-	</SessionMention>
+	<PromptField
+		{att}
+		bind:value={form.prompt}
+		bind:el={promptEl}
+		data-journey="prompt"
+		id="sp-prompt"
+		rows={10}
+		placeholder={m.spawn_prompt_placeholder()}
+		resize="bottom"
+		submitOn="mod-enter"
+		onsubmit={() => onsubmit?.()}
+		onkeydown={(e: KeyboardEvent) => {
+			nav.handleKey(e);
+		}}
+	/>
 </Field>
 
 <style>

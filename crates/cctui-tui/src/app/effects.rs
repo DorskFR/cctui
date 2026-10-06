@@ -8,35 +8,24 @@ use cctui_proto::ws::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::account_switch::AccountSwitchAction;
-use super::accounts::AccountAction;
-use super::action::{AccountsFor, Action, Effect, ModelsFor};
+use super::action::{Action, Effect, ModelsFor};
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
-use super::bookmarks::BookmarkAction;
 use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
 use super::deeplink::DeepLinkAction;
 use super::diagnose::DiagnoseAction;
-use super::dispatch::DispatchAction;
-use super::dispatchers::DispatcherAction;
 use super::drafts::DraftAction;
 use super::fileview::{self, FileViewAction};
-use super::forkform::ForkAction;
 use super::identity::AuthAction;
 use super::images::ImagesAction;
-use super::instance::InstanceAction;
 use super::labels::LabelAction;
 use super::line::agent_event_to_line;
 use super::machines::MachineAction;
 use super::pins::PinAction;
-use super::pools::PoolAction;
-use super::profiles::ProfileAction;
 use super::send::SendAction;
 use super::slice::SliceAction;
-use super::spawn::{SpawnAction, SpawnFetch};
-use super::spawn_drafts::SpawnDraftAction;
-use super::spend::SpendAction;
 use super::state::{ConversationLine, PendingPermission};
 use super::toast::Level;
 
@@ -48,9 +37,6 @@ const CONCURRENCY: usize = 8;
 
 /// Payload version sent with a settings write; the server migrates forward.
 const SETTINGS_VERSION: i32 = 1;
-
-/// Rows per page while walking a transcript for an export.
-const EXPORT_PAGE: i64 = 500;
 
 /// How long a composer sits still before its draft is written, matching the
 /// web UI: a keystroke must not be a request.
@@ -75,7 +61,7 @@ impl Effects {
         let notify = action_tx.clone();
 
         tokio::spawn(async move {
-            let drafts = Arc::new(DraftSaver::new(Arc::clone(&server), action_tx.clone()));
+            let drafts = Arc::new(DraftSaver::new(Arc::clone(&server)));
             let limit = Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
             while let Some(effect) = rx.recv().await {
                 if effect.runs_concurrently() {
@@ -161,7 +147,6 @@ impl Effect {
         matches!(
             self,
             Self::LoadConversationPage { .. }
-                | Self::ExportConversation { .. }
                 | Self::OpenLinkedFile { .. }
                 | Self::ReadAttachment { .. }
                 | Self::ReadSpawnFile { .. }
@@ -172,10 +157,7 @@ impl Effect {
                 | Self::FetchMachineDirs { .. }
                 | Self::FetchRecentDirs { .. }
                 | Self::FetchSpawnMemory
-                | Self::FetchChangelog { .. }
-                | Self::FetchSelfUpdateRun
                 | Self::FetchHarnessModels { .. }
-                | Self::FetchSessionLangfuse { .. }
                 | Self::SearchSessions { .. }
                 | Self::SearchValues { .. }
         )
@@ -185,7 +167,6 @@ impl Effect {
     const fn label(&self) -> &'static str {
         match self {
             Self::LoadConversationPage { .. } => "loading the transcript",
-            Self::ExportConversation { .. } => "the export",
             Self::OpenLinkedFile { .. } => "opening the file",
             Self::ReadAttachment { .. } | Self::ReadSpawnFile { .. } => "reading the attachment",
             Self::ReadClipboardImage => "reading the clipboard image",
@@ -194,20 +175,11 @@ impl Effect {
             Self::FetchGitInfo { .. } => "reading the git info",
             Self::FetchMachineDirs { .. } | Self::FetchRecentDirs { .. } => "listing directories",
             Self::FetchSpawnMemory => "loading the spawn memory",
-            Self::FetchChangelog { .. } => "loading the changelog",
-            Self::FetchSelfUpdateRun => "checking the update",
             Self::FetchHarnessModels { .. } => "loading the models",
-            Self::FetchSessionLangfuse { .. } => "loading the spend",
             Self::SearchSessions { .. } | Self::SearchValues { .. } => "the search",
             _ => "that request",
         }
     }
-}
-
-/// The row a `save_draft` spawn created. The draft route answers with the new
-/// row's id in `command_id` and no `session_id`, so that is what identifies it.
-fn created_draft_id(reply: &cctui_proto::api::SpawnResponse) -> Option<String> {
-    (reply.status == "draft").then(|| reply.command_id.to_string())
 }
 
 /// Runs one effect, turning a panic into a toast.
@@ -239,32 +211,12 @@ async fn run_guarded(
 /// and the request is off the effect queue so typing never waits on it.
 struct DraftSaver {
     server: Arc<Client>,
-    /// The first spawn autosave is what mints the draft row; its id has to reach
-    /// the reducer or every later save mints another row.
-    actions: mpsc::Sender<Action>,
     pending: std::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
-    /// The spawn autosave keeps its own slot rather than a key in `pending`:
-    /// cancelling it has to be able to tell "still sleeping" from "already on
-    /// the wire", and the second case must be left alone.
-    spawn_save: std::sync::Mutex<Option<SpawnSave>>,
-}
-
-/// One in-progress spawn autosave.
-struct SpawnSave {
-    /// Raised once the request is actually out. Aborting after that loses the
-    /// draft id the reply carries.
-    committed: Arc<std::sync::atomic::AtomicBool>,
-    handle: tokio::task::JoinHandle<()>,
 }
 
 impl DraftSaver {
-    fn new(server: Arc<Client>, actions: mpsc::Sender<Action>) -> Self {
-        Self {
-            server,
-            actions,
-            pending: std::sync::Mutex::new(HashMap::new()),
-            spawn_save: std::sync::Mutex::new(None),
-        }
+    fn new(server: Arc<Client>) -> Self {
+        Self { server, pending: std::sync::Mutex::new(HashMap::new()) }
     }
 
     fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, tokio::task::JoinHandle<()>>> {
@@ -283,92 +235,6 @@ impl DraftSaver {
             }
         });
         self.pending().insert(key, handle);
-    }
-
-    /// One pending autosave at a time, keyed on the dialog rather than a
-    /// draft id: the first save is what mints the id.
-    ///
-    /// `immediate` skips the debounce, for the flush on quit.
-    fn autosave(
-        &self,
-        session_id: Option<String>,
-        request: Box<cctui_proto::api::SpawnRequest>,
-        immediate: bool,
-        generation: u64,
-    ) {
-        // A create already on the wire owns the row this dialog is about to get.
-        // Replacing it would lose that id and mint a second row, so the save is
-        // skipped; the next keystroke saves against the adopted id.
-        if self.spawn_create_in_flight() {
-            return;
-        }
-        let committed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let creating = session_id.is_none();
-        let server = Arc::clone(&self.server);
-        let actions = self.actions.clone();
-        let flag = Arc::clone(&committed);
-        let handle = tokio::spawn(async move {
-            if !immediate {
-                tokio::time::sleep(DRAFT_DEBOUNCE).await;
-            }
-            if creating {
-                flag.store(true, std::sync::atomic::Ordering::Release);
-            }
-            let outcome = match session_id.as_deref() {
-                Some(id) => server.update_draft(id, &request).await.map(|_| None),
-                // An autosave stores names, never bytes: the files go up at launch.
-                None => server
-                    .spawn_session(&request, Vec::new())
-                    .await
-                    .map(|reply| created_draft_id(&reply)),
-            };
-            match outcome {
-                Ok(Some(session_id)) => {
-                    let _ = actions
-                        .send(Action::SpawnDrafts(SpawnDraftAction::DraftCreated {
-                            session_id,
-                            generation,
-                        }))
-                        .await;
-                }
-                Ok(None) => {}
-                Err(e) => tracing::warn!(%e, "autosaving the spawn draft failed"),
-            }
-        });
-        let previous = self.spawn_save().replace(SpawnSave { committed, handle });
-        if let Some(previous) = previous {
-            previous.handle.abort();
-        }
-    }
-
-    fn spawn_save(&self) -> std::sync::MutexGuard<'_, Option<SpawnSave>> {
-        self.spawn_save.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Whether a draft-creating save has passed the point where cancelling it
-    /// would throw the new row's id away.
-    fn spawn_create_in_flight(&self) -> bool {
-        let mut slot = self.spawn_save();
-        let Some(save) = slot.as_ref() else { return false };
-        let running =
-            save.committed.load(std::sync::atomic::Ordering::Acquire) && !save.handle.is_finished();
-        if !running && save.handle.is_finished() {
-            *slot = None;
-        }
-        running
-    }
-
-    /// The dialog is gone: stop the save it still owed. A create already on the
-    /// wire is left to land, so the row it mints is still reported and can be
-    /// discarded by id rather than stranded.
-    fn cancel_spawn_autosave(&self) {
-        if self.spawn_create_in_flight() {
-            return;
-        }
-        let save = self.spawn_save().take();
-        if let Some(save) = save {
-            save.handle.abort();
-        }
     }
 
     fn cancel(&self, key: &str) {
@@ -418,122 +284,9 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
                 Vec::new()
             }
         },
-        Effect::LoadBookmarks { q, before } => {
-            match server.list_bookmarks(&q, before, super::bookmarks::PAGE).await {
-                Ok(rows) => vec![Action::Bookmarks(BookmarkAction::Loaded {
-                    rows,
-                    append: before.is_some(),
-                })],
-                Err(e) => {
-                    tracing::warn!(%e, "bookmark list fetch failed");
-                    vec![Action::Bookmarks(BookmarkAction::Failed)]
-                }
-            }
-        }
-        Effect::LoadProfiles => match server.profiles().await {
-            Ok(list) => vec![Action::Profiles(ProfileAction::Loaded(list))],
-            Err(e) => {
-                tracing::warn!(%e, "profile list fetch failed");
-                vec![Action::Profiles(ProfileAction::Failed)]
-            }
-        },
-        Effect::CreateProfile { name, spec } => {
-            let body = cctui_proto::api::profiles::CreateProfileRequest { name, spec: *spec };
-            match server.create_profile(&body).await {
-                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
-                Err(e) => {
-                    tracing::warn!(%e, "profile create failed");
-                    vec![Action::Toast(Level::Error, "could not create the profile".to_owned())]
-                }
-            }
-        }
-        Effect::UpdateProfile { id, name, spec } => {
-            let body = cctui_proto::api::profiles::UpdateProfileRequest { name, spec: Some(*spec) };
-            match server.update_profile(&id, &body).await {
-                Ok(profile) => vec![Action::Profiles(ProfileAction::Stored(Box::new(profile)))],
-                Err(e) => {
-                    tracing::warn!(%e, id, "profile update failed");
-                    vec![Action::Toast(Level::Error, "could not save the profile".to_owned())]
-                }
-            }
-        }
-        Effect::DeleteProfile { id } => match server.delete_profile(&id).await {
-            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
-                |_| Vec::new(),
-                |id| vec![Action::Profiles(ProfileAction::Deleted(id))],
-            ),
-            Err(e) => {
-                tracing::warn!(%e, id, "profile delete failed");
-                vec![Action::Toast(Level::Error, "could not delete the profile".to_owned())]
-            }
-        },
-        Effect::ReorderProfiles { ids } => match server.reorder_profiles(ids).await {
-            Ok(list) => vec![Action::Profiles(ProfileAction::Reordered(list))],
-            Err(e) => {
-                tracing::warn!(%e, "profile reorder failed");
-                vec![Action::Toast(Level::Error, "could not reorder the profiles".to_owned())]
-            }
-        },
-        Effect::AutosaveDraft { session_id, request, immediate, generation } => {
-            drafts.autosave(session_id, request, immediate, generation);
-            Vec::new()
-        }
-        Effect::CancelSpawnAutosave => {
-            drafts.cancel_spawn_autosave();
-            Vec::new()
-        }
-        Effect::LaunchDraft { session_id, env } => {
-            match server.launch_draft(&session_id, &env).await {
-                Ok(_) => vec![Action::SpawnDrafts(SpawnDraftAction::Launched { session_id })],
-                Err(e) => {
-                    tracing::warn!(%e, session_id, "draft launch failed");
-                    vec![Action::Toast(Level::Error, "could not launch the draft".to_owned())]
-                }
-            }
-        }
-        Effect::DiscardDraftSession { session_id } => {
-            match server.discard_draft(&session_id).await {
-                Ok(()) => vec![Action::SpawnDrafts(SpawnDraftAction::Discarded { session_id })],
-                Err(e) => {
-                    tracing::warn!(%e, session_id, "draft discard failed");
-                    vec![Action::Toast(Level::Error, "could not discard the draft".to_owned())]
-                }
-            }
-        }
-        Effect::CreateBookmark { draft } => match server.create_bookmark(&draft).await {
-            Ok(bookmark) => vec![Action::Bookmarks(BookmarkAction::Saved(Box::new(bookmark)))],
-            Err(e) => {
-                tracing::warn!(%e, "bookmark save failed");
-                vec![Action::Toast(Level::Error, "could not save the bookmark".to_owned())]
-            }
-        },
-        Effect::UpdateBookmark { id, title, note } => {
-            match server.update_bookmark(&id, &title, note.as_deref()).await {
-                Ok(bookmark) => {
-                    vec![Action::Bookmarks(BookmarkAction::Updated(Box::new(bookmark)))]
-                }
-                Err(e) => {
-                    tracing::warn!(%e, id, "bookmark update failed");
-                    vec![Action::Toast(Level::Error, "could not save the bookmark".to_owned())]
-                }
-            }
-        }
-        Effect::DeleteBookmark { id } => match server.delete_bookmark(&id).await {
-            Ok(()) => uuid::Uuid::parse_str(&id).map_or_else(
-                |_| Vec::new(),
-                |id| vec![Action::Bookmarks(BookmarkAction::Deleted { id })],
-            ),
-            Err(e) => {
-                tracing::warn!(%e, id, "bookmark delete failed");
-                vec![Action::Toast(Level::Error, "could not delete the bookmark".to_owned())]
-            }
-        },
         Effect::PinMessage { session_id, seq } => pin(server, session_id, seq, true).await,
         Effect::UnpinMessage { session_id, seq } => pin(server, session_id, seq, false).await,
         Effect::Copy { text, label } => copy(&text, label),
-        Effect::ExportConversation { session_id, meta, filter, format, path } => {
-            export(server, &session_id, &meta, &filter, format, &path).await
-        }
         Effect::LoadDraftIndex => load_draft_index(server).await,
         Effect::LoadDrafts { session_id } => load_drafts(server, session_id).await,
         Effect::SaveDraft { key, text } => {
@@ -642,27 +395,8 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
             if let Some(e) = error.as_ref() {
                 tracing::warn!(%e, "resume failed");
             }
-            vec![Action::Fork(ForkAction::Resumed(error.map(|e| e.to_string())))]
+            vec![Action::Controls(ControlsAction::Resumed(error.map(|e| e.to_string())))]
         }
-        Effect::FetchSpawnDispatchers => match server.spawn_dispatchers().await {
-            Ok(names) => vec![spawn_data(SpawnFetch::Dispatchers(names))],
-            Err(e) => {
-                tracing::warn!(%e, "spawn dispatcher list fetch failed");
-                Vec::new()
-            }
-        },
-        Effect::Dispatch { body } => match server.dispatch(&body).await {
-            Ok(resp) => vec![Action::Dispatch(DispatchAction::Submitted {
-                session_id: resp.session_id,
-                // `deduplicated` is the idempotency key landing on the job that
-                // is already running.
-                existing: resp.status == "deduplicated",
-            })],
-            Err(e) => {
-                tracing::warn!(%e, "dispatch failed");
-                vec![Action::Toast(Level::Error, format!("dispatch failed: {e}"))]
-            }
-        },
         Effect::Fork { session_id, request } => match server.fork(&session_id, &request).await {
             Ok(resp) => vec![Action::Controls(ControlsAction::Forked(resp.session_id))],
             Err(e) => {
@@ -680,9 +414,6 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
                         vec![Action::Spawn(super::spawn::SpawnAction::ModelsLoaded(Box::new(
                             models,
                         )))]
-                    }
-                    ModelsFor::ForkDialog => {
-                        vec![Action::Fork(ForkAction::ModelsLoaded(Box::new(models)))]
                     }
                 },
                 Err(e) => {
@@ -785,33 +516,9 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
         },
         // The accounts, usage and spend arms live in their own runner: one
         // function holding every arm builds a future too large for the stack.
-        rest @ (Effect::FetchAccounts { .. }
-        | Effect::FetchRedirects
-        | Effect::FetchAccountPools { .. }
-        | Effect::UpdateAccount { .. }
-        | Effect::ClaimLimitReset { .. }
-        | Effect::PutRedirect { .. }
-        | Effect::DeleteRedirect { .. }
-        | Effect::CreatePool { .. }
-        | Effect::UpdatePool { .. }
-        | Effect::DeletePool { .. }
-        | Effect::FetchMachines
-        | Effect::FetchUsage
-        | Effect::FetchSpend { .. }
-        | Effect::FetchSessionLangfuse { .. }
+        rest @ (Effect::FetchMachines
         | Effect::FetchAccountSwitch { .. }
         | Effect::SwitchSessionAccount { .. }
-        | Effect::FetchVersion
-        | Effect::RefreshVersion
-        | Effect::FetchSelfUpdateRun
-        | Effect::FetchChangelog
-        | Effect::LaunchSelfUpdate
-        | Effect::Access(..)
-        | Effect::FetchDispatchers
-        | Effect::EnrollDispatcher { .. }
-        | Effect::UpdateDispatcher { .. }
-        | Effect::DeleteDispatcher { .. }
-        | Effect::FetchAccountsUsage
         | Effect::FetchLabels
         | Effect::CreateLabel { .. }
         | Effect::UpdateLabel { .. }
@@ -837,85 +544,6 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
 #[allow(clippy::too_many_lines)]
 async fn run_accounts(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Action> {
     match effect {
-        Effect::FetchAccounts { want } => match server.accounts().await {
-            Ok(rows) => match want {
-                AccountsFor::Slice => vec![Action::Accounts(AccountAction::Loaded(rows))],
-                AccountsFor::SpawnDialog => vec![spawn_data(SpawnFetch::Accounts(rows))],
-            },
-            Err(e) => {
-                tracing::warn!(%e, "listing accounts failed");
-                match want {
-                    AccountsFor::Slice => {
-                        vec![Action::Accounts(AccountAction::Failed(account_error(&e)))]
-                    }
-                    AccountsFor::SpawnDialog => {
-                        vec![Action::Toast(Level::Warn, "could not list accounts".to_owned())]
-                    }
-                }
-            }
-        },
-        Effect::FetchRedirects => match server.redirects().await {
-            Ok(rules) => vec![Action::Accounts(AccountAction::RedirectsLoaded(rules))],
-            Err(e) => {
-                tracing::warn!(%e, "listing redirect rules failed");
-                Vec::new()
-            }
-        },
-        Effect::FetchAccountPools { want } => match server.account_pools().await {
-            Ok(rows) => match want {
-                AccountsFor::Slice => vec![Action::Pools(PoolAction::Loaded(rows))],
-                AccountsFor::SpawnDialog => vec![spawn_data(SpawnFetch::Pools(rows))],
-            },
-            Err(e) => {
-                tracing::warn!(%e, "listing account pools failed");
-                match want {
-                    AccountsFor::Slice => {
-                        vec![Action::Pools(PoolAction::Failed(account_error(&e)))]
-                    }
-                    AccountsFor::SpawnDialog => Vec::new(),
-                }
-            }
-        },
-        Effect::UpdateAccount { id, request } => match server.update_account(&id, &request).await {
-            Ok(()) => refetch_accounts(server).await,
-            Err(e) => vec![account_refusal(&e, "could not edit the account")],
-        },
-        Effect::ClaimLimitReset { provider_id, credit_id } => {
-            let request = cctui_client::LimitResetRequest { credit_id };
-            match server.limit_reset(&provider_id, &request).await {
-                Ok(outcome) => vec![Action::Accounts(AccountAction::ResetDone(Box::new(outcome)))],
-                Err(e) => vec![account_refusal(&e, "could not claim the reset")],
-            }
-        }
-        Effect::PutRedirect { account_id, to_account, family } => {
-            let request = cctui_client::PutRedirect {
-                to_account: Some(to_account),
-                family,
-                ..Default::default()
-            };
-            match server.put_account_redirect(&account_id, &request).await {
-                Ok(()) => refetch_accounts(server).await,
-                Err(e) => vec![account_refusal(&e, "could not set the redirect")],
-            }
-        }
-        Effect::DeleteRedirect { id } => match server.delete_redirect(&id).await {
-            Ok(()) => refetch_accounts(server).await,
-            Err(e) => vec![account_refusal(&e, "could not clear the redirect")],
-        },
-        Effect::CreatePool { request } => match server.create_account_pool(&request).await {
-            Ok(_) => refetch_pools(server).await,
-            Err(e) => vec![pool_refusal(&e, "could not create the pool")],
-        },
-        Effect::UpdatePool { id, request } => {
-            match server.update_account_pool(&id, &request).await {
-                Ok(()) => refetch_pools(server).await,
-                Err(e) => vec![pool_refusal(&e, "could not edit the pool")],
-            }
-        }
-        Effect::DeletePool { id } => match server.delete_account_pool(&id).await {
-            Ok(()) => refetch_pools(server).await,
-            Err(e) => vec![pool_refusal(&e, "could not delete the pool")],
-        },
         Effect::FetchMachines => match server.machines().await {
             Ok(rows) => vec![Action::Machines(MachineAction::Loaded(rows))],
             Err(e) => {
@@ -923,17 +551,6 @@ async fn run_accounts(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Act
                 vec![Action::Machines(MachineAction::Failed(machine_error(&e)))]
             }
         },
-        Effect::FetchUsage => fetch_usage(server).await,
-        Effect::FetchSpend { tz_offset } => fetch_spend(server, tz_offset).await,
-        Effect::FetchSessionLangfuse { session_id } => {
-            let usage = server.session_langfuse(&session_id).await.ok().map(|u| {
-                cctui_clientcore::spend::LangfuseSpend {
-                    cost_usd: u.cost_usd,
-                    trace_count: u.trace_count,
-                }
-            });
-            vec![Action::Spend(SpendAction::Langfuse { session_id, usage })]
-        }
         Effect::FetchAccountSwitch { session_id } => {
             match super::account_switch::load(server, &session_id).await {
                 Ok((bindings, credentials)) => {
@@ -962,92 +579,6 @@ async fn run_accounts(server: &Client, ws: &WsClient, effect: Effect) -> Vec<Act
                 }
             }
         }
-        Effect::FetchVersion => match server.version().await {
-            Ok(info) => vec![Action::Instance(InstanceAction::Loaded(Box::new(info)))],
-            Err(cctui_client::ClientError::Forbidden { .. }) => {
-                vec![Action::Instance(InstanceAction::Forbidden)]
-            }
-            Err(e) => {
-                tracing::warn!(%e, "reading the server version failed");
-                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
-            }
-        },
-        Effect::RefreshVersion => match server.refresh_version().await {
-            Ok(()) => vec![Action::Instance(InstanceAction::Refresh)],
-            Err(e) => {
-                tracing::warn!(%e, "probing upstream failed");
-                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
-            }
-        },
-        Effect::FetchSelfUpdateRun => match server.self_update_status().await {
-            Ok(run) => vec![Action::Instance(InstanceAction::RunLoaded(run.map(Box::new)))],
-            Err(cctui_client::ClientError::Forbidden { .. }) => {
-                vec![Action::Instance(InstanceAction::Forbidden)]
-            }
-            Err(e) => {
-                tracing::warn!(%e, "reading the self-update run failed");
-                vec![Action::Instance(InstanceAction::Failed(e.to_string()))]
-            }
-        },
-        Effect::FetchChangelog => match server.version_changelog().await {
-            Ok(log) => vec![Action::Instance(InstanceAction::ChangelogLoaded(log.releases))],
-            Err(e) => {
-                tracing::warn!(%e, "reading the changelog failed");
-                Vec::new()
-            }
-        },
-        Effect::LaunchSelfUpdate => match server.self_update().await {
-            Ok(launch) => vec![Action::Instance(InstanceAction::Launched(Box::new(launch)))],
-            Err(e) => {
-                tracing::warn!(%e, "launching the self-update failed");
-                vec![Action::Instance(InstanceAction::LaunchFailed(e.to_string()))]
-            }
-        },
-        Effect::Access(effect) => super::admin::run(*effect, server).await,
-        Effect::FetchDispatchers => match server.dispatchers().await {
-            Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
-            Err(e) => {
-                tracing::warn!(%e, "listing dispatchers failed");
-                vec![Action::Dispatchers(DispatcherAction::Failed(dispatcher_error(&e)))]
-            }
-        },
-        // The reply carries the key: it goes straight into the action and is
-        // never logged, because the log is not somewhere a secret may land.
-        Effect::EnrollDispatcher { name, request } => {
-            match server.enroll_dispatcher(&request).await {
-                Ok(reply) => vec![Action::Dispatchers(DispatcherAction::Enrolled {
-                    name,
-                    reply: Box::new(reply),
-                })],
-                Err(e) => {
-                    tracing::warn!(%e, "enrolling a dispatcher failed");
-                    vec![Action::Toast(Level::Error, format!("could not enroll {name}"))]
-                }
-            }
-        }
-        Effect::UpdateDispatcher { id, request } => {
-            match server.update_dispatcher(&id, &request).await {
-                Ok(_) => refetch_dispatchers(server).await,
-                Err(e) => {
-                    tracing::warn!(%e, "editing a dispatcher failed");
-                    vec![Action::Toast(Level::Error, "could not edit the dispatcher".to_owned())]
-                }
-            }
-        }
-        Effect::DeleteDispatcher { id } => match server.delete_dispatcher(&id).await {
-            Ok(()) => refetch_dispatchers(server).await,
-            Err(e) => {
-                tracing::warn!(%e, "removing a dispatcher failed");
-                vec![Action::Toast(Level::Error, "could not remove the dispatcher".to_owned())]
-            }
-        },
-        Effect::FetchAccountsUsage => match server.accounts_usage().await {
-            Ok(usage) => vec![spawn_data(SpawnFetch::Usage(usage))],
-            Err(e) => {
-                tracing::warn!(%e, "reading account usage failed");
-                Vec::new()
-            }
-        },
         Effect::FetchLabels => match server.labels().await {
             Ok(labels) => vec![Action::Labels(LabelAction::Loaded(labels))],
             Err(e) => {
@@ -1303,10 +834,6 @@ async fn fetch_pending_permissions(server: &Client) -> Vec<Action> {
     }
 }
 
-fn spawn_data(fetch: SpawnFetch) -> Action {
-    Action::Spawn(SpawnAction::DataLoaded(Box::new(fetch)))
-}
-
 async fn subscribe(ws: &WsClient, session_id: String) {
     if let Err(e) = ws.subscribe(session_id).await {
         tracing::warn!(%e, "subscribe failed");
@@ -1320,72 +847,6 @@ fn copy(text: &str, label: &'static str) -> Vec<Action> {
         vec![Action::Toast(Level::Info, format!("copied the {label}"))]
     } else {
         vec![Action::Toast(Level::Warn, format!("cannot copy the {label}"))]
-    }
-}
-
-/// Walks the whole transcript, oldest page first: the store holds rendered
-/// lines, and an export needs the events behind them.
-async fn export(
-    server: &Client,
-    session_id: &str,
-    meta: &super::export::Meta,
-    filter: &super::transcript_filter::Filter,
-    format: super::export::Format,
-    path: &std::path::Path,
-) -> Vec<Action> {
-    let mut events: Vec<AgentEvent> = Vec::new();
-    let mut before = None;
-    loop {
-        let page = Page { before, after: None, limit: Some(EXPORT_PAGE) };
-        let fetch = match server.conversation(session_id, page, None).await {
-            Ok(fetch) => fetch,
-            Err(e) => {
-                tracing::warn!(%e, session_id, "the export could not read the transcript");
-                return vec![Action::Toast(
-                    Level::Error,
-                    "export failed: cannot read the transcript".to_owned(),
-                )];
-            }
-        };
-        let ConversationFetch::Page { rows, .. } = fetch else { break };
-        if rows.is_empty() {
-            break;
-        }
-        let oldest = rows.iter().map(|r| r.seq).min();
-        let mut page_events: Vec<AgentEvent> = rows
-            .into_iter()
-            .filter_map(|row| serde_json::from_value::<AgentEvent>(row.event).ok())
-            .collect();
-        page_events.append(&mut events);
-        events = page_events;
-        match oldest {
-            Some(seq) => before = Some(seq),
-            None => break,
-        }
-    }
-
-    let body = match format {
-        super::export::Format::Markdown => super::export::to_markdown(meta, &events, filter),
-        super::export::Format::Html => super::export::to_html(meta, &events, filter),
-    };
-    if let Some(dir) = path.parent()
-        && let Err(e) = tokio::fs::create_dir_all(dir).await
-    {
-        tracing::warn!(%e, "cannot create the export directory");
-        return vec![Action::Toast(
-            Level::Error,
-            "export failed: cannot create the directory".to_owned(),
-        )];
-    }
-    match tokio::fs::write(path, body).await {
-        Ok(()) => vec![Action::Toast(
-            Level::Info,
-            format!("exported {} events to {}", events.len(), path.display()),
-        )],
-        Err(e) => {
-            tracing::warn!(%e, path = %path.display(), "cannot write the export");
-            vec![Action::Toast(Level::Error, format!("export failed: {e}"))]
-        }
     }
 }
 
@@ -1692,45 +1153,6 @@ async fn save_settings(server: &Client, patch: serde_json::Value) -> Vec<Action>
     vec![Action::SettingsSaved(Box::new(body))]
 }
 
-/// Both halves of the usage panel, in one round trip each. A half that fails is
-/// reported on its own: pools and credentials are read by different scopes, so
-/// losing one must not blank the other.
-async fn fetch_usage(server: &Client) -> Vec<Action> {
-    use crate::app::usage::UsageAction;
-
-    let (pools, accounts) = tokio::join!(server.account_pools_usage(), server.accounts_usage());
-    let mut out = Vec::new();
-    let mut failure = None;
-    match pools {
-        Ok(rows) => out.push(Action::Usage(UsageAction::PoolsLoaded(rows))),
-        Err(e) => {
-            tracing::warn!(%e, "reading pool usage failed");
-            failure = Some(usage_error(&e));
-        }
-    }
-    match accounts {
-        Ok(rows) => out.push(Action::Usage(UsageAction::AccountsLoaded(rows))),
-        Err(e) => {
-            tracing::warn!(%e, "reading account usage failed");
-            failure = Some(usage_error(&e));
-        }
-    }
-    if out.is_empty() {
-        return vec![Action::Usage(UsageAction::Failed(
-            failure.unwrap_or_else(|| "could not read usage".to_owned()),
-        ))];
-    }
-    out
-}
-
-fn usage_error(e: &cctui_client::ClientError) -> String {
-    match e {
-        cctui_client::ClientError::Forbidden { .. } => "this key may not read usage".to_owned(),
-        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
-        other => format!("could not read usage: {other}"),
-    }
-}
-
 /// Why the machines list is empty, in the words the view shows. A 403 is worth
 /// naming on its own: it means the key cannot enumerate machines, which is a
 /// different problem from having none.
@@ -1739,122 +1161,6 @@ fn machine_error(e: &cctui_client::ClientError) -> String {
         cctui_client::ClientError::Forbidden { .. } => "this key may not list machines".to_owned(),
         cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
         other => format!("could not list machines: {other}"),
-    }
-}
-
-/// A 403 here means the key may not read them at all, which the view says
-/// rather than looking like an install with no accounts.
-fn account_error(e: &cctui_client::ClientError) -> String {
-    match e {
-        cctui_client::ClientError::Forbidden { .. } => "this key may not list accounts".to_owned(),
-        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
-        other => format!("could not list accounts: {other}"),
-    }
-}
-
-/// A refused write turns the slice read-only; anything else is a one-off toast
-/// that leaves the editing keys live.
-fn account_refusal(e: &cctui_client::ClientError, what: &str) -> Action {
-    tracing::warn!(%e, "{what}");
-    if matches!(e, cctui_client::ClientError::Forbidden { .. }) {
-        return Action::Accounts(AccountAction::Refused(format!("{what}: not allowed")));
-    }
-    Action::Toast(Level::Error, format!("{what}: {e}"))
-}
-
-fn pool_refusal(e: &cctui_client::ClientError, what: &str) -> Action {
-    tracing::warn!(%e, "{what}");
-    if matches!(e, cctui_client::ClientError::Forbidden { .. }) {
-        return Action::Pools(PoolAction::Refused(format!("{what}: not allowed")));
-    }
-    Action::Toast(Level::Error, format!("{what}: {e}"))
-}
-
-/// Every account write refreshes the list and the rules: a redirect changes
-/// what a row says about itself, not just the rule store.
-async fn refetch_accounts(server: &Client) -> Vec<Action> {
-    let mut out = match server.accounts().await {
-        Ok(rows) => vec![Action::Accounts(AccountAction::Loaded(rows))],
-        Err(e) => {
-            tracing::warn!(%e, "refetching accounts failed");
-            Vec::new()
-        }
-    };
-    if let Ok(rules) = server.redirects().await {
-        out.push(Action::Accounts(AccountAction::RedirectsLoaded(rules)));
-    }
-    out
-}
-
-/// A membership change moves accounts between pools, so both panes are refetched.
-async fn refetch_pools(server: &Client) -> Vec<Action> {
-    let mut out = match server.account_pools().await {
-        Ok(rows) => vec![Action::Pools(PoolAction::Loaded(rows))],
-        Err(e) => {
-            tracing::warn!(%e, "refetching account pools failed");
-            Vec::new()
-        }
-    };
-    out.extend(refetch_accounts(server).await);
-    out
-}
-
-async fn refetch_dispatchers(server: &Client) -> Vec<Action> {
-    match server.dispatchers().await {
-        Ok(rows) => vec![Action::Dispatchers(DispatcherAction::Loaded(rows))],
-        Err(e) => {
-            tracing::warn!(%e, "refetching dispatchers failed");
-            Vec::new()
-        }
-    }
-}
-
-/// A 403 here means the key may not even list them, which is worth saying apart
-/// from an install with none enrolled.
-fn dispatcher_error(e: &cctui_client::ClientError) -> String {
-    match e {
-        cctui_client::ClientError::Forbidden { .. } => {
-            "this key may not list dispatchers".to_owned()
-        }
-        cctui_client::ClientError::Unauthorized => "the server rejected this key".to_owned(),
-        other => format!("could not list dispatchers: {other}"),
-    }
-}
-
-/// The three spend reads in one round trip. The token windows and the analytics
-/// are both load-bearing, so either failing fails the panel; cache-loss is a
-/// footnote and degrades to empty.
-async fn fetch_spend(server: &Client, tz_offset: i32) -> Vec<Action> {
-    use crate::app::spend::{CACHE_LOSS_DAYS, RANGE_DAYS, SpendData};
-
-    let (windows, analytics, cache_loss) = tokio::join!(
-        server.session_token_stats(tz_offset),
-        server.session_usage_analytics(RANGE_DAYS, tz_offset),
-        server.cache_loss(CACHE_LOSS_DAYS, tz_offset),
-    );
-    let (windows, analytics) = match (windows, analytics) {
-        (Ok(windows), Ok(analytics)) => (windows, analytics),
-        (Err(e), _) | (_, Err(e)) => {
-            tracing::warn!(%e, "reading spend failed");
-            return vec![Action::Spend(SpendAction::Failed(spend_error(&e)))];
-        }
-    };
-    if let Err(e) = &cache_loss {
-        tracing::warn!(%e, "reading cache-bust loss failed");
-    }
-    vec![Action::Spend(SpendAction::Loaded(Box::new(SpendData {
-        windows,
-        analytics,
-        cache_loss: cache_loss.unwrap_or_default(),
-    })))]
-}
-
-fn spend_error(e: &cctui_client::ClientError) -> String {
-    match e {
-        cctui_client::ClientError::Forbidden { .. } => {
-            "this key may not read usage stats".to_owned()
-        }
-        other => format!("could not read spend: {other}"),
     }
 }
 
@@ -2019,46 +1325,6 @@ mod tests {
         }
     }
 
-    /// R10 residual: cancelling a create that is already on the wire would throw
-    /// away the row id it is about to report, and the next save would mint a
-    /// second row.
-    #[tokio::test]
-    async fn an_autosave_already_on_the_wire_is_not_cancelled() {
-        let (base, _server) = hung_server();
-        let (_effects, action_rx) = effects_against(&base);
-        drop(action_rx);
-        let (tx, _rx) = tokio::sync::mpsc::channel(8);
-        let client = std::sync::Arc::new(cctui_client::Client::with_timeouts(
-            &base,
-            "tok",
-            Duration::from_secs(30),
-            Duration::from_secs(30),
-        ));
-        let saver = super::DraftSaver::new(client, tx);
-        let request = || {
-            let mut form = crate::app::spawn::SpawnForm::new();
-            form.fields.machine_id = "m-1".to_owned();
-            form.fields.working_dir = "/w".to_owned();
-            Box::new(form.request())
-        };
-
-        saver.autosave(None, request(), true, 1);
-        // `immediate` means the request is already going out; give it the tick it
-        // needs to reach the hung server and raise its flag.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(saver.spawn_create_in_flight(), "the create is past the point of no return");
-
-        saver.cancel_spawn_autosave();
-        assert!(saver.spawn_create_in_flight(), "it is let go of, not aborted");
-
-        // And a save that arrives while it is in flight does not mint a rival row.
-        saver.autosave(None, request(), true, 1);
-        assert!(
-            saver.spawn_create_in_flight(),
-            "the second save is skipped until the first one's id lands"
-        );
-    }
-
     /// Answers 200 to everything, on every connection it is given.
     ///
     /// It has to keep accepting: building the client also starts a websocket to
@@ -2203,7 +1469,7 @@ mod tests {
                 page: super::PageRequest { before: None, after: None, limit: None },
                 etag: None,
             },
-            Effect::FetchSelfUpdateRun,
+            Effect::FetchSpawnMemory,
             Effect::FetchRecentDirs,
         ] {
             assert!(independent.runs_concurrently(), "this effect can run beside the lane");

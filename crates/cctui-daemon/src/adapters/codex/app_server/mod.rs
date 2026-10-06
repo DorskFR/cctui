@@ -31,7 +31,7 @@ pub use notifications::item_event;
 pub(super) use notifications::{TurnStatus, parse_status};
 pub use registry::{
     CodexLiveSnapshot, LiveSessionRegistry, RouteAction, SessionCommand, SessionRecord,
-    SessionRegistry, route_or_prepare_resume,
+    SessionRegistry, raise_interrupt, route_or_prepare_resume,
 };
 pub use requests::{ThreadConfig, normalize_service_tier, service_tier_from_settings};
 pub(super) use requests::{initialized_notification, record_codex_version};

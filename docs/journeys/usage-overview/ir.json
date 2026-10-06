@@ -148,7 +148,7 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
 			"target": "range",
 			"say": {

@@ -1,7 +1,7 @@
 {
 	"id": "welcome",
 	"title": "What cctui is",
-	"version": 4,
+	"version": 5,
 	"variants": {
 		"desktop-dark": {
 			"captures": [
@@ -24,7 +24,7 @@
 					"name": "nav",
 					"file": "desktop-dark/03-nav.png",
 					"title": "The nav is the whole app",
-					"body": "Six destinations, and you will live in the second one. Open Sessions."
+					"body": "Every page hangs off this rail. Sessions is where most of the work happens — open it."
 				},
 				{
 					"index": 3,
@@ -41,21 +41,21 @@
 					"body": "This turns a prompt into a running agent: pick the machine, the folder and the account, and it works in the background whether or not you keep the tab open."
 				},
 				{
-					"index": 6,
+					"index": 8,
 					"name": "accounts",
 					"file": "desktop-dark/06-accounts.png",
-					"title": "Accounts — the credentials work runs on",
+					"title": "AI accounts — the credentials work runs on",
 					"body": "Provider accounts can be grouped into pools, and a session can draw from a pool rather than one fixed account, so one hitting a rate limit steps aside instead of stalling the queue."
 				},
 				{
-					"index": 8,
+					"index": 11,
 					"name": "access",
 					"file": "desktop-dark/07-access.png",
-					"title": "Access — what may run work",
+					"title": "Users & keys — who may run work",
 					"body": "Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open."
 				},
 				{
-					"index": 10,
+					"index": 13,
 					"name": "guides",
 					"file": "desktop-dark/08-guides.png",
 					"title": "Now walk it for real",
@@ -85,7 +85,7 @@
 					"name": "nav",
 					"file": "mobile-dark/03-nav.png",
 					"title": "The nav is the whole app",
-					"body": "Six destinations, and you will live in the second one. Open Sessions."
+					"body": "Every page hangs off this rail. Sessions is where most of the work happens — open it."
 				},
 				{
 					"index": 3,
@@ -102,21 +102,21 @@
 					"body": "This turns a prompt into a running agent: pick the machine, the folder and the account, and it works in the background whether or not you keep the tab open."
 				},
 				{
-					"index": 6,
+					"index": 8,
 					"name": "accounts",
 					"file": "mobile-dark/06-accounts.png",
-					"title": "Accounts — the credentials work runs on",
+					"title": "AI accounts — the credentials work runs on",
 					"body": "Provider accounts can be grouped into pools, and a session can draw from a pool rather than one fixed account, so one hitting a rate limit steps aside instead of stalling the queue."
 				},
 				{
-					"index": 8,
+					"index": 11,
 					"name": "access",
 					"file": "mobile-dark/07-access.png",
-					"title": "Access — what may run work",
+					"title": "Users & keys — who may run work",
 					"body": "Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open."
 				},
 				{
-					"index": 10,
+					"index": 13,
 					"name": "guides",
 					"file": "mobile-dark/08-guides.png",
 					"title": "Now walk it for real",

@@ -211,10 +211,11 @@ trait Resource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error>;
 
     /// Admin bypass, else owner match, else — for a shareable kind — a live
-    /// `use` grant, else denied.
+    /// `use` grant, else denied. A grant confers `Read` only: only the owner
+    /// edits or administers a shared resource.
     async fn authorize(
         ctx: &AuthContext,
-        _action: Action,
+        action: Action,
         id: &str,
         pool: &PgPool,
     ) -> Result<Decision, sqlx::Error> {
@@ -224,7 +225,8 @@ trait Resource {
         match Self::owner_of(id, pool).await? {
             Some(uid) if uid == ctx.user_id => Ok(Decision::Allowed),
             Some(_) => {
-                if let (Some(share_type), Ok(uuid)) = (Self::SHARE_TYPE, Uuid::parse_str(id))
+                if let (Action::Read, Some(share_type), Ok(uuid)) =
+                    (action, Self::SHARE_TYPE, Uuid::parse_str(id))
                     && crate::routes::shares::granted(pool, share_type, uuid, ctx.user_id).await?
                 {
                     return Ok(Decision::Allowed);
@@ -430,6 +432,17 @@ pub async fn authorize_session_read(
     pool: &PgPool,
 ) -> Result<(), StatusCode> {
     authorize_resource(ResourceKind::Session, ctx, Action::Read, Some(id), pool).await
+}
+
+/// In-handler machine-read gate, the same decision the `Resource(Machine, Read)`
+/// guard makes, for routes that only learn the machine after a lookup.
+pub async fn authorize_machine_read(
+    ctx: &AuthContext,
+    machine: Uuid,
+    pool: &PgPool,
+) -> Result<(), StatusCode> {
+    let id = machine.to_string();
+    authorize_resource(ResourceKind::Machine, ctx, Action::Read, Some(&id), pool).await
 }
 
 /// The session owner lookup shared by the HTTP guard and the WS path.
@@ -969,6 +982,105 @@ mod tests {
         assert_eq!(session_owner(&ids[0], &pool).await.unwrap(), Some(owner));
         assert_eq!(session_owner(&ids[1], &pool).await.unwrap(), None);
         assert_eq!(session_owner(&ids[2], &pool).await.unwrap(), Some(owner));
+    }
+
+    /// A live grant lets the grantee read the shared account and nothing more:
+    /// editing and administering it stay with the owner.
+    #[tokio::test]
+    async fn a_grant_confers_read_only() {
+        let Some(url) = crate::routes::gateway::test_db_url("grant_confers_read_only") else {
+            return;
+        };
+        let pool = crate::db::connect(&url).await.expect("connect test db");
+        let (owner, grantee) = (Uuid::new_v4(), Uuid::new_v4());
+        for uid in [owner, grantee] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("gr-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let account: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(owner)
+                .bind(format!("gr-account-{owner}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query(
+            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+             VALUES ('account', $1, $2)",
+        )
+        .bind(account)
+        .bind(grantee)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let id = account.to_string();
+        let them = user(grantee);
+        assert_eq!(
+            AccountResource::authorize(&them, Action::Read, &id, &pool).await.unwrap(),
+            Decision::Allowed
+        );
+        for action in [Action::Write, Action::Admin] {
+            assert_eq!(
+                AccountResource::authorize(&them, action, &id, &pool).await.unwrap(),
+                Decision::Denied,
+                "a grant must not confer {action:?}"
+            );
+        }
+        assert_eq!(
+            AccountResource::authorize(&user(owner), Action::Admin, &id, &pool).await.unwrap(),
+            Decision::Allowed
+        );
+    }
+
+    /// Every id-taking route that only declares `Authenticated` carries its
+    /// ownership filter inside the handler, with nothing proving it from the
+    /// route table. Each one is listed here deliberately: a new entry means a
+    /// new route whose handler SQL must be read for an owner filter, and a
+    /// route that gains a `Resource` policy should leave the list.
+    #[test]
+    fn id_taking_authenticated_routes_are_enumerated() {
+        const FILTERED_IN_HANDLER: &[&str] = &[
+            // The caller IS the id: the handler matches it against the principal.
+            "/auth/device/{user_code}",
+            "/auth/device/{user_code}/decision",
+            "/users/{id}/tokens",
+            // `user_id`-filtered SQL in the handler.
+            "/bookmarks/{id}",
+            "/drafts/{*key}",
+            "/keys/{id}",
+            "/keys/{id}/value",
+            "/labels/{id}",
+            "/passkeys/{id}",
+            "/prompts/{id}",
+            "/rooms/{id}",
+            "/plugins/{id}/backend/{*path}",
+            // Machine-scoped, owner-checked inside the handler.
+            "/machines/{machine_id}/commands/pending",
+            // Server-wide catalogues, not per-user objects.
+            "/daemon/binary/{target}",
+            "/models/{harness}",
+            "/skills/{name}",
+        ];
+        let mut found: Vec<&str> = descriptors()
+            .iter()
+            .filter(|d| matches!(d.authz, Authz::Authenticated) && d.path.contains('{'))
+            .map(|d| d.path)
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        let mut expected = FILTERED_IN_HANDLER.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            found, expected,
+            "an id-taking Authenticated route changed: give it an Authz::Resource policy, or \
+             list it here once its handler filters by owner"
+        );
     }
 
     #[test]

@@ -256,9 +256,78 @@ pub async fn reconcile(
     Ok(())
 }
 
+/// Mint a token for every user who enables `plugin_id` but holds none — users
+/// who enabled it before it declared `hostToken` never went through a settings
+/// write that would have minted one. Idempotent: a user with a sealed copy is
+/// skipped, and a copy written concurrently by a settings save wins (the token
+/// minted here is destroyed).
+pub async fn reconcile_plugin(
+    pool: &PgPool,
+    auth: &AuthConfig,
+    registry: &PluginRegistry,
+    plugin_id: &str,
+) -> sqlx::Result<usize> {
+    if wanted(registry, &[plugin_id.to_owned()]).is_empty() {
+        return Ok(0);
+    }
+    let users: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM user_settings \
+         WHERE (data #> $1::text[]) = 'true'::jsonb AND (data #> $2::text[]) IS NULL",
+    )
+    .bind(vec!["plugins".to_owned(), "enabled".to_owned(), plugin_id.to_owned()])
+    .bind(vec!["plugins".to_owned(), BLOCK.to_owned(), plugin_id.to_owned()])
+    .fetch_all(pool)
+    .await?;
+    let mut minted = 0;
+    for user_id in users {
+        let token = mint(pool, user_id, plugin_id).await?;
+        let sealed = Value::String(crate::crypto::encrypt(&token, &crate::crypto::vault_key()));
+        let written = sqlx::query(
+            "UPDATE user_settings SET data = jsonb_set(data, '{plugins}', \
+                 jsonb_set(data->'plugins', $1::text[], \
+                     coalesce(data #> $2::text[], '{}'::jsonb) || jsonb_build_object($3::text, $4::jsonb))) \
+             WHERE user_id = $5 AND (data #> $6::text[]) = 'true'::jsonb \
+             AND (data #> $7::text[]) IS NULL",
+        )
+        .bind(vec![BLOCK.to_owned()])
+        .bind(vec!["plugins".to_owned(), BLOCK.to_owned()])
+        .bind(plugin_id)
+        .bind(&sealed)
+        .bind(user_id)
+        .bind(vec!["plugins".to_owned(), "enabled".to_owned(), plugin_id.to_owned()])
+        .bind(vec!["plugins".to_owned(), BLOCK.to_owned(), plugin_id.to_owned()])
+        .execute(pool)
+        .await?
+        .rows_affected();
+        if written == 0 {
+            let hash = sha256_hex(&token);
+            sqlx::query("DELETE FROM user_tokens WHERE token_hash = $1")
+                .bind(&hash)
+                .execute(pool)
+                .await?;
+            purge(pool, auth, &[hash]).await?;
+        } else {
+            minted += 1;
+        }
+    }
+    if minted > 0 {
+        tracing::info!(plugin_id, minted, "plugin host tokens backfilled");
+    }
+    Ok(minted)
+}
+
+/// [`reconcile_plugin`] for every installed plugin; run once at server start.
+pub async fn reconcile_installed(pool: &PgPool, auth: &AuthConfig, registry: &PluginRegistry) {
+    for plugin in registry.all() {
+        if let Err(e) = reconcile_plugin(pool, auth, registry, &plugin.manifest.id).await {
+            tracing::warn!(plugin_id = %plugin.manifest.id, "plugin host token backfill failed: {e}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod db_tests {
-    use super::{label, reconcile, revoke_for_all, sealed, unsealed};
+    use super::{label, reconcile, reconcile_plugin, revoke_for_all, sealed, unsealed};
     use crate::auth::AuthConfig;
     use crate::plugins::PluginRegistry;
     use crate::plugins::test_support::write_plugin;
@@ -450,6 +519,46 @@ mod db_tests {
         assert!(sealed(Some(&off), ID).is_none(), "and the sealed copy does not survive");
 
         forget_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn an_install_backfills_a_token_for_users_who_enabled_the_plugin_earlier() {
+        const ID: &str = "host-token-backfill";
+        install_test_vault_key();
+        let Some(pool) = connect("plugin_host_token_backfill").await else { return };
+        let (_root, reg) = registry(ID);
+        let auth = AuthConfig::new(vec![], pool.clone());
+        let user_id = seed_user(&pool).await;
+        let bystander = seed_user(&pool).await;
+        persist(&pool, user_id, &enabled(ID, true)).await;
+        persist(&pool, bystander, &enabled(ID, false)).await;
+
+        assert_eq!(reconcile_plugin(&pool, &auth, &reg, ID).await.unwrap(), 1);
+        let hashes = token_rows(&pool, user_id, ID).await;
+        assert_eq!(hashes.len(), 1, "the enabling user gets exactly one token");
+        let data = stored_data(&pool, user_id).await;
+        let plaintext = unsealed(data.as_ref(), ID).expect("sealed into their settings");
+        assert_eq!(crate::auth::sha256_hex(&plaintext), hashes[0]);
+        assert_eq!(key_scopes(&pool, &hashes[0]).await, vec!["read".to_owned()]);
+        assert!(
+            data.as_ref().unwrap()["plugins"]["enabled"]["quiet"].as_bool().unwrap(),
+            "the rest of the blob is left alone"
+        );
+        assert!(
+            token_rows(&pool, bystander, ID).await.is_empty(),
+            "a user who disabled it gets none"
+        );
+
+        assert_eq!(
+            reconcile_plugin(&pool, &auth, &reg, ID).await.unwrap(),
+            0,
+            "a second run mints nothing"
+        );
+        assert_eq!(token_rows(&pool, user_id, ID).await, hashes);
+        assert_eq!(reconcile_plugin(&pool, &auth, &reg, "quiet").await.unwrap(), 0);
+
+        forget_user(&pool, user_id).await;
+        forget_user(&pool, bystander).await;
     }
 
     /// `revoke_for_all` is the one path behind both the instance toggle going

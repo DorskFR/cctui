@@ -1,5 +1,5 @@
 import { del, get, keys, set } from 'idb-keyval';
-import { MAX_TOTAL_BYTES } from './attachments';
+import { legacyMarkersToNames, MAX_TOTAL_BYTES } from './attachments';
 
 // Draft text lives in localStorage (drafts.ts); File handles cannot, so they
 // go to IndexedDB under a key derived from the draft key. Without IndexedDB
@@ -35,6 +35,8 @@ interface Record {
 export interface RestoredAttachments {
 	files: File[];
 	missing: string[];
+	/** Every recorded name in list order, missing ones included. */
+	names?: string[];
 }
 
 const hasIdb = () => typeof indexedDB !== 'undefined';
@@ -90,7 +92,7 @@ export const attachmentStore = {
 		const files = Array.isArray(rec.files) ? rec.files.filter((f) => f instanceof Blob) : [];
 		const present = new Set(files.map((f) => f.name));
 		const names = Array.isArray(rec.names) ? rec.names : [];
-		return { files, missing: names.filter((n) => !present.has(n)) };
+		return { files, missing: names.filter((n) => !present.has(n)), names };
 	},
 	/** Empty list removes the record. Over-cap lists record names only. */
 	async set(draftKey: string, files: File[]): Promise<void> {
@@ -230,4 +232,15 @@ export function dropMissingTokens(
 		.replace(/[ \t]{2,}/g, ' ')
 		.replace(/[ \t]+$/gm, '');
 	return { text: dropped ? out : text, dropped };
+}
+
+/** The draft as it reads against a restored list: an older draft's `[#N]`
+ *  markers become names, and tokens of files that did not survive are
+ *  dropped. */
+export function restoreDraftTokens(
+	text: string,
+	restored: RestoredAttachments
+): { text: string; dropped: number } {
+	const names = restored.names ?? restored.files.map((f) => f.name);
+	return dropMissingTokens(legacyMarkersToNames(text, names), restored.missing);
 }

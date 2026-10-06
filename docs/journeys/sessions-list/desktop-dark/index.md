@@ -30,7 +30,7 @@ This holds the view settings. Group by machine when you suspect one box, by proj
 
 **Try it: dense rows or roomy cards**
 
-Click it. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits — click again if you prefer the other.
+Switch it here — or in the ⋯ menu when the bar is narrow. Rows fit more of the fleet on screen; cards give each session room for its prompt and its latest activity. Your choice sticks between visits.
 
 ![search](06-search.png)
 

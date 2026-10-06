@@ -4,7 +4,7 @@
 	import { scheduleMenuItems } from './conversation/scheduleMenu';
 	import { parseCustom, toLocalInput } from './conversation/scheduleTimes';
 	import { toasts } from '$lib/toast.svelte';
-	import { isSubmitChord } from '$lib/platform';
+	import { submitChord } from '$lib/platform';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
 	import { SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
@@ -174,17 +174,17 @@
 		multiple
 		label={m.spawn_dropzone_label()}
 		disabled={sf.target !== 'machine'}
-		onfiles={sf.addFiles}
+		onfiles={sf.att.add}
+		onactive={sf.att.setDragActive}
 	>
 		<div
 			class="stack"
 			data-journey="spawn"
 			use:dialogBackdropGuard
-			onkeydown={(e: KeyboardEvent) => {
-				if (isSubmitChord(e) && !sf.busy && sf.valid) {
-					e.preventDefault();
-					void sf.submit();
-				}
+			use:submitChord={() => {
+				if (sf.busy || !sf.valid) return false;
+				void sf.submit();
+				return true;
 			}}
 		>
 			<SpawnTargetSection {sf} />

@@ -160,6 +160,8 @@ export interface Line {
 	// copy-as-Markdown output.
 	lang?: string;
 	tool?: string;
+	// The harness call id a tool line and its result share.
+	toolUseId?: string;
 	// Tool calls under the mcp__ prefix get the distinct MCP role hue.
 	mcp?: boolean;
 	// Thinking whose content the provider withheld: same brown treatment, dimmed.
@@ -187,6 +189,9 @@ export interface Line {
 	todos?: TodoItem[];
 	// Parsed `<task-notification>` — rendered as a system card, never as XML.
 	notification?: TaskNotification;
+	// A call the gateway's tool guard refused, in place of the assistant prose
+	// that announced it.
+	toolBlock?: { tool: string; term: string };
 	// Parsed `<command-*>` / `<local-command-*>` wrapper block.
 	command?: HarnessCommand;
 	// Turn summary attached to this (assistant) line, rendered under its bubble.

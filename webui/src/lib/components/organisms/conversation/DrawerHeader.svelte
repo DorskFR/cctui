@@ -15,10 +15,6 @@
 	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
 	import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
-	import IssueLinkModal from '$lib/components/molecules/IssueLinkModal.svelte';
-	import { readPluginSlot } from '$lib/plugins/sessionSlots';
-	import { YOUTRACK_PLUGIN_ID, detectSessionIssueId } from '$lib/plugins/issueLink';
-	import { useSessionActions } from '$lib/queries';
 	import { Button, Icon, IconButton, Input, Menu, Modal, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -136,12 +132,8 @@
 	}
 
 	let keepaliveOpen = $state(false);
-	let issueLinkOpen = $state(false);
 	let roomOpen = $state(false);
 
-	const sessionActions = useSessionActions();
-	const detectedIssue = $derived(detectSessionIssueId(session));
-	const issueLinked = $derived(!!readPluginSlot(session.metadata, YOUTRACK_PLUGIN_ID));
 
 	const followupItem = $derived<MenuItem | null>(
 		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
@@ -221,23 +213,6 @@
 			pressed: !!session.keepalive,
 			onselect: () => (keepaliveOpen = true)
 		},
-		{
-			label: issueLinked ? m.plugin_issue_menu_change() : m.plugin_issue_menu_link(),
-			icon: 'bookmark' as const,
-			attrs: { title: m.plugin_issue_menu_title() },
-			onselect: () => (issueLinkOpen = true)
-		},
-		...(issueLinked
-			? [
-					{
-						label: m.plugin_issue_menu_unlink(),
-						icon: 'unlink' as const,
-						onselect: () => {
-							void sessionActions.setPluginSlot(session.id, YOUTRACK_PLUGIN_ID, null);
-						}
-					}
-				]
-			: []),
 		...(onsetroom
 			? [
 					{
@@ -415,16 +390,12 @@
 		</div>
 	{/if}
 	{#if !compact}
-		<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {onsetmodel} {onfork} {detectedIssue} />
+		<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {onsetmodel} {onfork} />
 	{/if}
 </div>
 
 {#if keepaliveOpen}
 	<KeepaliveModal {session} onclose={() => (keepaliveOpen = false)} />
-{/if}
-
-{#if issueLinkOpen}
-	<IssueLinkModal {session} detected={detectedIssue} onclose={() => (issueLinkOpen = false)} />
 {/if}
 
 {#if roomOpen}

@@ -126,22 +126,32 @@ fn git_root(dir: &Path) -> Option<PathBuf> {
 /// whose cwd is `$HOME` or a repo carrying a `.env` must not become a
 /// credential dump.
 fn is_denied(real: &Path) -> bool {
-    const DENIED_DIRS: [&str; 3] = [".ssh", ".gnupg", ".aws"];
+    const DENIED_DIRS: [&str; 6] = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".gcloud"];
+    const DENIED_PARENTS: [&str; 3] = [".config/gh", ".config/cctui", ".config/gcloud"];
+    const HARNESS_AUTH_DIRS: [&str; 2] = [".codex", ".local/share/opencode"];
+    const DENIED_NAMES: [&str; 6] =
+        [".netrc", ".credentials.json", ".git-credentials", ".npmrc", ".pypirc", "daemon.toml"];
     let name = real.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let Some(parent) = real.parent() else { return true };
     if parent
         .components()
         .any(|c| DENIED_DIRS.contains(&c.as_os_str().to_str().unwrap_or_default()))
-        || parent.ends_with(".config/gh")
+        || DENIED_PARENTS.iter().any(|d| parent.ends_with(d))
+        || daemon_config_dir().is_some_and(|d| parent.starts_with(d))
+        || (name == "auth.json" && HARNESS_AUTH_DIRS.iter().any(|d| parent.ends_with(d)))
     {
         return true;
     }
-    name == ".netrc"
-        || name == ".credentials.json"
+    DENIED_NAMES.contains(&name)
         || name.starts_with(".env")
         || name.starts_with("id_rsa")
         || name.starts_with("id_ed25519")
         || matches!(name.to_ascii_lowercase().rsplit_once('.'), Some((_, "pem" | "key")))
+}
+
+/// The daemon's own config directory: `daemon.toml` there holds the machine key.
+fn daemon_config_dir() -> Option<PathBuf> {
+    crate::config::Config::default_path().parent()?.canonicalize().ok()
 }
 
 /// Expand `~`, canonicalise (following symlinks), and require a regular file
@@ -495,6 +505,16 @@ mod tests {
             "certs/Server.Key",
             "certs/.pem",
             ".netrc",
+            ".kube/config",
+            ".docker/config.json",
+            ".gcloud/credentials.db",
+            ".git-credentials",
+            ".npmrc",
+            ".pypirc",
+            ".config/cctui/daemon.toml",
+            ".codex/auth.json",
+            ".local/share/opencode/auth.json",
+            "project/daemon.toml",
         ] {
             let f = dir.path().join(rel);
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();

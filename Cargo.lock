@@ -913,16 +913,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bstr"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f7dc094d718f2e1c1559ad110e27eeaae14a5465d3d56dd6dbd793079fbd530"
-dependencies = [
- "memchr",
- "serde_core",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1014,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1030,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-client"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "async-trait",
  "cctui-proto",
@@ -1049,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-clientcore"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "cctui-proto",
  "serde",
@@ -1059,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -1072,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1102,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1123,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1148,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1169,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1192,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1211,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1242,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1265,7 +1255,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1286,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "serde",
  "ts-rs",
@@ -1294,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1339,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "caps",
@@ -1355,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.23.2"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1369,7 +1359,6 @@ dependencies = [
  "crossterm",
  "diffy",
  "dirs",
- "futures-util",
  "image",
  "insta",
  "pretty_assertions",
@@ -1377,20 +1366,18 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "ratatui-textarea",
- "regex-lite",
+ "regex",
  "reqwest",
  "rustls",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "similar 3.2.0",
  "supports-color",
  "syntect",
  "tempfile",
  "textwrap",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "toml",
  "tracing",
  "tui-term",
@@ -1415,9 +1402,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cipher",
@@ -2965,7 +2952,7 @@ checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
 dependencies = [
  "console",
  "once_cell",
- "similar 2.7.0",
+ "similar",
  "tempfile",
 ]
 
@@ -5119,15 +5106,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
-name = "similar"
-version = "3.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f66ca1f7aca2474dc10c942eb22feffc897735f54cd1db90138c2fddb490987"
-dependencies = [
- "bstr",
-]
-
-[[package]]
 name = "simple_asn1"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5529,7 +5507,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",

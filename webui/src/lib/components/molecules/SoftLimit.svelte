@@ -3,7 +3,17 @@
 	import { m } from '$lib/paraglide/messages';
 	import type { UsagePace } from '$lib/queries';
 	import { countdown, paceState, wallInMs } from '$lib/components/molecules/usage-battery.logic';
-	import { capFromBar, capToBar, resetIn, resetInShort, usdPct, usdReadout } from './cap-bar.logic';
+	import {
+		capFromBar,
+		capToBar,
+		isDenseWidth,
+		resetIn,
+		resetInShort,
+		USAGE_LABEL_W,
+		USAGE_READOUT_W,
+		usdPct,
+		usdReadout
+	} from './cap-bar.logic';
 
 	// One usage window as a cap bar: consumption fill, draggable cap, readout.
 	// The same component renders the read-only usage view (`oncapchange`
@@ -21,6 +31,7 @@
 		usd = false,
 		pace = null,
 		note = null,
+		dense = null,
 		oncapchange
 	}: {
 		label: string;
@@ -39,6 +50,8 @@
 		pace?: UsagePace | null;
 		/** Extra reading appended to the row's tooltip (a pool's projection). */
 		note?: string | null;
+		/** Density decided by the list the row sits in; null ⇒ measured per row. */
+		dense?: boolean | null;
 		/** Commits a dragged cap; absent (and not `editable`) ⇒ the bar is read-only. */
 		oncapchange?: (cap: number | null) => void;
 	} = $props();
@@ -50,7 +63,6 @@
 				? null
 				: Math.max(0, Math.min(100, Math.round(utilization)))
 	);
-	const reported = $derived(usd ? amountUsd !== null : utilization !== null);
 	const now = Date.now();
 	const resetText = $derived(usd || pct === null ? null : resetIn(resets, now));
 	const resetShort = $derived(usd || pct === null ? null : resetInShort(resets, now));
@@ -66,15 +78,12 @@
 	});
 	const showReset = $derived(!usd && pct !== null && resetShort !== null);
 
-	// The three-column bar only fits while the readout column can hold
-	// "100% · resets 5d 🔥" next to a track worth looking at. Below that the
-	// window name gives way so the row stays one line: the track and its readout
-	// are what carry the meaning, and the name survives in the tooltip. Measured
-	// rather than a media query — the stats panel is drag-resizable.
-	const READOUT_W = $derived(usd ? '7.5rem' : '6rem');
-	const DENSE_BELOW_PX = 300;
+	// Label and readout columns are fixed so every track in a list lines up
+	// whatever the window reads; below the density threshold the row stacks,
+	// label and readout above a full-width track. Measured rather than a media
+	// query — the stats panel is drag-resizable.
 	let width = $state(0);
-	const dense = $derived(width > 0 && width < DENSE_BELOW_PX);
+	const isDense = $derived(dense ?? isDenseWidth(width));
 
 	let barCap: number | null = $derived(capToBar(cap));
 	const tooltipPct = $derived(capToBar(cap));
@@ -91,7 +100,6 @@
 	const wallMs = $derived(paceKind ? wallInMs(pace, resets, now) : null);
 	const rowTitle = $derived.by(() => {
 		const parts: string[] = [];
-		if (dense) parts.push(label);
 		if (resetText) parts.push(m.capbar_caption_resets({ time: resetText }));
 		if (paceKind && expectedPct !== null) {
 			parts.push(
@@ -121,13 +129,14 @@
 
 <div class="soft-limit" bind:clientWidth={width} title={rowTitle || undefined}>
 	<CapBar
-		label={dense ? undefined : label}
+		{label}
+		layout={isDense ? 'stacked' : 'row'}
 		value={pct ?? 0}
 		bind:cap={barCap}
 		step={5}
 		warnAt={75}
-		labelWidth={dense ? '0px' : '4rem'}
-		readoutWidth={reported ? (dense ? 'max-content' : READOUT_W) : 'auto'}
+		labelWidth={USAGE_LABEL_W}
+		readoutWidth={isDense ? 'auto' : USAGE_READOUT_W}
 		readout={showReset || paceKind === 'flame' ? readoutSnippet : readoutText}
 		{readonly}
 		tooltip={readonly

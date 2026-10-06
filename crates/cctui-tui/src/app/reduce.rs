@@ -26,10 +26,6 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::Images(action) => super::images::reduce_images(app, action),
         Action::Labels(action) => super::labels::reduce_labels(app, action),
         Action::Machines(action) => super::machines::reduce_machines(app, action),
-        Action::Accounts(action) => super::accounts::reduce_accounts(app, action),
-        Action::Pools(action) => super::pools::reduce_pools(app, action),
-        Action::Spend(action) => super::spend::reduce_spend(app, action),
-        Action::Usage(action) => super::usage::reduce_usage(app, action),
         Action::SettingsSaved(blob) => {
             app.list_shape = super::list_view::ListShape::from_settings(&blob);
             app.settings_blob = Some(*blob);
@@ -45,9 +41,6 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             }
             Vec::new()
         }
-        Action::Dispatchers(action) => super::dispatchers::reduce_dispatchers(app, action),
-        Action::Access(action) => super::admin::reduce_access(app, action),
-        Action::Instance(action) => super::instance::reduce_instance(app, action),
         Action::Terminal(action) => terminal::reduce_terminal(app, action),
         Action::PendingChord(chord) => {
             app.pending_chord = Some(chord);
@@ -62,9 +55,6 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         Action::FileView(action) => super::fileview::reduce_fileview(app, action),
         Action::Drafts(drafts) => super::drafts::reduce_drafts(app, drafts),
         Action::Pins(pins) => super::pins::reduce_pins(app, pins),
-        Action::Bookmarks(action) => super::bookmarks::reduce_bookmarks(app, action),
-        Action::SpawnDrafts(action) => super::spawn_drafts::reduce_drafts(app, action),
-        Action::Profiles(action) => super::profiles::reduce_profiles(app, action),
         Action::Macros(action) => super::macros::reduce_macros(app, action),
         Action::AcceptMention(key) => super::mentions::accept(app).unwrap_or_else(|| {
             app.message_input.input(key);
@@ -89,8 +79,6 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
             effects.extend(super::list_search::on_tick(app));
             effects.extend(super::spawn::reduce(app, super::spawn::SpawnAction::Tick));
             effects.extend(super::unread::tick(app));
-            effects.extend(super::usage::on_tick(app));
-            effects.extend(super::instance::on_tick(app));
             effects
         }
 
@@ -268,8 +256,6 @@ fn reduce_action(app: &mut App, action: Action) -> Vec<Effect> {
         }
 
         Action::Controls(action) => super::controls::reduce_controls(app, action),
-        Action::Dispatch(action) => super::dispatch::reduce_dispatch(app, action),
-        Action::Fork(action) => super::forkform::reduce_fork(app, action),
         Action::Sidebar(action) => super::sidebar::reduce_sidebar(app, action),
         Action::Unread(action) => super::unread::reduce_unread(app, action),
         Action::ToggleAutoApproveSelected => app
@@ -661,7 +647,6 @@ mod tests {
                 Effect::LoadConversationPage { session_id, .. },
                 Effect::Subscribe { .. },
                 Effect::LoadPins { .. },
-                Effect::FetchSessionLangfuse { .. },
                 Effect::MarkSeen { .. },
             ] => assert_eq!(session_id, "s-a"),
             _ => panic!("expected a load, a subscribe, a pin read and a seen mark"),

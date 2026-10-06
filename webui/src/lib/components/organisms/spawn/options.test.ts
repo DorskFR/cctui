@@ -5,6 +5,7 @@ import {
 	accountBacksAdapter,
 	accountPickOptions,
 	adapterForProvider,
+	adapterLabel,
 	compatiblePools,
 	effectiveAdapterFor,
 	NO_ACCOUNT,
@@ -35,6 +36,15 @@ describe('adapterForProvider', () => {
 	// Claude Code and the spawn failed with "has no anthropic provider".
 	it('maps fireworks to opencode, never to claude-code', () => {
 		expect(adapterForProvider('fireworks')).toBe('opencode');
+	});
+});
+
+describe('adapterLabel', () => {
+	it('names every harness and never calls an unknown one Claude Code', () => {
+		expect(adapterLabel('claude-code')).toBe('Claude Code');
+		expect(adapterLabel('codex')).toBe('Codex');
+		expect(adapterLabel('opencode')).toBe('OpenCode');
+		expect(adapterLabel('gemini')).toBe('gemini');
 	});
 });
 

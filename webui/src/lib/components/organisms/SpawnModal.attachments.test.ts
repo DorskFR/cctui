@@ -91,7 +91,9 @@ const prompt = () =>
   must(document.querySelector<HTMLTextAreaElement>("#sp-prompt"), "prompt");
 const chips = () =>
   [
-    ...document.querySelectorAll('[data-tsu="AttachmentList"] li.chip [title]'),
+    ...document.querySelectorAll(
+      '[data-tsu="AttachmentList"] li.chip [data-tsu="Badge"][title]',
+    ),
   ].map((e) => e.getAttribute("title"));
 
 async function pick(files: File[]) {

@@ -5,6 +5,12 @@ import type { UploadCaps } from '@bindings/UploadCaps';
 // derivation, and size formatting. The caps are the server's own, served on
 // `GET /version`; rejecting here only fails fast, the server is the gate.
 
+const ATTACH_ADAPTERS = ['claude-code', 'codex', 'opencode'];
+
+/** Harnesses whose daemon stages mid-chat files to disk. */
+export const supportsAttachments = (adapter: string | null | undefined): boolean =>
+	ATTACH_ADAPTERS.includes(adapter ?? '');
+
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 export const MAX_FILES = 10;
@@ -52,20 +58,58 @@ export function mergeFiles(current: File[], incoming: File[]): File[] {
 	return mergeFilesRenamed(current, incoming).files;
 }
 
-/** Add `incoming` to `files`. With `tokenize`, each (post-rename) name is also
- *  referenced in `text`; callers that show the staged list elsewhere pass false
- *  and leave `text` to the user. */
+/** Numbered markers drafts saved by older builds carry in place of `[name]`. */
+const LEGACY_MARKER = / ?\[(?:#|📎)(\d+)\]/gu;
+
+/** How attaching marks the draft: the file's `[name]`, or nothing. */
+export type FileTokenMode = 'name' | false;
+
+/** Splice `tokens` into `text` at `caret` (end when omitted), space-separated
+ *  from the words around it. The caret comes back just after the tokens. */
+export function insertTokens(
+	text: string,
+	tokens: string[],
+	caret?: number
+): { text: string; caret: number } {
+	if (!tokens.length) return { text, caret: caret ?? text.length };
+	const at = Math.max(0, Math.min(text.length, caret ?? text.length));
+	const before = text.slice(0, at);
+	const after = text.slice(at);
+	const head = `${before}${before && !/\s$/.test(before) ? ' ' : ''}${tokens.join(' ')}`;
+	const gap = after && !/^\s/.test(after) ? ' ' : '';
+	return { text: head + gap + after, caret: head.length };
+}
+
+/** Add `incoming` to `files`, marking each (post-rename) file in `text` at
+ *  `caret` per `mode`. A `[name]` already in the draft is not repeated. */
 export function attachFiles(
 	files: File[],
 	text: string,
 	incoming: File[],
-	tokenize = true
-): { files: File[]; text: string } {
+	mode: FileTokenMode = 'name',
+	caret?: number
+): { files: File[]; text: string; caret: number } {
 	const merged = mergeFilesRenamed(files, incoming);
-	return {
-		files: merged.files,
-		text: tokenize ? appendFileTokens(text, merged.added) : text
-	};
+	const tokens =
+		mode === 'name' ? merged.added.map((f) => `[${f.name}]`).filter((t) => !text.includes(t)) : [];
+	const next = insertTokens(text, tokens, caret);
+	return { files: merged.files, ...next };
+}
+
+/** Rewrite an older draft's `[#N]` markers as the `[name]` of the N-th entry
+ *  of `names`; a marker past the list is dropped. */
+export function legacyMarkersToNames(text: string, names: string[]): string {
+	return text
+		.replace(LEGACY_MARKER, (tok, n: string) => {
+			const name = names[Number(n) - 1];
+			return name === undefined ? '' : `${tok.startsWith(' ') ? ' ' : ''}[${name}]`;
+		})
+		.replace(/^ +/, '');
+}
+
+/** Drop the `[name]` token of a removed file from the draft. */
+export function removeFileToken(text: string, name: string): string {
+	return text.split(` [${name}]`).join('').split(`[${name}]`).join('').replace(/^ +/, '');
 }
 
 const PASTE_NAME = /\bpaste-(\d+)\.txt\b/g;
@@ -84,6 +128,23 @@ export function nextPasteIndex(files: File[], text: string, used: Iterable<strin
 	for (const name of used) scan(name);
 	scan(text);
 	return max + 1;
+}
+
+/** Pasted text at least this long collapses into a `paste-N.txt` attachment
+ *  (the Claude Code trick) instead of flooding the textarea. */
+export const PASTE_MASK_CHARS = 2000;
+
+/** The `paste-N.txt` file a long text paste collapses into, or null when the
+ *  paste is short enough to land in the field. */
+export function maskedPaste(
+	text: string,
+	files: File[],
+	draft: string,
+	used: Iterable<string> = []
+): File | null {
+	if (!text || text.length < PASTE_MASK_CHARS) return null;
+	const name = `paste-${nextPasteIndex(files, draft, used)}.txt`;
+	return new File([text], name, { type: 'text/plain' });
 }
 
 /** Point each `[name]` token at the name staging actually gave the file.

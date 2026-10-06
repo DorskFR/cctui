@@ -101,6 +101,9 @@ pub fn explicit_target(
         .and_then(|r| r.to_account)
 }
 
+/// `(session, account owner, session user, account, family, account name, pool)`.
+type BoundToken = (String, Uuid, Option<Uuid>, Uuid, String, String, Option<Uuid>);
+
 /// The credential the session behind `session_token` may move to, or `None`
 /// when nothing authorises a move — the caller then mirrors / refuses as
 /// before.
@@ -115,19 +118,27 @@ pub async fn pick_failover_target(
     model: Option<&str>,
 ) -> Option<FailoverTarget> {
     let hash = crate::auth::sha256_hex(session_token);
-    let bound: Option<(String, Uuid, Uuid, String, String, Option<Uuid>)> = sqlx::query_as(
-        "SELECT t.session_id, ap.user_id, ap.account_id, ap.family, a.name, t.pool_id \
-         FROM session_tokens t \
-         JOIN account_providers ap ON ap.id = t.account_id \
-         JOIN accounts a ON a.id = ap.account_id \
-         WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
+    // `user_id` is the bound account's OWNER — whose pool and whose redirect
+    // rules authorise a move. `session_user` is who the session belongs to, and
+    // every elected target is re-checked against them: on a shared account the
+    // owner's pool holds accounts the grantee was never given.
+    let bound: Option<BoundToken> = sqlx::query_as(
+        "SELECT t.session_id, ap.user_id, COALESCE(s.user_id, t.user_id), \
+                    ap.account_id, ap.family, a.name, t.pool_id \
+             FROM session_tokens t \
+             JOIN account_providers ap ON ap.id = t.account_id \
+             JOIN accounts a ON a.id = ap.account_id \
+             LEFT JOIN sessions s ON s.id = t.session_id \
+             WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
     .bind(&hash)
     .fetch_optional(&state.pool)
     .await
     .ok()
     .flatten();
-    let (session_id, user_id, from_account, family, from_account_name, pool_id) = bound?;
+    let (session_id, user_id, session_user, from_account, family, from_account_name, pool_id) =
+        bound?;
+    let session_user = session_user.unwrap_or(user_id);
     if cooldown_active(&RECENT_FAILOVERS, &session_id, Instant::now(), FAILOVER_COOLDOWN) {
         return None;
     }
@@ -140,6 +151,7 @@ pub async fn pick_failover_target(
             state,
             &pool,
             user_id,
+            session_user,
             &family,
             exclude_provider,
             model,
@@ -170,11 +182,16 @@ pub async fn pick_failover_target(
     let (provider_id, account_name): (Uuid, String) = sqlx::query_as(
         "SELECT ap.id, a.name \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-         WHERE ap.account_id = $1 AND ap.family = $2 AND ap.id != $3",
+         WHERE ap.account_id = $1 AND ap.family = $2 AND ap.id != $3 \
+           AND (a.user_id = $4 OR EXISTS ( \
+               SELECT 1 FROM resource_shares rs \
+                WHERE rs.resource_type = 'account' AND rs.resource_id = a.id \
+                  AND rs.grantee_id = $4 AND rs.revoked_at IS NULL))",
     )
     .bind(to_account)
     .bind(&family)
     .bind(exclude_provider)
+    .bind(session_user)
     .fetch_optional(&state.pool)
     .await
     .ok()
@@ -205,6 +222,7 @@ async fn pick_within_pool(
     state: &AppState,
     pool: &AccountPool,
     user_id: Uuid,
+    session_user: Uuid,
     family: &str,
     exclude_provider: Uuid,
     model: Option<&str>,
@@ -218,7 +236,7 @@ async fn pick_within_pool(
     // A sibling whose catalog does not list the request's model would only
     // trade a 429 for a 404.
     let fam = super::Family::from_label(family)?;
-    let members: Vec<_> = members
+    let mut members: Vec<_> = members
         .into_iter()
         .filter(|m| m.provider_id != exclude_provider)
         .filter(|m| {
@@ -230,6 +248,13 @@ async fn pick_within_pool(
             )
         })
         .collect();
+    if session_user != user_id {
+        let usable = futures_util::future::join_all(
+            members.iter().map(|m| super::provider_usable_by(state, m.provider_id, session_user)),
+        )
+        .await;
+        members = members.into_iter().zip(usable).filter(|(_, ok)| *ok).map(|(m, _)| m).collect();
+    }
     if members.is_empty() {
         return None;
     }

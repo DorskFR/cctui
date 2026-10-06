@@ -1,7 +1,7 @@
 //! `parity.toml` must stay in step with the route table and `ServerEvent`.
 //!
-//! One entry per route and per variant, saying whether the TUI handles it,
-//! which epic ticket will, or why it never will. Any drift fails here.
+//! One entry per route and per variant, saying whether the TUI handles it or
+//! why it does not. Any drift fails here.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -11,9 +11,6 @@ use serde::Deserialize;
 
 const MANIFEST: &str = include_str!("../parity.toml");
 const SERVER_EVENT_RS: &str = include_str!("app/server_event.rs");
-
-/// Leaf tickets of the TUI epic; a `planned` entry must name one.
-const TICKET_RANGE: std::ops::RangeInclusive<u32> = 1200..=1278;
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -33,8 +30,6 @@ struct Entry {
     #[serde(default)]
     module: Option<String>,
     #[serde(default)]
-    ticket: Option<String>,
-    #[serde(default)]
     reason: Option<String>,
 }
 
@@ -42,7 +37,6 @@ struct Entry {
 #[serde(rename_all = "snake_case")]
 enum Status {
     Handled,
-    Planned,
     Waived,
 }
 
@@ -88,22 +82,6 @@ fn check_shape(kind: &str, entry: &Entry) {
                 "{kind} {key} names module {module}, which is not a file under crates/cctui-tui/src"
             );
         }
-        Status::Planned => {
-            let ticket = entry
-                .ticket
-                .as_ref()
-                .unwrap_or_else(|| panic!("{kind} {key} is planned but names no ticket"));
-            let number = ticket
-                .strip_prefix("CCT-")
-                .and_then(|n| n.parse::<u32>().ok())
-                .unwrap_or_else(|| panic!("{kind} {key}: {ticket} is not a CCT-<number> ticket"));
-            assert!(
-                TICKET_RANGE.contains(&number),
-                "{kind} {key}: {ticket} is outside the TUI epic (CCT-{}..{})",
-                TICKET_RANGE.start(),
-                TICKET_RANGE.end()
-            );
-        }
         Status::Waived => {
             let reason = entry
                 .reason
@@ -133,7 +111,7 @@ fn every_route_has_an_entry() {
         assert!(
             entries.contains_key(route.id),
             "{} {} is not in crates/cctui-tui/parity.toml: add a [[route]] entry marking it \
-             handled, planned (with a ticket) or waived (with a reason)",
+             handled or waived (with a reason)",
             route.method,
             route.path
         );

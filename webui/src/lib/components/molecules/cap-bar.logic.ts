@@ -16,6 +16,15 @@ export function usdPct(amountUsd: number | null, capUsd: number | null | undefin
 	return Math.max(0, Math.min(100, Math.round((amountUsd / capUsd) * 100)));
 }
 
+/** Shared column widths so every usage bar track lines up; overridable per list. */
+export const USAGE_LABEL_W = 'var(--usage-label-w, 4rem)';
+/** Fits the widest readout: "$1234.56 / $2000.00" and "Not currently reported". */
+export const USAGE_READOUT_W = 'var(--usage-readout-w, 8.75rem)';
+export const USAGE_DENSE_BELOW_PX = 300;
+
+/** Zero (unmeasured) is never dense. */
+export const isDenseWidth = (width: number): boolean => width > 0 && width < USAGE_DENSE_BELOW_PX;
+
 export const money = (n: number) => `$${n.toFixed(2)}`;
 
 export function resetIn(resets: string | null | undefined, now: number): string | null {

@@ -8,6 +8,7 @@ const FIRST_SESSION_TITLE = {
 // Tsumikit's FilterSearchBar forwards no attributes to its input, so the bar is
 // addressed by accessible name within the cctui wrapper.
 const FIND_BOX = { label: 'Search in conversation', within: 'conversation-search' } as const;
+const FIND_ITEM = { role: 'menuitem', name: 'Search in conversation' } as const;
 const SESSIONS = '/sessions';
 
 export default defineJourney({
@@ -33,11 +34,36 @@ export default defineJourney({
 		{
 			id: 'open-find',
 			qaOnly: true,
+			when: { viewport: 'desktop' },
 			target: 'conversation/header/find',
 			do: { kind: 'click' },
 			say: {
 				title: { en: 'Open find in conversation', fr: 'Ouvrir la recherche dans la conversation' },
 				body: { en: 'The bar opens under the toolbar, focused and ready. ⌘F / Ctrl+F does the same.', fr: 'La barre s’ouvre sous la barre d’outils, prête à recevoir le curseur. ⌘F / Ctrl+F fait de même.' }
+			},
+			expect: [{ visible: 'conversation-search' }]
+		},
+		{
+			id: 'open-actions-mobile',
+			qaOnly: true,
+			when: { viewport: 'mobile' },
+			target: 'conversation/header/actions',
+			do: { kind: 'click' },
+			say: {
+				title: { en: 'Find lives in the ⋯ menu', fr: 'La recherche est dans le menu ⋯' },
+				body: { en: 'A narrow header folds find into its actions menu.', fr: 'Un en-tête étroit range la recherche dans son menu d’actions.' }
+			},
+			expect: [{ visible: FIND_ITEM }]
+		},
+		{
+			id: 'open-find-mobile',
+			qaOnly: true,
+			when: { viewport: 'mobile' },
+			target: FIND_ITEM,
+			do: { kind: 'click' },
+			say: {
+				title: { en: 'Open find in conversation', fr: 'Ouvrir la recherche dans la conversation' },
+				body: { en: 'The bar opens under the toolbar, focused and ready.', fr: 'La barre s’ouvre sous la barre d’outils, prête à recevoir le curseur.' }
 			},
 			expect: [{ visible: 'conversation-search' }]
 		},

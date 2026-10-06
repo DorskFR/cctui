@@ -280,13 +280,14 @@ impl LogTail {
             self.sessions.keys().filter(|p| !alive.contains(*p)).cloned().collect();
         for path in ended {
             if let Some(s) = self.sessions.remove(&path) {
-                let _ = self
-                    .events
-                    .send(AdapterEvent::SessionEnded {
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::SessionEnded {
                         local_id: s.local_id,
                         reason: EndReason::Completed,
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
         }
         let now = Instant::now();

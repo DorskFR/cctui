@@ -6,56 +6,28 @@ use crate::app::App;
 use crate::app::slice::{self, TABS, Tab};
 use crate::theme;
 
-/// `1 Sessions  2 Bookmarks  3 Overview  …`, the current one highlighted and
-/// the ones the TUI has not built yet dimmed but still numbered.
+/// `1 Sessions  2 Overview  3 Machines`, the current one highlighted.
 ///
-/// `reserve` is what the caller still has to fit on the row: the unbuilt tabs
-/// are the first thing dropped, being the only ones that lead nowhere.
+/// `reserve` is what the caller still has to fit on the row: the labels of the
+/// slices you are not on go first, then whole tabs.
 #[must_use]
 pub fn tab_spans(app: &App, width: usize, reserve: usize) -> Vec<Span<'static>> {
-    let cost = |t: &Tab| t.label.chars().count() + 4;
-    let all: usize = TABS.iter().map(cost).sum();
-    let built: usize = TABS
+    let labelled: usize = TABS.iter().map(|t: &Tab| t.label.chars().count() + 4).sum();
+    let show_labels = labelled + reserve <= width;
+    let groups = TABS
         .iter()
-        .filter(|t| t.slice.is_some_and(|slice| slice::permitted(app, slice)))
-        .map(cost)
-        .sum();
-    let unbuilt_bare: usize =
-        TABS.iter().filter(|t| !t.slice.is_some_and(|s| slice::permitted(app, s))).count() * 3;
-    // Degrade in order: every label; then the labels of the tabs that lead
-    // nowhere, which keep a bare number so the sequence has no hole in it; then
-    // the labels of the slices you are not on; then the placeholders, because a
-    // reachable slice's number is worth more than one that leads nowhere. Bare
-    // numbers still have a width, so the last rung drops whole tabs.
-    let show_unbuilt_labels = all + reserve <= width;
-    let show_labels = built + reserve <= width;
-    let keep_unbuilt = built + unbuilt_bare + reserve <= width;
-
-    let mut groups: Vec<(bool, Vec<Span<'static>>)> = Vec::with_capacity(TABS.len());
-    for (index, tab) in TABS.iter().enumerate() {
-        // A slice this key may not enter reads as one the TUI has not built:
-        // same dimmed number, so the built tabs never renumber under the user.
-        let reachable = tab.slice.is_some_and(|slice| slice::permitted(app, slice));
-        if !reachable && !keep_unbuilt {
-            continue;
-        }
-        let number = index + 1;
-        let current = tab.slice == Some(app.slice);
-        let (key_style, label_style) = if current {
-            (theme::hotkey(), theme::bold())
-        } else if reachable {
-            (theme::hotkey(), theme::dim())
-        } else {
-            (theme::border_dim(), theme::border_dim())
-        };
-        let mut group = vec![Span::styled(format!(" {number}"), key_style)];
-        let labelled = current || if reachable { show_labels } else { show_unbuilt_labels };
-        if labelled {
-            group.push(Span::styled(format!(" {}", tab.label), label_style));
-        }
-        group.push(Span::raw(" "));
-        groups.push((current, group));
-    }
+        .enumerate()
+        .map(|(index, tab)| {
+            let current = tab.slice == app.slice;
+            let label_style = if current { theme::bold() } else { theme::dim() };
+            let mut group = vec![Span::styled(format!(" {}", index + 1), theme::hotkey())];
+            if current || show_labels {
+                group.push(Span::styled(format!(" {}", tab.label), label_style));
+            }
+            group.push(Span::raw(" "));
+            (current, group)
+        })
+        .collect();
     fit(groups, width.saturating_sub(reserve))
 }
 
@@ -145,62 +117,18 @@ mod tests {
         app
     }
 
-    /// Every slice reachable, as an admin's is: the width an all-labels row no
-    /// longer fits is not a reason for a number to vanish out of the middle of
-    /// the sequence, because a hole reads as a bug.
-    #[test]
-    fn a_placeholder_keeps_its_number_once_the_labels_stop_fitting() {
-        let mut app = app();
-        app.auth = crate::app::identity::AuthState::Identified(crate::app::identity::Identity {
-            user_id: None,
-            role: "user".to_owned(),
-            user_name: Some("tester".to_owned()),
-            scopes: vec!["admin".to_owned()],
-            token_preview: String::new(),
-        });
-        let labelled: usize =
-            crate::app::slice::TABS.iter().map(|t| t.label.chars().count() + 4).sum();
-        // One column short of the all-labels row: the rung the live bar sat on.
-        let width = labelled - 1;
-        let strip = text(&tab_spans(&app, width, 0));
-        for number in 1..=crate::app::slice::TABS.len() {
-            assert!(
-                strip.contains(&format!(" {number}")),
-                "width {width} dropped tab {number}: {strip}"
-            );
-        }
-    }
-
     #[test]
     fn every_tab_is_numbered_in_order() {
         let app = app();
-        assert_eq!(
-            text(&tab_spans(&app, 120, 0)),
-            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines  5 Access  6 Accounts  7 Settings  8 Spend "
-        );
+        assert_eq!(text(&tab_spans(&app, 120, 0)), " 1 Sessions  2 Overview  3 Machines ");
     }
 
     #[test]
-    fn a_row_with_other_work_on_it_sheds_the_tabs_that_lead_nowhere_first() {
+    fn a_row_with_other_work_on_it_keeps_only_the_current_label() {
         let app = app();
-        // This key is no admin, so Access sheds with the unbuilt tabs; the
-        // slices it may enter keep their labels.
-        assert_eq!(
-            text(&tab_spans(&app, 120, 48)),
-            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines  6 Accounts  8 Spend "
-        );
-        assert_eq!(
-            text(&tab_spans(&app, 70, 0)),
-            " 1 Sessions  2 Bookmarks  3 Overview  4 Machines  6 Accounts  8 Spend "
-        );
-    }
-
-    #[test]
-    fn a_very_tight_row_keeps_the_numbers_and_the_slice_you_are_on() {
-        let app = app();
-        let bare = text(&tab_spans(&app, 80, 61));
+        let bare = text(&tab_spans(&app, 120, 100));
         assert_eq!(bare, " 1 Sessions  2  3 ");
-        assert!(bare.chars().count() + 61 <= 80, "it has to actually fit: {bare:?}");
+        assert!(bare.chars().count() + 100 <= 120, "it has to actually fit: {bare:?}");
     }
 
     /// However tight the row, the bar fits what it was given and still shows the
@@ -217,7 +145,7 @@ mod tests {
                 bar.chars().count() + reserve <= 80,
                 "reserve {reserve} overflowed with {bar:?}"
             );
-            assert!(bar.contains('4'), "reserve {reserve} lost the current tab: {bar:?}");
+            assert!(bar.contains('3'), "reserve {reserve} lost the current tab: {bar:?}");
         }
         assert!(text(&tab_spans(&app, 80, 40)).contains("Machines"), "the label survives a bit");
     }
@@ -241,7 +169,7 @@ mod tests {
     #[test]
     fn the_current_tab_is_the_one_the_slice_names() {
         let mut app = app();
-        reduce(&mut app, Action::Slice(SliceAction::Switch(3)));
+        reduce(&mut app, Action::Slice(SliceAction::Switch(2)));
         assert_eq!(app.slice, Slice::Overview);
         let spans = tab_spans(&app, 120, 0);
         let overview = spans

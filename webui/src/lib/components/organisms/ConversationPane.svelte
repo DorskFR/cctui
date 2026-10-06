@@ -9,6 +9,7 @@
 	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '$lib/rooms';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
+	import { supportsAttachments as adapterSupportsAttachments } from '$lib/attachments';
 	import { Dropzone } from '@dorsk/tsumikit';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
@@ -314,11 +315,7 @@
 		fork.openExtract({ mode: 'selected', anchor_message_id: null, selected_message_ids: range });
 	}
 
-	// Filesystem-backed adapters only; the composer owns the attachment state
-	// and the dropzone feeds it via the component ref.
-	const supportsAttachments = $derived(
-		session.adapter_id === 'claude-code' || session.adapter_id === 'codex'
-	);
+	const supportsAttachments = $derived(adapterSupportsAttachments(session.adapter_id));
 	let composer = $state<ConversationComposer>();
 	$effect(() =>
 		registerComposer(id, {
@@ -352,13 +349,15 @@
 
 <div class="conv-pane" data-chrome={chrome}>
 		{#if plugins.current && plugins.open}
-			<PluginPaneHost
-				plugin={plugins.current.info}
-				module={plugins.current.module}
-				{session}
-				params={plugins.open.params}
-				onclose={() => plugins.close()}
-			/>
+			{#key plugins.current.info.id}
+				<PluginPaneHost
+					plugin={plugins.current.info}
+					module={plugins.current.module}
+					{session}
+					params={plugins.open.params}
+					onclose={() => plugins.close()}
+				/>
+			{/key}
 		{/if}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
@@ -545,6 +544,7 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
+		overflow: clip;
 		background: var(--bg);
 		padding-top: var(--safe-top);
 	}

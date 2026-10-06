@@ -117,16 +117,6 @@ export function useSessionActions() {
       await api.post<void>(`/sessions/${id}/unpin`);
       inval();
     },
-    // Per-plugin data slot (`metadata.plugins.<pluginId>`); `null` clears it.
-    // Refreshes the list so the chip moves on the card and in the header.
-    setPluginSlot: async (
-      id: string,
-      pluginId: string,
-      data: Record<string, unknown> | null,
-    ) => {
-      await endpoints.setSessionPlugin(id, pluginId, data);
-      inval();
-    },
     setKeepalive: async (
       id: string,
       body: SessionKeepaliveRequest,
@@ -233,6 +223,8 @@ export function useSessionActions() {
       inval();
       return res;
     },
+    setDraftAttachments: (id: string, files: File[]) =>
+      endpoints.setDraftAttachments(id, files),
     // Fork a conversation into a new session. Optionally overrides
     // model/effort (the "fork to change model" path for claude). The new
     // session links back to the parent and registers shortly after; refetch.

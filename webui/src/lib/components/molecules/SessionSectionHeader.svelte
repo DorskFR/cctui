@@ -58,12 +58,21 @@
 	);
 	const archiveLabel = $derived(m.sessions_archive_section({ section: label }));
 	const heading = $derived(title ?? label);
+	let el = $state<HTMLElement>();
 	let width = $state(Infinity);
+	let height = $state(0);
 	// Mirrors the `ssh` container query: a bare number once the row is tight.
-	const countLabel = $derived(width < 416 ? String(count) : m.sessions_group_count({ count }));
+	// In em, so the text-size control moves the step with the text; a size
+	// change shows up as a new height.
+	const tight = $derived.by(() => {
+		void height;
+		if (!el) return false;
+		return width < 27.75 * parseFloat(getComputedStyle(el).fontSize);
+	});
+	const countLabel = $derived(tight ? String(count) : m.sessions_group_count({ count }));
 </script>
 
-<div class="ssh" bind:clientWidth={width}>
+<div class="ssh" bind:this={el} bind:clientWidth={width} bind:clientHeight={height}>
 	<SectionHeader
 		variant="group"
 		level={3}
@@ -119,7 +128,7 @@
 	.ssh {
 		container: ssh / inline-size;
 	}
-	@container ssh (max-width: 26rem) {
+	@container ssh (max-width: 27.75em) {
 		.sort-words {
 			display: none;
 		}

@@ -34,7 +34,7 @@
 {/snippet}
 
 {#snippet footer()}
-	<Button variant="primary" onclick={ondone}>{m.guide_done_continue()}</Button>
+	<Button variant="primary" autofocus onclick={ondone}>{m.guide_done_continue()}</Button>
 {/snippet}
 
 <Modal title={m.guide_done_title()} size="sm" onclose={ondone} {body} {footer} />

@@ -3,6 +3,7 @@
 use super::{GET, sess_read, sess_write};
 use crate::authz::{Authn, Routes};
 use crate::routes;
+use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
 use axum::routing::{get, post, put};
 
@@ -47,6 +48,15 @@ pub(super) fn register(r: Routes) -> Routes {
             "/sessions/{id}/draft",
             "Replace a draft session's stored spawn payload in place.",
             put(routes::sessions::update_draft),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::PUT],
+            "/sessions/{id}/draft-attachments",
+            "Replace a draft session's stored attachments.",
+            put(routes::spawn::put_draft_attachments)
+                .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
             Authn::Bearer,
             sess_write(),
         )

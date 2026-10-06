@@ -1188,8 +1188,9 @@ launched a harness itself and the resulting agent was invisible to cctui.
 
 ### The tool
 
-`cctui-daemon` serves a local **stdio MCP server** exposing two tools —
-`CctuiAgent`, below, and [`CctuiUsage`](#cctuiusage--the-limits-that-apply-to-this-session-cct-1076):
+`cctui-daemon` serves a local **stdio MCP server** exposing `CctuiAgent`, below,
+[`CctuiAgentArchive`](#cctuiagentarchive--release-a-child-and-its-slot) and
+[`CctuiUsage`](#cctuiusage--the-limits-that-apply-to-this-session-cct-1076):
 
 ```
 CctuiAgent(
@@ -1261,7 +1262,7 @@ writable by the session:
 "spawn_capability": {
   "adapters": ["opencode"],   // exact ids; empty or absent = spawning denied
   "max_budget_usd": 0.50,     // ceiling AND the default when a call omits one
-  "max_children": 3,          // total children over the session's life
+  "max_children": 3,          // children holding a slot at once (see below)
   "max_permission_mode": "ask" // optional child posture ceiling
 }
 ```
@@ -1270,7 +1271,9 @@ Enforcement lives server-side in
 `POST /api/v1/daemon/sessions/{id}/spawn-child` (machine-key auth), which the
 daemon relays to. It denies when: no capability is recorded, the adapter is not
 listed, `budget_usd` exceeds `max_budget_usd` (or one is requested with no
-ceiling set), or the session already has `max_children`. The daemon grants
+ceiling set), or the session already has `max_children` children holding a
+slot. A child holds its slot until it crashes, is killed or is archived; a
+completed child keeps it, since the parent can still reattach to it. The daemon grants
 nothing on its own. Capabilities are persisted in `session_spawn_capabilities`
 and cached in server memory, so a restart no longer silently disarms a live
 session's spawn tool; a lookup that errors still denies.
@@ -1290,6 +1293,21 @@ can spawn an opencode/Fireworks child on the same account.
 `budget_usd` is optional and usually unnecessary: the account's own `session_usd`
 cap already bounds a child, gateway-side. Naming a ceiling in the launcher only
 adds a second limit that can deny the spawn. Prefer the account cap.
+
+### `CctuiAgentArchive` — release a child and its slot
+
+```
+CctuiAgentArchive(
+  session_id: string   # a child (or deeper descendant) of the calling session
+) -> the archived session ids and the slots now used
+```
+
+The daemon relays it to `POST /api/v1/daemon/sessions/{id}/archive-child`
+(machine-key auth). The target must sit below the caller in its own spawn tree
+and belong to the same user; anything else — itself, its parent, a sibling,
+another user's session — is a `404`. A session the user pinned is always
+refused: no agent overrides a pin. A child that is still running is killed, and
+its own descendants are archived with it, exactly like a human archive.
 
 ### `CctuiUsage` — the limits that apply to *this* session
 
@@ -1313,8 +1331,9 @@ The payload carries the pinned account (name, emoji, provider, pool), the usage
 windows with pace, the caps actually in force — the account's `SoftLimits` with
 any `CctuiAgent` per-child budget merged in as `session_usd` — this session's
 spend so far, any durable block already written onto the session row, the
-`decision` for the current model, and a `per_model` map so an orchestrator can
-see that one model's weekly window is blocked while another is fine.
+`decision` for the current model, a `per_model` map so an orchestrator can
+see that one model's weekly window is blocked while another is fine, and —
+when the session may spawn — its `children` slots (`used`, `max`, `depth_left`).
 
 ```jsonc
 {
@@ -1327,6 +1346,7 @@ see that one model's weekly window is blocked while another is fine.
     "claude-fable-5-1": { "allow": false, "retry_after_secs": 5400, "key": "weekly_model:fable" },
     "claude-opus-5": { "allow": true }
   },
+  "children": { "used": 3, "max": 16, "depth_left": 3 },
   "age_secs": 41, "stale": false
 }
 ```
@@ -1334,7 +1354,7 @@ see that one model's weekly window is blocked while another is fine.
 The one-line rendering that precedes it reads:
 
 ```
-🐧dorsk-main · 5h 46% resets in 2h10 · weekly 71% · budget $3.42/$20 · claude-fable-5-1 weekly_model:fable BLOCKED for 1h30 · claude-opus-5 ok
+🐧dorsk-main · 5h 46% resets in 2h10 · weekly 71% · budget $3.42/$20 · claude-fable-5-1 weekly_model:fable BLOCKED for 1h30 · claude-opus-5 ok · children 3/16
 ```
 
 **It fails soft, on purpose.** An empty or cold usage cache returns no windows, an

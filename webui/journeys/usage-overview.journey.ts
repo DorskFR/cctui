@@ -67,6 +67,7 @@ export default defineJourney({
 			id: 'range',
 			target: 'range',
 			do: { kind: 'click' },
+			guide: 'next',
 			say: {
 				title: { en: 'Choose the period you are reading', fr: 'Choisir la période que vous lisez' },
 				body: { en: 'Pick a different period and watch the charts below redraw — this selector governs them, not the tiles above. Widen it to judge a trend, narrow it to explain a single expensive day.', fr: 'Choisissez une autre période et regardez les graphiques ci-dessous se redessiner — ce sélecteur les gouverne, pas les tuiles ci-dessus. Élargissez-la pour juger une tendance, réduisez-la pour expliquer une journée coûteuse.' }

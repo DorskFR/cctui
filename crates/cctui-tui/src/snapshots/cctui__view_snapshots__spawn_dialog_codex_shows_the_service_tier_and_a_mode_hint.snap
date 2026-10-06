@@ -1,24 +1,21 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 407
+assertion_line: 307
 expression: render_screen(&mut app)
 ---
- cctui  v0.0.0┌ New session ─────────────────────────────────────────────────────────┐
- 1 Sessions  2│  [Machine]   Dispatch    Ctrl-D switches                             │tus
-   ▾ Needs inp│ Profile                                                              │
-▸    ● [claude│   no profiles yet — press + to save this setup                       │
-   ▾ Working (│  Machine  orion                                                      │
-     ● [claude│  Dir      /home/dev/infra                                            │
-     ▾ subagen│  Name     —                                                          │
-       ↳ ● [cl│  Harness  codex                                                      │
-   ▾ Completed│  Model    —                                                          │
-     ○ [claude│  Effort   —                                                          │
-              │  Tier     —                                                          │
+ cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
+ 1 Sessions  2 Overview  3 Machines   starred · live · dispatched  sort: activity ↓  group: status
+   ▾ Needs inp┌ New session ─────────────────────────────────────────────────────────┐
+▸    ● [claude│❯ Machine  orion                                                      │
+   ▾ Working (│  Dir      /home/dev/infra                                            │
+     ● [claude│  Name     —                                                          │
+     ▾ subagen│  Harness  codex                                                      │
+       ↳ ● [cl│  Model    —                                                          │
+   ▾ Completed│  Effort   —                                                          │
+     ○ [claude│  Tier     —                                                          │
               │  Mode     yolo                                                       │
               │           skips prompts and sandbox                                  │
               │  Prompt   —                                                          │
-              │ Account                                                              │
-              │   [auto (most allocation left)]                                      │
               │ Labels                                                               │
               │   no labels yet                                                      │
               │ Env                                                                  │
@@ -26,4 +23,7 @@ expression: render_screen(&mut app)
               │ Files                                                                │
               │   none  (o add path)                                                 │
               │  Ctrl-S launch   Tab next   Esc cancel                               │
- j/k:nav  Ente└──────────────────────────────────────────────────────────────────────┘
+              └──────────────────────────────────────────────────────────────────────┘
+
+
+ j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

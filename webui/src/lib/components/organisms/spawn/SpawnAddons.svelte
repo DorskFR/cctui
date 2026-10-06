@@ -1,9 +1,9 @@
 <script lang="ts">
-	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
 	import type { Label } from '@bindings/Label';
 	import { AutoGrid, Badge, Button, FileButton, Icon, Popover } from '@dorsk/tsumikit';
 	import { labelTint, hueToColor } from '$lib/labels';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
+	import type { PromptAttachments } from '$lib/promptAttachments.svelte';
 	import LabelMenu from '$lib/components/molecules/LabelMenu.svelte';
 	import EnvSecretsField from './EnvSecretsField.svelte';
 	import type { EnvRow } from './types';
@@ -12,19 +12,15 @@
 	let {
 		labelIds = $bindable(),
 		envRows = $bindable(),
-		pending = [],
-		files,
+		att,
 		allLabels,
 		envInvalid,
 		attachments,
-		labelActions,
-		onfiles,
-		onremovefile
+		labelActions
 	}: {
 		labelIds: string[];
 		envRows: EnvRow[];
-		pending?: { file: File }[];
-		files: File[];
+		att: PromptAttachments;
 		allLabels: Label[];
 		envInvalid: boolean;
 		attachments: boolean;
@@ -33,8 +29,6 @@
 			updateLabel: (id: string, patch: { name?: string; color?: string }) => Promise<Label>;
 			deleteLabel: (id: string) => Promise<void>;
 		};
-		onfiles: (files: File[]) => void;
-		onremovefile: (name: string) => void;
 	} = $props();
 
 	const selectedLabels = $derived(allLabels.filter((l) => labelIds.includes(l.id)));
@@ -88,7 +82,7 @@
 			/>
 		</Popover>
 		{#if attachments}
-			<FileButton label={m.spawn_add_files()} icon="file-text" multiple {onfiles} />
+			<FileButton label={m.spawn_add_files()} icon="file-text" multiple onfiles={att.add} />
 		{/if}
 		<Button block onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
 	</AutoGrid>
@@ -107,8 +101,7 @@
 		</div>
 	{/if}
 	{#if attachments}
-		<ImageCompressionStatus {pending} />
-		<AttachmentList {files} onremove={onremovefile} />
+		<AttachmentList {att} />
 	{/if}
 	<EnvSecretsField bind:envRows invalid={envInvalid} />
 </div>

@@ -1,4 +1,3 @@
-import { localTimeZone } from '@dorsk/tsumikit';
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { MachineRow } from '@bindings/MachineRow';
 import { endpoints } from '$lib/queries/endpoints';
@@ -18,7 +17,6 @@ export function createProbes(qc: QueryClient): Probes {
 	const pools = () => qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools });
 	const sessions = () =>
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) });
-	const stats = () => qc.fetchQuery({ queryKey: qk.sessionStats, queryFn: () => endpoints.sessionStats(localTimeZone()) });
 	const machines = async (): Promise<MachineRow[]> => {
 		const who = await me();
 		if (who.role === 'admin') {
@@ -37,6 +35,6 @@ export function createProbes(qc: QueryClient): Probes {
 			(await machines()).filter((m) => m.kind !== 'ephemeral' && !m.revoked_at).length,
 		sessions: async () => (await sessions()).sessions.length > 0,
 		'sessions.drafts': async () => (await sessions()).sessions.filter((s) => s.status === 'draft').length,
-		'sessions.live': async () => (await stats()).live > 0
+		'sessions.live': async () => (await sessions()).sessions.some(isLive)
 	};
 }

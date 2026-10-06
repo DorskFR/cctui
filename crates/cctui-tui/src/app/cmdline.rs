@@ -646,10 +646,10 @@ mod path_completion_tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         std::fs::write(dir.path().join("only.md"), b"x").expect("write");
         let mut app = app();
-        reduce(&mut app, CmdAction::OpenPrefilled(Mode::Command, "export "));
-        app.cmdline.input = format!("export md {}/on", dir.path().display());
+        reduce(&mut app, CmdAction::OpenPrefilled(Mode::Command, "attach "));
+        app.cmdline.input = format!("attach notes {}/on", dir.path().display());
         reduce(&mut app, CmdAction::CompletePath);
-        assert_eq!(app.cmdline.input, format!("export md {}/only.md", dir.path().display()));
+        assert_eq!(app.cmdline.input, format!("attach notes {}/only.md", dir.path().display()));
     }
 
     #[test]

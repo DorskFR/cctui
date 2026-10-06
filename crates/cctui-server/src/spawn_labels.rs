@@ -76,11 +76,14 @@ pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&st
     attach(pool, session_id, &ids).await;
 }
 
-/// Attach existing labels to a session, skipping any that no longer exist.
+/// Attach existing labels to a session, skipping any that no longer exist or
+/// that belong to another user.
 async fn attach(pool: &PgPool, session_id: &str, ids: &[Uuid]) {
     match sqlx::query(
         "INSERT INTO session_labels (session_id, label_id) \
-         SELECT $1, l.id FROM labels l WHERE l.id = ANY($2) \
+         SELECT $1, l.id FROM labels l WHERE l.id = ANY($2) AND l.user_id = (\
+             SELECT COALESCE(s.user_id, m.user_id) FROM sessions s \
+               LEFT JOIN machines m ON m.id = s.machine_uuid WHERE s.id = $1) \
          ON CONFLICT DO NOTHING",
     )
     .bind(session_id)
@@ -108,7 +111,9 @@ pub async fn sync_draft(pool: &PgPool, draft_id: &str, label_ids: &[String]) {
         if !ids.is_empty() {
             sqlx::query(
                 "INSERT INTO session_labels (session_id, label_id) \
-                 SELECT $1, l.id FROM labels l WHERE l.id = ANY($2) \
+                 SELECT $1, l.id FROM labels l WHERE l.id = ANY($2) AND l.user_id = (\
+                     SELECT COALESCE(s.user_id, m.user_id) FROM sessions s \
+                       LEFT JOIN machines m ON m.id = s.machine_uuid WHERE s.id = $1) \
                  ON CONFLICT DO NOTHING",
             )
             .bind(draft_id)
@@ -184,18 +189,19 @@ mod tests {
         )
     }
 
-    async fn label(pool: &PgPool) -> Uuid {
-        sqlx::query_scalar("INSERT INTO labels (name, color) VALUES ($1, '#abcdef') RETURNING id")
-            .bind(format!("spawn-labels-{}", Uuid::new_v4()))
-            .fetch_one(pool)
-            .await
-            .unwrap()
+    async fn label(pool: &PgPool, owner: Uuid) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO labels (name, color, user_id) VALUES ($1, '#abcdef', $2) RETURNING id",
+        )
+        .bind(format!("spawn-labels-{}", Uuid::new_v4()))
+        .bind(owner)
+        .fetch_one(pool)
+        .await
+        .unwrap()
     }
 
-    async fn session(pool: &PgPool, status: &str) -> String {
+    async fn user(pool: &PgPool) -> Uuid {
         let uid = Uuid::new_v4();
-        let machine = Uuid::new_v4();
-        let sid = Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
             .bind(uid)
             .bind(format!("spawn-labels-{uid}"))
@@ -203,6 +209,12 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+        uid
+    }
+
+    async fn session(pool: &PgPool, uid: Uuid, status: &str) -> String {
+        let machine = Uuid::new_v4();
+        let sid = Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
             .bind(machine)
             .bind(uid)
@@ -243,7 +255,9 @@ mod tests {
         let Some(pool) = test_pool("spawn_labels_attach_on_registration").await else {
             return;
         };
-        let (a, b, gone) = (label(&pool).await, label(&pool).await, label(&pool).await);
+        let uid = user(&pool).await;
+        let (a, b, gone) =
+            (label(&pool, uid).await, label(&pool, uid).await, label(&pool, uid).await);
         let command_id = Uuid::new_v4().to_string();
         remember_intent(
             &pool,
@@ -253,7 +267,7 @@ mod tests {
         .await;
         sqlx::query("DELETE FROM labels WHERE id = $1").bind(gone).execute(&pool).await.unwrap();
 
-        let sid = session(&pool, "active").await;
+        let sid = session(&pool, uid, "active").await;
         claim_intent(&pool, &sid, Some(&command_id)).await;
         let mut want = vec![a, b];
         want.sort();
@@ -268,10 +282,17 @@ mod tests {
         assert_eq!(left, 0, "the intent is consumed on claim");
 
         // Pre-minted ids (claude-code) register under the spawn key itself.
-        let pre = session(&pool, "active").await;
+        let pre = session(&pool, uid, "active").await;
         remember_intent(&pool, &pre, &[a.to_string()]).await;
         claim_intent(&pool, &pre, None).await;
         assert_eq!(labels_of(&pool, &pre).await, vec![a]);
+
+        // Another user's label never lands on this session.
+        let theirs = label(&pool, user(&pool).await).await;
+        let other = session(&pool, uid, "active").await;
+        remember_intent(&pool, &other, &[theirs.to_string(), a.to_string()]).await;
+        claim_intent(&pool, &other, None).await;
+        assert_eq!(labels_of(&pool, &other).await, vec![a]);
     }
 
     /// A draft row mirrors its payload's labels, and every save replaces them.
@@ -280,8 +301,9 @@ mod tests {
         let Some(pool) = test_pool("spawn_labels_sync_draft_row").await else {
             return;
         };
-        let (a, b) = (label(&pool).await, label(&pool).await);
-        let draft = session(&pool, "draft").await;
+        let uid = user(&pool).await;
+        let (a, b) = (label(&pool, uid).await, label(&pool, uid).await);
+        let draft = session(&pool, uid, "draft").await;
 
         sync_draft(&pool, &draft, &[a.to_string(), b.to_string()]).await;
         let mut want = vec![a, b];

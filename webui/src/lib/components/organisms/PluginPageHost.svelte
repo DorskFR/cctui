@@ -24,6 +24,7 @@
 	const me = useMe();
 	// One context object per mounted plugin: the id it is keyed to decides where
 	// `pluginFetch` goes, and the user only fills in once `/me` answers.
+	// svelte-ignore state_referenced_locally
 	setContext<HostContext>(HOST_CONTEXT_KEY, {
 		...hostContext({ pluginId: plugin.id }),
 		get user() {

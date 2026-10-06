@@ -46,7 +46,7 @@
 			>
 				<span class="cell" class:active>
 					<span class="ico"
-						>{#if it.iconName}<Icon name={it.iconName} size={20} />{:else}{it.icon}{/if}{#if it.href === '/sessions' && unread > 0}<span class="unread"
+						><Icon name={it.iconName} size={20} />{#if it.href === '/sessions' && unread > 0}<span class="unread"
 								><Badge
 									size="xs"
 									numeric

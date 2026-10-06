@@ -31,10 +31,10 @@ VALUES
    'ci-runner-02', 'seed-fixture-machine-2', 'persistent', 145, 'ci-runner-02',
    now() - interval '12 days', now() - interval '4 minutes');
 
-INSERT INTO labels (id, name, color) VALUES
-  ('b0000000-0000-4000-8000-000000000001', 'backend',  '#3b82f6'),
-  ('b0000000-0000-4000-8000-000000000002', 'frontend', '#a855f7'),
-  ('b0000000-0000-4000-8000-000000000003', 'infra',    '#f59e0b');
+INSERT INTO labels (id, user_id, name, color) VALUES
+  ('b0000000-0000-4000-8000-000000000001', '00000000-0000-0000-0000-000000000000', 'backend',  '#3b82f6'),
+  ('b0000000-0000-4000-8000-000000000002', '00000000-0000-0000-0000-000000000000', 'frontend', '#a855f7'),
+  ('b0000000-0000-4000-8000-000000000003', '00000000-0000-0000-0000-000000000000', 'infra',    '#f59e0b');
 
 INSERT INTO sessions (
   id, parent_id, machine_id, machine_uuid, working_dir, status, registered_at,

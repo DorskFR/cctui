@@ -1,9 +1,9 @@
 //! Opt-in periodic `claude update` / `codex update`, then cycle the harness
 //! process when idle.
 //!
-//! Claude's cycle is left to the adapter's `version_gate`,
-//! which already cycles a `claude daemon` older than the CLI; codex goes
-//! through `codex_version_gate`.
+//! Claude's cycle is left to its adapter, which already cycles a `claude
+//! daemon` older than the CLI; codex is cycled from here. Both go through
+//! [`crate::adapters::version_gate`].
 //!
 //! Never restarts `cctui-daemon` or touches its unit. Worker pods report
 //! `managed-by-image` and never update: their harness is the baked image.
@@ -25,8 +25,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::claude_code::version_gate as claude_gate;
-use crate::adapters::codex::codex_version_gate::{self as codex_gate, CodexVersionGate, Decision};
-use crate::adapters::codex::sandbox_probe;
+use crate::adapters::codex::{codex_version_gate as codex_gate, sandbox_probe};
+use crate::adapters::version_gate::{self as gate, Decision, VersionGate};
 
 const TICK: Duration = Duration::from_mins(1);
 const UPDATE_TIMEOUT: Duration = Duration::from_mins(10);
@@ -105,9 +105,17 @@ struct State {
     versions: HarnessVersions,
 }
 
+/// Unit tests never touch the state file the machine's live daemon reads.
+fn state_paths() -> Vec<std::path::PathBuf> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    crate::runtime::state_candidates(STATE_FILE)
+}
+
 impl State {
     fn load() -> Self {
-        crate::runtime::state_candidates(STATE_FILE)
+        state_paths()
             .iter()
             .find_map(|p| std::fs::read_to_string(p).ok())
             .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -116,8 +124,7 @@ impl State {
 
     fn persist(&self) {
         let Ok(json) = serde_json::to_string_pretty(self) else { return };
-        if crate::runtime::record_at(&crate::runtime::state_candidates(STATE_FILE), &json).is_none()
-        {
+        if crate::runtime::record_at(&state_paths(), &json).is_none() {
             tracing::debug!("failed to persist harness update state");
         }
     }
@@ -183,23 +190,27 @@ fn last_line(text: &str) -> Option<&str> {
 }
 
 pub type BusyProbe =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = codex_gate::Busy> + Send>> + Send + Sync>;
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = gate::Busy> + Send>> + Send + Sync>;
 
 pub struct Runner {
     claude_bin: String,
     codex_bin: String,
     codex_busy: BusyProbe,
-    codex_gate: CodexVersionGate,
+    codex_gate: VersionGate,
 }
 
 impl Runner {
     #[must_use]
     pub fn new(claude_bin: String, codex_bin: String, codex_busy: BusyProbe) -> Self {
-        Self { claude_bin, codex_bin, codex_busy, codex_gate: CodexVersionGate::default() }
+        Self { claude_bin, codex_bin, codex_busy, codex_gate: VersionGate::default() }
     }
 
-    fn bin(&self, harness: &str) -> &str {
-        if harness == HARNESS_CODEX { &self.codex_bin } else { &self.claude_bin }
+    fn bin(&self, harness: &str) -> Option<&str> {
+        match harness {
+            HARNESS_CLAUDE_CODE => Some(&self.claude_bin),
+            HARNESS_CODEX => Some(&self.codex_bin),
+            _ => None,
+        }
     }
 
     /// One pass: update every due harness in turn (never two at once), then
@@ -220,21 +231,20 @@ impl Runner {
     }
 
     async fn cli_version(&self, harness: &str) -> Option<String> {
-        let out = run(self.bin(harness), &["--version"], PROBE_TIMEOUT).await.ok()?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        if harness == HARNESS_CODEX {
-            codex_gate::parse_cli_version(&stdout)
-        } else {
-            claude_gate::parse_cli_version(&stdout)
-        }
+        let out = run(self.bin(harness)?, &["--version"], PROBE_TIMEOUT).await.ok()?;
+        gate::parse_cli_version(&String::from_utf8_lossy(&out.stdout))
     }
 
     async fn update(&self, harness: &str) {
+        let Some(bin) = self.bin(harness) else {
+            record(harness, "unsupported harness".to_owned());
+            return;
+        };
         let Some(before) = self.cli_version(harness).await else {
             record(harness, "not installed".to_owned());
             return;
         };
-        let outcome = match run(self.bin(harness), &["update"], UPDATE_TIMEOUT).await {
+        let outcome = match run(bin, &["update"], UPDATE_TIMEOUT).await {
             Ok(out) => {
                 let after = self.cli_version(harness).await;
                 classify(
@@ -278,7 +288,7 @@ impl Runner {
             return;
         }
         let busy = (self.codex_busy)().await;
-        match self.codex_gate.check(&versions, busy, std::time::Instant::now()) {
+        match codex_gate::check(&mut self.codex_gate, &versions, busy, std::time::Instant::now()) {
             Decision::Nothing => {}
             Decision::Deferred { .. } => {
                 let already = STATE
@@ -435,6 +445,11 @@ Check permissions on /home/you/.local/share/claude
     }
 
     #[test]
+    fn tests_never_resolve_the_live_state_file() {
+        assert!(state_paths().is_empty());
+    }
+
+    #[test]
     fn interval_gates_reruns() {
         let t0 = Utc::now();
         assert!(due(None, t0, 24));
@@ -472,7 +487,7 @@ esac
 
     #[cfg(unix)]
     #[tokio::test]
-    #[ignore = "spawns fake harness shims and writes the shared harness-update state file"]
+    #[ignore = "spawns fake harness shims"]
     async fn update_then_cycle_only_when_idle() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let dir = tempfile::tempdir().unwrap();
@@ -516,5 +531,14 @@ esac
             1,
             "not due, in sync: nothing"
         );
+    }
+
+    #[test]
+    fn unknown_harness_has_no_updater() {
+        let busy: BusyProbe = Arc::new(|| Box::pin(async { None }));
+        let runner = Runner::new("claude".to_owned(), "codex".to_owned(), busy);
+        assert_eq!(runner.bin(HARNESS_CLAUDE_CODE), Some("claude"));
+        assert_eq!(runner.bin(HARNESS_CODEX), Some("codex"));
+        assert_eq!(runner.bin("opencode"), None);
     }
 }

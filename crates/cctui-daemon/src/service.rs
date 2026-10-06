@@ -40,22 +40,6 @@ pub fn uninstall() -> Result<()> {
     }
 }
 
-/// Restart the daemon service if one is currently running.
-///
-/// Lets a freshly swapped binary take effect. Returns `Ok(true)` if a managed
-/// service was found and restarted, `Ok(false)` if none is active (the caller
-/// decides whether to re-exec or print a hint). Errors only if driving the
-/// service manager fails outright.
-pub fn restart_if_active() -> Result<bool> {
-    if cfg!(target_os = "macos") {
-        macos::restart_if_active()
-    } else if cfg!(target_os = "linux") {
-        linux::restart_if_active()
-    } else {
-        Ok(false)
-    }
-}
-
 /// Explicitly restart the daemon service (the `service restart` subcommand).
 /// Errors if the service manager rejects the request (e.g. no unit installed).
 pub fn restart() -> Result<()> {
@@ -217,14 +201,6 @@ mod linux {
             .args(["--user", "is-active", "--quiet", UNIT_NAME])
             .status()
             .is_ok_and(|s| s.success())
-    }
-
-    pub fn restart_if_active() -> Result<bool> {
-        if !is_active() {
-            return Ok(false);
-        }
-        systemctl(&["restart", UNIT_NAME])?;
-        Ok(true)
     }
 
     pub fn restart() -> Result<()> {
@@ -389,15 +365,6 @@ mod macos {
         is_loaded(PLIST_LABEL)
     }
 
-    pub fn restart_if_active() -> Result<bool> {
-        if !is_loaded(PLIST_LABEL) {
-            return Ok(false);
-        }
-        // `kickstart -k` kills the running instance and starts it fresh.
-        run("launchctl", &["kickstart", "-k", &service_target(PLIST_LABEL)])?;
-        Ok(true)
-    }
-
     const LOG_TAIL_LINES: usize = 40;
 
     /// `launchctl print` for the agent (with its `last exit …` lines echoed
@@ -465,6 +432,14 @@ mod tests {
         assert!(
             UNIT_TEMPLATE.lines().any(|l| l.trim() == "OOMPolicy=continue"),
             "an OOM-killed agent tool must not stop the unit and kill every session:\n{UNIT_TEMPLATE}"
+        );
+    }
+
+    #[test]
+    fn reload_re_execs_in_place_instead_of_restarting() {
+        assert!(
+            UNIT_TEMPLATE.lines().any(|l| l.trim() == "ExecReload=/bin/kill -HUP $MAINPID"),
+            "`systemctl --user reload` must hand off to the SIGHUP re-exec:\n{UNIT_TEMPLATE}"
         );
     }
 

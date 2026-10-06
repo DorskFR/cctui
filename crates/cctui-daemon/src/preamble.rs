@@ -166,7 +166,7 @@ mod tests {
         let session = format!("test-{}", uuid::Uuid::new_v4());
         let items = vec![item("memory", "House style", "be terse")];
         let notice = stage_context(&session, &items).expect("a notice");
-        let path = std::path::Path::new("/tmp/cctui-uploads").join(&session).join("context.md");
+        let path = crate::adapters::uploads::session_dir(&session).join("context.md");
         assert!(notice.contains(&path.to_string_lossy().into_owned()), "{notice}");
         assert!(std::fs::read_to_string(&path).unwrap().contains("be terse"));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -188,7 +188,7 @@ mod tests {
         assert!(block.starts_with("<session-context>\n"), "{block}");
         assert!(block.ends_with("</session-context>"), "{block}");
         assert!(block.contains("context: 1 attached"), "{block}");
-        let _ = std::fs::remove_dir_all(std::path::Path::new("/tmp/cctui-uploads").join(&session));
+        crate::adapters::uploads::remove_session_dir(&session);
     }
 
     #[test]

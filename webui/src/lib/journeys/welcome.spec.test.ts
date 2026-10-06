@@ -33,10 +33,13 @@ describe('welcome spec', () => {
 			'to-sessions',
 			'sessions',
 			'start',
+			'to-settings',
 			'to-accounts',
+			'to-accounts-mobile',
 			'accounts',
-			'to-access',
-			'access',
+			'to-users',
+			'to-users-mobile',
+			'users',
 			'settings',
 			'guides'
 		]);
@@ -46,12 +49,26 @@ describe('welcome spec', () => {
 		// Only the closing hop to the guides page declares a route; every other
 		// screen is reached by the user clicking the nav item the step points at.
 		const hops = pub.steps.filter((s) => s.id.startsWith('to-'));
-		for (const hop of hops) expect(hop.target, hop.id).toBe(`nav[${hop.id.slice(3)}]`);
-		expect(hops.map((s) => s.id)).toEqual(['to-sessions', 'to-accounts', 'to-access']);
+		expect(hops.map((s) => [s.id, s.target])).toEqual([
+			['to-sessions', 'nav[sessions]'],
+			['to-settings', 'nav[settings]'],
+			['to-accounts', 'settings-nav[accounts]'],
+			['to-accounts-mobile', 'settings-tab[accounts]'],
+			['to-users', 'settings-nav[users]'],
+			['to-users-mobile', 'settings-tab[users]']
+		]);
+		expect(hops.filter((s) => s.id.endsWith('-mobile')).map((s) => s.when)).toEqual([
+			{ viewport: 'mobile' },
+			{ viewport: 'mobile' }
+		]);
 		for (const hop of hops) expect(hop.do.kind, hop.id).toBe('click');
 		expect(pub.steps.slice(1).filter((s) => s.route !== undefined).map((s) => s.id)).toEqual([
 			'guides'
 		]);
+	});
+
+	it('lets Enter advance every step, clicking the target still works on a hop', () => {
+		for (const step of pub.steps) expect(step.guide, step.id).toBe('next');
 	});
 
 	it('marks no step optional, which guide mode cannot honour anyway', () => {

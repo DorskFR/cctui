@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { updated } from '$app/state';
 	import { ws } from '$lib/ws.svelte';
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
 	import { setUploadCaps } from '$lib/uploadCaps.svelte';
-	import { releaseChannel } from '$lib/releaseChannel';
+	import { releaseChannel, versionLine } from '$lib/releaseChannel';
+	import { MediaQuery } from 'svelte/reactivity';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { fontScale } from '$lib/fontscale.svelte';
@@ -20,14 +20,7 @@
 import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	import ProviderStatusDot from '$lib/components/molecules/ProviderStatusDot.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
-	import {
-		DEFAULT_SETTINGS_PAGE,
-		settingsHref
-	} from '$lib/components/organisms/settings/settings.logic';
 	import { m } from '$lib/paraglide/messages';
-
-	const GUIDES_HREF = settingsHref('guides');
-	const SETTINGS_HREF = settingsHref(DEFAULT_SETTINGS_PAGE);
 
 	const version = useVersion();
 	const me = useMe();
@@ -110,7 +103,23 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		if (d.fontScale !== f) settings.setDisplay({ fontScale: f });
 	});
 
+	// Below the nav breakpoint `.vers` is hidden, so the menu carries the version.
+	const narrow = new MediaQuery('(max-width: 47.999rem)');
+	const srvVersion = $derived(version.data?.version);
 	const userMenu = $derived<MenuItem[]>([
+		...(narrow.current
+			? [
+					{
+						label: versionLine(__CLIENT_VERSION__, srvVersion),
+						icon: 'git-commit' as const,
+						disabled: true,
+						tag:
+							releaseChannel(srvVersion ?? __CLIENT_VERSION__) === 'beta'
+								? m.release_channel_beta()
+								: undefined
+					}
+				]
+			: []),
 		...(latest
 			? [
 					{
@@ -128,12 +137,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 			pressed: notify.enabled,
 			onselect: () => void toggleNotify()
 		},
-		{
-			label: m.nav_getting_started(),
-			icon: 'life-buoy' as const,
-			onselect: () => void goto(GUIDES_HREF)
-		},
-		{ label: m.nav_settings(), icon: 'settings' as const, onselect: () => void goto(SETTINGS_HREF) },
 		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
 	]);
 </script>
@@ -326,7 +329,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	/* ui / srv stacked in one column: two lines cost no more width than one, so
 	   the block never has to compete with the nav for room. It cannot wrap, so
 	   below the nav breakpoint it goes away entirely rather than run under the
-	   account cluster — both versions stay readable in Settings › Instance. */
+	   account cluster, and the account menu shows the version instead. */
 	.vers {
 		display: none;
 		flex-direction: column;

@@ -278,6 +278,7 @@ mod tests {
         for tool in [
             crate::mcp::TOOL_NAME,
             crate::mcp::USAGE_TOOL_NAME,
+            crate::mcp::ARCHIVE_TOOL_NAME,
             crate::mcp::PEERS_TOOL_NAME,
             crate::mcp::SEND_TOOL_NAME,
             crate::mcp::HISTORY_TOOL_NAME,

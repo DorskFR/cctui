@@ -70,9 +70,9 @@ pub async fn spawn_session(
 
     // Draft: stage the spawn payload as a `draft` session row and stop
     // — no env minted, no daemon dispatch, no model turn. Launched later via
-    // `POST /sessions/{id}/launch`.
+    // `POST /sessions/{id}/launch`, which re-reads the files from the blob store.
     if req.save_draft {
-        return save_draft(&state, &ctx, &req).await;
+        return save_draft(&state, &ctx, &req, &parsed.raw).await;
     }
 
     dispatch_spawn(&state, &ctx, req, uploads, parsed.raw)
@@ -134,6 +134,14 @@ fn spawn_ids(adapter_id: &str, command_id: Uuid) -> (Option<Uuid>, Uuid) {
     (pre_session_id, pre_session_id.unwrap_or(command_id))
 }
 
+fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
+    let id = requested.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("claude-code");
+    if crate::routes::gateway::Family::try_from_adapter(id).is_none() {
+        return Err(format!("unknown adapter {id:?}"));
+    }
+    Ok(id.to_owned())
+}
+
 async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -151,7 +159,7 @@ async fn validate_spawn(
 
     let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
-    let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
+    let adapter_id = spawn_adapter(req.adapter_id.as_deref()).map_err(bad_request)?;
     let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
@@ -899,12 +907,14 @@ pub async fn resolve_owned_machine(
 
 /// Persist a spawn payload as a `draft` session row. No env is stored
 /// (re-entered at launch), no daemon dispatch happens, and the row is excluded
-/// from liveness/reaping via its sticky `draft` status. Returns the new draft
-/// session id in `command_id` with `status = "draft"`.
+/// from liveness/reaping via its sticky `draft` status. Attached files are kept
+/// in the blob store under the draft id so the launch can stage them. Returns
+/// the new draft session id in `command_id` with `status = "draft"`.
 async fn save_draft(
     state: &AppState,
     ctx: &AuthContext,
     req: &SpawnRequest,
+    uploads: &[crate::uploads::RawUpload],
 ) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
     let (machine_uuid, _) = resolve_owned_machine(state, ctx, &req.machine_id)
         .await
@@ -944,8 +954,17 @@ async fn save_draft(
     .execute(&state.pool)
     .await?;
 
-    crate::spawn_labels::sync_draft(&state.pool, &draft_id.to_string(), &req.label_ids).await;
-    tracing::info!(machine = %req.machine_id, draft = %draft_id, "draft session saved");
+    let draft_key = draft_id.to_string();
+    if !uploads.is_empty() {
+        crate::routes::attachments::record_uploads(&state.pool, &draft_key, uploads, &[])
+            .await
+            .map_err(|e| {
+                tracing::error!(draft = %draft_key, "recording draft attachments: {e}");
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
+            })?;
+    }
+    crate::spawn_labels::sync_draft(&state.pool, &draft_key, &req.label_ids).await;
+    tracing::info!(machine = %req.machine_id, draft = %draft_id, files = uploads.len(), "draft session saved");
     Ok((
         StatusCode::CREATED,
         Json(SpawnResponse {
@@ -1008,12 +1027,17 @@ pub async fn launch_stored_draft(
         }
     }
 
-    let outcome = dispatch_spawn(state, ctx, req, Vec::new(), Vec::new())
+    let (uploads, raw_uploads) =
+        load_draft_uploads(&state.pool, session_id, &req.attachment_names).await?;
+    req.attachment_names.clear();
+
+    let outcome = dispatch_spawn(state, ctx, req, uploads, raw_uploads)
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
 
     // Drop the draft only after a successful dispatch; the live session is born
-    // from the daemon's registration with its own id.
+    // from the daemon's registration with its own id. The `sessions` delete
+    // trigger drops the draft's attachment rows with it.
     if let Err(e) = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
         .bind(session_id)
         .execute(&state.pool)
@@ -1023,6 +1047,110 @@ pub async fn launch_stored_draft(
     }
     tracing::info!(draft = %session_id, "draft launched");
     Ok(outcome)
+}
+
+/// The draft's stored files, re-read from the blob store in the shape
+/// [`dispatch_spawn`] takes, so the launched session stages and records them
+/// exactly like a direct spawn. `expected` are the names the draft payload
+/// references: any of them absent from the store fails the launch rather than
+/// spawning a prompt that points at files the worker never gets.
+pub async fn load_draft_uploads(
+    pool: &sqlx::PgPool,
+    draft_id: &str,
+    expected: &[String],
+) -> Result<(Vec<cctui_proto::adapter::BootstrapFile>, Vec<crate::uploads::RawUpload>), AppError> {
+    use base64::Engine;
+    let rows = crate::routes::attachments::list_session_attachments(pool, draft_id).await?;
+    let missing: Vec<&str> = expected
+        .iter()
+        .filter(|n| !rows.iter().any(|r| r.name == **n))
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        return Err(AppError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "draft attachments missing from storage: {}; re-attach them and save the draft",
+                missing.join(", ")
+            ),
+        ));
+    }
+    let mut uploads = Vec::with_capacity(rows.len());
+    let mut raw = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some((_, bytes)) =
+            crate::routes::blobs::fetch_session_blob(pool, draft_id, &row.hash).await?
+        else {
+            return Err(AppError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!(
+                    "draft attachment {:?} has no stored content; re-attach it and save the draft",
+                    row.name
+                ),
+            ));
+        };
+        uploads.push(cctui_proto::adapter::BootstrapFile {
+            name: row.name.clone(),
+            content_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        });
+        raw.push(crate::uploads::RawUpload {
+            name: row.name,
+            bytes: bytes.into(),
+            content_type: row.content_type,
+        });
+    }
+    Ok((uploads, raw))
+}
+
+/// `PUT /api/v1/sessions/{id}/draft-attachments` — `multipart/form-data`.
+///
+/// Replace a draft's stored files with the parts of this request (same shape
+/// and caps as `/sessions/spawn`; no file parts clears them). The webui sends
+/// it only when the form's file set changed since the last save, so
+/// `PUT /sessions/{id}/draft` stays a cheap JSON body.
+pub async fn put_draft_attachments(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    multipart: Multipart,
+) -> Result<Json<Vec<crate::routes::attachments::SessionAttachment>>, AppError> {
+    let parsed = parse_upload_multipart(multipart, cached_upload_caps(&state))
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+        .bind(&session_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    let Some(status) = status else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
+    };
+    if SessionRowStatus::parse(&status) != Some(SessionRowStatus::Draft) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "session is not a draft"));
+    }
+    let rows =
+        replace_draft_attachments(&state.pool, &session_id, &parsed.raw).await.map_err(|e| {
+            tracing::error!(draft = %session_id, "replacing draft attachments: {e}");
+            AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
+        })?;
+    tracing::info!(draft = %session_id, files = rows.len(), "draft attachments replaced");
+    Ok(Json(rows))
+}
+
+/// Swap a draft's attachment rows for `uploads` in one transaction. Blobs are
+/// content-addressed and shared, so only the rows go.
+pub async fn replace_draft_attachments(
+    pool: &sqlx::PgPool,
+    draft_id: &str,
+    uploads: &[crate::uploads::RawUpload],
+) -> Result<Vec<crate::routes::attachments::SessionAttachment>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM session_attachments WHERE session_id = $1")
+        .bind(draft_id)
+        .execute(&mut *tx)
+        .await?;
+    let rows =
+        crate::routes::attachments::record_uploads_in(&mut tx, draft_id, uploads, &[]).await?;
+    tx.commit().await?;
+    Ok(rows)
 }
 
 /// `POST /api/v1/sessions/{id}/schedule-launch`. Queue a draft to launch at
@@ -1156,19 +1284,217 @@ pub async fn stage_session_files(
 
 /// Poll endpoint superseded by WS push; answers an empty list so polling
 /// clients don't get a 404.
+/// Draining the queue consumes it, so only the machine's owner may poll it.
 pub async fn get_machine_commands(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(machine_id): Path<String>,
-) -> Json<Vec<MachineCommand>> {
+) -> Result<Json<Vec<MachineCommand>>, AppError> {
+    let owned = match Uuid::parse_str(&machine_id) {
+        Ok(id) => {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM machines WHERE id = $1 AND user_id = $2)",
+            )
+            .bind(id)
+            .bind(ctx.user_id)
+            .fetch_one(&state.pool)
+            .await?
+        }
+        Err(_) => false,
+    };
+    if !owned {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
+    }
     let commands = {
         let mut registry = state.registry.write().await;
         registry.take_machine_commands(&machine_id)
     };
-    Json(commands)
+    Ok(Json(commands))
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::http::StatusCode;
+    use base64::Engine;
+
+    #[tokio::test]
+    async fn only_the_owner_drains_a_machine_queue() {
+        use axum::extract::{Path, State};
+        use axum::{Extension, Json};
+
+        let Some(url) =
+            crate::routes::gateway::test_db_url("only_the_owner_drains_a_machine_queue")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let (owner, other, machine) =
+            (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for uid in [owner, other] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("mq-{uid}"))
+                .bind(format!("hmq-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(owner)
+            .bind(format!("mkmq-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state = crate::state::AppState::for_test(pool);
+        state.registry.write().await.queue_machine_command(
+            &machine.to_string(),
+            "noop",
+            serde_json::Value::Null,
+        );
+        let caller = |user_id| crate::auth::AuthContext {
+            user_id,
+            key_id: uuid::Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::iter::once(crate::auth::Scope::Read).collect(),
+        };
+
+        let denied = super::get_machine_commands(
+            State(state.clone()),
+            Extension(caller(other)),
+            Path(machine.to_string()),
+        )
+        .await;
+        assert!(denied.is_err(), "another user must not drain the queue");
+
+        let Json(drained) = super::get_machine_commands(
+            State(state),
+            Extension(caller(owner)),
+            Path(machine.to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(drained.len(), 1, "the refused poll left the command queued");
+    }
+
+    fn upload(name: &str, bytes: &[u8]) -> crate::uploads::RawUpload {
+        crate::uploads::RawUpload {
+            name: name.to_owned(),
+            bytes: axum::body::Bytes::copy_from_slice(bytes),
+            content_type: None,
+        }
+    }
+
+    async fn seed_draft(pool: &sqlx::PgPool) -> String {
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'draft-att', $2)")
+            .bind(uid)
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        let sid = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, adapter_id, status) \
+             VALUES ($1, $2, '/w', $3, $4, 'claude-code', 'draft')",
+        )
+        .bind(&sid)
+        .bind(machine.to_string())
+        .bind(uid)
+        .bind(machine)
+        .execute(pool)
+        .await
+        .unwrap();
+        sid
+    }
+
+    #[tokio::test]
+    async fn a_launch_reads_the_drafts_files_back_as_spawn_uploads() {
+        let Some(url) = crate::routes::gateway::test_db_url("draft_attachments_launch") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let draft = seed_draft(&pool).await;
+        let note = format!("draft note {draft}");
+        crate::routes::attachments::record_uploads(
+            &pool,
+            &draft,
+            &[
+                upload("note.md", note.as_bytes()),
+                upload("shot.png", &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1]),
+            ],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let names = ["note.md".to_owned(), "shot.png".to_owned()];
+        let (uploads, raw) = super::load_draft_uploads(&pool, &draft, &names).await.unwrap();
+        assert_eq!(uploads.len(), 2);
+        assert_eq!(raw.len(), 2);
+        assert_eq!(uploads[0].name, "note.md");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(&uploads[0].content_b64).unwrap(),
+            note.as_bytes(),
+            "the daemon decodes the same bytes the form attached"
+        );
+        assert_eq!(raw[1].name, "shot.png");
+        assert_eq!(raw[1].content_type.as_deref(), Some("image/png"));
+
+        let Err(crate::error::AppError::Status(code, msg)) =
+            super::load_draft_uploads(&pool, &draft, &["gone.txt".to_owned()]).await
+        else {
+            panic!("a referenced file the store lacks must fail the launch");
+        };
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(msg.contains("gone.txt"), "{msg}");
+
+        let rows = super::replace_draft_attachments(&pool, &draft, &[upload("only.txt", b"x")])
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let listed =
+            crate::routes::attachments::list_session_attachments(&pool, &draft).await.unwrap();
+        assert_eq!(listed.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["only.txt"]);
+        let (uploads, _) = super::load_draft_uploads(&pool, &draft, &[]).await.unwrap();
+        assert_eq!(uploads.len(), 1, "a draft with no listed names still ships what it stored");
+
+        super::replace_draft_attachments(&pool, &draft, &[]).await.unwrap();
+        assert!(
+            crate::routes::attachments::list_session_attachments(&pool, &draft)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let (uploads, raw) = super::load_draft_uploads(&pool, &draft, &[]).await.unwrap();
+        assert!(uploads.is_empty() && raw.is_empty());
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&draft)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn spawn_refuses_an_adapter_with_no_family() {
+        assert_eq!(super::spawn_adapter(None).unwrap(), "claude-code");
+        assert_eq!(super::spawn_adapter(Some(" ")).unwrap(), "claude-code");
+        for adapter in ["claude-code", "codex", "opencode"] {
+            assert_eq!(super::spawn_adapter(Some(adapter)).unwrap(), adapter);
+        }
+        assert!(super::spawn_adapter(Some("gemini")).is_err());
+    }
+
     #[test]
     fn every_spawn_hands_the_daemon_the_key_its_token_is_bound_to() {
         let command_id = uuid::Uuid::new_v4();

@@ -18,7 +18,7 @@ An agent waiting on an answer stops making progress until you reply. That is why
 
 **The nav is the whole app**
 
-Six destinations, and you will live in the second one. Open Sessions.
+Every page hangs off this rail. Sessions is where most of the work happens — open it.
 
 ![sessions](desktop-dark/04-sessions.png)
 
@@ -34,13 +34,13 @@ This turns a prompt into a running agent: pick the machine, the folder and the a
 
 ![accounts](desktop-dark/06-accounts.png)
 
-**Accounts — the credentials work runs on**
+**AI accounts — the credentials work runs on**
 
 Provider accounts can be grouped into pools, and a session can draw from a pool rather than one fixed account, so one hitting a rate limit steps aside instead of stalling the queue.
 
 ![access](desktop-dark/07-access.png)
 
-**Access — what may run work**
+**Users & keys — who may run work**
 
 Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open.
 
@@ -68,7 +68,7 @@ An agent waiting on an answer stops making progress until you reply. That is why
 
 **The nav is the whole app**
 
-Six destinations, and you will live in the second one. Open Sessions.
+Every page hangs off this rail. Sessions is where most of the work happens — open it.
 
 ![sessions](mobile-dark/04-sessions.png)
 
@@ -84,13 +84,13 @@ This turns a prompt into a running agent: pick the machine, the folder and the a
 
 ![accounts](mobile-dark/06-accounts.png)
 
-**Accounts — the credentials work runs on**
+**AI accounts — the credentials work runs on**
 
 Provider accounts can be grouped into pools, and a session can draw from a pool rather than one fixed account, so one hitting a rate limit steps aside instead of stalling the queue.
 
 ![access](mobile-dark/07-access.png)
 
-**Access — what may run work**
+**Users & keys — who may run work**
 
 Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open.
 

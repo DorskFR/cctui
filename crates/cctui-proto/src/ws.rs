@@ -448,6 +448,10 @@ pub enum AgentEvent {
         /// `server_tool_use` for provider-executed tools.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        /// The harness's call id; its result carries the same one. Absent from
+        /// daemons and rows that predate it, where pairing falls back to order.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
@@ -462,6 +466,9 @@ pub enum AgentEvent {
         /// `server_tool_result` for provider-executed tools.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        /// Id of the `tool_call` this result answers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
         #[serde(default)]
         error: bool,
         ts: i64,
@@ -849,6 +856,7 @@ mod tests {
             tool: "AskUserQuestion".into(),
             input: serde_json::json!({}),
             kind: None,
+            tool_use_id: None,
             ts: 100, // ties, and flushed late
             seq: Some(2),
         };
@@ -894,12 +902,22 @@ mod tests {
             tool: "Bash".into(),
             input: serde_json::json!({"command": "ls"}),
             kind: None,
+            tool_use_id: Some("toolu_1".into()),
             ts: 42,
             seq: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"tool_call""#));
         assert!(json.contains(r#""tool":"Bash""#));
+        assert!(json.contains(r#""tool_use_id":"toolu_1""#));
+    }
+
+    #[test]
+    fn a_tool_event_without_an_id_decodes_and_reencodes_without_one() {
+        let wire = r#"{"type":"tool_call","tool":"Bash","input":{},"ts":1}"#;
+        let event: AgentEvent = serde_json::from_str(wire).expect("an old daemon's call decodes");
+        assert!(matches!(&event, AgentEvent::ToolCall { tool_use_id: None, .. }));
+        assert!(!serde_json::to_string(&event).unwrap().contains("tool_use_id"));
     }
 
     /// The shape the server actually serves for a persisted result, verbatim
@@ -927,6 +945,7 @@ mod tests {
             tool: "Bash".into(),
             output_summary: "file.txt".into(),
             kind: None,
+            tool_use_id: Some("toolu_1".into()),
             error: false,
             ts: 42,
             seq: None,
@@ -934,6 +953,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"tool_result""#));
         assert!(json.contains(r#""output_summary":"file.txt""#));
+        assert!(json.contains(r#""tool_use_id":"toolu_1""#));
     }
 
     #[test]
@@ -968,6 +988,7 @@ mod tests {
                 tool: "Read".into(),
                 input: serde_json::json!({}),
                 kind: None,
+                tool_use_id: Some("toolu_2".into()),
                 ts: 2,
                 seq: None,
             },
@@ -975,6 +996,7 @@ mod tests {
                 tool: "Read".into(),
                 output_summary: "ok".into(),
                 kind: Some("server_tool_result".into()),
+                tool_use_id: Some("toolu_2".into()),
                 error: true,
                 ts: 3,
                 seq: None,

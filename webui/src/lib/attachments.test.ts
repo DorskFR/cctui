@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
 	appendFileTokens,
 	attachFiles,
+	insertTokens,
+	supportsAttachments,
+	legacyMarkersToNames,
+	removeFileToken,
 	DEFAULT_UPLOAD_CAPS,
 	extForType,
 	fileCapError,
@@ -9,6 +13,8 @@ import {
 	mergeFiles,
 	mergeFilesRenamed,
 	nextPasteIndex,
+	maskedPaste,
+	PASTE_MASK_CHARS,
 	prefixImageTokens,
 	rewriteFileTokens
 } from './attachments';
@@ -61,7 +67,7 @@ describe('mergeFiles', () => {
 
 describe('attachFiles', () => {
 	it('rewrites the token to the renamed file', () => {
-		const { files, text } = attachFiles([f('a.txt')], '[a.txt]', [f('a.txt')]);
+		const { files, text } = attachFiles([f('a.txt')], '[a.txt]', [f('a.txt')], 'name');
 		expect(files.map((x) => x.name)).toEqual(['a.txt', 'a-2.txt']);
 		expect(text).toBe('[a.txt] [a-2.txt]');
 	});
@@ -73,10 +79,61 @@ describe('attachFiles', () => {
 	});
 });
 
+describe('file name tokens', () => {
+	it('marks each attached file with its name at the caret', () => {
+		const shots = [1, 2].map((i) => f(`Screenshot 2026-10-02 at 11.3${i}.22.png`));
+		const { files, text, caret } = attachFiles([], 'before after', shots, 'name', 6);
+		expect(files).toHaveLength(2);
+		const tokens = '[Screenshot 2026-10-02 at 11.31.22.png] [Screenshot 2026-10-02 at 11.32.22.png]';
+		expect(text).toBe(`before ${tokens} after`);
+		expect(caret).toBe(`before ${tokens}`.length);
+	});
+
+	it('names a renamed duplicate by its new name and appends without a caret', () => {
+		const { text } = attachFiles([f('a.png')], 'see [a.png]', [f('a.png')]);
+		expect(text).toBe('see [a.png] [a-2.png]');
+	});
+
+	it("drops a removed file's token and leaves the others", () => {
+		expect(removeFileToken('a [x.png] b [y.png]', 'x.png')).toBe('a b [y.png]');
+		expect(removeFileToken('[x.png] text', 'x.png')).toBe('text');
+	});
+
+	it("turns an older draft's numbered markers into names", () => {
+		expect(legacyMarkersToNames('second [#2] then [📎1]', ['a.png', 'b.png'])).toBe(
+			'second [b.png] then [a.png]'
+		);
+		expect(legacyMarkersToNames('stray [#9] here', ['a.png'])).toBe('stray here');
+	});
+});
+
+describe('insertTokens', () => {
+	it('pads the tokens off the words around the caret', () => {
+		expect(insertTokens('ab', ['[t]'], 1)).toEqual({ text: 'a [t] b', caret: 5 });
+		expect(insertTokens('a ', ['[t]'], 2)).toEqual({ text: 'a [t]', caret: 5 });
+		expect(insertTokens('', ['[t]', '[u]'])).toEqual({ text: '[t] [u]', caret: 7 });
+	});
+});
+
+describe('maskedPaste', () => {
+	it('collapses a long paste into the next paste-N.txt', async () => {
+		const text = 'y'.repeat(PASTE_MASK_CHARS);
+		const file = maskedPaste(text, [f('paste-1.txt')], '');
+		expect(file?.name).toBe('paste-2.txt');
+		expect(file?.type).toBe('text/plain');
+		expect(await file?.text()).toBe(text);
+	});
+
+	it('leaves a short or empty paste alone', () => {
+		expect(maskedPaste('y'.repeat(PASTE_MASK_CHARS - 1), [], '')).toBeNull();
+		expect(maskedPaste('', [], '')).toBeNull();
+	});
+});
+
 describe('nextPasteIndex', () => {
 	const paste = (files: File[], text: string) => {
 		const name = `paste-${nextPasteIndex(files, text)}.txt`;
-		return attachFiles(files, text, [f(name)]);
+		return attachFiles(files, text, [f(name)], 'name');
 	};
 
 	it('numbers consecutive pastes paste-1, paste-2', () => {
@@ -224,5 +281,13 @@ describe('prefixImageTokens', () => {
 
 	it('leaves a body without images untouched', () => {
 		expect(prefixImageTokens('hi', [f('a.txt')], ['/tmp/a.txt'])).toBe('hi');
+	});
+});
+
+describe('supportsAttachments', () => {
+	it('accepts every staging harness and refuses unknown ones', () => {
+		for (const a of ['claude-code', 'codex', 'opencode']) expect(supportsAttachments(a)).toBe(true);
+		expect(supportsAttachments('gemini')).toBe(false);
+		expect(supportsAttachments(null)).toBe(false);
 	});
 });

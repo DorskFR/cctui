@@ -1,8 +1,8 @@
 use super::{
     AdapterEvent, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
-    JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, StateJson, agent_relay_config,
+    JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, SpawnWatchdog, StateJson, agent_relay_config,
     build_session_context, detect_whip_from_settings, dispatch_done, ensure_hook_settings, json,
-    launch, mpsc, resolve_launch_env_for, socket, stage_uploads, transcript,
+    launch, mpsc, resolve_launch_env_for, socket, transcript,
 };
 
 impl Driver {
@@ -395,9 +395,10 @@ impl Driver {
         .map(|p| p.to_string_lossy().into_owned());
         // A staging failure is fatal: silently dropping an attachment the user
         // expects the worker to read would be worse.
-        let staged = stage_uploads(session_id, &spec.bootstrap).inspect_err(|_| {
-            crate::configsweep::remove_session_files(short);
-        })?;
+        let staged = crate::adapters::uploads::stage_bootstrap(session_id, &spec.bootstrap)
+            .inspect_err(|_| {
+                crate::configsweep::remove_session_files(short);
+            })?;
         let session_context = build_session_context(
             spec,
             cwd,
@@ -427,6 +428,10 @@ impl Driver {
             what: format!("spawn in {cwd}"),
             session_id: ids.session_id.clone(),
             gate,
+            watchdog: Some(
+                SpawnWatchdog::new(self.cfg.jobs_root.clone())
+                    .with_server(self.server.as_ref().map(|s| s.base_url().to_owned())),
+            ),
         })
     }
 
@@ -611,14 +616,21 @@ impl Driver {
             what: format!("fork of {parent_local_id} in {cwd}"),
             session_id: ids.session_id.clone(),
             gate: self.launch_gate(&ids.session_id, &ids.short, spec.model.as_deref()),
+            watchdog: Some(
+                SpawnWatchdog::new(self.cfg.jobs_root.clone())
+                    .with_server(self.server.as_ref().map(|s| s.base_url().to_owned())),
+            ),
         })
     }
 }
 
 impl DeferredDispatch {
-    /// Send the dispatch and await the daemon's reply. An `ok:false` reply or
-    /// a silent daemon (see [`socket::ONE_SHOT_TIMEOUT`]) is an error, and the
-    /// worker's managed config files are swept so nothing dangles.
+    /// Send the dispatch, await the daemon's reply, then wait for the worker to
+    /// actually start. An `ok:false` reply or a silent daemon (see
+    /// [`socket::ONE_SHOT_TIMEOUT`]) is an error, and the worker's managed
+    /// config files are swept so nothing dangles. A worker that never appears
+    /// is an error carrying the claude-daemon log tail; its config files are
+    /// kept, since the worker may still come up late.
     pub async fn send(self) -> anyhow::Result<()> {
         if let Some(gate) = &self.gate {
             gate.run().await;
@@ -628,6 +640,13 @@ impl DeferredDispatch {
             .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
             .with_context(|| format!("dispatch {}", self.what))?;
         tracing::info!(?resp, session_id = %self.session_id, "{} dispatched via control socket", self.what);
+        if let Some(watchdog) = &self.watchdog {
+            if let Err(stall) = watchdog.confirm(&self.sock, &self.short).await {
+                tracing::warn!(session_id = %self.session_id, short = %self.short, "{stall}");
+                anyhow::bail!("{}: {stall}", self.what);
+            }
+            tracing::info!(session_id = %self.session_id, short = %self.short, "worker started");
+        }
         Ok(())
     }
 
@@ -788,6 +807,84 @@ mod tests {
             .expect("an outcome within the bound")
             .expect("an outcome");
         assert!(matches!(ev, AdapterEvent::CommandResult { ok: true, .. }), "{ev:?}");
+    }
+
+    /// A claude daemon that accepts every `dispatch` and answers `list` with
+    /// `listed` — so the worker either shows up in the roster or never does.
+    fn fake_daemon(listed: Vec<String>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cctui-wd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("d.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                let jobs: Vec<_> = listed.iter().map(|short| json!({ "short": short })).collect();
+                tokio::spawn(async move {
+                    let (r, mut w) = stream.into_split();
+                    let mut line = String::new();
+                    let mut reader = tokio::io::BufReader::new(r);
+                    tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.unwrap();
+                    let reply = if line.contains("\"list\"") {
+                        json!({ "ok": true, "op": "list", "jobs": jobs })
+                    } else {
+                        json!({ "ok": true })
+                    };
+                    let reply = format!("{reply}\n");
+                    tokio::io::AsyncWriteExt::write_all(&mut w, reply.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        sock
+    }
+
+    fn watched(sock: PathBuf, log: &Path) -> DeferredDispatch {
+        let mut dispatch = deferred(sock);
+        let jobs_root =
+            std::env::temp_dir().join(format!("cctui-wd-jobs-{}", uuid::Uuid::new_v4()));
+        dispatch.watchdog = Some(
+            SpawnWatchdog::new(jobs_root)
+                .with_bounds(Duration::from_millis(300), Duration::from_millis(20))
+                .with_logs(vec![log.to_path_buf()]),
+        );
+        dispatch
+    }
+
+    async fn command_result(rx: &mut mpsc::Receiver<AdapterEvent>) -> (bool, Option<String>) {
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("an outcome within the bound")
+            .expect("an outcome");
+        match ev {
+            AdapterEvent::CommandResult { ok, error, .. } => (ok, error),
+            other => panic!("expected a CommandResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_accepted_dispatch_whose_worker_never_starts_fails_with_the_log_tail() {
+        let log = std::env::temp_dir().join(format!("cctui-wd-{}.log", uuid::Uuid::new_v4()));
+        std::fs::write(&log, "supervisor up\nError: spawn claude ENOENT\n").unwrap();
+        let (tx, mut rx) = mpsc::channel(4);
+        watched(fake_daemon(Vec::new()), &log).run_detached(tx, Some(uuid::Uuid::new_v4()));
+        let (ok, error) = command_result(&mut rx).await;
+        assert!(!ok, "a dispatch the daemon merely accepted must not be reported launched");
+        let error = error.expect("a failure detail");
+        assert!(error.contains("spawn in /tmp"), "{error}");
+        assert!(error.contains("never started"), "{error}");
+        assert!(error.contains("Error: spawn claude ENOENT"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_accepted_dispatch_is_launched_once_the_worker_is_in_the_roster() {
+        let log = std::env::temp_dir().join(format!("cctui-wd-{}.log", uuid::Uuid::new_v4()));
+        let (tx, mut rx) = mpsc::channel(4);
+        let short = "abcd1234".to_owned();
+        let mut dispatch = watched(fake_daemon(vec![short.clone()]), &log);
+        dispatch.short = short;
+        dispatch.run_detached(tx, Some(uuid::Uuid::new_v4()));
+        let (ok, error) = command_result(&mut rx).await;
+        assert!(ok, "{error:?}");
     }
 
     #[test]

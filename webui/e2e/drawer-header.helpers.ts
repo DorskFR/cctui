@@ -1,10 +1,12 @@
 import { type Locator, type Page } from '@playwright/test';
+import { stubDrawer } from './drawer.fixture';
 
 export const WIDE = { width: 1280, height: 900 };
 export const NARROW = { width: 360, height: 800 };
 export const TINY = { width: 320, height: 640 };
 
 export async function openDrawer(page: Page, viewport: { width: number; height: number }) {
+	await stubDrawer(page);
 	await page.setViewportSize(viewport);
 	await page.goto('/sessions');
 	await page.locator('[data-journey="search"]').waitFor();

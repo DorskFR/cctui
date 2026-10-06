@@ -121,9 +121,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         )
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];
-    if let Some(cost) = super::spend::langfuse_span(app, &session.id) {
-        header_spans.push(cost);
-    }
     if let Some(filter) = app.filter.summary() {
         header_spans.push(Span::styled(format!(" ── ⛛ {filter}"), theme::dim()));
     }
@@ -474,7 +471,11 @@ fn render_result(
     error: bool,
     expanded: bool,
 ) -> Vec<Line<'static>> {
-    let marker = if error { "└ ✗ " } else { "└ " };
+    let base = if error { "└ ✗ " } else { "└ " };
+    let marker = line.answers.as_deref().map_or_else(
+        || base.to_owned(),
+        |tool| format!("{base}{}: ", transcript::display_tool_name(tool)),
+    );
     let marker_style = if error { theme::error() } else { ARROW };
     let body_style = if error { theme::error() } else { TOOL_RESULT_STYLE };
 
@@ -508,7 +509,7 @@ fn render_result(
     let shown = if expanded { body.len() } else { RESULT_PREVIEW_ROWS.min(body.len()) };
     let mut first = vec![
         Span::raw(ts),
-        Span::styled(marker.to_owned(), marker_style),
+        Span::styled(marker, marker_style),
         Span::styled(body[0].to_owned(), body_style),
     ];
     if shown < body.len() {
@@ -770,11 +771,11 @@ pub fn edit_diff(
         return None;
     }
 
-    let diff = similar::TextDiff::from_lines(old, new);
-    let unified = diff
-        .unified_diff()
-        .context_radius(2)
-        .header(&format!("a/{file_path}"), &format!("b/{file_path}"))
+    let unified = diffy::DiffOptions::new()
+        .set_context_len(2)
+        .set_original_filename(format!("a/{file_path}"))
+        .set_modified_filename(format!("b/{file_path}"))
+        .create_patch(old, new)
         .to_string();
 
     if unified.is_empty() {
@@ -852,6 +853,14 @@ mod tests {
         let mut line = ConversationLine::new(LineKind::Result { error }, text, 0);
         line.tool = Some("Bash".to_owned());
         line
+    }
+
+    #[test]
+    fn a_result_away_from_its_call_names_the_tool_it_answers() {
+        let mut line = result(false, "ok");
+        assert_eq!(rows(&line, false), ["└ ok"]);
+        line.answers = Some("Read".to_owned());
+        assert!(rows(&line, false)[0].starts_with("└ Read: ok"), "{:?}", rows(&line, false));
     }
 
     #[test]

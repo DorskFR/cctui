@@ -169,6 +169,166 @@ impl FireworksSettings {
     }
 }
 
+/// Why the gateway refused to forward a request path.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum GatewayPathError {
+    /// A `.`/`..` segment, raw or percent-encoded: it escapes the base path of
+    /// an upstream whose base carries one (`…/backend-api/codex`).
+    DotSegment,
+    /// An empty segment (`//`), which some upstreams collapse and others treat
+    /// as an absolute reset of the path.
+    EmptySegment,
+    /// Not a path this provider's harness calls.
+    NotAllowed,
+    /// The path is allowed, but not with this method.
+    MethodNotAllowed,
+}
+
+impl std::fmt::Display for GatewayPathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::DotSegment => "contains a relative path segment",
+            Self::EmptySegment => "contains an empty path segment",
+            Self::NotAllowed => "is not an API path this gateway forwards",
+            Self::MethodNotAllowed => "is not forwarded with this method",
+        })
+    }
+}
+
+/// One allowlist entry: the methods, the path, and whether subpaths match.
+struct PathRule {
+    methods: &'static [&'static str],
+    path: &'static str,
+    subpaths: bool,
+}
+
+const fn rule(methods: &'static [&'static str], path: &'static str, subpaths: bool) -> PathRule {
+    PathRule { methods, path, subpaths }
+}
+
+/// The inference API surface each harness actually calls through its gateway
+/// base url. Anything else is refused rather than forwarded with the account's
+/// credential: the upstreams behind these routes also serve account
+/// administration, and a worker holds only a session token.
+const fn rules(family: Family) -> &'static [PathRule] {
+    const ANTHROPIC: &[PathRule] = &[
+        rule(&["POST"], "/v1/messages", false),
+        rule(&["POST"], "/v1/messages/count_tokens", false),
+        rule(&["POST"], "/v1/complete", false),
+        rule(&["GET"], "/v1/models", true),
+    ];
+    const OPENAI: &[PathRule] = &[
+        rule(&["POST", "GET"], "/responses", true),
+        rule(&["POST"], "/chat/completions", false),
+        rule(&["POST"], "/completions", false),
+        rule(&["GET"], "/models", true),
+    ];
+    const FIREWORKS: &[PathRule] = &[
+        rule(&["POST"], "/chat/completions", false),
+        rule(&["POST"], "/completions", false),
+        rule(&["POST"], "/embeddings", false),
+        rule(&["GET"], "/models", true),
+    ];
+    match family {
+        Family::Anthropic => ANTHROPIC,
+        Family::Openai => OPENAI,
+        Family::Fireworks => FIREWORKS,
+    }
+}
+
+/// `CCTUI_GATEWAY_EXTRA_PATHS`: break-glass additions as `METHOD:/prefix`
+/// entries (`*` matches any method), should an upstream grow a path before this
+/// build can be updated.
+fn extra_paths() -> &'static [(String, String)] {
+    static EXTRA: std::sync::LazyLock<Vec<(String, String)>> = std::sync::LazyLock::new(|| {
+        std::env::var("CCTUI_GATEWAY_EXTRA_PATHS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|e| e.trim().split_once(':'))
+            .map(|(m, p)| (m.trim().to_ascii_uppercase(), p.trim().to_owned()))
+            .filter(|(_, p)| p.starts_with('/'))
+            .collect()
+    });
+    EXTRA.as_slice()
+}
+
+/// Percent-decode a path for validation only. Invalid escapes are left as the
+/// literal bytes they are, which is also how every upstream reads them.
+fn percent_decode(tail: &str) -> String {
+    let bytes = tail.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| char::from(b).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(hi), Some(lo)) =
+                (bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex))
+        {
+            out.push(u8::try_from(hi * 16 + lo).unwrap_or(b'_'));
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Reject anything that could resolve to a different upstream path than it
+/// reads as: dot segments and empty segments, raw or percent-encoded. A single
+/// trailing slash is tolerated.
+fn normalized_segments(tail: &str) -> Result<(), GatewayPathError> {
+    let body = tail.strip_suffix('/').unwrap_or(tail);
+    for seg in body.split('/').skip(1) {
+        if seg.is_empty() {
+            return Err(GatewayPathError::EmptySegment);
+        }
+        if seg == "." || seg == ".." {
+            return Err(GatewayPathError::DotSegment);
+        }
+    }
+    Ok(())
+}
+
+/// Whether the gateway may forward `method tail` to `family`'s upstream.
+/// `tail` is the request path with the `/gateway/<family>` prefix already
+/// stripped, exactly as it will be appended to the upstream base.
+pub fn gateway_path_permitted(
+    family: Family,
+    method: &str,
+    tail: &str,
+) -> Result<(), GatewayPathError> {
+    let unsafe_bytes = |p: &str| p.bytes().any(|b| b == b'\\' || b.is_ascii_control());
+    if !tail.starts_with('/') || unsafe_bytes(tail) {
+        return Err(GatewayPathError::NotAllowed);
+    }
+    normalized_segments(tail)?;
+    let decoded = percent_decode(tail);
+    if unsafe_bytes(&decoded) {
+        return Err(GatewayPathError::NotAllowed);
+    }
+    normalized_segments(&decoded)?;
+
+    let method = method.to_ascii_uppercase();
+    let path = decoded.strip_suffix('/').unwrap_or(&decoded);
+    let matches = |rule_path: &str, subpaths: bool| {
+        path == rule_path || (subpaths && path.starts_with(&format!("{rule_path}/")))
+    };
+    if extra_paths().iter().any(|(m, p)| (m.as_str() == "*" || *m == method) && matches(p, true)) {
+        return Ok(());
+    }
+    let mut path_known = false;
+    for r in rules(family) {
+        if matches(r.path, r.subpaths) {
+            if r.methods.contains(&method.as_str()) {
+                return Ok(());
+            }
+            path_known = true;
+        }
+    }
+    Err(if path_known { GatewayPathError::MethodNotAllowed } else { GatewayPathError::NotAllowed })
+}
+
 /// The provider *family* of an account: which env vars it drives, and the key
 /// `UNIQUE (account_id, family)` enforces one credential per. `fireworks` is its
 /// own family — despite the `OpenAI` wire protocol — so a Fireworks key can sit
@@ -204,18 +364,37 @@ impl Family {
             _ => None,
         }
     }
-    /// Derive the family from a spawn adapter id (`codex*` → openai,
-    /// `opencode*` → fireworks, else anthropic). This IS the spawn resolution
+    /// Derive the family from a spawn adapter id (`opencode*` → fireworks,
+    /// `codex*` → openai, `claude*` → anthropic). This IS the spawn resolution
     /// key: the adapter names the harness family, and the account identity
     /// carries at most one provider row per family.
-    pub fn from_adapter(adapter_id: &str) -> Self {
-        if adapter_id.starts_with("opencode") {
-            Self::Fireworks
-        } else if adapter_id.starts_with("codex") {
-            Self::Openai
+    ///
+    /// Fail-closed: an adapter id that names no known harness yields `None`
+    /// rather than silently binding an Anthropic credential to it.
+    pub fn try_from_adapter(adapter_id: &str) -> Option<Self> {
+        let id = adapter_id.trim();
+        if id.starts_with("opencode") {
+            Some(Self::Fireworks)
+        } else if id.starts_with("codex") {
+            Some(Self::Openai)
+        } else if id.starts_with("claude") {
+            Some(Self::Anthropic)
         } else {
-            Self::Anthropic
+            None
         }
+    }
+
+    /// [`try_from_adapter`](Self::try_from_adapter) with the historical
+    /// anthropic fallback. Callers that can reject the request should use
+    /// `try_from_adapter` instead.
+    pub fn from_adapter(adapter_id: &str) -> Self {
+        Self::try_from_adapter(adapter_id).unwrap_or_else(|| {
+            tracing::warn!(
+                adapter = adapter_id,
+                "unknown harness family for adapter; defaulting to anthropic"
+            );
+            Self::Anthropic
+        })
     }
     /// Human label for error messages, and the stored `family` column value.
     pub const fn label(self) -> &'static str {
@@ -223,6 +402,123 @@ impl Family {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
             Self::Fireworks => "fireworks",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Family, GatewayPathError, gateway_path_permitted as permitted};
+
+    #[test]
+    fn the_paths_each_harness_calls_are_forwarded() {
+        for (family, method, tail) in [
+            (Family::Anthropic, "POST", "/v1/messages"),
+            (Family::Anthropic, "POST", "/v1/messages/count_tokens"),
+            (Family::Anthropic, "GET", "/v1/models"),
+            (Family::Anthropic, "GET", "/v1/models/claude-opus-5"),
+            (Family::Openai, "POST", "/responses"),
+            (Family::Openai, "POST", "/responses/compact"),
+            (Family::Openai, "GET", "/responses"),
+            (Family::Openai, "GET", "/models"),
+            (Family::Openai, "POST", "/chat/completions"),
+            (Family::Fireworks, "POST", "/chat/completions"),
+            (Family::Fireworks, "GET", "/models"),
+        ] {
+            permitted(family, method, tail).unwrap_or_else(|e| panic!("{method} {tail}: {e}"));
+        }
+        permitted(Family::Anthropic, "post", "/v1/messages").unwrap();
+        permitted(Family::Anthropic, "POST", "/v1/messages/").unwrap();
+    }
+
+    #[test]
+    fn dot_segments_cannot_escape_the_upstream_base_path() {
+        for tail in [
+            "/../v1/organizations",
+            "/responses/../../me",
+            "/%2e%2e/me",
+            "/%2E%2E/me",
+            "/responses/%2e%2e%2fme",
+            "/./responses",
+            "/%2e/responses",
+        ] {
+            assert_eq!(
+                permitted(Family::Openai, "POST", tail),
+                Err(GatewayPathError::DotSegment),
+                "{tail} must be refused as a dot segment"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_segments_are_refused() {
+        for tail in ["//me", "/responses//x", "/%2f%2fme"] {
+            assert_eq!(
+                permitted(Family::Openai, "POST", tail),
+                Err(GatewayPathError::EmptySegment),
+                "{tail}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_known_path_with_the_wrong_method_is_refused() {
+        assert_eq!(
+            permitted(Family::Anthropic, "DELETE", "/v1/messages"),
+            Err(GatewayPathError::MethodNotAllowed)
+        );
+        assert_eq!(
+            permitted(Family::Anthropic, "GET", "/v1/messages"),
+            Err(GatewayPathError::MethodNotAllowed)
+        );
+        assert_eq!(
+            permitted(Family::Openai, "DELETE", "/responses/resp_1"),
+            Err(GatewayPathError::MethodNotAllowed)
+        );
+    }
+
+    #[test]
+    fn administrative_and_cross_family_paths_are_not_forwarded() {
+        for (family, method, tail) in [
+            (Family::Openai, "GET", "/me"),
+            (Family::Openai, "GET", "/accounts"),
+            (Family::Anthropic, "GET", "/api/oauth/usage"),
+            (Family::Anthropic, "POST", "/v1/organizations/x/invites"),
+            (Family::Anthropic, "POST", "/responses"),
+            (Family::Anthropic, "GET", "/v1/files"),
+            (Family::Fireworks, "POST", "/v1/messages"),
+        ] {
+            assert_eq!(
+                permitted(family, method, tail),
+                Err(GatewayPathError::NotAllowed),
+                "{method} {tail}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_or_control_laden_tail_is_refused() {
+        for tail in [
+            "v1/messages",
+            "/v1/\u{0}messages",
+            "/v1\\messages",
+            "/v1/messages%5c..%5cx",
+            "/v1/messages%00",
+        ] {
+            assert_eq!(
+                permitted(Family::Anthropic, "POST", tail),
+                Err(GatewayPathError::NotAllowed)
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_adapter_has_no_family() {
+        assert_eq!(Family::try_from_adapter("claude-code"), Some(Family::Anthropic));
+        assert_eq!(Family::try_from_adapter("codex-app-server"), Some(Family::Openai));
+        assert_eq!(Family::try_from_adapter("opencode"), Some(Family::Fireworks));
+        for unknown in ["", "gemini", "aider", "cursor", "anthropic"] {
+            assert_eq!(Family::try_from_adapter(unknown), None, "{unknown}");
         }
     }
 }

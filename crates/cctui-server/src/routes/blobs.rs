@@ -85,6 +85,17 @@ pub async fn store_blob(
     bytes: &[u8],
     media_type: Option<&str>,
 ) -> Result<StoredBlob, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    store_blob_in(&mut conn, bytes, media_type).await
+}
+
+/// [`store_blob`] on an explicit connection, so a caller can run it inside its
+/// own transaction.
+pub async fn store_blob_in(
+    conn: &mut sqlx::PgConnection,
+    bytes: &[u8],
+    media_type: Option<&str>,
+) -> Result<StoredBlob, sqlx::Error> {
     let hash = hex::encode(Sha256::digest(bytes));
     let byte_len = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
     let rows = sqlx::query(
@@ -95,7 +106,7 @@ pub async fn store_blob(
     .bind(media_type)
     .bind(byte_len)
     .bind(bytes)
-    .execute(pool)
+    .execute(conn)
     .await?
     .rows_affected();
     Ok(StoredBlob { hash, created: rows == 1 })

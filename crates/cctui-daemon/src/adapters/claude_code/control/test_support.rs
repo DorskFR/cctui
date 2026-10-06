@@ -14,6 +14,7 @@ pub(super) fn deferred(sock: PathBuf) -> DeferredDispatch {
         what: "spawn in /tmp".to_owned(),
         session_id: uuid::Uuid::new_v4().to_string(),
         gate: None,
+        watchdog: None,
     }
 }
 

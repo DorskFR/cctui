@@ -1,10 +1,10 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 557
+assertion_line: 457
 expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~4 live  ▪ 0/0 machines  $0.00 today  ●4 unread  ! 2 need input — Ctrl+g
- 1 Sessions  2  3  4  6  8   starred · live · dispatched  sort: activity ↓  group: status
+ 1 Sessions  2 Overview  3 Machines   starred · live · dispatched  sort: activity ↓  group: status
    ▾ Needs input (1)
 ▸    ● [claude-code] deploy (main)  opus  0s  $1.25  ! ⚡
    ▾ Working (3)

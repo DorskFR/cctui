@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
+import { stubDrawer } from './drawer.fixture';
 
 const DESKTOP = { width: 1536, height: 900 };
 
 async function openDrawer(page: Page) {
+	await stubDrawer(page);
 	await page.setViewportSize(DESKTOP);
 	await page.goto('/sessions');
 	await page.locator('[data-journey="search"]').waitFor();

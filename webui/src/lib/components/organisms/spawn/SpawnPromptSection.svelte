@@ -21,7 +21,8 @@
 		machines={sf.machineList}
 		recentDirs={sf.recentDirs}
 		onsubmit={sf.submit}
-		onfiles={sf.addFiles}
+		att={sf.att}
+		bind:promptEl={sf.promptEl}
 	/>
 	<ProfileList
 		profiles={sf.profiles}

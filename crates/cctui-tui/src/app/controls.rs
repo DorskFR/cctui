@@ -1,5 +1,5 @@
-//! Controlling a running session: interrupt with feedback, the model/effort
-//! picker, and a whole-session fork.
+//! Controlling a session: interrupt with feedback, the model/effort picker, a
+//! whole-session fork and resuming an ended session.
 
 use std::collections::HashMap;
 
@@ -125,7 +125,11 @@ pub enum ControlsAction {
         session_id: String,
         error: Option<String>,
     },
+    /// One press of the fork key: arms, or forks the whole session when armed.
+    Fork,
     Forked(Option<String>),
+    Resume,
+    Resumed(Option<String>),
     OpenModelPicker,
     ClosePicker,
     PickerMove(isize),
@@ -145,7 +149,16 @@ pub fn reduce_controls(app: &mut App, action: ControlsAction) -> Vec<Effect> {
         ControlsAction::InterruptFinished { session_id, error } => {
             interrupt_finished(app, &session_id, error)
         }
+        ControlsAction::Fork => confirm(app, Confirm::Fork),
         ControlsAction::Forked(session_id) => forked(app, session_id),
+        ControlsAction::Resume => resume(app),
+        ControlsAction::Resumed(error) => {
+            match error {
+                Some(error) => app.toast(Level::Error, format!("resume failed: {error}")),
+                None => app.toast(Level::Info, "resuming…"),
+            }
+            Vec::new()
+        }
         ControlsAction::OpenModelPicker => open_picker(app),
         ControlsAction::ClosePicker => close_picker(app),
         ControlsAction::PickerMove(delta) => {
@@ -224,6 +237,23 @@ fn forked(app: &mut App, session_id: Option<String>) -> Vec<Effect> {
     };
     app.controls.pending_jump = Some(session_id);
     vec![Effect::RefreshSessions]
+}
+
+/// Only an ended session can be resumed; a live one has nothing to revive.
+fn resume(app: &mut App) -> Vec<Effect> {
+    let Some(session) = app.selected_session() else { return Vec::new() };
+    if !resumable(session) {
+        app.toast(Level::Info, "this session is still running");
+        return Vec::new();
+    }
+    let session_id = session.id.clone();
+    vec![Effect::Resume { session_id }]
+}
+
+/// What the banner's ended state offers its action for.
+#[must_use]
+pub fn resumable(session: &SessionListItem) -> bool {
+    session.end_reason.is_some() || session.status == cctui_proto::models::SessionStatus::Archived
 }
 
 /// Called after the session list changes: opens a forked session once it is
@@ -716,5 +746,50 @@ mod tests {
             "s-b",
             "the row under the cursor is the fork"
         );
+    }
+
+    #[test]
+    fn the_fork_key_arms_then_forks_the_whole_session() {
+        let mut app = app();
+        let selected = app.selected_session_id().expect("a row under the cursor");
+        assert!(controls(&mut app, ControlsAction::Fork).is_empty(), "the first press only arms");
+        match controls(&mut app, ControlsAction::Fork).as_slice() {
+            [Effect::Fork { session_id, request }] => {
+                assert_eq!(*session_id, selected);
+                assert!(request.extract.is_none(), "a whole-session fork");
+            }
+            other => panic!("expected one fork effect, got {} effects", other.len()),
+        }
+    }
+
+    #[test]
+    fn only_an_ended_or_archived_session_can_be_resumed() {
+        let mut app = App::new();
+        app.sessions = vec![session("s-a", "alpha", "active", "working")];
+        app.update_aggregates();
+        let (selected, at) = ("s-a".to_owned(), 0);
+        assert!(!super::resumable(&app.sessions[at]));
+        assert!(controls(&mut app, ControlsAction::Resume).is_empty());
+        assert!(app.toasts.latest().expect("a toast").text.contains("still running"));
+
+        app.sessions[at].end_reason = Some(cctui_proto::models::SessionEndReason::Crashed);
+        assert!(super::resumable(&app.sessions[at]));
+        match controls(&mut app, ControlsAction::Resume).as_slice() {
+            [Effect::Resume { session_id }] => assert_eq!(*session_id, selected),
+            _ => panic!("expected a resume effect"),
+        }
+
+        app.sessions[at].end_reason = None;
+        app.sessions[at].status = cctui_proto::models::SessionStatus::Archived;
+        assert!(super::resumable(&app.sessions[at]), "an archived session too");
+    }
+
+    #[test]
+    fn a_failed_resume_says_why() {
+        let mut app = app();
+        controls(&mut app, ControlsAction::Resumed(Some("machine offline".to_owned())));
+        assert!(app.toasts.latest().expect("a toast").text.contains("machine offline"));
+        controls(&mut app, ControlsAction::Resumed(None));
+        assert_eq!(app.toasts.latest().expect("a toast").text, "resuming…");
     }
 }

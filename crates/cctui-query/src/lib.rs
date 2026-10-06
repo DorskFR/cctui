@@ -282,4 +282,12 @@ mod tests {
             let _ = parse(&"NOT AND ".repeat(50_000));
         });
     }
+
+    #[test]
+    fn adapter_enum_accepts_every_harness() {
+        let def = super::resolve("adapter").unwrap();
+        for adapter in ["claude-code", "codex", "opencode"] {
+            assert!(def.enum_values.contains(&adapter), "{adapter}");
+        }
+    }
 }

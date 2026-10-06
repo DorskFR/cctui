@@ -16,7 +16,7 @@ use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
 
-const HARNESSES: &[&str] = &["claude-code", "codex"];
+const HARNESSES: &[&str] = &["claude-code", "codex", "opencode"];
 const PERMISSION_MODES: &[&str] = &["ask", "auto", "yolo", "whip"];
 
 const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
@@ -374,9 +374,16 @@ mod tests {
     }
 
     #[test]
+    fn clean_spec_accepts_every_harness() {
+        for harness in ["claude-code", "codex", "opencode"] {
+            assert_eq!(clean_spec(spec(harness, None)).expect(harness).harness, harness);
+        }
+    }
+
+    #[test]
     fn clean_spec_rejects_unknown_vocabulary() {
         assert_eq!(
-            clean_spec(spec("opencode", None)).unwrap_err().into_response().status(),
+            clean_spec(spec("gemini", None)).unwrap_err().into_response().status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(

@@ -2,10 +2,10 @@ use std::fmt::Write as _;
 
 use super::{PathBuf, json};
 
-/// Decode + stage `bootstrap` file uploads under
-/// `/tmp/cctui-uploads/<session-id>/`, returning their absolute paths in upload
-/// order. Files are written 0600 with sanitized bare names; an empty/null
-/// bootstrap yields an empty vec. Errors (bad base64, unwritable dir) abort the
+/// Decode + stage `bootstrap` file uploads under the upload staging root's
+/// `<session-id>/` dir, returning their absolute paths in upload order. Files
+/// are written 0600 with sanitized bare names; an empty/null bootstrap yields
+/// an empty vec. Errors (bad base64, unwritable dir) abort the
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
 /// Build the spawn-time `<session-context>` block prepended to the
@@ -89,13 +89,6 @@ pub(super) fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> Str
     );
     b.push_str(usage);
     b
-}
-
-pub(super) fn stage_uploads(
-    session_id: &str,
-    bootstrap: &serde_json::Value,
-) -> anyhow::Result<Vec<String>> {
-    crate::adapters::uploads::stage_bootstrap(session_id, bootstrap)
 }
 
 /// Public entry point for mid-chat attachment staging. Thin wrapper
@@ -853,44 +846,6 @@ mod tests {
         assert_eq!(merge_account_under_managed(managed.clone(), Some(&json!("garbage"))), managed);
     }
 
-    #[test]
-    fn stage_uploads_writes_sanitized_0600_files() {
-        use base64::Engine;
-        use std::os::unix::fs::PermissionsExt;
-
-        let session_id = format!("test-{}", uuid::Uuid::new_v4());
-        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
-        // A normal name and a traversal attempt that must collapse to its basename.
-        let bootstrap = json!({
-            "uploads": [
-                { "name": "notes.txt", "content_b64": b64("hello world") },
-                { "name": "../../etc/evil", "content_b64": b64("nope") },
-            ]
-        });
-
-        let paths = stage_uploads(&session_id, &bootstrap).expect("stage ok");
-        assert_eq!(paths.len(), 2);
-        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
-
-        let notes = dir.join("notes.txt");
-        assert!(paths.contains(&notes.to_string_lossy().into_owned()));
-        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "hello world");
-        let mode = std::fs::metadata(&notes).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "uploaded file must be 0600");
-
-        // Traversal collapsed to the bare basename inside the staging dir.
-        let evil = dir.join("evil");
-        assert!(evil.exists(), "traversal name must be reduced to a basename in-dir");
-        assert!(!std::path::Path::new("/tmp/cctui-uploads").join("../../etc/evil").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn stage_uploads_null_bootstrap_is_empty() {
-        assert!(stage_uploads("sid", &serde_json::Value::Null).unwrap().is_empty());
-    }
-
     fn bare_spec() -> cctui_proto::adapter::SessionSpec {
         cctui_proto::adapter::SessionSpec {
             service_tier: None,
@@ -1107,7 +1062,7 @@ mod tests {
 
         let session_id = format!("test-{}", uuid::Uuid::new_v4());
         let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
-        let dir = std::path::Path::new("/tmp/cctui-uploads").join(&session_id);
+        let dir = crate::adapters::uploads::session_dir(&session_id);
 
         // First upload stages report.pdf.
         let first = stage_mid_chat_files(
@@ -1166,9 +1121,12 @@ mod tests {
              shared or pool-elected, not necessarily your own), its usage windows, this \
              session's spend, and whether each model is currently allowed or soft-limit blocked. \
              Check it before a fan-out and when picking a child's model: a blocked model burns \
-             the whole batch on 429s. Takes no arguments.\nBoth tools are served by an MCP \
-             server that connects as this session starts. If either reports \"No such tool \
-             available\" on your first turn, it lost that race: wait a few seconds and retry the \
+             the whole batch on 429s. Takes no arguments.\nCctuiAgentArchive: \
+             `mcp__cctui__CctuiAgentArchive` archives a child this session spawned, with its \
+             own children, and frees its slot: finished children keep their slot until \
+             archived. A running child is killed; a session the user pinned is refused.\nThese \
+             tools are served by an MCP server that connects as this session starts. If one \
+             reports \"No such tool available\" on your first turn, it lost that race: wait a few seconds and retry the \
              call once before concluding the tool is missing.\n"
         );
         assert_eq!(
@@ -1186,9 +1144,12 @@ mod tests {
              shared or pool-elected, not necessarily your own), its usage windows, this \
              session's spend, and whether each model is currently allowed or soft-limit blocked. \
              Check it before a fan-out and when picking a child's model: a blocked model burns \
-             the whole batch on 429s. Takes no arguments.\nBoth tools are served by an MCP \
-             server that connects as this session starts. If either reports \"No such tool \
-             available\" on your first turn, it lost that race: wait a few seconds and retry the \
+             the whole batch on 429s. Takes no arguments.\nCctuiAgentArchive: \
+             `mcp__cctui__CctuiAgentArchive` archives a child this session spawned, with its \
+             own children, and frees its slot: finished children keep their slot until \
+             archived. A running child is killed; a session the user pinned is refused.\nThese \
+             tools are served by an MCP server that connects as this session starts. If one \
+             reports \"No such tool available\" on your first turn, it lost that race: wait a few seconds and retry the \
              call once before concluding the tool is missing.\n"
         );
     }

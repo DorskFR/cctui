@@ -56,17 +56,20 @@ pub fn part_payloads(part: &Part, role: &str) -> Vec<(Kind, Value)> {
             }
             vec![(Kind::Message, reasoning_payload(text, message_id.as_deref()))]
         }
-        Part::Tool { tool, state, .. } => match state {
-            ToolState::Completed { input, output, .. } => vec![
-                (Kind::ToolUse, tool_call_payload(tool, input)),
-                (Kind::ToolUse, tool_result_payload(output, false)),
-            ],
-            ToolState::Error { input, error } => vec![
-                (Kind::ToolUse, tool_call_payload(tool, input)),
-                (Kind::ToolUse, tool_result_payload(error, true)),
-            ],
-            ToolState::Pending | ToolState::Running { .. } => Vec::new(),
-        },
+        Part::Tool { id, tool, call_id, state, .. } => {
+            let call_id = call_id.as_deref().unwrap_or(id);
+            match state {
+                ToolState::Completed { input, output, .. } => vec![
+                    (Kind::ToolUse, tool_call_payload(tool, input, call_id)),
+                    (Kind::ToolUse, tool_result_payload(output, false, call_id)),
+                ],
+                ToolState::Error { input, error } => vec![
+                    (Kind::ToolUse, tool_call_payload(tool, input, call_id)),
+                    (Kind::ToolUse, tool_result_payload(error, true, call_id)),
+                ],
+                ToolState::Pending | ToolState::Running { .. } => Vec::new(),
+            }
+        }
         Part::Other => Vec::new(),
     }
 }
@@ -105,11 +108,11 @@ fn reasoning_payload(text: &str, message_id: Option<&str>) -> Value {
     })
 }
 
-fn tool_call_payload(tool: &str, input: &Value) -> Value {
-    json!({ "type": "tool_call", "tool": tool, "input": input })
+fn tool_call_payload(tool: &str, input: &Value, call_id: &str) -> Value {
+    json!({ "type": "tool_call", "tool": tool, "input": input, "id": call_id, "tool_use_id": call_id })
 }
 
-fn tool_result_payload(output: &str, error: bool) -> Value {
+fn tool_result_payload(output: &str, error: bool, call_id: &str) -> Value {
     let capped: String = output.chars().take(TOOL_OUTPUT_CAP).collect();
     json!({
         "type": "tool_result",
@@ -118,6 +121,7 @@ fn tool_result_payload(output: &str, error: bool) -> Value {
         "content": capped,
         "is_error": error,
         "error": error,
+        "tool_use_id": call_id,
     })
 }
 
@@ -271,6 +275,23 @@ mod tests {
         assert_eq!(got[1].1["content"], "fn main() {}");
         assert_eq!(got[1].1["kind"], "tool_result");
         assert_eq!(got[1].1["is_error"], false);
+        assert_eq!(got[0].1["tool_use_id"], "call_1");
+        assert_eq!(got[0].1["id"], "call_1");
+        assert_eq!(got[1].1["tool_use_id"], "call_1");
+    }
+
+    #[test]
+    fn a_tool_without_a_call_id_pairs_on_its_part_id() {
+        let part = Part::Tool {
+            id: "prt_7".to_owned(),
+            message_id: None,
+            tool: "bash".to_owned(),
+            call_id: None,
+            state: ToolState::Error { input: json!({}), error: "denied".to_owned() },
+        };
+        let got = part_payloads(&part, "assistant");
+        assert_eq!(got[0].1["tool_use_id"], "prt_7");
+        assert_eq!(got[1].1["tool_use_id"], "prt_7");
     }
 
     #[test]

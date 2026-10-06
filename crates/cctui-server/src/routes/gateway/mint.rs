@@ -195,7 +195,7 @@ pub async fn mint_session_env(
         );
         return Err(MintSessionEnvError::NoProviderForFamily(family));
     };
-    mint_env_for_account(state, row.id, &row.provider, session_id)
+    mint_env_for_account(state, row.id, &row.provider, session_id, Some(user_id))
         .await
         .map_err(MintSessionEnvError::Db)
 }
@@ -238,7 +238,7 @@ pub async fn mint_session_env_all_families(
     let (primary_row, secondaries) = order.split_last().expect("mint_order yields the primary");
     let mut env = std::collections::BTreeMap::new();
     for row in secondaries {
-        match mint_env_for_account(state, row.id, &row.provider, session_id).await {
+        match mint_env_for_account(state, row.id, &row.provider, session_id, Some(user_id)).await {
             Ok(e) => env.extend(e),
             Err(err) => tracing::warn!(
                 %session_id,
@@ -249,9 +249,15 @@ pub async fn mint_session_env_all_families(
         }
     }
     env.extend(
-        mint_env_for_account(state, primary_row.id, &primary_row.provider, session_id)
-            .await
-            .map_err(MintSessionEnvError::Db)?,
+        mint_env_for_account(
+            state,
+            primary_row.id,
+            &primary_row.provider,
+            session_id,
+            Some(user_id),
+        )
+        .await
+        .map_err(MintSessionEnvError::Db)?,
     );
     Ok(env)
 }
@@ -286,7 +292,7 @@ pub async fn mint_session_env_for_account(
     let provider: Option<String> =
         crate::store::account_providers::provider_by_id(&state.pool, provider_id).await?;
     let Some(provider) = provider else { return Ok(None) };
-    Ok(Some(mint_env_for_account(state, provider_id, &provider, session_id).await?))
+    Ok(Some(mint_env_for_account(state, provider_id, &provider, session_id, None).await?))
 }
 
 /// Resolve a session's bound OAuth account and re-mint its gateway env, ready
@@ -361,17 +367,157 @@ pub async fn resolve_session_accounts(state: &AppState, session_id: &str) -> Vec
     ids
 }
 
+/// Whether a launch runs under its own user's account or under one merely
+/// SHARED to them. A grantee gets the credential and nothing else: the owner's
+/// `settings_json` and `env_json` are authored for the owner's own machines, and
+/// several of their keys are shell commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trust {
+    Owner,
+    Grantee,
+}
+
+/// The `(account identity, owner)` behind a provider row, or `None` when the row
+/// is gone.
+async fn provider_account(pool: &sqlx::PgPool, provider_id: Uuid) -> Option<(Uuid, Uuid)> {
+    sqlx::query_as(
+        "SELECT a.id, a.user_id FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+         WHERE ap.id = $1",
+    )
+    .bind(provider_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// The user a mint for `session_id` acts for. `known` is the authenticated
+/// caller when a path has one; otherwise the session row, the user its gateway
+/// token was minted for, or — in the dispatch window, where neither exists yet —
+/// the ephemeral dispatch key cut for this session. `None` is fail-closed
+/// everywhere downstream.
+pub async fn acting_user(state: &AppState, session_id: &str, known: Option<Uuid>) -> Option<Uuid> {
+    acting_user_in(&state.pool, session_id, known).await
+}
+
+/// [`acting_user`] against a bare pool.
+pub async fn acting_user_in(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    known: Option<Uuid>,
+) -> Option<Uuid> {
+    if known.is_some() {
+        return known;
+    }
+    for sql in [
+        "SELECT user_id FROM sessions WHERE id = $1",
+        "SELECT user_id FROM session_tokens WHERE session_id = $1 \
+         ORDER BY (revoked_at IS NULL) DESC, created_at DESC LIMIT 1",
+        "SELECT user_id FROM auth_keys WHERE session_id = $1 AND revoked_at IS NULL \
+         ORDER BY created_at DESC LIMIT 1",
+    ] {
+        if let Some(uid) = sqlx::query_scalar::<_, Option<Uuid>>(sql)
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+        {
+            return Some(uid);
+        }
+    }
+    None
+}
+
+/// Whether `user_id` may still launch under `provider_id`'s account — they own
+/// it, or hold a live share — and how far to trust it. This is the RE-MINT gate
+/// as much as the first-mint one: revoking a share has to stop the next resume,
+/// not merely the tokens that happened to be live at revoke time.
+pub async fn mint_trust(
+    state: &AppState,
+    provider_id: Uuid,
+    user_id: Option<Uuid>,
+) -> Option<Trust> {
+    mint_trust_in(&state.pool, provider_id, user_id).await
+}
+
+/// [`mint_trust`] against a bare pool.
+pub async fn mint_trust_in(
+    pool: &sqlx::PgPool,
+    provider_id: Uuid,
+    user_id: Option<Uuid>,
+) -> Option<Trust> {
+    let (account, owner) = provider_account(pool, provider_id).await?;
+    let user_id = user_id?;
+    if user_id == owner {
+        return Some(Trust::Owner);
+    }
+    crate::routes::shares::granted(pool, "account", account, user_id)
+        .await
+        .ok()
+        .unwrap_or(false)
+        .then_some(Trust::Grantee)
+}
+
+/// Whether `user_id` may launch under `provider_id` at all. The predicate every
+/// path that MOVES a session's binding — switch-account, failover — has to apply
+/// to its target, or a grantee's session lands on an account of the sharer's
+/// that was never shared.
+pub async fn provider_usable_by(state: &AppState, provider_id: Uuid, user_id: Uuid) -> bool {
+    mint_trust(state, provider_id, Some(user_id)).await.is_some()
+}
+
+/// Revoke this session's live tokens on one provider row. Paired with a refused
+/// re-mint: the credential the grantee already holds has to stop resolving too,
+/// or they keep the gateway until the token's own TTL runs out.
+async fn revoke_session_provider_tokens(state: &AppState, session_id: &str, provider_id: Uuid) {
+    if let Err(e) = sqlx::query(
+        "UPDATE session_tokens SET revoked_at = now() \
+         WHERE session_id = $1 AND account_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(session_id)
+    .bind(provider_id)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::error!(
+            %session_id,
+            provider = %provider_id,
+            error = %e,
+            "failed to revoke an unauthorised session token — it stays usable until it expires"
+        );
+    }
+}
+
 /// Mint a fresh opaque session token bound to `(session_id, account_id)`,
 /// persist the account on the session row so the binding is durable across id
 /// rotation / restart, and return the gateway env for the account's
 /// provider family.
+///
+/// `acting` is the authenticated caller when the path knows one; `None` resolves
+/// it via [`acting_user`]. A caller who neither owns the account nor holds a live
+/// share on it gets NO env and its stale tokens revoked.
 pub async fn mint_env_for_account(
     state: &AppState,
     account_id: Uuid,
     provider: &str,
     session_id: &str,
+    acting: Option<Uuid>,
 ) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
     let family = Family::from_provider(provider);
+    let acting = acting_user(state, session_id, acting).await;
+    let Some(trust) = mint_trust(state, account_id, acting).await else {
+        tracing::warn!(
+            %session_id,
+            provider = %account_id,
+            user = ?acting,
+            "refusing gateway mint: the session's user neither owns this account nor holds a live \
+             share on it"
+        );
+        revoke_session_provider_tokens(state, session_id, account_id).await;
+        return Ok(std::collections::BTreeMap::new());
+    };
 
     // A session keeps ONE immutable gateway token per provider family for its
     // whole life; an account switch only repoints its binding. Scoping to the
@@ -388,7 +534,9 @@ pub async fn mint_env_for_account(
         // `account_providers` join + family predicate confine the repoint to the
         // same-family token, leaving the other family's token untouched.
         let _ = sqlx::query(
-            "UPDATE session_tokens AS st SET account_id = $2, revoked_at = NULL, expires_at = $4 \
+            "UPDATE session_tokens AS st \
+                    SET account_id = $2, revoked_at = NULL, expires_at = $4, \
+                        user_id = COALESCE($5::uuid, st.user_id) \
                  FROM account_providers AS oa \
                  WHERE st.session_id = $1 AND st.revoked_at IS NULL \
                    AND st.account_id = oa.id \
@@ -398,6 +546,7 @@ pub async fn mint_env_for_account(
         .bind(account_id)
         .bind(family.label())
         .bind(Utc::now() + session_token_ttl())
+        .bind(acting)
         .execute(&state.pool)
         .await;
         // The reused token's fingerprint may have been flagged as a
@@ -416,14 +565,15 @@ pub async fn mint_env_for_account(
         let enc = crate::crypto::encrypt(&token, &key);
         sqlx::query(
             "INSERT INTO session_tokens \
-                 (token_hash, session_id, account_id, encrypted_token, expires_at) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                 (token_hash, session_id, account_id, encrypted_token, expires_at, user_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&token_hash)
         .bind(session_id)
         .bind(account_id)
         .bind(&enc)
         .bind(Utc::now() + session_token_ttl())
+        .bind(acting)
         .execute(&state.pool)
         .await?;
         token
@@ -448,11 +598,22 @@ pub async fn mint_env_for_account(
     // `resume_env_for_session`, and the daemon's `gateway-env` pull — the account
     // env is re-served on respawn/resume and survives a daemon / claude-daemon
     // restart, not just the initial spawn.
-    if let Some(account_env) = account_env_json(state, account_id, &key).await {
+    if let Some(mut account_env) = account_env_json(state, account_id, &key).await {
+        if trust == Trust::Grantee {
+            let dropped = crate::settings_catalog::shared::filter_env(&mut account_env);
+            if !dropped.is_empty() {
+                tracing::info!(
+                    %session_id,
+                    provider = %account_id,
+                    dropped = %dropped.join(","),
+                    "shared account: env names outside the share allowlist withheld from the grantee"
+                );
+            }
+        }
         env.extend(account_env);
     }
     if family == Family::Openai
-        && let Some(block) = codex_config_block(state, account_id).await
+        && let Some(block) = codex_config_block(state, account_id, trust).await
     {
         env.insert(cctui_proto::codex_config::CONFIG_TOML_ENV.to_owned(), block);
     }
@@ -465,7 +626,7 @@ pub async fn mint_env_for_account(
 /// daemon turns it into `-c` flags, the k8s worker entrypoint splices it into
 /// `~/.codex/config.toml` — so every (re)launch that mints env also re-derives
 /// the settings, and neither path re-renders them itself.
-async fn codex_config_block(state: &AppState, account_id: Uuid) -> Option<String> {
+async fn codex_config_block(state: &AppState, account_id: Uuid, trust: Trust) -> Option<String> {
     let settings: Option<serde_json::Value> =
         sqlx::query_scalar("SELECT settings_json FROM account_providers WHERE id = $1")
             .bind(account_id)
@@ -473,7 +634,12 @@ async fn codex_config_block(state: &AppState, account_id: Uuid) -> Option<String
             .await
             .ok()
             .flatten();
-    cctui_proto::codex_config::render_block(&settings?)
+    let settings = settings?;
+    let settings = match trust {
+        Trust::Owner => settings,
+        Trust::Grantee => crate::settings_catalog::shared::filter_settings(&settings).0,
+    };
+    cctui_proto::codex_config::render_block(&settings)
 }
 
 /// Insert the family's gateway routing keys over whatever the account env
@@ -720,8 +886,12 @@ pub async fn resolve_session_settings(
     state: &AppState,
     session_id: &str,
 ) -> Option<serde_json::Value> {
+    let acting = acting_user(state, session_id, None).await;
     let mut merged: Option<serde_json::Value> = None;
     for account_id in resolve_session_accounts(state, session_id).await {
+        let Some(trust) = mint_trust(state, account_id, acting).await else {
+            continue;
+        };
         let settings: Option<serde_json::Value> =
             sqlx::query_scalar("SELECT settings_json FROM account_providers WHERE id = $1")
                 .bind(account_id)
@@ -729,7 +899,23 @@ pub async fn resolve_session_settings(
                 .await
                 .ok()
                 .flatten();
-        if let Some(s) = settings.filter(|v| !v.is_null()) {
+        let settings = settings.filter(|v| !v.is_null()).map(|s| match trust {
+            Trust::Owner => s,
+            Trust::Grantee => {
+                let (kept, dropped) = crate::settings_catalog::shared::filter_settings(&s);
+                if !dropped.is_empty() {
+                    tracing::info!(
+                        %session_id,
+                        provider = %account_id,
+                        dropped = %dropped.join(","),
+                        "shared account: settings keys outside the share allowlist withheld from \
+                         the grantee"
+                    );
+                }
+                kept
+            }
+        });
+        if let Some(s) = settings {
             match merged.as_mut() {
                 Some(base) => cctui_proto::util::deep_merge(base, s),
                 None => merged = Some(s),
@@ -902,6 +1088,134 @@ mod db_tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    async fn mk_user(pool: &sqlx::PgPool, name: &str) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("{name}-{}", Uuid::new_v4()))
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The share boundary, end to end against a real DB: the owner is trusted
+    /// fully, a live grantee gets the credential with the settings/env filter on,
+    /// and a revoked grantee gets nothing at all — the gate `mint_env_for_account`
+    /// consults before it hands out any env.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn trust_follows_ownership_then_the_live_share() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let suffix = Uuid::new_v4();
+        let owner = mk_user(&pool, "owner").await;
+        let grantee = mk_user(&pool, "grantee").await;
+        let stranger = mk_user(&pool, "stranger").await;
+        let account = mk_account(&pool, owner, &format!("shared-{suffix}")).await;
+        let provider = mk_provider(&pool, owner, account, "anthropic").await;
+
+        assert_eq!(
+            mint_trust_in(&pool, provider, Some(owner)).await,
+            Some(Trust::Owner),
+            "the account's owner is the owner"
+        );
+        assert_eq!(
+            mint_trust_in(&pool, provider, Some(stranger)).await,
+            None,
+            "a user with no share may not mint at all"
+        );
+        assert_eq!(
+            mint_trust_in(&pool, provider, None).await,
+            None,
+            "an unattributable mint fails closed"
+        );
+
+        mk_share(&pool, account, grantee).await;
+        assert_eq!(
+            mint_trust_in(&pool, provider, Some(grantee)).await,
+            Some(Trust::Grantee),
+            "a live share mints, but only as a grantee"
+        );
+
+        sqlx::query(
+            "UPDATE resource_shares SET revoked_at = now() \
+             WHERE resource_type = 'account' AND resource_id = $1 AND grantee_id = $2",
+        )
+        .bind(account)
+        .bind(grantee)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            mint_trust_in(&pool, provider, Some(grantee)).await,
+            None,
+            "a revoked share must block the next re-mint, not just the live tokens"
+        );
+
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(account).execute(&pool).await.ok();
+        assert_eq!(
+            mint_trust_in(&pool, provider, Some(owner)).await,
+            None,
+            "a vanished provider row mints nothing"
+        );
+        for u in [owner, grantee, stranger] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.unwrap();
+        }
+    }
+
+    /// Revoking a share must cut the ex-grantee's live gateway tokens — and only
+    /// theirs: the owner's own session on the same account keeps running.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn revoking_a_share_cuts_only_that_grantees_tokens() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let suffix = Uuid::new_v4();
+        let owner = mk_user(&pool, "owner").await;
+        let grantee = mk_user(&pool, "grantee").await;
+        let account = mk_account(&pool, owner, &format!("shared-{suffix}")).await;
+        let provider = mk_provider(&pool, owner, account, "anthropic").await;
+        mk_share(&pool, account, grantee).await;
+
+        let mk_token = async |user: Uuid, tag: &str| -> String {
+            let hash = format!("h-{tag}-{}", Uuid::new_v4());
+            sqlx::query(
+                "INSERT INTO session_tokens (token_hash, session_id, account_id, user_id) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(&hash)
+            .bind(format!("ses-{tag}-{suffix}"))
+            .bind(provider)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+            hash
+        };
+        let owner_token = mk_token(owner, "own").await;
+        let grantee_token = mk_token(grantee, "grant").await;
+
+        crate::routes::accounts::revoke_grantee_session_tokens(&pool, account, grantee).await;
+
+        let live = async |hash: &str| -> bool {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT revoked_at IS NULL FROM session_tokens WHERE token_hash = $1",
+            )
+            .bind(hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        assert!(!live(&grantee_token).await, "the ex-grantee's token must be dead");
+        assert!(live(&owner_token).await, "the owner's own token must survive");
+
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(account).execute(&pool).await.ok();
+        for u in [owner, grantee] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.unwrap();
+        }
     }
 
     /// An owner's rule on a shared account must move a grantee's launch; a

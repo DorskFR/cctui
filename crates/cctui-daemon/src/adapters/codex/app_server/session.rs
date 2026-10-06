@@ -28,23 +28,25 @@ pub(super) struct SpawnAck {
 impl SpawnAck {
     pub(super) async fn ok(&mut self) {
         if let Some(command_id) = self.command_id.take() {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
-                .await;
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult { command_id, ok: true, error: None },
+            )
+            .await;
         }
     }
 
     pub(super) async fn fail(&mut self, error: &str) {
         if let Some(command_id) = self.command_id.take() {
-            let _ = self
-                .events
-                .send(AdapterEvent::CommandResult {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult {
                     command_id,
                     ok: false,
                     error: Some(error.to_owned()),
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
 }
@@ -1118,7 +1120,7 @@ mod tests {
         assert!(instructions.contains("context: 1 attached"), "{instructions}");
         assert!(instructions.contains("House style"), "{instructions}");
 
-        let staged = std::path::Path::new("/tmp/cctui-uploads").join(&key).join("context.md");
+        let staged = crate::adapters::uploads::session_dir(&key).join("context.md");
         assert!(instructions.contains(&staged.to_string_lossy().into_owned()), "{instructions}");
         assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
         let _ = std::fs::remove_dir_all(staged.parent().unwrap());

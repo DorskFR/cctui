@@ -3,7 +3,7 @@
 	// one link per page — each entry is a route, the current one marked with an
 	// accent bar. On narrow screens the list gives way to a row of tabs (the
 	// search box moves to the page head there).
-	import { Input, Badge, Tabs, Text, type TabItem } from '@dorsk/tsumikit';
+	import { Icon, Input, Badge, Tabs, Text, type IconName, type TabItem } from '@dorsk/tsumikit';
 	import { goto } from '$app/navigation';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import {
@@ -17,7 +17,7 @@
 
 	export interface TocEntry {
 		page: SettingsPage;
-		icon: string;
+		icon: IconName;
 		label: string;
 		admin?: boolean;
 	}
@@ -42,7 +42,13 @@
 	);
 
 	// Narrow screens: the same pages as kit tabs; picking one routes.
-	const tabs = $derived<TabItem[]>(entries.map((e) => ({ id: e.page, label: e.label })));
+	const tabs = $derived<TabItem[]>(
+		entries.map((e) => ({
+			id: e.page,
+			label: e.label,
+			attrs: { 'data-journey': 'settings-tab', 'data-journey-key': e.page }
+		}))
+	);
 	let tab = $derived(active as string);
 	$effect(() => {
 		if (tab !== active) void goto(settingsHref(tab as SettingsPage), { noScroll: true });
@@ -50,8 +56,7 @@
 </script>
 
 <!-- `settings-goto` is on whichever of these two is visible at this width, so a
-     guide can ask for "the page switcher" once instead of per viewport. The kit's
-     Tabs exposes no anchor on its triggers, so a tap bubbles to the strip. -->
+     guide can ask for "the page switcher" once instead of per viewport. -->
 <div class="tabs" data-journey="settings-goto">
 	<Tabs {tabs} bind:value={tab} label={m.settings_title()}>
 		{#snippet panel()}{/snippet}
@@ -81,7 +86,7 @@
 				data-journey-key={e.page}
 			>
 				<span class="toc-item" class:active={active === e.page}>
-					<span class="ico"><Text tone={active === e.page ? 'accent' : 'faint'}>{e.icon}</Text></span>
+					<span class="ico" class:on={active === e.page}><Icon name={e.icon} size={16} /></span>
 					<Text size="sm" tone={active === e.page ? 'default' : 'muted'}>{e.label}</Text>
 					{#if e.admin}
 						<span class="tag"><Badge tone="warn" size="sm" border>{m.settings_scope_admin()}</Badge></span>
@@ -128,9 +133,14 @@
 		border-left-color: var(--accent);
 	}
 	.ico {
+		display: inline-flex;
 		width: 1.25rem;
-		text-align: center;
+		justify-content: center;
 		flex: none;
+		color: var(--text-faint);
+	}
+	.ico.on {
+		color: var(--accent);
 	}
 	.tag {
 		margin-left: auto;

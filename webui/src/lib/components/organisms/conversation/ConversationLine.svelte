@@ -7,6 +7,7 @@
 	import LineActions from './LineActions.svelte';
 	import LineDelivery from './LineDelivery.svelte';
 	import LineFooter from './LineFooter.svelte';
+	import MessageBubble from './MessageBubble.svelte';
 	import MarkerBody from './MarkerBody.svelte';
 	import TaskNotificationCard from './TaskNotificationCard.svelte';
 	import ThinkingBubble from './ThinkingBubble.svelte';
@@ -17,7 +18,6 @@
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
-	import './bubble.css';
 
 	let {
 		ln,
@@ -107,6 +107,7 @@
 	class:failed={!!ln.failed}
 	class:queued={queueWaiting}
 	class:cancelled={ln.cancelled}
+	class:blocked={!!ln.toolBlock}
 >
 	<div class="lmeta row">
 		{#if selectMode && forkAnchor}
@@ -157,18 +158,29 @@
 	</div>
 	{#if ln.role === 'thinking'}
 		<ThinkingBubble html={ln.html} redacted={ln.redacted} />
+	{:else if ln.toolBlock}
+		<div class="bubble tool-block" role="note">
+			{m.conversation_tool_call_blocked({ tool: ln.toolBlock.tool, rule: ln.toolBlock.term })}
+		</div>
 	{:else if ln.role === 'marker'}
 		<MarkerBody texts={ln.markerTexts ?? [ln.text ?? '']} />
 	{:else if ln.notification}
 		<TaskNotificationCard note={ln.notification} />
 	{:else if ln.command}
 		<HarnessCommandCard command={ln.command} />
-	{:else if ln.html}
-		<div class="bubble">{@html ln.html}</div>
-	{:else if ln.htmlCode}
-		<pre class="bubble mono code">{@html ln.htmlCode}</pre>
-	{:else if ln.text}
-		<pre class="bubble mono code">{ln.text}</pre>
+	{:else}
+		<MessageBubble
+			role={ln.role}
+			mcp={ln.mcp}
+			html={ln.html}
+			htmlCode={ln.htmlCode}
+			text={ln.text}
+			tinted={settings.roleTintedBackground}
+			pending={ln.pending}
+			queued={queueWaiting}
+			failed={!!ln.failed}
+			cancelled={ln.cancelled}
+		/>
 	{/if}
 	{#if pluginActions.length && onpluginaction}
 		<PluginMessageActions actions={pluginActions} onopen={onpluginaction} />
@@ -212,6 +224,9 @@
 	}
 	.line.marker {
 		--bc: var(--text-faint);
+	}
+	.line.blocked {
+		--bc: var(--danger);
 	}
 	.line.tool,
 	.line.result {
@@ -260,49 +275,6 @@
 		padding-left: var(--sp-2);
 		margin-left: calc(-1 * var(--sp-2));
 	}
-	/* Opt-in (Settings › Sessions): the whole bubble background takes the
-	   role colour, on top of the rails below. Mixed into --bg-elevated so it
-	   follows light and dark themes alike; user/system go a step stronger
-	   than their always-on tint so they still stand apart. */
-	.line.tinted.assistant .bubble {
-		background: color-mix(in srgb, var(--role-assistant) 11%, var(--bg-elevated));
-	}
-	.line.tinted.tool .bubble,
-	.line.tinted.result .bubble {
-		background: color-mix(in srgb, var(--role-tool) 11%, var(--bg-elevated));
-	}
-	.line.tinted.mcp .bubble {
-		background: color-mix(in srgb, var(--role-mcp) 11%, var(--bg-elevated));
-	}
-	.line.tinted.user .bubble {
-		background: color-mix(in srgb, var(--role-user) 22%, var(--bg-elevated));
-	}
-	.line.tinted.system .bubble {
-		background: color-mix(in srgb, var(--role-system) 20%, var(--bg-elevated));
-	}
-	/* Uniform role tints — all via --role-* tokens. */
-	.line.user .bubble {
-		background: color-mix(in srgb, var(--role-user) 14%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-user) 45%, transparent);
-	}
-	.line.assistant .bubble {
-		border-left: 2px solid color-mix(in srgb, var(--role-assistant) 55%, transparent);
-	}
-	/* System/agent-directed messages (harness wake-ups, task notifications,
-	   injected reminders) — purple, distinct from the green user bubbles so
-	   they don't read as something the human typed. */
-	.line.system .bubble {
-		background: color-mix(in srgb, var(--role-system) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-system) 40%, transparent);
-	}
-	.line.peer .bubble {
-		background: color-mix(in srgb, var(--role-peer) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-peer) 40%, transparent);
-	}
-	.line.poll .bubble {
-		background: color-mix(in srgb, var(--role-poll) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-poll) 40%, transparent);
-	}
 	/* Harness bookkeeping (permission-mode flips, worktree/title updates) —
 	   deliberately the quietest bubble in the log. */
 	.line.marker .bubble {
@@ -310,6 +282,12 @@
 		border-color: var(--border);
 		color: var(--text-faint);
 		font-size: var(--fs-xs);
+	}
+	.line.marker .bubble.tool-block {
+		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+		color: var(--text);
+		font-size: var(--fs-sm);
 	}
 	/* The marker timestamp shows only on hover so a burst of them cannot
 	   dominate the log. */
@@ -319,39 +297,5 @@
 	.line.marker:hover .marker-ts,
 	.line.marker:focus-within .marker-ts {
 		visibility: visible;
-	}
-	/* Optimistic reply: muted/amber until the agent acknowledges, then it
-	   settles into the regular green user tint above. */
-	.line.user.pending .bubble {
-		background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--warn) 35%, transparent);
-		opacity: 0.85;
-	}
-	.line.user.queued .bubble {
-		background: color-mix(in srgb, var(--role-queued) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-queued) 40%, transparent);
-	}
-	.line.user.cancelled .bubble {
-		opacity: 0.6;
-		text-decoration: line-through;
-	}
-	/* Failed send: the bubble goes red and a Retry control appears. */
-	.line.user.failed .bubble {
-		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
-	}
-	.line.tool .bubble,
-	.line.result .bubble {
-		background: var(--bg-elevated-2);
-		border-left: 2px solid color-mix(in srgb, var(--role-tool) 55%, transparent);
-	}
-	.line.tool.mcp .bubble {
-		border-left-color: color-mix(in srgb, var(--role-mcp) 60%, transparent);
-	}
-	.code {
-		white-space: pre-wrap;
-		max-height: 22rem;
-		overflow: auto;
-		font-size: calc(var(--fs-sm) - 0.0625rem);
 	}
 </style>

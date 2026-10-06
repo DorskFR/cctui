@@ -1055,7 +1055,7 @@ impl Client {
         data: Value,
     ) -> Result<SettingsPayload, ClientError> {
         let route = Self::route("put_settings")?;
-        let body = serde_json::to_value(SettingsPayload { version, data })
+        let body = serde_json::to_value(SettingsPayload { version, data, revision: None })
             .map_err(|source| ClientError::Decode { route: route.id, source })?;
         self.json(route, &[], &[], Some(&body)).await
     }

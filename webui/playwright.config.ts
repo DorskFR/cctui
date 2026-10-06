@@ -37,7 +37,7 @@ export default defineConfig({
 		{
 			name: 'drawer-header',
 			testMatch: ['drawer-header-meta.spec.ts', 'drawer-header-actions.spec.ts'],
-			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
+			use: { baseURL: headerUrl }
 		},
 		{
 			name: 'spawn',
@@ -47,13 +47,16 @@ export default defineConfig({
 		{
 			name: 'drawer',
 			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts', 'mobile-hscroll.spec.ts'],
-			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
+			use: { baseURL: headerUrl }
 		},
+		// CI runs this and the two drawer projects: every request is stubbed
+		// through page.route, so they need no server, no seeded database and no
+		// journeys/.auth/state.json. Keep them that way.
 		{
-			name: 'tiles',
+			name: 'hermetic',
 			// Anchored to the filename: testMatch sees the absolute path, so a bare
 			// `tiles-` also matches every spec under a worktree named for the branch.
-			testMatch: /(^|[\\/])tiles-[^\\/]*\.spec\.ts$/,
+			testMatch: /(^|[\\/])(tiles-|fontscale-)[^\\/]*\.spec\.ts$/,
 			use: { baseURL: headerUrl }
 		},
 		{

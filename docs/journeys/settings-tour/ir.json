@@ -64,9 +64,11 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
-			"target": "settings-goto",
+			"target": {
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"sessions\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"sessions\"]"
+			},
 			"say": {
 				"title": {
 					"en": "Settings are one page per subject",
@@ -111,9 +113,11 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
-			"target": "settings-goto",
+			"target": {
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"execution\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"execution\"]"
+			},
 			"say": {
 				"title": {
 					"en": "Now the one that matters most",
@@ -158,9 +162,11 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
-			"target": "settings-goto",
+			"target": {
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"privacy\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"privacy\"]"
+			},
 			"say": {
 				"title": {
 					"en": "And what never leaves",
@@ -205,9 +211,11 @@
 			"do": {
 				"kind": "click"
 			},
-			"guide": "wait-for-user",
+			"guide": "next",
 			"timeout": 10000,
-			"target": "settings-goto",
+			"target": {
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"guides\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"guides\"]"
+			},
 			"say": {
 				"title": {
 					"en": "One page left",

@@ -1,6 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { stubDrawer } from './drawer.fixture';
 
 test.use({ isMobile: true, hasTouch: true, deviceScaleFactor: 3.5 });
+
+test.beforeEach(({ page }) => stubDrawer(page));
 
 const WIDTHS = [360, 412, 800];
 const NARROW = { width: 360, height: 800 };

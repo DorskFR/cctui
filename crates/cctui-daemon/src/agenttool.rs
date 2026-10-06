@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cctui_proto::api::{
-    MessageChildRequest, PeerMessageRequest, RoomToolRequest, SpawnChildRequest,
+    ArchiveChildRequest, ArchiveChildResponse, MessageChildRequest, PeerMessageRequest,
+    RoomToolRequest, SpawnChildRequest,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -54,6 +55,8 @@ enum CallKind {
     Usage {
         model: Option<String>,
     },
+    /// `CctuiAgentArchive`: archive a descendant and free its slot.
+    ArchiveChild(ArchiveChildRequest),
     /// `CctuiPeers`: the sessions this one may address.
     Peers,
     /// `CctuiSend`: one message into a peer's turn queue. Unlike
@@ -93,38 +96,18 @@ struct Call {
     proto: u64,
 }
 
-/// A signpost, not an allowlist: an account catalog may alias other ids, and
-/// the daemon never rejects an id it does not recognise.
-const KNOWN_MODELS: &[(&str, &str)] = &[
-    (
-        "claude-code",
-        "claude-opus-5[1m], claude-opus-5, claude-sonnet-5, claude-haiku-4-5, claude-fable-5",
-    ),
-    ("codex", "gpt-5.6-sol, gpt-5.6-terra"),
-];
+/// Where a caller finds a current model id. Concrete ids are never compiled in:
+/// they go stale and steer every caller onto a superseded model.
+const MODEL_ID_HINT: &str = "use your own model id (your environment names it) or one \
+    CctuiUsage lists under per_model; an alias from the account's own catalog is also \
+    accepted";
 
-fn known_models_for(adapter: &str) -> String {
-    let normalized = normalize_adapter(adapter);
-    KNOWN_MODELS.iter().find(|(id, _)| *id == normalized).map_or_else(
-        || {
-            KNOWN_MODELS
-                .iter()
-                .map(|(id, models)| format!("{id}: {models}"))
-                .collect::<Vec<_>>()
-                .join("; ")
-        },
-        |(_, models)| (*models).to_owned(),
-    )
-}
-
-fn missing_model_error(adapter: &str) -> String {
+fn missing_model_error() -> String {
     format!(
         "model is required and was not given. CctuiAgent never falls back to the account \
          default: that silently spends a different budget than the caller intended, and a \
          whole fan-out can die on 429 minutes later without the cause being visible. Pass \
-         model explicitly — known ids: {}. An alias from the account's own catalog is also \
-         accepted.",
-        known_models_for(adapter),
+         model explicitly — {MODEL_ID_HINT}."
     )
 }
 
@@ -142,6 +125,10 @@ fn parse_call(line: &str) -> Result<Call, String> {
     let proto = v.get("proto").and_then(Value::as_u64).unwrap_or(1);
     let kind = match v.get("kind").and_then(Value::as_str) {
         Some("usage") => CallKind::Usage { model: string_arg(&args, "model") },
+        Some("archive_child") => match string_arg(&args, "session_id") {
+            Some(session_id) => CallKind::ArchiveChild(ArchiveChildRequest { session_id }),
+            None => return Err("session_id is required: the child to archive".to_owned()),
+        },
         Some("peers") => CallKind::Peers,
         Some("send_peer") => parse_send_peer(&args)?,
         Some("room") => parse_room(&args)?,
@@ -255,7 +242,7 @@ fn parse_spawn_agent(args: &Value) -> Result<CallKind, String> {
     }
     let adapter = normalize_adapter(args.get("adapter").and_then(Value::as_str).unwrap_or(""));
     let Some(model) = string_arg(args, "model") else {
-        return Err(missing_model_error(&adapter));
+        return Err(missing_model_error());
     };
     Ok(CallKind::Spawn(SpawnChildRequest {
         adapter,
@@ -345,6 +332,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             timeout.as_secs(),
         ),
         CallKind::Usage { .. }
+        | CallKind::ArchiveChild(_)
         | CallKind::Peers
         | CallKind::SendPeer(_)
         | CallKind::Room(_)
@@ -682,6 +670,12 @@ fn render_usage(v: &Value) -> String {
             }
         }
     }
+    if let Some(used) = v.pointer("/children/used").and_then(Value::as_u64) {
+        match v.pointer("/children/max").and_then(Value::as_u64) {
+            Some(max) => parts.push(format!("children {used}/{max}")),
+            None => parts.push(format!("children {used}")),
+        }
+    }
     if v.get("stale").and_then(Value::as_bool).unwrap_or(false) {
         parts.push("usage cache stale — numbers may be out of date".to_owned());
     }
@@ -689,6 +683,17 @@ fn render_usage(v: &Value) -> String {
         return "no usage information is available for this session".to_owned();
     }
     parts.join(" · ")
+}
+
+fn render_archived(resp: &ArchiveChildResponse) -> String {
+    let slots = resp.max_children.map_or_else(
+        || format!("{} child slots used", resp.children_used),
+        |max| format!("{}/{max} child slots used", resp.children_used),
+    );
+    if resp.archived.is_empty() {
+        return format!("nothing archived · {slots}");
+    }
+    format!("archived {} · {slots}", resp.archived.join(", "))
 }
 
 async fn run_usage(
@@ -795,6 +800,10 @@ async fn run_unfollowed_call(
     let me = call.session_id.as_str();
     let frame = match &call.kind {
         CallKind::Usage { model } => run_usage(server, machine_key, me, model.as_deref()).await,
+        CallKind::ArchiveChild(req) => match server.archive_child(machine_key, me, req).await {
+            Ok(resp) => json!({ "ok": true, "result": render_archived(&resp) }),
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
         CallKind::Peers => match server.peers(machine_key, me).await {
             Ok(v) => json!({ "ok": true, "result": render_peers(&v) }),
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
@@ -891,6 +900,7 @@ async fn run_call(
             (handle, req.session_id.clone())
         }
         CallKind::Usage { .. }
+        | CallKind::ArchiveChild(_)
         | CallKind::Peers
         | CallKind::SendPeer(_)
         | CallKind::Room(_)
@@ -1248,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spawn_without_a_model_is_rejected_and_the_error_names_the_ids() {
+    fn a_spawn_without_a_model_is_rejected_and_the_error_says_where_to_find_one() {
         for args in [
             json!({ "adapter": "claude-code", "prompt": "go" }),
             json!({ "adapter": "claude-code", "prompt": "go", "model": "   " }),
@@ -1258,20 +1268,31 @@ mod tests {
                 json!({ "kind": "spawn_agent", "session_id": "p", "args": args }).to_string();
             let Err(err) = parse_call(&line) else { panic!("a spawn without a model must fail") };
             assert!(err.contains("model is required"), "{err}");
-            assert!(err.contains("claude-opus-5[1m]"), "{err}");
-            assert!(err.contains("claude-fable-5"), "{err}");
             assert!(err.contains("never falls back"), "{err}");
+            assert!(err.contains("per_model"), "{err}");
         }
     }
 
     #[test]
-    fn the_missing_model_error_lists_the_ids_of_the_named_adapter() {
-        let codex = missing_model_error("codex-cli");
-        assert!(codex.contains("gpt-5.6-sol"), "{codex}");
-        assert!(!codex.contains("claude-opus-5"), "{codex}");
-        let unknown = missing_model_error("opencode");
-        assert!(unknown.contains("claude-code:"), "{unknown}");
-        assert!(unknown.contains("codex:"), "{unknown}");
+    fn the_missing_model_error_names_no_concrete_model_id() {
+        let err = missing_model_error();
+        for stale in ["claude-opus", "claude-sonnet", "claude-haiku", "claude-fable", "gpt-5"] {
+            assert!(!err.contains(stale), "compiled-in model id {stale:?} in: {err}");
+        }
+    }
+
+    #[test]
+    fn a_model_id_absent_from_any_list_still_parses() {
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "p",
+            "args": { "adapter": "claude-code", "prompt": "go", "model": "claude-opus-9-9[1m]" },
+        })
+        .to_string();
+        let CallKind::Spawn(req) = parse_call(&line).expect("parses").kind else {
+            panic!("expected a spawn")
+        };
+        assert_eq!(req.model.as_deref(), Some("claude-opus-9-9[1m]"));
     }
 
     #[test]
@@ -1835,6 +1856,40 @@ mod tests {
         assert!(stale.contains("shared"), "{stale}");
         assert!(stale.contains("usage cache stale"), "{stale}");
         assert_eq!(render_usage(&json!({})), "no usage information is available for this session");
+    }
+
+    #[test]
+    fn the_usage_line_reports_child_slots() {
+        let capped = render_usage(&json!({ "children": { "used": 3, "max": 16 } }));
+        assert_eq!(capped, "children 3/16");
+        let uncapped = render_usage(&json!({ "children": { "used": 2 } }));
+        assert_eq!(uncapped, "children 2");
+    }
+
+    #[test]
+    fn an_archive_call_needs_a_target_and_parses_into_its_own_kind() {
+        let line =
+            json!({ "kind": "archive_child", "session_id": "p", "args": { "session_id": " c1 " } })
+                .to_string();
+        let call = parse_call(&line).unwrap();
+        let CallKind::ArchiveChild(req) = call.kind else { panic!("expected archive_child") };
+        assert_eq!(req.session_id, "c1");
+        assert!(dispatch_note(&CallKind::ArchiveChild(req), Duration::from_secs(30)).is_empty());
+
+        let missing = json!({ "kind": "archive_child", "session_id": "p", "args": {} }).to_string();
+        assert!(parse_call(&missing).unwrap_err().contains("session_id is required"));
+    }
+
+    #[test]
+    fn an_archive_result_names_the_rows_and_the_slots_left() {
+        let resp = ArchiveChildResponse {
+            archived: vec!["c1".into(), "c1-sub".into()],
+            children_used: 15,
+            max_children: Some(16),
+        };
+        assert_eq!(render_archived(&resp), "archived c1, c1-sub · 15/16 child slots used");
+        let none = ArchiveChildResponse { archived: vec![], children_used: 4, max_children: None };
+        assert_eq!(render_archived(&none), "nothing archived · 4 child slots used");
     }
 
     #[test]

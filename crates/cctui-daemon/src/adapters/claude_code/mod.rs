@@ -32,6 +32,7 @@ mod pty_view;
 mod roster;
 mod session_registry;
 mod socket;
+mod spawn_watchdog;
 pub(crate) mod state;
 mod streamjson;
 mod transcript;
@@ -68,15 +69,20 @@ pub(crate) type SessionMap = Arc<Mutex<HashMap<String, String>>>;
 pub(crate) type PendingAsks = Arc<Mutex<HashMap<String, Option<serde_json::Value>>>>;
 
 /// A tool-permission hook currently parked in `handle_hook_connection`,
-/// long-polling for a human's decision. Keyed by the stable
-/// `local_id` of the session the blocked `PreToolUse` hook belongs to (the
-/// listener resolves the hook's live `session_id` through [`SessionMap`]). The
+/// long-polling for a human's decision. Keyed by `(local_id, request_id)`: a
+/// session can block several `PreToolUse` hooks at once (parallel tool calls),
+/// and each decision must reach the hook it answers (the listener resolves the
+/// hook's live `session_id` to `local_id` through [`SessionMap`]). The
 /// `oneshot::Sender<bool>` resolves the hook: `true` → the hook returns an
 /// `allow` decision, `false` → `deny`. Dropping the sender (timeout / session
 /// gone) lets the hook fall through to the keystroke path. The driver's
 /// `PermissionResponse` handler resolves the entry instead of attaching +
-/// injecting keystrokes whenever one is registered for the target session.
-pub(crate) type PendingPermHooks = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>;
+/// injecting keystrokes whenever one is registered for the target request.
+pub(crate) type PendingPermHooks =
+    Arc<Mutex<HashMap<PermHookKey, tokio::sync::oneshot::Sender<bool>>>>;
+
+/// `(local_id, request_id)` of a parked permission hook.
+pub(crate) type PermHookKey = (String, String);
 
 /// Last hook delivery per stable `local_id`: `(kind, when)`. Maintained by
 /// the ask-hook listener and read by the session-diagnose aggregation
@@ -128,6 +134,7 @@ async fn start_bg(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     tracing::info!("claude-code adapter starting in claude-daemon mode");
     let cfg = control::DriverConfig::from_value(&ctx.config);
     let pty_watch = ctx.pty_watch.take();
+    let interrupts = ctx.interrupts.take();
     let driver = control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
         // Gateway-env launch chokepoint source.
         .with_server(ctx.server.clone(), ctx.machine_key.clone());
@@ -135,6 +142,15 @@ async fn start_bg(mut ctx: AdapterCtx) -> anyhow::Result<()> {
         let (views, roster) = driver.pty_watch_pump();
         let pump = pty_view::PtyWatchPump::new(views, roster, ctx.shutdown.clone());
         tokio::spawn(pump.run(watches));
+    }
+    if let Some(queue) = interrupts {
+        crate::adapter_runtime::spawn_interrupt_pump(
+            "claude-code",
+            queue,
+            std::sync::Arc::new(driver.interrupter()),
+            ctx.events.clone(),
+            ctx.shutdown.clone(),
+        );
     }
     // The `AskUserQuestion` PreToolUse hook delivers the pending
     // question here over the daemon's local socket. The hook reports claude's
@@ -498,9 +514,10 @@ async fn wait_for_perm_decision(
     pending_perm_hooks: &PendingPermHooks,
 ) -> String {
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    let key: PermHookKey = (req.local_id.clone(), req.request_id.clone());
     // Register before emitting so a fast decision can't race past an empty map.
     if let Ok(mut map) = pending_perm_hooks.lock() {
-        map.insert(req.local_id.clone(), tx);
+        map.insert(key.clone(), tx);
     }
     let _ = events
         .send(AdapterEvent::PermissionRequest {
@@ -513,10 +530,9 @@ async fn wait_for_perm_decision(
 
     let outcome = tokio::time::timeout(PERM_HOOK_WAIT, rx).await;
     // Always clear our slot: on timeout the sender is dropped here; on a
-    // delivered decision the driver already removed it (a stale re-insert from a
-    // racing request is harmless — it's keyed by local_id and replaced).
+    // delivered decision the driver already removed it.
     if let Ok(mut map) = pending_perm_hooks.lock() {
-        map.remove(&req.local_id);
+        map.remove(&key);
     }
     // Tell clients the inline prompt is no longer pending regardless of outcome.
     let _ = events
@@ -541,7 +557,7 @@ async fn wait_for_perm_decision(
                 "permissionDecisionReason": "Denied from cctui.",
             },
         }),
-        // Sender dropped (driver replaced our slot) or wait timed out: defer to
+        // Sender dropped or wait timed out: defer to
         // the normal permission flow so the keystroke fallback can answer.
         _ => json!({
             "hookSpecificOutput": {
@@ -582,6 +598,10 @@ impl AdapterFactory for ClaudeCodeFactory {
     /// Only the `claude daemon` path owns a PTY to relay.
     fn pty_watch(&self, config: &serde_json::Value) -> bool {
         Mode::from_config(config) == Mode::Bg
+    }
+
+    fn interrupts(&self, config: &serde_json::Value) -> bool {
+        matches!(Mode::from_config(config), Mode::Bg | Mode::Sdk)
     }
 }
 
@@ -756,13 +776,50 @@ mod tests {
             other => panic!("expected PermissionRequest, got {other:?}"),
         }
         // Deliver the human decision the way the driver would.
-        let sender = hooks2.lock().unwrap().remove("L1").expect("registered");
+        let sender =
+            hooks2.lock().unwrap().remove(&("L1".to_owned(), "r1".to_owned())).expect("registered");
         sender.send(true).unwrap();
         let decision = join.await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&decision).unwrap();
         assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
         // A PermissionResolved follows so clients drop the inline card.
         assert!(matches!(rx.recv().await, Some(AdapterEvent::PermissionResolved { .. })));
+    }
+
+    /// Two prompts parked at once in one session (parallel tool calls) must
+    /// each get their own decision, not the other one's.
+    #[tokio::test]
+    async fn concurrent_perm_hooks_in_one_session_resolve_independently() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let hooks: PendingPermHooks = Arc::default();
+        let req = |id: &str| PermRequest {
+            local_id: "L1".into(),
+            request_id: id.into(),
+            tool: "Bash".into(),
+            input: json!({}),
+        };
+        let (h1, tx1) = (hooks.clone(), tx.clone());
+        let first = tokio::spawn(async move { wait_for_perm_decision(req("r1"), &tx1, &h1).await });
+        let (h2, tx2) = (hooks.clone(), tx);
+        let second =
+            tokio::spawn(async move { wait_for_perm_decision(req("r2"), &tx2, &h2).await });
+        for _ in 0..2 {
+            assert!(matches!(rx.recv().await, Some(AdapterEvent::PermissionRequest { .. })));
+        }
+        assert_eq!(hooks.lock().unwrap().len(), 2, "the second prompt must not evict the first");
+
+        let take = |id: &str| {
+            hooks.lock().unwrap().remove(&("L1".to_owned(), id.to_owned())).expect("registered")
+        };
+        take("r2").send(true).unwrap();
+        take("r1").send(false).unwrap();
+
+        let decision = |line: String| -> String {
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            v["hookSpecificOutput"]["permissionDecision"].as_str().unwrap().to_owned()
+        };
+        assert_eq!(decision(first.await.unwrap()), "deny");
+        assert_eq!(decision(second.await.unwrap()), "allow");
     }
 
     #[test]

@@ -149,8 +149,6 @@ pub async fn fetch_by_id(
     exec: impl PgExecutor<'_>,
     id: &str,
 ) -> Result<Option<DbSession>, sqlx::Error> {
-    // Same projection as search: `DbSession` gains columns (room_id, room_name)
-    // and a hand-copied SELECT silently drifts, failing every non-live open.
     let sql = format!("{DB_SESSION_SELECT} WHERE s.id = $1");
     sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(id).fetch_optional(exec).await
 }
@@ -227,7 +225,9 @@ pub fn job_children<'a>(children: &'a [Child], archived: &[String]) -> Vec<&'a s
 
 #[cfg(test)]
 mod tests {
-    use super::{Child, SessionRowStatus, descendants, job_children, upsert_registered};
+    use super::{
+        Child, SessionRowStatus, descendants, fetch_by_id, job_children, upsert_registered,
+    };
 
     #[test]
     fn row_status_round_trips_through_text() {
@@ -374,6 +374,55 @@ mod tests {
         ] {
             sqlx::query(sql).bind(uid).execute(&pool).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn fetch_by_id_reads_a_non_uuid_opencode_id() {
+        let name = "fetch_by_id_non_uuid";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{name}-{uid}"))
+            .bind(format!("h-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mk-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let id = format!("ses_{}", uid.simple());
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             metadata, adapter_id) VALUES ($1, $2, $2, $3, '/w', 'ended', '{}', 'opencode')",
+        )
+        .bind(&id)
+        .bind(machine)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let got = fetch_by_id(&pool, &id).await;
+
+        for sql in [
+            "DELETE FROM sessions WHERE user_id = $1",
+            "DELETE FROM machines WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(sql).bind(uid).execute(&pool).await.unwrap();
+        }
+        assert!(got.expect("fetch_by_id must decode the row").is_some());
     }
 
     #[tokio::test]
