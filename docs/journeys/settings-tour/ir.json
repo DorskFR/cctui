@@ -67,7 +67,7 @@
 			"guide": "next",
 			"timeout": 10000,
 			"target": {
-				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"sessions\"], .tabs[data-journey=\"settings-goto\"]"
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"sessions\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"sessions\"]"
 			},
 			"say": {
 				"title": {
@@ -116,7 +116,7 @@
 			"guide": "next",
 			"timeout": 10000,
 			"target": {
-				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"execution\"], .tabs[data-journey=\"settings-goto\"]"
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"execution\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"execution\"]"
 			},
 			"say": {
 				"title": {
@@ -165,7 +165,7 @@
 			"guide": "next",
 			"timeout": 10000,
 			"target": {
-				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"privacy\"], .tabs[data-journey=\"settings-goto\"]"
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"privacy\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"privacy\"]"
 			},
 			"say": {
 				"title": {
@@ -214,7 +214,7 @@
 			"guide": "next",
 			"timeout": 10000,
 			"target": {
-				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"guides\"], .tabs[data-journey=\"settings-goto\"]"
+				"css": ".toc [data-journey=\"settings-nav\"][data-journey-key=\"guides\"], .tabs [data-journey=\"settings-tab\"][data-journey-key=\"guides\"]"
 			},
 			"say": {
 				"title": {
