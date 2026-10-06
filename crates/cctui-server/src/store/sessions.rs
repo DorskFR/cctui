@@ -1,7 +1,7 @@
 use cctui_proto::models::SessionStatus;
 use sqlx::PgExecutor;
 
-use crate::routes::sessions::DbSession;
+use crate::routes::sessions::{DB_SESSION_SELECT, DbSession};
 
 /// Every value `sessions.status` may hold; migration 139 enforces the same set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,18 +149,10 @@ pub async fn fetch_by_id(
     exec: impl PgExecutor<'_>,
     id: &str,
 ) -> Result<Option<DbSession>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
-                s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-                COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
-         FROM sessions s \
-         LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.id = $1",
-    )
-    .bind(id)
-    .fetch_optional(exec)
-    .await
+    // Same projection as search: `DbSession` gains columns (room_id, room_name)
+    // and a hand-copied SELECT silently drifts, failing every non-live open.
+    let sql = format!("{DB_SESSION_SELECT} WHERE s.id = $1");
+    sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(id).fetch_optional(exec).await
 }
 
 pub async fn adapter_id(

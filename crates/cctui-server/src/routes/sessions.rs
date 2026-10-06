@@ -1114,8 +1114,10 @@ pub struct SearchParams {
     pub offset: Option<i64>,
 }
 
-/// Shared SELECT + machine-name join for the session-search queries.
-const SEARCH_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
+/// Shared SELECT + machine-name and room joins: the full `DbSession`
+/// projection. Every `query_as::<DbSession>` builds on it, so a new field
+/// cannot be added to one query and forgotten in another.
+pub const DB_SESSION_SELECT: &str = "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
             s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
             COALESCE(m.display_name, m.name) AS resolved_machine_name, \
             m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind, \
@@ -1374,7 +1376,7 @@ pub async fn search_sessions(
         // Browse the archive: archived sessions only, newest first, paginated.
         // `$3` scopes to the caller (NULL = admin).
         let sql = format!(
-            "{SEARCH_SELECT} WHERE s.status = 'archived' \
+            "{DB_SESSION_SELECT} WHERE s.status = 'archived' \
              AND ($3::uuid IS NULL OR m.user_id = $3) \
              ORDER BY s.registered_at DESC LIMIT $1 OFFSET $2"
         );
@@ -1415,7 +1417,7 @@ pub async fn search_sessions(
         let (li, oi) = (n + 1 + extra, n + 2 + extra);
         let ui = oi + 1;
         let sql = format!(
-            "{SEARCH_SELECT} WHERE ({scope}) AND ({where_sql}) \
+            "{DB_SESSION_SELECT} WHERE ({scope}) AND ({where_sql}) \
              AND (${ui}::uuid IS NULL OR m.user_id = ${ui}) \
              ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}"
         );
@@ -3469,7 +3471,7 @@ mod tests {
             .await
             .unwrap();
 
-            let sql = format!("{} WHERE s.id = $1", super::SEARCH_SELECT);
+            let sql = format!("{} WHERE s.id = $1", super::DB_SESSION_SELECT);
             let row = sqlx::query_as::<_, super::DbSession>(sqlx::AssertSqlSafe(sql))
                 .bind(&sid)
                 .fetch_one(&pool)
@@ -4834,6 +4836,44 @@ mod tests {
         .await
         .expect("read session");
         assert_eq!(row.expect("session row").4.as_deref(), Some("plan"));
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    /// Opening a session that is no longer live reads it through
+    /// `fetch_by_id`; its SELECT once lacked `room_id`, so every archived open
+    /// failed with `no column found for name: room_id`.
+    #[tokio::test]
+    async fn an_archived_session_opens_from_the_db_with_its_room() {
+        let Some((pool, sid)) = seeded_session("archived_session_opens_with_room").await else {
+            return;
+        };
+        let room: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO rooms (user_id, name) \
+             SELECT user_id, 'wave 23' FROM sessions WHERE id = $1 RETURNING id",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .expect("seed room");
+        sqlx::query("UPDATE sessions SET room_id = $1, status = 'archived' WHERE id = $2")
+            .bind(room)
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("archive into room");
+
+        let row = crate::store::sessions::fetch_by_id(&pool, &sid)
+            .await
+            .expect("fetch_by_id must decode a full DbSession")
+            .expect("session row");
+        assert_eq!(row.status, "archived");
+        assert_eq!(row.room_id, Some(room));
+        assert_eq!(row.room_name.as_deref(), Some("wave 23"));
 
         sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(&sid)
