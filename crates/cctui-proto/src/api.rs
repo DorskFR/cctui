@@ -848,6 +848,9 @@ pub struct UsageBucket {
     pub output: u64,
     pub cache_read: u64,
     pub cache_creation: u64,
+    /// Dollars, priced from each session's account catalog like the session
+    /// list's cost; tokens of an unpriced model add nothing.
+    pub cost_usd: f64,
 }
 
 /// Attributed by session model, not per turn.

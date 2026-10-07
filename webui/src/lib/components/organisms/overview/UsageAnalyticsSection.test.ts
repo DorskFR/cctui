@@ -6,7 +6,7 @@ const usageDays: number[] = [];
 const cacheLossDays: number[] = [];
 const usage = (granularity: 'hour' | 'day') => ({
 	granularity,
-	buckets: [{ bucket: new Date().toISOString(), input: 1, output: 1, cache_read: 1, cache_creation: 0 }],
+	buckets: [{ bucket: new Date().toISOString(), input: 1, output: 1, cache_read: 1, cache_creation: 0, cost_usd: 0 }],
 	models: [],
 	heatmap: []
 });

@@ -7,4 +7,9 @@ export type UsageBucket = {
 /**
  * Bucket start, RFC3339 UTC.
  */
-bucket: string, input: number, output: number, cache_read: number, cache_creation: number, };
+bucket: string, input: number, output: number, cache_read: number, cache_creation: number, 
+/**
+ * Dollars, priced from each session's account catalog like the session
+ * list's cost; tokens of an unpriced model add nothing.
+ */
+cost_usd: number, };

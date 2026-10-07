@@ -12,6 +12,7 @@ import {
 	peakBucket,
 	recentFrom,
 	isAxisTick,
+	rangeCost,
 } from './usage-analytics';
 
 // Anchor "now" to a fixed local wall-clock instant so bucket keys are stable.
@@ -23,6 +24,7 @@ const bucket = (d: Date, over: Partial<UsageBucket> = {}): UsageBucket => ({
 	output: 0,
 	cache_read: 0,
 	cache_creation: 0,
+	cost_usd: 0,
 	...over,
 });
 
@@ -51,6 +53,35 @@ describe('fillBuckets', () => {
 		const filled = fillBuckets([], 1, 'hour', NOW);
 		expect(filled).toHaveLength(24);
 		expect(filled.every((b) => b.input === 0)).toBe(true);
+	});
+});
+
+describe('rangeCost', () => {
+	it('carries each row's dollars onto its slot and sums the range', () => {
+		const today = new Date(2026, 6, 15, 9, 0, 0);
+		const twoDaysAgo = new Date(2026, 6, 13, 22, 0, 0);
+		const filled = fillBuckets(
+			[bucket(today, { cost_usd: 1.25 }), bucket(twoDaysAgo, { cost_usd: 0.5 })],
+			7,
+			'day',
+			NOW,
+		);
+		expect(filled[6].cost_usd).toBe(1.25);
+		expect(filled[5].cost_usd).toBe(0);
+		expect(filled[4].cost_usd).toBe(0.5);
+		expect(rangeCost(filled)).toBeCloseTo(1.75);
+	});
+
+	it('reads a missing, negative or non-finite cost as nothing', () => {
+		const rows = [
+			bucket(NOW, { cost_usd: -1 }),
+			{ ...bucket(NOW), cost_usd: Number.NaN },
+			{ ...bucket(NOW), cost_usd: undefined as unknown as number },
+		];
+		for (const row of rows) {
+			expect(rangeCost(fillBuckets([row], 1, 'day', NOW))).toBe(0);
+		}
+		expect(rangeCost([])).toBe(0);
 	});
 });
 

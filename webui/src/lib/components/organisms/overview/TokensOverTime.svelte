@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { UsageBucket } from '@bindings/UsageBucket';
-	import { compact } from '$lib/format';
+	import { compact, usd } from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
 	import { Text, Timestamp, formatTimestamp } from '@dorsk/tsumikit';
 	import {
@@ -9,6 +9,7 @@
 		isAxisTick,
 		peakBucket,
 		peakBucketTotal,
+		rangeCost,
 		recentFrom,
 		type Granularity
 	} from './usage-analytics';
@@ -27,6 +28,7 @@
 	const peakHeight = $derived(peakBucketTotal(filled));
 	const peak = $derived(peakBucket(filled));
 	const recent = $derived(recentFrom(filled.length));
+	const cost = $derived(rangeCost(filled));
 
 	const tickEvery = $derived(granularity === 'hour' ? 6 : days <= 7 ? 1 : 7);
 	const tick = (ms: number) => formatTimestamp(ms, granularity === 'hour' ? 'time' : 'short-iso');
@@ -40,7 +42,7 @@
 				class="col"
 				class:recent={i >= recent}
 				role="listitem"
-				title={`${formatTimestamp(b.ms, 'datetime')}\n↑${b.input}  ↓${b.output}  ⚡${b.cache_read}`}
+				title={`${formatTimestamp(b.ms, 'datetime')}\n↑${b.input}  ↓${b.output}  ⚡${b.cache_read}  ${usd(b.cost_usd)}`}
 			>
 				<div class="bar" style={`height:${pct(bucketTotal(b))}`}></div>
 			</div>
@@ -58,7 +60,10 @@
 	{#if peak}
 		<Text size="xs" tone="faint"
 			>{m.home_usage_peak({ n: compact(bucketTotal(peak)) })} ·
-			<Timestamp value={peak.ms} mode="datetime" tone="inherit" /></Text
+			<Timestamp value={peak.ms} mode="datetime" tone="inherit" />
+			{#if cost > 0}
+				· {m.home_usage_range_cost({ usd: usd(cost) })}
+			{/if}</Text
 		>
 	{/if}
 </div>

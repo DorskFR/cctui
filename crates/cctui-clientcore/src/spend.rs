@@ -1,10 +1,11 @@
 //! Spend readings: what the windows cost, which models the dollars went to,
-//! and the daily token series a sparkline draws.
+//! and the daily series a sparkline draws.
 //!
-//! Ports the webui's `spend.ts` and `overview/cache-loss.ts`. No endpoint
-//! reports dollars per window, so per-model dollars are attributed as the
-//! Overview's cost tile does: a session's lifetime cost, booked to the window
-//! it was registered in. Times are unix milliseconds — the caller's clock.
+//! Ports the webui's `spend.ts` and `overview/cache-loss.ts`. Per-model
+//! dollars are attributed as the Overview's cost tile does: a session's
+//! lifetime cost, booked to the window it was registered in. The daily series
+//! is what `/sessions/stats/usage` reports per bucket: tokens and the dollars
+//! they were priced at. Times are unix milliseconds — the caller's clock.
 
 use crate::format;
 
@@ -107,10 +108,28 @@ pub fn spend_totals(rows: &[ModelSpendRow]) -> ModelSpendRow {
 
 /// One day of the usage series, keyed by the local-midnight instant the caller
 /// truncated it to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DailyPoint {
     pub day_ms: i64,
     pub tokens: u64,
+    pub cost_usd: f64,
+}
+
+impl DailyPoint {
+    /// One `/sessions/stats/usage` bucket, with its start already truncated to
+    /// the local day. Tokens are what the bar stacks: input, output and cache
+    /// reads, as the webui's `bucketTotal`.
+    #[must_use]
+    pub fn from_bucket(
+        day_ms: i64,
+        input: u64,
+        output: u64,
+        cache_read: u64,
+        cost_usd: f64,
+    ) -> Self {
+        let cost_usd = if cost_usd.is_finite() { cost_usd.max(0.0) } else { 0.0 };
+        Self { day_ms, tokens: input.saturating_add(output).saturating_add(cache_read), cost_usd }
+    }
 }
 
 const DAY_MS: i64 = 86_400_000;
@@ -123,13 +142,34 @@ const DAY_MS: i64 = 86_400_000;
 /// than a missing bar.
 #[must_use]
 pub fn fill_daily(points: &[DailyPoint], days: usize, end_day_ms: i64) -> Vec<u64> {
+    fill_with(points, days, end_day_ms, |p| p.tokens)
+}
+
+/// The dollar series of [`fill_daily`]: what the spend sparkline draws.
+#[must_use]
+pub fn fill_daily_usd(points: &[DailyPoint], days: usize, end_day_ms: i64) -> Vec<f64> {
+    fill_with(points, days, end_day_ms, |p| p.cost_usd)
+}
+
+fn fill_with<T: Default + Copy>(
+    points: &[DailyPoint],
+    days: usize,
+    end_day_ms: i64,
+    pick: impl Fn(&DailyPoint) -> T,
+) -> Vec<T> {
     (0..days)
         .rev()
         .map(|back| {
             let ms = end_day_ms - i64::try_from(back).unwrap_or(0) * DAY_MS;
-            points.iter().find(|p| p.day_ms == ms).map_or(0, |p| p.tokens)
+            points.iter().find(|p| p.day_ms == ms).map_or_else(T::default, &pick)
         })
         .collect()
+}
+
+/// Dollars across the whole series, the caption under a spend sparkline.
+#[must_use]
+pub fn daily_total_usd(points: &[DailyPoint]) -> f64 {
+    points.iter().map(|p| p.cost_usd).sum::<f64>() + 0.0
 }
 
 /// Range totals of the daily cache-loss rows: dollars burned re-sending a
@@ -191,8 +231,8 @@ pub fn langfuse_cost_label(cost_usd: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DailyPoint, SessionSpend, Windows, fill_daily, langfuse_cost_label, model_spend,
-        spend_since, spend_totals,
+        DailyPoint, SessionSpend, Windows, daily_total_usd, fill_daily, fill_daily_usd,
+        langfuse_cost_label, model_spend, spend_since, spend_totals,
     };
 
     const DAY: i64 = 86_400_000;
@@ -241,11 +281,24 @@ mod tests {
     fn fill_daily_zero_fills_gaps() {
         let end = 10 * DAY;
         let points = [
-            DailyPoint { day_ms: end, tokens: 7 },
-            DailyPoint { day_ms: end - 2 * DAY, tokens: 3 },
+            DailyPoint { day_ms: end, tokens: 7, cost_usd: 0.5 },
+            DailyPoint { day_ms: end - 2 * DAY, tokens: 3, cost_usd: 1.25 },
         ];
         assert_eq!(fill_daily(&points, 4, end), vec![0, 3, 0, 7]);
         assert!(fill_daily(&points, 0, end).is_empty());
+        assert_eq!(fill_daily_usd(&points, 4, end), vec![0.0, 1.25, 0.0, 0.5]);
+        assert!((daily_total_usd(&points) - 1.75).abs() < 1e-9);
+        assert!(daily_total_usd(&[]).abs() < 1e-9);
+        assert!(!daily_total_usd(&[]).is_sign_negative());
+    }
+
+    #[test]
+    fn daily_point_stacks_tokens_and_keeps_dollars_finite() {
+        let p = DailyPoint::from_bucket(DAY, 100, 20, 5, 0.25);
+        assert_eq!(p.tokens, 125);
+        assert!((p.cost_usd - 0.25).abs() < 1e-9);
+        assert_eq!(DailyPoint::from_bucket(DAY, 1, 1, 1, f64::NAN).cost_usd, 0.0);
+        assert_eq!(DailyPoint::from_bucket(DAY, 1, 1, 1, -3.0).cost_usd, 0.0);
     }
 
     #[test]

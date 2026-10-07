@@ -733,6 +733,7 @@
 	"home_usage_output": "Sortie",
 	"home_usage_page_title": "Utilisation",
 	"home_usage_peak": "Pic {n} tokens/intervalle",
+	"home_usage_range_cost": "{usd} dépensés sur la période",
 	"home_usage_range_label": "Période",
 	"home_usage_scope": "sur {machines} machines · {accounts} comptes",
 	"home_usage_title": "Analyse d'utilisation",
