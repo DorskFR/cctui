@@ -287,7 +287,11 @@ mod tests {
         ];
         assert_eq!(fill_daily(&points, 4, end), vec![0, 3, 0, 7]);
         assert!(fill_daily(&points, 0, end).is_empty());
-        assert_eq!(fill_daily_usd(&points, 4, end), vec![0.0, 1.25, 0.0, 0.5]);
+        let usd = fill_daily_usd(&points, 4, end);
+        assert_eq!(usd.len(), 4);
+        for (got, want) in usd.iter().zip([0.0, 1.25, 0.0, 0.5]) {
+            assert!((got - want).abs() < 1e-9, "{usd:?}");
+        }
         assert!((daily_total_usd(&points) - 1.75).abs() < 1e-9);
         assert!(daily_total_usd(&[]).abs() < 1e-9);
         assert!(!daily_total_usd(&[]).is_sign_negative());
@@ -298,8 +302,8 @@ mod tests {
         let p = DailyPoint::from_bucket(DAY, 100, 20, 5, 0.25);
         assert_eq!(p.tokens, 125);
         assert!((p.cost_usd - 0.25).abs() < 1e-9);
-        assert_eq!(DailyPoint::from_bucket(DAY, 1, 1, 1, f64::NAN).cost_usd, 0.0);
-        assert_eq!(DailyPoint::from_bucket(DAY, 1, 1, 1, -3.0).cost_usd, 0.0);
+        assert!(DailyPoint::from_bucket(DAY, 1, 1, 1, f64::NAN).cost_usd.abs() < 1e-9);
+        assert!(DailyPoint::from_bucket(DAY, 1, 1, 1, -3.0).cost_usd.abs() < 1e-9);
     }
 
     #[test]

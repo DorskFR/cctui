@@ -688,6 +688,240 @@ mod tests {
     }
 
     #[test]
+    fn the_timezone_ctes_stay_materialized() {
+        for cte in ["WITH zone AS MATERIALIZED (", "), boundaries AS MATERIALIZED ("] {
+            assert!(
+                super::SESSION_COUNTS_SQL.contains(cte),
+                "`{cte}` was dropped: pg_timezone_names goes back to eight scans per call, which \
+                 no correctness test can see"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn session_calendar_counts_over_db() {
+        let Some(url) = crate::routes::gateway::test_db_url("session_calendar_counts_over_db")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("test database");
+        let mut tx = pool.begin().await.unwrap();
+        // Temporary tables isolate the exact production query from shared fixtures.
+        sqlx::raw_sql(
+            "CREATE TEMP TABLE machines (id uuid, user_id uuid) ON COMMIT DROP;
+             CREATE TEMP TABLE sessions (machine_uuid uuid, status text, registered_at timestamptz) ON COMMIT DROP;
+             INSERT INTO machines VALUES
+                ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000011'),
+                ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000022');
+             INSERT INTO sessions
+                SELECT '00000000-0000-0000-0000-000000000001'::uuid, 'archived', '2026-10-26 00:00Z'::timestamptz
+                FROM generate_series(1, 30);
+             INSERT INTO sessions VALUES
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-10-24 22:00Z'),
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-10-25 22:59:59Z'),
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-09-30 22:00Z'),
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-09-30 21:59:59Z'),
+                ('00000000-0000-0000-0000-000000000002', 'active', '2026-10-26 01:00Z');"
+        ).execute(&mut *tx).await.unwrap();
+        let owner = uuid::Uuid::from_u128(17);
+        let now = Utc.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap();
+        for (uid, timezone, expected) in [
+            // Monday following the DST change: yesterday lasted 25 hours.
+            (Some(owner), "Europe/Paris", (34, 30, 30, 2, 30, 33)),
+            (None, "Europe/Paris", (35, 30, 31, 2, 31, 34)),
+            (Some(owner), "UTC", (34, 30, 30, 1, 30, 32)),
+            (Some(owner), "unknown/timezone", (34, 30, 30, 1, 30, 32)),
+            (Some(uuid::Uuid::from_u128(99)), "Europe/Paris", (0, 0, 0, 0, 0, 0)),
+        ] {
+            let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(super::SESSION_COUNTS_SQL)
+                .bind(uid)
+                .bind(timezone)
+                .bind(now)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(counts, expected, "timezone={timezone}, owner={uid:?}");
+        }
+        // New year, month and week boundaries are independent calendar periods.
+        sqlx::raw_sql(
+            "TRUNCATE sessions; INSERT INTO sessions VALUES
+            (NULL, 'archived', '2026-12-31 23:00Z'),
+            (NULL, 'active', '2026-12-31 22:59:59Z'),
+            (NULL, 'active', '2026-12-27 23:00Z'),
+            (NULL, 'active', '2026-12-27 22:59:59Z');",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(super::SESSION_COUNTS_SQL)
+            .bind(None::<uuid::Uuid>)
+            .bind("Europe/Paris")
+            .bind(Utc.with_ymd_and_hms(2027, 1, 1, 12, 0, 0).unwrap())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(counts, (4, 1, 1, 1, 3, 1));
+        tx.rollback().await.unwrap();
+    }
+
+    #[test]
+    fn granularity_hourly_for_short_ranges() {
+        assert_eq!(granularity_for_days(1), "hour");
+        assert_eq!(granularity_for_days(2), "hour");
+        assert_eq!(granularity_for_days(3), "day");
+        assert_eq!(granularity_for_days(30), "day");
+    }
+
+    // SQL aggregation test: needs a migrated Postgres. Point
+    // DATABASE_URL/TEST_DATABASE_URL at one and it runs; otherwise it skips.
+    // Exercises the exact handler query strings (the USAGE_*_SQL consts) for
+    // day bucketing, per-model grouping (incl. NULL model → 'unknown'), and
+    // hour-of-week heatmap extraction.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn usage_aggregation_over_db() {
+        use super::{USAGE_BUCKETS_SQL, USAGE_HEATMAP_SQL, USAGE_MODELS_SQL};
+        use sqlx::Row as _;
+
+        let Some(url) = crate::routes::gateway::test_db_url("usage_aggregation_over_db") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let prefix = "cct707-agg";
+        let cleanup = |p: sqlx::PgPool| async move {
+            sqlx::query("DELETE FROM sessions WHERE id LIKE $1")
+                .bind(format!("{prefix}-%"))
+                .execute(&p)
+                .await
+                .expect("cleanup");
+        };
+        cleanup(pool.clone()).await;
+
+        let seed = |n: i64,
+                    model: Option<&'static str>,
+                    at: DateTime<Utc>,
+                    input: i64,
+                    output: i64,
+                    cache_read: i64,
+                    cache_creation: i64| {
+            let pool = pool.clone();
+            async move {
+                let sid = format!("{prefix}-s{n}");
+                sqlx::query(
+                    "INSERT INTO sessions (id, machine_id, working_dir, status, model) \
+                     VALUES ($1, 'test-machine', '/tmp', 'active', $2) \
+                     ON CONFLICT (id) DO UPDATE SET model = EXCLUDED.model",
+                )
+                .bind(&sid)
+                .bind(model)
+                .execute(&pool)
+                .await
+                .expect("insert session");
+                sqlx::query(
+                    "INSERT INTO session_token_usage (session_id, message_id, input_tokens, \
+                     output_tokens, cache_read_tokens, cache_creation_tokens, created_at) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                )
+                .bind(&sid)
+                .bind(format!("{prefix}-m{n}"))
+                .bind(input)
+                .bind(output)
+                .bind(cache_read)
+                .bind(cache_creation)
+                .bind(at)
+                .execute(&pool)
+                .await
+                .expect("insert usage");
+            }
+        };
+
+        let now = Utc::now();
+        // Anchor at midday UTC so the +2h sibling row can't cross a UTC date
+        // boundary (near-midnight runs split the bucket otherwise).
+        let midday = |d: DateTime<Utc>| {
+            d.date_naive().and_hms_opt(12, 0, 0).expect("valid midday").and_utc()
+        };
+        let day_a = midday(now - Duration::days(3));
+        let day_a2 = day_a + Duration::hours(2);
+        let day_b = midday(now - Duration::days(5));
+        // Two rows on day_a (one claude, one NULL model → 'unknown'), one on day_b.
+        seed(1, Some("claude-x"), day_a, 100, 10, 5, 1).await;
+        seed(2, None, day_a2, 200, 20, 0, 0).await;
+        seed(3, Some("claude-x"), day_b, 50, 5, 2, 0).await;
+
+        let since = now - Duration::days(30);
+        let no_uid = Option::<uuid::Uuid>::None;
+
+        // Buckets: day_a merges its two rows (100+200), day_b holds 50. Other
+        // rows in a shared DB are ignored by matching our known dates + totals.
+        let rows = sqlx::query(USAGE_BUCKETS_SQL)
+            .bind("day")
+            .bind(0_i32)
+            .bind(since)
+            .bind(no_uid)
+            .fetch_all(&pool)
+            .await
+            .expect("buckets query");
+        let (mut a_in, mut b_in) = (0i64, 0i64);
+        for r in &rows {
+            let bucket: DateTime<Utc> = r.get(0);
+            let input: i64 = r.get(1);
+            if bucket.date_naive() == day_a.date_naive() {
+                a_in += input;
+            } else if bucket.date_naive() == day_b.date_naive() {
+                b_in += input;
+            }
+        }
+        assert!(a_in >= 300, "day_a bucket must include our 300 input, got {a_in}");
+        assert!(b_in >= 50, "day_b bucket must include our 50 input, got {b_in}");
+
+        // Models: claude-x present with >=2 messages, NULL grouped under 'unknown'.
+        let rows = sqlx::query(USAGE_MODELS_SQL)
+            .bind(since)
+            .bind(no_uid)
+            .fetch_all(&pool)
+            .await
+            .expect("models query");
+        let (mut claude_msgs, mut unknown_msgs) = (0i64, 0i64);
+        for r in &rows {
+            let model: String = r.get(0);
+            let messages: i64 = r.get(4);
+            match model.as_str() {
+                "claude-x" => claude_msgs += messages,
+                "unknown" => unknown_msgs += messages,
+                _ => {}
+            }
+        }
+        assert!(claude_msgs >= 2, "claude-x should have >=2 messages, got {claude_msgs}");
+        assert!(unknown_msgs >= 1, "NULL model must bucket under 'unknown'");
+
+        // Heatmap: a cell exists at day_a's (dow, hour).
+        let rows = sqlx::query(USAGE_HEATMAP_SQL)
+            .bind(0_i32)
+            .bind(since)
+            .bind(no_uid)
+            .fetch_all(&pool)
+            .await
+            .expect("heatmap query");
+        let want_dow: i32 = day_a.format("%w").to_string().parse().unwrap();
+        let want_hour: i32 = day_a.format("%H").to_string().parse().unwrap();
+        let hit = rows.iter().any(|r| {
+            let dow: i32 = r.get(0);
+            let hour: i32 = r.get(1);
+            let messages: i64 = r.get(2);
+            dow == want_dow && hour == want_hour && messages >= 1
+        });
+        assert!(hit, "heatmap should have a cell at dow={want_dow} hour={want_hour}");
+
+        cleanup(pool.clone()).await;
+    }
+
+    #[test]
     fn day_start_utc_when_no_offset() {
         // 2026-06-11T09:30Z with offset 0 → midnight the same UTC day.
         let now = Utc.with_ymd_and_hms(2026, 6, 11, 9, 30, 0).unwrap();
