@@ -602,6 +602,23 @@ async fn execute_spawn(
     ))
 }
 
+/// The instance default capability, granting only the harnesses `machine_uuid` runs.
+///
+/// Falls back to the default-enabled set when the machine's rows cannot be read.
+async fn default_capability_for(
+    state: &AppState,
+    machine_uuid: Uuid,
+) -> cctui_proto::api::SpawnCapability {
+    let cap = crate::routes::server_settings::spawn_default_capability(state).await;
+    match crate::routes::daemon::enabled_adapter_ids(state, machine_uuid).await {
+        Ok(ids) => cap.with_adapters(ids),
+        Err(e) => {
+            tracing::warn!(%machine_uuid, error = %e, "enabled adapters unknown; granting the defaults");
+            cap
+        }
+    }
+}
+
 /// Keyed by the id the worker will register as, and stored before dispatch so
 /// the capability resolves the moment the worker asks.
 async fn persist_spawn_capability(
@@ -611,18 +628,10 @@ async fn persist_spawn_capability(
     permission_mode: Option<cctui_proto::adapter::PermissionMode>,
     token_session_id: &str,
 ) {
-    let mut cap = match req.spawn_capability.clone().filter(|c| !c.is_empty()) {
-        Some(cap) => cap,
-        None => {
-            let cap = crate::routes::server_settings::spawn_default_capability(state).await;
-            match crate::routes::daemon::enabled_adapter_ids(state, machine_uuid).await {
-                Ok(ids) => cap.with_adapters(ids),
-                Err(e) => {
-                    tracing::warn!(%machine_uuid, error = %e, "enabled adapters unknown; granting the defaults");
-                    cap
-                }
-            }
-        }
+    let mut cap = if let Some(cap) = req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+        cap
+    } else {
+        default_capability_for(state, machine_uuid).await
     };
     let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
     cap.max_permission_mode = Some(
