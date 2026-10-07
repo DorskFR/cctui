@@ -147,7 +147,7 @@ async fn soft_limit_refusal(
     {
         return Ok(super::failover_retry_response(
             &target.account_name,
-            target.reason,
+            &target.reason,
             is_anthropic,
         ));
     }
@@ -700,7 +700,7 @@ async fn send_upstream(
     {
         return Err(Ok(super::failover_retry_response(
             &target.account_name,
-            target.reason,
+            &target.reason,
             is_anthropic,
         )));
     }

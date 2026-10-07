@@ -17,13 +17,16 @@
 //! Politeness: each family's `ETag` is remembered and sent back as
 //! `If-None-Match`, so an unchanged page costs a 304 with no body.
 //!
-//! ## Not built here: failover deprioritization
+//! ## Failover deprioritization
 //!
-//! `gateway::failover` could deprioritize a pool member whose family reports
-//! `major`/`critical`. That is deliberately out of scope: a rebind driven by an
-//! upstream incident must be recorded in `session_account_rebinds` with a reason
-//! that names the incident, and inventing a silent routing input first is how a
-//! pool starts moving sessions for reasons nobody can read back.
+//! Under `CCTUI_GATEWAY_OUTAGE_FAILOVER=1`, `gateway::failover` ranks a pool
+//! member whose native family reads [`Indicator::Major`] or
+//! [`Indicator::Critical`] behind every healthy sibling ([`routing_outage`]).
+//! `Minor` and `Unknown` never move anything. A rebind the incident steered
+//! lands in `session_account_rebinds` with a reason naming the family, so a
+//! pool never moves a session for a cause nobody can read back.
+//!
+//! [`routing_outage`]: ProviderStatusCache::routing_outage
 
 use std::sync::Arc;
 
@@ -74,6 +77,24 @@ impl ProviderStatusCache {
         let family = family_of_provider(provider)?;
         let status = self.get(family);
         status.indicator.is_degraded().then_some(status)
+    }
+
+    /// The incident severity routing should steer around for `family`, if any:
+    /// a major or critical reading. Minor is noise to a router, and unknown is
+    /// not a reading.
+    #[must_use]
+    pub fn routing_outage(&self, family: &str) -> Option<Indicator> {
+        let indicator = self.get(family).indicator;
+        matches!(indicator, Indicator::Major | Indicator::Critical).then_some(indicator)
+    }
+
+    /// Seed a reading the way the poller would, for tests over fixtures.
+    #[cfg(test)]
+    pub fn seed(&self, status: ProviderStatus) {
+        let Some((family, ..)) = SOURCES.iter().find(|(f, ..)| *f == status.family) else {
+            return;
+        };
+        self.record(family, status, None);
     }
 
     fn record(&self, family: &'static str, status: ProviderStatus, etag: Option<String>) {
@@ -262,6 +283,21 @@ mod tests {
 
     fn parse(raw: &str) -> serde_json::Value {
         serde_json::from_str(raw).expect("fixture is valid json")
+    }
+
+    #[test]
+    fn only_a_major_or_critical_reading_is_a_routing_outage() {
+        let cache = ProviderStatusCache::default();
+        assert_eq!(cache.routing_outage("anthropic"), None, "unknown is not a reading");
+        cache.seed(normalize("anthropic", &parse(NONE)));
+        assert_eq!(cache.routing_outage("anthropic"), None);
+        cache.seed(normalize("anthropic", &parse(MINOR)));
+        assert_eq!(cache.routing_outage("anthropic"), None, "minor is noise to a router");
+        cache.seed(normalize("openai", &parse(MAJOR)));
+        assert_eq!(cache.routing_outage("openai"), Some(Indicator::Major));
+        cache.seed(normalize("openai", &parse(CRITICAL)));
+        assert_eq!(cache.routing_outage("openai"), Some(Indicator::Critical));
+        assert_eq!(cache.routing_outage("fireworks"), None, "an unpolled family is unknown");
     }
 
     #[test]
