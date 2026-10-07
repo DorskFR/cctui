@@ -668,6 +668,38 @@ type AutoAccountRow = (
     Option<serde_json::Value>,
 );
 
+/// Every account an election the caller did not name may bind in `family`.
+///
+/// An account whose `pool_eligible` is false is never among them: clearing it
+/// is the owner saying "only when I ask for it by name" (a local model on a
+/// workstation, a credential reserved for one job). Without this filter a
+/// local `anthropic-compatible` or `fireworks` endpoint, which always looks
+/// wide open, won any `auto_account` election its catalog did not exclude.
+/// Naming the account (`account: "..."`) still binds it.
+async fn auto_account_candidates(
+    exec: impl sqlx::PgExecutor<'_>,
+    user_id: Uuid,
+    family: crate::routes::gateway::Family,
+    owned_only: bool,
+) -> Result<Vec<AutoAccountRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT a.id, a.name, ap.id, ap.soft_limits_json, ap.models, ap.model_aliases \
+         FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+         WHERE ap.family = $2 \
+           AND a.pool_eligible \
+           AND (a.user_id = $1 OR (NOT $3 AND EXISTS ( \
+               SELECT 1 FROM resource_shares s \
+                WHERE s.resource_type = 'account' AND s.resource_id = a.id \
+                  AND s.grantee_id = $1 AND s.revoked_at IS NULL))) \
+         ORDER BY a.name",
+    )
+    .bind(user_id)
+    .bind(family.label())
+    .bind(owned_only)
+    .fetch_all(exec)
+    .await
+}
+
 /// Pick the account an `auto_account` spawn binds: the one with the most
 /// allocation left for the model it will run.
 ///
@@ -700,22 +732,9 @@ pub(super) async fn auto_account_name_scoped(
     model: Option<&str>,
     owned_only: bool,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
-    let rows: Vec<AutoAccountRow> = sqlx::query_as(
-        "SELECT a.id, a.name, ap.id, ap.soft_limits_json, ap.models, ap.model_aliases \
-         FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
-         WHERE ap.family = $2 \
-           AND (a.user_id = $1 OR (NOT $3 AND EXISTS ( \
-               SELECT 1 FROM resource_shares s \
-                WHERE s.resource_type = 'account' AND s.resource_id = a.id \
-                  AND s.grantee_id = $1 AND s.revoked_at IS NULL))) \
-         ORDER BY a.name",
-    )
-    .bind(user_id)
-    .bind(family.label())
-    .bind(owned_only)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| AppError::from(e).into_parts())?;
+    let rows = auto_account_candidates(&state.pool, user_id, family, owned_only)
+        .await
+        .map_err(|e| AppError::from(e).into_parts())?;
     if rows.is_empty() {
         // No accounts configured: unbound spawn, exactly as an unset `account`.
         return Ok(None);
@@ -1586,5 +1605,125 @@ mod tests {
             resolve_default_account(&["a".to_owned(), "b".to_owned()], uid, "codex").unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
         assert!(err.1.0.error.contains("a, b"));
+    }
+
+    /// An account whose owner cleared `pool_eligible` is out of every election
+    /// (`auto_account`, its owned-only variant for `CctuiAgent` children, and
+    /// pools, which gateway failover elects through), owned or shared, while
+    /// the eligible ones next to it stay candidates.
+    #[tokio::test]
+    async fn an_ineligible_account_is_never_elected() {
+        use crate::routes::gateway::Family;
+
+        let Some(url) =
+            crate::routes::gateway::test_db_url("an_ineligible_account_is_never_elected")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+
+        let me = elig_user(&pool).await;
+        let lender = elig_user(&pool).await;
+        let spark = elig_account(&pool, me, "Spark local (OpenCode)", "fireworks", false).await;
+        let cloud = elig_account(&pool, me, "Fireworks cloud", "fireworks", true).await;
+        let lent_spark = elig_account(&pool, lender, "Lent spark", "fireworks", false).await;
+        let lent_cloud = elig_account(&pool, lender, "Lent cloud", "fireworks", true).await;
+        for lent in [lent_spark, lent_cloud] {
+            sqlx::query(
+                "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+                 VALUES ('account', $1, $2)",
+            )
+            .bind(lent)
+            .bind(me)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let names = |rows: Vec<super::AutoAccountRow>| {
+            let mut n: Vec<String> = rows.into_iter().map(|r| r.1).collect();
+            n.sort();
+            n
+        };
+        let auto =
+            super::auto_account_candidates(&pool, me, Family::Fireworks, false).await.unwrap();
+        assert_eq!(names(auto), ["Fireworks cloud", "Lent cloud"]);
+        let owned =
+            super::auto_account_candidates(&pool, me, Family::Fireworks, true).await.unwrap();
+        assert_eq!(names(owned), ["Fireworks cloud"]);
+
+        // Enrolled in the owner's own pool, the ineligible account is kept as a
+        // member but never handed to an election.
+        let pool_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO account_pools (user_id, name) VALUES ($1, 'Mine') RETURNING id",
+        )
+        .bind(me)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for (pos, acct) in [spark, cloud, lent_spark, lent_cloud].into_iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO account_pool_members (pool_id, account_id, position) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(pool_id)
+            .bind(acct)
+            .bind(i32::try_from(pos).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let usable = crate::store::account_pools::usable_members(&pool, pool_id, me, "fireworks")
+            .await
+            .unwrap();
+        let usable: Vec<&str> = usable.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(usable, ["Fireworks cloud", "Lent cloud"]);
+        let stored = crate::store::account_pools::members(&pool, pool_id).await.unwrap();
+        assert_eq!(stored.len(), 4, "membership rows are kept, only elections skip them");
+
+        for uid in [me, lender] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        }
+    }
+
+    async fn elig_user(pool: &sqlx::PgPool) -> uuid::Uuid {
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("elig-{uid}"))
+            .bind(format!("helig-{uid}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        uid
+    }
+    async fn elig_account(
+        pool: &sqlx::PgPool,
+        owner: uuid::Uuid,
+        name: &str,
+        provider: &str,
+        eligible: bool,
+    ) -> uuid::Uuid {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, pool_eligible) VALUES ($1, $2, $3) \
+             RETURNING id",
+        )
+        .bind(owner)
+        .bind(name)
+        .bind(eligible)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO account_providers (user_id, account_id, provider) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(owner)
+        .bind(id)
+        .bind(provider)
+        .execute(pool)
+        .await
+        .unwrap();
+        id
     }
 }

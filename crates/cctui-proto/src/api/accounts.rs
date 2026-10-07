@@ -136,9 +136,11 @@ pub struct AccountInfo {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub providers: Vec<ProviderInfo>,
-    /// The owner's veto on pool membership: with this false, only the owner
-    /// may enrol this account in an account pool. Grantees can still launch on
-    /// it by name — they just cannot make it a silent overflow target.
+    /// The owner's veto on automatic election: with this false, no election
+    /// ever binds this account (`auto_account`, a pool, gateway failover, a
+    /// `CctuiAgent` child crossing families), and only the owner may enrol it
+    /// in an account pool, where it is kept but never elected. It is used only
+    /// when a launch names it.
     pub pool_eligible: bool,
     /// Relative plan size inside a pool aggregate (upstream reports percent,
     /// never the plan behind it). `1` = same as the other members.
@@ -304,7 +306,8 @@ pub struct UpdateAccount {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "string[]", optional))]
     pub env_remove: Option<Vec<String>>,
-    /// Owner-only: whether grantees may enrol this account in their pools.
+    /// Owner-only: whether any election may bind this account (see
+    /// `OAuthAccount::pool_eligible`); false leaves it to launches that name it.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "boolean", optional))]
     pub pool_eligible: Option<bool>,

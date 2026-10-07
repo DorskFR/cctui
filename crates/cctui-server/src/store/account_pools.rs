@@ -12,7 +12,8 @@
 //!     it happens to be reachable;
 //!   * membership is re-checked on every read ([`usable_members`]), not just
 //!     when the pool was edited, so revoking a share or clearing
-//!     `pool_eligible` takes the account out of every election immediately.
+//!     `pool_eligible` takes the account out of every election immediately,
+//!     the owner's own pools included.
 
 use sqlx::PgExecutor;
 use uuid::Uuid;
@@ -205,10 +206,12 @@ pub struct UsableMember {
 /// order.
 ///
 /// Re-derives eligibility from the live grant state instead of trusting the
-/// membership row: the account must still be the pool owner's own, or still be
-/// shared with them *and* still carry the owner's `pool_eligible`. A member
-/// that fails either test simply is not returned — the pool shrinks quietly to
-/// what is genuinely allowed rather than erroring, and the UI shows why from
+/// membership row: the account must still carry its owner's `pool_eligible`,
+/// and still be the pool owner's own or still be shared with them. A cleared
+/// `pool_eligible` holds even against the owner's own pools: an election is
+/// never how such an account gets bound, only naming it is. A member that
+/// fails either test simply is not returned — the pool shrinks quietly to what
+/// is genuinely allowed rather than erroring, and the UI shows why from
 /// [`members`].
 pub async fn usable_members(
     exec: impl PgExecutor<'_>,
@@ -223,11 +226,12 @@ pub async fn usable_members(
            JOIN accounts a          ON a.id = m.account_id \
            JOIN account_providers ap ON ap.account_id = a.id AND ap.family = $3 \
           WHERE m.pool_id = $1 \
+            AND a.pool_eligible \
             AND (a.user_id = $2 \
-                 OR (a.pool_eligible AND EXISTS ( \
+                 OR EXISTS ( \
                      SELECT 1 FROM resource_shares s \
                       WHERE s.resource_type = 'account' AND s.resource_id = a.id \
-                        AND s.grantee_id = $2 AND s.revoked_at IS NULL))) \
+                        AND s.grantee_id = $2 AND s.revoked_at IS NULL)) \
           ORDER BY m.position, lower(a.name)",
     )
     .bind(pool_id)

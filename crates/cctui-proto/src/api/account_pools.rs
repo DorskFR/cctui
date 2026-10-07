@@ -39,8 +39,9 @@ pub struct AccountPoolMember {
     /// owner). Such a member can leave the pool without warning: the owner may
     /// revoke the share or clear `pool_eligible`.
     pub owned: bool,
-    /// The owner's veto. A shared member with this false is kept in the row
-    /// (so the UI can say why it stopped counting) but never elected.
+    /// The owner's veto. A member with this false, shared or owned, is kept
+    /// in the row (so the UI can say why it stopped counting) but never
+    /// elected.
     pub pool_eligible: bool,
 }
 
