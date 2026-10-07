@@ -470,6 +470,24 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
+id = "get_machines_by_machine_adapters"
+# GET /machines/{machine_id}/adapters — Which harnesses a machine runs: table rows with the machine's enable/config pins.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_machines_by_machine_adapters_by_adapter"
+# PUT /machines/{machine_id}/adapters/{adapter} — Enable, disable or configure one harness on a machine (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_machines_by_machine_adapters_by_adapter"
+# DELETE /machines/{machine_id}/adapters/{adapter} — Drop a machine's pin for one harness, back to the table default (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_machines_by_machine_codex_models"
 # GET /machines/{machine_id}/codex-models — Machine/account-scoped codex model catalog.
 tui = "waived"

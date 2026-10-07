@@ -4,7 +4,7 @@
 	// same fields — the editor only adds a name row and its save actions.
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { useHarnessModels, useHarnesses } from '$lib/queries';
+	import { useHarnessModels, useHarnesses, useMachineAdapters } from '$lib/queries';
 	import { harnessTable } from '$lib/harnesses.svelte';
 	import { familyAccent, pickableHarnesses } from '$lib/harnesses';
 	import { AutoGrid, Field, OptionButton, Select, Switch, Text } from '@dorsk/tsumikit';
@@ -46,7 +46,11 @@
 	} = $props();
 
 	useHarnesses();
-	const harnesses = $derived(pickableHarnesses(harnessTable()));
+	const machineAdapters = useMachineAdapters(() => machineId);
+	const enabledIds = $derived(
+		machineAdapters.data?.filter((a) => a.enabled).map((a) => a.adapter_id) ?? null
+	);
+	const harnesses = $derived(pickableHarnesses(harnessTable(), enabledIds));
 	const account = $derived(accountById(accounts, draft.account_id));
 	const provider = $derived(providerForAdapter(account, draft.harness));
 	const usesAccountModels = $derived(!!provider && isCompatibleProvider(provider.provider));

@@ -79,3 +79,13 @@ export const useHarnesses = () =>
     },
     staleTime: Infinity,
   }));
+
+/** Which harnesses `machineId` runs. Short stale time: an admin toggle on
+ *  another tab should reach the spawn picker within a minute. */
+export const useMachineAdapters = (machineId: () => string) =>
+  createQuery(() => ({
+    queryKey: qk.machineAdapters(machineId()),
+    queryFn: () => endpoints.machineAdapters(machineId()),
+    enabled: !!machineId(),
+    staleTime: 60_000,
+  }));

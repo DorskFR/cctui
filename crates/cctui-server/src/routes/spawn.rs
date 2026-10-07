@@ -541,7 +541,7 @@ async fn execute_spawn(
         bootstrap,
         parent_local_id: None,
     };
-    persist_spawn_capability(state, req, permission_mode, &token_session_id).await;
+    persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
     // `command_id` travels with the command and comes back in an
     // `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`, letting the
     // client surface success/failure instead of silently polling.
@@ -606,13 +606,23 @@ async fn execute_spawn(
 /// the capability resolves the moment the worker asks.
 async fn persist_spawn_capability(
     state: &AppState,
+    machine_uuid: Uuid,
     req: &SpawnRequest,
     permission_mode: Option<cctui_proto::adapter::PermissionMode>,
     token_session_id: &str,
 ) {
     let mut cap = match req.spawn_capability.clone().filter(|c| !c.is_empty()) {
         Some(cap) => cap,
-        None => crate::routes::server_settings::spawn_default_capability(state).await,
+        None => {
+            let cap = crate::routes::server_settings::spawn_default_capability(state).await;
+            match crate::routes::daemon::enabled_adapter_ids(state, machine_uuid).await {
+                Ok(ids) => cap.with_adapters(ids),
+                Err(e) => {
+                    tracing::warn!(%machine_uuid, error = %e, "enabled adapters unknown; granting the defaults");
+                    cap
+                }
+            }
+        }
     };
     let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
     cap.max_permission_mode = Some(

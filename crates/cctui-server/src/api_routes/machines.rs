@@ -1,11 +1,11 @@
 //! Per-machine command, filesystem and model routes.
 
 use super::GET;
-use crate::authz::Authz::{self, Authenticated};
+use crate::authz::Authz::{self, Authenticated, Scope as ScopeAz};
 use crate::authz::{Action, Authn, IdFrom, ResourceKind, Routes};
-use crate::routes;
+use crate::{auth, routes};
 use axum::http::Method;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
@@ -57,6 +57,30 @@ pub(super) fn register(r: Routes) -> Routes {
         post(routes::codex_models::refresh_codex_models),
         Authn::Bearer,
         Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[GET],
+        "/machines/{machine_id}/adapters",
+        "Which harnesses a machine runs: table rows with the machine's enable/config pins.",
+        get(routes::machine_adapters::list),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[Method::PUT],
+        "/machines/{machine_id}/adapters/{adapter}",
+        "Enable, disable or configure one harness on a machine (admin).",
+        put(routes::machine_adapters::set),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::DELETE],
+        "/machines/{machine_id}/adapters/{adapter}",
+        "Drop a machine's pin for one harness, back to the table default (admin).",
+        delete(routes::machine_adapters::reset),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
     )
     .add(
         &[GET],
