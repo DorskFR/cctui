@@ -295,7 +295,8 @@ async fn resolve_spawn_account(
     // once the account is minted. `None` for every other decision: a session
     // that named no pool is never moved.
     let mut bound_pool: Option<Uuid> = None;
-    let family_for_binding = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family_for_binding = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     let account_choice = match decision {
         // A name is an account name first; it only elects a pool when no
         // account of the user's answers to it.
@@ -391,7 +392,7 @@ async fn spawn_service_tier(
     // one: resolve to a concrete value here rather than letting the worker
     // inherit whatever the machine's config.toml happens to say.
     if crate::routes::gateway::Family::from_adapter(adapter_id)
-        == crate::routes::gateway::Family::Openai
+        == Ok(crate::routes::gateway::Family::Openai)
     {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(state, token_session_id).await;
@@ -419,7 +420,8 @@ async fn mint_account_env(
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
     let SpawnTarget { uid, adapter_id, token_session_id, .. } = target;
     let uid = *uid;
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     // The fireworks family resolves even an ABSENT model: its catalog is the
     // only source of model ids, and its harness has no default to fall back on.
     if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
@@ -638,7 +640,8 @@ async fn default_account_name(
     user_id: Uuid,
     adapter_id: &str,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT a.name \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \

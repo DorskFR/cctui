@@ -18,6 +18,14 @@ pub(super) fn register(r: Routes) -> Routes {
     )
     .add(
         &[GET],
+        "/harnesses",
+        "The harness table: ids, families, capabilities and permission modes.",
+        get(routes::harnesses::list_harnesses),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET],
         "/models/{harness}",
         "Model and effort options for a harness picker (optional machine_id).",
         get(routes::harness_models::get_harness_models),

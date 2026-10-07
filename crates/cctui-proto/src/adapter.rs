@@ -12,9 +12,192 @@ use uuid::Uuid;
 #[serde(transparent)]
 pub struct AdapterId(pub String);
 
-/// Every adapter compiled into the daemon. `adapters_enabled` rows only override
-/// config or disable; a missing binary surfaces as a failed spawn.
-pub const KNOWN_ADAPTERS: &[&str] = &["claude-code", "codex", "opencode"];
+/// What a harness can do, as the clients gate their controls on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct HarnessCapabilities {
+    pub fork: bool,
+    pub rename: bool,
+    pub resume: bool,
+    pub set_model: bool,
+    pub live_view: bool,
+    pub attach: bool,
+    pub mid_chat_files: bool,
+    pub child_spawn: bool,
+}
+
+/// Where a harness's model picker gets its entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ModelsSource {
+    /// A fixed list shipped with the clients.
+    Static,
+    /// A live catalog the daemon reports.
+    Catalog,
+    /// Only the harness default.
+    None,
+}
+
+/// One harness as served by `GET /api/v1/harnesses`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct HarnessDescriptor {
+    pub id: String,
+    pub label: String,
+    pub family: crate::provider::ProviderFamily,
+    pub capabilities: HarnessCapabilities,
+    /// Runs on every machine without an `adapters_enabled` row.
+    pub default_enabled: bool,
+    pub models_source: ModelsSource,
+    /// The postures the harness can express, in picker order.
+    pub permission_modes: Vec<PermissionMode>,
+}
+
+struct HarnessRow {
+    id: &'static str,
+    label: &'static str,
+    family: crate::provider::ProviderFamily,
+    capabilities: HarnessCapabilities,
+    default_enabled: bool,
+    models_source: ModelsSource,
+    permission_modes: &'static [PermissionMode],
+}
+
+impl HarnessRow {
+    fn descriptor(&self) -> HarnessDescriptor {
+        HarnessDescriptor {
+            id: self.id.to_owned(),
+            label: self.label.to_owned(),
+            family: self.family,
+            capabilities: self.capabilities,
+            default_enabled: self.default_enabled,
+            models_source: self.models_source,
+            permission_modes: self.permission_modes.to_vec(),
+        }
+    }
+}
+
+/// The harness table every hand-written adapter list derives from.
+const HARNESS_ROWS: &[HarnessRow] = &[
+    HarnessRow {
+        id: "claude-code",
+        label: "Claude Code",
+        family: crate::provider::ProviderFamily::Anthropic,
+        capabilities: HarnessCapabilities {
+            fork: true,
+            rename: true,
+            resume: true,
+            set_model: false,
+            live_view: true,
+            attach: true,
+            mid_chat_files: true,
+            child_spawn: true,
+        },
+        default_enabled: true,
+        models_source: ModelsSource::Static,
+        permission_modes: &PermissionMode::ALL,
+    },
+    HarnessRow {
+        id: "codex",
+        label: "Codex",
+        family: crate::provider::ProviderFamily::Openai,
+        capabilities: HarnessCapabilities {
+            fork: false,
+            rename: true,
+            resume: true,
+            set_model: true,
+            live_view: true,
+            attach: false,
+            mid_chat_files: true,
+            child_spawn: true,
+        },
+        default_enabled: true,
+        models_source: ModelsSource::Catalog,
+        permission_modes: &PermissionMode::ALL,
+    },
+    HarnessRow {
+        id: "opencode",
+        label: "OpenCode",
+        family: crate::provider::ProviderFamily::Fireworks,
+        capabilities: HarnessCapabilities {
+            fork: false,
+            rename: true,
+            resume: false,
+            set_model: false,
+            live_view: true,
+            attach: false,
+            mid_chat_files: true,
+            child_spawn: false,
+        },
+        default_enabled: true,
+        models_source: ModelsSource::None,
+        permission_modes: &PermissionMode::ALL,
+    },
+];
+
+const fn known_adapter_ids() -> [&'static str; HARNESS_ROWS.len()] {
+    let mut out = [""; HARNESS_ROWS.len()];
+    let mut i = 0;
+    while i < HARNESS_ROWS.len() {
+        out[i] = HARNESS_ROWS[i].id;
+        i += 1;
+    }
+    out
+}
+
+/// Every adapter compiled into the daemon, in table order.
+pub const KNOWN_ADAPTERS: [&str; HARNESS_ROWS.len()] = known_adapter_ids();
+
+/// The whole table, in picker order.
+#[must_use]
+pub fn harnesses() -> Vec<HarnessDescriptor> {
+    HARNESS_ROWS.iter().map(HarnessRow::descriptor).collect()
+}
+
+/// The adapters that run on a machine with no `adapters_enabled` row.
+#[must_use]
+pub fn default_enabled_adapters() -> Vec<&'static str> {
+    HARNESS_ROWS.iter().filter(|r| r.default_enabled).map(|r| r.id).collect()
+}
+
+/// Whether `id` runs by default on a machine without an `adapters_enabled` row.
+/// An unknown id never does.
+#[must_use]
+pub fn is_default_enabled(id: &str) -> bool {
+    HARNESS_ROWS.iter().any(|r| r.id == id && r.default_enabled)
+}
+
+/// The descriptor whose id is exactly `id`.
+#[must_use]
+pub fn harness(id: &str) -> Option<HarnessDescriptor> {
+    HARNESS_ROWS.iter().find(|r| r.id == id).map(HarnessRow::descriptor)
+}
+
+/// The descriptor an adapter id resolves to: the id itself, or a variant of it
+/// (`codex-app-server`, `opencode-cli`). Fail-closed: anything else is `None`.
+#[must_use]
+pub fn harness_for_adapter(adapter_id: &str) -> Option<HarnessDescriptor> {
+    let id = adapter_id.trim();
+    HARNESS_ROWS
+        .iter()
+        .find(|r| id == r.id || id.strip_prefix(r.id).is_some_and(|rest| rest.starts_with('-')))
+        .map(HarnessRow::descriptor)
+}
+
+/// The harness ids whose family is `family`, in table order.
+#[must_use]
+pub fn harness_ids_in_family(family: crate::provider::ProviderFamily) -> Vec<&'static str> {
+    HARNESS_ROWS.iter().filter(|r| r.family == family).map(|r| r.id).collect()
+}
+
+/// The harness a provider credential runs: the first table row of the
+/// provider's family.
+#[must_use]
+pub fn harness_for_provider(provider: &str) -> Option<&'static str> {
+    let family = crate::provider::provider_family(provider);
+    HARNESS_ROWS.iter().find(|r| r.family == family).map(|r| r.id)
+}
 
 impl AdapterId {
     #[must_use]
@@ -699,6 +882,43 @@ impl std::fmt::Debug for BootstrapFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_adapters_are_the_table_ids_in_order() {
+        assert_eq!(KNOWN_ADAPTERS, ["claude-code", "codex", "opencode"]);
+        let ids: Vec<String> = harnesses().into_iter().map(|h| h.id).collect();
+        assert_eq!(ids, KNOWN_ADAPTERS);
+    }
+
+    #[test]
+    fn harness_lookup_is_exact_and_variants_resolve_by_dash_prefix() {
+        assert_eq!(harness("codex").map(|h| h.label), Some("Codex".to_owned()));
+        assert_eq!(harness("codex-app-server"), None);
+        assert_eq!(harness_for_adapter("codex-app-server").map(|h| h.id), Some("codex".to_owned()));
+        assert_eq!(
+            harness_for_adapter(" opencode-cli ").map(|h| h.id),
+            Some("opencode".to_owned())
+        );
+        for unknown in ["", "gemini", "codexx", "claude", "anthropic"] {
+            assert_eq!(harness_for_adapter(unknown), None, "{unknown}");
+        }
+    }
+
+    #[test]
+    fn provider_to_harness_follows_the_family() {
+        assert_eq!(harness_for_provider("anthropic"), Some("claude-code"));
+        assert_eq!(harness_for_provider("anthropic-compatible"), Some("claude-code"));
+        assert_eq!(harness_for_provider("openai-compatible"), Some("codex"));
+        assert_eq!(harness_for_provider("fireworks"), Some("opencode"));
+        assert_eq!(harness_ids_in_family(crate::provider::ProviderFamily::Fireworks), ["opencode"]);
+    }
+
+    #[test]
+    fn every_row_is_enabled_by_default_today() {
+        assert_eq!(default_enabled_adapters(), KNOWN_ADAPTERS);
+        assert!(is_default_enabled("opencode"));
+        assert!(!is_default_enabled("gemini"));
+    }
 
     #[test]
     fn every_permission_mode_maps_to_an_approval_policy_codex_accepts() {

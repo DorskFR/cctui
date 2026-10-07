@@ -1066,6 +1066,7 @@ mod tests {
             "DELETE /me/key Bearer Authenticated",
             "GET /meta/domain Bearer Authenticated",
             "GET /models/codex/catalog Bearer Authenticated",
+            "GET /harnesses Bearer Authenticated",
             "GET /models/{harness} Bearer Authenticated",
             "GET /passkeys Bearer Authenticated",
             "POST /passkeys/register/finish Bearer Authenticated",

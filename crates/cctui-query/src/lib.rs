@@ -286,8 +286,9 @@ mod tests {
     #[test]
     fn adapter_enum_accepts_every_harness() {
         let def = super::resolve("adapter").unwrap();
-        for adapter in ["claude-code", "codex", "opencode"] {
+        for adapter in cctui_proto::adapter::KNOWN_ADAPTERS {
             assert!(def.enum_values.contains(&adapter), "{adapter}");
         }
+        assert_eq!(def.enum_values.len(), cctui_proto::adapter::KNOWN_ADAPTERS.len());
     }
 }

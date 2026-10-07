@@ -24,6 +24,7 @@ pub mod fs;
 pub mod gateway;
 pub mod harness_models;
 pub mod harness_update;
+pub mod harnesses;
 pub mod images;
 pub mod instance;
 pub mod internal;

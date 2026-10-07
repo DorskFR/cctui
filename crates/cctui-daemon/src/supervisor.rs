@@ -1162,7 +1162,9 @@ fn stage_files_result(
     local_id: &str,
     uploads: &[cctui_proto::adapter::BootstrapFile],
 ) -> DaemonFrameUp {
-    let result = if matches!(adapter_id, "claude-code" | "codex" | "opencode") {
+    let supported = cctui_proto::adapter::harness_for_adapter(adapter_id)
+        .is_some_and(|h| h.capabilities.mid_chat_files);
+    let result = if supported {
         crate::adapters::claude_code::stage_mid_chat_files(local_id, uploads)
     } else {
         Err(anyhow::anyhow!("adapter {adapter_id} does not support mid-chat file staging"))
@@ -2862,7 +2864,7 @@ mod tests {
             name: "note.txt".into(),
             content_b64: base64::engine::general_purpose::STANDARD.encode(b"hi"),
         };
-        for adapter in ["claude-code", "codex", "opencode"] {
+        for adapter in cctui_proto::adapter::KNOWN_ADAPTERS {
             let local_id = format!("test-{}", uuid::Uuid::new_v4());
             let up = super::stage_files_result(
                 uuid::Uuid::new_v4(),

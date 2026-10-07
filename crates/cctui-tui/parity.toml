@@ -488,6 +488,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_harnesses"
+# GET /harnesses — The harness table: ids, families, capabilities and permission modes.
+tui = "waived"
+reason = "the TUI spawns through profiles and derives the harness table from cctui-proto directly"
+
+[[route]]
 id = "get_models_by_harness"
 # GET /models/{harness} — Model and effort options for a harness picker (optional machine_id).
 tui = "handled"

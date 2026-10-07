@@ -37,6 +37,12 @@ fn permission_mode_order_matches_the_fixture() {
 }
 
 #[test]
+fn harness_table_matches_the_fixture() {
+    let fx = fixture();
+    assert_eq!(serde_json::to_value(cctui_proto::adapter::harnesses()).unwrap(), fx["harnesses"]);
+}
+
+#[test]
 fn static_harness_model_lists_match_the_fixture() {
     let fx = fixture();
     let listed = fx["harness_models"].as_array().expect("harness_models is a list");

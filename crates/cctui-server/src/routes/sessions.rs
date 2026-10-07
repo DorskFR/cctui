@@ -2829,7 +2829,7 @@ pub async fn fork_session(
     let is_claude = adapter_id == "claude-code";
     let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
     let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
-        == crate::routes::gateway::Family::Openai
+        == Ok(crate::routes::gateway::Family::Openai)
     {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(&state, &session_id).await;

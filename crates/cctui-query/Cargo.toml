@@ -12,5 +12,6 @@ workspace = true
 ts = ["dep:ts-rs"]
 
 [dependencies]
+cctui-proto.workspace = true
 serde.workspace = true
 ts-rs = { workspace = true, optional = true }

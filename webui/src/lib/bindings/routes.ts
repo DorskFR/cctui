@@ -87,6 +87,7 @@ export const ROUTES = [
   { id: "get_machines_by_machine_codex_models", method: "GET", path: "/machines/{machine_id}/codex-models", summary: "Machine/account-scoped codex model catalog.", request: null, response: null },
   { id: "post_machines_by_machine_codex_models_refresh", method: "POST", path: "/machines/{machine_id}/codex-models/refresh", summary: "Re-read every OpenAI account's codex model catalog from upstream.", request: null, response: null },
   { id: "get_models_codex_catalog", method: "GET", path: "/models/codex/catalog", summary: "Codex model catalog merged across every machine (newest report wins).", request: null, response: null },
+  { id: "get_harnesses", method: "GET", path: "/harnesses", summary: "The harness table: ids, families, capabilities and permission modes.", request: null, response: "HarnessDescriptor[]" },
   { id: "get_models_by_harness", method: "GET", path: "/models/{harness}", summary: "Model and effort options for a harness picker (optional machine_id).", request: null, response: "HarnessModels" },
   { id: "get_meta_domain", method: "GET", path: "/meta/domain", summary: "Provider metadata, quota probes, end-reason tones, permission modes.", request: null, response: "DomainMeta" },
   { id: "get_me", method: "GET", path: "/me", summary: "Get the current principal (user, scopes, machine).", request: null, response: "MeResponse" },

@@ -768,6 +768,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_harnesses",
+        method: Method::Get,
+        path: "/harnesses",
+        summary: "The harness table: ids, families, capabilities and permission modes.",
+        request: None,
+        response: Some("HarnessDescriptor[]"),
+    },
+    Route {
         id: "get_models_by_harness",
         method: Method::Get,
         path: "/models/{harness}",

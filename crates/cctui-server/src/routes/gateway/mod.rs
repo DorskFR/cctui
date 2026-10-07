@@ -309,9 +309,9 @@ mod tests {
     fn family_from_adapter_is_the_spawn_resolution_key() {
         // the adapter id names the harness family spawn resolves the
         // account's provider row by.
-        assert!(matches!(Family::from_adapter("codex"), Family::Openai));
-        assert!(matches!(Family::from_adapter("codex-foo"), Family::Openai));
-        assert!(matches!(Family::from_adapter("claude-code"), Family::Anthropic));
+        assert!(matches!(Family::from_adapter("codex"), Ok(Family::Openai)));
+        assert!(matches!(Family::from_adapter("codex-foo"), Ok(Family::Openai)));
+        assert!(matches!(Family::from_adapter("claude-code"), Ok(Family::Anthropic)));
     }
 
     #[test]
@@ -351,8 +351,8 @@ mod tests {
         // or the unique (account_id, family) index would forbid holding both.
         assert_eq!(Family::from_provider("fireworks"), Family::Fireworks);
         assert_ne!(Family::from_provider("fireworks"), Family::Openai);
-        assert_eq!(Family::from_adapter("opencode"), Family::Fireworks);
-        assert_eq!(Family::from_adapter("opencode-cli"), Family::Fireworks);
+        assert_eq!(Family::from_adapter("opencode"), Ok(Family::Fireworks));
+        assert_eq!(Family::from_adapter("opencode-cli"), Ok(Family::Fireworks));
         assert_eq!(Family::from_label("fireworks"), Some(Family::Fireworks));
         assert_eq!(Family::from_label("nope"), None);
     }

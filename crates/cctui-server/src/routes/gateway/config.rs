@@ -343,6 +343,18 @@ pub enum Family {
     Fireworks,
 }
 
+/// An adapter id the harness table does not know.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UnknownHarness(pub String);
+
+impl std::fmt::Display for UnknownHarness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown harness {:?}", self.0)
+    }
+}
+
+impl std::error::Error for UnknownHarness {}
+
 impl Family {
     /// Derive the family from a stored `provider` value. Must agree with the
     /// generated `family` column (migration 078).
@@ -364,37 +376,29 @@ impl Family {
             _ => None,
         }
     }
-    /// Derive the family from a spawn adapter id (`opencode*` → fireworks,
-    /// `codex*` → openai, `claude*` → anthropic). This IS the spawn resolution
-    /// key: the adapter names the harness family, and the account identity
-    /// carries at most one provider row per family.
+    pub const fn from_provider_family(family: cctui_proto::provider::ProviderFamily) -> Self {
+        match family {
+            cctui_proto::provider::ProviderFamily::Anthropic => Self::Anthropic,
+            cctui_proto::provider::ProviderFamily::Openai => Self::Openai,
+            cctui_proto::provider::ProviderFamily::Fireworks => Self::Fireworks,
+        }
+    }
+    /// Derive the family from a spawn adapter id through the harness table.
+    /// This IS the spawn resolution key: the adapter names the harness family,
+    /// and the account identity carries at most one provider row per family.
     ///
     /// Fail-closed: an adapter id that names no known harness yields `None`
     /// rather than silently binding an Anthropic credential to it.
     pub fn try_from_adapter(adapter_id: &str) -> Option<Self> {
-        let id = adapter_id.trim();
-        if id.starts_with("opencode") {
-            Some(Self::Fireworks)
-        } else if id.starts_with("codex") {
-            Some(Self::Openai)
-        } else if id.starts_with("claude") {
-            Some(Self::Anthropic)
-        } else {
-            None
-        }
+        cctui_proto::adapter::harness_for_adapter(adapter_id)
+            .map(|h| Self::from_provider_family(h.family))
     }
 
-    /// [`try_from_adapter`](Self::try_from_adapter) with the historical
-    /// anthropic fallback. Callers that can reject the request should use
-    /// `try_from_adapter` instead.
-    pub fn from_adapter(adapter_id: &str) -> Self {
-        Self::try_from_adapter(adapter_id).unwrap_or_else(|| {
-            tracing::warn!(
-                adapter = adapter_id,
-                "unknown harness family for adapter; defaulting to anthropic"
-            );
-            Self::Anthropic
-        })
+    /// [`try_from_adapter`](Self::try_from_adapter) as an error a request
+    /// handler can return: a gateway bind for an unknown harness never launches.
+    pub fn from_adapter(adapter_id: &str) -> Result<Self, UnknownHarness> {
+        Self::try_from_adapter(adapter_id)
+            .ok_or_else(|| UnknownHarness(adapter_id.trim().to_owned()))
     }
     /// Human label for error messages, and the stored `family` column value.
     pub const fn label(self) -> &'static str {
@@ -519,6 +523,28 @@ mod tests {
         assert_eq!(Family::try_from_adapter("opencode"), Some(Family::Fireworks));
         for unknown in ["", "gemini", "aider", "cursor", "anthropic"] {
             assert_eq!(Family::try_from_adapter(unknown), None, "{unknown}");
+        }
+    }
+
+    #[test]
+    fn from_adapter_is_an_error_for_an_unknown_harness() {
+        assert_eq!(Family::from_adapter("gemini"), Err(super::UnknownHarness("gemini".into())));
+        assert_eq!(
+            Family::from_adapter("gemini").unwrap_err().to_string(),
+            "unknown harness \"gemini\""
+        );
+        assert_eq!(Family::from_adapter("claude-code"), Ok(Family::Anthropic));
+    }
+
+    #[test]
+    fn every_harness_in_the_table_has_a_family() {
+        for h in cctui_proto::adapter::harnesses() {
+            assert_eq!(
+                Family::try_from_adapter(&h.id),
+                Some(Family::from_provider_family(h.family)),
+                "{}",
+                h.id
+            );
         }
     }
 }
