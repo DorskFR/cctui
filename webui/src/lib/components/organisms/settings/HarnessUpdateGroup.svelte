@@ -3,27 +3,31 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import { endpoints } from '$lib/queries';
+	import { harnessLabel } from '$lib/harnesses';
+	import { harnessTable } from '$lib/harnesses.svelte';
 	import type { CodexSandbox } from '@bindings/CodexSandbox';
 	import type { HarnessAutoupdateInfo } from '@bindings/HarnessAutoupdateInfo';
 	import type { HarnessUpdatePolicy } from '@bindings/HarnessUpdatePolicy';
 	import type { HarnessVersion } from '@bindings/HarnessVersion';
+	import type { HarnessVersions } from '@bindings/HarnessVersions';
 	import type { MachineHarnessInfo } from '@bindings/MachineHarnessInfo';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	const HARNESSES = ['claude-code', 'codex'] as const;
+	const DEFAULT_HARNESSES = ['claude-code', 'codex'];
 	const CODEX_SANDBOX_DOCS =
 		'https://github.com/DorskFR/cctui/blob/main/docs/codex-sandbox.md';
 	const DEFAULT_POLICY: HarnessUpdatePolicy = {
 		enabled: false,
 		interval_hours: 24,
-		harnesses: [...HARNESSES]
+		harnesses: [...DEFAULT_HARNESSES]
 	};
+	const harnessIds = $derived(harnessTable().map((h) => h.id));
 
 	let info = $state<HarnessAutoupdateInfo | null>(null);
 	let enabled = $state(false);
 	let hours = $state('24');
-	let harnesses = $state<string[]>([...HARNESSES]);
+	let harnesses = $state<string[]>([...DEFAULT_HARNESSES]);
 	let saving = $state(false);
 
 	function apply(next: HarnessAutoupdateInfo) {
@@ -44,7 +48,7 @@
 	const draft = $derived<HarnessUpdatePolicy>({
 		enabled,
 		interval_hours: Math.max(1, Math.floor(Number(hours) || 24)),
-		harnesses: HARNESSES.filter((h) => harnesses.includes(h))
+		harnesses: harnessIds.filter((h) => harnesses.includes(h))
 	});
 	const dirty = $derived(JSON.stringify(draft) !== JSON.stringify(info?.instance ?? DEFAULT_POLICY));
 
@@ -86,6 +90,14 @@
 		if (!v.daemon || v.daemon === v.cli) return v.cli ?? '—';
 		return `${v.cli ?? '?'} / ${v.daemon}`;
 	}
+
+	/** Every harness in the table, then any the machine reported beyond it. */
+	function versionLines(all: HarnessVersions): string {
+		const extra = Object.keys(all).filter((id) => !harnessIds.includes(id));
+		return [...harnessIds, ...extra]
+			.map((id) => `${harnessLabel(id, harnessTable())} ${versions(all[id])}`)
+			.join(' · ');
+	}
 </script>
 
 <SettingGroup title={m.settings_harness_update_label()}>
@@ -105,7 +117,7 @@
 				aria-label={m.settings_harness_update_interval()}
 				placeholder={m.settings_harness_update_interval()}
 			/>
-			{#each HARNESSES as h (h)}
+			{#each harnessIds as h (h)}
 				<Checkbox
 					label={h}
 					checked={harnesses.includes(h)}
@@ -136,7 +148,7 @@
 						</Select>
 						{#if row.report}
 							<Text size="xs" tone="faint" variant="code">
-								claude {versions(row.report.versions.claude_code)} · codex {versions(row.report.versions.codex)}
+								{versionLines(row.report.versions)}
 							</Text>
 							{#if row.report.managed_by_image}
 								<Badge>{m.settings_harness_update_managed_by_image()}</Badge>

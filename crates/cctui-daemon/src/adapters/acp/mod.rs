@@ -366,12 +366,15 @@ async fn fail(events: &mpsc::Sender<AdapterEvent>, command_id: Option<Uuid>, err
     }
 }
 
-/// The agent version `initialize` reported, for the machine's harness
-/// report.
+/// The agent version `initialize` reported, recorded under the adapter id
+/// for the machine's harness report.
 fn report_agent_version(adapter_id: &str, version: Option<&str>) {
-    if let Some(version) = version {
-        tracing::info!(agent = adapter_id, %version, "acp agent version");
-    }
+    let Some(version) = version.map(str::trim).filter(|v| !v.is_empty()) else { return };
+    tracing::info!(agent = adapter_id, %version, "acp agent version");
+    crate::harness_update::record_version(
+        adapter_id,
+        cctui_proto::harness::HarnessVersion { cli: Some(version.to_owned()), daemon: None },
+    );
 }
 
 /// Ask the live session for its snapshot; `None` when it does not answer
