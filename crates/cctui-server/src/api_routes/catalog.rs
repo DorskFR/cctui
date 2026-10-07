@@ -1,5 +1,5 @@
-//! Domain catalogs: the static tables and the per-harness model lists both
-//! clients derive their pickers from.
+//! Domain catalogs: the server-owned tables both clients derive their pickers
+//! from.
 
 use super::GET;
 use crate::authz::Authz::Authenticated;
@@ -10,9 +10,9 @@ use axum::routing::get;
 pub(super) fn register(r: Routes) -> Routes {
     r.add(
         &[GET],
-        "/meta/domain",
-        "Provider metadata, quota probes, end-reason tones, permission modes.",
-        get(routes::domain_meta::get_domain_meta),
+        "/meta/usage-probes",
+        "The quota-probe registry, for the account usage-probe picker.",
+        get(routes::usage_probes::get_usage_probes),
         Authn::Bearer,
         Authenticated,
     )

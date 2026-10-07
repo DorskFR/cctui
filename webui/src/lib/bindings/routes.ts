@@ -92,7 +92,7 @@ export const ROUTES = [
   { id: "get_models_codex_catalog", method: "GET", path: "/models/codex/catalog", summary: "Codex model catalog merged across every machine (newest report wins).", request: null, response: null },
   { id: "get_harnesses", method: "GET", path: "/harnesses", summary: "The harness table: ids, families, capabilities and permission modes.", request: null, response: "HarnessDescriptor[]" },
   { id: "get_models_by_harness", method: "GET", path: "/models/{harness}", summary: "Model and effort options for a harness picker (optional machine_id).", request: null, response: "HarnessModels" },
-  { id: "get_meta_domain", method: "GET", path: "/meta/domain", summary: "Provider metadata, quota probes, end-reason tones, permission modes.", request: null, response: "DomainMeta" },
+  { id: "get_meta_usage_probes", method: "GET", path: "/meta/usage-probes", summary: "The quota-probe registry, for the account usage-probe picker.", request: null, response: "UsageProbeInfo[]" },
   { id: "get_me", method: "GET", path: "/me", summary: "Get the current principal (user, scopes, machine).", request: null, response: "MeResponse" },
   { id: "delete_me_key", method: "DELETE", path: "/me/key", summary: "Revoke the credential this request authenticated with.", request: null, response: null },
   { id: "get_auth_device_by_user_code", method: "GET", path: "/auth/device/{user_code}", summary: "What a pending device login is asking for.", request: null, response: "DeviceAuthRequestInfo" },

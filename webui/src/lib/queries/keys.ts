@@ -65,7 +65,7 @@ export const qk = {
   harnessModelsAll: ["harness-models"] as const,
   harnessModels: (harness: string, machineId: string, model: string) =>
     ["harness-models", harness, machineId, model] as const,
-  domainMeta: ["domain-meta"] as const,
+  usageProbes: ["usage-probes"] as const,
   harnesses: ["harnesses"] as const,
   machineAdapters: (machineId: string) => ["machine-adapters", machineId] as const,
   sessionBindings: (sessionId: string) => ["session-bindings", sessionId] as const,

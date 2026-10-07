@@ -518,10 +518,10 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
-id = "get_meta_domain"
-# GET /meta/domain — Provider metadata, quota probes, end-reason tones, permission modes.
+id = "get_meta_usage_probes"
+# GET /meta/usage-probes — The quota-probe registry, for the account usage-probe picker.
 tui = "waived"
-reason = "browser host metadata used to build webui links"
+reason = "the usage-probe picker lives in the webui account drawer"
 
 [[route]]
 id = "get_me"

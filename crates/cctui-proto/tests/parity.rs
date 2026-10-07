@@ -6,8 +6,9 @@
 //! both agree.
 
 use cctui_proto::adapter::PermissionMode;
-use cctui_proto::domain_meta::DomainMeta;
 use cctui_proto::harness_models::harness_models;
+use cctui_proto::provider::provider_kinds;
+use cctui_proto::session_end::end_reason_table;
 use serde_json::Value;
 
 fn fixture() -> Value {
@@ -19,15 +20,13 @@ fn fixture() -> Value {
 #[test]
 fn end_reason_table_matches_the_fixture() {
     let fx = fixture();
-    let meta = DomainMeta::new(vec![]);
-    assert_eq!(serde_json::to_value(&meta.end_reasons).unwrap(), fx["end_reasons"]);
+    assert_eq!(serde_json::to_value(end_reason_table()).unwrap(), fx["end_reasons"]);
 }
 
 #[test]
 fn provider_table_matches_the_fixture() {
     let fx = fixture();
-    let meta = DomainMeta::new(vec![]);
-    assert_eq!(serde_json::to_value(&meta.providers).unwrap(), fx["providers"]);
+    assert_eq!(serde_json::to_value(provider_kinds()).unwrap(), fx["providers"]);
 }
 
 #[test]

@@ -808,12 +808,12 @@ pub const ROUTES: &[Route] = &[
         response: Some("HarnessModels"),
     },
     Route {
-        id: "get_meta_domain",
+        id: "get_meta_usage_probes",
         method: Method::Get,
-        path: "/meta/domain",
-        summary: "Provider metadata, quota probes, end-reason tones, permission modes.",
+        path: "/meta/usage-probes",
+        summary: "The quota-probe registry, for the account usage-probe picker.",
         request: None,
-        response: Some("DomainMeta"),
+        response: Some("UsageProbeInfo[]"),
     },
     Route {
         id: "get_me",

@@ -74,7 +74,6 @@ export type * from './DispatchAccount';
 export type * from './DispatchRequest';
 export type * from './DispatchResponse';
 export type * from './DispatchStatus';
-export type * from './DomainMeta';
 export type * from './Draft';
 export type * from './DraftAuthorKind';
 export type * from './DraftCommentInfo';

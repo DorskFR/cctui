@@ -79,7 +79,7 @@ import type { HarnessModels } from "@bindings/HarnessModels";
 import type { HarnessDescriptor } from "@bindings/HarnessDescriptor";
 import type { MachineAdapterInfo } from "@bindings/MachineAdapterInfo";
 import type { SetMachineAdapterRequest } from "@bindings/SetMachineAdapterRequest";
-import type { DomainMeta } from "@bindings/DomainMeta";
+import type { UsageProbeInfo } from "@bindings/UsageProbeInfo";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { RescrubRequest } from "@bindings/RescrubRequest";
@@ -429,8 +429,8 @@ export const endpoints = {
     api.del<MachineAdapterInfo[]>(
       `/machines/${encodeURIComponent(machineId)}/adapters/${encodeURIComponent(adapter)}`,
     ),
-  /** Provider metadata, quota probes, end-reason tones, permission modes. */
-  domainMeta: () => api.get<DomainMeta>("/meta/domain"),
+  /** The quota-probe registry, for the account usage-probe picker. */
+  usageProbes: () => api.get<UsageProbeInfo[]>("/meta/usage-probes"),
   /** Ask the machine's daemon to re-run codex `model/list`; the fresh
    *  catalog lands asynchronously. */
   refreshCodexModels: (machineId: string) =>
