@@ -14,9 +14,9 @@
       "id": "yubisashi",
       "name": "Review",
       "description": "Frames your running dev app next to the conversation. Point at an element and its source location lands in the composer, ready for your comment.",
-      "version": "0.5.4",
-      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.5.4/yubisashi-0.5.4.tgz",
-      "sha256": "c03d207325ede5af53629b1034d483051a367414fbbe728673411eb62b158307",
+      "version": "0.6.0",
+      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.6.0/yubisashi-0.6.0.tgz",
+      "sha256": "5204b3e5b74755e0eb2a287578cf4eb166cc55605236deddca8234c3b99c47d6",
       "homepage": "https://github.com/DorskFR/yubisashi"
     }
   ]
