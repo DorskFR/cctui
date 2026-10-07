@@ -1,13 +1,17 @@
 //! Localhost HTTP server exposing the workflow guard over axum.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::body::Bytes;
+use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
+use crate::dialect::{DIALECT_HEADER, Dialect};
 use crate::engine::WorkflowEngine;
 
 type Engine = Arc<WorkflowEngine>;
@@ -63,22 +67,34 @@ async fn post_state(State(engine): State<Engine>) -> impl IntoResponse {
     ([("Content-Type", "text/plain")], body)
 }
 
-async fn check(State(engine): State<Engine>, Json(data): Json<Value>) -> impl IntoResponse {
+/// Pre-tool check. The verdict is rendered in the dialect named by
+/// `?dialect=` or the `X-Guard-Dialect` header; with neither it is Claude
+/// Code's, which is what deployed hooks expect. The body is parsed by hand so
+/// an unreadable request still yields a deny in that dialect instead of an
+/// extractor rejection.
+async fn check(
+    State(engine): State<Engine>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let dialect = Dialect::resolve(
+        query.get("dialect").map(String::as_str),
+        headers.get(DIALECT_HEADER).and_then(|v| v.to_str().ok()),
+    );
+    let Ok(data) = serde_json::from_slice::<Value>(&body) else {
+        return Json(dialect.fail_closed("malformed /check body — failing closed"));
+    };
     let tool = data.get("tool_name").and_then(Value::as_str).unwrap_or("").to_owned();
     let tool_input = data.get("tool_input").cloned().unwrap_or_else(|| json!({}));
-    let decision = tokio::task::spawn_blocking(move || engine.check(&tool, &tool_input))
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("guard check task failed: {e}");
-            json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason":
-                        "internal guard error (check task failed) — failing closed",
-                }
-            })
-        });
+    let decision =
+        tokio::task::spawn_blocking(move || engine.check(&tool, &tool_input)).await.map_or_else(
+            |e| {
+                tracing::error!("guard check task failed: {e}");
+                dialect.fail_closed("internal guard error (check task failed) — failing closed")
+            },
+            |verdict| dialect.render(&verdict),
+        );
     Json(decision)
 }
 

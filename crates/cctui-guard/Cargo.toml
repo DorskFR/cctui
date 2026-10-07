@@ -29,6 +29,7 @@ shlex = "2.0"
 [dev-dependencies]
 tempfile.workspace = true
 reqwest.workspace = true
+insta = "1"
 
 [lints]
 workspace = true
