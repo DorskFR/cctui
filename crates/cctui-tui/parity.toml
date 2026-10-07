@@ -1590,3 +1590,8 @@ reason = "liveness tick with nothing to render"
 name = "resync"
 tui = "handled"
 module = "app/server_event.rs"
+
+[[ws_event]]
+name = "limit_reset_redeemed"
+tui = "handled"
+module = "app/server_event.rs"
