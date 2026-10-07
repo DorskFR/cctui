@@ -14,8 +14,10 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
-/// Stable `<subject>.<verb>` kinds. Adding one is one call site: `kind` is a
-/// text column and unknown kinds render generically.
+/// Stable `<subject>.<verb>` kinds.
+///
+/// Adding one is one call site: `kind` is a text column and unknown kinds
+/// render generically.
 pub mod kind {
     pub const SESSION_CREATED: &str = "session.created";
     pub const SESSION_LAUNCHED: &str = "session.launched";
@@ -106,9 +108,11 @@ impl std::fmt::Display for Actor {
     }
 }
 
-/// One lifecycle event to record. Subject ids the call site does not know are
-/// filled in from the subject row at insert time, as are the denormalised
-/// `session_name` / `machine_label` the summary is rendered from.
+/// One lifecycle event to record.
+///
+/// Subject ids the call site does not know are filled in from the subject row
+/// at insert time, as are the denormalised `session_name` / `machine_label`
+/// the summary is rendered from.
 #[derive(Debug, Clone)]
 pub struct Event {
     pub kind: String,
@@ -188,9 +192,11 @@ fn num_of(detail: &Value, key: &str) -> Option<i64> {
     detail.get(key).and_then(Value::as_i64)
 }
 
-/// The one-line human summary stored with the row. Rendered once, at insert,
-/// from the kind and its payload so a row stays readable after its subject is
-/// gone. Unknown kinds fall back to `<subject> <kind>`.
+/// The one-line human summary stored with the row.
+///
+/// Rendered once, at insert, from the kind and its payload so a row stays
+/// readable after its subject is gone. Unknown kinds fall back to
+/// `<subject> <kind>`.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn render_summary(kind_name: &str, event: &Event) -> String {
@@ -216,24 +222,24 @@ pub fn render_summary(kind_name: &str, event: &Event) -> String {
         kind::SESSION_LAUNCHED => format!("{} launched from a draft", session()),
         kind::SESSION_ENDED => {
             let reason = str_of(d, "end_reason").unwrap_or("unknown");
-            match str_of(d, "end_detail") {
-                Some(detail) => format!("{} ended ({reason}): {}", session(), first_line(detail)),
-                None => format!("{} ended ({reason})", session()),
-            }
+            str_of(d, "end_detail").map_or_else(
+                || format!("{} ended ({reason})", session()),
+                |detail| format!("{} ended ({reason}): {}", session(), first_line(detail)),
+            )
         }
         kind::SESSION_ARCHIVED => match num_of(d, "children") {
             Some(n) if n > 0 => format!("{} archived with {n} children", session()),
             _ => format!("{} archived", session()),
         },
         kind::SESSION_UNARCHIVED => format!("{} unarchived", session()),
-        kind::SESSION_FORKED => match str_of(d, "child_session_id") {
-            Some(child) => format!("{} forked into {}", session(), short_id(child)),
-            None => format!("{} forked", session()),
-        },
-        kind::SESSION_RESUMED => match str_of(d, "origin") {
-            Some(origin) => format!("{} resumed ({origin})", session()),
-            None => format!("{} resumed", session()),
-        },
+        kind::SESSION_FORKED => str_of(d, "child_session_id").map_or_else(
+            || format!("{} forked", session()),
+            |child| format!("{} forked into {}", session(), short_id(child)),
+        ),
+        kind::SESSION_RESUMED => str_of(d, "origin").map_or_else(
+            || format!("{} resumed", session()),
+            |origin| format!("{} resumed ({origin})", session()),
+        ),
         kind::SESSION_AUTO_RESUMED => {
             if d.get("exhausted").and_then(Value::as_bool) == Some(true) {
                 format!(
@@ -338,8 +344,9 @@ fn first_line(text: &str) -> String {
     out
 }
 
-/// Fire-and-forget: insert on a detached task. Never blocks or fails the
-/// caller; a failed insert is a warning.
+/// Fire-and-forget: insert on a detached task.
+///
+/// Never blocks or fails the caller; a failed insert is a warning.
 pub fn record(state: &AppState, event: Event) {
     let state = state.clone();
     tokio::spawn(async move {
@@ -352,6 +359,7 @@ pub fn record(state: &AppState, event: Event) {
 pub use cctui_proto::api::events::EventRecord;
 
 /// Insert `event`, publish it as [`ServerEvent::Event`] and return the row.
+///
 /// The body of [`record`]; exposed so a test can observe the failure the
 /// detached path only logs.
 ///
@@ -380,8 +388,9 @@ pub async fn record_now(state: &AppState, mut event: Event) -> Result<EventRecor
     Ok(row)
 }
 
-/// Fill the subject ids and labels the call site did not carry. Best-effort:
-/// a lookup failure leaves the event as given.
+/// Fill the subject ids and labels the call site did not carry.
+///
+/// Best-effort: a lookup failure leaves the event as given.
 async fn enrich(pool: &sqlx::PgPool, event: &mut Event) {
     if let Some(session_id) = event.session_id.clone() {
         let row: Option<(Option<Uuid>, Option<Uuid>, Option<String>)> = sqlx::query_as(
@@ -715,8 +724,9 @@ pub(crate) mod tests {
         rows.iter().map(|r| r.kind.as_str()).collect()
     }
 
-    /// A daemon channel on the bus so dispatch-gated routes go through; the
-    /// receiver is kept so the channel stays open.
+    /// A daemon channel on the bus so dispatch-gated routes go through.
+    ///
+    /// The receiver is kept so the channel stays open.
     fn fake_daemon(
         state: &AppState,
         machine: Uuid,

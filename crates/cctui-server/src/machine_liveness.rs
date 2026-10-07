@@ -38,11 +38,12 @@ pub fn derive(last_seen_at: DateTime<Utc>) -> MachineLiveness {
     }
 }
 
-/// Record `tier` for `machine_id` and broadcast a
-/// [`ServerEvent::MachineLiveness`] iff it changed from the last known tier.
-/// Returns whether it changed. The `online` / `stale` transitions are logged
-/// here; `offline` is logged by [`sweep`] once it knows how many sessions the
-/// transition ended, so one offline is one row.
+/// Record `tier` for `machine_id`, broadcasting iff it changed.
+///
+/// The broadcast is a [`ServerEvent::MachineLiveness`]; returns whether the
+/// tier changed from the last known one. The `online` / `stale` transitions
+/// are logged here; `offline` is logged by [`sweep`] once it knows how many
+/// sessions the transition ended, so one offline is one row.
 pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiveness) -> bool {
     let changed = record_tier(&state.machine_liveness, machine_id, tier);
     if changed {
@@ -135,9 +136,10 @@ fn newly_offline(transitions: impl Iterator<Item = (Uuid, MachineLiveness, bool)
         .collect()
 }
 
-/// End every still-live session of the given offline machines as
-/// `machine_offline`, returning `(session, machine)` per ended row. Soft: the
-/// daemon re-registering the session on reconnect reverts it.
+/// End every still-live session of the given offline machines.
+///
+/// Marks them `machine_offline`, returning `(session, machine)` per ended row.
+/// Soft: the daemon re-registering the session on reconnect reverts it.
 async fn mark_sessions_machine_offline(
     state: &AppState,
     machine_ids: &[Uuid],
@@ -244,8 +246,7 @@ mod tests {
         assert_eq!(pass(MachineLiveness::Offline), vec![id]);
     }
 
-    /// A machine crossing the dead window ends its sessions once and logs one
-    /// `machine.offline` with the count; the sweeps after it log nothing.
+    /// One `machine.offline` per dead-window crossing, none on later sweeps.
     #[tokio::test]
     async fn an_offline_machine_logs_one_offline_row_and_one_end_per_session() {
         let Some(url) = crate::routes::gateway::test_db_url("liveness_offline_events") else {

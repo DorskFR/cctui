@@ -2,6 +2,8 @@
 import type { EventRecord } from "./EventRecord";
 
 /**
- * A keyset page. Pass the last row's `id` back as `before` for the next one.
+ * A keyset page.
+ *
+ * Pass the last row's `id` back as `before` for the next one.
  */
 export type EventPage = { events: Array<EventRecord>, has_more: boolean, };

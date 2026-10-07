@@ -99,6 +99,7 @@ pub async fn set_inactive(
 }
 
 /// Insert a freshly registered session, or reset an existing row to `new`.
+///
 /// An existing row is only touched when it belongs to `user_id` on
 /// `machine_uuid`; `None` when nothing was written, otherwise whether the row
 /// was inserted rather than reset.

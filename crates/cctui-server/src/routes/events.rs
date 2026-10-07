@@ -20,8 +20,10 @@ use crate::state::AppState;
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 200;
 
-/// Query string of the three list routes. `kind` is comma-separated and
-/// prefix-matched, so `session.` selects the family.
+/// Query string of the three list routes.
+///
+/// `kind` is comma-separated and prefix-matched, so `session.` selects the
+/// family.
 #[derive(Debug, Default, Deserialize)]
 pub struct EventQuery {
     #[serde(default)]
@@ -78,8 +80,10 @@ impl Viewer {
     }
 }
 
-/// Shared list body. `subject` narrows to one session or machine on the
-/// per-subject routes; `q` applies the caller's filters on top.
+/// Shared list body.
+///
+/// `subject` narrows to one session or machine on the per-subject routes;
+/// `q` applies the caller's filters on top.
 async fn fetch(
     state: &AppState,
     viewer: Viewer,
@@ -230,8 +234,7 @@ mod tests {
         Extension(AuthContext { user_id: uid, key_id: uid, machine_id: None, scopes })
     }
 
-    /// Two users, one session each; every route shows a user only their own
-    /// rows, and the system family only to an admin.
+    /// Every route shows a user only their own rows; system rows need admin.
     #[tokio::test]
     async fn a_user_cannot_read_another_users_events_on_any_route() {
         let Some(pool) = test_pool("events_api_isolation").await else { return };

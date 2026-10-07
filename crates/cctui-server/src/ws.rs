@@ -617,9 +617,10 @@ fn audience(event: &ServerEvent) -> Audience {
     }
 }
 
-/// The REST visibility rule, per frame: `system.*` is admin-only, otherwise
-/// the session owner, else whoever the machine is shared with, else the
-/// event's own user.
+/// The REST visibility rule, per frame.
+///
+/// `system.*` is admin-only, otherwise the session owner, else whoever the
+/// machine is shared with, else the event's own user.
 fn event_audience(event: &cctui_proto::api::events::EventRecord) -> Audience {
     use Audience::{AdminsOnly, OwnerOf, SharedWith};
     if crate::events::is_system_kind(&event.kind) {

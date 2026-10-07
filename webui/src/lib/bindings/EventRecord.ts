@@ -2,9 +2,11 @@
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
- * One recorded lifecycle transition. `summary` is rendered at insert time and
- * `detail` keeps the denormalised `session_name` / `machine_label`, so a row
- * stays readable once its subject is gone and the id columns are null.
+ * One recorded lifecycle transition.
+ *
+ * `summary` is rendered at insert time and `detail` keeps the denormalised
+ * `session_name` / `machine_label`, so a row stays readable once its subject
+ * is gone and the id columns are null.
  */
 export type EventRecord = { id: number, occurred_at: string, 
 /**

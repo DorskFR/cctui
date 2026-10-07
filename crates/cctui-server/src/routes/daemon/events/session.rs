@@ -113,10 +113,12 @@ pub(super) async fn persist_failed_spawn(
     Ok(true)
 }
 
-/// Record the end: a `session_ended` stream event (the conversation's final
-/// line) plus the row's sticky `ended` status, `ended_at`, `end_reason` and
-/// `end_detail`. A no-op unless `machine_id`/`user_id` own the session;
-/// `true` when the row flipped to `ended` on this call.
+/// Record the end of a session the caller's machine owns.
+///
+/// Writes a `session_ended` stream event (the conversation's final line) plus
+/// the row's sticky `ended` status, `ended_at`, `end_reason` and `end_detail`.
+/// A no-op unless `machine_id`/`user_id` own the session; `true` when the row
+/// flipped to `ended` on this call.
 pub(in crate::routes::daemon) async fn persist_session_end(
     pool: &sqlx::PgPool,
     machine_id: Uuid,

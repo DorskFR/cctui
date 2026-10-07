@@ -160,8 +160,7 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, 
     Ok((config, pool, auth_config, migrations))
 }
 
-/// `system.migrations_applied` only when this boot applied some; every boot
-/// records `system.server_started`.
+/// Boot rows: `system.server_started` always, `system.migrations_applied` when some ran.
 fn record_boot_events(state: &AppState, migrations: &[i64]) {
     use events::{Actor, Event, kind};
     if !migrations.is_empty() {
@@ -761,8 +760,7 @@ async fn auto_archive_stale(state: &AppState) -> usize {
     }
 }
 
-/// One `system.reaper_ran` summary per sweep that changed something; a quiet
-/// sweep records nothing.
+/// One `system.reaper_ran` summary per sweep that changed something.
 async fn reaper_sweep(state: &AppState) {
     demote_idle_registered(state).await;
     let archived = auto_archive_stale(state).await;
