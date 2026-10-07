@@ -42,10 +42,11 @@ pub struct Sample {
     pub utilization: f64,
 }
 
-/// Length of a canonical window, or `None` for one that never resets
-/// (a per-session dollar budget) or an unknown key. A monthly budget is
-/// paced as 30 days: close enough for a burn rate, and the exact rollover
-/// comes from the window's own `resets_at`.
+/// Length of a canonical window.
+///
+/// `None` for one that never resets (a per-session dollar budget) or an
+/// unknown key. A monthly budget is paced as 30 days: close enough for a burn
+/// rate, and the exact rollover comes from the window's own `resets_at`.
 #[must_use]
 pub fn window_duration(key: &str) -> Option<Duration> {
     if key == KEY_SESSION || key == KEY_USD_5H {
