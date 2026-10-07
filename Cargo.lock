@@ -1187,6 +1187,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "insta",
  "reqwest",
  "rustls",
  "schemars 1.2.2",
@@ -1278,6 +1279,7 @@ dependencies = [
 name = "cctui-query"
 version = "0.24.0"
 dependencies = [
+ "cctui-proto",
  "serde",
  "ts-rs",
 ]

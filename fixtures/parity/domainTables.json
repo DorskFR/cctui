@@ -133,12 +133,7 @@
       },
       "default_enabled": true,
       "models_source": "static",
-      "permission_modes": [
-        "ask",
-        "auto",
-        "yolo",
-        "whip"
-      ]
+      "permission_modes": ["ask", "auto", "yolo", "whip"]
     },
     {
       "id": "codex",
@@ -156,12 +151,7 @@
       },
       "default_enabled": true,
       "models_source": "catalog",
-      "permission_modes": [
-        "ask",
-        "auto",
-        "yolo",
-        "whip"
-      ]
+      "permission_modes": ["ask", "auto", "yolo", "whip"]
     },
     {
       "id": "opencode",
@@ -179,12 +169,7 @@
       },
       "default_enabled": true,
       "models_source": "none",
-      "permission_modes": [
-        "ask",
-        "auto",
-        "yolo",
-        "whip"
-      ]
+      "permission_modes": ["ask", "auto", "yolo", "whip"]
     }
   ]
 }
