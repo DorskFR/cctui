@@ -600,7 +600,10 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::MachineResources { machine_id, .. } => {
             SharedWith(Owned::Machine(*machine_id))
         }
-        ServerEvent::AccountUsage { account_id, .. } => SharedWith(Owned::Account(*account_id)),
+        ServerEvent::AccountUsage { account_id, .. }
+        | ServerEvent::LimitResetRedeemed { account_id, .. } => {
+            SharedWith(Owned::Account(*account_id))
+        }
         ServerEvent::DispatcherLiveness { dispatcher_id, .. } => {
             SharedWith(Owned::Dispatcher(*dispatcher_id))
         }

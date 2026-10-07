@@ -1,6 +1,7 @@
 //! Spend a usage-limit reset the moment it would help, instead of letting it
-//! expire unused. Per provider credential, opt-in, policy-driven: the policy
-//! lives in `account_providers.provider_settings` under `auto_limit_reset`, so a
+//! expire unused.
+//!
+//! Per provider credential, opt-in, policy-driven: the policy lives in `account_providers.provider_settings` under `auto_limit_reset`, so a
 //! new knob needs no migration. Usage is read through the per-account cache
 //! (never fetched directly), the claim goes through the same path as the
 //! button, and a per-provider advisory lock plus the audit table keep a
@@ -206,8 +207,10 @@ fn lock_key(provider_id: Uuid) -> i64 {
 }
 
 /// A session-level Postgres advisory lock on one credential, held on its own
-/// pooled connection. Whichever replica takes it owns that credential's claim
-/// until it releases; the others skip the credential this tick.
+/// pooled connection.
+///
+/// Whichever replica takes it owns that credential's claim until it releases;
+/// the others skip the credential this tick.
 pub struct ClaimLock {
     conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
     key: i64,
@@ -247,10 +250,12 @@ struct Candidate {
     provider_settings: Option<Value>,
 }
 
-/// One pass over every credential with the toggle on. Each is judged against
-/// the usage the soft-limit path already caches (refreshed at most once per
-/// cache TTL, never on demand here), and a credit is spent at most once across
-/// replicas. Best-effort: every failure is logged and the next tick retries.
+/// One pass over every credential with the toggle on.
+///
+/// Each is judged against the usage the soft-limit path already caches
+/// (refreshed at most once per cache TTL, never on demand here), and a credit
+/// is spent at most once across replicas. Best-effort: every failure is logged
+/// and the next tick retries.
 pub async fn sweep(state: &AppState) {
     let rows: Vec<Candidate> = match sqlx::query_as(
         "SELECT p.id, p.provider, a.name AS account_name, p.provider_settings \
@@ -312,7 +317,7 @@ async fn redeem_once(state: &AppState, row: &Candidate, credit_id: Option<String
                     });
                 }
             }
-            Err(e) => tracing::warn!(account = %row.id, "auto-redeem failed: {}", e.message()),
+            Err(e) => tracing::warn!(account = %row.id, "auto-redeem failed: {e}"),
         }
     }
     lock.release().await;

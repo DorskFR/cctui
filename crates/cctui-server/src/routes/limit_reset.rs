@@ -418,9 +418,11 @@ pub async fn limit_reset(
 }
 
 /// Claim a reset on provider row `id`, audit it, and refresh the cached usage
-/// when the claim may have moved a window. `requested_by` is `None` for a
-/// claim the server made on its own policy. Shared by the button and the
-/// auto-redeem sweep so both spend a credit the same way.
+/// when the claim may have moved a window.
+///
+/// `requested_by` is `None` for a claim the server made on its own policy.
+/// Shared by the button and the auto-redeem sweep so both spend a credit the
+/// same way.
 pub async fn redeem(
     state: &AppState,
     id: Uuid,
