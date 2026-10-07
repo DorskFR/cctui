@@ -79,9 +79,10 @@ impl ProviderStatusCache {
         status.indicator.is_degraded().then_some(status)
     }
 
-    /// The incident severity routing should steer around for `family`, if any:
-    /// a major or critical reading. Minor is noise to a router, and unknown is
-    /// not a reading.
+    /// The incident severity routing should steer around for `family`, if any.
+    ///
+    /// Only a major or critical reading counts: minor is noise to a router, and
+    /// unknown is not a reading.
     #[must_use]
     pub fn routing_outage(&self, family: &str) -> Option<Indicator> {
         let indicator = self.get(family).indicator;

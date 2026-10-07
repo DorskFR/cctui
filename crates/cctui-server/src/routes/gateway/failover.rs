@@ -46,8 +46,10 @@ fn failover_enabled() -> bool {
     *ENABLED
 }
 
-/// Opt-in: `CCTUI_GATEWAY_OUTAGE_FAILOVER=1|true|on|yes`. Off, the
-/// provider-status cache is never consulted and a pool ranks as it always has.
+/// Opt-in: `CCTUI_GATEWAY_OUTAGE_FAILOVER=1|true|on|yes`.
+///
+/// Off, the provider-status cache is never consulted and a pool ranks as it
+/// always has.
 fn outage_failover_enabled() -> bool {
     static ENABLED: LazyLock<bool> = LazyLock::new(|| {
         std::env::var("CCTUI_GATEWAY_OUTAGE_FAILOVER").is_ok_and(|v| flag_enables(&v))
@@ -80,9 +82,10 @@ pub fn note_failover(map: &dashmap::DashMap<String, Instant>, session_id: &str, 
 /// confused with "a rule I wrote last Tuesday moved this".
 pub const REASON_POOL: &str = "pool";
 pub const REASON_REDIRECT: &str = "redirect";
-/// Prefix of the reason recorded when an upstream incident steered the pool's
-/// pick away from a member it would otherwise have elected; the family whose
-/// status page reported it follows the colon.
+/// Prefix of the reason recorded when an upstream incident steered the pick.
+///
+/// The pool would otherwise have elected the member it steered away from; the
+/// family whose status page reported the incident follows the colon.
 pub const REASON_OUTAGE_PREFIX: &str = "outage:";
 
 /// The reason recorded for a move steered around an incident in `family`.
@@ -97,9 +100,10 @@ pub fn outage_family(reason: &str) -> Option<&str> {
     reason.strip_prefix(REASON_OUTAGE_PREFIX).filter(|f| !f.is_empty())
 }
 
-/// The upstream incident a pool member is exposed to, when it is one routing
-/// should steer around. A member served by a compatible endpoint (`base_url`
-/// set) is not covered by the vendor's status page and reads as healthy.
+/// The family whose incident a pool member is exposed to, if routing should steer around it.
+///
+/// A member served by a compatible endpoint (`base_url` set) is not covered by
+/// the vendor's status page and reads as healthy.
 #[must_use]
 pub fn member_outage(
     cache: &crate::provider_status::ProviderStatusCache,
@@ -355,11 +359,10 @@ fn in_pool_failover_armed(pool: Option<&AccountPool>) -> bool {
     pool.is_some_and(|p| p.failover)
 }
 
-/// The election itself, over `candidates` paired positionally with
-/// `providers` and `outages`. Split from the DB/usage fetch so the rule that
-/// decides where a refused session lands is testable without a gateway.
+/// The election itself, over `candidates` paired positionally with `providers` and `outages`.
 ///
-/// Members under an upstream incident form a second tier: the healthy ones are
+/// Split from the DB/usage fetch so the rule that decides where a refused
+/// session lands is testable without a gateway. Members under an upstream incident form a second tier: the healthy ones are
 /// elected first, and the degraded ones only when no healthy member has room.
 /// With no outage reported (or the flag off) the two tiers are one, and the
 /// result is exactly the plain election. A pick the tiering changed is
@@ -404,9 +407,9 @@ fn elect_replacement(
     })
 }
 
-/// Run the pool's strategy over the candidates `keep` admits and return the
-/// winner's index into `candidates`, or `None` when no admitted member has
-/// measured room.
+/// The winner's index into `candidates` under the pool's strategy, over the members `keep` admits.
+///
+/// `None` when no admitted member has measured room.
 fn elect_among(
     pool: &AccountPool,
     candidates: &[crate::account_pick::Candidate],
