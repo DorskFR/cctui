@@ -27,19 +27,20 @@ const WEEKLY_MODEL_PREFIX = 'weekly_model:';
 
 /** The dollar windows, in display order. Offered by the editor for
  *  pay-per-token providers, whose budgets are money, not a subscription share. */
-export const USD_WINDOW_KEYS = ['session_usd', 'usd_5h', 'usd_7d'];
+export const USD_WINDOW_KEYS = ['session_usd', 'usd_5h', 'usd_7d', 'usd_monthly'];
 
 export function isUsdKey(key: string): boolean {
 	return USD_WINDOW_KEYS.includes(key);
 }
 
 /** Short label for a canonical window key: 5h · 7d · <model>, and Session ·
- *  5h · 7d for dollar windows. Canonical keys always read this way; only an
+ *  5h · 7d · Monthly for dollar windows. Canonical keys always read this way; only an
  *  unknown key falls back to whatever the server called it. */
 export function windowLabelFromKey(key: string): string {
 	if (key === 'session_usd') return 'Session';
 	if (key === 'usd_5h') return '5h';
 	if (key === 'usd_7d') return '7d';
+	if (key === 'usd_monthly') return 'Monthly';
 	if (key === 'session') return '5h';
 	if (key === 'weekly_all') return '7d';
 	if (key.startsWith(WEEKLY_MODEL_PREFIX)) return key.slice(WEEKLY_MODEL_PREFIX.length);

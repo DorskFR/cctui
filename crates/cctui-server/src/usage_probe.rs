@@ -28,7 +28,7 @@
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 
-use crate::soft_limit::{KEY_USD_5H, KEY_USD_7D, UsageWindow, usd_window};
+use crate::soft_limit::{KEY_USD_5H, KEY_USD_7D, KEY_USD_MONTHLY, UsageWindow, usd_window};
 
 /// One probe's HTTP call, fully resolved.
 pub struct ProbeRequest {
@@ -219,11 +219,11 @@ fn next_utc_monday(now: DateTime<Utc>) -> DateTime<Utc> {
 /// `LiteLLM`: `GET /key/info` reports a virtual key's `spend` and its budget
 /// window.
 ///
-/// Reported **only** when the key's `budget_duration` is one cctui already has a
-/// canonical key for. A `LiteLLM` budget can be any duration (`30d`, `1mo`), and
-/// there is no canonical monthly dollar window; emitting such a key as `usd_7d`
-/// would make every downstream reset time a lie. Saying nothing keeps the
-/// credential honestly unmeasured until the vocabulary is extended on purpose.
+/// Reported **only** when the key's `budget_duration` is one cctui has a
+/// canonical key for: 5h, 7d, or a month (`30d` / `1mo`, which both land on
+/// `usd_monthly`; the key's own `budget_reset_at` carries the real rollover).
+/// Any other duration is left unsaid rather than forced under the nearest
+/// key, which would make every downstream reset time a lie.
 pub struct LiteLlmProbe;
 
 impl UsageProbe for LiteLlmProbe {
@@ -269,6 +269,7 @@ fn usd_key_for_duration(duration: &str) -> Option<&'static str> {
     match duration.trim() {
         "5h" | "300m" => Some(KEY_USD_5H),
         "7d" | "1w" | "168h" => Some(KEY_USD_7D),
+        "30d" | "720h" | "1mo" => Some(KEY_USD_MONTHLY),
         _ => None,
     }
 }
@@ -373,11 +374,45 @@ mod tests {
     }
 
     #[test]
-    fn litellm_says_nothing_rather_than_mislabel_a_budget_it_has_no_key_for() {
-        let monthly = serde_json::json!({
-            "info": {"spend": 4.25, "budget_duration": "30d", "budget_reset_at": "2026-10-01T00:00:00Z"}
+    fn litellm_reports_a_monthly_budget_as_the_monthly_dollar_window() {
+        let body = serde_json::json!({
+            "key": "sk-1234",
+            "info": {
+                "key_name": "sk-...1234",
+                "key_alias": "cctui",
+                "spend": 38.9,
+                "max_budget": 200.0,
+                "budget_duration": "30d",
+                "budget_reset_at": "2026-10-01T00:00:00Z",
+                "models": [],
+                "tpm_limit": null,
+                "rpm_limit": null
+            }
         });
-        assert!(LITELLM.parse(&monthly, now()).is_empty());
+        let windows = LITELLM.parse(&body, now());
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].key, KEY_USD_MONTHLY);
+        assert_eq!(windows[0].kind, "usd");
+        assert_eq!(windows[0].amount_usd, Some(38.9));
+        assert_eq!(windows[0].resets_at.unwrap().to_rfc3339(), "2026-10-01T00:00:00+00:00");
+
+        let calendar = serde_json::json!({
+            "info": {"spend": 1.0, "budget_duration": "1mo", "budget_reset_at": "2026-11-01T00:00:00Z"}
+        });
+        assert_eq!(LITELLM.parse(&calendar, now())[0].key, KEY_USD_MONTHLY);
+
+        let back = normalize_usage_windows(&windows_to_usage_json(&windows));
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].key, KEY_USD_MONTHLY);
+        assert_eq!(back[0].amount_usd, Some(38.9));
+    }
+
+    #[test]
+    fn litellm_says_nothing_rather_than_mislabel_a_budget_it_has_no_key_for() {
+        let odd = serde_json::json!({
+            "info": {"spend": 4.25, "budget_duration": "3d", "budget_reset_at": "2026-09-12T00:00:00Z"}
+        });
+        assert!(LITELLM.parse(&odd, now()).is_empty());
         let unbudgeted = serde_json::json!({"info": {"spend": 4.25}});
         assert!(LITELLM.parse(&unbudgeted, now()).is_empty());
         let empty = serde_json::json!({"info": {"budget_duration": "7d"}});
@@ -389,7 +424,10 @@ mod tests {
         assert_eq!(usd_key_for_duration("5h"), Some(KEY_USD_5H));
         assert_eq!(usd_key_for_duration(" 7d "), Some(KEY_USD_7D));
         assert_eq!(usd_key_for_duration("1w"), Some(KEY_USD_7D));
-        assert_eq!(usd_key_for_duration("1mo"), None);
+        assert_eq!(usd_key_for_duration("30d"), Some(KEY_USD_MONTHLY));
+        assert_eq!(usd_key_for_duration("1mo"), Some(KEY_USD_MONTHLY));
+        assert_eq!(usd_key_for_duration("3d"), None);
+        assert_eq!(usd_key_for_duration("1y"), None);
     }
 
     #[test]
