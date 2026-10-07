@@ -102,4 +102,12 @@ pub(super) fn register(r: Routes) -> Routes {
             Authn::Bearer,
             sess_read(),
         )
+        .add(
+            &[GET],
+            "/sessions/{id}/events",
+            "One session's lifecycle events, newest first.",
+            get(routes::events::session_events),
+            Authn::Bearer,
+            sess_read(),
+        )
 }

@@ -446,6 +446,12 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
+id = "get_machines_by_machine_events"
+# GET /machines/{machine_id}/events — One machine's lifecycle events, newest first.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_machines_by_machine_commands_pending"
 # GET /machines/{machine_id}/commands/pending — Poll a machine's pending spawn/control commands.
 tui = "waived"
@@ -502,6 +508,12 @@ module = "app/effects.rs"
 [[route]]
 id = "get_models_codex_catalog"
 # GET /models/codex/catalog — Codex model catalog merged across every machine (newest report wins).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_events"
+# GET /events — Lifecycle event log (sessions, machines, system), keyset-paginated newest first.
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
@@ -1262,6 +1274,12 @@ tui = "handled"
 module = "main.rs"
 
 [[route]]
+id = "get_sessions_by_id_events"
+# GET /sessions/{id}/events — One session's lifecycle events, newest first.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_sessions_by_id_langfuse"
 # GET /sessions/{id}/langfuse — Langfuse cost/usage rollup for a session.
 tui = "waived"
@@ -1580,6 +1598,11 @@ reason = "the TUI session list does not group by room"
 name = "user_actions"
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[ws_event]]
+name = "event"
+tui = "waived"
+reason = "the TUI has no event log view; the list refresh carries status"
 
 [[ws_event]]
 name = "heartbeat"

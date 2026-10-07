@@ -19,6 +19,7 @@ pub mod dispatcher;
 pub mod dispatchers;
 pub mod drafts;
 pub mod enroll;
+pub mod events;
 pub mod fs;
 pub mod gateway;
 pub mod harness_models;

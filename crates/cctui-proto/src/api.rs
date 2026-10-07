@@ -9,6 +9,7 @@ pub mod capabilities;
 pub mod context;
 pub mod device_auth;
 pub mod dispatchers;
+pub mod events;
 pub mod gateway;
 pub mod harness_update;
 pub mod instance;

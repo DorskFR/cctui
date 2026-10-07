@@ -349,22 +349,21 @@ pub fn record(state: &AppState, event: Event) {
     });
 }
 
-/// The row as inserted, for the broadcast the read path will add.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct Inserted {
-    pub id: i64,
-    pub occurred_at: chrono::DateTime<chrono::Utc>,
-}
+pub use cctui_proto::api::events::EventRecord;
 
-/// Insert `event` and wait for the row. The body of [`record`]; exposed so a
-/// test can observe the failure the detached path only logs.
-pub async fn record_now(state: &AppState, mut event: Event) -> Result<Inserted, sqlx::Error> {
+/// Insert `event`, publish it as [`ServerEvent::Event`] and return the row.
+/// The body of [`record`]; exposed so a test can observe the failure the
+/// detached path only logs.
+///
+/// [`ServerEvent::Event`]: cctui_proto::ws::ServerEvent::Event
+pub async fn record_now(state: &AppState, mut event: Event) -> Result<EventRecord, sqlx::Error> {
     enrich(&state.pool, &mut event).await;
     let summary = render_summary(&event.kind, &event);
-    let row: Inserted = sqlx::query_as(
+    let row: EventRecord = sqlx::query_as(
         "INSERT INTO events (kind, severity, session_id, machine_id, user_id, actor, summary, detail) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-         RETURNING id, occurred_at",
+         RETURNING id, occurred_at, kind, severity, session_id, machine_id, user_id, actor, \
+                   summary, detail",
     )
     .bind(&event.kind)
     .bind(event.severity.as_str())
@@ -377,6 +376,7 @@ pub async fn record_now(state: &AppState, mut event: Event) -> Result<Inserted, 
     .fetch_one(&state.pool)
     .await?;
     tracing::debug!(id = row.id, kind = %event.kind, %summary, "lifecycle event recorded");
+    state.bus.publish_server(cctui_proto::ws::ServerEvent::Event { event: row.clone() });
     Ok(row)
 }
 

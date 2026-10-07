@@ -30,6 +30,7 @@ fn command_result(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn to_actions(event: ServerEvent) -> Vec<Action> {
     match event {
         ServerEvent::PermissionRequest {
@@ -127,6 +128,9 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         }
         ServerEvent::RoomMembers { .. } => waived("the TUI list does not group by room"),
         ServerEvent::UserActions { .. } => waived("no needs-you list; the counts ride on the rows"),
+        ServerEvent::Event { .. } => {
+            waived("the TUI has no event log view; the list refresh carries status")
+        }
         ServerEvent::Heartbeat { .. } => waived("liveness tick with nothing to render"),
     }
 }

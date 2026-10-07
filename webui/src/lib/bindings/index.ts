@@ -84,6 +84,8 @@ export type * from './EndReasonInfo';
 export type * from './EndTone';
 export type * from './EnvKind';
 export type * from './EnvVar';
+export type * from './EventPage';
+export type * from './EventRecord';
 export type * from './ForkExtract';
 export type * from './ForkMode';
 export type * from './ForkRequest';

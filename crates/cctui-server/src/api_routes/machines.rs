@@ -18,6 +18,14 @@ pub(super) fn register(r: Routes) -> Routes {
     )
     .add(
         &[GET],
+        "/machines/{machine_id}/events",
+        "One machine's lifecycle events, newest first.",
+        get(routes::events::machine_events),
+        Authn::Bearer,
+        Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+    )
+    .add(
+        &[GET],
         "/machines/{machine_id}/fs/dirs",
         "List directories on a machine (spawn dir picker).",
         get(routes::fs::list_dirs),

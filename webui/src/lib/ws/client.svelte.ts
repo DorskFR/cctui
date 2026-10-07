@@ -16,6 +16,7 @@ import {
 	type AccountUsageEvent,
 	type CommandOutcome,
 	type GithubEvent,
+	type LifecycleEvent,
 	type MachineResourcesEvent,
 	type SessionEndedEvent,
 	type SessionListPatch
@@ -202,6 +203,10 @@ export class WsClient {
 				for (const cb of this.machineResourcesCbs) cb(p);
 				break;
 			}
+			case 'event': {
+				for (const cb of this.eventCbs) cb(msg.event);
+				break;
+			}
 			case 'limit_reset_redeemed':
 				toasts.ok(m.auto_limit_reset_redeemed({ account: msg.account_name, outcome: msg.outcome }));
 				break;
@@ -239,6 +244,14 @@ export class WsClient {
 	onAccountUsage(cb: (ev: AccountUsageEvent) => void): () => void {
 		this.accountUsageCbs.add(cb);
 		return () => this.accountUsageCbs.delete(cb);
+	}
+
+	/** Lifecycle rows as they are recorded; the events page and the session
+	 *  Events tab prepend them instead of refetching. */
+	private eventCbs = new Set<(ev: LifecycleEvent) => void>();
+	onEvent(cb: (ev: LifecycleEvent) => void): () => void {
+		this.eventCbs.add(cb);
+		return () => this.eventCbs.delete(cb);
 	}
 
 	private sessionEndedCbs = new Set<(ev: SessionEndedEvent) => void>();

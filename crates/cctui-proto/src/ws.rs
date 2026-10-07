@@ -786,6 +786,10 @@ pub enum ServerEvent {
         session_id: String,
         actions: Vec<crate::api::UserAction>,
     },
+    /// A lifecycle event was recorded; scoped like the `/events` list.
+    Event {
+        event: crate::api::events::EventRecord,
+    },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
     /// This socket lagged. Refetch the session, or everything when `None`.

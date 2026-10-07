@@ -612,8 +612,26 @@ fn audience(event: &ServerEvent) -> Audience {
         ServerEvent::ScheduledLaunch { user_id, .. } => {
             user_id.map_or(AdminsOnly, |u| OwnerOf(Owned::User(u)))
         }
+        ServerEvent::Event { event } => event_audience(event),
         ServerEvent::Heartbeat {} | ServerEvent::Resync { .. } => Everyone,
     }
+}
+
+/// The REST visibility rule, per frame: `system.*` is admin-only, otherwise
+/// the session owner, else whoever the machine is shared with, else the
+/// event's own user.
+fn event_audience(event: &cctui_proto::api::events::EventRecord) -> Audience {
+    use Audience::{AdminsOnly, OwnerOf, SharedWith};
+    if crate::events::is_system_kind(&event.kind) {
+        return AdminsOnly;
+    }
+    if let Some(session_id) = &event.session_id {
+        return OwnerOf(Owned::Session(session_id.clone()));
+    }
+    if let Some(machine_id) = event.machine_id {
+        return SharedWith(Owned::Machine(machine_id));
+    }
+    event.user_id.map_or(AdminsOnly, |u| OwnerOf(Owned::User(u)))
 }
 
 /// Resolves the owning user of a resource; `None` when unknown.
@@ -1146,6 +1164,62 @@ mod tests {
         spawn_relay_task(stream_rx, "sess-1".into(), tx).await.unwrap();
 
         assert_eq!(&*rx.recv().await.unwrap(), r#"{"type":"resync","session_id":"sess-1"}"#);
+    }
+
+    fn lifecycle_event(
+        kind: &str,
+        session_id: Option<&str>,
+        machine_id: Option<uuid::Uuid>,
+        user_id: Option<uuid::Uuid>,
+    ) -> ServerEvent {
+        ServerEvent::Event {
+            event: cctui_proto::api::events::EventRecord {
+                id: 1,
+                occurred_at: chrono::DateTime::from_timestamp(0, 0).expect("epoch"),
+                kind: kind.to_owned(),
+                severity: "info".to_owned(),
+                session_id: session_id.map(str::to_owned),
+                machine_id,
+                user_id,
+                actor: "system".to_owned(),
+                summary: String::new(),
+                detail: serde_json::json!({}),
+            },
+        }
+    }
+
+    #[test]
+    fn lifecycle_events_follow_the_rest_visibility_rule() {
+        assert_eq!(
+            audience(&lifecycle_event(
+                "session.ended",
+                Some("sess-2"),
+                Some(BOB_MACHINE),
+                Some(BOB)
+            )),
+            Audience::OwnerOf(Owned::Session("sess-2".into()))
+        );
+        assert_eq!(
+            audience(&lifecycle_event("machine.offline", None, Some(BOB_MACHINE), Some(BOB))),
+            Audience::SharedWith(Owned::Machine(BOB_MACHINE))
+        );
+        assert_eq!(
+            audience(&lifecycle_event("session.launched", None, None, Some(BOB))),
+            Audience::OwnerOf(Owned::User(BOB))
+        );
+        assert_eq!(
+            audience(&lifecycle_event(
+                "system.account_limit_reached",
+                Some("sess-2"),
+                None,
+                Some(BOB)
+            )),
+            Audience::AdminsOnly
+        );
+        assert_eq!(
+            audience(&lifecycle_event("system.server_started", None, None, None)),
+            Audience::AdminsOnly
+        );
     }
 
     #[test]
