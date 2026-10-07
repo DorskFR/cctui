@@ -22,6 +22,7 @@ pub mod enroll;
 pub mod events;
 pub mod fs;
 pub mod gateway;
+pub mod harness_catalogs;
 pub mod harness_models;
 pub mod harness_update;
 pub mod harnesses;

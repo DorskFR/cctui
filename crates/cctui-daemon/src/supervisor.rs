@@ -418,7 +418,11 @@ impl Supervisor {
                         }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
-                        batch.push(serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event })?);
+                        if let Some(frame) =
+                            encode_event(adapter_id, event, harness_models_supported())?
+                        {
+                            batch.push(frame);
+                        }
                     }
                     // Flush the coalesced batch once its window elapses.
                     () = wait_deadline(batch.deadline), if active.is_none() => {
@@ -1214,6 +1218,41 @@ fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
 /// Claude Code requests `thinking.display: "omitted"`, so the API returns
 /// thinking blocks as a bare replay signature. They render as nothing and cost
 /// a `stream_events` row each.
+fn harness_models_supported() -> bool {
+    crate::servercaps::server_supports(cctui_proto::capability::HARNESS_MODELS)
+}
+
+/// One event as its wire frame, or `None` when this server must not see it.
+///
+/// A server that does not advertise `harness_models` would fail the whole
+/// batch on the kind, so codex's catalog goes out under the `codex_models`
+/// name it knew and any other harness's catalog is held back entirely.
+fn encode_event(
+    adapter_id: String,
+    event: AdapterEvent,
+    harness_models: bool,
+) -> serde_json::Result<Option<Vec<u8>>> {
+    let (harness, catalog) = match event {
+        AdapterEvent::HarnessModels { adapter_id: harness, catalog } if !harness_models => {
+            (harness, catalog)
+        }
+        event => return serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event }).map(Some),
+    };
+    if harness != "codex" {
+        tracing::debug!(%harness, "model catalog held back: the server predates harness_models");
+        return Ok(None);
+    }
+    let mut frame = serde_json::to_value(DaemonFrameUp::Event {
+        adapter_id,
+        event: AdapterEvent::HarnessModels { adapter_id: harness, catalog },
+    })?;
+    if let Some(event) = frame.get_mut("event").and_then(serde_json::Value::as_object_mut) {
+        event.insert("kind".to_owned(), serde_json::Value::String("codex_models".to_owned()));
+        event.remove("adapter_id");
+    }
+    serde_json::to_vec(&frame).map(Some)
+}
+
 fn is_textless_thinking(event: &AdapterEvent) -> bool {
     let AdapterEvent::Message { payload, .. } = event else { return false };
     if payload.get("role").and_then(serde_json::Value::as_str) != Some("assistant_thinking") {
@@ -1297,7 +1336,8 @@ async fn drain_for_shutdown(
         match tokio::time::timeout(step, event_rx.recv()).await {
             Ok(Some((adapter_id, event))) => {
                 let event = scrub_event(event, scrub);
-                if let Ok(frame) = serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event }) {
+                if let Ok(Some(frame)) = encode_event(adapter_id, event, harness_models_supported())
+                {
                     frames.push(frame);
                 }
             }
@@ -1437,11 +1477,79 @@ fn parse_frame(msg: Message) -> Option<DaemonFrameDown> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    fn sol_catalog() -> cctui_proto::codex_catalog::CodexModelCatalog {
+        cctui_proto::codex_catalog::CodexModelCatalog {
+            models: vec![cctui_proto::codex_catalog::CodexModel {
+                id: "gpt-5.6-sol".into(),
+                model: "gpt-5.6-sol".into(),
+                display_name: "GPT-5.6 Sol".into(),
+                description: String::new(),
+                hidden: false,
+                is_default: true,
+                supported_efforts: vec![],
+                default_effort: String::new(),
+                input_modalities: vec![],
+                upgrade: None,
+                minimal_client_version: None,
+            }],
+            client_version: None,
+        }
+    }
+
+    #[test]
+    fn a_capable_server_gets_harness_models_as_is() {
+        let frame = super::encode_event(
+            "gemini".into(),
+            AdapterEvent::HarnessModels { adapter_id: "gemini".into(), catalog: sol_catalog() },
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(v["event"]["kind"], "harness_models");
+        assert_eq!(v["event"]["adapter_id"], "gemini");
+    }
+
+    #[test]
+    fn an_older_server_gets_codex_models_under_its_old_name_and_nothing_else() {
+        let frame = super::encode_event(
+            "codex".into(),
+            AdapterEvent::HarnessModels { adapter_id: "codex".into(), catalog: sol_catalog() },
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(v["event"]["kind"], "codex_models");
+        assert!(v["event"].get("adapter_id").is_none(), "{v}");
+        assert_eq!(v["event"]["catalog"]["models"][0]["id"], "gpt-5.6-sol");
+        let back: DaemonFrameUp = serde_json::from_slice(&frame).unwrap();
+        assert!(matches!(
+            back,
+            DaemonFrameUp::Event { event: AdapterEvent::HarnessModels { adapter_id, .. }, .. }
+                if adapter_id == "codex"
+        ));
+        let held = super::encode_event(
+            "gemini".into(),
+            AdapterEvent::HarnessModels { adapter_id: "gemini".into(), catalog: sol_catalog() },
+            false,
+        )
+        .unwrap();
+        assert!(held.is_none());
+        let other = super::encode_event(
+            "gemini".into(),
+            AdapterEvent::TurnEnd { local_id: "s".into(), ts: None },
+            false,
+        )
+        .unwrap();
+        assert!(other.is_some(), "only the catalog is gated here");
+    }
+
     use cctui_proto::api::DaemonAdapterConfig;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use cctui_proto::adapter::AdapterCommand;
+    use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
     use cctui_proto::chunk::{Accept, Reassembler};
     use cctui_proto::ws::DaemonFrameUp;
 

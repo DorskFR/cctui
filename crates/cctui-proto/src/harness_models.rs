@@ -178,10 +178,28 @@ pub fn with_current_model(mut options: Vec<ModelOption>, current: &str) -> Vec<M
     options
 }
 
+/// Effort levels from a reported catalog alone, `""` first; empty when the
+/// catalog names none for the model. For harnesses with no static list.
+#[must_use]
+pub fn catalog_efforts_for(catalog: &CodexModelCatalog, model_id: &str) -> Vec<String> {
+    let model = if model_id.is_empty() {
+        catalog.models.iter().find(|m| m.is_default).or_else(|| catalog.models.first())
+    } else {
+        catalog.models.iter().find(|m| m.id == model_id)
+    };
+    let supported = model.map(|m| m.supported_efforts.clone()).unwrap_or_default();
+    if supported.is_empty() {
+        return Vec::new();
+    }
+    std::iter::once(String::new()).chain(supported).collect()
+}
+
 /// The lists for one harness.
 ///
 /// `model` is the id already selected, so `efforts` are the ones it supports.
-/// An unknown harness gets the claude shape, which is also what a free-text
+/// A harness other than the three native ones is catalog-driven when a
+/// daemon reported one (an ACP agent's config options or legacy `models`)
+/// and otherwise gets the claude shape, which is also what a free-text
 /// picker needs.
 #[must_use]
 pub fn harness_models(
@@ -189,10 +207,11 @@ pub fn harness_models(
     catalog: Option<&CodexModelCatalog>,
     model: &str,
 ) -> HarnessModels {
-    let (models, efforts) = match harness {
-        "codex" => (codex_models_for(catalog), codex_efforts_for(catalog, model)),
-        "opencode" => (vec![default_option()], Vec::new()),
-        _ => (claude_models(), claude_efforts()),
+    let (models, efforts) = match (harness, catalog) {
+        ("codex", _) => (codex_models_for(catalog), codex_efforts_for(catalog, model)),
+        ("opencode", _) => (vec![default_option()], Vec::new()),
+        ("claude-code", _) | (_, None) => (claude_models(), claude_efforts()),
+        (_, Some(reported)) => (codex_models_for(catalog), catalog_efforts_for(reported, model)),
     };
     HarnessModels { harness: harness.to_owned(), models, efforts }
 }
@@ -337,5 +356,23 @@ mod tests {
         assert_eq!(harness_models("claude-code", None, "").models, claude_models());
         assert_eq!(harness_models("whatever", None, "").efforts, claude_efforts());
         assert_eq!(harness_models("codex", None, "").models, codex_models());
+    }
+
+    #[test]
+    fn a_reported_catalog_drives_a_harness_without_a_static_list() {
+        let mut flash = model("gemini-2.5-flash");
+        flash.supported_efforts = vec!["low".into(), "high".into()];
+        let mut pro = model("gemini-2.5-pro");
+        pro.is_default = true;
+        let catalog = CodexModelCatalog { models: vec![pro, flash], client_version: None };
+        let got = harness_models("gemini", Some(&catalog), "");
+        let ids: Vec<&str> = got.models.iter().map(|m| m.v.as_str()).collect();
+        assert_eq!(ids, ["", "gemini-2.5-pro", "gemini-2.5-flash"]);
+        assert!(got.efforts.is_empty(), "the default model lists no efforts: {:?}", got.efforts);
+        let flash = harness_models("gemini", Some(&catalog), "gemini-2.5-flash");
+        assert_eq!(flash.efforts, ["", "low", "high"]);
+        let unknown = harness_models("gemini", Some(&catalog), "not-listed");
+        assert!(unknown.efforts.is_empty());
+        assert_eq!(catalog_efforts_for(&CodexModelCatalog::default(), ""), Vec::<String>::new());
     }
 }

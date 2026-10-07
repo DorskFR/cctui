@@ -250,7 +250,7 @@ pub enum DaemonFrameDown {
         session_ids: Vec<String>,
     },
     /// Re-run codex `model/list`; the result arrives as
-    /// [`AdapterEvent::CodexModels`](crate::adapter::AdapterEvent::CodexModels).
+    /// [`AdapterEvent::HarnessModels`](crate::adapter::AdapterEvent::HarnessModels).
     RefreshCodexModels {},
     /// Run the update hook for `version`. No reply: the hook restarts the server,
     /// so progress is posted to `/api/v1/daemon/update-hook/{run_id}`.

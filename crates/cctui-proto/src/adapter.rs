@@ -451,8 +451,14 @@ pub enum AdapterEvent {
         request_id: Uuid,
         report: Box<crate::diagnose::SessionDiagnose>,
     },
-    /// Machine-scoped codex `model/list` catalog.
-    CodexModels {
+    /// Machine-scoped model catalog of one harness (codex `model/list`, an
+    /// ACP agent's config options or legacy `models`). `codex_models` is the
+    /// wire name a daemon from before the generalisation sends; it decodes as
+    /// codex's catalog.
+    #[serde(alias = "codex_models")]
+    HarnessModels {
+        #[serde(default = "codex_adapter_id")]
+        adapter_id: String,
         catalog: crate::codex_catalog::CodexModelCatalog,
     },
     /// Base64 PTY bytes, sent only while [`AdapterCommand::WatchPty`] is on.
@@ -484,6 +490,10 @@ pub enum AdapterEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observed_at: Option<i64>,
     },
+}
+
+fn codex_adapter_id() -> String {
+    "codex".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1039,9 +1049,60 @@ mod tests {
         assert_eq!(back.as_str(), "claude-code");
     }
 
+    fn sol_catalog() -> crate::codex_catalog::CodexModelCatalog {
+        crate::codex_catalog::CodexModelCatalog {
+            models: vec![crate::codex_catalog::CodexModel {
+                id: "gpt-5.6-sol".into(),
+                model: "gpt-5.6-sol".into(),
+                display_name: "GPT-5.6 Sol".into(),
+                description: String::new(),
+                hidden: false,
+                is_default: true,
+                supported_efforts: vec!["low".into(), "high".into()],
+                default_effort: "medium".into(),
+                input_modalities: vec!["text".into()],
+                upgrade: None,
+                minimal_client_version: None,
+            }],
+            client_version: None,
+        }
+    }
+
+    #[test]
+    fn adapter_event_harness_models_roundtrips_with_its_adapter_id() {
+        let evt =
+            AdapterEvent::HarnessModels { adapter_id: "gemini".into(), catalog: sol_catalog() };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"harness_models""#), "{json}");
+        assert!(json.contains(r#""adapter_id":"gemini""#), "{json}");
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        let AdapterEvent::HarnessModels { adapter_id, catalog } = back else {
+            panic!("wrong variant")
+        };
+        assert_eq!(adapter_id, "gemini");
+        assert_eq!(catalog.models[0].id, "gpt-5.6-sol");
+    }
+
+    /// A daemon from before the generalisation still sends `codex_models`
+    /// with no adapter id; it is codex's catalog.
+    #[test]
+    fn legacy_codex_models_event_decodes_as_the_codex_catalog() {
+        let legacy = serde_json::json!({
+            "kind": "codex_models",
+            "catalog": serde_json::to_value(sol_catalog()).unwrap(),
+        });
+        let back: AdapterEvent = serde_json::from_value(legacy).unwrap();
+        let AdapterEvent::HarnessModels { adapter_id, catalog } = back else {
+            panic!("wrong variant")
+        };
+        assert_eq!(adapter_id, "codex");
+        assert_eq!(catalog.models[0].supported_efforts, ["low", "high"]);
+    }
+
     #[test]
     fn adapter_event_codex_models_roundtrips() {
-        let evt = AdapterEvent::CodexModels {
+        let evt = AdapterEvent::HarnessModels {
+            adapter_id: "codex".into(),
             catalog: crate::codex_catalog::CodexModelCatalog {
                 models: vec![crate::codex_catalog::CodexModel {
                     id: "gpt-5.6-sol".into(),
@@ -1060,9 +1121,12 @@ mod tests {
             },
         };
         let json = serde_json::to_string(&evt).unwrap();
-        assert!(json.contains(r#""kind":"codex_models""#));
+        assert!(json.contains(r#""kind":"harness_models""#));
         let back: AdapterEvent = serde_json::from_str(&json).unwrap();
-        let AdapterEvent::CodexModels { catalog } = back else { panic!("wrong variant") };
+        let AdapterEvent::HarnessModels { adapter_id, catalog } = back else {
+            panic!("wrong variant")
+        };
+        assert_eq!(adapter_id, "codex");
         assert_eq!(catalog.models[0].id, "gpt-5.6-sol");
         assert_eq!(catalog.models[0].supported_efforts, ["low", "high"]);
     }

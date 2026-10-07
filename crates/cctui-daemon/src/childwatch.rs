@@ -501,7 +501,7 @@ impl ChildWatch {
             | AdapterEvent::SessionModel { .. }
             | AdapterEvent::PrLink { .. }
             | AdapterEvent::Diagnose { .. }
-            | AdapterEvent::CodexModels { .. }
+            | AdapterEvent::HarnessModels { .. }
             | AdapterEvent::PtyChunk { .. }
             | AdapterEvent::TranscriptMark { .. } => {}
             _ => {}

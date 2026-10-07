@@ -16,7 +16,6 @@ mod pty_view;
 pub mod rows;
 pub mod session;
 
-
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionSpec};
 use tokio::sync::mpsc;
 use uuid::Uuid;

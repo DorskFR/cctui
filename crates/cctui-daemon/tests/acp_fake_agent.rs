@@ -633,6 +633,8 @@ mod scenarios {
         scenario!(a_missing_login_is_an_actionable_spawn_failure),
         scenario!(interrupt_cancels_a_stalled_turn),
         scenario!(diagnose_carries_agent_info_and_the_rings),
+        scenario!(config_options_populate_the_catalog_and_set_model_round_trips),
+        scenario!(legacy_models_populate_the_catalog_and_set_model_round_trips),
     ];
 
     fn exe() -> String {
@@ -903,6 +905,16 @@ mod scenarios {
         Ok(())
     }
 
+    pub async fn config_options_populate_the_catalog_and_set_model_round_trips()
+    -> anyhow::Result<()> {
+        catalog_scenarios::config_options().await
+    }
+
+    pub async fn legacy_models_populate_the_catalog_and_set_model_round_trips() -> anyhow::Result<()>
+    {
+        catalog_scenarios::legacy().await
+    }
+
     pub async fn diagnose_carries_agent_info_and_the_rings() -> anyhow::Result<()> {
         let mut h = start(&FAKE_ROW, &exe());
         h.spawn(&full_script(), Some(PermissionMode::Auto), "ping").await;
@@ -949,6 +961,151 @@ mod scenarios {
             .await?;
         h.finish().await;
         Ok(())
+    }
+}
+
+mod catalog_scenarios {
+    use super::*;
+
+    const SET_MODEL: Uuid = Uuid::from_u128(0x55);
+
+    fn config_options_json() -> Value {
+        json!([
+            {
+                "id": "model", "name": "Model", "category": "model", "type": "select",
+                "currentValue": "flash",
+                "options": [
+                    { "value": "pro", "name": "Pro" },
+                    { "value": "flash", "name": "Flash", "description": "fast" },
+                ],
+            },
+            {
+                "id": "thinking", "name": "Thinking level", "category": "thought_level", "type": "select",
+                "currentValue": "medium",
+                "options": [{ "value": "low", "name": "Low" }, { "value": "high", "name": "High" }],
+            },
+        ])
+    }
+
+    fn legacy_models() -> Value {
+        json!({
+            "currentModelId": "gemini-2.5-pro",
+            "availableModels": [
+                { "modelId": "gemini-2.5-pro", "name": "Gemini 2.5 Pro" },
+                { "modelId": "gemini-2.5-flash", "name": "Gemini 2.5 Flash" },
+            ],
+        })
+    }
+
+    fn catalogs(events: &[AdapterEvent]) -> Vec<&cctui_proto::codex_catalog::CodexModelCatalog> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::HarnessModels { adapter_id, catalog }
+                    if adapter_id == FAKE_ROW.id =>
+                {
+                    Some(catalog)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub async fn run(
+        script: Value,
+        expect_ids: &[&str],
+        initial: &str,
+        switch_to: &str,
+        effort: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let mut h = start(&FAKE_ROW, &exe);
+        h.spawn(&script, None, "ping").await;
+        let events = h.until(is_idle, Duration::from_secs(30)).await?;
+        let local_id =
+            started(&events).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        let first = catalogs(&events);
+        anyhow::ensure!(!first.is_empty(), "a HarnessModels event at spawn: {events:#?}");
+        let ids: Vec<&str> = first[0].models.iter().map(|m| m.id.as_str()).collect();
+        anyhow::ensure!(ids == expect_ids, "catalog ids {ids:?} != {expect_ids:?}");
+        anyhow::ensure!(
+            first[0].models.iter().any(|m| m.is_default && m.id == initial),
+            "the current model is the default: {:#?}",
+            first[0]
+        );
+        anyhow::ensure!(
+            events
+                .iter()
+                .any(|e| matches!(e, AdapterEvent::SessionModel { model, .. } if model == initial)),
+            "session model reported: {events:#?}"
+        );
+        h.send(AdapterCommand::SetModel {
+            local_id: local_id.clone(),
+            model: Some(switch_to.to_owned()),
+            effort: effort.map(str::to_owned),
+            command_id: Some(SET_MODEL),
+        })
+        .await;
+        let rest = h
+            .until(|e| matches!(e, AdapterEvent::CommandResult { command_id, .. } if *command_id == SET_MODEL), Duration::from_secs(15))
+            .await?;
+        anyhow::ensure!(
+            command_result(&rest, SET_MODEL) == Some((true, None)),
+            "set_model acked: {rest:#?}"
+        );
+        anyhow::ensure!(
+            rest.iter().any(
+                |e| matches!(e, AdapterEvent::Status { model: Some(m), .. } if m == switch_to)
+            ),
+            "the new model is reported on the card: {rest:#?}"
+        );
+        let after = catalogs(&rest);
+        anyhow::ensure!(
+            after
+                .last()
+                .is_some_and(|c| c.models.iter().any(|m| m.is_default && m.id == switch_to)),
+            "the catalog is re-reported with the new default: {after:#?}"
+        );
+        if let Some(effort) = effort {
+            anyhow::ensure!(
+                after.last().is_some_and(|c| c.models[0].default_effort == effort),
+                "the effort travels with the catalog: {after:#?}"
+            );
+        }
+        h.send(AdapterCommand::Diagnose { local_id: local_id.clone(), request_id: DIAGNOSE }).await;
+        let diag = h
+            .until(|e| matches!(e, AdapterEvent::Diagnose { .. }), Duration::from_secs(10))
+            .await?;
+        let Some(AdapterEvent::Diagnose { report, .. }) = diag.last() else { unreachable!() };
+        anyhow::ensure!(
+            report.acp.as_ref().and_then(|a| a.model.as_deref()) == Some(switch_to),
+            "diagnose shows the switched model: {:#?}",
+            report.acp
+        );
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok(())
+    }
+
+    pub async fn config_options() -> anyhow::Result<()> {
+        let mut script = full_script();
+        script["configOptions"] = config_options_json();
+        run(script, &["pro", "flash"], "flash", "pro", Some("high")).await
+    }
+
+    pub async fn legacy() -> anyhow::Result<()> {
+        let mut script = full_script();
+        script["models"] = legacy_models();
+        run(
+            script,
+            &["gemini-2.5-pro", "gemini-2.5-flash"],
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            None,
+        )
+        .await
     }
 }
 

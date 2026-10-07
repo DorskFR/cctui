@@ -1,9 +1,9 @@
 //! `GET /api/v1/models/{harness}` — the model and effort lists a picker for
 //! that harness should offer.
 //!
-//! Codex is catalog-driven, so an optional `machine_id` narrows the catalog to
-//! the one that machine reports; every other harness answers from the static
-//! lists. There is no allowlist — the picker also accepts free text.
+//! Codex and the ACP agents are catalog-driven, so an optional `machine_id`
+//! narrows the catalog to the one that machine reports; claude answers from
+//! the static lists. There is no allowlist — the picker also accepts free text.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -37,7 +37,11 @@ pub async fn get_harness_models(
         ),
         None => None,
     };
-    let catalog = (harness == "codex").then(|| effective_catalog(&state, machine));
+    let catalog = if harness == "codex" {
+        Some(effective_catalog(&state, machine))
+    } else {
+        crate::routes::harness_catalogs::effective(&harness, machine)
+    };
     let model = query.model.as_deref().unwrap_or_default();
     Ok(Json(harness_models(&harness, catalog.as_ref(), model)))
 }

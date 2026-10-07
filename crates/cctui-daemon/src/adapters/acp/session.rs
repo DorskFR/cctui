@@ -265,8 +265,12 @@ impl AcpSession {
         self.session = Some(session);
 
         self.apply_mode(&session_id).await?;
-        if let Some(model) = self.params.model.as_deref().filter(|m| !m.trim().is_empty()) {
-            tracing::warn!(%model, "acp: launch model not applied: set_model is not supported yet");
+        if (self.params.model.is_some() || self.params.effort.is_some())
+            && let Err(err) = self
+                .set_model(&session_id, self.params.model.clone(), self.params.effort.clone())
+                .await
+        {
+            tracing::warn!(%err, "acp: launch model not applied");
         }
         self.register(session_id.clone()).await;
         if let Some(preflight) = self.params.preflight.take() {
@@ -384,6 +388,9 @@ impl AcpSession {
                 .send(AdapterEvent::SessionModel { local_id: local_id.clone(), model })
                 .await;
         }
+        if let Some(event) = self.catalog.event(self.params.row.id) {
+            let _ = self.events.send(event).await;
+        }
         if let Some(mode) = self.current_mode.clone() {
             let posture = normalize::posture(&self.params.row.modes, &mode);
             if let Some(evt) =
@@ -464,17 +471,13 @@ impl AcpSession {
             SessionCommand::Permission { request_id, allow } => {
                 self.answer_permission(&request_id, allow).await;
             }
-            SessionCommand::SetModel { command_id, .. } => {
+            SessionCommand::SetModel { model, effort, command_id } => {
+                let outcome = self.set_model(&local_id, model, effort).await;
                 if let Some(command_id) = command_id {
+                    let error = outcome.err().map(|e| e.to_string());
                     crate::adapters::emit(
                         &self.events,
-                        AdapterEvent::CommandResult {
-                            command_id,
-                            ok: false,
-                            error: Some(
-                                crate::adapter_runtime::Unsupported("set_model").to_string(),
-                            ),
-                        },
+                        AdapterEvent::CommandResult { command_id, ok: error.is_none(), error },
                     )
                     .await;
                 }
@@ -540,6 +543,9 @@ impl AcpSession {
                     let _ = self.events.send(status_model(local_id, model)).await;
                 }
                 self.model = model;
+                if let Some(event) = self.catalog.event(self.params.row.id) {
+                    let _ = self.events.send(event).await;
+                }
             }
             Out::Mode { agent_mode, .. } => {
                 self.current_mode = Some(agent_mode.clone());
@@ -705,6 +711,40 @@ impl AcpSession {
             return;
         };
         let _ = self.events.send(event).await;
+    }
+
+    /// `set_config_option` when the agent exposes the option, legacy
+    /// `set_model` otherwise; the answer's config options refresh the catalog.
+    async fn set_model(
+        &mut self,
+        session_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> anyhow::Result<()> {
+        let requests =
+            self.catalog.set_model_requests(session_id, model.as_deref(), effort.as_deref())?;
+        for (method, params) in requests {
+            let resp = self.request(&method, params, RPC_TIMEOUT).await?;
+            if let Some(options) = resp.get("configOptions").and_then(Value::as_array) {
+                self.catalog.apply_config_options(options);
+            }
+        }
+        if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
+            self.catalog.note_legacy_model(&model);
+        }
+        let model = self.catalog.current_model();
+        if self.local_id.is_some() {
+            if model != self.model
+                && let Some(model) = model.clone()
+            {
+                let _ = self.events.send(status_model(session_id, model)).await;
+            }
+            if let Some(event) = self.catalog.event(self.params.row.id) {
+                let _ = self.events.send(event).await;
+            }
+        }
+        self.model = model;
+        Ok(())
     }
 
     async fn request(
