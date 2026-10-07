@@ -568,6 +568,7 @@ fn spend_parity() {
             .map(|p| DailyPoint {
                 day_ms: p["dayMs"].as_i64().expect("an i64"),
                 tokens: p["tokens"].as_u64().expect("a u64"),
+                cost_usd: p["costUsd"].as_f64().unwrap_or(0.0),
             })
             .collect();
         let days = usize::try_from(c["days"].as_u64().expect("a u64")).expect("a usize");

@@ -57,7 +57,7 @@ describe('fillBuckets', () => {
 });
 
 describe('rangeCost', () => {
-	it('carries each row's dollars onto its slot and sums the range', () => {
+	it("carries each row's dollars onto its slot and sums the range", () => {
 		const today = new Date(2026, 6, 15, 9, 0, 0);
 		const twoDaysAgo = new Date(2026, 6, 13, 22, 0, 0);
 		const filled = fillBuckets(

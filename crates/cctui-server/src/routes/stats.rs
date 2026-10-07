@@ -337,8 +337,7 @@ const fn granularity_for_days(days: i64) -> &'static str {
 }
 
 type BucketRow = (DateTime<Utc>, i64, i64, i64, i64);
-/// `(bucket, model, catalog, input, output, cache_read)` from
-/// [`USAGE_COST_SQL`]: one row per bucket × model × pricing catalog.
+/// One [`USAGE_COST_SQL`] row: `(bucket, model, catalog, input, output, cache_read)`.
 type CostRow = (DateTime<Utc>, Option<String>, Option<serde_json::Value>, i64, i64, i64);
 type ModelRow = (String, i64, i64, i64, i64);
 type HeatRow = (i32, i32, i64, i64);
@@ -359,8 +358,9 @@ const USAGE_BUCKETS_SQL: &str = "SELECT \
      WHERE stu.created_at >= $3 AND ($4::uuid IS NULL OR m.user_id = $4) \
      GROUP BY bucket ORDER BY bucket";
 
-/// Dollars per bucket. Same bucketing and binds as [`USAGE_BUCKETS_SQL`], but
-/// split further by model and by the catalog of the account the session last
+/// Dollars per bucket, with the binds of [`USAGE_BUCKETS_SQL`].
+///
+/// Split further by model and by the catalog of the account the session last
 /// drew a gateway token from, so each row can be priced the way the session
 /// list prices it (`crate::cost`). A session with no token has no catalog and
 /// prices to nothing.

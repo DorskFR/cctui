@@ -116,11 +116,12 @@ pub struct DailyPoint {
 }
 
 impl DailyPoint {
-    /// One `/sessions/stats/usage` bucket, with its start already truncated to
-    /// the local day. Tokens are what the bar stacks: input, output and cache
-    /// reads, as the webui's `bucketTotal`.
+    /// One `/sessions/stats/usage` bucket, its start already truncated to the local day.
+    ///
+    /// Tokens are what the bar stacks: input, output and cache reads, as the
+    /// webui's `bucketTotal`.
     #[must_use]
-    pub fn from_bucket(
+    pub const fn from_bucket(
         day_ms: i64,
         input: u64,
         output: u64,
