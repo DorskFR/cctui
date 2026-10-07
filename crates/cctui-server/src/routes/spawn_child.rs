@@ -820,6 +820,7 @@ async fn archive_descendant(
         target,
         false,
         cctui_proto::adapter::RemoveInitiator::Automatic,
+        crate::events::Actor::Agent(session_id.to_owned()),
     )
     .await?;
     if outcome == crate::routes::sessions::ArchiveOutcome::SkippedPinned {

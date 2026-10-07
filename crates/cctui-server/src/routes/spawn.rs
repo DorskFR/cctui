@@ -1068,6 +1068,19 @@ pub async fn launch_stored_draft(
         tracing::warn!(%session_id, "draft launched but row delete failed: {e}");
     }
     tracing::info!(draft = %session_id, "draft launched");
+    crate::events::record(
+        state,
+        crate::events::Event::new(
+            crate::events::kind::SESSION_LAUNCHED,
+            crate::events::Actor::User(ctx.user_id),
+        )
+        .user(ctx.user_id)
+        .detail(serde_json::json!({
+            "draft_id": session_id,
+            "session_id": outcome.1.session_id,
+            "command_id": outcome.1.command_id,
+        })),
+    );
     Ok(outcome)
 }
 

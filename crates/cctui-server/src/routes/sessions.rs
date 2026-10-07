@@ -16,6 +16,7 @@ use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, Sessio
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
+use crate::events::{self, Actor, Event, kind};
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::resolve_owned_machine;
 use crate::state::AppState;
@@ -52,11 +53,21 @@ pub async fn register(
     // (e.g. Claude restart) is treated the same way: status=new, let the
     // first activity promote it. Only a row of this user on this machine is
     // updated; anything else, including a row with no owner, is left alone.
-    let written =
+    let Some(inserted) =
         crate::store::sessions::upsert_registered(&state.pool, &session, machine_uuid, ctx.user_id)
-            .await?;
-    if !written {
+            .await?
+    else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
+    };
+    if inserted {
+        events::record(
+            &state,
+            Event::new(kind::SESSION_CREATED, Actor::Daemon)
+                .session(&session_id)
+                .machine(machine_uuid)
+                .user(ctx.user_id)
+                .detail(serde_json::json!({ "origin": "daemon-registered" })),
+        );
     }
 
     let ws_url = format!(
@@ -2332,6 +2343,7 @@ pub async fn send_message(
 
 pub async fn rename_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<RenameRequest>,
 ) -> Result<StatusCode, AppError> {
@@ -2342,11 +2354,25 @@ pub async fn rename_session(
     // Persist immediately so the UI reflects the rename without waiting for
     // the daemon round-trip. The daemon write-through (below) keeps the
     // on-disk state.json in sync so the next status poll doesn't revert it.
-    sqlx::query("UPDATE sessions SET session_name = $2 WHERE id = $1")
-        .bind(&session_id)
-        .bind(name)
-        .execute(&state.pool)
-        .await?;
+    let previous: Option<Option<String>> = sqlx::query_scalar(
+        "WITH prior AS (SELECT session_name FROM sessions WHERE id = $1) \
+         UPDATE sessions SET session_name = $2 WHERE id = $1 \
+         RETURNING (SELECT session_name FROM prior)",
+    )
+    .bind(&session_id)
+    .bind(name)
+    .fetch_optional(&state.pool)
+    .await?;
+    if let Some(previous) = previous
+        && previous.as_deref() != Some(name)
+    {
+        events::record(
+            &state,
+            Event::new(kind::SESSION_RENAMED, Actor::User(ctx.user_id))
+                .session(&session_id)
+                .detail(serde_json::json!({ "from": previous, "to": name, "session_name": name })),
+        );
+    }
     // Best-effort propagation to the owning daemon's adapter.
     let _ = crate::bus::dispatch(
         &state,
@@ -2384,6 +2410,7 @@ pub async fn mark_seen(
 
 pub async fn kill_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     // Best-effort: also dispatch to the daemon so the running worker is
@@ -2404,6 +2431,10 @@ pub async fn kill_session(
     }
     state.bus.deregister_session_stream(&session_id);
     tracing::info!(session_id = %session_id, "session killed");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_KILLED, Actor::User(ctx.user_id)).session(&session_id),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2422,6 +2453,7 @@ pub async fn kill_session(
 /// instead of firing-and-forgetting. Returns the id in the response body.
 pub async fn interrupt_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
     let command_id = uuid::Uuid::new_v4();
@@ -2456,6 +2488,12 @@ pub async fn interrupt_session(
         return Err(AppError::new(status, message));
     }
     tracing::info!(session_id = %session_id, %command_id, "session interrupted");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_INTERRUPTED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(serde_json::json!({ "command_id": command_id })),
+    );
     Ok((
         StatusCode::ACCEPTED,
         Json(cctui_proto::api::SpawnResponse {
@@ -2492,6 +2530,7 @@ pub struct SwitchAccountRequest {
 #[allow(clippy::too_many_lines)]
 pub async fn switch_account(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<SwitchAccountRequest>,
 ) -> Result<StatusCode, AppError> {
@@ -2649,6 +2688,16 @@ pub async fn switch_account(
         family = %target_family,
         "switched session account (soft-limit rebind)"
     );
+    events::record(
+        &state,
+        Event::new(kind::SESSION_ACCOUNT_SWITCHED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(serde_json::json!({
+                "from_account_id": current_account_id,
+                "to_account_id": target_id,
+                "family": target_family,
+            })),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2686,6 +2735,7 @@ pub async fn session_bindings(
 /// this is not a fork.
 pub async fn resume_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     // Pass the working_dir so the daemon can resume even after archiving ran
@@ -2715,6 +2765,12 @@ pub async fn resume_session(
     })?;
     crate::store::sessions::set_inactive(&state.pool, &session_id, true).await?;
     tracing::info!(session_id = %session_id, "resume dispatched");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_RESUMED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(serde_json::json!({ "origin": "manual" })),
+    );
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -2733,6 +2789,7 @@ pub async fn resume_session(
 /// Returns the id in the response body, mirroring interrupt.
 pub async fn set_model(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SetModelRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
@@ -2761,6 +2818,14 @@ pub async fn set_model(
     )
     .await;
     tracing::info!(session_id = %session_id, %command_id, ?model, ?effort, "set-model dispatched");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_MODEL_CHANGED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(
+                serde_json::json!({ "model": model, "effort": effort, "command_id": command_id }),
+            ),
+    );
     Ok((
         StatusCode::ACCEPTED,
         Json(cctui_proto::api::SpawnResponse {
@@ -2785,6 +2850,7 @@ pub async fn set_model(
 /// re-flip it. Returns a `command_id` the webui can await like a spawn.
 pub async fn fork_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::ForkRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), AppError> {
@@ -2869,6 +2935,18 @@ pub async fn fork_session(
         },
     )?;
     tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_FORKED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .machine(machine_uuid)
+            .detail(serde_json::json!({
+                "parent_session_id": session_id,
+                "child_session_id": child_session_id,
+                "command_id": command_id,
+                "adapter_id": adapter_id,
+            })),
+    );
     Ok((
         StatusCode::ACCEPTED,
         Json(cctui_proto::api::ForkResponse {
@@ -2906,10 +2984,13 @@ pub async fn set_auto_approve(
 /// never force, so a pin is never undone by an automation.
 pub async fn archive_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(q): Query<ArchiveQuery>,
 ) -> Result<StatusCode, AppError> {
-    let outcome = archive_one(&state, &session_id, q.force, RemoveInitiator::User).await?;
+    let outcome =
+        archive_one(&state, &session_id, q.force, RemoveInitiator::User, Actor::User(ctx.user_id))
+            .await?;
     match outcome {
         ArchiveOutcome::Archived => Ok(StatusCode::NO_CONTENT),
         ArchiveOutcome::SkippedPinned => Err(AppError::new(
@@ -2990,6 +3071,7 @@ pub async fn archive_one(
     session_id: &str,
     force: bool,
     initiator: RemoveInitiator,
+    actor: Actor,
 ) -> Result<ArchiveOutcome, sqlx::Error> {
     if !force {
         let pinned: Option<bool> = sqlx::query_scalar("SELECT pinned FROM sessions WHERE id = $1")
@@ -3056,6 +3138,14 @@ pub async fn archive_one(
         state.bus.deregister_session_stream(child);
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
+    if archived.iter().any(|id| id == session_id) {
+        events::record(
+            state,
+            Event::new(kind::SESSION_ARCHIVED, actor).session(session_id).detail(
+                serde_json::json!({ "children": children.len(), "initiator": initiator.as_str() }),
+            ),
+        );
+    }
     Ok(ArchiveOutcome::Archived)
 }
 
@@ -3064,15 +3154,25 @@ pub async fn archive_one(
 /// status from activity.
 pub async fn unarchive_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    unarchive_one(&state, &session_id).await?;
+    unarchive_one(&state, &session_id, ctx.user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
-    crate::store::sessions::set_inactive(&state.pool, session_id, true).await?;
-    tracing::info!(session_id = %session_id, "session unarchived");
+async fn unarchive_one(
+    state: &AppState,
+    session_id: &str,
+    by: uuid::Uuid,
+) -> Result<(), sqlx::Error> {
+    if crate::store::sessions::set_inactive(&state.pool, session_id, true).await? {
+        tracing::info!(session_id = %session_id, "session unarchived");
+        events::record(
+            state,
+            Event::new(kind::SESSION_UNARCHIVED, Actor::User(by)).session(session_id),
+        );
+    }
     Ok(())
 }
 
@@ -3219,7 +3319,8 @@ pub async fn archive_sessions(
     let mut ok = 0usize;
     let mut pinned = 0usize;
     for id in &ids {
-        match archive_one(&state, id, false, RemoveInitiator::User).await {
+        match archive_one(&state, id, false, RemoveInitiator::User, Actor::User(ctx.user_id)).await
+        {
             Ok(ArchiveOutcome::Archived) => ok += 1,
             Ok(ArchiveOutcome::SkippedPinned) => pinned += 1,
             Err(e) => tracing::error!(session_id = %id, "batch archive db error: {e}"),
@@ -3251,7 +3352,7 @@ pub async fn unarchive_sessions(
     };
     let mut ok = 0usize;
     for id in &ids {
-        match unarchive_one(&state, id).await {
+        match unarchive_one(&state, id, ctx.user_id).await {
             Ok(()) => ok += 1,
             Err(e) => tracing::error!(session_id = %id, "batch unarchive db error: {e}"),
         }

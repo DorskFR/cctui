@@ -15,6 +15,7 @@ use cctui_proto::models::MachineLiveness;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::events::{self, Actor, Event, kind};
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
@@ -39,7 +40,9 @@ pub fn derive(last_seen_at: DateTime<Utc>) -> MachineLiveness {
 
 /// Record `tier` for `machine_id` and broadcast a
 /// [`ServerEvent::MachineLiveness`] iff it changed from the last known tier.
-/// Returns whether it changed.
+/// Returns whether it changed. The `online` / `stale` transitions are logged
+/// here; `offline` is logged by [`sweep`] once it knows how many sessions the
+/// transition ended, so one offline is one row.
 pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiveness) -> bool {
     let changed = record_tier(&state.machine_liveness, machine_id, tier);
     if changed {
@@ -48,6 +51,21 @@ pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiv
             machine_id,
             liveness: tier,
         });
+        match tier {
+            MachineLiveness::Online => {
+                events::record(
+                    state,
+                    Event::new(kind::MACHINE_ONLINE, Actor::System).machine(machine_id),
+                );
+            }
+            MachineLiveness::Stale => events::record(
+                state,
+                Event::new(kind::MACHINE_STALE, Actor::System)
+                    .severity(events::Severity::Warn)
+                    .machine(machine_id),
+            ),
+            MachineLiveness::Offline => {}
+        }
     }
     changed
 }
@@ -81,8 +99,32 @@ pub async fn sweep(state: &AppState) {
         let tier = derive(last_seen_at);
         (id, tier, record_and_broadcast(state, id, tier))
     }));
-    if !newly_offline.is_empty() {
-        mark_sessions_machine_offline(state, &newly_offline).await;
+    if newly_offline.is_empty() {
+        return;
+    }
+    let ended = mark_sessions_machine_offline(state, &newly_offline).await;
+    for machine_id in newly_offline {
+        let count = ended.iter().filter(|(_, m)| *m == machine_id).count();
+        events::record(
+            state,
+            Event::new(kind::MACHINE_OFFLINE, Actor::System)
+                .severity(events::Severity::Warn)
+                .machine(machine_id)
+                .detail(serde_json::json!({ "ended_sessions": count })),
+        );
+    }
+    for (session_id, machine_id) in ended {
+        events::record(
+            state,
+            Event::new(kind::SESSION_ENDED, Actor::System)
+                .severity(events::Severity::Warn)
+                .session(session_id)
+                .machine(machine_id)
+                .detail(serde_json::json!({
+                    "end_reason": "machine_offline",
+                    "end_detail": "machine offline: no daemon heartbeat",
+                })),
+        );
     }
 }
 
@@ -94,29 +136,38 @@ fn newly_offline(transitions: impl Iterator<Item = (Uuid, MachineLiveness, bool)
 }
 
 /// End every still-live session of the given offline machines as
-/// `machine_offline`. Soft: the daemon re-registering the session on reconnect
-/// reverts it.
-async fn mark_sessions_machine_offline(state: &AppState, machine_ids: &[Uuid]) {
-    match sqlx::query(
+/// `machine_offline`, returning `(session, machine)` per ended row. Soft: the
+/// daemon re-registering the session on reconnect reverts it.
+async fn mark_sessions_machine_offline(
+    state: &AppState,
+    machine_ids: &[Uuid],
+) -> Vec<(String, Uuid)> {
+    match sqlx::query_as::<_, (String, Uuid)>(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'machine_offline', \
              end_detail = 'machine offline: no daemon heartbeat' \
          WHERE machine_uuid = ANY($1) AND status = ANY($2) \
-           AND end_reason IS NULL",
+           AND end_reason IS NULL \
+         RETURNING id, machine_uuid",
     )
     .bind(machine_ids)
     .bind(SessionRowStatus::names(SessionRowStatus::RUNNING))
-    .execute(&state.pool)
+    .fetch_all(&state.pool)
     .await
     {
-        Ok(res) if res.rows_affected() > 0 => {
-            tracing::info!(
-                machines = machine_ids.len(),
-                count = res.rows_affected(),
-                "sessions marked machine_offline"
-            );
+        Ok(rows) => {
+            if !rows.is_empty() {
+                tracing::info!(
+                    machines = machine_ids.len(),
+                    count = rows.len(),
+                    "sessions marked machine_offline"
+                );
+            }
+            rows
         }
-        Ok(_) => {}
-        Err(err) => tracing::warn!(%err, "machine_offline mark failed"),
+        Err(err) => {
+            tracing::warn!(%err, "machine_offline mark failed");
+            Vec::new()
+        }
     }
 }
 
@@ -136,6 +187,23 @@ pub fn record_and_broadcast_dispatcher(
             dispatcher_id,
             liveness: tier,
         });
+        let logged = match tier {
+            MachineLiveness::Online => {
+                Some((kind::SYSTEM_DISPATCHER_ONLINE, events::Severity::Info))
+            }
+            MachineLiveness::Offline => {
+                Some((kind::SYSTEM_DISPATCHER_OFFLINE, events::Severity::Warn))
+            }
+            MachineLiveness::Stale => None,
+        };
+        if let Some((event_kind, severity)) = logged {
+            events::record(
+                state,
+                Event::new(event_kind, Actor::System)
+                    .severity(severity)
+                    .detail(serde_json::json!({ "dispatcher_id": dispatcher_id })),
+            );
+        }
     }
 }
 
@@ -174,6 +242,45 @@ mod tests {
         assert!(pass(MachineLiveness::Offline).is_empty());
         assert!(pass(MachineLiveness::Online).is_empty());
         assert_eq!(pass(MachineLiveness::Offline), vec![id]);
+    }
+
+    /// A machine crossing the dead window ends its sessions once and logs one
+    /// `machine.offline` with the count; the sweeps after it log nothing.
+    #[tokio::test]
+    async fn an_offline_machine_logs_one_offline_row_and_one_end_per_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("liveness_offline_events") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "lv-off").await;
+        let a = crate::events::tests::seed_session(&pool, uid, machine, Some("a")).await;
+        let b = crate::events::tests::seed_session(&pool, uid, machine, Some("b")).await;
+        sqlx::query("UPDATE machines SET last_seen_at = now() - interval '2 hours' WHERE id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        state.machine_liveness.insert(machine, MachineLiveness::Online);
+        for _ in 0..3 {
+            sweep(&state).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let offline: Vec<(serde_json::Value,)> = sqlx::query_as(
+            "SELECT detail FROM events WHERE machine_id = $1 AND kind = 'machine.offline'",
+        )
+        .bind(machine)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(offline.len(), 1, "one machine.offline, not one per sweep or per session");
+        assert_eq!(offline[0].0["ended_sessions"], 2);
+        for sid in [&a, &b] {
+            let rows = crate::events::tests::rows_for_session(&pool, sid).await;
+            let ended: Vec<_> = rows.iter().filter(|r| r.kind == "session.ended").collect();
+            assert_eq!(ended.len(), 1);
+            assert_eq!(ended[0].detail["end_reason"], "machine_offline");
+        }
     }
 
     #[test]

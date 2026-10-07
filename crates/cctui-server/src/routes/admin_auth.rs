@@ -222,6 +222,14 @@ pub async fn delete_machine(
         return Err(AppError::new(StatusCode::CONFLICT, "machine must be revoked before delete"));
     }
     tracing::info!(machine_id = %id, "machine deleted (soft)");
+    crate::events::record(
+        &state,
+        crate::events::Event::new(
+            crate::events::kind::MACHINE_DELETED,
+            crate::events::Actor::User(ctx.user_id),
+        )
+        .machine(id),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -253,6 +261,15 @@ pub async fn revoke_machine(
     .await?;
     state.auth_config.purge(&old_hash);
     tracing::info!(machine_id = %id, "machine revoked");
+    crate::events::record(
+        &state,
+        crate::events::Event::new(
+            crate::events::kind::MACHINE_REVOKED,
+            crate::events::Actor::User(ctx.user_id),
+        )
+        .severity(crate::events::Severity::Warn)
+        .machine(id),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 

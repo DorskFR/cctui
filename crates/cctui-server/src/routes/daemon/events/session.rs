@@ -29,10 +29,47 @@ async fn mark_session_ended(
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
-    persist_session_end(&state.pool, machine_id, user_id, local_id, reason).await?;
+    if persist_session_end(&state.pool, machine_id, user_id, local_id, reason).await? {
+        record_session_ended(state, local_id, machine_id, user_id, reason);
+    }
     // Session-scoped gateway tokens die with the session.
     crate::routes::gateway::revoke_session_tokens(state, local_id).await;
     Ok(())
+}
+
+/// One `session.ended` per row that actually flipped to `ended`.
+pub(super) fn record_session_ended(
+    state: &AppState,
+    local_id: &str,
+    machine_id: Uuid,
+    user_id: Uuid,
+    reason: &EndReason,
+) {
+    use crate::events::{Actor, Event, Severity, kind};
+    use cctui_proto::models::SessionEndReason;
+    let end_reason = reason.kind();
+    let severity = match end_reason {
+        SessionEndReason::Crashed
+        | SessionEndReason::ResumeFailed
+        | SessionEndReason::SpawnFailed => Severity::Error,
+        SessionEndReason::DaemonLost | SessionEndReason::MachineOffline => Severity::Warn,
+        SessionEndReason::Completed
+        | SessionEndReason::Killed
+        | SessionEndReason::ReapedInactive
+        | SessionEndReason::Other => Severity::Info,
+    };
+    crate::events::record(
+        state,
+        Event::new(kind::SESSION_ENDED, Actor::Daemon)
+            .severity(severity)
+            .session(local_id)
+            .machine(machine_id)
+            .user(user_id)
+            .detail(json!({
+                "end_reason": end_reason.as_str(),
+                "end_detail": reason.detail().map(truncate_end_detail),
+            })),
+    );
 }
 
 pub(super) fn publish_session_ended(state: &AppState, local_id: &str, reason: &EndReason) {
@@ -78,14 +115,15 @@ pub(super) async fn persist_failed_spawn(
 
 /// Record the end: a `session_ended` stream event (the conversation's final
 /// line) plus the row's sticky `ended` status, `ended_at`, `end_reason` and
-/// `end_detail`. A no-op unless `machine_id`/`user_id` own the session.
+/// `end_detail`. A no-op unless `machine_id`/`user_id` own the session;
+/// `true` when the row flipped to `ended` on this call.
 pub(in crate::routes::daemon) async fn persist_session_end(
     pool: &sqlx::PgPool,
     machine_id: Uuid,
     user_id: Uuid,
     local_id: &str,
     reason: &EndReason,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let payload = json!({ "reason": reason });
     // `WHERE EXISTS` guard: a session_ended can arrive for a session the server
     // never registered (its SessionStarted was dropped, or an ephemeral subagent
@@ -108,7 +146,7 @@ pub(in crate::routes::daemon) async fn persist_session_end(
     // `ended` is sticky: read paths treat it as terminal regardless of
     // heartbeat age, whereas `inactive` would be re-derived to Active from a
     // still-recent heartbeat. Resume can revive the row.
-    sqlx::query(concat!(
+    let flipped = sqlx::query(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
                  end_detail = $3 \
              WHERE id = $1 AND machine_uuid = $4 AND user_id = $5 AND ",
@@ -120,8 +158,9 @@ pub(in crate::routes::daemon) async fn persist_session_end(
     .bind(machine_id)
     .bind(user_id)
     .execute(pool)
-    .await?;
-    Ok(())
+    .await?
+    .rows_affected();
+    Ok(flipped > 0)
 }
 
 /// Advance a session's stored transcript high-water mark to `offset`, keeping
@@ -271,7 +310,7 @@ async fn on_session_started(
         None
     };
     let Some(first_registration) = upsert_session(
-        &state.pool,
+        state,
         machine_id,
         user_id,
         adapter_id,
@@ -287,6 +326,26 @@ async fn on_session_started(
     };
     if first_registration {
         publish_session_registered(state, &local_id).await;
+        let origin = match (&spawn_key_hint, &meta.parent_local_id) {
+            (Some(_), _) => "spawned",
+            (None, Some(_)) => "child",
+            (None, None) => "daemon-registered",
+        };
+        crate::events::record(
+            state,
+            crate::events::Event::new(
+                crate::events::kind::SESSION_CREATED,
+                crate::events::Actor::Daemon,
+            )
+            .session(&local_id)
+            .machine(machine_id)
+            .user(user_id)
+            .detail(json!({
+                "origin": origin,
+                "adapter_id": adapter_id,
+                "parent_session_id": meta.parent_local_id,
+            })),
+        );
     }
     crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
     crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;

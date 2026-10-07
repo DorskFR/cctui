@@ -14,6 +14,11 @@ fn env_u32(name: &str, default: u32) -> u32 {
 }
 
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
+    connect_reporting(database_url).await.map(|(pool, _)| pool)
+}
+
+/// [`connect`], also returning the migration versions this call applied.
+pub async fn connect_reporting(database_url: &str) -> Result<(PgPool, Vec<i64>), sqlx::Error> {
     // Pool sizing is env-tunable so prod can scale connections without a rebuild.
     // Defaults are generous enough to absorb gateway proxying + heartbeats +
     // dispatcher bumps + webui loads without starving the pool (CCT slow-pool fix);
@@ -35,22 +40,23 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect_with(connect_options)
         .await?;
 
-    migrate(&pool).await?;
+    let applied = migrate(&pool).await?;
 
     tracing::info!(
         max_connections,
         min_connections,
         acquire_timeout_secs = acquire_timeout,
         slow_query_ms,
+        applied = ?applied,
         "database connected and migrations applied"
     );
-    Ok(pool)
+    Ok((pool, applied))
 }
 
 /// Serializes migrations across replicas with a polled advisory lock. A
 /// blocking `pg_advisory_lock` waiter holds a snapshot that a concurrent
 /// `CREATE INDEX CONCURRENTLY` must wait out, which deadlocks the two.
-async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
+async fn migrate(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
     const LOCK_KEY: i64 = 0x6363_7475_695f_6d67;
     let mut conn = pool.acquire().await?;
     while !sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
@@ -62,12 +68,26 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     }
     let result = async {
         reconcile_migration_checksums(pool).await?;
+        let before = applied_versions(&mut conn).await?;
         MIGRATOR.run(&mut *conn).await?;
-        Ok(())
+        let after = applied_versions(&mut conn).await?;
+        Ok(after.into_iter().filter(|v| !before.contains(v)).collect())
     }
     .await;
     sqlx::query("SELECT pg_advisory_unlock($1)").bind(LOCK_KEY).execute(&mut *conn).await?;
     result
+}
+
+async fn applied_versions(conn: &mut sqlx::PgConnection) -> Result<Vec<i64>, sqlx::Error> {
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+        .fetch_one(&mut *conn)
+        .await?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+        .fetch_all(conn)
+        .await
 }
 
 async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error> {
