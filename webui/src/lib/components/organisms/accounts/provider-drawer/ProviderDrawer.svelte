@@ -17,6 +17,7 @@
 	import { Button, Drawer, IconButton, NavItem, Text, resizeHandle } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
+	import AutoLimitResetEditor from '$lib/components/molecules/AutoLimitResetEditor.svelte';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
 	import { editorWindowKeys } from '$lib/components/molecules/usage-windows';
 	import { pagesFor, type PageId } from './pages.logic';
@@ -224,6 +225,7 @@
 				bind:rate={edit.rate}
 			/>
 			{#if kind === 'anthropic' || kind === 'openai'}
+				<AutoLimitResetEditor bind:value={edit.autoReset} family={kind} />
 				<UsageNoticesEditor bind:value={edit.notices} />
 			{/if}
 		{:else if edit.page === 'resets'}

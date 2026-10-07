@@ -3,6 +3,8 @@ import type { ServerEvent } from '@bindings/ServerEvent';
 import type { UserAction } from '@bindings/UserAction';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
+import { toasts } from '$lib/toast.svelte';
+import { m } from '$lib/paraglide/messages';
 import type { QueryClient } from '@tanstack/svelte-query';
 import {
 	KeyedListeners,
@@ -200,6 +202,9 @@ export class WsClient {
 				for (const cb of this.machineResourcesCbs) cb(p);
 				break;
 			}
+			case 'limit_reset_redeemed':
+				toasts.ok(m.auto_limit_reset_redeemed({ account: msg.account_name, outcome: msg.outcome }));
+				break;
 			case 'account_usage': {
 				const p: AccountUsageEvent = {
 					account_id: msg.account_id,

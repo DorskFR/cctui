@@ -2067,5 +2067,12 @@
 	"rooms_archive_confirm_empty": "Archive “{room}”? Nothing in it is still running.",
 	"rooms_archive_skipped_pinned": "{count} pinned session(s) were left running.",
 	"conversation_crashed": "The conversation panel crashed.",
-	"conversation_export_loading": "Loading the whole conversation… {count} messages so far"
+	"conversation_export_loading": "Loading the whole conversation… {count} messages so far",
+	"auto_limit_reset_enabled": "Auto-use limit resets",
+	"auto_limit_reset_used_label": "5h used ≥ %",
+	"auto_limit_reset_expires_label": "or expires within (h)",
+	"auto_limit_reset_weekly_label": "only while weekly < %",
+	"auto_limit_reset_help_codex": "Spend an available reset credit on its own once the 5h window is this used, or when the credit is about to expire, so it is never wasted. Off by default; nothing is consumed while off.",
+	"auto_limit_reset_help_claude": "Spend the at-wall reset on its own when the 5h window hits 100% and the weekly window is still under this ceiling, so a reset never burns the last of the week. Off by default; nothing is consumed while off.",
+	"auto_limit_reset_redeemed": "Limit reset redeemed on {account} ({outcome})"
 }

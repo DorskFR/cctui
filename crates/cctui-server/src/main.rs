@@ -4,6 +4,7 @@ mod api_routes;
 mod auth;
 mod authz;
 mod auto_archive;
+mod auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;
 mod brief;
@@ -774,6 +775,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
         machine_liveness::sweep_dispatchers(&state).await;
     });
     spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
+    spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
     spawn_sweep(state, |state| async move {

@@ -72,6 +72,9 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             let toast = format!("{} soft limit cleared", short_id(&session_id));
             soft_limit(session_id, false, Level::Info, toast)
         }
+        ServerEvent::LimitResetRedeemed { account_name, outcome, .. } => {
+            vec![Action::Toast(Level::Info, format!("{account_name}: limit reset {outcome}"))]
+        }
         ServerEvent::ToolCallBlocked { session_id, tool_name, rule } => {
             vec![Action::Toast(
                 Level::Warn,
