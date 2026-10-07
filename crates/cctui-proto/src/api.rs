@@ -14,6 +14,7 @@ pub mod harness_update;
 pub mod instance;
 pub mod langfuse;
 pub mod limit_reset;
+pub mod machine_adapters;
 pub mod machine_resources;
 pub mod me;
 pub mod pace;
@@ -109,10 +110,17 @@ impl SpawnCapability {
     }
 
     /// Default for an interactive machine spawn that names no capability.
+    ///
+    /// Grants every harness that runs by default;
+    /// [`with_adapters`](Self::with_adapters) narrows it to what one machine
+    /// actually runs.
     #[must_use]
     pub fn machine_default() -> Self {
         Self {
-            adapters: crate::adapter::KNOWN_ADAPTERS.iter().map(|a| (*a).to_owned()).collect(),
+            adapters: crate::adapter::default_enabled_adapters()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
             max_budget_usd: Some(DEFAULT_CHILD_BUDGET_USD),
             max_children: Some(DEFAULT_MAX_CHILDREN),
             max_permission_mode: None,
@@ -120,6 +128,13 @@ impl SpawnCapability {
             max_tree_budget_usd: Some(DEFAULT_TREE_BUDGET_USD),
             tree_root: None,
         }
+    }
+
+    /// The same capability granting exactly `adapters`.
+    #[must_use]
+    pub fn with_adapters(mut self, adapters: Vec<String>) -> Self {
+        self.adapters = adapters;
+        self
     }
 
     /// Capability handed to a child: per-child ceiling, posture and depth only
@@ -848,6 +863,9 @@ pub struct UsageBucket {
     pub output: u64,
     pub cache_read: u64,
     pub cache_creation: u64,
+    /// Dollars, priced from each session's account catalog like the session
+    /// list's cost; tokens of an unpriced model add nothing.
+    pub cost_usd: f64,
 }
 
 /// Attributed by session model, not per turn.

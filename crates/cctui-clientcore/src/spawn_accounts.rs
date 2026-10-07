@@ -10,24 +10,16 @@
 
 use crate::spawn::{NO_ACCOUNT, pool_name};
 
-/// Harness cards never reorder, and `opencode` has no spawn card — so a
-/// fireworks-only account backs nothing the dialog can offer.
-pub const ALL_ADAPTERS: [&str; 2] = ["claude-code", "codex"];
+use cctui_proto::adapter::KNOWN_ADAPTERS;
 
-const KNOWN_ADAPTERS: [&str; 3] = ["claude-code", "codex", "opencode"];
+/// The harness cards, in table order.
+pub const ALL_ADAPTERS: [&str; KNOWN_ADAPTERS.len()] = KNOWN_ADAPTERS;
 
-/// The harness a provider credential runs. `fireworks` is its own family and
-/// only `opencode` runs it; the rest of the openai family runs Codex;
-/// everything else runs Claude Code.
+/// The harness a provider credential runs: the first harness-table row of the
+/// provider's family. The table covers every family, so this never misses.
 #[must_use]
 pub fn adapter_for_provider(provider: &str) -> &'static str {
-    if provider == "fireworks" {
-        "opencode"
-    } else if provider.contains("openai") {
-        "codex"
-    } else {
-        "claude-code"
-    }
+    cctui_proto::adapter::harness_for_provider(provider).unwrap_or(KNOWN_ADAPTERS[0])
 }
 
 /// The harnesses an account's credentials can run, in stable order.

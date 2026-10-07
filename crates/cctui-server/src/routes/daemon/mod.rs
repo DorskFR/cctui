@@ -40,7 +40,7 @@ mod tokens;
 
 pub use connection::ws;
 pub use gateway_env::{session_gateway_env, session_token_valid};
-pub use reconcile::{load_reconcile, load_scrub_config};
+pub use reconcile::{enabled_adapter_ids, load_reconcile, load_scrub_config};
 pub use tokens::mint_user_token;
 
 // ---- /api/v1/daemon/auth ----

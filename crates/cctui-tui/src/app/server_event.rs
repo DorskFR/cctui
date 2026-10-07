@@ -72,12 +72,8 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             let toast = format!("{} soft limit cleared", short_id(&session_id));
             soft_limit(session_id, false, Level::Info, toast)
         }
-        ServerEvent::ToolCallBlocked { session_id, tool_name, rule } => {
-            vec![Action::Toast(
-                Level::Warn,
-                format!("{} blocked {tool_name} ({rule})", short_id(&session_id)),
-            )]
-        }
+        ServerEvent::LimitResetRedeemed { .. } => limit_reset_redeemed(event),
+        ServerEvent::ToolCallBlocked { .. } => tool_call_blocked(event),
         ServerEvent::MachineLiveness { machine_id, liveness } => {
             vec![Action::SessionLive(SessionLiveAction::MachineLiveness {
                 machine_id: machine_id.to_string(),
@@ -141,6 +137,25 @@ fn soft_limit(session_id: String, active: bool, level: Level, toast: String) -> 
         Action::Diagnose(DiagnoseAction::SoftLimit { session_id, active }),
         Action::Toast(level, toast),
     ]
+}
+
+/// A blocked tool call is only ever news for the status line.
+fn tool_call_blocked(event: ServerEvent) -> Vec<Action> {
+    let ServerEvent::ToolCallBlocked { session_id, tool_name, rule } = event else {
+        return Vec::new();
+    };
+    vec![Action::Toast(
+        Level::Warn,
+        format!("{} blocked {tool_name} ({rule})", short_id(&session_id)),
+    )]
+}
+
+/// An automatic limit-reset claim is only ever news for the status line.
+fn limit_reset_redeemed(event: ServerEvent) -> Vec<Action> {
+    let ServerEvent::LimitResetRedeemed { account_name, outcome, .. } = event else {
+        return Vec::new();
+    };
+    vec![Action::Toast(Level::Info, format!("{account_name}: limit reset {outcome}"))]
 }
 
 fn waived(reason: &'static str) -> Vec<Action> {

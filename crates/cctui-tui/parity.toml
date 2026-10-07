@@ -470,6 +470,24 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
+id = "get_machines_by_machine_adapters"
+# GET /machines/{machine_id}/adapters — Which harnesses a machine runs: table rows with the machine's enable/config pins.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_machines_by_machine_adapters_by_adapter"
+# PUT /machines/{machine_id}/adapters/{adapter} — Enable, disable or configure one harness on a machine (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_machines_by_machine_adapters_by_adapter"
+# DELETE /machines/{machine_id}/adapters/{adapter} — Drop a machine's pin for one harness, back to the table default (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_machines_by_machine_codex_models"
 # GET /machines/{machine_id}/codex-models — Machine/account-scoped codex model catalog.
 tui = "waived"
@@ -488,16 +506,22 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_harnesses"
+# GET /harnesses — The harness table: ids, families, capabilities and permission modes.
+tui = "waived"
+reason = "the TUI spawns through profiles and derives the harness table from cctui-proto directly"
+
+[[route]]
 id = "get_models_by_harness"
 # GET /models/{harness} — Model and effort options for a harness picker (optional machine_id).
 tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
-id = "get_meta_domain"
-# GET /meta/domain — Provider metadata, quota probes, end-reason tones, permission modes.
+id = "get_meta_usage_probes"
+# GET /meta/usage-probes — The quota-probe registry, for the account usage-probe picker.
 tui = "waived"
-reason = "browser host metadata used to build webui links"
+reason = "the usage-probe picker lives in the webui account drawer"
 
 [[route]]
 id = "get_me"
@@ -1564,5 +1588,10 @@ reason = "liveness tick with nothing to render"
 
 [[ws_event]]
 name = "resync"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "limit_reset_redeemed"
 tui = "handled"
 module = "app/server_event.rs"

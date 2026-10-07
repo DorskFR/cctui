@@ -601,7 +601,13 @@ pub async fn spawn_child(
     // launches, and a missing row there would hand it the unclamped default.
     let (authorized, child_cap) =
         reserve_child(&state.pool, &session_id, cap.as_ref(), &req, usage, &child_key).await?;
-    let family = crate::routes::gateway::Family::from_adapter(&authorized.adapter);
+    let family = match crate::routes::gateway::Family::from_adapter(&authorized.adapter) {
+        Ok(f) => f,
+        Err(e) => {
+            release_child(&state.pool, &child_key).await;
+            return Err(deny(StatusCode::BAD_REQUEST, e.to_string()));
+        }
+    };
     let (mut env, model) =
         match child_account_env(&state, &parent, family, req.model.as_deref(), &child_key).await {
             Ok(v) => v,
@@ -996,7 +1002,7 @@ mod tests {
             assert_eq!(
                 ok,
                 Authorized {
-                    adapter: (*adapter).to_owned(),
+                    adapter: adapter.to_owned(),
                     budget_usd: Some(cctui_proto::api::DEFAULT_CHILD_BUDGET_USD),
                     permission_mode: PermissionMode::Ask,
                 }

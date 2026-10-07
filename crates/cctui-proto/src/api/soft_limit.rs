@@ -31,6 +31,9 @@ pub const KEY_SESSION_USD: &str = "session_usd";
 pub const KEY_USD_5H: &str = "usd_5h";
 /// Rolling 7d dollar spend.
 pub const KEY_USD_7D: &str = "usd_7d";
+/// Monthly dollar budget (a calendar month or a 30-day cycle; the window's own
+/// `resets_at` says which).
+pub const KEY_USD_MONTHLY: &str = "usd_monthly";
 
 /// `Retry-After` for a blocking window with no known reset (a session budget
 /// never resets): a bounded hint, not `i64::MAX`.
@@ -55,7 +58,7 @@ pub const SESSION_SCOPE_PREFIX: &str = "session_scope:";
 /// Whether a canonical key denotes a dollar-denominated window.
 #[must_use]
 pub fn is_usd_key(key: &str) -> bool {
-    matches!(key, KEY_SESSION_USD | KEY_USD_5H | KEY_USD_7D)
+    matches!(key, KEY_SESSION_USD | KEY_USD_5H | KEY_USD_7D | KEY_USD_MONTHLY)
 }
 
 /// Whether a canonical key denotes a per-model weekly window.
@@ -293,9 +296,9 @@ pub fn normalize_usage_windows(usage: &serde_json::Value) -> Vec<UsageWindow> {
     out
 }
 
-/// Top-level `session_usd` / `usd_5h` / `usd_7d` blocks → dollar windows.
+/// Top-level `session_usd` / `usd_5h` / `usd_7d` / `usd_monthly` blocks → dollar windows.
 fn push_usd_windows(usage: &serde_json::Value, out: &mut Vec<UsageWindow>) {
-    for key in [KEY_SESSION_USD, KEY_USD_5H, KEY_USD_7D] {
+    for key in [KEY_SESSION_USD, KEY_USD_5H, KEY_USD_7D, KEY_USD_MONTHLY] {
         if out.iter().any(|w| w.key == key) {
             continue;
         }
@@ -448,6 +451,7 @@ pub fn usd_label(key: &str) -> &'static str {
     match key {
         KEY_USD_5H => "5h spend",
         KEY_USD_7D => "7d spend",
+        KEY_USD_MONTHLY => "Monthly spend",
         _ => "Session spend",
     }
 }
@@ -1115,6 +1119,24 @@ mod tests {
         assert_eq!(w[0].label, "5h spend");
         assert!((w[0].amount_usd.unwrap() - 1.5).abs() < 1e-9);
         assert!((w[0].utilization - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn usd_monthly_is_a_dollar_window_with_its_own_reset() {
+        let mut usage = usd_usage(1.5, "2026-06-19T16:00:00Z", 12.0);
+        usage["usd_monthly"] = json!({ "amount_usd": 40.0, "resets_at": "2026-07-01T00:00:00Z" });
+        let w = normalize_usage_windows(&usage);
+        let keys: Vec<_> = w.iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(keys, ["usd_5h", "usd_7d", "usd_monthly"]);
+        let m = &w[2];
+        assert_eq!(m.kind, "usd");
+        assert_eq!(m.label, "Monthly spend");
+        assert!((m.amount_usd.unwrap() - 40.0).abs() < 1e-9);
+        assert_eq!(m.resets_at.unwrap().to_rfc3339(), "2026-07-01T00:00:00+00:00");
+        assert!(is_usd_key(KEY_USD_MONTHLY));
+        assert_eq!(canonicalize_key(" usd_monthly "), Some(KEY_USD_MONTHLY.to_owned()));
+        let sl = SoftLimits::from_json(Some(&json!({ "usd_monthly": { "cap_usd": 100.0 } })));
+        assert_eq!(sl.limits[KEY_USD_MONTHLY].cap_usd, Some(100.0));
     }
 
     #[test]

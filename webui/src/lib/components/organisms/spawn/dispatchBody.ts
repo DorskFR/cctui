@@ -19,7 +19,7 @@ export function buildDispatchBody(
 	if (form.prompt.trim()) payload.prompt = form.prompt.trim();
 	if (form.prompt_file.trim()) payload.prompt_file = form.prompt_file.trim();
 	const adapter = form.dispatch_adapter || 'claude-code';
-	if (adapter === 'codex') payload.adapter = 'codex';
+	if (adapter !== 'claude-code') payload.adapter = adapter;
 	const compatible = !!provider && isCompatibleProvider(provider);
 	const model = compatible
 		? form.model_account.trim()

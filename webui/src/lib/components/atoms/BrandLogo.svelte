@@ -1,8 +1,12 @@
 <script lang="ts">
 	// Tiny brand marks per adapter/provider. `currentColor` so callers control the
-	// hue via CSS. Anthropic mark for claude-code / anthropic, OpenAI blossom for
-	// codex / openai, Fireworks chevrons for opencode / fireworks. Pass `provider`
-	// (account-side) or `adapter` (session-side) — either resolves the mark.
+	// hue via CSS. The mark follows the harness table's family: Anthropic mark,
+	// OpenAI blossom, Fireworks chevrons; anything the table does not know wears
+	// a neutral prompt glyph. Pass `provider` (account-side) or `adapter`
+	// (session-side) — either resolves the mark.
+	import { brandMark } from '$lib/harnesses';
+	import { harnessTable } from '$lib/harnesses.svelte';
+
 	let {
 		adapter,
 		provider,
@@ -13,19 +17,26 @@
 		size?: number;
 	} = $props();
 
-	const isCodex = $derived(
-		provider != null
-			? provider === 'openai'
-			: (adapter ?? 'claude-code').toString().startsWith('codex')
-	);
-	const isFireworks = $derived(
-		provider != null
-			? provider === 'fireworks'
-			: (adapter ?? '').toString().startsWith('opencode')
-	);
+	const mark = $derived(brandMark({ adapter, provider }, harnessTable()));
 </script>
 
-{#if isFireworks}
+{#if mark === 'neutral'}
+	<svg
+		width={size}
+		height={size}
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="2.2"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		aria-label="Harness"
+		role="img"
+	>
+		<path d="M5 6l6 6-6 6" />
+		<path d="M13 18h6" />
+	</svg>
+{:else if mark === 'fireworks'}
 	<!-- Fireworks AI mark -->
 	<svg
 		width={size * 2}
@@ -46,7 +57,7 @@
 			d="M0 314.408L18.5727 270.595L212.643 271.677L76.525 133.988L95.0977 90.1748L243.819 240.816C256.247 253.384 259.843 272.026 252.93 288.26C246.088 304.424 230.203 314.827 212.643 314.827L0.0698221 314.339L0 314.408Z"
 		/>
 	</svg>
-{:else if isCodex}
+{:else if mark === 'openai'}
 	<!-- OpenAI blossom -->
 	<svg
 		width={size}

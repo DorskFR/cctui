@@ -6,6 +6,15 @@ use crate::routes::daemon::ingest::{Stored, insert_event, note_insert};
 use crate::state::AppState;
 
 #[allow(clippy::too_many_arguments)]
+/// `LIKE` patterns matching every adapter id (and its variants) whose harness
+/// family the gateway meters itself.
+fn gateway_metered_adapter_patterns() -> Vec<String> {
+    cctui_proto::adapter::harness_ids_in_family(cctui_proto::provider::ProviderFamily::Fireworks)
+        .into_iter()
+        .map(|id| format!("{id}%"))
+        .collect()
+}
+
 async fn insert_token_usage(
     pool: &sqlx::PgPool,
     local_id: &str,
@@ -21,15 +30,15 @@ async fn insert_token_usage(
     let o = i64::try_from(output_tokens).unwrap_or(i64::MAX);
     let cr = i64::try_from(cache_read_tokens).unwrap_or(i64::MAX);
     let cc = i64::try_from(cache_creation_tokens).unwrap_or(i64::MAX);
-    // Opencode is metered by the gateway capture (model stamped); the daemon's
-    // model-NULL row for the same message would double-count. Gate it to a no-op
-    // for opencode sessions so exactly one path meters them.
+    // Fireworks-family harnesses are metered by the gateway capture (model
+    // stamped); the daemon's model-NULL row for the same message would
+    // double-count, so exactly one path meters them.
     sqlx::query(
         "INSERT INTO session_token_usage \
             (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) \
          SELECT $1, $2, $3, $4, $5, $6 \
          WHERE NOT EXISTS ( \
-             SELECT 1 FROM sessions WHERE id = $1 AND adapter_id LIKE 'opencode%') \
+             SELECT 1 FROM sessions WHERE id = $1 AND adapter_id LIKE ANY($7)) \
          ON CONFLICT (session_id, message_id) DO NOTHING",
     )
     .bind(local_id)
@@ -38,6 +47,7 @@ async fn insert_token_usage(
     .bind(o)
     .bind(cr)
     .bind(cc)
+    .bind(gateway_metered_adapter_patterns())
     .execute(pool)
     .await?;
     Ok(())
@@ -116,6 +126,12 @@ mod tests {
     /// DB-gated: an opencode session is metered by the gateway capture alone —
     /// the daemon's model-NULL row for the same message must be a no-op, or
     /// budgets double-count. One row survives, and it carries a model.
+    #[test]
+    fn the_gateway_metered_patterns_name_opencode_and_nothing_anthropic() {
+        let patterns = super::gateway_metered_adapter_patterns();
+        assert_eq!(patterns, vec!["opencode%".to_owned()]);
+    }
+
     #[tokio::test]
     async fn opencode_daemon_usage_is_suppressed_gateway_is_single_source() {
         let Some(url) = crate::routes::gateway::test_db_url("opencode_daemon_usage_is_suppressed")

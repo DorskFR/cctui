@@ -1,7 +1,8 @@
 import { createQuery } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
-import { setDomainMeta } from "$lib/domainMeta.svelte";
+import { setUsageProbes } from "$lib/usageProbes.svelte";
+import { setHarnesses } from "$lib/harnesses.svelte";
 
 export const useMe = () =>
   createQuery(() => ({
@@ -52,16 +53,38 @@ export const useSelfUpdateRun = (enabled: () => boolean) =>
     refetchInterval: (query) => (query.state.data?.done ? false : 3_000),
   }));
 
-/** The server-owned half of the domain metadata — today the quota-probe
- *  registry. Constant per server version, so cache it for the whole session.
- *  The closed tables are `$lib/domainTables`, not this. */
-export const useDomainMeta = () =>
+/** The quota-probe registry. Constant per server version, so cache it for the
+ *  whole session. The closed tables are `$lib/domainTables`, not this. */
+export const useUsageProbes = () =>
   createQuery(() => ({
-    queryKey: qk.domainMeta,
+    queryKey: qk.usageProbes,
     queryFn: async () => {
-      const meta = await endpoints.domainMeta();
-      setDomainMeta(meta);
-      return meta;
+      const probes = await endpoints.usageProbes();
+      setUsageProbes(probes);
+      return probes;
     },
     staleTime: Infinity,
+  }));
+
+/** The harness table. Constant per server version; the shipped copy answers
+ *  until this lands, then the served rows take over. */
+export const useHarnesses = () =>
+  createQuery(() => ({
+    queryKey: qk.harnesses,
+    queryFn: async () => {
+      const rows = await endpoints.harnesses();
+      setHarnesses(rows);
+      return rows;
+    },
+    staleTime: Infinity,
+  }));
+
+/** Which harnesses `machineId` runs. Short stale time: an admin toggle on
+ *  another tab should reach the spawn picker within a minute. */
+export const useMachineAdapters = (machineId: () => string) =>
+  createQuery(() => ({
+    queryKey: qk.machineAdapters(machineId()),
+    queryFn: () => endpoints.machineAdapters(machineId()),
+    enabled: !!machineId(),
+    staleTime: 60_000,
   }));

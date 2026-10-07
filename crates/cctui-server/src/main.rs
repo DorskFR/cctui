@@ -4,6 +4,7 @@ mod api_routes;
 mod auth;
 mod authz;
 mod auto_archive;
+mod auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;
 mod brief;
@@ -774,6 +775,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
         machine_liveness::sweep_dispatchers(&state).await;
     });
     spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
+    spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
     spawn_sweep(state, |state| async move {
@@ -1045,6 +1047,7 @@ mod tests {
             "GET /drafts/{*key} Bearer Authenticated",
             "PUT /drafts/{*key} Bearer Authenticated",
             "POST /enroll Bearer Scope(Enroll)",
+            "GET /harnesses Bearer Authenticated",
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
             "DELETE /keys/{id} Bearer Authenticated",
@@ -1054,6 +1057,9 @@ mod tests {
             "DELETE /labels/{id} Bearer Authenticated",
             "PATCH /labels/{id} Bearer Authenticated",
             "GET /machines/resources Bearer Authenticated",
+            r#"GET /machines/{machine_id}/adapters Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            "DELETE /machines/{machine_id}/adapters/{adapter} Bearer Scope(Admin)",
+            "PUT /machines/{machine_id}/adapters/{adapter} Bearer Scope(Admin)",
             r#"GET /machines/{machine_id}/codex-models Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"POST /machines/{machine_id}/codex-models/refresh Bearer Resource(Machine, Read, Path("machine_id"))"#,
             "GET /machines/{machine_id}/commands/pending Bearer Authenticated",
@@ -1064,7 +1070,7 @@ mod tests {
             "GET /manifest/daemon Bearer Authenticated",
             "GET /me Bearer Authenticated",
             "DELETE /me/key Bearer Authenticated",
-            "GET /meta/domain Bearer Authenticated",
+            "GET /meta/usage-probes Bearer Authenticated",
             "GET /models/codex/catalog Bearer Authenticated",
             "GET /models/{harness} Bearer Authenticated",
             "GET /passkeys Bearer Authenticated",

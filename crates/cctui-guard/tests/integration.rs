@@ -465,3 +465,141 @@ async fn llmjudge_runs_after_gate_with_clean_context() {
     );
     assert!(stdin.contains("JSON array"), "{stdin}");
 }
+
+/// Step 1 of `PROMPT` is read-only, so `Read` allows and `Edit` denies. The
+/// same two verdicts rendered through every dialect selector the edge accepts.
+#[tokio::test]
+async fn check_renders_the_requested_dialect() {
+    let (base, _dir) = spawn().await;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::new();
+
+    let post = |url: String, header: Option<&'static str>, body: Vec<u8>| {
+        let client = client.clone();
+        async move {
+            let mut req = client.post(url).header("Content-Type", "application/json").body(body);
+            if let Some(h) = header {
+                req = req.header("X-Guard-Dialect", h);
+            }
+            req.send().await.unwrap().text().await.unwrap()
+        }
+    };
+    let allow_body =
+        serde_json::to_vec(&json!({"tool_name": "Read", "tool_input": {"file_path": "/tmp/x"}}))
+            .unwrap();
+    let deny_body =
+        serde_json::to_vec(&json!({"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}}))
+            .unwrap();
+
+    // No dialect: byte-identical to the Claude Code hook shape.
+    assert_eq!(
+        post(format!("{base}/check"), None, allow_body.clone()).await,
+        r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#
+    );
+    let deny = post(format!("{base}/check"), None, deny_body.clone()).await;
+    assert!(deny.starts_with(
+        r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[Step 1] "#
+    ), "{deny}");
+
+    // Query parameter.
+    assert_eq!(
+        post(format!("{base}/check?dialect=native"), None, allow_body.clone()).await,
+        r#"{"decision":"allow"}"#
+    );
+    let deny: Value = serde_json::from_str(
+        &post(format!("{base}/check?dialect=native"), None, deny_body.clone()).await,
+    )
+    .unwrap();
+    assert_eq!(deny["decision"], "deny");
+    assert!(deny["reason"].as_str().unwrap().starts_with("[Step 1] "));
+
+    // Header.
+    assert_eq!(
+        post(format!("{base}/check"), Some("codex"), allow_body.clone()).await,
+        r#"{"decision":"allow"}"#
+    );
+    let deny: Value = serde_json::from_str(
+        &post(format!("{base}/check"), Some("codex"), deny_body.clone()).await,
+    )
+    .unwrap();
+    assert_eq!(deny["decision"], "block");
+
+    assert_eq!(
+        post(format!("{base}/check"), Some("opencode"), allow_body.clone()).await,
+        r#"{"allow":true}"#
+    );
+    let deny: Value = serde_json::from_str(
+        &post(format!("{base}/check"), Some("opencode"), deny_body.clone()).await,
+    )
+    .unwrap();
+    assert_eq!(deny["allow"], false);
+
+    assert_eq!(
+        post(format!("{base}/check?dialect=acp"), None, allow_body.clone()).await,
+        r#"{"outcome":{"optionId":"allow_once","outcome":"selected"}}"#
+    );
+    let deny: Value =
+        serde_json::from_str(&post(format!("{base}/check?dialect=acp"), None, deny_body).await)
+            .unwrap();
+    assert_eq!(deny["outcome"]["optionId"], "reject_once");
+
+    // Query wins over header; an unknown name falls back to the next source.
+    assert_eq!(
+        post(format!("{base}/check?dialect=native"), Some("codex"), allow_body.clone()).await,
+        r#"{"decision":"allow"}"#
+    );
+    assert_eq!(
+        post(format!("{base}/check?dialect=bogus"), Some("opencode"), allow_body.clone()).await,
+        r#"{"allow":true}"#
+    );
+    assert_eq!(
+        post(format!("{base}/check?dialect=bogus"), None, allow_body).await,
+        r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#
+    );
+}
+
+/// An unreadable body never fails open: it is a deny in the requested
+/// dialect, Claude's when none was requested.
+#[tokio::test]
+async fn malformed_check_body_fails_closed_in_the_requested_dialect() {
+    let (base, _dir) = spawn().await;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::new();
+
+    let post = |url: String| {
+        let client = client.clone();
+        async move {
+            client
+                .post(url)
+                .header("Content-Type", "application/json")
+                .body("{not json")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        }
+    };
+
+    assert_eq!(
+        post(format!("{base}/check")).await,
+        r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"malformed /check body — failing closed"}}"#
+    );
+    assert_eq!(
+        post(format!("{base}/check?dialect=native")).await,
+        r#"{"decision":"deny","reason":"malformed /check body — failing closed"}"#
+    );
+    assert_eq!(
+        post(format!("{base}/check?dialect=codex")).await,
+        r#"{"decision":"block","reason":"malformed /check body — failing closed"}"#
+    );
+    assert_eq!(
+        post(format!("{base}/check?dialect=opencode")).await,
+        r#"{"allow":false,"reason":"malformed /check body — failing closed"}"#
+    );
+    assert_eq!(
+        post(format!("{base}/check?dialect=acp")).await,
+        r#"{"_meta":{"reason":"malformed /check body — failing closed"},"outcome":{"optionId":"reject_once","outcome":"selected"}}"#
+    );
+}

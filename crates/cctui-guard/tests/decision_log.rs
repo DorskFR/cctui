@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use cctui_guard::decision_log::{DecisionLog, Kind, build_report, parse_log};
-use cctui_guard::engine::WorkflowEngine;
+use cctui_guard::engine::{Verdict, WorkflowEngine};
 use cctui_guard::ir::Workflow;
 use cctui_guard::parser::parse_guard_rules_str;
 use serde_json::{Value, json};
@@ -58,12 +58,12 @@ fn logs_checks_transitions_and_writes_report_on_exit() {
     let (engine, fx) = engine();
 
     let denied = engine.check("Bash", &json!({ "command": "git push origin main" }));
-    assert_eq!(
-        denied["hookSpecificOutput"]["permissionDecision"], "deny",
-        "git push must be denied in step 1"
+    assert!(
+        matches!(denied, Verdict::Deny { .. }),
+        "git push must be denied in step 1: {denied:?}"
     );
     let ok = engine.check("Read", &json!({ "file_path": "/workspace/x" }));
-    assert_eq!(ok["hookSpecificOutput"]["permissionDecision"], "allow");
+    assert_eq!(ok, Verdict::Allow);
 
     // Advance to step 2, then exit.
     let adv = engine.transition(&json!(2));

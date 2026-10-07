@@ -16,9 +16,6 @@ use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::state::AppState;
 
-const HARNESSES: &[&str] = &["claude-code", "codex", "opencode"];
-const PERMISSION_MODES: &[&str] = &["ask", "auto", "yolo", "whip"];
-
 const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
                     effort, permission_mode, service_tier, context_items, sort_order, created_at, \
                     updated_at";
@@ -47,13 +44,16 @@ fn clean_name(raw: &str) -> Result<String, AppError> {
 /// the spawn path understands.
 fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, AppError> {
     let harness = spec.harness.trim().to_string();
-    if !HARNESSES.contains(&harness.as_str()) {
+    let Some(descriptor) = cctui_proto::adapter::harness(&harness) else {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown harness"));
-    }
+    };
     let opt = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let permission_mode = opt(spec.permission_mode);
     if let Some(mode) = &permission_mode
-        && !PERMISSION_MODES.contains(&mode.as_str())
+        && !serde_json::from_value::<cctui_proto::adapter::PermissionMode>(
+            serde_json::Value::String(mode.clone()),
+        )
+        .is_ok_and(|m| descriptor.permission_modes.contains(&m))
     {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown permission mode"));
     }
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn clean_spec_accepts_every_harness() {
-        for harness in ["claude-code", "codex", "opencode"] {
+        for harness in cctui_proto::adapter::KNOWN_ADAPTERS {
             assert_eq!(clean_spec(spec(harness, None)).expect(harness).harness, harness);
         }
     }

@@ -1,3 +1,4 @@
+import { HARNESSES } from '$lib/domainTables';
 import { filters, parse, type FilterNode, type Schema, type ValueOption } from '@dorsk/tsumikit';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { m } from '$lib/paraglide/messages';
@@ -92,7 +93,7 @@ export function buildSessionSearchSchema(fetchValues: FetchValues): Schema {
 				label: m.search_field_adapter(),
 				type: 'enum',
 				operators: ['eq', 'ne'],
-				options: ['claude-code', 'codex'].map((v) => ({ value: v, label: v }))
+				options: HARNESSES.map((h) => ({ value: h.id, label: h.id }))
 			},
 			{
 				name: 'pinned',

@@ -7,7 +7,7 @@
 use chrono::{DateTime, Duration, Utc};
 
 use crate::api::soft_limit::{
-    KEY_SESSION, KEY_USD_5H, KEY_USD_7D, KEY_WEEKLY_ALL, WEEKLY_MODEL_PREFIX,
+    KEY_SESSION, KEY_USD_5H, KEY_USD_7D, KEY_USD_MONTHLY, KEY_WEEKLY_ALL, WEEKLY_MODEL_PREFIX,
 };
 
 /// Floor on `expected_pct` when forming the ratio so the first minute of a
@@ -42,14 +42,19 @@ pub struct Sample {
     pub utilization: f64,
 }
 
-/// Length of a canonical window, or `None` for one that never resets
-/// (a per-session dollar budget) or an unknown key.
+/// Length of a canonical window.
+///
+/// `None` for one that never resets (a per-session dollar budget) or an
+/// unknown key. A monthly budget is paced as 30 days: close enough for a burn
+/// rate, and the exact rollover comes from the window's own `resets_at`.
 #[must_use]
 pub fn window_duration(key: &str) -> Option<Duration> {
     if key == KEY_SESSION || key == KEY_USD_5H {
         Some(Duration::hours(5))
     } else if key == KEY_WEEKLY_ALL || key == KEY_USD_7D || key.starts_with(WEEKLY_MODEL_PREFIX) {
         Some(Duration::days(7))
+    } else if key == KEY_USD_MONTHLY {
+        Some(Duration::days(30))
     } else {
         None
     }
@@ -133,6 +138,7 @@ mod tests {
         assert_eq!(window_duration("weekly_all"), Some(Duration::days(7)));
         assert_eq!(window_duration("weekly_model:fable"), Some(Duration::days(7)));
         assert_eq!(window_duration("usd_7d"), Some(Duration::days(7)));
+        assert_eq!(window_duration("usd_monthly"), Some(Duration::days(30)));
         assert_eq!(window_duration("session_usd"), None);
         assert_eq!(window_duration("nope"), None);
     }

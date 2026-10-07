@@ -71,7 +71,7 @@ pub static FIELDS: &[FieldDef] = &[
         aliases: &[],
         ty: FieldType::Enum,
         default_op: FilterOp::Eq,
-        enum_values: &["claude-code", "codex", "opencode"],
+        enum_values: &cctui_proto::adapter::KNOWN_ADAPTERS,
     },
     FieldDef {
         name: "pinned",

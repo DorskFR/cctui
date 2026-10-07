@@ -41,18 +41,34 @@ pub async fn archived_jobs(
     .await
 }
 
-/// Union the machine's `adapters_enabled` rows with [`KNOWN_ADAPTERS`]: every
-/// known adapter runs by default, a row only overrides its config or disables
-/// it.
-fn merge_known_adapters(
+/// Union the machine's `adapters_enabled` rows with the harnesses that run by default.
+///
+/// A row overrides a default-on harness's config or disables it, and is the
+/// only thing that turns a default-off harness on.
+fn merge_default_adapters<'a>(
     mut rows: Vec<(String, serde_json::Value, bool)>,
+    defaults: impl IntoIterator<Item = &'a str>,
 ) -> Vec<(String, serde_json::Value, bool)> {
-    for id in cctui_proto::adapter::KNOWN_ADAPTERS {
+    for id in defaults {
         if !rows.iter().any(|(rid, _, _)| rid == id) {
-            rows.push(((*id).to_owned(), serde_json::json!({}), true));
+            rows.push((id.to_owned(), serde_json::json!({}), true));
         }
     }
     rows
+}
+
+/// The ids of every harness a machine runs: default-on ones without a
+/// disabling row, plus any the machine's rows enable.
+pub async fn enabled_adapter_ids(
+    state: &AppState,
+    machine_id: Uuid,
+) -> anyhow::Result<Vec<String>> {
+    Ok(load_reconcile(state, machine_id)
+        .await?
+        .into_iter()
+        .filter(|a| a.enabled)
+        .map(|a| a.adapter_id.0)
+        .collect())
 }
 
 pub async fn load_reconcile(
@@ -65,7 +81,7 @@ pub async fn load_reconcile(
     .bind(machine_id)
     .fetch_all(&state.pool)
     .await?;
-    let rows = merge_known_adapters(rows);
+    let rows = merge_default_adapters(rows, cctui_proto::adapter::default_enabled_adapters());
 
     // Bridge the owning user's `user_settings.data.harnessMode` into each
     // claude-code adapter's `config["mode"]`. The settings blob is
@@ -137,9 +153,13 @@ mod tests {
 
     use super::*;
 
+    fn defaults() -> Vec<&'static str> {
+        cctui_proto::adapter::default_enabled_adapters()
+    }
+
     #[test]
-    fn merge_known_adapters_defaults_every_known_adapter_on() {
-        let got = merge_known_adapters(Vec::new());
+    fn merge_defaults_every_default_on_adapter() {
+        let got = merge_default_adapters(Vec::new(), defaults());
         let mut ids: Vec<&str> = got.iter().map(|(id, _, _)| id.as_str()).collect();
         ids.sort_unstable();
         assert_eq!(ids, ["claude-code", "codex", "opencode"]);
@@ -147,12 +167,29 @@ mod tests {
     }
 
     #[test]
-    fn merge_known_adapters_keeps_row_overrides() {
+    fn a_default_off_adapter_is_skipped_without_a_row() {
+        let got = merge_default_adapters(Vec::new(), ["claude-code"]);
+        assert!(got.iter().any(|(id, _, enabled)| id == "claude-code" && *enabled));
+        assert!(!got.iter().any(|(id, _, _)| id == "gemini"));
+    }
+
+    #[test]
+    fn a_default_off_adapter_is_included_when_a_row_enables_it() {
+        let rows = vec![("gemini".to_owned(), json!({"bin": "/opt/gemini"}), true)];
+        let got = merge_default_adapters(rows, ["claude-code"]);
+        let gemini = got.iter().find(|(id, _, _)| id == "gemini").expect("row kept");
+        assert!(gemini.2);
+        assert_eq!(gemini.1, json!({"bin": "/opt/gemini"}));
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn merge_defaults_keeps_row_overrides() {
         let rows = vec![
             ("opencode".to_owned(), json!({"bin": "/opt/opencode"}), false),
             ("legacy-harness".to_owned(), json!({}), true),
         ];
-        let got = merge_known_adapters(rows);
+        let got = merge_default_adapters(rows, defaults());
         assert_eq!(got.len(), 4);
         let opencode = got.iter().find(|(id, _, _)| id == "opencode").unwrap();
         assert_eq!(opencode.1, json!({"bin": "/opt/opencode"}));

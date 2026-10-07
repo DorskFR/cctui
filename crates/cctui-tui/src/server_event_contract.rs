@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 29;
+const VARIANT_COUNT: usize = 30;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -153,6 +153,13 @@ fn fleet_samples() -> Vec<ServerEvent> {
             retry_after_secs: 60,
         },
         ServerEvent::SoftLimitCleared { session_id: "s-1".to_owned() },
+        ServerEvent::LimitResetRedeemed {
+            account_id: uuid(),
+            account_name: "primary".to_owned(),
+            provider: "openai".to_owned(),
+            outcome: "reset".to_owned(),
+            credit_id: Some("credit-1".to_owned()),
+        },
         ServerEvent::ToolCallBlocked {
             session_id: "s-1".to_owned(),
             tool_name: "Bash".to_owned(),
@@ -197,6 +204,7 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::GithubEvent { .. } => "github_event",
         ServerEvent::SoftLimitReached { .. } => "soft_limit_reached",
         ServerEvent::SoftLimitCleared { .. } => "soft_limit_cleared",
+        ServerEvent::LimitResetRedeemed { .. } => "limit_reset_redeemed",
         ServerEvent::ToolCallBlocked { .. } => "tool_call_blocked",
         ServerEvent::PtyChunk { .. } => "pty_chunk",
         ServerEvent::ScheduledLaunch { .. } => "scheduled_launch",

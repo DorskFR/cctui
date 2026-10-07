@@ -1,6 +1,5 @@
-//! Codex adapter, enabled on every machine by default
-//! ([`cctui_proto::adapter::KNOWN_ADAPTERS`]) unless an `adapters_enabled` row
-//! disables it.
+//! Codex adapter, enabled on every machine by default (the harness table in
+//! `cctui_proto::adapter`) unless an `adapters_enabled` row disables it.
 //!
 //! Two modes, picked by config or env:
 //!

@@ -1,13 +1,21 @@
 <script lang="ts">
 	import type { PermissionMode } from '@bindings/PermissionMode';
 	import { AutoGrid, OptionButton, Text } from '@dorsk/tsumikit';
-	import { modes } from '$lib/components/organisms/spawn/options';
+	import { modesFor } from '$lib/components/organisms/spawn/options';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		value,
-		onpick
-	}: { value: string | null; onpick: (v: PermissionMode) => void } = $props();
+		onpick,
+		harness = null
+	}: {
+		value: string | null;
+		onpick: (v: PermissionMode) => void;
+		/** Narrows the cards to the postures this harness can express. */
+		harness?: string | null;
+	} = $props();
+
+	const modes = $derived(modesFor(harness));
 
 	// Per-mode accent: ask = green (safe), auto = blue (sandboxed),
 	// yolo = red (no prompts, full access), whip = violet (yolo and never stalls).

@@ -115,5 +115,61 @@
       "efforts": []
     }
   ],
-  "permission_modes": ["ask", "auto", "yolo", "whip"]
+  "permission_modes": ["ask", "auto", "yolo", "whip"],
+  "harnesses": [
+    {
+      "id": "claude-code",
+      "label": "Claude Code",
+      "family": "anthropic",
+      "capabilities": {
+        "fork": true,
+        "rename": true,
+        "resume": true,
+        "set_model": false,
+        "live_view": true,
+        "attach": true,
+        "mid_chat_files": true,
+        "child_spawn": true
+      },
+      "default_enabled": true,
+      "models_source": "static",
+      "permission_modes": ["ask", "auto", "yolo", "whip"]
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "family": "openai",
+      "capabilities": {
+        "fork": false,
+        "rename": true,
+        "resume": true,
+        "set_model": true,
+        "live_view": true,
+        "attach": false,
+        "mid_chat_files": true,
+        "child_spawn": true
+      },
+      "default_enabled": true,
+      "models_source": "catalog",
+      "permission_modes": ["ask", "auto", "yolo", "whip"]
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "family": "fireworks",
+      "capabilities": {
+        "fork": false,
+        "rename": true,
+        "resume": false,
+        "set_model": false,
+        "live_view": true,
+        "attach": false,
+        "mid_chat_files": true,
+        "child_spawn": false
+      },
+      "default_enabled": true,
+      "models_source": "none",
+      "permission_modes": ["ask", "auto", "yolo", "whip"]
+    }
+  ]
 }

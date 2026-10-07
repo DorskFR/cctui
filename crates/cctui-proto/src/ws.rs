@@ -738,6 +738,16 @@ pub enum ServerEvent {
     SoftLimitCleared {
         session_id: String,
     },
+    /// The server spent a usage-limit reset on an account under its auto-redeem
+    /// policy. `outcome` is the upstream result (`reset`, `already_redeemed`, …).
+    LimitResetRedeemed {
+        account_id: uuid::Uuid,
+        account_name: String,
+        provider: String,
+        outcome: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credit_id: Option<String>,
+    },
     /// The account's tool-call policy blocked a tool call. `rule` holds the rule
     /// name and a masked match; raw input is never carried.
     ToolCallBlocked {

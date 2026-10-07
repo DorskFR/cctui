@@ -6,6 +6,11 @@
 //! under `CCTUI_GATEWAY_FAILOVER=1`. A session with neither stays put and sees
 //! the refusal. Every move is recorded in `session_account_rebinds`.
 //!
+//! Under `CCTUI_GATEWAY_OUTAGE_FAILOVER=1` a pool election also reads the
+//! provider-status cache: a member whose native family reports a major or
+//! critical incident ranks behind every healthy sibling, and a move the
+//! incident steered is recorded as such rather than as the pool's own doing.
+//!
 //! Request bodies stream unbuffered, so the refused request is not replayed:
 //! the session's token row is repointed and the gateway answers 429
 //! `Retry-After: 1`, which every supported harness retries. Callers are the
@@ -41,6 +46,17 @@ fn failover_enabled() -> bool {
     *ENABLED
 }
 
+/// Opt-in: `CCTUI_GATEWAY_OUTAGE_FAILOVER=1|true|on|yes`.
+///
+/// Off, the provider-status cache is never consulted and a pool ranks as it
+/// always has.
+fn outage_failover_enabled() -> bool {
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        std::env::var("CCTUI_GATEWAY_OUTAGE_FAILOVER").is_ok_and(|v| flag_enables(&v))
+    });
+    *ENABLED
+}
+
 /// Whether an env-flag value spells "on". Unset/anything else means off.
 pub fn flag_enables(value: &str) -> bool {
     matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
@@ -66,6 +82,40 @@ pub fn note_failover(map: &dashmap::DashMap<String, Instant>, session_id: &str, 
 /// confused with "a rule I wrote last Tuesday moved this".
 pub const REASON_POOL: &str = "pool";
 pub const REASON_REDIRECT: &str = "redirect";
+/// Prefix of the reason recorded when an upstream incident steered the pick.
+///
+/// The pool would otherwise have elected the member it steered away from; the
+/// family whose status page reported the incident follows the colon.
+pub const REASON_OUTAGE_PREFIX: &str = "outage:";
+
+/// The reason recorded for a move steered around an incident in `family`.
+#[must_use]
+pub fn outage_reason(family: &str) -> String {
+    format!("{REASON_OUTAGE_PREFIX}{family}")
+}
+
+/// The family an incident-steered reason names, if the reason is one.
+#[must_use]
+pub fn outage_family(reason: &str) -> Option<&str> {
+    reason.strip_prefix(REASON_OUTAGE_PREFIX).filter(|f| !f.is_empty())
+}
+
+/// The family whose incident a pool member is exposed to, if routing should steer around it.
+///
+/// A member served by a compatible endpoint (`base_url` set) is not covered by
+/// the vendor's status page and reads as healthy.
+#[must_use]
+pub fn member_outage(
+    cache: &crate::provider_status::ProviderStatusCache,
+    provider: &str,
+    base_url: Option<&str>,
+) -> Option<&'static str> {
+    if base_url.is_some_and(|u| !u.trim().is_empty()) {
+        return None;
+    }
+    let family = crate::provider_status::family_of_provider(provider)?;
+    cache.routing_outage(family).map(|_| family)
+}
 
 /// The credential a failing session should rebind to.
 pub struct FailoverTarget {
@@ -76,8 +126,8 @@ pub struct FailoverTarget {
     pub from_account_name: String,
     /// The pool that authorised the move, when one did.
     pub pool_id: Option<Uuid>,
-    /// [`REASON_POOL`] or [`REASON_REDIRECT`].
-    pub reason: &'static str,
+    /// [`REASON_POOL`], [`REASON_REDIRECT`], or an [`outage_reason`].
+    pub reason: String,
 }
 
 /// The account an explicit rule sends `from_account` to for `model`. A rule
@@ -202,7 +252,7 @@ pub async fn pick_failover_target(
         account_name,
         from_account_name,
         pool_id: None,
-        reason: REASON_REDIRECT,
+        reason: REASON_REDIRECT.to_owned(),
     })
 }
 
@@ -267,6 +317,14 @@ async fn pick_within_pool(
     // ones already moved keeps them from all landing on the same sibling.
     let providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
     let in_flight = crate::account_resolve::in_flight_by_provider(state, &providers).await;
+    let outages: Vec<Option<&'static str>> = members
+        .iter()
+        .map(|m| {
+            outage_failover_enabled()
+                .then(|| member_outage(&state.provider_status, &m.provider, m.base_url.as_deref()))
+                .flatten()
+        })
+        .collect();
     let candidates: Vec<crate::account_pick::Candidate> = members
         .iter()
         .zip(usages.iter())
@@ -286,6 +344,7 @@ async fn pick_within_pool(
         pool,
         &candidates,
         &providers,
+        &outages,
         model,
         chrono::Utc::now(),
         session_id,
@@ -300,36 +359,77 @@ fn in_pool_failover_armed(pool: Option<&AccountPool>) -> bool {
     pool.is_some_and(|p| p.failover)
 }
 
-/// The election itself, over `candidates` paired positionally with
-/// `providers`. Split from the DB/usage fetch so the rule that decides where a
-/// refused session lands is testable without a gateway.
+/// The election itself, over `candidates` paired positionally with `providers` and `outages`.
+///
+/// Split from the DB/usage fetch so the rule that decides where a refused
+/// session lands is testable without a gateway. Members under an upstream incident form a second tier: the healthy ones are
+/// elected first, and the degraded ones only when no healthy member has room.
+/// With no outage reported (or the flag off) the two tiers are one, and the
+/// result is exactly the plain election. A pick the tiering changed is
+/// attributed to the incident, never to the pool.
 #[allow(clippy::too_many_arguments)]
 fn elect_replacement(
     pool: &AccountPool,
     candidates: &[crate::account_pick::Candidate],
     providers: &[Uuid],
+    outages: &[Option<&'static str>],
     model: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
     session_id: &str,
     from_account_name: &str,
 ) -> Option<FailoverTarget> {
-    let pick = if pool.strategy == crate::store::account_pools::STRATEGY_ORDERED {
-        crate::account_pick::pick_in_order(candidates, model, now)
+    let all = vec![true; candidates.len()];
+    let plain = elect_among(pool, candidates, &all, model, now)?;
+    let healthy: Vec<bool> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, _)| outages.get(i).copied().flatten().is_none())
+        .collect();
+    let (idx, reason) = if healthy.iter().all(|h| *h) {
+        (plain, REASON_POOL.to_owned())
     } else {
-        crate::account_pick::pick_account(candidates, model, now)
+        match elect_among(pool, candidates, &healthy, model, now) {
+            Some(idx) if idx != plain => {
+                let family = outages.get(plain).copied().flatten().unwrap_or("upstream");
+                (idx, outage_reason(family))
+            }
+            Some(idx) => (idx, REASON_POOL.to_owned()),
+            None => (plain, REASON_POOL.to_owned()),
+        }
+    };
+    Some(FailoverTarget {
+        session_id: session_id.to_owned(),
+        provider_id: *providers.get(idx)?,
+        account_name: candidates.get(idx)?.name.clone(),
+        from_account_name: from_account_name.to_owned(),
+        pool_id: Some(pool.id),
+        reason,
+    })
+}
+
+/// The winner's index into `candidates` under the pool's strategy, over the members `keep` admits.
+///
+/// `None` when no admitted member has measured room.
+fn elect_among(
+    pool: &AccountPool,
+    candidates: &[crate::account_pick::Candidate],
+    keep: &[bool],
+    model: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<usize> {
+    let admitted: Vec<usize> =
+        (0..candidates.len()).filter(|i| keep.get(*i).copied().unwrap_or(false)).collect();
+    let subset: Vec<crate::account_pick::Candidate> =
+        admitted.iter().map(|i| candidates[*i].clone()).collect();
+    let pick = if pool.strategy == crate::store::account_pools::STRATEGY_ORDERED {
+        crate::account_pick::pick_in_order(&subset, model, now)
+    } else {
+        crate::account_pick::pick_account(&subset, model, now)
     };
     let crate::account_pick::Pick::Chosen { name, .. } = pick else { return None };
     // Measured room only: see the note above on why an unreadable member is
     // not a failover target even though it is a launch candidate.
-    let idx = candidates.iter().position(|c| c.name == name && c.usage_known)?;
-    Some(FailoverTarget {
-        session_id: session_id.to_owned(),
-        provider_id: *providers.get(idx)?,
-        account_name: name,
-        from_account_name: from_account_name.to_owned(),
-        pool_id: Some(pool.id),
-        reason: REASON_POOL,
-    })
+    admitted.into_iter().find(|i| candidates[*i].name == name && candidates[*i].usage_known)
 }
 
 /// Repoint the session's live token row from `from_provider` to the elected
@@ -373,7 +473,7 @@ pub async fn rebind_session(
             target.pool_id,
             &target.from_account_name,
             &target.account_name,
-            target.reason,
+            &target.reason,
         )
         .await
         {
@@ -407,9 +507,11 @@ pub fn failover_retry_response(
     // "a rule I forgot about moved this" is the difference between a feature
     // and a surprise.
     let because = if reason == REASON_POOL {
-        "the next account in its pool"
+        "the next account in its pool".to_owned()
+    } else if let Some(family) = outage_family(reason) {
+        format!("a pool member clear of the {family} incident its status page reports")
     } else {
-        "its configured redirect target"
+        "its configured redirect target".to_owned()
     };
     let message = format!(
         "cctui gateway: the bound account is out of allocation — session moved to \
@@ -476,6 +578,25 @@ mod tests {
     fn disabled_by_default_even_with_a_sibling() {
         // The env is unset in tests: the process-wide gate must read as off.
         assert!(!failover_enabled(), "failover must be opt-in");
+        assert!(!outage_failover_enabled(), "outage-aware ranking must be opt-in");
+    }
+
+    #[test]
+    fn outage_reasons_round_trip_and_never_collide_with_the_fixed_ones() {
+        assert_eq!(outage_reason("anthropic"), "outage:anthropic");
+        assert_eq!(outage_family("outage:anthropic"), Some("anthropic"));
+        assert_eq!(outage_family("outage:"), None);
+        assert_eq!(outage_family(REASON_POOL), None);
+        assert_eq!(outage_family(REASON_REDIRECT), None);
+    }
+
+    #[tokio::test]
+    async fn the_retry_names_the_incident_the_session_was_steered_around() {
+        let resp = failover_retry_response("Secours", &outage_reason("openai"), false);
+        assert_eq!(resp.headers()["x-cctui-failover-reason"], "outage:openai");
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("openai incident"), "{text}");
     }
 
     #[test]
@@ -589,15 +710,25 @@ mod tests {
         ))));
     }
 
+    const NO_OUTAGE: [Option<&str>; 2] = [None, None];
+
     #[test]
     fn a_refused_session_moves_to_the_member_with_room_and_records_the_pool() {
         let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
         let spare = Uuid::new_v4();
         let candidates = [member("alpha", 100.0, true), member("beta", 9.0, true)];
         let providers = [Uuid::new_v4(), spare];
-        let target =
-            elect_replacement(&p, &candidates, &providers, None, Utc::now(), "sess-1", "alpha")
-                .expect("a member with room");
+        let target = elect_replacement(
+            &p,
+            &candidates,
+            &providers,
+            &NO_OUTAGE,
+            None,
+            Utc::now(),
+            "sess-1",
+            "alpha",
+        )
+        .expect("a member with room");
         assert_eq!(target.account_name, "beta");
         assert_eq!(target.provider_id, spare);
         assert_eq!(target.from_account_name, "alpha");
@@ -613,8 +744,17 @@ mod tests {
         let candidates = [member("beta", 0.0, false)];
         let providers = [Uuid::new_v4()];
         assert!(
-            elect_replacement(&p, &candidates, &providers, None, Utc::now(), "sess-1", "alpha")
-                .is_none()
+            elect_replacement(
+                &p,
+                &candidates,
+                &providers,
+                &[None],
+                None,
+                Utc::now(),
+                "sess-1",
+                "alpha"
+            )
+            .is_none()
         );
     }
 
@@ -624,8 +764,126 @@ mod tests {
         let candidates = [member("alpha", 100.0, true), member("beta", 100.0, true)];
         let providers = [Uuid::new_v4(), Uuid::new_v4()];
         assert!(
-            elect_replacement(&p, &candidates, &providers, None, Utc::now(), "sess-1", "alpha")
-                .is_none()
+            elect_replacement(
+                &p,
+                &candidates,
+                &providers,
+                &NO_OUTAGE,
+                None,
+                Utc::now(),
+                "sess-1",
+                "alpha"
+            )
+            .is_none()
         );
+    }
+
+    /// A cache carrying the fixture readings: anthropic operational, openai in
+    /// a major incident.
+    fn status_cache() -> crate::provider_status::ProviderStatusCache {
+        let cache = crate::provider_status::ProviderStatusCache::default();
+        let parse = |raw: &str| serde_json::from_str::<serde_json::Value>(raw).unwrap();
+        cache.seed(crate::provider_status::normalize(
+            "anthropic",
+            &parse(include_str!("../../fixtures/provider_status/anthropic_none.json")),
+        ));
+        cache.seed(crate::provider_status::normalize(
+            "openai",
+            &parse(include_str!("../../fixtures/provider_status/openai_major.json")),
+        ));
+        cache
+    }
+
+    #[test]
+    fn a_member_is_degraded_only_through_its_native_familys_incident() {
+        let cache = status_cache();
+        assert_eq!(member_outage(&cache, "openai", None), Some("openai"));
+        assert_eq!(member_outage(&cache, "anthropic", None), None, "operational");
+        assert_eq!(member_outage(&cache, "fireworks", None), None, "no status page");
+        assert_eq!(
+            member_outage(&cache, "openai", Some("https://compat.example/v1")),
+            None,
+            "a compatible endpoint is not the vendor's hosted API"
+        );
+        assert_eq!(member_outage(&cache, "openai", Some("  ")), Some("openai"));
+    }
+
+    fn elect(
+        p: &AccountPool,
+        candidates: &[crate::account_pick::Candidate],
+        providers: &[Uuid],
+        outages: &[Option<&'static str>],
+    ) -> Option<FailoverTarget> {
+        elect_replacement(p, candidates, providers, outages, None, Utc::now(), "sess-1", "src")
+    }
+
+    #[test]
+    fn a_degraded_member_ranks_behind_a_healthy_one_with_less_room_and_says_why() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let candidates = [member("roomy", 5.0, true), member("tight", 60.0, true)];
+        let providers = [Uuid::new_v4(), Uuid::new_v4()];
+        let plain = elect(&p, &candidates, &providers, &NO_OUTAGE).unwrap();
+        assert_eq!(plain.account_name, "roomy");
+        assert_eq!(plain.reason, REASON_POOL);
+
+        let steered = elect(&p, &candidates, &providers, &[Some("openai"), None]).unwrap();
+        assert_eq!(steered.account_name, "tight");
+        assert_eq!(steered.provider_id, providers[1]);
+        assert_eq!(steered.reason, "outage:openai");
+        assert_eq!(steered.pool_id, Some(p.id));
+    }
+
+    #[test]
+    fn an_incident_that_did_not_change_the_pick_is_still_the_pools_doing() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let candidates = [member("roomy", 5.0, true), member("tight", 60.0, true)];
+        let providers = [Uuid::new_v4(), Uuid::new_v4()];
+        let t = elect(&p, &candidates, &providers, &[None, Some("openai")]).unwrap();
+        assert_eq!(t.account_name, "roomy");
+        assert_eq!(t.reason, REASON_POOL);
+    }
+
+    #[test]
+    fn every_healthy_member_out_falls_back_to_the_degraded_tier_as_before() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let candidates = [member("down", 10.0, true), member("spent", 100.0, true)];
+        let providers = [Uuid::new_v4(), Uuid::new_v4()];
+        let t = elect(&p, &candidates, &providers, &[Some("anthropic"), None]).unwrap();
+        assert_eq!(t.account_name, "down");
+        assert_eq!(t.reason, REASON_POOL, "the plain election would have landed here too");
+    }
+
+    #[test]
+    fn a_whole_pool_under_one_incident_ranks_exactly_as_without_it() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let candidates = [member("a", 50.0, true), member("b", 20.0, true)];
+        let providers = [Uuid::new_v4(), Uuid::new_v4()];
+        let plain = elect(&p, &candidates, &providers, &NO_OUTAGE).unwrap();
+        let all_down = elect(&p, &candidates, &providers, &[Some("anthropic"); 2]).unwrap();
+        assert_eq!(all_down.account_name, plain.account_name);
+        assert_eq!(all_down.provider_id, plain.provider_id);
+        assert_eq!(all_down.reason, REASON_POOL);
+    }
+
+    #[test]
+    fn an_ordered_pool_skips_a_degraded_rung_and_records_the_incident() {
+        let p = pool(crate::store::account_pools::STRATEGY_ORDERED, true);
+        let candidates = [member("first", 90.0, true), member("second", 10.0, true)];
+        let providers = [Uuid::new_v4(), Uuid::new_v4()];
+        let plain = elect(&p, &candidates, &providers, &NO_OUTAGE).unwrap();
+        assert_eq!(plain.account_name, "first", "position beats margin");
+        let steered = elect(&p, &candidates, &providers, &[Some("openai"), None]).unwrap();
+        assert_eq!(steered.account_name, "second");
+        assert_eq!(steered.reason, "outage:openai");
+    }
+
+    #[test]
+    fn the_steered_target_still_needs_measured_room() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let candidates = [member("down", 10.0, true), member("blind", 0.0, false)];
+        let providers = [Uuid::new_v4(), Uuid::new_v4()];
+        let t = elect(&p, &candidates, &providers, &[Some("openai"), None]).unwrap();
+        assert_eq!(t.account_name, "down");
+        assert_eq!(t.reason, REASON_POOL);
     }
 }

@@ -4,7 +4,7 @@
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { looseSettings } from './pages.logic';
 	import { usageProbeOptions } from '$lib/providers';
-	import { useDomainMeta } from '$lib/queries';
+	import { useUsageProbes } from '$lib/queries';
 
 	let {
 		endpoint = false,
@@ -38,7 +38,7 @@
 		onmove?: (targetId: string) => void;
 	} = $props();
 
-	useDomainMeta();
+	useUsageProbes();
 
 	let raw = $state('');
 	let rawError = $state('');

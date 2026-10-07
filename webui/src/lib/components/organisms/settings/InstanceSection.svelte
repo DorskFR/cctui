@@ -16,6 +16,7 @@
 	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
+	import MachineAdaptersGroup from './MachineAdaptersGroup.svelte';
 	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
 	import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
 	import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
@@ -230,6 +231,7 @@
 		</SettingGroup>
 		<PasskeySignInGroup />
 		<HarnessUpdateGroup />
+		<MachineAdaptersGroup />
 		<SpawnLimitsGroup />
 		<UpstreamHostsGroup />
 	{/if}

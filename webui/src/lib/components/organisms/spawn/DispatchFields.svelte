@@ -61,7 +61,7 @@
 	// Only accounts whose provider family backs the selected harness apply
 	// (provider-family union): a claude worker needs an anthropic-family
 	// provider, a codex worker an openai-family one.
-	const dispatchAccounts = $derived(accounts.filter((a) => accountAdapters(a).includes(adapter as Adapter)));
+	const dispatchAccounts = $derived(accounts.filter((a) => accountAdapters(a).includes(adapter)));
 	const selectedAccount = $derived(
 		form.account ? dispatchAccounts.find((a) => a.name === form.account) : undefined
 	);
@@ -72,7 +72,7 @@
 	// machine-scoped catalog, so codex dispatch reads the cross-machine merge
 	// (static offline list when empty); claude families are annotated with the
 	// account's alias targets.
-	const harness = $derived(isCodex ? 'codex' : 'claude-code');
+	const harness = $derived(adapter);
 	const harnessModels = useHarnessModels(
 		() => harness,
 		() => '',

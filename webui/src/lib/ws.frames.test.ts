@@ -102,6 +102,14 @@ const fixtures = {
 		retry_after_secs: 600
 	},
 	soft_limit_cleared: { type: 'soft_limit_cleared', session_id: SID },
+	limit_reset_redeemed: {
+		type: 'limit_reset_redeemed',
+		account_id: ACCOUNT,
+		account_name: 'work',
+		provider: 'openai',
+		outcome: 'reset',
+		credit_id: 'credit-1'
+	},
 	tool_call_blocked: { type: 'tool_call_blocked', session_id: SID, tool_name: 'Bash', rule: 'rm -rf' },
 	pty_chunk: { type: 'pty_chunk', session_id: SID, data: 'aGk=' },
 	scheduled_launch: {

@@ -205,10 +205,16 @@ async fn mint_ephemeral_dispatch_key(
 /// adapter of its own: the entry's provider hint names the family when there is
 /// one, otherwise the forwarded payload's adapter does, defaulting to
 /// `claude-code` as the rest of the dispatch path does.
-fn binding_family(hint: Option<&str>, payload_adapter: &str) -> crate::routes::gateway::Family {
+fn binding_family(
+    hint: Option<&str>,
+    payload_adapter: &str,
+) -> Result<crate::routes::gateway::Family, (StatusCode, Json<ApiError>)> {
     hint.map(str::trim).filter(|p| !p.is_empty()).map_or_else(
-        || crate::routes::gateway::Family::from_adapter(payload_adapter),
-        crate::routes::gateway::Family::from_provider,
+        || {
+            crate::routes::gateway::Family::from_adapter(payload_adapter)
+                .map_err(|e| crate::routes::spawn::bad_request(e.to_string()))
+        },
+        |p| Ok(crate::routes::gateway::Family::from_provider(p)),
     )
 }
 
@@ -636,7 +642,7 @@ async fn resolve_routed_accounts(
                 let (account, pool_id) = crate::account_resolve::resolve_pool_by_id(
                     state,
                     uid,
-                    binding_family(None, payload_adapter),
+                    binding_family(None, payload_adapter)?,
                     requested_model,
                     pool_id,
                 )
@@ -655,7 +661,7 @@ async fn resolve_routed_accounts(
     // name always wins.
     let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(accounts.len());
     for (name, hint) in accounts {
-        let family = binding_family(hint.as_deref(), payload_adapter);
+        let family = binding_family(hint.as_deref(), payload_adapter)?;
         let bound = crate::account_resolve::resolve_account_or_pool(
             state,
             uid,
@@ -1231,15 +1237,16 @@ mod tests {
 
     #[test]
     fn a_provider_hint_scopes_the_binding_family() {
-        assert_eq!(binding_family(Some("openai"), "claude-code"), Family::Openai);
-        assert_eq!(binding_family(Some("fireworks"), "claude-code"), Family::Fireworks);
+        assert_eq!(binding_family(Some("openai"), "claude-code").unwrap(), Family::Openai);
+        assert_eq!(binding_family(Some("fireworks"), "claude-code").unwrap(), Family::Fireworks);
     }
 
     #[test]
     fn without_a_hint_the_payload_adapter_scopes_the_binding_family() {
-        assert_eq!(binding_family(None, "codex"), Family::Openai);
-        assert_eq!(binding_family(Some("  "), "codex"), Family::Openai);
-        assert_eq!(binding_family(None, "claude-code"), Family::Anthropic);
+        assert_eq!(binding_family(None, "codex").unwrap(), Family::Openai);
+        assert_eq!(binding_family(Some("  "), "codex").unwrap(), Family::Openai);
+        assert_eq!(binding_family(None, "claude-code").unwrap(), Family::Anthropic);
+        assert!(binding_family(None, "gemini").is_err());
     }
 
     #[test]

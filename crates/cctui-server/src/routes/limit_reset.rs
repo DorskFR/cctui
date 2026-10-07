@@ -413,35 +413,51 @@ pub async fn limit_reset(
     let Some(provider) = provider else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
-    let Some(acct) = gateway::reload_account(&state, id).await else {
+    let out = redeem(&state, id, &provider, req.credit_id, Some(ctx.user_id)).await?;
+    Ok(Json(out))
+}
+
+/// Claim a reset on provider row `id`, audit it, and refresh the cached usage
+/// when the claim may have moved a window.
+///
+/// `requested_by` is `None` for a claim the server made on its own policy.
+/// Shared by the button and the auto-redeem sweep so both spend a credit the
+/// same way.
+pub async fn redeem(
+    state: &AppState,
+    id: Uuid,
+    provider: &str,
+    credit_id: Option<String>,
+    requested_by: Option<Uuid>,
+) -> Result<LimitResetResponse, AppError> {
+    let Some(acct) = gateway::reload_account(state, id).await else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
-    let access_token = gateway::current_access_token(&state, &acct)
+    let access_token = gateway::current_access_token(state, &acct)
         .await
         .map_err(|s| AppError::new(s, "could not obtain an access token for this account"))?;
 
-    let out = match provider.as_str() {
-        "openai" => claim_codex(&state, &acct, &access_token, req.credit_id).await,
-        "anthropic" => claim_claude(&state, &acct, &access_token, req.credit_id).await,
+    let out = match provider {
+        "openai" => claim_codex(state, &acct, &access_token, credit_id).await,
+        "anthropic" => claim_claude(state, &acct, &access_token, credit_id).await,
         _ => {
             return Err(AppError::new(StatusCode::BAD_REQUEST, "this provider has no limit reset"));
         }
     };
-    record(&state, id, &out, ctx.user_id).await;
+    record(state, id, &out, requested_by).await;
     if invalidates_usage(&out.outcome) {
         state.account_usage_cache.remove(&id);
         // Net-zero upstream: the eviction above already forced the next reader
         // to fetch; doing it here just leaves the cache warm and pushes once.
-        if let Ok((p, usage)) = crate::routes::gateway::fetch_usage_with_provider(&state, id).await
-        {
-            crate::routes::gateway::record_usage_samples(&state, id, usage.as_ref());
-            crate::routes::accounts::store_and_broadcast_usage(&state, id, p, usage).await;
+        if let Ok((p, usage)) = crate::routes::gateway::fetch_usage_with_provider(state, id).await {
+            crate::routes::gateway::record_usage_samples(state, id, usage.as_ref());
+            crate::routes::accounts::store_and_broadcast_usage(state, id, p, usage).await;
         }
     }
-    Ok(Json(LimitResetResponse { account_id: id, provider, ..out }))
+    Ok(LimitResetResponse { account_id: id, provider: provider.to_owned(), ..out })
 }
 
-async fn record(state: &AppState, id: Uuid, out: &LimitResetResponse, requested_by: Uuid) {
+async fn record(state: &AppState, id: Uuid, out: &LimitResetResponse, requested_by: Option<Uuid>) {
     if let Err(e) = sqlx::query(
         "INSERT INTO account_limit_resets \
              (provider_id, idempotency_key, credit_id, outcome, requested_by) \

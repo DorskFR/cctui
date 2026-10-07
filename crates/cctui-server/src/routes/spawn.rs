@@ -295,7 +295,8 @@ async fn resolve_spawn_account(
     // once the account is minted. `None` for every other decision: a session
     // that named no pool is never moved.
     let mut bound_pool: Option<Uuid> = None;
-    let family_for_binding = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family_for_binding = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     let account_choice = match decision {
         // A name is an account name first; it only elects a pool when no
         // account of the user's answers to it.
@@ -391,7 +392,7 @@ async fn spawn_service_tier(
     // one: resolve to a concrete value here rather than letting the worker
     // inherit whatever the machine's config.toml happens to say.
     if crate::routes::gateway::Family::from_adapter(adapter_id)
-        == crate::routes::gateway::Family::Openai
+        == Ok(crate::routes::gateway::Family::Openai)
     {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(state, token_session_id).await;
@@ -419,7 +420,8 @@ async fn mint_account_env(
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
     let SpawnTarget { uid, adapter_id, token_session_id, .. } = target;
     let uid = *uid;
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     // The fireworks family resolves even an ABSENT model: its catalog is the
     // only source of model ids, and its harness has no default to fall back on.
     if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
@@ -539,7 +541,7 @@ async fn execute_spawn(
         bootstrap,
         parent_local_id: None,
     };
-    persist_spawn_capability(state, req, permission_mode, &token_session_id).await;
+    persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
     // `command_id` travels with the command and comes back in an
     // `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`, letting the
     // client surface success/failure instead of silently polling.
@@ -600,17 +602,36 @@ async fn execute_spawn(
     ))
 }
 
+/// The instance default capability, granting only the harnesses `machine_uuid` runs.
+///
+/// Falls back to the default-enabled set when the machine's rows cannot be read.
+async fn default_capability_for(
+    state: &AppState,
+    machine_uuid: Uuid,
+) -> cctui_proto::api::SpawnCapability {
+    let cap = crate::routes::server_settings::spawn_default_capability(state).await;
+    match crate::routes::daemon::enabled_adapter_ids(state, machine_uuid).await {
+        Ok(ids) => cap.with_adapters(ids),
+        Err(e) => {
+            tracing::warn!(%machine_uuid, error = %e, "enabled adapters unknown; granting the defaults");
+            cap
+        }
+    }
+}
+
 /// Keyed by the id the worker will register as, and stored before dispatch so
 /// the capability resolves the moment the worker asks.
 async fn persist_spawn_capability(
     state: &AppState,
+    machine_uuid: Uuid,
     req: &SpawnRequest,
     permission_mode: Option<cctui_proto::adapter::PermissionMode>,
     token_session_id: &str,
 ) {
-    let mut cap = match req.spawn_capability.clone().filter(|c| !c.is_empty()) {
-        Some(cap) => cap,
-        None => crate::routes::server_settings::spawn_default_capability(state).await,
+    let mut cap = if let Some(cap) = req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+        cap
+    } else {
+        default_capability_for(state, machine_uuid).await
     };
     let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
     cap.max_permission_mode = Some(
@@ -638,7 +659,8 @@ async fn default_account_name(
     user_id: Uuid,
     adapter_id: &str,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT a.name \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \

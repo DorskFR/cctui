@@ -76,7 +76,10 @@ import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { HarnessModels } from "@bindings/HarnessModels";
-import type { DomainMeta } from "@bindings/DomainMeta";
+import type { HarnessDescriptor } from "@bindings/HarnessDescriptor";
+import type { MachineAdapterInfo } from "@bindings/MachineAdapterInfo";
+import type { SetMachineAdapterRequest } from "@bindings/SetMachineAdapterRequest";
+import type { UsageProbeInfo } from "@bindings/UsageProbeInfo";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { RescrubRequest } from "@bindings/RescrubRequest";
@@ -410,8 +413,24 @@ export const endpoints = {
       ...(machineId ? { machine_id: machineId } : {}),
       ...(model ? { model } : {}),
     }),
-  /** Provider metadata, quota probes, end-reason tones, permission modes. */
-  domainMeta: () => api.get<DomainMeta>("/meta/domain"),
+  /** The harness table: ids, families, capabilities and permission modes. */
+  harnesses: () => api.get<HarnessDescriptor[]>("/harnesses"),
+  /** Which harnesses one machine runs, with its enable/config pins. */
+  machineAdapters: (machineId: string) =>
+    api.get<MachineAdapterInfo[]>(`/machines/${encodeURIComponent(machineId)}/adapters`),
+  /** Enable, disable or configure one harness on a machine (admin). */
+  setMachineAdapter: (machineId: string, adapter: string, body: SetMachineAdapterRequest) =>
+    api.put<MachineAdapterInfo[]>(
+      `/machines/${encodeURIComponent(machineId)}/adapters/${encodeURIComponent(adapter)}`,
+      body,
+    ),
+  /** Drop a machine's pin for one harness, back to the table default (admin). */
+  resetMachineAdapter: (machineId: string, adapter: string) =>
+    api.del<MachineAdapterInfo[]>(
+      `/machines/${encodeURIComponent(machineId)}/adapters/${encodeURIComponent(adapter)}`,
+    ),
+  /** The quota-probe registry, for the account usage-probe picker. */
+  usageProbes: () => api.get<UsageProbeInfo[]>("/meta/usage-probes"),
   /** Ask the machine's daemon to re-run codex `model/list`; the fresh
    *  catalog lands asynchronously. */
   refreshCodexModels: (machineId: string) =>
