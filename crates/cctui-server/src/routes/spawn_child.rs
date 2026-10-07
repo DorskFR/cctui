@@ -1002,7 +1002,7 @@ mod tests {
             assert_eq!(
                 ok,
                 Authorized {
-                    adapter: (*adapter).to_owned(),
+                    adapter: adapter.to_owned(),
                     budget_usd: Some(cctui_proto::api::DEFAULT_CHILD_BUDGET_USD),
                     permission_mode: PermissionMode::Ask,
                 }

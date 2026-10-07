@@ -13,6 +13,9 @@ use uuid::Uuid;
 pub struct AdapterId(pub String);
 
 /// What a harness can do, as the clients gate their controls on it.
+// Public wire shape mirrored to TS bindings; the bools are independent gates
+// the clients read by name, so an enum set would churn the API for nothing.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessCapabilities {

@@ -384,6 +384,7 @@ impl Family {
         }
     }
     /// Derive the family from a spawn adapter id through the harness table.
+    ///
     /// This IS the spawn resolution key: the adapter names the harness family,
     /// and the account identity carries at most one provider row per family.
     ///
