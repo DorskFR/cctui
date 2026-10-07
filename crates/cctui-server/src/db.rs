@@ -13,6 +13,7 @@ fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+#[cfg(test)]
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     connect_reporting(database_url).await.map(|(pool, _)| pool)
 }

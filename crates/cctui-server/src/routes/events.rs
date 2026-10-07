@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
+use crate::events::Severity;
 use crate::state::AppState;
 
 const DEFAULT_LIMIT: i64 = 50;
@@ -128,8 +129,9 @@ async fn fetch(
     if !patterns.is_empty() {
         qb.push(" AND e.kind LIKE ANY(").push_bind(patterns).push(")");
     }
-    if let Some(severity) = &q.severity {
-        qb.push(" AND e.severity = ").push_bind(severity.clone());
+    if let Some(raw) = &q.severity {
+        let severity = Severity::parse(raw).map_or("none", Severity::as_str);
+        qb.push(" AND e.severity = ").push_bind(severity);
     }
     if let Some(since) = q.since {
         qb.push(" AND e.occurred_at >= ").push_bind(since);
@@ -393,5 +395,12 @@ mod tests {
         .await;
         assert!(warns.iter().all(|e| e.severity == "warn"));
         assert!(!warns.is_empty());
+        let none = run(EventQuery {
+            severity: Some("loud".into()),
+            machine_id: Some(machine),
+            ..Default::default()
+        })
+        .await;
+        assert!(none.is_empty(), "an unknown severity selects nothing");
     }
 }
