@@ -67,11 +67,12 @@ async fn post_state(State(engine): State<Engine>) -> impl IntoResponse {
     ([("Content-Type", "text/plain")], body)
 }
 
-/// Pre-tool check. The verdict is rendered in the dialect named by
-/// `?dialect=` or the `X-Guard-Dialect` header; with neither it is Claude
-/// Code's, which is what deployed hooks expect. The body is parsed by hand so
-/// an unreadable request still yields a deny in that dialect instead of an
-/// extractor rejection.
+/// Pre-tool check, answered in the caller's dialect.
+///
+/// The dialect is named by `?dialect=` or the `X-Guard-Dialect` header; with
+/// neither it is Claude Code's, which is what deployed hooks expect. The body
+/// is parsed by hand so an unreadable request still yields a deny in that
+/// dialect instead of an extractor rejection.
 async fn check(
     State(engine): State<Engine>,
     Query(query): Query<HashMap<String, String>>,

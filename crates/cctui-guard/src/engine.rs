@@ -51,7 +51,7 @@ impl Verdict {
     }
 
     #[must_use]
-    pub fn is_allow(&self) -> bool {
+    pub const fn is_allow(&self) -> bool {
         matches!(self, Self::Allow)
     }
 }

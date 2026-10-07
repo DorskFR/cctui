@@ -538,10 +538,9 @@ async fn check_renders_the_requested_dialect() {
         post(format!("{base}/check?dialect=acp"), None, allow_body.clone()).await,
         r#"{"outcome":{"optionId":"allow_once","outcome":"selected"}}"#
     );
-    let deny: Value = serde_json::from_str(
-        &post(format!("{base}/check?dialect=acp"), None, deny_body.clone()).await,
-    )
-    .unwrap();
+    let deny: Value =
+        serde_json::from_str(&post(format!("{base}/check?dialect=acp"), None, deny_body).await)
+            .unwrap();
     assert_eq!(deny["outcome"]["optionId"], "reject_once");
 
     // Query wins over header; an unknown name falls back to the next source.

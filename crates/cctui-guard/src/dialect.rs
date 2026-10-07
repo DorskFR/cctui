@@ -1,6 +1,7 @@
-//! Harness dialects for `/check` verdicts. The engine decides in its own
-//! vocabulary; this module renders that decision in the shape the calling
-//! harness's pre-tool hook expects.
+//! Harness dialects for `/check` verdicts.
+//!
+//! The engine decides in its own vocabulary; this module renders that decision
+//! in the shape the calling harness's pre-tool hook expects.
 
 use serde_json::{Value, json};
 
@@ -20,16 +21,18 @@ pub enum Dialect {
     Claude,
     /// Codex hook decision: `allow` / `block` / `ask`.
     Codex,
-    /// OpenCode `tool.execute.before` shim: `{"allow":bool,"reason":"…"}`.
+    /// `OpenCode` `tool.execute.before` shim: `{"allow":bool,"reason":"…"}`.
     OpenCode,
     /// ACP `session/request_permission` outcome with the chosen option id.
     Acp,
 }
 
 impl Dialect {
-    /// Parse a dialect name. Unknown or empty names are `None`; the caller
-    /// falls back to the default so a typo never changes the verdict shape
-    /// to something the harness cannot read.
+    /// Parse a dialect name.
+    ///
+    /// Unknown or empty names are `None`; the caller falls back to the default
+    /// so a typo never changes the verdict shape to something the harness
+    /// cannot read.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {

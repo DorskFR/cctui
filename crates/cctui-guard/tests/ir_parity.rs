@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use cctui_guard::engine::WorkflowEngine;
+use cctui_guard::engine::{Verdict, WorkflowEngine};
 use cctui_guard::ir::{Rule, Transition, Version, Workflow, WorkflowStep};
 use cctui_guard::parser::{
     Step, parse_guard_rules_str, parse_keywords, parse_steps, parse_transitions,
@@ -98,10 +98,11 @@ fn matrix() -> Vec<(&'static str, Value)> {
 }
 
 fn decision(engine: &WorkflowEngine, tool: &str, input: &Value) -> String {
-    engine.check(tool, input)["hookSpecificOutput"]["permissionDecision"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    match engine.check(tool, input) {
+        Verdict::Allow => "allow".to_owned(),
+        Verdict::Deny { .. } => "deny".to_owned(),
+        Verdict::Ask { .. } => "ask".to_owned(),
+    }
 }
 
 /// Assert a parsed markdown [`Step`] compiled into the typed [`WorkflowStep`]
