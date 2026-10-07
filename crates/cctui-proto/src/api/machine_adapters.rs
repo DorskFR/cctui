@@ -29,8 +29,9 @@ pub struct MachineAdapterInfo {
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SetMachineAdapterRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown> | null"))]
+    #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown> | null", optional))]
     pub config: Option<serde_json::Value>,
 }

@@ -41,9 +41,10 @@ pub async fn archived_jobs(
     .await
 }
 
-/// Union the machine's `adapters_enabled` rows with the harnesses that run by
-/// default: a row overrides a default-on harness's config or disables it, and
-/// is the only thing that turns a default-off harness on.
+/// Union the machine's `adapters_enabled` rows with the harnesses that run by default.
+///
+/// A row overrides a default-on harness's config or disables it, and is the
+/// only thing that turns a default-off harness on.
 fn merge_default_adapters<'a>(
     mut rows: Vec<(String, serde_json::Value, bool)>,
     defaults: impl IntoIterator<Item = &'a str>,

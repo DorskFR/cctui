@@ -109,9 +109,11 @@ impl SpawnCapability {
         self.adapters.is_empty()
     }
 
-    /// Default for an interactive machine spawn that names no capability:
-    /// every harness that runs by default. [`with_adapters`](Self::with_adapters)
-    /// narrows it to what one machine actually runs.
+    /// Default for an interactive machine spawn that names no capability.
+    ///
+    /// Grants every harness that runs by default;
+    /// [`with_adapters`](Self::with_adapters) narrows it to what one machine
+    /// actually runs.
     #[must_use]
     pub fn machine_default() -> Self {
         Self {

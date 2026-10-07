@@ -1,7 +1,7 @@
 //! `/api/v1/machines/{machine_id}/adapters` — which harnesses a machine runs.
 //!
-//! Reads are for the machine's owner (the spawn picker narrows to them);
-//! writes are admin-only and push a fresh Reconcile so the daemon converges
+//! Reads are for the machine's owner (the spawn picker narrows to them).
+//! Writes are admin-only and push a fresh Reconcile so the daemon converges
 //! without a reconnect. Running sessions are never touched.
 
 use axum::extract::{Path, State};
@@ -55,12 +55,11 @@ async fn rows(
     pool: &sqlx::PgPool,
     machine_id: Uuid,
 ) -> Result<Vec<(String, serde_json::Value, bool)>, AppError> {
-    Ok(sqlx::query_as(
-        "SELECT adapter_id, config, enabled FROM adapters_enabled WHERE machine_id = $1",
-    )
-    .bind(machine_id)
-    .fetch_all(pool)
-    .await?)
+    sqlx::query_as("SELECT adapter_id, config, enabled FROM adapters_enabled WHERE machine_id = $1")
+        .bind(machine_id)
+        .fetch_all(pool)
+        .await
+        .map_err(AppError::from)
 }
 
 async fn machine_exists(pool: &sqlx::PgPool, machine_id: Uuid) -> Result<(), AppError> {
