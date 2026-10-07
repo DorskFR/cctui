@@ -9,6 +9,7 @@ export type * from './AccountRedirect';
 export type * from './AccountShareInfo';
 export type * from './AccountUsage';
 export type * from './AccountUsageEntry';
+export type * from './AcpDiagnose';
 export type * from './AdapterId';
 export type * from './AddUserActionRequest';
 export type * from './AdminPluginInfo';

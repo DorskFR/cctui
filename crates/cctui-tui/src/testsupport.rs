@@ -312,6 +312,7 @@ pub fn diagnose_response() -> cctui_proto::diagnose::SessionDiagnoseResponse {
             gateway: DiagnoseFact::missing("daemon-config", "no server client"),
             codex: None,
             opencode: None,
+            acp: None,
         }),
         daemon_error: None,
         server: ServerDiagnose {

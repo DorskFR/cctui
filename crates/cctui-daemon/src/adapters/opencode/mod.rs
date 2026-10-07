@@ -644,6 +644,7 @@ async fn diagnose(
         ),
         codex: None,
         opencode: Some(opencode),
+        acp: None,
     }
 }
 

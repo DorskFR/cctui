@@ -353,6 +353,55 @@ pub struct OpenCodeDiagnose {
     pub rpc_tail: Vec<TrafficFrame>,
 }
 
+/// ACP-adapter section: one agent process spoken to over stdio JSON-RPC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct AcpDiagnose {
+    /// The agent row (adapter id) this session runs under.
+    pub agent: String,
+    /// `agentInfo.name` from `initialize`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    /// `agentInfo.version` from `initialize`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pid: Option<u32>,
+    /// Whether a live command channel exists for this session.
+    pub live: bool,
+    /// The agent's own session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_session_id: Option<String>,
+    /// `working` (a turn is in flight), `idle` or `unknown`.
+    pub turn_status: String,
+    /// The agent-side mode id currently applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_modes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Permission prompts awaiting an answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_permissions: Vec<String>,
+    /// The last `usage_update` cost the agent priced, in USD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cost_usd: Option<f64>,
+    /// The raw `initialize` response: capabilities and auth methods.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub initialize: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocol_errors: Vec<TrafficError>,
+    /// Trailing agent stderr lines, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stderr_tail: Vec<TrafficStderrLine>,
+    /// The last JSON-RPC frames on the agent's stdio, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rpc_tail: Vec<TrafficFrame>,
+}
+
 /// Everything the daemon knows about one session, dated. Adapter-specific
 /// diagnostics go in tagged sections such as [`SessionDiagnose::codex`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -389,6 +438,9 @@ pub struct SessionDiagnose {
     /// `OpenCode`-adapter-specific section.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode: Option<OpenCodeDiagnose>,
+    /// ACP-adapter section (gemini and the other ACP agents).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp: Option<AcpDiagnose>,
 }
 
 /// Server-side facts merged into the diagnose response (the daemon cannot see

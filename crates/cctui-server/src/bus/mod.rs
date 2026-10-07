@@ -1786,6 +1786,7 @@ mod tests {
             gateway: DiagnoseFact::missing("daemon-config", "n/a"),
             codex: None,
             opencode: None,
+            acp: None,
         }
     }
 
