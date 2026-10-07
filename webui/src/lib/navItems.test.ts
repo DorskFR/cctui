@@ -10,9 +10,9 @@ describe('navItems', () => {
 		expect(hrefs.at(-1)).toBe('/settings');
 	});
 
-	it('ends the built-in run at bookmarks: admin screens live under Settings', () => {
+	it('ends the built-in run at events: admin screens live under Settings', () => {
 		const hrefs = navItems().map((i) => i.href);
-		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/settings']);
+		expect(hrefs).toEqual(['/', '/sessions', '/bookmarks', '/events', '/settings']);
 	});
 
 	it('keeps access, accounts and dispatchers out of the nav', () => {

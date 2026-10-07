@@ -74,4 +74,8 @@ export const qk = {
   machinesAll: ["machines", "all"] as const,
   changelog: (version: string) => ["version", "changelog", version] as const,
   selfUpdateRun: ["version", "self-update-run"] as const,
+  eventsAll: ["events"] as const,
+  events: (query: Record<string, string>) => ["events", "feed", query] as const,
+  sessionEvents: (sessionId: string) => ["events", "session", sessionId] as const,
+  machineEvents: (machineId: string) => ["events", "machine", machineId] as const,
 };
