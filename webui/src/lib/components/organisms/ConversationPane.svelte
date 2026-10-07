@@ -10,6 +10,8 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import { supportsAttachments as adapterSupportsAttachments } from '$lib/attachments';
+	import { harnessCapabilities } from '$lib/harnesses';
+	import { harnessTable } from '$lib/harnesses.svelte';
 	import { Dropzone } from '@dorsk/tsumikit';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
@@ -25,7 +27,7 @@
 	import PluginPaneHost from './conversation/PluginPaneHost.svelte';
 	import { registerComposer } from '$lib/plugins/composerBridge.svelte';
 	import { DrawerPlugins } from '$lib/plugins/drawerPlugins.svelte';
-	import { usePlugins } from '$lib/queries';
+	import { useHarnesses, usePlugins } from '$lib/queries';
 	import { settings } from '$lib/settings.svelte';
 	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
@@ -281,6 +283,8 @@
 	});
 
 	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
+	useHarnesses();
+	const harnessCaps = $derived(harnessCapabilities(session.adapter_id, harnessTable()));
 
 	const sa = new SessionActions({
 		id: () => id,
@@ -305,9 +309,8 @@
 		}
 	});
 
-	// Subset fork from a conversation extract. Claude-only; codex has
-	// no partial-fork primitive, so the per-message actions are gated off for it.
-	const forkable = $derived(!isCodexSession && !archived);
+	// Subset fork from a conversation extract, only where the harness forks.
+	const forkable = $derived(harnessCaps.fork && !archived);
 	const forkSelect = new ForkSelection();
 	function forkSelection() {
 		const range = forkSelect.range(lines);
@@ -421,7 +424,7 @@
 					autoApprove={session.auto_approve}
 					ontoggleAuto={sa.toggleAutoApprove}
 					{terminalOpen}
-					ontoggleTerminal={() => (terminalOpen = !terminalOpen)}
+					ontoggleTerminal={harnessCaps.live_view ? () => (terminalOpen = !terminalOpen) : undefined}
 					plugins={plugins.buttons}
 					pins={pins.pins}
 					{lines}

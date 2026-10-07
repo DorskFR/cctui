@@ -13,6 +13,8 @@
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
 	import { Badge, Icon, IconButton, Popover, Select, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { harnessModelsFallback } from '$lib/domainTables';
+	import { harnessCapabilities } from '$lib/harnesses';
+	import { harnessTable } from '$lib/harnesses.svelte';
 	import {
 		useCapabilities,
 		useHarnessModels,
@@ -65,7 +67,8 @@
 	);
 	const calls = $derived(Number(lf.data?.trace_count ?? 0));
 
-	// In-place model/effort editor, codex only.
+	// In-place model/effort editor, where the harness can switch model.
+	const canSetModel = $derived(harnessCapabilities(session.adapter_id, harnessTable()).set_model);
 	let modelEditing = $state(false);
 	let pendingModel = $state('');
 	let pendingEffort = $state('');
@@ -107,7 +110,7 @@
 {/snippet}
 
 {#snippet modelMeta(idPrefix: string)}
-	{#if isCodexSession && !archived}
+	{#if canSetModel && !archived}
 		{#if modelEditing}
 			<span class="model-edit">
 				<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">

@@ -2,6 +2,7 @@ import { createQuery } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import { setDomainMeta } from "$lib/domainMeta.svelte";
+import { setHarnesses } from "$lib/harnesses.svelte";
 
 export const useMe = () =>
   createQuery(() => ({
@@ -62,6 +63,19 @@ export const useDomainMeta = () =>
       const meta = await endpoints.domainMeta();
       setDomainMeta(meta);
       return meta;
+    },
+    staleTime: Infinity,
+  }));
+
+/** The harness table. Constant per server version; the shipped copy answers
+ *  until this lands, then the served rows take over. */
+export const useHarnesses = () =>
+  createQuery(() => ({
+    queryKey: qk.harnesses,
+    queryFn: async () => {
+      const rows = await endpoints.harnesses();
+      setHarnesses(rows);
+      return rows;
     },
     staleTime: Infinity,
   }));

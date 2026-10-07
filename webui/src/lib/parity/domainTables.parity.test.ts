@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	END_REASONS,
 	HARNESS_MODELS,
+	HARNESSES,
 	PERMISSION_MODES,
 	PROVIDERS,
 	harnessModelsFallback
@@ -13,6 +14,7 @@ type Fixture = {
 	providers: unknown[];
 	harness_models: { harness: string }[];
 	permission_modes: string[];
+	harnesses: unknown[];
 };
 
 const fx = parityFixture<Fixture>('domainTables');
@@ -32,7 +34,12 @@ describe('domain table parity fixtures', () => {
 	it('permission modes', () => {
 		expect(PERMISSION_MODES).toEqual(fx.permission_modes);
 	});
-	it('an unknown harness falls back to the claude shape', () => {
-		expect(harnessModelsFallback('nonesuch').models).toEqual(HARNESS_MODELS[0].models);
+	it('harness table', () => {
+		expect(HARNESSES).toEqual(fx.harnesses);
+	});
+	it('an unknown harness gets only the default entry, never claude models', () => {
+		const fallback = harnessModelsFallback('nonesuch');
+		expect(fallback.models.map((o) => o.v)).toEqual(['']);
+		expect(fallback.efforts).toEqual([]);
 	});
 });

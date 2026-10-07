@@ -76,6 +76,7 @@ import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { HarnessModels } from "@bindings/HarnessModels";
+import type { HarnessDescriptor } from "@bindings/HarnessDescriptor";
 import type { DomainMeta } from "@bindings/DomainMeta";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
@@ -410,6 +411,8 @@ export const endpoints = {
       ...(machineId ? { machine_id: machineId } : {}),
       ...(model ? { model } : {}),
     }),
+  /** The harness table: ids, families, capabilities and permission modes. */
+  harnesses: () => api.get<HarnessDescriptor[]>("/harnesses"),
   /** Provider metadata, quota probes, end-reason tones, permission modes. */
   domainMeta: () => api.get<DomainMeta>("/meta/domain"),
   /** Ask the machine's daemon to re-run codex `model/list`; the fresh
