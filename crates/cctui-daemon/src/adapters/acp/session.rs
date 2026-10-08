@@ -25,11 +25,11 @@ use super::protocol::{self, InitInfo, NewSession, PromptOutcome, TurnUsage};
 use super::rows::AgentRow;
 use crate::adapters::traffic_rings::TrafficRings;
 
-const RPC_TIMEOUT: Duration = Duration::from_secs(60);
+const RPC_TIMEOUT: Duration = Duration::from_mins(1);
 /// `session/new` may trigger an interactive login flow on some agents.
-const NEW_SESSION_TIMEOUT: Duration = Duration::from_secs(120);
+const NEW_SESSION_TIMEOUT: Duration = Duration::from_mins(2);
 /// A turn has no upper bound of its own; this only catches a dead agent.
-const TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+const TURN_TIMEOUT: Duration = Duration::from_hours(6);
 
 pub type LiveRegistry = Arc<Mutex<HashMap<String, LiveSession>>>;
 
@@ -87,7 +87,6 @@ pub struct SpawnParams {
 }
 
 struct Turn {
-    command_id: Option<Uuid>,
     turn_id: Option<Uuid>,
 }
 
@@ -277,7 +276,7 @@ impl AcpSession {
             preflight.run_bound(&session_id).await;
         }
         if let Some(first) = self.first_turn(&session_id) {
-            self.begin_turn(&session_id, first, self.params.command_id, None);
+            self.begin_turn(&session_id, &first, self.params.command_id, None);
         } else if let Some(command_id) = self.params.command_id {
             crate::adapters::emit(
                 &self.events,
@@ -401,9 +400,13 @@ impl AcpSession {
         }
     }
 
+    /// Biased: the inbox drains before a finished turn is handled, so every
+    /// update the agent sent ahead of its prompt response is emitted before
+    /// the idle status.
     async fn serve(&mut self) {
         loop {
             tokio::select! {
+                biased;
                 () = self.shutdown.cancelled() => {
                     self.kill(EndReason::Killed).await;
                     return;
@@ -446,7 +449,7 @@ impl AcpSession {
                 if self.turn.is_some() {
                     self.queued.push_back((text, command_id, turn_id));
                 } else {
-                    self.begin_turn(&local_id, text, command_id, turn_id);
+                    self.begin_turn(&local_id, &text, command_id, turn_id);
                 }
             }
             SessionCommand::Interrupt { command_id } => {
@@ -602,15 +605,15 @@ impl AcpSession {
     fn begin_turn(
         &mut self,
         local_id: &str,
-        text: String,
+        text: &str,
         command_id: Option<Uuid>,
         turn_id: Option<Uuid>,
     ) {
         let Some(cx) = self.connection.as_ref().map(AcpConnection::requester) else { return };
         self.turns += 1;
         let images = if self.turns == 1 { self.images() } else { Vec::new() };
-        let params = protocol::prompt_params(local_id, &text, &images);
-        self.turn = Some(Turn { command_id, turn_id });
+        let params = protocol::prompt_params(local_id, text, &images);
+        self.turn = Some(Turn { turn_id });
         self.quota = None;
         self.context_usage = None;
         let events = self.events.clone();
@@ -674,7 +677,7 @@ impl AcpSession {
         crate::adapters::turn_end::emit_gated(&self.events, &local_id, self.turn_end_supported)
             .await;
         if let Some((text, command_id, turn_id)) = self.queued.pop_front() {
-            self.begin_turn(&local_id, text, command_id, turn_id);
+            self.begin_turn(&local_id, &text, command_id, turn_id);
         }
     }
 
@@ -825,7 +828,7 @@ impl AcpSession {
         }
     }
 
-    async fn end(&mut self, local_id: &str, reason: EndReason) {
+    async fn end(&self, local_id: &str, reason: EndReason) {
         self.live.lock().await.remove(local_id);
         if !self.params.key.is_empty() {
             crate::adapters::uploads::remove_session_dir(&self.params.key);

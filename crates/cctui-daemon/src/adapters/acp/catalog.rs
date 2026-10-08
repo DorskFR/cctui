@@ -34,7 +34,7 @@ impl Catalog {
     /// The legacy `set_model` answered without a config option update.
     pub fn note_legacy_model(&mut self, model: &str) {
         if let Some(legacy) = self.legacy.as_mut() {
-            legacy.current = model.to_owned();
+            model.clone_into(&mut legacy.current);
         }
     }
 

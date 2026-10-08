@@ -111,7 +111,9 @@ mod tests {
             cwd: PathBuf::from("/no/such/dir/for/acp"),
             env: BTreeMap::new(),
         };
-        let err = spawn(&launch, &Arc::new(TrafficRings::default())).unwrap_err();
+        let Err(err) = spawn(&launch, &Arc::new(TrafficRings::default())) else {
+            panic!("a missing working dir must not spawn")
+        };
         assert!(err.to_string().contains("working_dir does not exist"), "{err}");
     }
 

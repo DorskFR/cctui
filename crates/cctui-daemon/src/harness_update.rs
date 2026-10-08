@@ -218,9 +218,9 @@ impl Runner {
             HARNESS_CLAUDE_CODE => Some((self.claude_bin.clone(), vec!["update".to_owned()])),
             HARNESS_CODEX => Some((self.codex_bin.clone(), vec!["update".to_owned()])),
             other => {
-                let argv = crate::adapters::acp::rows::row(other)?.update?;
-                let (bin, args) = argv.split_first()?;
-                Some(((*bin).to_owned(), args.iter().map(|a| (*a).to_owned()).collect()))
+                let command = crate::adapters::acp::rows::row(other)?.update?;
+                let (bin, rest) = command.split_first()?;
+                Some(((*bin).to_owned(), rest.iter().map(|a| (*a).to_owned()).collect()))
             }
         }
     }

@@ -5,7 +5,7 @@ use cctui_proto::adapter::AdapterEvent;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::session::{LiveRegistry, SessionCommand};
+use super::session::LiveRegistry;
 use crate::adapter_runtime::PtyWatch;
 use crate::adapters::ring_view::{RingViewManager, TrafficSnapshot};
 

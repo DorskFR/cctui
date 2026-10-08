@@ -574,6 +574,7 @@ mod tests {
             ),
             codex: None,
             opencode: None,
+            acp: None,
         }
     }
 

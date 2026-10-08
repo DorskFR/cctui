@@ -135,16 +135,12 @@ mod fake_agent {
         tokio::spawn(async move {
             let mut lines = BufReader::new(tokio::io::stdin()).lines();
             loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if tx.send(Inbound::Line(line)).is_err() {
-                            return;
-                        }
-                    }
-                    _ => {
-                        let _ = tx.send(Inbound::Eof);
-                        return;
-                    }
+                let Ok(Some(line)) = lines.next_line().await else {
+                    let _ = tx.send(Inbound::Eof);
+                    return;
+                };
+                if tx.send(Inbound::Line(line)).is_err() {
+                    return;
                 }
             }
         });
@@ -170,8 +166,11 @@ mod fake_agent {
             .and_then(Value::as_str)
             .map(str::to_owned);
         if let Some(path) = agent.script.get("orphanPidFile").and_then(Value::as_str) {
-            let child = std::process::Command::new("sleep").arg("300").spawn().expect("sleep");
-            std::fs::write(path, child.id().to_string()).unwrap();
+            // Left running on purpose: the kill must reach it through the process
+            // group, which the scenario checks by pid.
+            let child = tokio::process::Command::new("sleep").arg("300").spawn().expect("sleep");
+            std::fs::write(path, child.id().expect("pid").to_string()).unwrap();
+            std::mem::forget(child);
         }
         while let Some(inbound) = rx.recv().await {
             match inbound {
@@ -417,7 +416,7 @@ mod fake_agent {
                 json!({
                     "sessionUpdate": "usage_update",
                     "used": 1234,
-                    "size": 100000,
+                    "size": 100_000,
                     "cost": { "amount": 0.0042, "currency": "USD" },
                 }),
             )
@@ -612,7 +611,11 @@ fn full_script() -> Value {
 }
 
 mod scenarios {
-    use super::*;
+    use super::{
+        AdapterCommand, AdapterEvent, DIAGNOSE, Duration, EndReason, FAKE_ROW, INTERRUPT,
+        PermissionMode, SPAWN, catalog_scenarios, command_result, full_script, is_idle, json,
+        messages, pid_alive, start, started, tool_uses,
+    };
 
     type Run =
         fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>;
@@ -965,7 +968,10 @@ mod scenarios {
 }
 
 mod catalog_scenarios {
-    use super::*;
+    use super::{
+        AdapterCommand, AdapterEvent, DIAGNOSE, Duration, FAKE_ROW, Uuid, Value, command_result,
+        full_script, is_idle, json, start, started,
+    };
 
     const SET_MODEL: Uuid = Uuid::from_u128(0x55);
 
@@ -1113,7 +1119,10 @@ mod catalog_scenarios {
 /// `PATH` (or `CCTUI_ACP_REAL_BIN`) and a login; `CCTUI_ACP_REAL_MODEL`
 /// names the model.
 mod real_agent {
-    use super::*;
+    use super::{
+        AdapterCommand, AdapterEvent, AgentRow, BTreeMap, DIAGNOSE, Duration, ModeTable, REPLY,
+        SPAWN, Value, command_result, is_idle, messages, start, started,
+    };
 
     static OPENCODE_ROW: AgentRow = AgentRow {
         id: "opencode-acp-probe",
@@ -1135,7 +1144,7 @@ mod real_agent {
             .send(AdapterCommand::Spawn { spec, command_id: Some(SPAWN), session_id: None })
             .await
             .unwrap();
-        let events = h.until(is_idle, Duration::from_secs(180)).await?;
+        let events = h.until(is_idle, Duration::from_mins(3)).await?;
         let local_id = started(&events)
             .ok_or_else(|| anyhow::anyhow!("no SessionStarted: {events:#?}"))?
             .to_owned();
@@ -1169,7 +1178,7 @@ mod real_agent {
             turn_id: None,
         })
         .await;
-        let second = h.until(is_idle, Duration::from_secs(180)).await?;
+        let second = h.until(is_idle, Duration::from_mins(3)).await?;
         anyhow::ensure!(command_result(&second, REPLY) == Some((true, None)), "{second:#?}");
         h.send(AdapterCommand::Kill { local_id, signal: None }).await;
         h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))

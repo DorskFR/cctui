@@ -11,10 +11,11 @@
 /// [`AdapterEvent::TurnEnd`](crate::adapter::AdapterEvent::TurnEnd).
 pub const TURN_END: &str = "turn_end";
 
-/// The server decodes
-/// [`AdapterEvent::HarnessModels`](crate::adapter::AdapterEvent::HarnessModels);
-/// without it a daemon downgrades the codex catalog to the older `codex_models`
-/// wire name and sends no other harness's.
+/// The server decodes `harness_models` events.
+///
+/// Without it a daemon downgrades the codex catalog to the older `codex_models`
+/// wire name and sends no other harness's
+/// ([`AdapterEvent::HarnessModels`](crate::adapter::AdapterEvent::HarnessModels)).
 pub const HARNESS_MODELS: &str = "harness_models";
 
 /// Everything this build understands, for a server to advertise.

@@ -71,7 +71,7 @@ impl Requester {
         match tokio::time::timeout(timeout, sent.block_task()).await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(err)) => Err(RpcError {
-                code: i64::from(i32::from(err.code.clone())),
+                code: i64::from(i32::from(err.code)),
                 message: rpc_error_text(&err),
             }
             .into()),
@@ -219,7 +219,8 @@ fn note_lines(line: &mut Vec<u8>, bytes: &[u8], rings: &TrafficRings, direction:
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(value) => rings.note_rpc(direction, &value),
                     Err(err) => {
-                        rings.note_protocol_error(&format!("{direction}: unparseable frame: {err}"))
+                        rings
+                            .note_protocol_error(&format!("{direction}: unparseable frame: {err}"));
                     }
                 }
             }
@@ -245,7 +246,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for TapRead<R> {
         let this = self.get_mut();
         let before = buf.filled().len();
         let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
-        if let Poll::Ready(Ok(())) = &polled {
+        if matches!(&polled, Poll::Ready(Ok(()))) {
             let fresh = &buf.filled()[before..];
             note_lines(&mut this.line, fresh, &this.rings, "in");
         }

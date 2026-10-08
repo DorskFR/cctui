@@ -283,10 +283,8 @@ pub fn permission_response(options: &[PermissionOption], allow: bool) -> Value {
 /// in, worded for the user.
 #[must_use]
 pub fn auth_required_detail(agent: &str, machine: Option<&str>) -> String {
-    match machine {
-        Some(m) => format!("{agent} is not logged in: run `{agent}` once on {m} to log in"),
-        None => format!("{agent} is not logged in: run `{agent}` once on this machine to log in"),
-    }
+    let on = machine.unwrap_or("this machine");
+    format!("{agent} is not logged in: run `{agent}` once on {on} to log in")
 }
 
 #[cfg(test)]
@@ -347,12 +345,12 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(s.session_id, "sess_1");
-        let modes = s.modes.unwrap();
-        assert_eq!(modes.current, "default");
-        assert_eq!(modes.available[1].description.as_deref(), Some("no prompts"));
-        let models = s.models.unwrap();
-        assert_eq!(models.current, "gemini-2.5-pro");
-        assert_eq!(models.available[1].id, "gemini-2.5-flash");
+        let mode_list = s.modes.unwrap();
+        assert_eq!(mode_list.current, "default");
+        assert_eq!(mode_list.available[1].description.as_deref(), Some("no prompts"));
+        let legacy = s.models.unwrap();
+        assert_eq!(legacy.current, "gemini-2.5-pro");
+        assert_eq!(legacy.available[1].id, "gemini-2.5-flash");
         assert_eq!(s.config_options.len(), 1);
         assert!(parse_new_session(&json!({})).is_err());
         let bare = parse_new_session(&json!({ "sessionId": "s" })).unwrap();

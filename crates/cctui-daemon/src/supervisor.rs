@@ -142,6 +142,13 @@ impl EventBatch {
         }
     }
 
+    fn push_event(&mut self, adapter_id: String, event: AdapterEvent) -> serde_json::Result<()> {
+        if let Some(frame) = encode_event(adapter_id, event, harness_models_supported())? {
+            self.push(frame);
+        }
+        Ok(())
+    }
+
     fn take(&mut self) -> Vec<Vec<u8>> {
         self.deadline = None;
         self.bytes = 0;
@@ -418,11 +425,7 @@ impl Supervisor {
                         }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
-                        if let Some(frame) =
-                            encode_event(adapter_id, event, harness_models_supported())?
-                        {
-                            batch.push(frame);
-                        }
+                        batch.push_event(adapter_id, event)?;
                     }
                     // Flush the coalesced batch once its window elapses.
                     () = wait_deadline(batch.deadline), if active.is_none() => {
