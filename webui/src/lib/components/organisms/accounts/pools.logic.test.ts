@@ -7,6 +7,7 @@ import {
 	exhaustedWindow,
 	groupAccounts,
 	membershipAfterMove,
+	newPoolOwner,
 	poolOf
 } from './pools.logic';
 
@@ -101,5 +102,26 @@ describe('exhaustedWindow', () => {
 		expect(exhaustedWindow(entries, 'a')?.provider).toBe('anthropic');
 		expect(exhaustedWindow(entries, 'c')).toBeNull();
 		expect(exhaustedWindow(null, 'a')).toBeNull();
+	});
+});
+
+describe('newPoolOwner', () => {
+	const owners = [{ id: 'admin' }, { id: 'amandine' }];
+
+	it('sends no owner for a non-admin, so the server takes the caller', () => {
+		expect(newPoolOwner([], 'amandine', 'amandine')).toBeNull();
+	});
+
+	it('gives the pool to the owner of the account dropped on it', () => {
+		expect(newPoolOwner(owners, 'amandine', 'admin')).toBe('amandine');
+	});
+
+	it('gives an empty pool to the signed-in admin, not the first listed user', () => {
+		expect(newPoolOwner(owners, null, 'amandine')).toBe('amandine');
+	});
+
+	it('falls back to the first listed user when the caller is not one of them', () => {
+		expect(newPoolOwner(owners, undefined, 'ghost')).toBe('admin');
+		expect(newPoolOwner(owners, undefined, null)).toBe('admin');
 	});
 });
