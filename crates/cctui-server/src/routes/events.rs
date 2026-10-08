@@ -229,7 +229,7 @@ mod tests {
 
     fn ctx(uid: Uuid, admin: bool) -> Extension<AuthContext> {
         let mut scopes: std::collections::BTreeSet<crate::auth::Scope> =
-            [crate::auth::Scope::Read].into_iter().collect();
+            std::iter::once(crate::auth::Scope::Read).collect();
         if admin {
             scopes.insert(crate::auth::Scope::Admin);
         }

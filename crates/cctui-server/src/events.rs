@@ -145,19 +145,19 @@ impl Event {
     }
 
     #[must_use]
-    pub fn machine(mut self, id: Uuid) -> Self {
+    pub const fn machine(mut self, id: Uuid) -> Self {
         self.machine_id = Some(id);
         self
     }
 
     #[must_use]
-    pub fn user(mut self, id: Uuid) -> Self {
+    pub const fn user(mut self, id: Uuid) -> Self {
         self.user_id = Some(id);
         self
     }
 
     #[must_use]
-    pub fn severity(mut self, severity: Severity) -> Self {
+    pub const fn severity(mut self, severity: Severity) -> Self {
         self.severity = severity;
         self
     }
@@ -464,7 +464,7 @@ pub async fn prune(pool: &sqlx::PgPool) -> u64 {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
 
     fn ev(kind: &str) -> Event {
@@ -586,7 +586,7 @@ pub(crate) mod tests {
         )
     }
 
-    pub(crate) async fn seed_user_machine(pool: &sqlx::PgPool, tag: &str) -> (Uuid, Uuid) {
+    pub async fn seed_user_machine(pool: &sqlx::PgPool, tag: &str) -> (Uuid, Uuid) {
         let uid = Uuid::new_v4();
         let machine = Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
@@ -609,7 +609,7 @@ pub(crate) mod tests {
         (uid, machine)
     }
 
-    pub(crate) async fn seed_session(
+    pub async fn seed_session(
         pool: &sqlx::PgPool,
         uid: Uuid,
         machine: Uuid,
@@ -632,7 +632,7 @@ pub(crate) mod tests {
     }
 
     #[derive(sqlx::FromRow)]
-    pub(crate) struct Row {
+    pub struct Row {
         pub kind: String,
         pub session_id: Option<String>,
         pub machine_id: Option<Uuid>,
@@ -642,7 +642,7 @@ pub(crate) mod tests {
         pub detail: Value,
     }
 
-    pub(crate) async fn rows_for_session(pool: &sqlx::PgPool, session_id: &str) -> Vec<Row> {
+    pub async fn rows_for_session(pool: &sqlx::PgPool, session_id: &str) -> Vec<Row> {
         sqlx::query_as(
             "SELECT kind, session_id, machine_id, user_id, actor, summary, detail FROM events \
              WHERE session_id = $1 OR detail->>'session_id' = $1 ORDER BY id",
