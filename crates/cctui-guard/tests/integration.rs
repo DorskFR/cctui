@@ -535,8 +535,11 @@ async fn check_renders_the_requested_dialect() {
     assert_eq!(deny["allow"], false);
 
     assert_eq!(
-        post(format!("{base}/check?dialect=acp"), None, allow_body.clone()).await,
-        r#"{"outcome":{"optionId":"allow_once","outcome":"selected"}}"#
+        serde_json::from_str::<Value>(
+            &post(format!("{base}/check?dialect=acp"), None, allow_body.clone()).await
+        )
+        .unwrap(),
+        json!({"outcome": {"optionId": "allow_once", "outcome": "selected"}})
     );
     let deny: Value =
         serde_json::from_str(&post(format!("{base}/check?dialect=acp"), None, deny_body).await)
@@ -599,7 +602,10 @@ async fn malformed_check_body_fails_closed_in_the_requested_dialect() {
         r#"{"allow":false,"reason":"malformed /check body — failing closed"}"#
     );
     assert_eq!(
-        post(format!("{base}/check?dialect=acp")).await,
-        r#"{"_meta":{"reason":"malformed /check body — failing closed"},"outcome":{"optionId":"reject_once","outcome":"selected"}}"#
+        serde_json::from_str::<Value>(&post(format!("{base}/check?dialect=acp")).await).unwrap(),
+        json!({
+            "_meta": {"reason": "malformed /check body — failing closed"},
+            "outcome": {"optionId": "reject_once", "outcome": "selected"}
+        })
     );
 }
