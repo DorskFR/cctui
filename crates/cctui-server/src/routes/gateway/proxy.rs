@@ -984,7 +984,7 @@ mod tests {
     /// them and invalidate the cached prefix from the first tool call onward.
     const fn unsorted_body() -> axum::body::Bytes {
         axum::body::Bytes::from_static(
-            br#"{"model":"claude-opus-5","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a","old_string":"x","new_string":"y"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"thinking":{"type":"adaptive","display":"omitted"}}"#,
+            br#"{"model": "claude-opus-5", "messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a","old_string":"x","new_string":"y"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"thinking":{"type":"adaptive","display":"omitted"}}"#,
         )
     }
 
@@ -999,7 +999,7 @@ mod tests {
         assert_ne!(
             axum::body::Bytes::from(parsed.to_string()),
             original,
-            "test body must actually be key-order-sensitive"
+            "test body must not survive a re-serialization"
         );
     }
 
