@@ -92,7 +92,7 @@ pub struct CascadeCounts {
 /// revoked, without any of that being reimplemented here.
 ///
 /// [`archive_one`]: crate::routes::sessions::archive_one
-async fn archive_room_sessions(state: &AppState, room_id: Uuid) -> CascadeCounts {
+async fn archive_room_sessions(state: &AppState, room_id: Uuid, by: Uuid) -> CascadeCounts {
     let ids = match sessions_in_room(&state.pool, room_id).await {
         Ok(ids) => ids,
         Err(err) => {
@@ -107,6 +107,7 @@ async fn archive_room_sessions(state: &AppState, room_id: Uuid) -> CascadeCounts
             id,
             false,
             cctui_proto::adapter::RemoveInitiator::User,
+            crate::events::Actor::User(by),
         )
         .await
         {
@@ -159,7 +160,7 @@ pub async fn update_room(
             .execute(&state.pool)
             .await?;
         if archived {
-            counts = archive_room_sessions(&state, id).await;
+            counts = archive_room_sessions(&state, id, ctx.user_id).await;
         }
     }
     state.bus.publish_server(cctui_proto::ws::ServerEvent::RoomMembers {

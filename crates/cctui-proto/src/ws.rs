@@ -250,7 +250,7 @@ pub enum DaemonFrameDown {
         session_ids: Vec<String>,
     },
     /// Re-run codex `model/list`; the result arrives as
-    /// [`AdapterEvent::CodexModels`](crate::adapter::AdapterEvent::CodexModels).
+    /// [`AdapterEvent::HarnessModels`](crate::adapter::AdapterEvent::HarnessModels).
     RefreshCodexModels {},
     /// Run the update hook for `version`. No reply: the hook restarts the server,
     /// so progress is posted to `/api/v1/daemon/update-hook/{run_id}`.
@@ -785,6 +785,10 @@ pub enum ServerEvent {
     UserActions {
         session_id: String,
         actions: Vec<crate::api::UserAction>,
+    },
+    /// A lifecycle event was recorded; scoped like the `/events` list.
+    Event {
+        event: crate::api::events::EventRecord,
     },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},

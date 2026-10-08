@@ -720,6 +720,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_machines_by_machine_events",
+        method: Method::Get,
+        path: "/machines/{machine_id}/events",
+        summary: "One machine's lifecycle events, newest first.",
+        request: None,
+        response: Some("EventPage"),
+    },
+    Route {
         id: "get_machines_by_machine_fs_dirs",
         method: Method::Get,
         path: "/machines/{machine_id}/fs/dirs",
@@ -790,6 +798,14 @@ pub const ROUTES: &[Route] = &[
         summary: "Codex model catalog merged across every machine (newest report wins).",
         request: None,
         response: None,
+    },
+    Route {
+        id: "get_events",
+        method: Method::Get,
+        path: "/events",
+        summary: "Lifecycle event log (sessions, machines, system), keyset-paginated newest first.",
+        request: None,
+        response: Some("EventPage"),
     },
     Route {
         id: "get_harnesses",
@@ -1806,6 +1822,14 @@ pub const ROUTES: &[Route] = &[
         summary: "Langfuse cost/usage rollup for a session.",
         request: None,
         response: None,
+    },
+    Route {
+        id: "get_sessions_by_id_events",
+        method: Method::Get,
+        path: "/sessions/{id}/events",
+        summary: "One session's lifecycle events, newest first.",
+        request: None,
+        response: Some("EventPage"),
     },
     Route {
         id: "get_accounts_by_id_shares",

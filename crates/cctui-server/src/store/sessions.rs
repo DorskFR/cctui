@@ -83,35 +83,38 @@ impl SessionRowStatus {
     }
 }
 
+/// Whether a row changed.
 pub async fn set_inactive(
     exec: impl PgExecutor<'_>,
     id: &str,
     require_archived: bool,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let sql = if require_archived {
         "UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'"
     } else {
         "UPDATE sessions SET status = 'inactive' WHERE id = $1"
     };
-    sqlx::query(sql).bind(id).execute(exec).await?;
-    Ok(())
+    let res = sqlx::query(sql).bind(id).execute(exec).await?;
+    Ok(res.rows_affected() > 0)
 }
 
 /// Insert a freshly registered session, or reset an existing row to `new`.
+///
 /// An existing row is only touched when it belongs to `user_id` on
-/// `machine_uuid`; returns whether a row was written.
+/// `machine_uuid`; `None` when nothing was written, otherwise whether the row
+/// was inserted rather than reset.
 pub async fn upsert_registered(
     exec: impl PgExecutor<'_>,
     session: &cctui_proto::models::Session,
     machine_uuid: uuid::Uuid,
     user_id: uuid::Uuid,
-) -> Result<bool, sqlx::Error> {
-    let written: Option<String> = sqlx::query_scalar(
+) -> Result<Option<bool>, sqlx::Error> {
+    let written: Option<bool> = sqlx::query_scalar(
         r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, user_id, working_dir, status, registered_at, last_heartbeat, metadata, model)
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'new', $8, $9, $10, NULLIF($10->>'model', ''))
            ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $9, metadata = $10, model = COALESCE(sessions.model, EXCLUDED.model)
            WHERE sessions.user_id = EXCLUDED.user_id AND sessions.machine_uuid = EXCLUDED.machine_uuid
-           RETURNING id",
+           RETURNING (xmax = 0)",
     )
     .bind(&session.id)
     .bind(&session.parent_id)
@@ -125,7 +128,7 @@ pub async fn upsert_registered(
     .bind(&session.metadata)
     .fetch_optional(exec)
     .await?;
-    Ok(written.is_some())
+    Ok(written)
 }
 
 /// The subset of `ids` whose session runs on a machine owned by `user_id`.
@@ -493,7 +496,7 @@ mod tests {
                 adapter_id: None,
             };
             let written = upsert_registered(&pool, &session, mine, me).await.unwrap();
-            assert_eq!(written, expect, "user {user:?} machine {machine:?}");
+            assert_eq!(written.is_some(), expect, "user {user:?} machine {machine:?}");
             let (status, owner, uuid): (String, Option<Uuid>, Option<Uuid>) =
                 sqlx::query_as("SELECT status, user_id, machine_uuid FROM sessions WHERE id = $1")
                     .bind(&sid)

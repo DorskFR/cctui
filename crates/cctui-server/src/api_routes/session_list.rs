@@ -20,6 +20,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET],
+            "/events",
+            "Lifecycle event log (sessions, machines, system), keyset-paginated newest first.",
+            get(routes::events::list_events),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
             "/sessions/stats",
             "Aggregate session counts/status stats.",
             get(routes::stats::session_stats),

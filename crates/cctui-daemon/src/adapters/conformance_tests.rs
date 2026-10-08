@@ -347,3 +347,57 @@ async fn codex_answers_every_command() {
     task.abort();
     assert_eq!(lines, expected);
 }
+
+/// The adapter answers every command with a bogus binary and no live
+/// session: a correlated command gets a failed result, a kill of an unknown
+/// session still reports it ended, and nothing hangs.
+#[tokio::test]
+async fn acp_answers_every_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (ctx, mut harness) = ctx(serde_json::json!({ "bin": tmp.path().join("no-such-gemini") }));
+    let adapter = super::acp::AcpAdapter { row: &super::acp::rows::GEMINI };
+    let task = tokio::spawn(async move { adapter.start(ctx).await });
+    let expected = sorted(&[
+        "diagnose diagnose",
+        "ended Killed",
+        "ended Killed",
+        "result fork ok=false error=Some(\"fork is not supported by this adapter\")",
+        "result interrupt ok=false error=Some(\"no live gemini session\")",
+        "result reply ok=false error=Some(\"no live gemini session\")",
+        "result remove ok=true error=None",
+        "result set_model ok=false error=Some(\"no live gemini session\")",
+        "result spawn ok=false error=Some(\"working_dir required\")",
+    ]);
+    let lines = drive("gemini", &mut harness, expected.len(), &[]).await;
+    task.abort();
+    assert_eq!(lines, expected);
+}
+
+/// A posture the agent row cannot express is refused before any process is
+/// spawned, with the mode named in the error.
+#[tokio::test]
+async fn acp_refuses_an_inexpressible_permission_mode_at_spawn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (ctx, mut harness) = ctx(serde_json::json!({ "bin": tmp.path().join("no-such-gemini") }));
+    let adapter = super::acp::AcpAdapter { row: &super::acp::rows::GEMINI };
+    let task = tokio::spawn(async move { adapter.start(ctx).await });
+    let mut spec = spec_without_dir("gemini");
+    spec.working_dir = Some(tmp.path().display().to_string());
+    spec.permission_mode = Some(cctui_proto::adapter::PermissionMode::Whip);
+    harness
+        .commands
+        .send(AdapterCommand::Spawn { spec, command_id: Some(SPAWN), session_id: None })
+        .await
+        .unwrap();
+    let lines = collect(&mut harness.events, 1, &[]).await;
+    harness.shutdown.cancel();
+    task.abort();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("result spawn ok=false"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("permission mode `whip` cannot be expressed by gemini"),
+        "{}",
+        lines[0]
+    );
+    assert!(lines[0].contains("refusing to spawn"), "{}", lines[0]);
+}

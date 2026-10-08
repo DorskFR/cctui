@@ -117,6 +117,7 @@ impl Driver {
             gateway,
             codex: None,
             opencode: None,
+            acp: None,
         };
         self.events
             .send(AdapterEvent::Diagnose {

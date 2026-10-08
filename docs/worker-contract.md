@@ -204,11 +204,15 @@ Capabilities are dropped entirely before the daemon runs — see hardening below
 
 The daemon runs inside the worker and inherits the platform capability vars
 (`CCTUI_MACHINE_KEY[_FILE]`, `REPLY_URL`). A `Command` inherits the daemon's full
-environment by default, so every `claude`/`codex` child it exec's is scrubbed of
-those vars (`childenv::CHILD_ENV_REMOVALS`, applied via `ScrubChildEnv` at every
-spawn site) — the agent (untrusted code that can read its own env) never sees the
-machine key it could impersonate the machine with, or the result-callback bearer
-it could spoof completion with.
+environment by default, so every `claude`/`codex`/`opencode` child it exec's,
+and every ACP agent process (`crates/cctui-daemon/src/adapters/acp/`), is
+scrubbed of those vars (`childenv::CHILD_ENV_REMOVALS`, applied via
+`ScrubChildEnv` at every spawn site) — the agent (untrusted code that can read
+its own env) never sees the machine key it could impersonate the machine with,
+or the result-callback bearer it could spoof completion with. ACP agents are
+spawned in their own process group so a kill reaches whatever their launcher
+forked; dispatching them to worker pods (entrypoint, image) is a follow-up of
+the ACP epic and is not part of this contract yet.
 
 ### Metadata/credential deny-list
 

@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 30;
+const VARIANT_COUNT: usize = 31;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -175,6 +175,20 @@ fn fleet_samples() -> Vec<ServerEvent> {
         },
         ServerEvent::RoomMembers { room_id: uuid(), user_id: uuid() },
         ServerEvent::UserActions { session_id: "s-1".to_owned(), actions: vec![user_action()] },
+        ServerEvent::Event {
+            event: cctui_proto::api::events::EventRecord {
+                id: 1,
+                occurred_at: now(),
+                kind: "session.ended".to_owned(),
+                severity: "info".to_owned(),
+                session_id: Some("s-1".to_owned()),
+                machine_id: Some(uuid()),
+                user_id: Some(uuid()),
+                actor: "daemon".to_owned(),
+                summary: "s-1 ended (completed)".to_owned(),
+                detail: serde_json::json!({ "end_reason": "completed" }),
+            },
+        },
         ServerEvent::Heartbeat {},
         ServerEvent::Resync { session_id: Some("s-1".to_owned()) },
     ]
@@ -210,6 +224,7 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::ScheduledLaunch { .. } => "scheduled_launch",
         ServerEvent::RoomMembers { .. } => "room_members",
         ServerEvent::UserActions { .. } => "user_actions",
+        ServerEvent::Event { .. } => "event",
         ServerEvent::Heartbeat { .. } => "heartbeat",
         ServerEvent::Resync { .. } => "resync",
     }

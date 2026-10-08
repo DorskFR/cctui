@@ -25,7 +25,7 @@ tracing-subscriber.workspace = true
 futures-util.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["compat"] }
 reqwest.workspace = true
 clap.workspace = true
 toml.workspace = true
@@ -34,7 +34,12 @@ rustix = { version = "1", features = ["process", "fs", "net"] }
 sha2.workspace = true
 hex.workspace = true
 base64.workspace = true
+agent-client-protocol = { version = "=2.2.0", features = ["unstable_end_turn_token_usage"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "acp_fake_agent"
+harness = false

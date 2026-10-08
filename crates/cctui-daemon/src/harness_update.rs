@@ -1,5 +1,5 @@
-//! Opt-in periodic `claude update` / `codex update`, then cycle the harness
-//! process when idle.
+//! Opt-in periodic harness updates (`claude update`, `codex update`, each
+//! ACP agent row's own command), then cycle the harness process when idle.
 //!
 //! Claude's cycle is left to its adapter, which already cycles a `claude
 //! daemon` older than the CLI; codex is cycled from here. Both go through
@@ -147,12 +147,10 @@ fn record(harness: &str, outcome: String) {
     });
 }
 
-fn record_versions(harness: &str, version: HarnessVersion) {
-    with_state(|s| match harness {
-        HARNESS_CLAUDE_CODE => s.versions.claude_code = Some(version),
-        HARNESS_CODEX => s.versions.codex = Some(version),
-        _ => {}
-    });
+/// Record what a harness reports about itself: the updater after a run, an
+/// ACP session after `initialize`.
+pub fn record_version(harness: &str, version: HarnessVersion) {
+    with_state(|s| s.versions.insert(harness, version));
 }
 
 #[must_use]
@@ -209,7 +207,21 @@ impl Runner {
         match harness {
             HARNESS_CLAUDE_CODE => Some(&self.claude_bin),
             HARNESS_CODEX => Some(&self.codex_bin),
-            _ => None,
+            other => crate::adapters::acp::rows::row(other).map(|r| r.bin),
+        }
+    }
+
+    /// The command that updates `harness` in place, or `None` for a harness
+    /// with no updater. Never another harness's command.
+    fn update_command(&self, harness: &str) -> Option<(String, Vec<String>)> {
+        match harness {
+            HARNESS_CLAUDE_CODE => Some((self.claude_bin.clone(), vec!["update".to_owned()])),
+            HARNESS_CODEX => Some((self.codex_bin.clone(), vec!["update".to_owned()])),
+            other => {
+                let command = crate::adapters::acp::rows::row(other)?.update?;
+                let (bin, rest) = command.split_first()?;
+                Some(((*bin).to_owned(), rest.iter().map(|a| (*a).to_owned()).collect()))
+            }
         }
     }
 
@@ -236,7 +248,7 @@ impl Runner {
     }
 
     async fn update(&self, harness: &str) {
-        let Some(bin) = self.bin(harness) else {
+        let Some((bin, args)) = self.update_command(harness) else {
             record(harness, "unsupported harness".to_owned());
             return;
         };
@@ -244,7 +256,8 @@ impl Runner {
             record(harness, "not installed".to_owned());
             return;
         };
-        let outcome = match run(bin, &["update"], UPDATE_TIMEOUT).await {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let outcome = match run(&bin, &args, UPDATE_TIMEOUT).await {
             Ok(out) => {
                 let after = self.cli_version(harness).await;
                 classify(
@@ -267,19 +280,24 @@ impl Runner {
     }
 
     async fn refresh_versions(&self, harness: &str) {
-        let version = if harness == HARNESS_CODEX {
-            let v = codex_gate::probe_versions(&self.codex_bin).await;
-            HarnessVersion { cli: v.cli, daemon: v.app_server }
-        } else {
-            let daemon = run(&self.claude_bin, &["daemon", "status"], PROBE_TIMEOUT)
-                .await
-                .ok()
-                .and_then(|o| {
-                    claude_gate::parse_daemon_status(&String::from_utf8_lossy(&o.stdout)).version
-                });
-            HarnessVersion { cli: self.cli_version(harness).await, daemon }
+        let version = match harness {
+            HARNESS_CODEX => {
+                let v = codex_gate::probe_versions(&self.codex_bin).await;
+                HarnessVersion { cli: v.cli, daemon: v.app_server }
+            }
+            HARNESS_CLAUDE_CODE => {
+                let daemon = run(&self.claude_bin, &["daemon", "status"], PROBE_TIMEOUT)
+                    .await
+                    .ok()
+                    .and_then(|o| {
+                        claude_gate::parse_daemon_status(&String::from_utf8_lossy(&o.stdout))
+                            .version
+                    });
+                HarnessVersion { cli: self.cli_version(harness).await, daemon }
+            }
+            _ => HarnessVersion { cli: self.cli_version(harness).await, daemon: None },
         };
-        record_versions(harness, version);
+        record_version(harness, version);
     }
 
     async fn cycle_codex(&mut self) {
@@ -521,7 +539,7 @@ esac
             r.outcomes.iter().find(|o| o.harness == HARNESS_CODEX).unwrap().outcome,
             "updated 0.153.4→0.155.0"
         );
-        let codex = r.versions.codex.unwrap();
+        let codex = r.versions.get(HARNESS_CODEX).cloned().unwrap();
         assert_eq!(codex.cli.as_deref(), Some("0.155.0"));
         assert_eq!(codex.daemon.as_deref(), Some("0.155.0"));
 
@@ -539,6 +557,48 @@ esac
         let runner = Runner::new("claude".to_owned(), "codex".to_owned(), busy);
         assert_eq!(runner.bin(HARNESS_CLAUDE_CODE), Some("claude"));
         assert_eq!(runner.bin(HARNESS_CODEX), Some("codex"));
+        assert_eq!(runner.bin("gemini"), Some("gemini"));
         assert_eq!(runner.bin("opencode"), None);
+    }
+
+    /// Each harness updates with its own command; a harness without one gets
+    /// none at all, never `claude update`.
+    #[test]
+    fn update_command_is_per_harness_with_no_claude_fallback() {
+        let busy: BusyProbe = Arc::new(|| Box::pin(async { None }));
+        let runner = Runner::new("/opt/claude".to_owned(), "codex".to_owned(), busy);
+        assert_eq!(
+            runner.update_command(HARNESS_CLAUDE_CODE),
+            Some(("/opt/claude".to_owned(), vec!["update".to_owned()]))
+        );
+        assert_eq!(
+            runner.update_command(HARNESS_CODEX),
+            Some(("codex".to_owned(), vec!["update".to_owned()]))
+        );
+        assert_eq!(
+            runner.update_command("gemini"),
+            Some((
+                "npm".to_owned(),
+                vec!["install".to_owned(), "-g".to_owned(), "@google/gemini-cli@latest".to_owned()]
+            ))
+        );
+        for harness in ["opencode", "nobody", ""] {
+            assert_eq!(runner.update_command(harness), None, "{harness}");
+        }
+        for row in crate::adapters::acp::rows::ROWS {
+            let (bin, _) = runner.update_command(row.id).expect(row.id);
+            assert_ne!(bin, "/opt/claude", "{}", row.id);
+            assert_ne!(bin, "claude", "{}", row.id);
+        }
+    }
+
+    #[test]
+    fn a_recorded_version_lands_under_its_adapter_id() {
+        record_version("gemini", HarnessVersion { cli: Some("0.62.0".into()), daemon: None });
+        let r = report();
+        assert_eq!(r.versions.get("gemini").and_then(|v| v.cli.as_deref()), Some("0.62.0"));
+        with_state(|s| {
+            s.versions.0.remove("gemini");
+        });
     }
 }

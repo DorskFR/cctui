@@ -122,7 +122,9 @@ mod tests {
     use super::*;
 
     fn compact(v: &Value) -> String {
-        serde_json::to_string(v).unwrap()
+        let mut v = v.clone();
+        v.sort_all_objects();
+        serde_json::to_string(&v).unwrap()
     }
 
     #[test]

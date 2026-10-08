@@ -794,7 +794,10 @@ impl<'a> EventLoop<'a> {
             tracing::warn!(%warning, "codex: spawning anyway");
         }
         self.thread.catalog_sent = true;
-        self.events().send(AdapterEvent::CodexModels { catalog }).await.ok();
+        self.events()
+            .send(AdapterEvent::HarnessModels { adapter_id: "codex".to_owned(), catalog })
+            .await
+            .ok();
         self.send_thread_request().await
     }
 
@@ -816,7 +819,10 @@ impl<'a> EventLoop<'a> {
                     models: std::mem::take(&mut self.thread.model_catalog),
                     client_version: None,
                 };
-                self.events().send(AdapterEvent::CodexModels { catalog }).await.ok();
+                self.events()
+                    .send(AdapterEvent::HarnessModels { adapter_id: "codex".to_owned(), catalog })
+                    .await
+                    .ok();
             }
         }
     }

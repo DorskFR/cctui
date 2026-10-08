@@ -1,5 +1,7 @@
 //! Harness auto-update: the policy pushed to daemons and the heartbeat report.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
@@ -78,13 +80,45 @@ pub struct HarnessVersion {
     pub daemon: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Versions per harness, keyed by adapter id (`claude-code`, `codex`,
+/// `gemini`, …). A daemon from before the map sent two fixed fields; its
+/// `claude_code` key is read as `claude-code`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct HarnessVersions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_code: Option<HarnessVersion>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub codex: Option<HarnessVersion>,
+#[serde(transparent)]
+pub struct HarnessVersions(pub BTreeMap<String, HarnessVersion>);
+
+impl HarnessVersions {
+    #[must_use]
+    pub fn get(&self, harness: &str) -> Option<&HarnessVersion> {
+        self.0.get(harness)
+    }
+
+    pub fn insert(&mut self, harness: &str, version: HarnessVersion) {
+        self.0.insert(harness.to_owned(), version);
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &HarnessVersion)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v))
+    }
+}
+
+impl<'de> Deserialize<'de> for HarnessVersions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut map: BTreeMap<String, Option<HarnessVersion>> =
+            BTreeMap::deserialize(deserializer)?;
+        if let Some(legacy) = map.remove("claude_code")
+            && !map.contains_key(HARNESS_CLAUDE_CODE)
+        {
+            map.insert(HARNESS_CLAUDE_CODE.to_owned(), legacy);
+        }
+        Ok(Self(map.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +268,47 @@ mod tests {
             serde_json::from_str(r#"{"versions":{},"outcomes":[]}"#).unwrap();
         assert!(report.codex_sandbox.is_none());
         assert!(!serde_json::to_string(&report).unwrap().contains("codex_sandbox"));
+    }
+
+    #[test]
+    fn versions_are_a_map_keyed_by_adapter_id() {
+        let mut versions = HarnessVersions::default();
+        versions.insert("gemini", HarnessVersion { cli: Some("0.62.0".into()), daemon: None });
+        versions.insert(
+            HARNESS_CODEX,
+            HarnessVersion { cli: Some("0.155.0".into()), daemon: Some("0.155.0".into()) },
+        );
+        let json = serde_json::to_string(&versions).unwrap();
+        assert_eq!(
+            json,
+            r#"{"codex":{"cli":"0.155.0","daemon":"0.155.0"},"gemini":{"cli":"0.62.0"}}"#
+        );
+        let back: HarnessVersions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, versions);
+        assert_eq!(back.get("gemini").and_then(|v| v.cli.as_deref()), Some("0.62.0"));
+        assert_eq!(back.iter().map(|(k, _)| k).collect::<Vec<_>>(), ["codex", "gemini"]);
+        assert!(HarnessVersions::default().is_empty());
+    }
+
+    /// A daemon from before the map sends `claude_code` and `codex` as fixed
+    /// fields, `null` when unknown.
+    #[test]
+    fn legacy_fixed_fields_decode_under_their_adapter_ids() {
+        let legacy = r#"{"claude_code":{"cli":"2.1.280","daemon":"2.1.279"},"codex":null}"#;
+        let versions: HarnessVersions = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            versions.get(HARNESS_CLAUDE_CODE).and_then(|v| v.daemon.as_deref()),
+            Some("2.1.279")
+        );
+        assert!(versions.get("claude_code").is_none());
+        assert!(versions.get(HARNESS_CODEX).is_none());
+        let report: HarnessReport =
+            serde_json::from_str(r#"{"versions":{"claude_code":{"cli":"2.1.280"}},"outcomes":[]}"#)
+                .unwrap();
+        assert_eq!(
+            report.versions.get(HARNESS_CLAUDE_CODE).and_then(|v| v.cli.as_deref()),
+            Some("2.1.280")
+        );
     }
 
     #[test]

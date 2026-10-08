@@ -1,5 +1,6 @@
 //! Compiled-in adapter registry.
 
+pub mod acp;
 pub mod agent_mcp;
 pub mod claude_code;
 pub mod codex;
@@ -31,9 +32,11 @@ pub async fn emit(events: &mpsc::Sender<AdapterEvent>, event: AdapterEvent) {
 
 #[must_use]
 pub fn registry() -> Vec<Box<dyn AdapterFactory>> {
-    vec![
+    let mut factories: Vec<Box<dyn AdapterFactory>> = vec![
         Box::new(claude_code::ClaudeCodeFactory),
         Box::new(codex::CodexFactory),
         Box::new(opencode::OpenCodeFactory),
-    ]
+    ];
+    factories.extend(acp::factories());
+    factories
 }

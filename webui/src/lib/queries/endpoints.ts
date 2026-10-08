@@ -86,6 +86,7 @@ import type { RescrubRequest } from "@bindings/RescrubRequest";
 import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
+import type { EventPage } from "@bindings/EventPage";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
 import type { AccountPoolView } from "@bindings/AccountPoolView";
 import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
@@ -389,6 +390,11 @@ export const endpoints = {
    *  the project keys never reach the browser. */
   sessionLangfuse: (id: string) =>
     api.get<LangfuseSessionUsage>(`/sessions/${id}/langfuse`),
+  events: (query: Record<string, string>) => api.get<EventPage>("/events", query),
+  sessionEvents: (id: string, query: Record<string, string> = {}) =>
+    api.get<EventPage>(`/sessions/${encodeURIComponent(id)}/events`, query),
+  machineEvents: (machineId: string, query: Record<string, string> = {}) =>
+    api.get<EventPage>(`/machines/${encodeURIComponent(machineId)}/events`, query),
   recentDirs: (machineId: string) =>
     api.get<string[]>("/sessions/recent-dirs", {
       machine_id: machineId || undefined,

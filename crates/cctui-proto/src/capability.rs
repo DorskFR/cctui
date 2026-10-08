@@ -11,8 +11,15 @@
 /// [`AdapterEvent::TurnEnd`](crate::adapter::AdapterEvent::TurnEnd).
 pub const TURN_END: &str = "turn_end";
 
+/// The server decodes `harness_models` events.
+///
+/// Without it a daemon downgrades the codex catalog to the older `codex_models`
+/// wire name and sends no other harness's
+/// ([`AdapterEvent::HarnessModels`](crate::adapter::AdapterEvent::HarnessModels)).
+pub const HARNESS_MODELS: &str = "harness_models";
+
 /// Everything this build understands, for a server to advertise.
-pub const ALL: &[&str] = &[TURN_END];
+pub const ALL: &[&str] = &[TURN_END, HARNESS_MODELS];
 
 /// Whether `advertised` contains `capability`.
 #[must_use]

@@ -21,6 +21,7 @@
 	import ForkSelectBar from './conversation/ForkSelectBar.svelte';
 	import AutoArchiveNotice from './conversation/AutoArchiveNotice.svelte';
 	import TaskPanel from './conversation/TaskPanel.svelte';
+	import SessionEventsPanel from './conversation/SessionEventsPanel.svelte';
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
@@ -438,6 +439,7 @@
 			{/if}
 
 			<TaskPanel sessionId={id} progress={stream.todoProgress} />
+			<SessionEventsPanel sessionId={id} />
 
 			{#if terminalOpen}
 				<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />

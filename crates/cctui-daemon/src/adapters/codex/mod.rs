@@ -878,6 +878,7 @@ async fn build_diagnose(
         gateway,
         codex: Some(codex),
         opencode: None,
+        acp: None,
     }
 }
 

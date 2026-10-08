@@ -16,6 +16,7 @@ mod crypto;
 mod db;
 mod dispatchers;
 mod error;
+mod events;
 mod fireworks_billing;
 mod followup;
 mod http_cache;
@@ -90,8 +91,9 @@ async fn main() -> anyhow::Result<()> {
     }
     install_crypto_provider();
     init_tracing();
-    let (config, pool, auth_config) = bootstrap().await?;
+    let (config, pool, auth_config, migrations) = bootstrap().await?;
     let state = build_state(&config, pool, auth_config.clone()).await?;
+    record_boot_events(&state, &migrations);
     plugin_store::init(&state.pool, &state.plugins).await;
     plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins).await;
     start_background_tasks(&state).await;
@@ -137,13 +139,13 @@ fn init_tracing() {
         .init();
 }
 
-async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)> {
+async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
     if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
         anyhow::bail!("refusing to start: {e}");
     }
 
     let config = Config::from_env()?;
-    let pool = db::connect(&config.database_url).await?;
+    let (pool, migrations) = db::connect_reporting(&config.database_url).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
@@ -155,7 +157,26 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)>
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
-    Ok((config, pool, auth_config))
+    Ok((config, pool, auth_config, migrations))
+}
+
+/// Boot rows: `system.server_started` always, `system.migrations_applied` when some ran.
+fn record_boot_events(state: &AppState, migrations: &[i64]) {
+    use events::{Actor, Event, kind};
+    if !migrations.is_empty() {
+        events::record(
+            state,
+            Event::new(kind::SYSTEM_MIGRATIONS_APPLIED, Actor::System)
+                .detail(serde_json::json!({ "versions": migrations })),
+        );
+    }
+    events::record(
+        state,
+        Event::new(kind::SYSTEM_SERVER_STARTED, Actor::System).detail(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_sha": env!("CCTUI_GIT_HASH"),
+        })),
+    );
 }
 
 async fn install_vault_key(pool: &sqlx::PgPool) -> anyhow::Result<()> {
@@ -683,9 +704,9 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
 
 /// Auto-archive sessions silent past the TTL so the default list stays
 /// self-cleaning, asking the daemon to remove each underlying job. `0` disables.
-async fn auto_archive_stale(state: &AppState) {
+async fn auto_archive_stale(state: &AppState) -> usize {
     if state.config.archive_after_secs == 0 {
-        return;
+        return 0;
     }
     let cutoff = chrono::Utc::now()
         - chrono::Duration::seconds(
@@ -722,10 +743,36 @@ async fn auto_archive_stale(state: &AppState) {
                     cctui_proto::adapter::RemoveInitiator::Automatic,
                 )
                 .await;
+                events::record(
+                    state,
+                    events::Event::new(events::kind::SESSION_ARCHIVED, events::Actor::Reaper)
+                        .session(id)
+                        .detail(serde_json::json!({ "reason": "inactive_ttl" })),
+                );
             }
+            ids.len()
         }
-        Ok(_) => {}
-        Err(err) => tracing::warn!(%err, "auto-archive sweep failed"),
+        Ok(_) => 0,
+        Err(err) => {
+            tracing::warn!(%err, "auto-archive sweep failed");
+            0
+        }
+    }
+}
+
+/// One `system.reaper_ran` summary per sweep that changed something.
+async fn reaper_sweep(state: &AppState) {
+    demote_idle_registered(state).await;
+    let archived = auto_archive_stale(state).await;
+    auto_archive::sweep(state).await;
+    let events_pruned = events::prune(&state.pool).await;
+    if archived > 0 || events_pruned > 0 {
+        events::record(
+            state,
+            events::Event::new(events::kind::SYSTEM_REAPER_RAN, events::Actor::Reaper).detail(
+                serde_json::json!({ "archived": archived, "events_pruned": events_pruned }),
+            ),
+        );
     }
 }
 
@@ -758,11 +805,7 @@ async fn keepalive_sweep(state: AppState) {
 
 /// Each sweep runs on its own task so a slow pass delays only itself.
 fn spawn_reaper_sweeps(state: &AppState) {
-    spawn_sweep(state, |state| async move {
-        demote_idle_registered(&state).await;
-        auto_archive_stale(&state).await;
-        auto_archive::sweep(&state).await;
-    });
+    spawn_sweep(state, |state| async move { reaper_sweep(&state).await });
     spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
     spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
@@ -818,16 +861,24 @@ async fn reap_ephemeral_machines(state: &AppState) {
         - chrono::Duration::seconds(
             i64::try_from(state.config.ephemeral_machine_ttl_secs).unwrap_or(i64::MAX),
         );
-    match sqlx::query(
+    match sqlx::query_scalar::<_, uuid::Uuid>(
         "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
-         WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1",
+         WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1 RETURNING id",
     )
     .bind(cutoff)
-    .execute(&state.pool)
+    .fetch_all(&state.pool)
     .await
     {
-        Ok(res) if res.rows_affected() > 0 => {
-            tracing::info!(count = res.rows_affected(), "reaped stale ephemeral machines");
+        Ok(ids) if !ids.is_empty() => {
+            tracing::info!(count = ids.len(), "reaped stale ephemeral machines");
+            for id in ids {
+                events::record(
+                    state,
+                    events::Event::new(events::kind::MACHINE_DELETED, events::Actor::Reaper)
+                        .machine(id)
+                        .detail(serde_json::json!({ "reason": "ephemeral_ttl" })),
+                );
+            }
         }
         Ok(_) => {}
         Err(err) => tracing::warn!(%err, "ephemeral machine reap failed"),
@@ -1047,6 +1098,7 @@ mod tests {
             "GET /drafts/{*key} Bearer Authenticated",
             "PUT /drafts/{*key} Bearer Authenticated",
             "POST /enroll Bearer Scope(Enroll)",
+            "GET /events Bearer Authenticated",
             "GET /harnesses Bearer Authenticated",
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
@@ -1063,6 +1115,7 @@ mod tests {
             r#"GET /machines/{machine_id}/codex-models Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"POST /machines/{machine_id}/codex-models/refresh Bearer Resource(Machine, Read, Path("machine_id"))"#,
             "GET /machines/{machine_id}/commands/pending Bearer Authenticated",
+            r#"GET /machines/{machine_id}/events Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"GET /machines/{machine_id}/fs/dirs Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"GET /machines/{machine_id}/fs/file Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"GET /machines/{machine_id}/fs/gitinfo Bearer Resource(Machine, Read, Path("machine_id"))"#,
@@ -1135,6 +1188,7 @@ mod tests {
             r#"POST /sessions/{id}/discard Bearer Resource(Session, Write, Path("id"))"#,
             r#"PUT /sessions/{id}/draft Bearer Resource(Session, Write, Path("id"))"#,
             r#"PUT /sessions/{id}/draft-attachments Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/events Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/files Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/images/{image_id} Bearer Resource(Session, Read, Path("id"))"#,

@@ -231,6 +231,20 @@ async fn launch_hook(
     }
 
     tracing::info!(%run_id, %machine, version = %latest.version, "update hook dispatched");
+    crate::events::record(
+        state,
+        crate::events::Event::new(
+            crate::events::kind::MACHINE_UPDATED,
+            crate::events::Actor::User(ctx.user_id),
+        )
+        .machine(machine)
+        .detail(serde_json::json!({
+            "phase": "started",
+            "run_id": run_id,
+            "from_version": CURRENT,
+            "to_version": latest.version,
+        })),
+    );
     Ok(SelfUpdateResponse::Hook { run_id, version: latest.version.clone() })
 }
 

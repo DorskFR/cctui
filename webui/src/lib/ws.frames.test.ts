@@ -134,6 +134,21 @@ const fixtures = {
 			}
 		]
 	},
+	event: {
+		type: 'event',
+		event: {
+			id: 7,
+			occurred_at: '2026-10-02T07:30:00Z',
+			kind: 'session.ended',
+			severity: 'info',
+			session_id: SID,
+			machine_id: null,
+			user_id: USER,
+			actor: 'daemon',
+			summary: 'wip ended (completed)',
+			detail: { end_reason: 'completed', session_name: 'wip' }
+		}
+	},
 	heartbeat: { type: 'heartbeat' },
 	resync: { type: 'resync', session_id: SID }
 } satisfies { [K in ServerEvent['type']]: Extract<ServerEvent, { type: K }> };
@@ -250,6 +265,16 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		expect(patches).toEqual([]);
 		vi.advanceTimersByTime(2000);
 		expect(c.changeTick).toBe(before + 1);
+	});
+
+	it('event hands the lifecycle row to onEvent listeners as-is', () => {
+		const { c, sock } = setup();
+		const seen: unknown[] = [];
+		const off = c.onEvent((ev) => seen.push(ev));
+		sock.deliver(fixtures.event);
+		off();
+		sock.deliver(fixtures.event);
+		expect(seen).toEqual([fixtures.event.event]);
 	});
 
 	it('permission_request adds a prompt and permission_resolved removes it', () => {

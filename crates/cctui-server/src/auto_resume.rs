@@ -255,6 +255,16 @@ async fn fire(state: &AppState, row: &StuckRow, attempt: i32, now: DateTime<Utc>
     match dispatch {
         Ok(()) => {
             tracing::info!(%session_id, attempt, "auto-resume nudge sent after connection loss");
+            crate::events::record(
+                state,
+                crate::events::Event::new(
+                    crate::events::kind::SESSION_AUTO_RESUMED,
+                    crate::events::Actor::Reaper,
+                )
+                .severity(crate::events::Severity::Warn)
+                .session(session_id)
+                .detail(serde_json::json!({ "attempt": attempt, "max_attempts": MAX_ATTEMPTS })),
+            );
         }
         Err(err) => {
             tracing::warn!(%session_id, attempt, %err, "auto-resume nudge could not be dispatched");
@@ -318,6 +328,16 @@ async fn exhaust(state: &AppState, row: &StuckRow) {
     .map_err(|e| tracing::warn!(%session_id, "auto-resume row update failed: {e}"));
     let name = row.session_name.clone().unwrap_or_else(|| session_id.clone());
     tracing::error!(%session_id, "auto-resume gave up after {MAX_ATTEMPTS} nudges: {name}");
+    crate::events::record(
+        state,
+        crate::events::Event::new(
+            crate::events::kind::SESSION_AUTO_RESUMED,
+            crate::events::Actor::Reaper,
+        )
+        .severity(crate::events::Severity::Error)
+        .session(session_id)
+        .detail(serde_json::json!({ "exhausted": true, "attempts": MAX_ATTEMPTS })),
+    );
     crate::ntfy::notify(
         &state.config,
         crate::ntfy::Notification {
