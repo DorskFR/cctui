@@ -17,6 +17,7 @@
 	const sl = $derived(settings.state.sessionList);
 	const spawnDock = $derived(settings.spawnDock);
 	const statsDock = $derived(settings.statsDock);
+	const conversationDock = $derived(settings.conversationDock);
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
 	const autoResume = $derived(settings.autoResumeOnConnectionLoss);
 
@@ -155,6 +156,34 @@
 	</SettingGroup>
 
 	<SettingGroup title={m.settings_group_conversation()}>
+		<SettingRow
+			label={m.settings_conversation_dock_label()}
+			help={m.settings_conversation_dock_help()}
+			journey="setting"
+			journeyKey="conversation-dock"
+		>
+			<Switch
+				bind:checked={
+					() => conversationDock.enabled, (v) => settings.setConversationDock({ enabled: v })
+				}
+				label={m.settings_conversation_dock_label()}
+			/>
+		</SettingRow>
+		<SettingRow
+			label={m.settings_conversation_dock_side_label()}
+			disabled={!conversationDock.enabled}
+			selfLabelled
+		>
+			<SegmentedControl
+				options={sideOptions}
+				label={m.settings_conversation_dock_side_label()}
+				control
+				bind:value={
+					() => conversationDock.side,
+					(v) => settings.setConversationDock({ side: v as typeof conversationDock.side })
+				}
+			/>
+		</SettingRow>
 		<SettingRow
 			label={m.settings_auto_resume_label()}
 			help={m.settings_auto_resume_help()}

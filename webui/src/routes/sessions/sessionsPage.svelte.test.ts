@@ -93,7 +93,14 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 		actions: actions as unknown as SessionsPageDeps['actions'],
 		invalidateSessions: vi.fn(),
 		refetchLive: vi.fn(async () => {}),
-		dockLayout: () => ({ spawn: null, stats: null, stacked: false, left: null, right: null }),
+		dockLayout: () => ({
+			conversation: null,
+			spawn: null,
+			stats: null,
+			stacked: false,
+			left: null,
+			right: null
+		}),
 		clearUrlSession: vi.fn(),
 		confirm: () => true,
 		spawnSlot: {
@@ -471,7 +478,14 @@ describe('SessionsPage — spawn form and drafts', () => {
 		expect(modal.sp.showSpawn).toBe(true);
 		expect(modal.sp.spawnPrefill).toEqual({ prompt: 'x' });
 		const docked = make({
-			dockLayout: () => ({ spawn: 'right', stats: null, stacked: false, left: null, right: '30rem' })
+			dockLayout: () => ({
+				conversation: null,
+				spawn: 'right',
+				stats: null,
+				stacked: false,
+				left: null,
+				right: '30rem'
+			})
 		});
 		docked.sp.openSpawn(null);
 		expect(docked.sp.showSpawn).toBe(false);
