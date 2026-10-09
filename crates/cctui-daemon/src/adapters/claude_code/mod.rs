@@ -525,6 +525,7 @@ async fn wait_for_perm_decision(
             request_id: req.request_id.clone(),
             tool: req.tool.clone(),
             input: req.input,
+            options: Vec::new(),
         })
         .await;
 

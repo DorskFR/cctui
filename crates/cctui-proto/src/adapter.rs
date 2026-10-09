@@ -29,6 +29,16 @@ pub struct HarnessCapabilities {
     pub child_spawn: bool,
 }
 
+/// One answer an agent offers on a permission prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct PermissionChoice {
+    pub option_id: String,
+    pub name: String,
+    /// `allow_once` / `allow_always` / `reject_once` / `reject_always`.
+    pub kind: String,
+}
+
 /// Where a harness's model picker gets its entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -403,6 +413,9 @@ pub enum AdapterEvent {
         tool: String,
         #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
         input: serde_json::Value,
+        /// The agent's own answers; empty for a plain allow/deny prompt.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<PermissionChoice>,
     },
     /// The permission prompt was answered or dismissed elsewhere.
     PermissionResolved {
@@ -600,6 +613,10 @@ pub enum AdapterCommand {
         local_id: String,
         request_id: String,
         allow: bool,
+        /// A [`PermissionChoice::option_id`]; overrides `allow` when the
+        /// adapter knows it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
     },
     /// Persist the name to the adapter's own source of truth.
     Rename {
@@ -1300,6 +1317,7 @@ mod tests {
             request_id: "req-123".into(),
             tool: "Bash".into(),
             input: serde_json::json!({"command": "ls"}),
+            options: Vec::new(),
         };
         let json = serde_json::to_string(&evt).unwrap();
         assert!(json.contains(r#""kind":"permission_request""#));
@@ -1323,12 +1341,45 @@ mod tests {
                 local_id: "s1".into(),
                 request_id: "req-123".into(),
                 allow: true,
+                option_id: None,
             },
         ];
         for cmd in cases {
             let json = serde_json::to_string(&cmd).unwrap();
             let _back: AdapterCommand = serde_json::from_str(&json).expect(&json);
         }
+    }
+
+    #[test]
+    fn permission_options_and_picks_are_optional_on_the_wire() {
+        let old_cmd: AdapterCommand = serde_json::from_str(
+            r#"{"kind":"permission_response","local_id":"s1","request_id":"r","allow":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(old_cmd, AdapterCommand::PermissionResponse { option_id: None, .. }));
+        let old_evt: AdapterEvent = serde_json::from_str(
+            r#"{"kind":"permission_request","local_id":"s1","request_id":"r","tool":"Bash"}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(old_evt, AdapterEvent::PermissionRequest { ref options, .. } if options.is_empty())
+        );
+        let evt = AdapterEvent::PermissionRequest {
+            local_id: "s1".into(),
+            request_id: "r".into(),
+            tool: "read".into(),
+            input: serde_json::Value::Null,
+            options: vec![PermissionChoice {
+                option_id: "always".into(),
+                name: "Always".into(),
+                kind: "allow_always".into(),
+            }],
+        };
+        let back: AdapterEvent =
+            serde_json::from_str(&serde_json::to_string(&evt).unwrap()).unwrap();
+        assert!(
+            matches!(back, AdapterEvent::PermissionRequest { options, .. } if options[0].option_id == "always")
+        );
     }
 
     #[test]

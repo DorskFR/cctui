@@ -37,6 +37,9 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
             turn_id: None,
         });
     }
+    if is_voice_note(event_type, payload) {
+        return message_event(payload, ts);
+    }
     if adapter_id == "codex" {
         // Reuse the read-side canonicalizer, then lift the canonical client
         // Value into the live `AgentEvent` shape — one source of truth for
@@ -104,7 +107,8 @@ fn message_event(payload: &Value, ts: i64) -> Option<AgentEvent> {
         "assistant"
         | "assistant_thinking"
         | "assistant_redacted_thinking"
-        | "assistant_attachment" => Some(AgentEvent::Text {
+        | "assistant_attachment"
+        | "assistant_voice" => Some(AgentEvent::Text {
             content: text.to_owned(),
             meta: false,
             kind: text_kind(role),
@@ -191,11 +195,19 @@ fn queue_op_text(payload: &Value, text: &str) -> String {
     text.split_once(": ").map_or_else(String::new, |(_, body)| body.trim().to_owned())
 }
 
+/// Voice notes are written by the server itself, in one shape whatever the
+/// session's adapter.
+fn is_voice_note(event_type: &str, payload: &Value) -> bool {
+    event_type == "message"
+        && payload.get("role").and_then(Value::as_str) == Some("assistant_voice")
+}
+
 fn text_kind(role: &str) -> Option<String> {
     let kind = match role {
         "assistant_thinking" => "thinking",
         "assistant_redacted_thinking" => "redacted_thinking",
         "assistant_attachment" => "attachment",
+        "assistant_voice" => "voice",
         "system_marker" => "system_marker",
         "turn_annotation" => "turn_annotation",
         _ => return None,
@@ -222,6 +234,9 @@ pub fn for_client(adapter_id: &str, event_type: &str, payload: Value) -> Option<
             "meta": true,
             "kind": "system_marker",
         }));
+    }
+    if is_voice_note(event_type, &payload) {
+        return map_daemon_message(&payload);
     }
     match adapter_id {
         "claude-code" => claude_code(event_type, payload),
@@ -631,7 +646,8 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
         "assistant"
         | "assistant_thinking"
         | "assistant_redacted_thinking"
-        | "assistant_attachment" => Some(json!({
+        | "assistant_attachment"
+        | "assistant_voice" => Some(json!({
             "type": "text",
             "content": text,
             "role": "Assistant",
@@ -1206,6 +1222,25 @@ mod tests {
         assert_eq!(n["type"], "turn_summary");
         assert_eq!(n["detail"], "done");
         assert_eq!(n["needs_action"], false);
+    }
+
+    #[test]
+    fn a_voice_note_is_a_voice_text_for_every_adapter() {
+        let p = json!({ "role": "assistant_voice", "text": "hello there", "message_id": "n1" });
+        for adapter in ["claude-code", "codex", "opencode"] {
+            let n = for_client(adapter, "message", p.clone()).unwrap();
+            assert_eq!(n["kind"], "voice", "{adapter}");
+            assert_eq!(n["content"], "hello there");
+            assert_eq!(n["message_id"], "n1");
+            match to_agent_event(adapter, "message", &p).unwrap() {
+                AgentEvent::Text { kind, content, message_id, .. } => {
+                    assert_eq!(kind.as_deref(), Some("voice"));
+                    assert_eq!(content, "hello there");
+                    assert_eq!(message_id.as_deref(), Some("n1"));
+                }
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
     }
 
     #[test]

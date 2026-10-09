@@ -1888,6 +1888,14 @@ pub const ROUTES: &[Route] = &[
         response: Some("EventPage"),
     },
     Route {
+        id: "get_sessions_by_id_voice_notes_by_note",
+        method: Method::Get,
+        path: "/sessions/{id}/voice-notes/{note_id}",
+        summary: "Fetch an agent voice note's audio.",
+        request: None,
+        response: None,
+    },
+    Route {
         id: "get_accounts_by_id_shares",
         method: Method::Get,
         path: "/accounts/{id}/shares",

@@ -1359,6 +1359,7 @@ mod tests {
             request_id: "req-1".into(),
             tool: "Bash".into(),
             input: json!(null),
+            options: Vec::new(),
         });
         assert!(running_line(&h).contains("permission: Bash"));
         watch.observe(&AdapterEvent::PermissionResolved {

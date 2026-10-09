@@ -78,6 +78,7 @@ fn session_samples() -> Vec<ServerEvent> {
             tool_name: "Bash".to_owned(),
             description: "run tests".to_owned(),
             input_preview: "cargo test".to_owned(),
+            options: Vec::new(),
         },
         ServerEvent::PermissionResolved {
             session_id: "s-1".to_owned(),

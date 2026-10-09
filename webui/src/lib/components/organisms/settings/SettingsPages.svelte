@@ -11,6 +11,7 @@
 	import ExecutionSection from './ExecutionSection.svelte';
 	import PrivacySection from './PrivacySection.svelte';
 	import NotificationsSection from './NotificationsSection.svelte';
+	import VoiceSection from './VoiceSection.svelte';
 	import MonitoringSection from './MonitoringSection.svelte';
 	import SecuritySection from './SecuritySection.svelte';
 	import GuidesSection from './GuidesSection.svelte';
@@ -47,6 +48,7 @@
 </div>
 <div class="pg" class:on={current === 'notifications'} data-settings-page="notifications" data-journey="page" data-journey-key="notifications">
 	<NotificationsSection />
+	<VoiceSection />
 </div>
 <div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring" data-journey="page" data-journey-key="monitoring">
 	<MonitoringSection />

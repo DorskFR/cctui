@@ -299,6 +299,7 @@ async fn replay_pending(
             tool_name: p.tool_name,
             description: p.description,
             input_preview: p.input_preview,
+            options: p.options,
         })
         .collect();
     if let Some(ask) = ask {
@@ -407,7 +408,7 @@ async fn run_tui_socket(
                 )
                 .await;
             }
-            TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
+            TuiCommand::PermissionResponse { session_id, request_id, behavior, option_id } => {
                 if !ws_owns_session(&state, &ctx, &session_id).await {
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: permission-response denied (not owner)");
                     continue;
@@ -439,6 +440,7 @@ async fn run_tui_socket(
                         local_id: resolved_session_id.clone(),
                         request_id: request_id.clone(),
                         allow,
+                        option_id,
                     },
                 )
                 .await;
@@ -1072,6 +1074,7 @@ mod tests {
             tool_name: "Bash".into(),
             description: String::new(),
             input_preview: String::new(),
+            options: Vec::new(),
             received_at: chrono::Utc::now(),
         }
     }

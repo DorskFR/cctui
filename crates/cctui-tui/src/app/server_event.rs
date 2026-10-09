@@ -39,6 +39,7 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             tool_name,
             description,
             input_preview,
+            ..
         } => vec![Action::Attention(AttentionAction::PermissionRequested(PendingPermission {
             session_id,
             request_id,

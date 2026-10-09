@@ -227,6 +227,7 @@ export const ROUTES = [
   { id: "get_sessions_by_id_diagnose", method: "GET", path: "/sessions/{id}/diagnose", summary: "Snapshot everything the daemon knows about a session, dated.", request: null, response: null },
   { id: "get_sessions_by_id_langfuse", method: "GET", path: "/sessions/{id}/langfuse", summary: "Langfuse cost/usage rollup for a session.", request: null, response: null },
   { id: "get_sessions_by_id_events", method: "GET", path: "/sessions/{id}/events", summary: "One session's lifecycle events, newest first.", request: null, response: "EventPage" },
+  { id: "get_sessions_by_id_voice_notes_by_note", method: "GET", path: "/sessions/{id}/voice-notes/{note_id}", summary: "Fetch an agent voice note's audio.", request: null, response: null },
   { id: "get_accounts_by_id_shares", method: "GET", path: "/accounts/{id}/shares", summary: "List or grant shares of an account to other users.", request: null, response: null },
   { id: "post_accounts_by_id_shares", method: "POST", path: "/accounts/{id}/shares", summary: "List or grant shares of an account to other users.", request: null, response: null },
   { id: "delete_accounts_by_id_shares_by_user", method: "DELETE", path: "/accounts/{id}/shares/{user_id}", summary: "Revoke a user's share of an account.", request: null, response: null },

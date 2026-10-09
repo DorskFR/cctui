@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod connection;
+pub mod elicitation;
 pub mod modes;
 pub mod normalize;
 pub mod persist;
@@ -198,7 +199,7 @@ impl SessionDriver for Pump {
     }
 
     async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
-        self.prompt(local_id, text, None, None).await;
+        self.prompt(local_id, text, None, None, None).await;
         Ok(Handled::Deferred)
     }
 
@@ -206,12 +207,12 @@ impl SessionDriver for Pump {
         &mut self,
         local_id: String,
         text: String,
-        _ask_picks: Option<Vec<Vec<usize>>>,
+        ask_picks: Option<Vec<Vec<usize>>>,
         _env: std::collections::BTreeMap<String, String>,
         command_id: Option<Uuid>,
         turn_id: Option<Uuid>,
     ) -> CommandOutcome {
-        self.prompt(local_id, text, command_id, turn_id).await;
+        self.prompt(local_id, text, ask_picks, command_id, turn_id).await;
         Ok(Handled::Deferred)
     }
 
@@ -274,7 +275,18 @@ impl SessionDriver for Pump {
         request_id: String,
         allow: bool,
     ) -> CommandOutcome {
-        route(&self.live, &local_id, SessionCommand::Permission { request_id, allow }).await;
+        self.permission_answer(local_id, request_id, allow, None).await
+    }
+
+    async fn permission_answer(
+        &mut self,
+        local_id: String,
+        request_id: String,
+        allow: bool,
+        option_id: Option<String>,
+    ) -> CommandOutcome {
+        let cmd = SessionCommand::Permission { request_id, allow, option_id };
+        route(&self.live, &local_id, cmd).await;
         Ok(Handled::Deferred)
     }
 
@@ -316,12 +328,12 @@ impl Pump {
         &self,
         local_id: String,
         text: String,
+        ask_picks: Option<Vec<Vec<usize>>>,
         command_id: Option<Uuid>,
         turn_id: Option<Uuid>,
     ) {
-        let delivered =
-            route(&self.live, &local_id, SessionCommand::Prompt { text, command_id, turn_id })
-                .await;
+        let cmd = SessionCommand::Prompt { text, ask_picks, command_id, turn_id };
+        let delivered = route(&self.live, &local_id, cmd).await;
         if !delivered {
             fail(&self.events, command_id, &format!("no live {} session", self.row.id)).await;
         }

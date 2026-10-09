@@ -358,6 +358,38 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    /// Synthesize `text` into a voice note posted in the session's conversation.
+    pub async fn speak(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        text: &str,
+        voice: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/voice-notes",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(machine_key)
+            .json(&serde_json::json!({ "text": text, "voice": voice }))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let reason = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .unwrap_or(text);
+            anyhow::bail!("CctuiSpeak failed ({status}): {reason}");
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Add one item to the session's user-action list, or tick one by id.
     ///
     /// The server answers the whole list either way — including a rejection,

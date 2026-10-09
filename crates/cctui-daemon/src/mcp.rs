@@ -31,11 +31,17 @@ pub const HISTORY_TOOL_NAME: &str = "CctuiHistory";
 pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
 pub const USER_ACTION_ADD_TOOL_NAME: &str = "CctuiUserActionAdd";
 pub const USER_ACTION_TICK_TOOL_NAME: &str = "CctuiUserActionTick";
+pub const SPEAK_TOOL_NAME: &str = "CctuiSpeak";
 
 /// A limits lookup is one cached server read; it must never hold a turn open
 /// the way a followed child does. The peer tools are the same shape: one
 /// server round-trip, no child to wait for.
 const USAGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Synthesizing up to 4096 characters can take far longer than a lookup.
+const SPEAK_TIMEOUT: Duration = Duration::from_mins(2);
+
+pub const SPEAK_MAX_CHARS: usize = 4096;
 
 /// Socket `kind` of every tool that is a single server round-trip.
 const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
@@ -47,6 +53,7 @@ const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (ROOM_TOOL_NAME, "room"),
     (USER_ACTION_ADD_TOOL_NAME, "user_action_add"),
     (USER_ACTION_TICK_TOOL_NAME, "user_action_tick"),
+    (SPEAK_TOOL_NAME, "speak"),
 ];
 
 /// The socket `kind` a tool call becomes. `spawn_agent` is the only kind that
@@ -147,6 +154,35 @@ pub fn tool_schema() -> Value {
                 },
             },
             "required": ["prompt", "model"],
+            "additionalProperties": false,
+        },
+    })
+}
+
+/// The `CctuiSpeak` input schema.
+#[must_use]
+pub fn speak_tool_schema() -> Value {
+    json!({
+        "name": SPEAK_TOOL_NAME,
+        "description": "Post a voice note into this session's conversation: the text is \
+    synthesized to speech and shown to the user as a playable audio message with its \
+    transcript. Use it sparingly, for something the user should hear. Keep it short and \
+    speakable: plain sentences, no markdown, no code, no URLs, no lists. Returns the \
+    note's duration, or an error when speech is disabled or unreachable.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "maxLength": SPEAK_MAX_CHARS,
+                    "description": "What to say, as plain spoken prose.",
+                },
+                "voice": {
+                    "type": "string",
+                    "description": "Voice id; omit to use the instance default.",
+                },
+            },
+            "required": ["text"],
             "additionalProperties": false,
         },
     })
@@ -456,6 +492,7 @@ pub fn tool_schemas() -> Vec<Value> {
         room_tool_schema(),
         user_action_add_schema(),
         user_action_tick_schema(),
+        speak_tool_schema(),
     ]
 }
 
@@ -583,10 +620,10 @@ fn call_daemon(
     outbox: &Outbox,
 ) -> (String, bool) {
     let tool = tool_of_kind(kind);
-    let timeout = if kind == "spawn_agent" {
-        resolve_timeout(args.get("timeout_secs").and_then(Value::as_u64))
-    } else {
-        USAGE_TIMEOUT
+    let timeout = match kind {
+        "spawn_agent" => resolve_timeout(args.get("timeout_secs").and_then(Value::as_u64)),
+        "speak" => SPEAK_TIMEOUT,
+        _ => USAGE_TIMEOUT,
     };
     let request = json!({
         "kind": kind,
@@ -769,6 +806,7 @@ mod tests {
                 ROOM_TOOL_NAME,
                 USER_ACTION_ADD_TOOL_NAME,
                 USER_ACTION_TICK_TOOL_NAME,
+                SPEAK_TOOL_NAME,
             ]
         );
     }
@@ -931,6 +969,45 @@ mod tests {
         for word in ["KILLED", "pinned", "slot", "spawn tree"] {
             assert!(desc.contains(word), "{word} missing: {desc}");
         }
+    }
+
+    #[test]
+    fn the_speak_tool_requires_text_and_asks_for_speakable_prose() {
+        let schema = speak_tool_schema();
+        assert_eq!(tool_kind(SPEAK_TOOL_NAME), Some("speak"));
+        assert_eq!(schema["inputSchema"]["required"], json!(["text"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["text"]["maxLength"], json!(SPEAK_MAX_CHARS));
+        assert!(props.contains_key("voice"));
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("no markdown"), "{desc}");
+    }
+
+    #[test]
+    fn a_speak_call_reaches_the_daemon_with_the_longer_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(req["kind"], json!("speak"));
+            assert_eq!(req["args"]["text"], json!("hello"));
+            assert_eq!(req["timeout_secs"], json!(SPEAK_TIMEOUT.as_secs()));
+            writeln!(stream, "{}", json!({ "ok": true, "result": "{\"ok\":true}" })).unwrap();
+        });
+        let (_, is_error) = call_daemon(
+            "s1",
+            &sock_path,
+            "speak",
+            &json!({ "text": "hello" }),
+            None,
+            &Outbox::new(),
+        );
+        server.join().unwrap();
+        assert!(!is_error);
     }
 
     #[test]

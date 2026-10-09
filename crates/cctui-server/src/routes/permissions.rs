@@ -19,6 +19,7 @@ pub struct PendingPermission {
     pub tool_name: String,
     pub description: String,
     pub input_preview: String,
+    pub options: Vec<cctui_proto::adapter::PermissionChoice>,
     pub received_at: DateTime<Utc>,
 }
 
@@ -214,6 +215,8 @@ pub struct PendingPermissionView {
     pub tool_name: String,
     pub description: String,
     pub input_preview: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<cctui_proto::adapter::PermissionChoice>,
 }
 
 /// List all currently-pending permission requests (for web client
@@ -260,6 +263,7 @@ pub async fn list_pending(
                 tool_name: p.tool_name,
                 description: p.description,
                 input_preview: p.input_preview,
+                options: p.options,
             })
             .collect(),
     )
@@ -282,6 +286,7 @@ mod tests {
             tool_name: "Bash".into(),
             description: "run ls".into(),
             input_preview: "ls".into(),
+            options: Vec::new(),
             received_at: Utc::now(),
         };
         store.insert_request(req);
@@ -299,6 +304,7 @@ mod tests {
             tool_name: "Bash".into(),
             description: "rm -rf".into(),
             input_preview: "rm -rf /".into(),
+            options: Vec::new(),
             received_at: Utc::now(),
         });
         assert_eq!(
@@ -376,6 +382,7 @@ mod tests {
             tool_name: "Bash".into(),
             description: "run ls".into(),
             input_preview: "ls".into(),
+            options: Vec::new(),
             received_at: Utc::now(),
         };
         // Backdating to make it stale
@@ -395,6 +402,7 @@ mod tests {
             tool_name: "Bash".into(),
             description: "run ls".into(),
             input_preview: "ls".into(),
+            options: Vec::new(),
             received_at: Utc::now(),
         };
         store.insert_request(req);

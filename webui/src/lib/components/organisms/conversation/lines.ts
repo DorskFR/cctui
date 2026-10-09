@@ -23,6 +23,7 @@ import {
   stripAttachmentDecorations,
 } from "./format";
 import type { Line, MsgCategory } from "./types";
+import { VOICE_TOOL } from "./voiceNote";
 
 export interface LineBuildCtx {
   visible: (c: MsgCategory) => boolean;
@@ -276,6 +277,17 @@ function buildLine(
           e.turn_id,
           scheduledAt,
         );
+      }
+      if (e.kind === "voice") {
+        if (!ctx.visible("assistant")) return null;
+        return {
+          role: "assistant",
+          ts: Number(e.ts),
+          html: "",
+          text: e.content,
+          messageId: e.message_id ?? undefined,
+          voiceNoteId: e.message_id ?? undefined,
+        };
       }
       const toolBlock = e.kind ? null : parseToolBlock(e.content);
       if (toolBlock) {
@@ -659,6 +671,12 @@ export function buildLines(
       const call = e.tool_use_id ? callTools.get(e.tool_use_id) : posCallTool;
       if (call) ln.tool = call;
     }
+    if (
+      ln.tool &&
+      VOICE_TOOL.test(ln.tool) &&
+      (e.type === "tool_call" || (e.type === "tool_result" && !e.error))
+    )
+      continue;
     if (hiddenTick && (ln.role === "assistant" || ln.role === "thinking"))
       continue;
     hiddenTick = false;

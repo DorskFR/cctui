@@ -23,6 +23,7 @@ pub fn initialize_params() -> Value {
         "clientCapabilities": {
             "fs": { "readTextFile": false, "writeTextFile": false },
             "terminal": false,
+            "elicitation": { "form": {} },
         },
         "clientInfo": { "name": CLIENT_NAME, "version": env!("CARGO_PKG_VERSION") },
     })
@@ -255,6 +256,7 @@ pub fn set_model_params(session_id: &str, model_id: &str) -> Value {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionOption {
     pub id: String,
+    pub name: String,
     /// `allow_once` / `allow_always` / `reject_once` / `reject_always`.
     pub kind: String,
 }
@@ -269,10 +271,30 @@ pub fn parse_permission_options(request: &Value) -> Vec<PermissionOption> {
         .filter_map(|o| {
             Some(PermissionOption {
                 id: o.get("optionId").and_then(Value::as_str)?.to_owned(),
+                name: o.get("name").and_then(Value::as_str).unwrap_or_default().to_owned(),
                 kind: o.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned(),
             })
         })
         .collect()
+}
+
+/// The `session/request_permission` result for the option the user picked.
+#[must_use]
+pub fn permission_selected(options: &[PermissionOption], option_id: &str) -> Option<Value> {
+    options
+        .iter()
+        .any(|o| o.id == option_id)
+        .then(|| json!({ "outcome": { "outcome": "selected", "optionId": option_id } }))
+}
+
+/// An unattended allow: only ever a one-shot grant, so a standing rule is
+/// never written on the user's behalf.
+#[must_use]
+pub fn auto_allow(options: &[PermissionOption]) -> Option<Value> {
+    options
+        .iter()
+        .find(|o| o.kind == "allow_once")
+        .and_then(|o| permission_selected(options, &o.id))
 }
 
 /// The `session/request_permission` result for a yes/no answer.
@@ -319,6 +341,7 @@ mod tests {
         assert_eq!(p["clientCapabilities"]["fs"]["readTextFile"], false);
         assert_eq!(p["clientCapabilities"]["fs"]["writeTextFile"], false);
         assert_eq!(p["clientCapabilities"]["terminal"], false);
+        assert_eq!(p["clientCapabilities"]["elicitation"]["form"], json!({}));
         assert_eq!(p["clientInfo"]["name"], CLIENT_NAME);
     }
 
@@ -438,6 +461,24 @@ mod tests {
         );
         assert_eq!(quota_tokens(&json!({ "quota": { "promptTokens": 3 } })), Some((3, 0)));
         assert_eq!(quota_tokens(&json!({})), None);
+    }
+
+    #[test]
+    fn a_picked_option_is_echoed_and_auto_allow_never_picks_always() {
+        let options = parse_permission_options(&json!({
+            "options": [
+                { "optionId": "always", "name": "Always", "kind": "allow_always" },
+                { "optionId": "once", "name": "Once", "kind": "allow_once" },
+            ],
+        }));
+        assert_eq!(options[0].name, "Always");
+        assert_eq!(
+            permission_selected(&options, "always").unwrap()["outcome"]["optionId"],
+            "always"
+        );
+        assert!(permission_selected(&options, "bogus").is_none());
+        assert_eq!(auto_allow(&options).unwrap()["outcome"]["optionId"], "once");
+        assert!(auto_allow(&options[..1]).is_none());
     }
 
     #[test]

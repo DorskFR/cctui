@@ -194,6 +194,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool: "Bash".into(),
                 input: json!({ "command": "true" }),
+                options: Vec::new(),
             }),
             event(cctui_proto::adapter::AdapterEvent::PtyChunk {
                 local_id: sid.clone(),

@@ -283,6 +283,7 @@ mod tests {
             crate::mcp::SEND_TOOL_NAME,
             crate::mcp::HISTORY_TOOL_NAME,
             crate::mcp::ROOM_TOOL_NAME,
+            crate::mcp::SPEAK_TOOL_NAME,
         ] {
             assert!(
                 names.iter().any(|n| n == tool),

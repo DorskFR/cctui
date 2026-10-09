@@ -1463,3 +1463,44 @@ describe("gateway tool block", () => {
     expect(buildLines([block], only("error"))).toHaveLength(1);
   });
 });
+
+describe("voice notes", () => {
+  const speakCall: AgentEvent = {
+    type: "tool_call",
+    tool: "mcp__cctui__CctuiSpeak",
+    input: { text: "hello" },
+    kind: null,
+    tool_use_id: "t1",
+    ts: 1,
+    seq: null,
+  };
+  const speakResult = (error: boolean): AgentEvent => ({
+    type: "tool_result",
+    tool: "",
+    tool_use_id: "t1",
+    output_summary: error ? "speech is disabled" : '{"ok":true}',
+    kind: null,
+    error,
+    ts: 3,
+    seq: null,
+  });
+  const note: AgentEvent = {
+    ...(text("hello there", 2, "voice") as AgentEvent & { type: "text" }),
+    message_id: "note-1",
+  };
+
+  it("renders a voice event as a playable assistant line, not prose", () => {
+    const [ln] = buildLines([note], ctx());
+    expect(ln.role).toBe("assistant");
+    expect(ln.voiceNoteId).toBe("note-1");
+    expect(ln.text).toBe("hello there");
+    expect(ln.html).toBe("");
+  });
+
+  it("hides the speak call and its successful result but keeps a failure", () => {
+    expect(buildLines([speakCall, note, speakResult(false)], ctx()).map((l) => l.voiceNoteId ?? l.role)).toEqual([
+      "note-1",
+    ]);
+    expect(roles([speakCall, speakResult(true)])).toEqual(["result"]);
+  });
+});

@@ -383,6 +383,7 @@ mod fake_agent {
             .await;
         }
 
+        #[allow(clippy::too_many_lines)]
         async fn on_prompt(&mut self, id: Value, session_id: &str, text: &str) {
             let turn = self.script.turn();
             self.message_id = format!(
@@ -457,6 +458,32 @@ mod fake_agent {
                 self.pending_permission = Some((request_id, id, session_id.to_owned()));
                 return;
             }
+            if turn == "elicit" {
+                let request_id = self.next_id;
+                self.next_id += 1;
+                self.send(json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "elicitation/create",
+                    "params": {
+                        "mode": "form",
+                        "sessionId": session_id,
+                        "message": "Deploy settings",
+                        "requestedSchema": {
+                            "type": "object",
+                            "properties": {
+                                "env": { "type": "string", "title": "Environment",
+                                         "oneOf": [{ "const": "stg", "title": "Staging" }, { "const": "prd", "title": "Production" }] },
+                                "replicas": { "type": "integer", "title": "Replicas" },
+                                "verbose": { "type": "boolean", "title": "Verbose" },
+                            },
+                            "required": ["env", "replicas"],
+                        },
+                    },
+                })).await;
+                self.pending_permission = Some((request_id, id, session_id.to_owned()));
+                return;
+            }
             self.finish_turn(id, session_id, false).await;
         }
 
@@ -502,9 +529,21 @@ mod fake_agent {
                 self.pending_permission = Some((request_id, prompt_id, session_id));
                 return true;
             }
-            let picked =
-                msg.pointer("/result/outcome/optionId").and_then(Value::as_str).unwrap_or_default();
-            let rejected = !picked.starts_with("allow");
+            let result = msg.get("result").cloned().unwrap_or(Value::Null);
+            self.update(
+                &session_id,
+                json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": format!("answered: {result}") },
+                    "messageId": "answer",
+                }),
+            )
+            .await;
+            let rejected = result
+                .pointer("/outcome/optionId")
+                .and_then(Value::as_str)
+                .is_some_and(|picked| !picked.starts_with("allow"))
+                || result.pointer("/outcome/outcome").is_some_and(|o| o == "cancelled");
             self.finish_turn(prompt_id, &session_id, rejected).await;
             true
         }
@@ -771,8 +810,8 @@ fn full_script() -> Value {
 mod scenarios {
     use super::{
         AdapterCommand, AdapterEvent, DIAGNOSE, Duration, EndReason, FAKE_ROW, INTERRUPT,
-        PermissionMode, SPAWN, catalog_scenarios, command_result, full_script, is_idle, json,
-        messages, pid_alive, start, started, tool_uses,
+        PermissionMode, SPAWN, Value, catalog_scenarios, command_result, full_script, is_idle,
+        json, messages, pid_alive, start, started, tool_uses,
     };
 
     type Run =
@@ -790,6 +829,8 @@ mod scenarios {
         scenario!(a_permission_request_is_answered_from_the_ui_path),
         scenario!(a_rejected_permission_fails_the_tool),
         scenario!(yolo_answers_permissions_itself),
+        scenario!(an_allow_always_pick_round_trips_its_option_id),
+        scenario!(an_elicitation_form_is_answered_with_typed_values),
         scenario!(an_inexpressible_mode_is_refused_before_spawn),
         scenario!(a_missing_login_is_an_actionable_spawn_failure),
         scenario!(interrupt_cancels_a_stalled_turn),
@@ -943,6 +984,7 @@ mod scenarios {
             local_id: local_id.clone(),
             request_id: request_id.clone(),
             allow,
+            option_id: None,
         })
         .await;
         let rest = h.until(is_idle, Duration::from_secs(30)).await?;
@@ -968,6 +1010,108 @@ mod scenarios {
 
     pub async fn a_rejected_permission_fails_the_tool() -> anyhow::Result<()> {
         permission_round_trip(false).await
+    }
+
+    fn answered(events: &[AdapterEvent]) -> Option<Value> {
+        messages(events, "assistant").iter().find_map(|m| {
+            m["content"]
+                .as_str()?
+                .strip_prefix("answered: ")
+                .and_then(|j| serde_json::from_str(j).ok())
+        })
+    }
+
+    pub async fn an_allow_always_pick_round_trips_its_option_id() -> anyhow::Result<()> {
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("permission");
+        h.spawn(&script, Some(PermissionMode::Ask), "do it").await;
+        let events = h
+            .until(|e| matches!(e, AdapterEvent::PermissionRequest { .. }), Duration::from_secs(30))
+            .await?;
+        let local_id =
+            started(&events).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        let Some(AdapterEvent::PermissionRequest { request_id, options, .. }) = events.last()
+        else {
+            unreachable!()
+        };
+        let ids: Vec<(&str, &str, &str)> = options
+            .iter()
+            .map(|o| (o.option_id.as_str(), o.name.as_str(), o.kind.as_str()))
+            .collect();
+        anyhow::ensure!(
+            ids == [
+                ("allow-always", "Always", "allow_always"),
+                ("allow-once", "Once", "allow_once"),
+                ("reject-once", "No", "reject_once"),
+            ],
+            "the agent's options reach the clients: {ids:?}"
+        );
+        h.send(AdapterCommand::PermissionResponse {
+            local_id: local_id.clone(),
+            request_id: request_id.clone(),
+            allow: true,
+            option_id: Some("allow-always".to_owned()),
+        })
+        .await;
+        let rest = h.until(is_idle, Duration::from_secs(30)).await?;
+        let answer = answered(&rest).ok_or_else(|| anyhow::anyhow!("no echo: {rest:#?}"))?;
+        anyhow::ensure!(
+            answer == json!({ "outcome": { "outcome": "selected", "optionId": "allow-always" } }),
+            "the picked option id reaches the agent: {answer}"
+        );
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok(())
+    }
+
+    pub async fn an_elicitation_form_is_answered_with_typed_values() -> anyhow::Result<()> {
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("elicit");
+        h.spawn(&script, Some(PermissionMode::Ask), "deploy").await;
+        let events = h
+            .until(|e| matches!(e, AdapterEvent::AskQuestion { .. }), Duration::from_secs(30))
+            .await?;
+        let local_id =
+            started(&events).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        let Some(AdapterEvent::AskQuestion { question, questions: Some(questions), .. }) =
+            events.last()
+        else {
+            anyhow::bail!("no structured ask: {events:#?}")
+        };
+        anyhow::ensure!(question == "Deploy settings", "message as the question: {question}");
+        let headers: Vec<&str> =
+            questions.as_array().unwrap().iter().filter_map(|q| q["header"].as_str()).collect();
+        anyhow::ensure!(headers == ["Environment", "Replicas", "Verbose"], "{questions}");
+        anyhow::ensure!(questions[0]["options"][1]["label"] == "Production", "{questions}");
+        h.send(AdapterCommand::Reply {
+            local_id: local_id.clone(),
+            text: "**Environment** — Environment\n→ Production\n\n**Replicas** — Replicas\n→ 3\n\n**Verbose** — Verbose\n→ No".to_owned(),
+            ask_picks: None,
+            env: std::collections::BTreeMap::new(),
+            command_id: None,
+            turn_id: None,
+        })
+        .await;
+        let rest = h.until(is_idle, Duration::from_secs(30)).await?;
+        anyhow::ensure!(
+            rest.iter().any(|e| matches!(e, AdapterEvent::AskResolved { .. })),
+            "the form closes: {rest:#?}"
+        );
+        let answer = answered(&rest).ok_or_else(|| anyhow::anyhow!("no echo: {rest:#?}"))?;
+        anyhow::ensure!(
+            answer
+                == json!({ "action": "accept", "content": { "env": "prd", "replicas": 3, "verbose": false } }),
+            "typed values reach the agent: {answer}"
+        );
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok(())
     }
 
     pub async fn yolo_answers_permissions_itself() -> anyhow::Result<()> {

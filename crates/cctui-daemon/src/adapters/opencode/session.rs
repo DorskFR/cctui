@@ -1164,6 +1164,7 @@ impl OpenCodeSession {
                         request_id: properties.id.clone(),
                         tool: properties.permission.clone(),
                         input: properties.metadata.clone(),
+                        options: Vec::new(),
                     })
                     .await;
                 let _ = client;

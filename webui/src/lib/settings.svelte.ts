@@ -465,6 +465,49 @@ export function clampPluginsConfig(
   return out;
 }
 
+export type VoiceInputMode = "push" | "handsfree";
+export type VoiceSpokenStyle = "brief" | "normal" | "verbose";
+
+export interface VoiceSettings {
+  voice?: string;
+  speed: number;
+  autoPlayVoiceNotes: boolean;
+  inputMode: VoiceInputMode;
+  autoSend: boolean;
+  bargeIn: boolean;
+  spokenStyle: VoiceSpokenStyle;
+}
+
+export const DEFAULT_VOICE: VoiceSettings = {
+  speed: 1,
+  autoPlayVoiceNotes: false,
+  inputMode: "push",
+  autoSend: false,
+  bargeIn: true,
+  spokenStyle: "brief",
+};
+
+export function mergeVoice(v: Partial<VoiceSettings> | undefined): VoiceSettings {
+  const raw = v ?? {};
+  const speed = Number(raw.speed);
+  const voice = typeof raw.voice === "string" ? raw.voice.trim() : "";
+  return {
+    ...(voice ? { voice } : {}),
+    speed:
+      Number.isFinite(speed) && speed >= 0.25 && speed <= 4
+        ? speed
+        : DEFAULT_VOICE.speed,
+    autoPlayVoiceNotes: raw.autoPlayVoiceNotes === true,
+    inputMode: raw.inputMode === "handsfree" ? "handsfree" : "push",
+    autoSend: raw.autoSend === true,
+    bargeIn: raw.bargeIn !== false,
+    spokenStyle:
+      raw.spokenStyle === "normal" || raw.spokenStyle === "verbose"
+        ? raw.spokenStyle
+        : "brief",
+  };
+}
+
 export interface SettingsState {
   sessionList: SessionListSettings;
   display: DisplaySettings;
@@ -514,6 +557,7 @@ export interface SettingsState {
   // browser's language / the base locale (Paraglide resolves it at runtime).
   locale: Locale | null;
   onboarding: OnboardingSettings;
+  voice: VoiceSettings;
 }
 
 const DEFAULTS: SettingsState = {
@@ -562,6 +606,7 @@ const DEFAULTS: SettingsState = {
     stepProgress: {},
     probeOptOut: [],
   },
+  voice: DEFAULT_VOICE,
 };
 
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
@@ -627,6 +672,7 @@ export function mergeDefaults(
     keymap: p.keymap ?? DEFAULTS.keymap,
     locale: clampLocale(p.locale),
     onboarding: mergeOnboarding(p.onboarding),
+    voice: mergeVoice(p.voice),
   };
 }
 
@@ -883,6 +929,15 @@ class Settings {
   // debounced save path.
   setSessionList(patch: Partial<SessionListSettings>) {
     this.state.sessionList = { ...this.state.sessionList, ...patch };
+    this.persist();
+  }
+
+  get voice(): VoiceSettings {
+    return this.state.voice;
+  }
+
+  setVoice(patch: Partial<VoiceSettings>) {
+    this.state.voice = mergeVoice({ ...this.state.voice, ...patch });
     this.persist();
   }
 

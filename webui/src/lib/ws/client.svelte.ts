@@ -495,12 +495,13 @@ export class WsClient {
 		return this.delivery.onDelivery(sid, cb);
 	}
 
-	respondPermission(sessionId: string, requestId: string, allow: boolean) {
+	respondPermission(sessionId: string, requestId: string, allow: boolean, optionId?: string) {
 		this.send({
 			type: 'permission_response',
 			session_id: sessionId,
 			request_id: requestId,
-			behavior: allow ? 'allow' : 'deny'
+			behavior: allow ? 'allow' : 'deny',
+			...(optionId ? { option_id: optionId } : {})
 		});
 		this.prompts.removePerm(sessionId, requestId);
 	}

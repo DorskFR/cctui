@@ -153,6 +153,7 @@ export type * from './PasskeyRegisterFinish';
 export type * from './PasskeyRow';
 export type * from './PasskeyTestResult';
 export type * from './PendingPrompts';
+export type * from './PermissionChoice';
 export type * from './PermissionMode';
 export type * from './PluginBackend';
 export type * from './PluginCatalogInstallRequest';
