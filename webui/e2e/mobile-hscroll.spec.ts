@@ -56,6 +56,7 @@ for (const width of WIDTHS) {
 test('412px touch: every drawer in the list stays free of horizontal scroll', async ({ page }) => {
 	await openSessions(page, 412);
 	const titles = page.locator('[data-journey="session"] [data-journey="title"]');
+	await titles.first().waitFor();
 	const count = Math.min(await titles.count(), 3);
 	expect(count).toBeGreaterThan(0);
 
