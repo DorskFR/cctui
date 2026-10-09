@@ -9,15 +9,21 @@
 //! request a permission, stall, refuse to start without a login, and leave a
 //! grandchild behind to prove the kill reaches the whole process group.
 //!
+//! A re-attached agent gets no spawn env (env is never persisted), so a row
+//! can carry the role and script in argv instead: `--fake-acp-agent
+//! --script <json>`.
+//!
 //! `cargo test -p cctui-daemon --test acp_fake_agent -- --ignored` runs the
-//! real-agent probe against `opencode acp` instead.
+//! real-agent probes against `opencode acp` instead.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use cctui_daemon::adapter_runtime::{Adapter, AdapterCtx};
 use cctui_daemon::adapters::acp::AcpAdapter;
 use cctui_daemon::adapters::acp::modes::{GEMINI_STYLE, ModeTable};
+use cctui_daemon::adapters::acp::persist::SessionStore;
 use cctui_daemon::adapters::acp::rows::AgentRow;
 use cctui_proto::adapter::{
     AdapterCommand, AdapterEvent, AdapterId, EndReason, PermissionMode, SessionSpec,
@@ -28,6 +34,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const AGENT_ENV: &str = "FAKE_ACP_AGENT";
+const AGENT_ARG: &str = "--fake-acp-agent";
+const SCRIPT_ARG: &str = "--script";
 const SCRIPT_ENV: &str = "FAKE_ACP_SCRIPT";
 const SPAWN: Uuid = Uuid::from_u128(0x51);
 const REPLY: Uuid = Uuid::from_u128(0x52);
@@ -35,11 +43,11 @@ const INTERRUPT: Uuid = Uuid::from_u128(0x53);
 const DIAGNOSE: Uuid = Uuid::from_u128(0x54);
 
 fn main() {
-    if std::env::var_os(AGENT_ENV).is_some() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if std::env::var_os(AGENT_ENV).is_some() || args.iter().any(|a| a == AGENT_ARG) {
         fake_agent::main();
         return;
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--list") {
         for (name, _) in scenarios::ALL {
             println!("{name}: test");
@@ -55,6 +63,11 @@ fn main() {
             report(
                 "real_opencode_agent_prompts_reports_usage_and_ends_its_turn",
                 real_agent::run().await,
+                &mut failures,
+            );
+            report(
+                "real_opencode_agent_resumes_in_a_fresh_process_after_a_reexec",
+                real_agent::resume().await,
                 &mut failures,
             );
         } else {
@@ -96,7 +109,7 @@ mod fake_agent {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::sync::mpsc;
 
-    use super::SCRIPT_ENV;
+    use super::{SCRIPT_ARG, SCRIPT_ENV};
 
     #[derive(Clone)]
     struct Script(Value);
@@ -124,9 +137,11 @@ mod fake_agent {
     }
 
     async fn run() {
+        let from_argv = std::env::args().skip_while(|a| a != SCRIPT_ARG).nth(1);
         let script = Script(
             std::env::var(SCRIPT_ENV)
                 .ok()
+                .or(from_argv)
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or(Value::Object(serde_json::Map::new())),
         );
@@ -148,6 +163,7 @@ mod fake_agent {
             script,
             out: tokio::io::stdout(),
             next_id: 1000,
+            message_id: String::new(),
             pending_prompt: None,
             pending_permission: None,
             config_options: Vec::new(),
@@ -192,6 +208,7 @@ mod fake_agent {
         script: Script,
         out: tokio::io::Stdout,
         next_id: u64,
+        message_id: String,
         pending_prompt: Option<(Value, String)>,
         pending_permission: Option<(u64, Value, String)>,
         config_options: Vec<Value>,
@@ -263,6 +280,9 @@ mod fake_agent {
                     if caps.get("close").and_then(Value::as_bool).unwrap_or(true) {
                         result["agentCapabilities"]["sessionCapabilities"]["close"] = json!({});
                     }
+                    if caps.get("resume").and_then(Value::as_bool) == Some(true) {
+                        result["agentCapabilities"]["sessionCapabilities"]["resume"] = json!({});
+                    }
                     self.respond(id, result).await;
                 }
                 "session/new" => {
@@ -270,16 +290,18 @@ mod fake_agent {
                         self.respond_error(id, -32000, "Authentication required").await;
                         return true;
                     }
-                    let mut result = json!({ "sessionId": "fake-session-1" });
-                    if let Some(modes) = self.script.get("modes") {
-                        result["modes"] = modes.clone();
-                    }
-                    if let Some(models) = self.script.get("models") {
-                        result["models"] = models.clone();
-                    }
-                    if !self.config_options.is_empty() {
-                        result["configOptions"] = Value::Array(self.config_options.clone());
-                    }
+                    let mut result = self.session_state();
+                    result["sessionId"] = json!("fake-session-1");
+                    self.respond(id, result).await;
+                }
+                "session/resume" => {
+                    let result = self.session_state();
+                    self.respond(id, result).await;
+                }
+                "session/load" => {
+                    let session_id = params["sessionId"].as_str().unwrap_or_default().to_owned();
+                    self.replay(&session_id).await;
+                    let result = self.session_state();
                     self.respond(id, result).await;
                 }
                 "session/set_mode" => {
@@ -324,14 +346,59 @@ mod fake_agent {
             true
         }
 
+        fn session_state(&self) -> Value {
+            let mut result = json!({});
+            if let Some(modes) = self.script.get("modes") {
+                result["modes"] = modes.clone();
+            }
+            if let Some(models) = self.script.get("models") {
+                result["models"] = models.clone();
+            }
+            if !self.config_options.is_empty() {
+                result["configOptions"] = Value::Array(self.config_options.clone());
+            }
+            result
+        }
+
+        /// What `session/load` streams back before answering: the earlier
+        /// conversation, as the agent stored it.
+        async fn replay(&mut self, session_id: &str) {
+            self.update(
+                session_id,
+                json!({
+                    "sessionUpdate": "user_message_chunk",
+                    "content": { "type": "text", "text": "replayed ping" },
+                    "messageId": "replay-user",
+                }),
+            )
+            .await;
+            self.update(
+                session_id,
+                json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "replayed answer" },
+                    "messageId": "replay-agent",
+                }),
+            )
+            .await;
+        }
+
         async fn on_prompt(&mut self, id: Value, session_id: &str, text: &str) {
             let turn = self.script.turn();
+            self.message_id = format!(
+                "msg-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            let message_id = self.message_id.clone();
             self.update(
                 session_id,
                 json!({
                     "sessionUpdate": "agent_message_chunk",
                     "content": { "type": "text", "text": "Hello " },
-                    "messageId": "msg-1",
+                    "messageId": message_id,
                 }),
             )
             .await;
@@ -340,7 +407,7 @@ mod fake_agent {
                 json!({
                     "sessionUpdate": "agent_message_chunk",
                     "content": { "type": "text", "text": format!("world: {text}") },
-                    "messageId": "msg-1",
+                    "messageId": message_id,
                 }),
             )
             .await;
@@ -353,7 +420,7 @@ mod fake_agent {
                 json!({
                     "sessionUpdate": "agent_thought_chunk",
                     "content": { "type": "text", "text": "thinking about it" },
-                    "messageId": "msg-1",
+                    "messageId": message_id,
                 }),
             )
             .await;
@@ -454,8 +521,12 @@ struct Harness {
     shutdown: CancellationToken,
     _connected: broadcast::Sender<()>,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     cwd: String,
+    row: &'static AgentRow,
+    bin: String,
+    store: Arc<SessionStore>,
+    reexec: CancellationToken,
 }
 
 static FAKE_ROW: AgentRow = AgentRow {
@@ -470,6 +541,16 @@ static FAKE_ROW: AgentRow = AgentRow {
 
 fn start(row: &'static AgentRow, bin: &str) -> Harness {
     let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(SessionStore::at(tmp.path().join("acp-sessions.json")));
+    start_in(row, bin, tmp, store)
+}
+
+fn start_in(
+    row: &'static AgentRow,
+    bin: &str,
+    tmp: tempfile::TempDir,
+    store: Arc<SessionStore>,
+) -> Harness {
     let cwd = tmp.path().display().to_string();
     let (events_tx, events) = mpsc::channel(512);
     let (commands, commands_rx) = mpsc::channel(64);
@@ -486,9 +567,30 @@ fn start(row: &'static AgentRow, bin: &str) -> Harness {
         machine_key: None,
         connected,
     };
-    let adapter = AcpAdapter { row };
+    let reexec = CancellationToken::new();
+    let adapter = AcpAdapter::new(row).with_store(Arc::clone(&store)).with_reexec(reexec.clone());
     let task = tokio::spawn(async move { adapter.start(ctx).await });
-    Harness { events, commands, shutdown, _connected: connected_tx, task, _tmp: tmp, cwd }
+    Harness {
+        events,
+        commands,
+        shutdown,
+        _connected: connected_tx,
+        task,
+        tmp,
+        cwd,
+        row,
+        bin: bin.to_owned(),
+        store,
+        reexec,
+    }
+}
+
+/// A row that makes `current_exe()` the fake agent through argv alone, as a
+/// re-attach launches it with no spawn env.
+fn argv_row(script: &Value) -> &'static AgentRow {
+    let args: Vec<&'static str> =
+        vec![AGENT_ARG, SCRIPT_ARG, Box::leak(script.to_string().into_boxed_str())];
+    Box::leak(Box::new(AgentRow { args: Box::leak(args.into_boxed_slice()), ..FAKE_ROW }))
 }
 
 impl Harness {
@@ -549,6 +651,62 @@ impl Harness {
     async fn finish(self) {
         self.shutdown.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(10), self.task).await;
+    }
+
+    /// What a daemon self-update does: the re-exec warning, then this
+    /// process gone, then a fresh adapter over the same state file.
+    async fn restart(self, agent_pid: u32) -> anyhow::Result<Self> {
+        self.reexec.cancel();
+        let pid = i32::try_from(agent_pid)?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while pid_alive(pid) {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "agent {pid} outlived the re-exec"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let Self { shutdown, task, tmp, row, bin, store, events, .. } = self;
+        shutdown.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
+        drop(events);
+        Ok(start_in(row, &bin, tmp, store))
+    }
+
+    async fn agent_pid(&mut self, local_id: &str) -> anyhow::Result<u32> {
+        let report = self.diagnose(local_id).await?;
+        report
+            .acp
+            .as_ref()
+            .and_then(|a| a.agent_pid)
+            .ok_or_else(|| anyhow::anyhow!("no agent pid in {report:#?}"))
+    }
+
+    async fn diagnose(
+        &mut self,
+        local_id: &str,
+    ) -> anyhow::Result<Box<cctui_proto::diagnose::SessionDiagnose>> {
+        self.send(AdapterCommand::Diagnose { local_id: local_id.to_owned(), request_id: DIAGNOSE })
+            .await;
+        let diag = self
+            .until(|e| matches!(e, AdapterEvent::Diagnose { .. }), Duration::from_secs(10))
+            .await?;
+        let Some(AdapterEvent::Diagnose { report, .. }) = diag.into_iter().last() else {
+            unreachable!()
+        };
+        Ok(report)
+    }
+
+    async fn reply(&self, local_id: &str, text: &str) {
+        self.send(AdapterCommand::Reply {
+            local_id: local_id.to_owned(),
+            text: text.to_owned(),
+            ask_picks: None,
+            env: BTreeMap::new(),
+            command_id: Some(REPLY),
+            turn_id: None,
+        })
+        .await;
     }
 }
 
@@ -638,6 +796,9 @@ mod scenarios {
         scenario!(diagnose_carries_agent_info_and_the_rings),
         scenario!(config_options_populate_the_catalog_and_set_model_round_trips),
         scenario!(legacy_models_populate_the_catalog_and_set_model_round_trips),
+        scenario!(a_reexec_reattaches_through_session_resume),
+        scenario!(a_reexec_reattaches_through_session_load_without_replaying_rows),
+        scenario!(an_agent_that_cannot_resume_ends_the_session_as_not_resumable),
     ];
 
     fn exe() -> String {
@@ -918,6 +1079,24 @@ mod scenarios {
         catalog_scenarios::legacy().await
     }
 
+    pub async fn a_reexec_reattaches_through_session_resume() -> anyhow::Result<()> {
+        let mut script = full_script();
+        script["capabilities"] = json!({ "resume": true });
+        super::durable::reattach(&script, "session/resume").await
+    }
+
+    pub async fn a_reexec_reattaches_through_session_load_without_replaying_rows()
+    -> anyhow::Result<()> {
+        let mut script = full_script();
+        script["capabilities"] = json!({ "loadSession": true });
+        super::durable::reattach(&script, "session/load").await
+    }
+
+    pub async fn an_agent_that_cannot_resume_ends_the_session_as_not_resumable()
+    -> anyhow::Result<()> {
+        super::durable::not_resumable().await
+    }
+
     pub async fn diagnose_carries_agent_info_and_the_rings() -> anyhow::Result<()> {
         let mut h = start(&FAKE_ROW, &exe());
         h.spawn(&full_script(), Some(PermissionMode::Auto), "ping").await;
@@ -962,6 +1141,151 @@ mod scenarios {
         h.send(AdapterCommand::Kill { local_id, signal: None }).await;
         h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
             .await?;
+        h.finish().await;
+        Ok(())
+    }
+}
+
+mod durable {
+    use super::{
+        AdapterEvent, Duration, EndReason, PermissionMode, REPLY, SPAWN, Value, argv_row,
+        command_result, full_script, is_idle, messages, start, started,
+    };
+
+    fn spawn_spec(
+        h: &super::Harness,
+        mode: Option<PermissionMode>,
+    ) -> cctui_proto::adapter::SessionSpec {
+        let mut spec = h.spec(&Value::Null, mode, "ping");
+        spec.env.clear();
+        spec
+    }
+
+    fn started_at(events: &[AdapterEvent]) -> Option<u64> {
+        events.iter().find_map(|e| match e {
+            AdapterEvent::SessionStarted { meta, .. } => meta.extra["started_at_ms"].as_u64(),
+            _ => None,
+        })
+    }
+
+    fn texts(events: &[AdapterEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::Message { payload, .. } => {
+                    payload["content"].as_str().map(str::to_owned)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub async fn reattach(script: &Value, method: &str) -> anyhow::Result<()> {
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let mut h = start(argv_row(script), &exe);
+        let spec = spawn_spec(&h, Some(PermissionMode::Auto));
+        h.send(cctui_proto::adapter::AdapterCommand::Spawn {
+            spec,
+            command_id: Some(SPAWN),
+            session_id: None,
+        })
+        .await;
+        let first = h.until(is_idle, Duration::from_secs(30)).await?;
+        let local_id = started(&first)
+            .ok_or_else(|| anyhow::anyhow!("no SessionStarted: {first:#?}"))?
+            .to_owned();
+        let born = started_at(&first).ok_or_else(|| anyhow::anyhow!("no start time"))?;
+        let pid = h.agent_pid(&local_id).await?;
+        anyhow::ensure!(h.store.get(&local_id).is_some(), "a live session is recorded");
+
+        let mut h = h.restart(pid).await?;
+        let back = h
+            .until(|e| matches!(e, AdapterEvent::SessionStarted { .. }), Duration::from_secs(30))
+            .await?;
+        anyhow::ensure!(
+            started(&back) == Some(local_id.as_str()),
+            "same session listed: {back:#?}"
+        );
+        anyhow::ensure!(started_at(&back) == Some(born), "start time survives: {back:#?}");
+        anyhow::ensure!(
+            !back.iter().any(|e| matches!(e, AdapterEvent::SessionEnded { .. })),
+            "not ended: {back:#?}"
+        );
+        let report = h.diagnose(&local_id).await?;
+        let acp = report.acp.as_ref().ok_or_else(|| anyhow::anyhow!("no acp section"))?;
+        anyhow::ensure!(acp.agent_pid.is_some_and(|p| p != pid), "a fresh agent: {acp:#?}");
+        anyhow::ensure!(
+            acp.rpc_tail.iter().any(|f| f.label == method && f.direction == "out"),
+            "re-attached with {method}: {:#?}",
+            acp.rpc_tail
+        );
+        anyhow::ensure!(
+            !acp.rpc_tail.iter().any(|f| f.label == "session/new"),
+            "no new session: {:#?}",
+            acp.rpc_tail
+        );
+        anyhow::ensure!(
+            acp.rpc_tail.iter().any(|f| f.label == "session/set_mode" && f.direction == "out"),
+            "the permission mode is re-applied: {:#?}",
+            acp.rpc_tail
+        );
+        anyhow::ensure!(acp.current_mode.as_deref() == Some("autoEdit"), "{acp:#?}");
+
+        h.reply(&local_id, "again").await;
+        let second = h.until(is_idle, Duration::from_secs(30)).await?;
+        anyhow::ensure!(command_result(&second, REPLY) == Some((true, None)), "{second:#?}");
+        let mut rows = texts(&back);
+        rows.extend(texts(&second));
+        let assistant: Vec<&Value> = messages(&second, "assistant");
+        anyhow::ensure!(
+            assistant.len() == 1 && assistant[0]["content"] == "Hello world: again",
+            "exactly the follow-up's answer: {assistant:#?}"
+        );
+        anyhow::ensure!(
+            !rows.iter().any(|t| t.contains("replayed") || t.contains("ping")),
+            "no earlier row re-emitted: {rows:#?}"
+        );
+        h.send(cctui_proto::adapter::AdapterCommand::Kill {
+            local_id: local_id.clone(),
+            signal: None,
+        })
+        .await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        anyhow::ensure!(h.store.get(&local_id).is_none(), "a killed session is forgotten");
+        h.finish().await;
+        Ok(())
+    }
+
+    pub async fn not_resumable() -> anyhow::Result<()> {
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let mut h = start(argv_row(&full_script()), &exe);
+        let spec = spawn_spec(&h, None);
+        h.send(cctui_proto::adapter::AdapterCommand::Spawn {
+            spec,
+            command_id: Some(SPAWN),
+            session_id: None,
+        })
+        .await;
+        let first = h.until(is_idle, Duration::from_secs(30)).await?;
+        let local_id =
+            started(&first).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        let pid = h.agent_pid(&local_id).await?;
+        let mut h = h.restart(pid).await?;
+        let events = h
+            .until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(30))
+            .await?;
+        let Some(AdapterEvent::SessionEnded {
+            local_id: ended,
+            reason: EndReason::ResumeFailed { detail },
+        }) = events.last()
+        else {
+            anyhow::bail!("expected ResumeFailed: {events:#?}");
+        };
+        anyhow::ensure!(*ended == local_id, "{ended}");
+        anyhow::ensure!(detail.contains("not resumable"), "{detail}");
+        anyhow::ensure!(started(&events).is_none(), "never listed again: {events:#?}");
+        anyhow::ensure!(h.store.get(&local_id).is_none(), "dropped from the registry");
         h.finish().await;
         Ok(())
     }
@@ -1217,6 +1541,69 @@ mod real_agent {
         h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
             .await?;
         anyhow::ensure!(!pid_alive(pid), "agent pid {pid} survived the kill");
+        h.finish().await;
+        Ok(())
+    }
+    /// Resume in a fresh agent process continues the conversation: the
+    /// codeword only exists in the turn the first process ran.
+    pub async fn resume() -> anyhow::Result<()> {
+        let bin = std::env::var("CCTUI_ACP_REAL_BIN").unwrap_or_else(|_| "opencode".to_owned());
+        let mut h = start(&OPENCODE_ROW, &bin);
+        let mut spec = h.spec(
+            &Value::Null,
+            None,
+            "Remember this codeword for later: PAPAYA-42. Reply with just: noted",
+        );
+        spec.env.clear();
+        spec.model = std::env::var("CCTUI_ACP_REAL_MODEL").ok();
+        h.send(AdapterCommand::Spawn { spec, command_id: Some(SPAWN), session_id: None }).await;
+        let first = h.until(is_idle, Duration::from_mins(3)).await?;
+        let local_id = started(&first)
+            .ok_or_else(|| anyhow::anyhow!("no SessionStarted: {first:#?}"))?
+            .to_owned();
+        let pid = h.agent_pid(&local_id).await?;
+        let mut h = h.restart(pid).await?;
+        let back = h
+            .until(
+                |e| {
+                    matches!(
+                        e,
+                        AdapterEvent::SessionStarted { .. } | AdapterEvent::SessionEnded { .. }
+                    )
+                },
+                Duration::from_mins(2),
+            )
+            .await?;
+        anyhow::ensure!(started(&back) == Some(local_id.as_str()), "re-attached: {back:#?}");
+        let report = h.diagnose(&local_id).await?;
+        let acp = report.acp.as_ref().ok_or_else(|| anyhow::anyhow!("no acp section"))?;
+        let method = acp
+            .rpc_tail
+            .iter()
+            .find(|f| {
+                f.direction == "out" && (f.label == "session/resume" || f.label == "session/load")
+            })
+            .map(|f| f.label.clone());
+        println!("    re-attached through {method:?}");
+        h.reply(&local_id, "What was the codeword I asked you to remember? Reply with it only.")
+            .await;
+        let second = h.until(is_idle, Duration::from_mins(3)).await?;
+        anyhow::ensure!(command_result(&second, REPLY) == Some((true, None)), "{second:#?}");
+        let answer: Vec<&Value> = messages(&second, "assistant");
+        println!("    answer: {answer:?}");
+        anyhow::ensure!(
+            answer.iter().any(|m| m.to_string().contains("PAPAYA-42")),
+            "the resumed session remembers the codeword: {second:#?}"
+        );
+        anyhow::ensure!(
+            !messages(&second, "user")
+                .iter()
+                .any(|m| m.to_string().contains("Remember this codeword")),
+            "the first prompt is not replayed into the transcript: {second:#?}"
+        );
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
         h.finish().await;
         Ok(())
     }
