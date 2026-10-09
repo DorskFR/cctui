@@ -146,6 +146,31 @@ pub async fn in_flight_by_provider(
     }
 }
 
+/// Which of `providers` must be signed in again before they can serve: the
+/// gateway flagged them `needs_reauth` after the upstream refused their
+/// credentials. Read from the table, not from `AppState::account_reauth`: that
+/// mirror is per replica, and the 401 may have landed on another one.
+///
+/// A failed read falls back to this replica's mirror, so an election never
+/// stops on it.
+pub async fn needing_reauth(
+    state: &AppState,
+    providers: &[Uuid],
+) -> std::collections::HashSet<Uuid> {
+    let rows: Result<Vec<Uuid>, sqlx::Error> =
+        sqlx::query_scalar("SELECT id FROM account_providers WHERE id = ANY($1) AND needs_reauth")
+            .bind(providers)
+            .fetch_all(&state.pool)
+            .await;
+    match rows {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!("account election: reading reauth flags failed: {e}");
+            providers.iter().filter(|p| state.account_reauth.contains_key(*p)).copied().collect()
+        }
+    }
+}
+
 /// Whether `user_id` can reach an account called `name` (their own, or one
 /// shared with them) — the same reachability `mint` uses.
 async fn account_exists(state: &AppState, user_id: Uuid, name: &str) -> Result<bool, sqlx::Error> {
@@ -244,6 +269,7 @@ pub async fn elect_pool_member(
     }))
     .await;
     let in_flight = in_flight_by_provider(state, &effective).await;
+    let reauth = needing_reauth(state, &effective).await;
 
     let candidates: Vec<crate::account_pick::Candidate> = members
         .iter()
@@ -258,6 +284,7 @@ pub async fn elect_pool_member(
             limits: crate::soft_limit::SoftLimits::from_json(m.soft_limits_json.as_ref()),
             usage_known: usage.is_some(),
             in_flight: in_flight.get(provider).copied().unwrap_or(0),
+            needs_reauth: reauth.contains(provider),
         })
         .collect();
 
@@ -388,6 +415,7 @@ mod tests {
             limits: SoftLimits::default(),
             usage_known: true,
             in_flight: 0,
+            needs_reauth: false,
         }
     }
 
@@ -438,6 +466,43 @@ mod tests {
         let ResolveError::Rejected(msg) = err else { panic!("expected a rejection") };
         assert!(msg.contains("alpha"), "{msg}");
         assert!(msg.contains("beta"), "{msg}");
+    }
+
+    #[test]
+    fn a_pool_with_every_member_to_reconnect_is_rejected_and_says_why() {
+        let mut alpha = candidate("alpha", 5.0);
+        alpha.needs_reauth = true;
+        let mut beta = candidate("beta", 0.0);
+        beta.needs_reauth = true;
+        beta.usage_known = false;
+        beta.windows.clear();
+        for strategy in [STRATEGY_HEADROOM, STRATEGY_ORDERED] {
+            let err =
+                elect("work", strategy, &[alpha.clone(), beta.clone()], None, chrono::Utc::now())
+                    .expect_err("no member can serve");
+            let ResolveError::Rejected(msg) = err else { panic!("expected a rejection") };
+            assert!(
+                msg.contains(&format!("alpha: {}", crate::account_pick::REAUTH_REASON)),
+                "{msg}"
+            );
+            assert!(
+                msg.contains(&format!("beta: {}", crate::account_pick::REAUTH_REASON)),
+                "{msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_to_reconnect_gives_way_to_a_sibling() {
+        let mut refused = candidate("alpha", 0.0);
+        refused.needs_reauth = true;
+        let candidates = [refused, candidate("beta", 70.0)];
+        for strategy in [STRATEGY_HEADROOM, STRATEGY_ORDERED] {
+            assert_eq!(
+                elect("work", strategy, &candidates, None, chrono::Utc::now()).unwrap().name,
+                "beta"
+            );
+        }
     }
 
     #[test]

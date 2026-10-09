@@ -35,7 +35,14 @@ pub struct Candidate {
     /// live, or were bound too recently to show up in its usage yet. Counted
     /// by the caller; see [`RESERVATION`].
     pub in_flight: u32,
+    /// The serving credential was refused upstream (`account_providers.needs_reauth`)
+    /// and must be signed in again. Such an account is out of every election,
+    /// whatever its usage says: re-electing it would only replay the 401.
+    pub needs_reauth: bool,
 }
+
+/// What a refused credential reports in the detail of [`Pick::Exhausted`].
+pub const REAUTH_REASON: &str = "needs reconnecting: its credentials were refused, sign in again";
 
 /// Why one candidate is out of the running.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +65,8 @@ pub enum Pick {
         score: Option<f64>,
         resets_at: Option<DateTime<Utc>>,
     },
-    /// Every candidate was readable AND out of allocation.
+    /// Every candidate was readable AND out of allocation, or must be
+    /// reconnected before it can serve anything.
     Exhausted(Vec<Blocked>),
     /// No candidate at all.
     None,
@@ -145,8 +153,8 @@ fn resets_phrase(window: &UsageWindow, now: DateTime<Utc>) -> String {
 /// a flaky usage endpoint degrades the choice instead of blocking the launch.
 ///
 /// [`Pick::Exhausted`] is returned only when every candidate was read AND every
-/// one is out. "Usage unavailable" must never masquerade as "you are out of
-/// allocation".
+/// one is out (a candidate to reconnect counts as out). "Usage unavailable"
+/// must never masquerade as "you are out of allocation".
 pub fn pick_account(candidates: &[Candidate], model: Option<&str>, now: DateTime<Utc>) -> Pick {
     if candidates.is_empty() {
         return Pick::None;
@@ -204,6 +212,12 @@ fn availability(
     model: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Option<Standing>, Blocked> {
+    // Before the usage test: a refused credential usually cannot read its
+    // usage either, and "unknown" is eligible, so checking it later would let
+    // the account that just answered 401 win the election again.
+    if candidate.needs_reauth {
+        return Err(Blocked { name: candidate.name.clone(), reason: REAUTH_REASON.to_owned() });
+    }
     if !candidate.usage_known {
         return Ok(None);
     }
@@ -360,6 +374,7 @@ mod tests {
             limits: SoftLimits::default(),
             usage_known: true,
             in_flight: 0,
+            needs_reauth: false,
         }
     }
 
@@ -394,6 +409,7 @@ mod tests {
             },
             usage_known: true,
             in_flight: 0,
+            needs_reauth: false,
         };
         let candidates = vec![paced("aburner", 4), paced("zcalm", 1)];
         assert_eq!(chosen(&pick_account(&candidates, None, now())), "zcalm");
@@ -435,6 +451,54 @@ mod tests {
             pick_account(&candidates, None, now()),
             Pick::Chosen { ref name, .. } if name == "spare"
         ));
+    }
+
+    /// The account that just answered 401: widest room, or no readable usage
+    /// at all (the usual case, its usage call is refused too). Neither may win
+    /// over a sibling, under either strategy.
+    #[test]
+    fn a_member_to_reconnect_is_never_elected() {
+        let refused_roomy = Candidate {
+            needs_reauth: true,
+            ..candidate("aaa-refused", vec![window(KEY_SESSION, "5h", 0.0, 1)])
+        };
+        let refused_unread = Candidate {
+            needs_reauth: true,
+            usage_known: false,
+            ..candidate("aab-refused", vec![])
+        };
+        let sibling = candidate("zzz-sibling", vec![window(KEY_SESSION, "5h", 90.0, 4)]);
+        let candidates = vec![refused_roomy, refused_unread, sibling];
+        assert_eq!(chosen(&pick_account(&candidates, None, now())), "zzz-sibling");
+        assert_eq!(chosen(&pick_in_order(&candidates, None, now())), "zzz-sibling");
+
+        // Behind an unreadable sibling too: unknown is eligible, refused is not.
+        let unread_sibling = Candidate { usage_known: false, ..candidate("zzz-unread", vec![]) };
+        let candidates = vec![candidates[1].clone(), unread_sibling];
+        assert_eq!(chosen(&pick_account(&candidates, None, now())), "zzz-unread");
+        assert_eq!(chosen(&pick_in_order(&candidates, None, now())), "zzz-unread");
+    }
+
+    #[test]
+    fn every_member_to_reconnect_is_an_explicit_refusal() {
+        let candidates = vec![
+            Candidate { needs_reauth: true, usage_known: false, ..candidate("beta", vec![]) },
+            Candidate {
+                needs_reauth: true,
+                ..candidate("alpha", vec![window(KEY_SESSION, "5h", 10.0, 3)])
+            },
+        ];
+        let expected = vec![
+            Blocked { name: "alpha".to_owned(), reason: REAUTH_REASON.to_owned() },
+            Blocked { name: "beta".to_owned(), reason: REAUTH_REASON.to_owned() },
+        ];
+        assert_eq!(pick_account(&candidates, None, now()), Pick::Exhausted(expected));
+        // The ladder keeps its own order in the detail.
+        let Pick::Exhausted(blocked) = pick_in_order(&candidates, None, now()) else {
+            panic!("expected a refusal")
+        };
+        assert_eq!(blocked.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["beta", "alpha"]);
+        assert!(blocked.iter().all(|b| b.reason == REAUTH_REASON));
     }
 
     #[test]
@@ -598,6 +662,7 @@ mod tests {
             limits: SoftLimits::default(),
             usage_known: false,
             in_flight: 0,
+            needs_reauth: false,
         });
         // Patrigeon is measured and has room, so it wins despite the unknown
         // sorting first by name.
@@ -616,6 +681,7 @@ mod tests {
                 limits: SoftLimits::default(),
                 usage_known: false,
                 in_flight: 0,
+                needs_reauth: false,
             },
             Candidate {
                 name: "Alpha".to_owned(),
@@ -623,6 +689,7 @@ mod tests {
                 limits: SoftLimits::default(),
                 usage_known: false,
                 in_flight: 0,
+                needs_reauth: false,
             },
         ];
         // No data anywhere: deterministic fallback, never an error.
@@ -646,6 +713,7 @@ mod tests {
             limits: SoftLimits::default(),
             usage_known: false,
             in_flight: 0,
+            needs_reauth: false,
         });
         assert_eq!(
             pick_account(&candidates, Some("opus"), now()),
@@ -764,6 +832,7 @@ mod tests {
             limits: SoftLimits::default(),
             usage_known: false,
             in_flight,
+            needs_reauth: false,
         };
         // No data anywhere: the less loaded unknown goes first, then the name.
         let candidates = vec![unreadable("Alpha", 2), unreadable("Beta", 0)];
