@@ -12,7 +12,7 @@ use serde_json::Value;
 use sqlx::{Connection, PgPool};
 use uuid::Uuid;
 
-use crate::routes::limit_reset::{self, limit_resets};
+use crate::routes::limit_reset::{self, limit_resets_at};
 use crate::soft_limit::{KEY_SESSION, KEY_WEEKLY_ALL, normalize_usage_windows};
 use crate::state::AppState;
 
@@ -113,7 +113,7 @@ fn decide_codex(policy: &Policy, usage: &Value, now: DateTime<Utc>) -> Decision 
     let session = window_pct(usage, KEY_SESSION);
     let horizon = chrono::Duration::seconds((policy.expires_within_hours * 3600.0).round() as i64);
     let mut saw_credit = false;
-    for entry in limit_resets("openai", usage).into_iter().filter(|e| e.usable) {
+    for entry in limit_resets_at("openai", usage, now).into_iter().filter(|e| e.usable) {
         saw_credit = true;
         if let Some(pct) = session
             && pct >= policy.used_pct
