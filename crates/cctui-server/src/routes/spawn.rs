@@ -794,6 +794,7 @@ pub(super) async fn auto_account_name_scoped(
     }))
     .await;
     let in_flight = crate::account_resolve::in_flight_by_provider(state, &effective).await;
+    let reauth = crate::account_resolve::needing_reauth(state, &effective).await;
 
     let candidates: Vec<crate::account_pick::Candidate> = rows
         .iter()
@@ -808,6 +809,7 @@ pub(super) async fn auto_account_name_scoped(
             limits: crate::soft_limit::SoftLimits::from_json(r.3.as_ref()),
             usage_known: usage.is_some(),
             in_flight: in_flight.get(provider).copied().unwrap_or(0),
+            needs_reauth: reauth.contains(provider),
         })
         .collect();
 
@@ -1607,6 +1609,34 @@ mod tests {
         // A blank pool name is not a pool.
         assert_eq!(decide_account(None, false, true, Some("  ")), AccountDecision::Auto);
         assert_eq!(decide_account(None, false, false, Some("")), AccountDecision::ResolveDefault);
+    }
+
+    /// The reauth gate lives in the election only. An account named outright
+    /// never reaches it, whatever else the request asks for, so naming an
+    /// account that must be reconnected still binds it, exactly as before.
+    #[test]
+    fn a_named_account_is_never_put_to_an_election() {
+        for (auto, pool) in [(false, None), (true, None), (true, Some("perso"))] {
+            assert_eq!(
+                decide_account(Some("refused"), false, auto, pool),
+                AccountDecision::Named("refused".to_owned())
+            );
+        }
+        assert_eq!(
+            crate::account_resolve::choose_target(
+                "refused",
+                true,
+                Some(crate::store::account_pools::AccountPool {
+                    id: Uuid::nil(),
+                    user_id: Uuid::nil(),
+                    name: "refused".to_owned(),
+                    strategy: crate::store::account_pools::STRATEGY_HEADROOM.to_owned(),
+                    failover: false,
+                    created_at: chrono::Utc::now(),
+                })
+            ),
+            crate::account_resolve::Target::Account("refused".to_owned())
+        );
     }
 
     #[test]
