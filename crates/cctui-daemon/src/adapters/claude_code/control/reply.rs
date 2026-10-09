@@ -23,7 +23,8 @@ impl Driver {
             .as_deref()
             .or(st.session_id.as_deref())
             .ok_or_else(|| anyhow::anyhow!("auth recovery: missing transcript identity"))?;
-        let path = transcript::transcript_path(&self.cfg.projects_root, cwd, session_id);
+        // Resolved once: both tail checks must read the same file.
+        let path = self.recovery_transcript_path(&short, cwd, session_id);
         anyhow::ensure!(
             tail_has_gateway_auth_error(&path)?,
             "auth recovery refused: transcript has advanced beyond the authentication failure"
@@ -46,6 +47,30 @@ impl Driver {
         self.resume_if_hibernated(sock, &short, local_id, &launch.env).await?;
         tracing::info!(%local_id, "recovered gateway authentication in a fresh worker");
         Ok(())
+    }
+
+    /// The live transcript of the worker being repaired. `EnterWorktree`
+    /// relocates it under the worktree's project slug, so the launch-cwd path
+    /// may not exist: prefer the pinned tail location for this session, then
+    /// the newest file for the session id across project dirs, and only then
+    /// the path derived from the launch cwd.
+    fn recovery_transcript_path(
+        &self,
+        short: &str,
+        cwd: &str,
+        session_id: &str,
+    ) -> std::path::PathBuf {
+        if let Some(loc) = self
+            .transcript_locations
+            .get(short)
+            .filter(|loc| loc.offset_key == session_id && loc.path.exists())
+        {
+            return loc.path.clone();
+        }
+        transcript::newest_transcript_for_session(&self.cfg.projects_root, session_id)
+            .unwrap_or_else(|| {
+                transcript::transcript_path(&self.cfg.projects_root, cwd, session_id)
+            })
     }
 
     fn auth_recovery_quiescent(&self, short: &str) -> bool {
@@ -486,6 +511,91 @@ mod auth_recovery_tests {
             .unwrap_err();
         assert!(error.to_string().contains("no complete gateway credential"), "{error}");
         assert!(job.join("state.json").exists());
+    }
+
+    const AUTH_FAILURE: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"API Error: 401 Invalid bearer token"}]}}"#;
+
+    #[tokio::test]
+    async fn recovery_follows_a_transcript_moved_into_a_worktree() {
+        // Production 0.24.5: a session that ran `EnterWorktree` has its
+        // transcript only under the worktree's project slug; deriving the path
+        // from the launch cwd failed with ENOENT and the session stayed in 401.
+        let (driver, _events) = super::super::test_support::driver();
+        let short = "aabbccdd";
+        let session = "aabbccdd-0000-0000-0000-000000000000";
+        let job = driver.cfg.jobs_root.join(short);
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(
+            job.join("state.json"),
+            json!({"sessionId":session,"cwd":"/project"}).to_string(),
+        )
+        .unwrap();
+        let moved = transcript::transcript_path(
+            &driver.cfg.projects_root,
+            "/project/.claude/worktrees/feature",
+            session,
+        );
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::write(&moved, AUTH_FAILURE).unwrap();
+        assert!(
+            !transcript::transcript_path(&driver.cfg.projects_root, "/project", session).exists()
+        );
+        let error = driver
+            .recover_gateway_auth(
+                std::path::Path::new("/nonexistent/socket"),
+                session,
+                &std::collections::BTreeMap::new(),
+            )
+            .await
+            .unwrap_err();
+        // Past both transcript checks: only the credential guard remains.
+        assert!(error.to_string().contains("no complete gateway credential"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn recovery_reads_the_pinned_transcript_location_first() {
+        let (mut driver, _events) = super::super::test_support::driver();
+        let short = "aabbccdd";
+        let session = "aabbccdd-0000-0000-0000-000000000000";
+        let job = driver.cfg.jobs_root.join(short);
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(
+            job.join("state.json"),
+            json!({"sessionId":session,"cwd":"/project"}).to_string(),
+        )
+        .unwrap();
+        // The pinned file is the live tail and has moved on; a newer stale copy
+        // elsewhere still ends on the 401 and must not be trusted.
+        let pinned = transcript::transcript_path(&driver.cfg.projects_root, "/pinned", session);
+        std::fs::create_dir_all(pinned.parent().unwrap()).unwrap();
+        std::fs::write(&pinned, r#"{"type":"user","message":{"content":"retry"}}"#).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&pinned)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH)
+            .unwrap();
+        let launch = transcript::transcript_path(&driver.cfg.projects_root, "/project", session);
+        std::fs::create_dir_all(launch.parent().unwrap()).unwrap();
+        std::fs::write(&launch, AUTH_FAILURE).unwrap();
+        driver.transcript_locations.insert(
+            short.into(),
+            super::super::TranscriptLocation {
+                path: pinned,
+                local_id: session.into(),
+                cwd: "/project".into(),
+                offset_key: session.into(),
+            },
+        );
+        let error = driver
+            .recover_gateway_auth(
+                std::path::Path::new("/nonexistent/socket"),
+                session,
+                &std::collections::BTreeMap::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("transcript has advanced"), "{error}");
     }
 
     #[tokio::test]
