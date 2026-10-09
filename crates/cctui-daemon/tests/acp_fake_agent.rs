@@ -1121,7 +1121,7 @@ mod catalog_scenarios {
 mod real_agent {
     use super::{
         AdapterCommand, AdapterEvent, AgentRow, BTreeMap, DIAGNOSE, Duration, ModeTable, REPLY,
-        SPAWN, Value, command_result, is_idle, messages, start, started,
+        SPAWN, Value, command_result, is_idle, messages, pid_alive, start, started, tool_uses,
     };
 
     static OPENCODE_ROW: AgentRow = AgentRow {
@@ -1180,9 +1180,43 @@ mod real_agent {
         .await;
         let second = h.until(is_idle, Duration::from_mins(3)).await?;
         anyhow::ensure!(command_result(&second, REPLY) == Some((true, None)), "{second:#?}");
+        std::fs::write(
+            std::path::Path::new(&h.cwd).join("secret.txt"),
+            "the codeword is MARMALADE\n",
+        )?;
+        h.send(AdapterCommand::Reply {
+            local_id: local_id.clone(),
+            text: "Use your file-read tool on secret.txt in the working directory and tell me the codeword.".to_owned(),
+            ask_picks: None,
+            env: BTreeMap::new(),
+            command_id: None,
+            turn_id: None,
+        })
+        .await;
+        let third = h.until(is_idle, Duration::from_mins(3)).await?;
+        anyhow::ensure!(
+            tool_uses(&third, "tool_call")
+                .iter()
+                .any(|t| t["input"].as_object().is_some_and(|m| !m.is_empty())),
+            "a tool call with its input: {third:#?}"
+        );
+        anyhow::ensure!(
+            messages(&third, "assistant").iter().any(|m| m.to_string().contains("MARMALADE")),
+            "the codeword in the answer: {third:#?}"
+        );
+        for e in &third {
+            if let AdapterEvent::ToolUse { payload, .. } | AdapterEvent::Message { payload, .. } = e
+            {
+                println!("    {payload}");
+            }
+        }
+        let pid = acp.agent_pid.ok_or_else(|| anyhow::anyhow!("no agent pid: {acp:#?}"))?;
+        let pid = i32::try_from(pid)?;
+        anyhow::ensure!(pid_alive(pid), "agent alive before kill");
         h.send(AdapterCommand::Kill { local_id, signal: None }).await;
         h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
             .await?;
+        anyhow::ensure!(!pid_alive(pid), "agent pid {pid} survived the kill");
         h.finish().await;
         Ok(())
     }
