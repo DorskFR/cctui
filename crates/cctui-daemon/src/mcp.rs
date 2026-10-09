@@ -138,8 +138,8 @@ pub fn tool_schema() -> Value {
                 },
                 "budget_usd": {
                     "type": "number",
-                    "description": "Dollar ceiling for this child's own spend. Must not exceed \
-    this session's permitted maximum; omit to inherit it.",
+                    "description": "Optional dollar ceiling for this child's own spend. Must not \
+    exceed this session's ceiling when it has one; omit to inherit it (no limit by default).",
                 },
                 "cwd": {
                     "type": "string",

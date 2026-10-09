@@ -79,7 +79,8 @@ pub struct SpawnCapability {
     /// Empty = deny all.
     #[serde(default)]
     pub adapters: Vec<String>,
-    /// Per-child `budget_usd` ceiling and default. `None` = no budget may be requested.
+    /// Per-child `budget_usd` ceiling and default. `None` = unlimited: a child
+    /// runs uncapped unless the call names its own budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_budget_usd: Option<f64>,
     /// Lifetime child count. `None` = unlimited.
@@ -91,7 +92,7 @@ pub struct SpawnCapability {
     /// Further generations allowed. `0` = none, `None` = unlimited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u32>,
-    /// Aggregate budget across all descendants of `tree_root`.
+    /// Aggregate budget across all descendants of `tree_root`. `None` = unlimited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tree_budget_usd: Option<f64>,
     /// `None` = this session is the root.
@@ -110,7 +111,9 @@ impl SpawnCapability {
         self.adapters.is_empty()
     }
 
-    /// Default for an interactive machine spawn that names no capability.
+    /// Default for an interactive machine spawn that names no capability: no
+    /// dollar ceiling and no child-count cap, only the depth limit. A ceiling
+    /// exists only when an admin setting or the launcher sets one explicitly.
     ///
     /// Grants every harness that runs by default;
     /// [`with_adapters`](Self::with_adapters) narrows it to what one machine
@@ -122,11 +125,11 @@ impl SpawnCapability {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
-            max_budget_usd: Some(DEFAULT_CHILD_BUDGET_USD),
-            max_children: Some(DEFAULT_MAX_CHILDREN),
+            max_budget_usd: None,
+            max_children: None,
             max_permission_mode: None,
             max_depth: Some(DEFAULT_MAX_DEPTH),
-            max_tree_budget_usd: Some(DEFAULT_TREE_BUDGET_USD),
+            max_tree_budget_usd: None,
             tree_root: None,
         }
     }
@@ -170,14 +173,8 @@ impl SpawnCapability {
     }
 }
 
-pub const DEFAULT_CHILD_BUDGET_USD: f64 = 20.0;
-
-pub const DEFAULT_MAX_CHILDREN: u32 = 16;
-
 /// Generations below the root.
 pub const DEFAULT_MAX_DEPTH: u32 = 3;
-
-pub const DEFAULT_TREE_BUDGET_USD: f64 = 400.0;
 
 /// Body for `POST /api/v1/daemon/sessions/{id}/spawn-child`; `{id}` is the parent.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

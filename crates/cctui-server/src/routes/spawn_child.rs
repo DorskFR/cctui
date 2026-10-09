@@ -59,7 +59,7 @@ pub struct Authorized {
 pub enum Denied {
     NoCapability,
     Adapter { requested: String, allowed: Vec<String> },
-    Budget { requested: f64, max: Option<f64> },
+    Budget { requested: f64, max: f64 },
     TooManyChildren { max: u32 },
     Depth,
     PermissionMode { requested: PermissionMode, max: PermissionMode },
@@ -78,15 +78,9 @@ impl std::fmt::Display for Denied {
                 "adapter {requested:?} is not permitted for this session (allowed: {})",
                 allowed.join(", ")
             ),
-            Self::Budget { requested, max } => match max {
-                Some(max) => {
-                    write!(f, "budget_usd {requested} exceeds this session's ceiling {max}")
-                }
-                None => write!(
-                    f,
-                    "budget_usd {requested} requested but this session may not set a dollar budget"
-                ),
-            },
+            Self::Budget { requested, max } => {
+                write!(f, "budget_usd {requested} exceeds this session's ceiling {max}")
+            }
             Self::TooManyChildren { max } => write!(
                 f,
                 "this session already has its maximum of {max} children — archive finished \
@@ -114,7 +108,8 @@ impl std::fmt::Display for Denied {
 /// over the per-child or remaining tree ceiling, a child count at the cap, an
 /// exhausted depth, or a posture above the parent's all deny. A call that names
 /// no budget inherits the smaller of the ceiling and what the tree has left; one
-/// that names no posture inherits the parent's.
+/// that names no posture inherits the parent's. An unset ceiling (per-child,
+/// child count or tree) is unlimited, never a denial.
 pub fn authorize(
     cap: Option<&SpawnCapability>,
     req: &SpawnChildRequest,
@@ -161,8 +156,8 @@ pub fn authorize(
             return Err(Denied::BadRequest("budget_usd must be a positive number".into()));
         }
         Some(b) => match cap.max_budget_usd {
-            Some(max) if b <= max => Some(b),
-            max => return Err(Denied::Budget { requested: b, max }),
+            Some(max) if b > max => return Err(Denied::Budget { requested: b, max }),
+            _ => Some(b),
         },
     };
     let budget = match cap.max_tree_budget_usd {
@@ -338,11 +333,21 @@ async fn reserve_child(
     .bind(&root)
     .bind(parent_id)
     .bind(child_key)
-    .bind(authorized.budget_usd.unwrap_or(0.0))
+    .bind(tree_grant_usd(cap, &authorized))
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok((authorized, child_cap))
+}
+
+/// Dollars a child's reservation draws from its tree. An unlimited tree draws
+/// nothing: the row only holds the child's slot until it registers.
+fn tree_grant_usd(cap: Option<&SpawnCapability>, authorized: &Authorized) -> f64 {
+    if cap.is_some_and(|c| c.max_tree_budget_usd.is_some()) {
+        authorized.budget_usd.unwrap_or(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Children counting against the parent's spawn quota: every child except those
@@ -950,16 +955,20 @@ mod tests {
         let cap = cap(&["opencode"], Some(2.0), None);
         assert_eq!(
             authorize(Some(&cap), &req("opencode", Some(5.0)), &usage(0)),
-            Err(Denied::Budget { requested: 5.0, max: Some(2.0) })
+            Err(Denied::Budget { requested: 5.0, max: 2.0 })
         );
     }
 
     #[test]
-    fn budget_requested_without_a_ceiling_denies() {
+    fn without_a_ceiling_a_named_budget_is_kept_and_none_stays_unlimited() {
         let cap = cap(&["opencode"], None, None);
         assert_eq!(
-            authorize(Some(&cap), &req("opencode", Some(0.5)), &usage(0)),
-            Err(Denied::Budget { requested: 0.5, max: None })
+            authorize(Some(&cap), &req("opencode", Some(500.0)), &usage(0)).unwrap().budget_usd,
+            Some(500.0)
+        );
+        assert_eq!(
+            authorize(Some(&cap), &req("opencode", None), &usage(0)).unwrap().budget_usd,
+            None
         );
     }
 
@@ -1004,7 +1013,7 @@ mod tests {
                 ok,
                 Authorized {
                     adapter: adapter.to_owned(),
-                    budget_usd: Some(cctui_proto::api::DEFAULT_CHILD_BUDGET_USD),
+                    budget_usd: None,
                     permission_mode: PermissionMode::Ask,
                 }
             );
@@ -1013,10 +1022,13 @@ mod tests {
             authorize(Some(&cap), &req("claude-code", Some(1.5)), &usage(0)).unwrap().budget_usd,
             Some(1.5)
         );
-        assert!(matches!(
-            authorize(Some(&cap), &req("claude-code", Some(1_000.0)), &usage(0)),
-            Err(Denied::Budget { .. })
-        ));
+        assert_eq!(
+            authorize(Some(&cap), &req("claude-code", Some(1_000.0)), &usage(0))
+                .unwrap()
+                .budget_usd,
+            Some(1_000.0),
+            "the default grant has no dollar ceiling"
+        );
     }
 
     /// DB-gated: a claude parent may spawn a `codex` child even when the
@@ -1944,12 +1956,49 @@ mod tests {
     }
 
     #[test]
-    fn machine_default_is_finite() {
+    fn machine_default_caps_depth_only() {
         let root = SpawnCapability::machine_default();
         assert_eq!(root.max_depth, Some(cctui_proto::api::DEFAULT_MAX_DEPTH));
-        assert_eq!(root.max_children, Some(cctui_proto::api::DEFAULT_MAX_CHILDREN));
-        assert!(root.max_tree_budget_usd.is_some_and(f64::is_finite));
+        assert_eq!(root.max_children, None);
+        assert_eq!(root.max_budget_usd, None);
+        assert_eq!(root.max_tree_budget_usd, None);
         const { assert!(cctui_proto::api::DEFAULT_MAX_DEPTH >= 2) };
+    }
+
+    /// Under the default grant no generation meets a dollar or child-count
+    /// limit: a busy parent and a heavily spent tree still spawn uncapped
+    /// children, and the reservation draws nothing from the tree.
+    #[test]
+    fn the_default_tree_is_unlimited_at_every_generation() {
+        let busy = Usage { live_children: 10_000, tree_granted_usd: 1e9, parent_mode: None };
+        let mut node = SpawnCapability::machine_default();
+        let mut id = "root".to_owned();
+        for generation in 1..=cctui_proto::api::DEFAULT_MAX_DEPTH {
+            let a = authorize(Some(&node), &req("claude-code", None), &busy).unwrap();
+            assert_eq!(a.budget_usd, None, "generation {generation} is uncapped");
+            assert!(tree_grant_usd(Some(&node), &a).abs() < f64::EPSILON);
+            node = node.inherited(&id, a.budget_usd, Some(a.permission_mode));
+            assert_eq!(
+                (node.max_budget_usd, node.max_children, node.max_tree_budget_usd),
+                (None, None, None),
+                "generation {generation} inherits no ceiling"
+            );
+            id = format!("gen-{generation}");
+        }
+    }
+
+    #[test]
+    fn only_a_capped_tree_draws_from_its_budget() {
+        let a = Authorized {
+            adapter: "codex".into(),
+            budget_usd: Some(2.0),
+            permission_mode: PermissionMode::Ask,
+        };
+        let capped =
+            SpawnCapability { max_tree_budget_usd: Some(10.0), ..cap(&["codex"], None, None) };
+        assert!((tree_grant_usd(Some(&capped), &a) - 2.0).abs() < f64::EPSILON);
+        assert!(tree_grant_usd(Some(&cap(&["codex"], None, None)), &a).abs() < f64::EPSILON);
+        assert!(tree_grant_usd(None, &a).abs() < f64::EPSILON);
     }
 
     #[test]

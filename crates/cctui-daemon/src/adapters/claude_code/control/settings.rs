@@ -72,11 +72,22 @@ pub(super) fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> Str
         .expect("agent_tool_context.md has a {capabilities} line");
     let mut b = String::from(intro);
     let _ = writeln!(b, "  adapters you may spawn: {}", cap.adapters.join(", "));
-    if let Some(max) = cap.max_budget_usd {
-        let _ = writeln!(b, "  per-child budget ceiling: ${max} (inherited when you name none)");
+    match cap.max_budget_usd {
+        Some(max) => {
+            let _ =
+                writeln!(b, "  per-child budget ceiling: ${max} (inherited when you name none)");
+        }
+        None => {
+            b.push_str("  no budget limit: children run uncapped unless you name a budget_usd\n");
+        }
     }
-    if let Some(max) = cap.max_children {
-        let _ = writeln!(b, "  max children for this session: {max}");
+    match cap.max_children {
+        Some(max) => {
+            let _ = writeln!(b, "  max children for this session: {max}");
+        }
+        None => {
+            b.push_str("  no limit on the number of children\n");
+        }
     }
     if let Some(depth) = cap.max_depth {
         let _ = writeln!(b, "  spawn generations left below this session: {depth}");
@@ -1016,7 +1027,10 @@ mod tests {
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap), &[], None);
         assert!(block.contains("mcp__cctui__CctuiAgent"));
         assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
-        assert!(block.contains("per-child budget ceiling: $20"));
+        assert!(block.contains("no budget limit"), "{block}");
+        assert!(block.contains("no limit on the number of children"), "{block}");
+        assert!(!block.contains("per-child budget ceiling"), "{block}");
+        assert!(!block.contains("max children for this session"), "{block}");
         assert!(block.contains("example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\""));
         assert!(block.contains("mcp__cctui__CctuiUsage"), "the limits tool is announced too");
         assert!(block.contains("blocked model burns the whole batch"), "{block}");
@@ -1161,7 +1175,8 @@ mod tests {
              streams back while it works) and returns its final message when its turn completes. \
              Parallel calls run in parallel. To send a follow-up to a child, call again with its \
              session_id (included in the reply) and a new prompt.\n  adapters you may spawn: \n  \
-             example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\", \"prompt\": \"Review \
+             no budget limit: children run uncapped unless you name a budget_usd\n  no limit on \
+             the number of children\n  example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\", \"prompt\": \"Review \
              the diff on branch X and list real defects\", \"cwd\": \
              \"/path/to/repo\"})\nCctuiUsage: `mcp__cctui__CctuiUsage` reports the rate limits \
              and budget that apply to THIS session — the account it is pinned to (possibly \
