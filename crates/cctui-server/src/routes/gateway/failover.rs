@@ -267,6 +267,7 @@ async fn pick_within_pool(
     // ones already moved keeps them from all landing on the same sibling.
     let providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
     let in_flight = crate::account_resolve::in_flight_by_provider(state, &providers).await;
+    let reauth = crate::account_resolve::needing_reauth(state, &providers).await;
     let candidates: Vec<crate::account_pick::Candidate> = members
         .iter()
         .zip(usages.iter())
@@ -279,6 +280,7 @@ async fn pick_within_pool(
             limits: crate::soft_limit::SoftLimits::from_json(m.soft_limits_json.as_ref()),
             usage_known: usage.is_some(),
             in_flight: in_flight.get(&m.provider_id).copied().unwrap_or(0),
+            needs_reauth: reauth.contains(&m.provider_id),
         })
         .collect();
 
@@ -572,6 +574,7 @@ mod tests {
             limits: crate::soft_limit::SoftLimits::default(),
             usage_known,
             in_flight: 0,
+            needs_reauth: false,
         }
     }
 
@@ -605,6 +608,44 @@ mod tests {
         // so the move is attributable to the pool afterwards.
         assert_eq!(target.pool_id, Some(p.id));
         assert_eq!(target.reason, REASON_POOL);
+    }
+
+    #[test]
+    fn a_member_to_reconnect_is_not_a_failover_target() {
+        for strategy in [
+            crate::store::account_pools::STRATEGY_HEADROOM,
+            crate::store::account_pools::STRATEGY_ORDERED,
+        ] {
+            let p = pool(strategy, true);
+            let mut refused = member("alpha", 0.0, true);
+            refused.needs_reauth = true;
+            let spare = Uuid::new_v4();
+            let candidates = [refused.clone(), member("beta", 60.0, true)];
+            let target = elect_replacement(
+                &p,
+                &candidates,
+                &[Uuid::new_v4(), spare],
+                None,
+                Utc::now(),
+                "sess-1",
+                "gamma",
+            )
+            .expect("the sibling with room");
+            assert_eq!(target.provider_id, spare);
+            // Alone, it is no target at all.
+            assert!(
+                elect_replacement(
+                    &p,
+                    &[refused],
+                    &[Uuid::new_v4()],
+                    None,
+                    Utc::now(),
+                    "sess-1",
+                    "gamma"
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]
