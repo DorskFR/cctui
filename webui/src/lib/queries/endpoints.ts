@@ -68,6 +68,9 @@ import type { UploadCapsInfo } from "@bindings/UploadCapsInfo";
 import type { UploadCapsRequest } from "@bindings/UploadCapsRequest";
 import type { UpstreamHostsInfo } from "@bindings/UpstreamHostsInfo";
 import type { UpstreamHostsRequest } from "@bindings/UpstreamHostsRequest";
+import type { SpeechCatalog } from "@bindings/SpeechCatalog";
+import type { SpeechSettingsInfo } from "@bindings/SpeechSettingsInfo";
+import type { SpeechSettingsRequest } from "@bindings/SpeechSettingsRequest";
 import type { HarnessAutoupdateInfo } from "@bindings/HarnessAutoupdateInfo";
 import type { HarnessPolicyRequest } from "@bindings/HarnessPolicyRequest";
 import type { HarnessUpdatePolicy } from "@bindings/HarnessUpdatePolicy";
@@ -164,6 +167,13 @@ export const endpoints = {
     api.put<UpstreamHostsInfo>("/admin/instance/upstream-hosts", {
       hosts,
     } satisfies UpstreamHostsRequest),
+  speechSettings: () => api.get<SpeechSettingsInfo>("/admin/instance/speech"),
+  /** `api_key` replaces the stored key, `clear_key` drops it; neither keeps it (admin). */
+  setSpeechSettings: (req: SpeechSettingsRequest) =>
+    api.put<SpeechSettingsInfo>("/admin/instance/speech", req),
+  speechCatalog: () => api.get<SpeechCatalog>("/admin/instance/speech/catalog"),
+  /** Health check plus a short synthesized sample (admin). */
+  testSpeech: () => api.postBlob("/admin/instance/speech/test"),
   /** Harness auto-update: instance default plus every machine's override and report (admin). */
   harnessAutoupdate: () => api.get<HarnessAutoupdateInfo>("/admin/harness-autoupdate"),
   /** Set (or clear with `null`) the instance-wide harness auto-update default (admin). */

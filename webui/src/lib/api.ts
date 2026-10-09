@@ -125,12 +125,19 @@ async function sendForm<T>(method: 'POST' | 'PUT', path: string, form: FormData)
 	const res = await apiFetch(buildUrl(apiBase(), path), { method, body: form });
 	return handle<T>(res);
 }
+/** POST with no body, reading the answer as a `Blob` (audio samples). */
+async function postBlob(path: string): Promise<Blob> {
+	const res = await apiFetch(buildUrl(apiBase(), path), { method: 'POST' });
+	if (!res.ok) await handle(res);
+	return res.blob();
+}
 const postForm = <T>(path: string, form: FormData) => sendForm<T>('POST', path, form);
 const putForm = <T>(path: string, form: FormData) => sendForm<T>('PUT', path, form);
 
 export const api = {
 	get: <T>(path: string, query?: RequestOpts['query']) => request<T>(apiBase(), path, { query }),
 	post: <T>(path: string, body?: unknown) => request<T>(apiBase(), path, { method: 'POST', body }),
+	postBlob,
 	postForm,
 	putForm,
 	patch: <T>(path: string, body?: unknown) =>

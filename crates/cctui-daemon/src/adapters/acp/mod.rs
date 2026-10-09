@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod connection;
 pub mod modes;
 pub mod normalize;
+pub mod persist;
 pub mod process;
 pub mod protocol;
 mod pty_view;
@@ -24,8 +25,11 @@ use crate::adapter_runtime::{
     Adapter, AdapterCtx, AdapterFactory, CommandOutcome, Handled, SessionDriver, dispatch_command,
 };
 use crate::client::ServerClient;
+use persist::SessionStore;
 use rows::AgentRow;
-use session::{AcpSession, LiveRegistry, SessionCommand, SpawnParams};
+use session::{AcpSession, LiveRegistry, Resume, SessionCommand, SpawnParams};
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// Declarative config: `{ "bin": "/path/to/agent" }` overrides the row's binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +68,7 @@ impl AdapterFactory for AcpFactory {
     }
 
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
-        Box::new(AcpAdapter { row: self.row })
+        Box::new(AcpAdapter::new(self.row))
     }
 
     fn pty_watch(&self, _config: &serde_json::Value) -> bool {
@@ -83,6 +87,27 @@ pub fn factories() -> Vec<Box<dyn AdapterFactory>> {
 
 pub struct AcpAdapter {
     pub row: &'static AgentRow,
+    store: Arc<SessionStore>,
+    reexec: CancellationToken,
+}
+
+impl AcpAdapter {
+    #[must_use]
+    pub fn new(row: &'static AgentRow) -> Self {
+        Self { row, store: persist::global(), reexec: crate::selfupdate::reexec_prep() }
+    }
+
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<SessionStore>) -> Self {
+        self.store = store;
+        self
+    }
+
+    #[must_use]
+    pub fn with_reexec(mut self, reexec: CancellationToken) -> Self {
+        self.reexec = reexec;
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -95,12 +120,18 @@ impl Adapter for AcpAdapter {
         let cfg = AcpConfig::from_value(&ctx.config);
         let bin = cfg.bin.clone().unwrap_or_else(|| self.row.bin.to_owned());
         tracing::info!(agent = self.row.id, %bin, "acp adapter ready");
-        pump(self.row, bin, ctx).await;
+        pump(self.row, bin, ctx, Arc::clone(&self.store), self.reexec.clone()).await;
         Ok(())
     }
 }
 
-async fn pump(row: &'static AgentRow, bin: String, ctx: AdapterCtx) {
+async fn pump(
+    row: &'static AgentRow,
+    bin: String,
+    ctx: AdapterCtx,
+    store: Arc<SessionStore>,
+    reexec: CancellationToken,
+) {
     let AdapterCtx {
         events,
         mut commands,
@@ -116,7 +147,8 @@ async fn pump(row: &'static AgentRow, bin: String, ctx: AdapterCtx) {
         let pump = pty_view::PtyWatchPump::new(live.clone(), events.clone(), shutdown.clone());
         tokio::spawn(pump.run(watches))
     });
-    let mut pump = Pump { row, bin, events, shutdown, server, machine_key, live };
+    let mut pump = Pump { row, bin, events, shutdown, server, machine_key, live, store, reexec };
+    pump.restore_sessions().await;
     let mut connect_closed = false;
     loop {
         tokio::select! {
@@ -145,6 +177,8 @@ struct Pump {
     server: Option<ServerClient>,
     machine_key: Option<String>,
     live: LiveRegistry,
+    store: Arc<SessionStore>,
+    reexec: CancellationToken,
 }
 
 #[async_trait::async_trait]
@@ -193,6 +227,35 @@ impl SessionDriver for Pump {
         _initiator: cctui_proto::adapter::RemoveInitiator,
     ) -> CommandOutcome {
         self.kill_session(local_id).await;
+        Ok(Handled::Done)
+    }
+
+    async fn resume(
+        &mut self,
+        local_id: String,
+        working_dir: Option<String>,
+        _env: std::collections::BTreeMap<String, String>,
+    ) -> CommandOutcome {
+        if self.live.lock().await.contains_key(&local_id) {
+            return Ok(Handled::Done);
+        }
+        let record = match (self.store.get(&local_id), working_dir) {
+            (Some(record), _) => record,
+            (None, Some(cwd)) => persist::Record {
+                adapter: self.row.id.to_owned(),
+                key: String::new(),
+                cwd,
+                model: None,
+                effort: None,
+                permission_mode: None,
+                parent_local_id: None,
+                started_at_ms: crate::neighbours::now_ms(),
+            },
+            (None, None) => {
+                return Err(anyhow::anyhow!("no recorded {} session {local_id}", self.row.id));
+            }
+        };
+        self.restore(local_id, record).await;
         Ok(Handled::Done)
     }
 
@@ -340,10 +403,73 @@ impl Pump {
             parent_local_id: spec.parent_local_id.clone(),
             preflight: Some(preflight),
             context: launch.context,
+            resume: None,
         };
+        self.run_session(params);
+    }
+
+    fn run_session(&self, params: SpawnParams) {
         let session =
-            AcpSession::new(params, self.events.clone(), self.live.clone(), self.shutdown.clone());
+            AcpSession::new(params, self.events.clone(), self.live.clone(), self.shutdown.clone())
+                .with_store(Arc::clone(&self.store))
+                .with_reexec(self.reexec.clone());
         tokio::spawn(session.run());
+    }
+
+    async fn restore_sessions(&self) {
+        for (local_id, record) in self.store.for_adapter(self.row.id) {
+            self.restore(local_id, record).await;
+        }
+    }
+
+    /// The account is bound to the agent's session id once it starts, so the
+    /// launch env is pulled by that id rather than the spawn key.
+    async fn restore(&self, local_id: String, record: persist::Record) {
+        let launch = match crate::adapters::gateway_env::resolve_launch(
+            self.row.id,
+            self.server.as_ref(),
+            self.machine_key.as_ref(),
+            &local_id,
+            &std::collections::BTreeMap::new(),
+            &[],
+        )
+        .await
+        {
+            Ok(launch) => launch,
+            Err(err) => {
+                self.store.remove(&local_id);
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::SessionEnded {
+                        local_id,
+                        reason: EndReason::ResumeFailed {
+                            detail: format!("launch environment unavailable: {err}"),
+                        },
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+        tracing::info!(%local_id, agent = self.row.id, "acp: re-attaching session");
+        self.run_session(SpawnParams {
+            row: self.row,
+            bin: self.bin.clone(),
+            key: record.key,
+            cwd: record.cwd,
+            env: launch.env,
+            prompt: None,
+            name: None,
+            model: record.model,
+            effort: record.effort,
+            permission_mode: record.permission_mode,
+            attachments: Vec::new(),
+            command_id: None,
+            parent_local_id: record.parent_local_id,
+            preflight: None,
+            context: Vec::new(),
+            resume: Some(Resume { session_id: local_id, started_at_ms: record.started_at_ms }),
+        });
     }
 }
 

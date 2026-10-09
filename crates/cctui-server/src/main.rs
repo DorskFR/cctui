@@ -55,6 +55,7 @@ mod settings_catalog;
 mod skill_store;
 mod soft_limit;
 mod spawn_labels;
+mod speech;
 mod state;
 mod store;
 mod transcript_md;
@@ -1047,6 +1048,10 @@ mod tests {
             "PUT /admin/instance/self-update Bearer Scope(Admin)",
             "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
             "PUT /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "GET /admin/instance/speech Bearer Scope(Admin)",
+            "PUT /admin/instance/speech Bearer Scope(Admin)",
+            "GET /admin/instance/speech/catalog Bearer Scope(Admin)",
+            "POST /admin/instance/speech/test Bearer Scope(Admin)",
             "GET /admin/instance/upload-caps Bearer Scope(Admin)",
             "PUT /admin/instance/upload-caps Bearer Scope(Admin)",
             "GET /admin/instance/upstream-hosts Bearer Scope(Admin)",
@@ -1249,6 +1254,9 @@ mod tests {
             "POST /version/refresh Bearer Authenticated",
             "GET /version/self-update Bearer Authenticated",
             "POST /version/self-update Bearer Scope(Admin)",
+            "GET /voice/config Bearer Human",
+            "POST /voice/speak Bearer Human",
+            "POST /voice/transcribe Bearer Human",
             "GET /{resource_type}/{id}/shares Bearer Human",
             "POST /{resource_type}/{id}/shares Bearer Human",
             "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",

@@ -29,6 +29,7 @@ pub fn initialize_params() -> Value {
 }
 
 /// What `initialize` told us, kept raw for the diagnose report.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InitInfo {
     pub protocol_version: u64,
@@ -37,6 +38,7 @@ pub struct InitInfo {
     pub image_prompts: bool,
     pub can_close: bool,
     pub can_load: bool,
+    pub can_resume: bool,
     pub auth_methods: Vec<String>,
 }
 
@@ -54,6 +56,7 @@ pub fn parse_initialize(resp: &Value) -> InitInfo {
             == Some(true),
         can_close: caps.pointer("/sessionCapabilities/close").is_some_and(|v| !v.is_null()),
         can_load: caps.get("loadSession").and_then(Value::as_bool) == Some(true),
+        can_resume: caps.pointer("/sessionCapabilities/resume").is_some_and(|v| !v.is_null()),
         auth_methods: resp
             .get("authMethods")
             .and_then(Value::as_array)
@@ -67,7 +70,25 @@ pub fn parse_initialize(resp: &Value) -> InitInfo {
 
 #[must_use]
 pub fn new_session_params(cwd: &Path) -> Value {
-    json!({ "cwd": cwd, "mcpServers": [] })
+    json!({ "cwd": cwd, "mcpServers": mcp_servers() })
+}
+
+const fn mcp_servers() -> Value {
+    Value::Array(Vec::new())
+}
+
+/// `session/resume` or `session/load`: same body, re-declaring what
+/// `session/new` declared.
+#[must_use]
+pub fn reattach_params(session_id: &str, cwd: &Path) -> Value {
+    json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": mcp_servers() })
+}
+
+/// A resume or load answer is a `session/new` answer without the id.
+pub fn parse_reattach(session_id: &str, resp: &Value) -> anyhow::Result<NewSession> {
+    let mut resp = if resp.is_object() { resp.clone() } else { json!({}) };
+    resp["sessionId"] = json!(session_id);
+    parse_new_session(&resp)
 }
 
 /// One entry of a mode or model list, from either vocabulary.
@@ -309,7 +330,7 @@ mod tests {
             "agentCapabilities": {
                 "loadSession": true,
                 "promptCapabilities": { "image": true },
-                "sessionCapabilities": { "close": {} },
+                "sessionCapabilities": { "close": {}, "resume": {} },
             },
             "authMethods": [{ "id": "oauth-personal", "name": "Log in with Google" }],
         }));
@@ -318,9 +339,27 @@ mod tests {
         assert!(info.image_prompts);
         assert!(info.can_close);
         assert!(info.can_load);
+        assert!(info.can_resume);
         assert_eq!(info.auth_methods, ["oauth-personal"]);
         let bare = parse_initialize(&json!({ "protocolVersion": 1 }));
         assert!(!bare.image_prompts && !bare.can_close && bare.agent_version.is_none());
+        assert!(!bare.can_load && !bare.can_resume);
+    }
+
+    #[test]
+    fn reattach_redeclares_cwd_and_mcp_servers_and_reads_the_answer_like_new() {
+        let p = reattach_params("sess_1", Path::new("/repo"));
+        assert_eq!(p["sessionId"], "sess_1");
+        assert_eq!(p["cwd"], "/repo");
+        assert_eq!(p["mcpServers"], new_session_params(Path::new("/repo"))["mcpServers"]);
+        let s = parse_reattach(
+            "sess_1",
+            &json!({ "modes": { "currentModeId": "yolo", "availableModes": [] } }),
+        )
+        .unwrap();
+        assert_eq!(s.session_id, "sess_1");
+        assert_eq!(s.modes.unwrap().current, "yolo");
+        assert_eq!(parse_reattach("sess_1", &Value::Null).unwrap().session_id, "sess_1");
     }
 
     #[test]

@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::connection::{AcpConnection, Incoming, RpcError};
 use super::modes::ModeApply;
 use super::normalize::{self, Coalescer, Out};
+use super::persist::{self, SessionStore};
 use super::process::Launch;
 use super::protocol::{self, InitInfo, NewSession, PromptOutcome, TurnUsage};
 use super::rows::AgentRow;
@@ -46,6 +47,17 @@ pub enum SessionCommand {
     Permission { request_id: String, allow: bool },
     SetModel { model: Option<String>, effort: Option<String>, command_id: Option<Uuid> },
     Diagnose { reply: mpsc::Sender<Snapshot> },
+}
+
+impl SessionCommand {
+    const fn command_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Prompt { command_id, .. }
+            | Self::Interrupt { command_id }
+            | Self::SetModel { command_id, .. } => *command_id,
+            Self::Kill | Self::Permission { .. } | Self::Diagnose { .. } => None,
+        }
+    }
 }
 
 /// What the diagnose report and the live view read off a session.
@@ -84,6 +96,15 @@ pub struct SpawnParams {
     pub parent_local_id: Option<String>,
     pub preflight: Option<crate::preflight::Preflight>,
     pub context: Vec<cctui_proto::api::SessionContextItem>,
+    pub resume: Option<Resume>,
+}
+
+/// An agent session a previous daemon process started, to re-attach instead
+/// of creating a new one.
+#[derive(Debug, Clone)]
+pub struct Resume {
+    pub session_id: String,
+    pub started_at_ms: u64,
 }
 
 struct Turn {
@@ -100,6 +121,8 @@ pub struct AcpSession {
     events: mpsc::Sender<AdapterEvent>,
     live: LiveRegistry,
     shutdown: CancellationToken,
+    reexec: CancellationToken,
+    store: Arc<SessionStore>,
     rings: Arc<TrafficRings>,
     commands_tx: mpsc::Sender<SessionCommand>,
     commands_rx: mpsc::Receiver<SessionCommand>,
@@ -141,6 +164,8 @@ impl AcpSession {
             events,
             live,
             shutdown,
+            reexec: crate::selfupdate::reexec_prep(),
+            store: persist::global(),
             rings: Arc::new(TrafficRings::default()),
             commands_tx,
             commands_rx,
@@ -168,6 +193,18 @@ impl AcpSession {
         }
     }
 
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<SessionStore>) -> Self {
+        self.store = store;
+        self
+    }
+
+    #[must_use]
+    pub fn with_reexec(mut self, reexec: CancellationToken) -> Self {
+        self.reexec = reexec;
+        self
+    }
+
     pub async fn run(mut self) {
         let command_id = self.params.command_id;
         match self.start().await {
@@ -187,9 +224,16 @@ impl AcpSession {
                     )
                     .await;
                 }
-                let local_id = self.local_id.clone().unwrap_or_else(|| self.params.key.clone());
+                let resumed = self.params.resume.as_ref().map(|r| r.session_id.clone());
+                let reason = if resumed.is_some() {
+                    EndReason::ResumeFailed { detail }
+                } else {
+                    EndReason::SpawnFailed { detail }
+                };
+                let local_id =
+                    self.local_id.clone().or(resumed).unwrap_or_else(|| self.params.key.clone());
                 if !local_id.is_empty() {
-                    self.end(&local_id, EndReason::SpawnFailed { detail }).await;
+                    self.end(&local_id, reason).await;
                 }
                 return;
             }
@@ -234,6 +278,42 @@ impl AcpSession {
         }
         super::report_agent_version(self.params.row.id, self.init.agent_version.as_deref());
 
+        let session = match self.params.resume.clone() {
+            Some(resume) => self.reattach(&resume.session_id).await?,
+            None => self.create().await?,
+        };
+        let session_id = session.session_id.clone();
+        self.current_mode = session.modes.as_ref().map(|m| m.current.clone());
+        self.catalog = super::catalog::Catalog::from_session(&session);
+        self.model = self.catalog.current_model();
+        self.session = Some(session);
+
+        self.apply_mode(&session_id).await?;
+        if (self.params.model.is_some() || self.params.effort.is_some())
+            && let Err(err) = self
+                .set_model(&session_id, self.params.model.clone(), self.params.effort.clone())
+                .await
+        {
+            tracing::warn!(%err, "acp: launch model not applied");
+        }
+        self.register(session_id.clone()).await;
+        if let Some(preflight) = self.params.preflight.take() {
+            preflight.run_bound(&session_id).await;
+        }
+        let first = if self.params.resume.is_some() { None } else { self.first_turn(&session_id) };
+        if let Some(first) = first {
+            self.begin_turn(&session_id, &first, self.params.command_id, None);
+        } else if let Some(command_id) = self.params.command_id {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult { command_id, ok: true, error: None },
+            )
+            .await;
+        }
+        Ok(())
+    }
+
+    async fn create(&self) -> anyhow::Result<NewSession> {
         let created = match self
             .request(
                 "session/new",
@@ -256,35 +336,38 @@ impl AcpSession {
                 anyhow::bail!(detail);
             }
         };
-        let session = protocol::parse_new_session(&created)?;
-        let session_id = session.session_id.clone();
-        self.current_mode = session.modes.as_ref().map(|m| m.current.clone());
-        self.catalog = super::catalog::Catalog::from_session(&session);
-        self.model = self.catalog.current_model();
-        self.session = Some(session);
+        protocol::parse_new_session(&created)
+    }
 
-        self.apply_mode(&session_id).await?;
-        if (self.params.model.is_some() || self.params.effort.is_some())
-            && let Err(err) = self
-                .set_model(&session_id, self.params.model.clone(), self.params.effort.clone())
-                .await
-        {
-            tracing::warn!(%err, "acp: launch model not applied");
+    /// `session/resume` when advertised, else `session/load`. Every row the
+    /// replayed history carries was already emitted by the process that ran
+    /// the session, so a load's replay is dropped rather than re-emitted.
+    async fn reattach(&mut self, session_id: &str) -> anyhow::Result<NewSession> {
+        let method = if self.init.can_resume {
+            "session/resume"
+        } else if self.init.can_load {
+            "session/load"
+        } else {
+            anyhow::bail!(
+                "{} advertises neither session/resume nor session/load: the session is not resumable",
+                self.params.row.id
+            );
+        };
+        let params = protocol::reattach_params(session_id, std::path::Path::new(&self.params.cwd));
+        let resp = self
+            .request(method, params, NEW_SESSION_TIMEOUT)
+            .await
+            .map_err(|e| anyhow::anyhow!("{method}: {e}"))?;
+        let mut kept = Vec::new();
+        while let Ok(incoming) = self.inbox_rx.try_recv() {
+            if !matches!(incoming, Incoming::Notification { .. }) {
+                kept.push(incoming);
+            }
         }
-        self.register(session_id.clone()).await;
-        if let Some(preflight) = self.params.preflight.take() {
-            preflight.run_bound(&session_id).await;
+        for incoming in kept {
+            let _ = self.inbox_tx.send(incoming);
         }
-        if let Some(first) = self.first_turn(&session_id) {
-            self.begin_turn(&session_id, &first, self.params.command_id, None);
-        } else if let Some(command_id) = self.params.command_id {
-            crate::adapters::emit(
-                &self.events,
-                AdapterEvent::CommandResult { command_id, ok: true, error: None },
-            )
-            .await;
-        }
-        Ok(())
+        protocol::parse_reattach(session_id, &resp)
     }
 
     async fn apply_mode(&mut self, session_id: &str) -> anyhow::Result<()> {
@@ -357,7 +440,21 @@ impl AcpSession {
         if !self.params.key.is_empty() && self.params.key != local_id {
             crate::agenttool::bind_session_alias(&self.params.key, &local_id);
         }
-        let started_at_ms = crate::neighbours::now_ms();
+        let started_at_ms =
+            self.params.resume.as_ref().map_or_else(crate::neighbours::now_ms, |r| r.started_at_ms);
+        self.store.upsert(
+            &local_id,
+            persist::Record {
+                adapter: self.params.row.id.to_owned(),
+                key: self.params.key.clone(),
+                cwd: self.params.cwd.clone(),
+                model: self.params.model.clone(),
+                effort: self.params.effort.clone(),
+                permission_mode: self.params.permission_mode,
+                parent_local_id: self.params.parent_local_id.clone(),
+                started_at_ms,
+            },
+        );
         let meta = SessionMeta {
             working_dir: Some(self.params.cwd.clone()),
             parent_local_id: self.params.parent_local_id.clone(),
@@ -407,6 +504,10 @@ impl AcpSession {
         loop {
             tokio::select! {
                 biased;
+                () = self.reexec.cancelled() => {
+                    self.on_reexec().await;
+                    return;
+                }
                 () = self.shutdown.cancelled() => {
                     self.kill(EndReason::Killed).await;
                     return;
@@ -819,6 +920,42 @@ impl AcpSession {
         super::process::shutdown(&mut connection.child).await;
     }
 
+    /// The agent dies with this process, so take it down now; the session
+    /// stays recorded and is not reported ended, so the next process
+    /// re-attaches it. No `session/close`: that would forget it agent-side.
+    async fn on_reexec(&mut self) {
+        let local_id = self.local_id();
+        tracing::info!(%local_id, agent = self.params.row.id, "acp: daemon re-exec, parking session");
+        for out in self.coalescer.flush() {
+            self.emit_out(&local_id, out).await;
+        }
+        self.ending = true;
+        self.turn = None;
+        if let Some(task) = self.turn_task.take() {
+            task.abort();
+        }
+        self.pending.clear();
+        self.commands_rx.close();
+        while let Ok(cmd) = self.commands_rx.try_recv() {
+            if let Some(command_id) = cmd.command_id() {
+                crate::adapters::emit(
+                    &self.events,
+                    AdapterEvent::CommandResult {
+                        command_id,
+                        ok: false,
+                        error: Some("the daemon is restarting".to_owned()),
+                    },
+                )
+                .await;
+            }
+        }
+        if let Some(mut connection) = self.connection.take() {
+            connection.close();
+            super::process::shutdown(&mut connection.child).await;
+        }
+        self.live.lock().await.remove(&local_id);
+    }
+
     async fn kill(&mut self, reason: EndReason) {
         let local_id = self.local_id();
         self.turn = None;
@@ -830,6 +967,7 @@ impl AcpSession {
 
     async fn end(&self, local_id: &str, reason: EndReason) {
         self.live.lock().await.remove(local_id);
+        self.store.remove(local_id);
         if !self.params.key.is_empty() {
             crate::adapters::uploads::remove_session_dir(&self.params.key);
         }

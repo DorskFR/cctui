@@ -355,7 +355,7 @@ async fn codex_answers_every_command() {
 async fn acp_answers_every_command() {
     let tmp = tempfile::tempdir().unwrap();
     let (ctx, mut harness) = ctx(serde_json::json!({ "bin": tmp.path().join("no-such-gemini") }));
-    let adapter = super::acp::AcpAdapter { row: &super::acp::rows::GEMINI };
+    let adapter = super::acp::AcpAdapter::new(&super::acp::rows::GEMINI);
     let task = tokio::spawn(async move { adapter.start(ctx).await });
     let expected = sorted(&[
         "diagnose diagnose",
@@ -379,7 +379,7 @@ async fn acp_answers_every_command() {
 async fn acp_refuses_an_inexpressible_permission_mode_at_spawn() {
     let tmp = tempfile::tempdir().unwrap();
     let (ctx, mut harness) = ctx(serde_json::json!({ "bin": tmp.path().join("no-such-gemini") }));
-    let adapter = super::acp::AcpAdapter { row: &super::acp::rows::GEMINI };
+    let adapter = super::acp::AcpAdapter::new(&super::acp::rows::GEMINI);
     let task = tokio::spawn(async move { adapter.start(ctx).await });
     let mut spec = spec_without_dir("gemini");
     spec.working_dir = Some(tmp.path().display().to_string());

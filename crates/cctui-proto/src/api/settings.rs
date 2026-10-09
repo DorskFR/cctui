@@ -72,7 +72,7 @@ pub struct UpstreamHostsInfo {
     pub source: SettingSource,
     /// `CCTUI_UPSTREAM_ALLOWED_HOSTS`, always allowed on top of `hosts`.
     pub env: Vec<String>,
-    /// Always allowed on top of `hosts` (the `LiteLLM` endpoint).
+    /// Always allowed on top of `hosts` (the `LiteLLM` endpoint and the speech service).
     pub managed: Vec<String>,
 }
 
@@ -102,4 +102,94 @@ pub struct UploadCapsInfo {
 pub struct UploadCapsRequest {
     /// `null` clears the saved caps, restoring the built-in defaults.
     pub caps: Option<UploadCaps>,
+}
+
+/// Non-secret part of the `speech` instance setting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(default)]
+pub struct SpeechConfig {
+    pub enabled: bool,
+    /// OpenAI-compatible root, e.g. `https://speech.example/v1`.
+    pub base_url: String,
+    pub stt_model: String,
+    pub stt_language: Option<String>,
+    pub tts_model: String,
+    pub tts_voice: String,
+    pub tts_format: String,
+}
+
+impl Default for SpeechConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: String::new(),
+            stt_model: "parakeet".into(),
+            stt_language: None,
+            tts_model: "kokoro".into(),
+            tts_voice: "af_heart".into(),
+            tts_format: "opus".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SpeechSettingsInfo {
+    pub config: SpeechConfig,
+    /// Whether an API key is stored; the key itself is never returned.
+    pub has_key: bool,
+    /// `settings` once an admin saved a value, else `default`.
+    pub source: SettingSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SpeechSettingsRequest {
+    pub config: SpeechConfig,
+    /// A new key to store; `null` keeps the current one.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub api_key: Option<String>,
+    /// Drops the stored key.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub clear_key: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SpeechCatalog {
+    pub models: Vec<String>,
+    pub voices: Vec<String>,
+}
+
+/// `GET /voice/config`: what the webui may use, without the URL or key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct VoiceConfigInfo {
+    pub enabled: bool,
+    pub stt_model: String,
+    pub stt_language: Option<String>,
+    pub tts_model: String,
+    pub tts_voice: String,
+    pub tts_format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct VoiceSpeakRequest {
+    pub text: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub voice: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub speed: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct VoiceTranscript {
+    pub text: String,
 }

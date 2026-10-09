@@ -52,6 +52,30 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
+            "/admin/instance/speech",
+            "Read or set the speech service (URL, encrypted API key, models, voice) (admin).",
+            get(routes::server_settings::get_speech).put(routes::server_settings::update_speech),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET],
+            "/admin/instance/speech/catalog",
+            "List the models and voices the configured speech service offers (admin).",
+            get(routes::server_settings::speech_catalog),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::POST],
+            "/admin/instance/speech/test",
+            "Check the speech service and return a short synthesized sample (admin).",
+            post(routes::server_settings::test_speech),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
             "/admin/instance/upload-caps",
             "Read or set the per-upload file count and size caps (admin).",
             get(routes::server_settings::get_upload_caps).put(routes::server_settings::update_upload_caps),

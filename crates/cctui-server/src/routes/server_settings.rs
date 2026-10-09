@@ -4,11 +4,13 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::{Extension, Json};
 
 pub use cctui_proto::api::settings::{
-    SettingSource, SpawnDefaults, SpawnDefaultsInfo, SpawnDefaultsSources, UploadCapsInfo,
-    UploadCapsRequest, UpstreamHostsInfo, UpstreamHostsRequest,
+    SettingSource, SpawnDefaults, SpawnDefaultsInfo, SpawnDefaultsSources, SpeechCatalog,
+    SpeechConfig, SpeechSettingsInfo, SpeechSettingsRequest, UploadCapsInfo, UploadCapsRequest,
+    UpstreamHostsInfo, UpstreamHostsRequest,
 };
 
 use crate::auth::{AuthContext, Scope};
@@ -19,6 +21,7 @@ use crate::uploads::UploadCaps;
 const SPAWN_KEY: &str = "spawn_defaults";
 const UPSTREAM_KEY: &str = "upstream_allowed_hosts";
 const UPLOAD_CAPS_KEY: &str = "upload_caps";
+const SPEECH_KEY: &str = "speech";
 
 const fn builtin_spawn_defaults() -> SpawnDefaults {
     SpawnDefaults {
@@ -181,6 +184,10 @@ async fn read_upstream_hosts(pool: &sqlx::PgPool) -> Result<UpstreamHostsInfo, s
 /// Reloads the in-memory upstream allowlist from the table; a failed read
 /// keeps the current list.
 pub async fn refresh_upstream_allowlist(pool: &sqlx::PgPool) {
+    if let Ok(speech) = stored_speech(pool).await {
+        let url = speech.as_ref().map(|s| s.config.base_url.as_str()).filter(|u| !u.is_empty());
+        crate::outbound::set_speech_upstream(url);
+    }
     match read_upstream_hosts(pool).await {
         Ok(info) => crate::outbound::set_upstream_allowlist(&info.hosts),
         Err(e) => tracing::warn!(error = %e, "upstream allowlist refresh failed"),
@@ -316,6 +323,176 @@ pub async fn update_upload_caps(
     store(&state.pool, UPLOAD_CAPS_KEY, value).await?;
     refresh_upload_caps(&state).await;
     Ok(Json(read_upload_caps(&state.pool).await))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct StoredSpeech {
+    #[serde(flatten)]
+    config: SpeechConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encrypted_key: Option<String>,
+}
+
+async fn stored_speech(pool: &sqlx::PgPool) -> Result<Option<StoredSpeech>, sqlx::Error> {
+    let raw = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM instance_settings WHERE key = $1",
+    )
+    .bind(SPEECH_KEY)
+    .fetch_optional(pool)
+    .await?;
+    Ok(raw.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+fn speech_info(stored: Option<&StoredSpeech>) -> SpeechSettingsInfo {
+    SpeechSettingsInfo {
+        config: stored.map(|s| s.config.clone()).unwrap_or_default(),
+        has_key: stored.is_some_and(|s| s.encrypted_key.is_some()),
+        source: if stored.is_some() { SettingSource::Settings } else { SettingSource::Default },
+    }
+}
+
+/// The saved speech setting with its decrypted key, read at use time.
+pub async fn read_speech(pool: &sqlx::PgPool) -> Result<(SpeechConfig, Option<String>), AppError> {
+    let stored = stored_speech(pool).await?.unwrap_or_default();
+    let key = match stored.encrypted_key {
+        Some(enc) => {
+            Some(crate::crypto::decrypt(&enc, &crate::crypto::vault_key()).ok_or_else(|| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "speech API key cannot be decrypted",
+                )
+            })?)
+        }
+        None => None,
+    };
+    Ok((stored.config, key))
+}
+
+const SPEECH_FORMATS: &[&str] = &["opus", "mp3", "aac", "flac", "wav", "pcm"];
+
+fn validate_speech(c: SpeechConfig) -> Result<SpeechConfig, AppError> {
+    let bad = |msg: String| AppError::new(StatusCode::BAD_REQUEST, msg);
+    let trim = |s: &str| s.trim().to_owned();
+    let c = SpeechConfig {
+        enabled: c.enabled,
+        base_url: trim(&c.base_url).trim_end_matches('/').to_owned(),
+        stt_model: trim(&c.stt_model),
+        stt_language: c.stt_language.map(|l| trim(&l)).filter(|l| !l.is_empty()),
+        tts_model: trim(&c.tts_model),
+        tts_voice: trim(&c.tts_voice),
+        tts_format: trim(&c.tts_format).to_ascii_lowercase(),
+    };
+    if c.base_url.is_empty() {
+        if c.enabled {
+            return Err(bad("base_url is required to enable speech".into()));
+        }
+    } else {
+        let url = reqwest::Url::parse(&c.base_url)
+            .map_err(|_| bad(format!("`{}` is not a URL", c.base_url)))?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(bad("base_url must be an http(s) URL with a host".into()));
+        }
+        if !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
+            return Err(bad("base_url cannot carry credentials or a query".into()));
+        }
+    }
+    for (name, v) in
+        [("stt_model", &c.stt_model), ("tts_model", &c.tts_model), ("tts_voice", &c.tts_voice)]
+    {
+        if v.is_empty() || v.len() > 128 {
+            return Err(bad(format!("{name} must be 1 to 128 characters")));
+        }
+    }
+    if c.stt_language.as_deref().is_some_and(|l| {
+        l.len() > 16 || !l.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    }) {
+        return Err(bad("stt_language must be a language code such as `en`".into()));
+    }
+    if !SPEECH_FORMATS.contains(&c.tts_format.as_str()) {
+        return Err(bad(format!("tts_format must be one of {}", SPEECH_FORMATS.join(", "))));
+    }
+    Ok(c)
+}
+
+fn validate_speech_key(raw: &str) -> Result<String, AppError> {
+    let key = raw.trim();
+    if key.is_empty() || key.len() > 4096 || key.chars().any(char::is_whitespace) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "api_key must be a single token"));
+    }
+    Ok(key.to_owned())
+}
+
+pub async fn get_speech(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<SpeechSettingsInfo>, AppError> {
+    admin(&ctx)?;
+    Ok(Json(speech_info(stored_speech(&state.pool).await?.as_ref())))
+}
+
+pub async fn update_speech(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<SpeechSettingsRequest>,
+) -> Result<Json<SpeechSettingsInfo>, AppError> {
+    admin(&ctx)?;
+    let config = validate_speech(req.config)?;
+    let new_key = req.api_key.as_deref().map(validate_speech_key).transpose()?;
+    let current = stored_speech(&state.pool).await?;
+    let encrypted_key = match (new_key, req.clear_key.unwrap_or(false)) {
+        (Some(k), _) => Some(crate::crypto::encrypt(&k, &crate::crypto::vault_key())),
+        (None, true) => None,
+        (None, false) => current.and_then(|c| c.encrypted_key),
+    };
+    let next = StoredSpeech { config, encrypted_key };
+    let value = (next != StoredSpeech::default())
+        .then(|| serde_json::to_value(&next).expect("serializable"));
+    store(&state.pool, SPEECH_KEY, value).await?;
+    refresh_upstream_allowlist(&state.pool).await;
+    Ok(Json(speech_info(stored_speech(&state.pool).await?.as_ref())))
+}
+
+pub fn speech_error(e: &crate::speech::SpeechError) -> AppError {
+    use crate::speech::SpeechError as E;
+    let status = match e {
+        E::NotConfigured => StatusCode::CONFLICT,
+        E::InputTooLong | E::Url(_) => StatusCode::BAD_REQUEST,
+        E::Transport(_) | E::Upstream { .. } | E::Decode(_) => StatusCode::BAD_GATEWAY,
+    };
+    AppError::new(status, e.to_string())
+}
+
+pub async fn speech_client(state: &AppState) -> Result<crate::speech::SpeechClient, AppError> {
+    let (config, key) = read_speech(&state.pool).await?;
+    crate::speech::SpeechClient::for_upstream(config, key).map_err(|e| speech_error(&e))
+}
+
+/// Models and voices the configured service offers, for the admin pickers.
+pub async fn speech_catalog(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<SpeechCatalog>, AppError> {
+    admin(&ctx)?;
+    let client = speech_client(&state).await?;
+    let models = client.health().await.map_err(|e| speech_error(&e))?;
+    let voices = client.voices().await.unwrap_or_default();
+    Ok(Json(SpeechCatalog { models, voices }))
+}
+
+/// Health check plus a short synthesis the admin UI plays back.
+pub async fn test_speech(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<axum::response::Response, AppError> {
+    admin(&ctx)?;
+    let client = speech_client(&state).await?;
+    client.health().await.map_err(|e| speech_error(&e))?;
+    let audio = client
+        .synthesize("Speech is working.", None, None, None)
+        .await
+        .map_err(|e| speech_error(&e))?;
+    let mime = crate::routes::voice::audio_mime(&client.config().tts_format);
+    Ok(([(http::header::CONTENT_TYPE, mime)], audio).into_response())
 }
 
 #[cfg(test)]
@@ -490,6 +667,93 @@ mod tests {
         .await
         .unwrap();
         assert_ne!(info.source, SettingSource::Settings);
+        assert!(crate::outbound::upstream_url_permitted(url).is_err());
+    }
+
+    #[test]
+    fn speech_validation_trims_and_rejects_bad_values() {
+        let ok = SpeechConfig {
+            enabled: true,
+            base_url: " https://speech.example/v1/ ".into(),
+            stt_language: Some(" ".into()),
+            tts_format: "MP3".into(),
+            ..SpeechConfig::default()
+        };
+        let v = validate_speech(ok.clone()).unwrap();
+        assert_eq!(v.base_url, "https://speech.example/v1");
+        assert_eq!((v.stt_language, v.tts_format.as_str()), (None, "mp3"));
+        assert!(validate_speech(SpeechConfig::default()).is_ok());
+        for bad in [
+            SpeechConfig { base_url: String::new(), ..ok.clone() },
+            SpeechConfig { base_url: "ftp://speech.example".into(), ..ok.clone() },
+            SpeechConfig { base_url: "https://u:p@speech.example/v1".into(), ..ok.clone() },
+            SpeechConfig { base_url: "not a url".into(), ..ok.clone() },
+            SpeechConfig { tts_voice: " ".into(), ..ok.clone() },
+            SpeechConfig { stt_model: String::new(), ..ok.clone() },
+            SpeechConfig { stt_language: Some("en; drop".into()), ..ok.clone() },
+            SpeechConfig { tts_format: "ogg".into(), ..ok },
+        ] {
+            let status = validate_speech(bad.clone()).unwrap_err().status();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}");
+        }
+        assert!(validate_speech_key("sk abc").is_err());
+        assert!(validate_speech_key("  ").is_err());
+        assert_eq!(validate_speech_key(" sk-1 ").unwrap(), "sk-1");
+    }
+
+    #[tokio::test]
+    async fn speech_key_is_encrypted_redacted_and_host_allowlisted() {
+        let _serial = UPSTREAM_TESTS.lock().await;
+        let Some(state) = state("speech_key_is_encrypted_redacted_and_host_allowlisted").await
+        else {
+            return;
+        };
+        crate::crypto::install_vault_key(vec![7u8; 32]);
+        let url = "http://speech-router.speech-probe.svc:8000/v1";
+        let put = |config: SpeechConfig, api_key: Option<&str>, clear_key: Option<bool>| {
+            update_speech(
+                State(state.clone()),
+                Extension(ctx(&[Scope::Admin])),
+                Json(SpeechSettingsRequest { config, api_key: api_key.map(Into::into), clear_key }),
+            )
+        };
+        let denied = get_speech(State(state.clone()), Extension(ctx(&[]))).await;
+        assert_eq!(denied.unwrap_err().status(), StatusCode::FORBIDDEN);
+        assert!(crate::outbound::upstream_url_permitted(url).is_err());
+
+        let config =
+            SpeechConfig { enabled: true, base_url: url.into(), ..SpeechConfig::default() };
+        let Json(info) = put(config.clone(), Some("sk-speech-secret"), None).await.unwrap();
+        assert!(info.has_key);
+        assert_eq!(info.source, SettingSource::Settings);
+        assert!(!serde_json::to_string(&info).unwrap().contains("sk-speech-secret"));
+        let raw: serde_json::Value =
+            sqlx::query_scalar("SELECT value FROM instance_settings WHERE key = 'speech'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert!(!raw.to_string().contains("sk-speech-secret"), "{raw}");
+        assert_eq!(read_speech(&state.pool).await.unwrap().1.as_deref(), Some("sk-speech-secret"));
+        crate::outbound::upstream_url_permitted(url).unwrap();
+        let hosts = read_upstream_hosts(&state.pool).await.unwrap();
+        assert!(hosts.managed.contains(&"speech-router.speech-probe.svc:8000".to_owned()));
+
+        let Json(info) =
+            put(SpeechConfig { tts_voice: "bf_emma".into(), ..config.clone() }, None, None)
+                .await
+                .unwrap();
+        assert!(info.has_key);
+        assert_eq!(info.config.tts_voice, "bf_emma");
+
+        let Json(info) = put(config.clone(), None, Some(true)).await.unwrap();
+        assert!(!info.has_key);
+        assert_eq!(read_speech(&state.pool).await.unwrap().1, None);
+
+        let bad = put(SpeechConfig { base_url: String::new(), ..config }, None, None).await;
+        assert_eq!(bad.unwrap_err().status(), StatusCode::BAD_REQUEST);
+
+        let Json(info) = put(SpeechConfig::default(), None, Some(true)).await.unwrap();
+        assert_eq!(info.source, SettingSource::Default);
         assert!(crate::outbound::upstream_url_permitted(url).is_err());
     }
 

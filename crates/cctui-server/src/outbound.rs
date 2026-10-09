@@ -118,20 +118,29 @@ pub fn env_upstream_entries() -> Vec<String> {
         .collect()
 }
 
-/// The host and port of `CCTUI_CLAUDE_LITELLM_ENDPOINT`, which the managed shim
-/// account points at; always allowed on top of the editable list.
+fn url_entry(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    let host = url.host_str()?.to_owned();
+    Some(url.port_or_known_default().map_or_else(|| host.clone(), |p| format!("{host}:{p}")))
+}
+
+static SPEECH_ENTRY: RwLock<Option<String>> = RwLock::new(None);
+
+/// Allows the configured speech service; takes effect on the next
+/// [`set_upstream_allowlist`].
+pub fn set_speech_upstream(base_url: Option<&str>) {
+    *SPEECH_ENTRY.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        base_url.and_then(url_entry);
+}
+
+/// Always allowed on top of the editable list: the host and port of
+/// `CCTUI_CLAUDE_LITELLM_ENDPOINT` and of the configured speech service.
 pub fn managed_upstream_entries() -> Vec<String> {
-    std::env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT")
-        .ok()
-        .and_then(|e| reqwest::Url::parse(e.trim()).ok())
-        .and_then(|url| {
-            let host = url.host_str()?.to_owned();
-            Some(
-                url.port_or_known_default().map_or_else(|| host.clone(), |p| format!("{host}:{p}")),
-            )
-        })
-        .into_iter()
-        .collect()
+    let litellm = std::env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT").ok().and_then(|e| url_entry(&e));
+    let speech = SPEECH_ENTRY.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let mut out: Vec<String> = litellm.into_iter().collect();
+    out.extend(speech.filter(|s| !out.contains(s)));
+    out
 }
 
 fn build_upstream_allowlist(saved: &[String], env: &[String]) -> Vec<AllowedHost> {
