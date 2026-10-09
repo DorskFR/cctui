@@ -16,6 +16,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
+	import ConversationDock from '$lib/components/organisms/ConversationDock.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
@@ -26,7 +27,13 @@
 	import TilesOverflowChip from './TilesOverflowChip.svelte';
 	import SessionsBulkBar from './SessionsBulkBar.svelte';
 	import EditDraftModal from './EditDraftModal.svelte';
-	import { drafts, clearSpawnSlot, currentSpawnSlot, readSpawnSlot } from '$lib/drafts';
+	import {
+		drafts,
+		clearSpawnSlot,
+		currentSpawnSlot,
+		readSpawnSlot,
+		LAST_DOCKED_SESSION
+	} from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { isViewMode, parseViewMode } from '$lib/sessionsView.svelte';
 	import { TILES_BOOT_KEY } from './tilesBoot';
@@ -190,6 +197,27 @@
 		lastUrlId = id;
 	});
 
+	// Docked conversation: remember what it shows, and on arrival with no
+	// session in the URL reopen the last one, if it is still in the live list
+	// (a session archived or deleted since simply leaves the column empty).
+	let dockRestored = false;
+	$effect(() => {
+		if (dockRestored || !mounted || !sp.docks.conversation || sessions.isLoading) return;
+		dockRestored = true;
+		if (untrack(() => sp.openSession) || sessionIdFromUrl()) return;
+		const last = drafts.get(LAST_DOCKED_SESSION);
+		const row = last ? untrack(() => sp.items.find((s) => s.id === last)) : undefined;
+		if (row) sp.openSession = row;
+	});
+	$effect(() => {
+		const id = sp.openSession?.id;
+		if (id && sp.docks.conversation) drafts.set(LAST_DOCKED_SESSION, id);
+	});
+	const closeDocked = () => {
+		drafts.clear(LAST_DOCKED_SESSION);
+		sp.openSession = null;
+	};
+
 	// live status changes from the websocket → refetch the list
 	$effect(() => {
 		void ws.changeTick;
@@ -279,7 +307,19 @@
 	<SessionSections {sp} {pending} {machineLiveness} />
 {/if}
 
-{#if sp.liveOpen}
+{#if sp.docks.conversation}
+	<ConversationDock
+		side={sp.docks.conversation}
+		width={sp.docks[sp.docks.conversation] ?? ''}
+		session={sp.liveOpen}
+		onclose={closeDocked}
+		highlight={sp.searchTerms}
+		focusSeq={sp.focusSeq}
+		onNewFromScript={sp.newFromScript}
+		onFollowup={sp.followUp}
+		onNavigate={(sid) => void sp.navigateToForked(sid)}
+	/>
+{:else if sp.liveOpen}
 	<ConversationDrawer
 		session={sp.liveOpen}
 		onclose={() => (sp.openSession = null)}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	clampDockWidth,
+	CONVERSATION_DOCK_WIDTH,
 	DOCK_MAX_PX,
 	DOCK_MIN_PX,
 	maxDockWidth,
@@ -16,7 +17,14 @@ const on = (side: 'left' | 'right') => ({ enabled: true, side });
 describe('resolveDocks', () => {
 	it('docks nothing below the wide breakpoint whatever is stored', () => {
 		const r = resolveDocks({ spawn: on('left'), stats: on('right'), wide: false, veryWide: false });
-		expect(r).toEqual({ spawn: null, stats: null, stacked: false, left: null, right: null });
+		expect(r).toEqual({
+			conversation: null,
+			spawn: null,
+			stats: null,
+			stacked: false,
+			left: null,
+			right: null
+		});
 	});
 
 	it('docks nothing in tiles mode, however wide the window and whatever is stored', () => {
@@ -27,6 +35,7 @@ describe('resolveDocks', () => {
 			veryWide: true
 		};
 		expect(resolveDocks({ ...inputs, tiles: true })).toEqual({
+			conversation: null,
 			spawn: null,
 			stats: null,
 			stacked: false,
@@ -98,6 +107,85 @@ describe('resolveDocks', () => {
 		});
 		expect(r.right).toBe(`${DOCK_MIN_PX}px`);
 		expect(r.left).toBe(STATS_DOCK_WIDTH);
+	});
+});
+
+describe('resolveDocks with a docked conversation', () => {
+	it('is off unless enabled, leaving the other panels exactly as before', () => {
+		const base = { spawn: on('right'), stats: on('left'), wide: true, veryWide: true };
+		expect(resolveDocks({ ...base, conversation: off })).toEqual(resolveDocks(base));
+		expect(resolveDocks(base).conversation).toBeNull();
+	});
+
+	it('pins the conversation to the chosen edge at its default width', () => {
+		for (const side of ['left', 'right'] as const) {
+			const r = resolveDocks({ spawn: off, stats: off, conversation: on(side), wide: true, veryWide: false });
+			expect(r.conversation).toBe(side);
+			expect(r[side]).toBe(CONVERSATION_DOCK_WIDTH);
+			expect(r[side === 'left' ? 'right' : 'left']).toBeNull();
+		}
+	});
+
+	it('falls back to the drawer below the wide breakpoint and in tiles mode', () => {
+		const inputs = { spawn: off, stats: off, conversation: on('right'), veryWide: true };
+		expect(resolveDocks({ ...inputs, wide: false }).conversation).toBeNull();
+		expect(resolveDocks({ ...inputs, wide: true, tiles: true }).conversation).toBeNull();
+	});
+
+	it('moves a panel asked for the same edge to the opposite one', () => {
+		const r = resolveDocks({
+			spawn: on('right'),
+			stats: on('right'),
+			conversation: on('right'),
+			wide: true,
+			veryWide: true
+		});
+		expect(r.conversation).toBe('right');
+		expect(r.spawn).toBe('left');
+		expect(r.stats).toBe('left');
+		expect(r.stacked).toBe(true);
+		expect(r.right).toBe(CONVERSATION_DOCK_WIDTH);
+		expect(r.left).toBe(SPAWN_DOCK_WIDTH);
+	});
+
+	it('keeps a panel already on the other edge where it is', () => {
+		const r = resolveDocks({
+			spawn: off,
+			stats: on('right'),
+			conversation: on('left'),
+			wide: true,
+			veryWide: true
+		});
+		expect(r.conversation).toBe('left');
+		expect(r.stats).toBe('right');
+		expect(r.right).toBe(STATS_DOCK_WIDTH);
+	});
+
+	it('keeps only the conversation when there is no room for a second column', () => {
+		const r = resolveDocks({
+			spawn: on('left'),
+			stats: on('left'),
+			conversation: on('right'),
+			wide: true,
+			veryWide: false
+		});
+		expect(r.conversation).toBe('right');
+		expect(r.spawn).toBeNull();
+		expect(r.stats).toBeNull();
+		expect(r.left).toBeNull();
+	});
+
+	it('uses the dragged conversation width, clamped like the others', () => {
+		const at = (width: number) =>
+			resolveDocks({
+				spawn: off,
+				stats: off,
+				conversation: { ...on('right'), width },
+				wide: true,
+				veryWide: false
+			}).right;
+		expect(at(720)).toBe('720px');
+		expect(at(5)).toBe(`${DOCK_MIN_PX}px`);
 	});
 });
 

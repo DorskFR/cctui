@@ -143,6 +143,17 @@ export interface StatsDockSettings {
   width?: number;
 }
 
+// Docked conversation: the open session stays pinned beside the list instead
+// of sliding in as an overlay drawer, so another row can be clicked without
+// closing it first. Same on/off + side shape as the other docks; off by
+// default, and a narrow viewport falls back to the drawer.
+export interface ConversationDockSettings {
+  enabled: boolean;
+  side: SpawnDockSide;
+  /** Width in px once the user has dragged the panel's grip; unset = default. */
+  width?: number;
+}
+
 // Header resource gauge: the machines whose CPU / memory / disk the header
 // shows a battery-style gauge for. Serializes as `data.resourceMonitor`; the
 // server stores the blob untouched. Empty (the default) hides the strip.
@@ -473,6 +484,8 @@ export interface SettingsState {
   spawnDock: SpawnDockSettings;
   // Docked stats panel (Sessions screen). Serializes as `data.statsDock`.
   statsDock: StatsDockSettings;
+  // Docked conversation (Sessions screen). Serializes as `data.conversationDock`.
+  conversationDock: ConversationDockSettings;
   // Header resource gauge machines. Serializes as `data.resourceMonitor`.
   resourceMonitor: ResourceMonitorSettings;
   // Claude harness mode. Top-level so it serializes as `data.harnessMode`,
@@ -542,6 +555,7 @@ const DEFAULTS: SettingsState = {
   },
   spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
   statsDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
+  conversationDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
   resourceMonitor: { machines: [] },
   harnessMode: DEFAULT_HARNESS_MODE,
   whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: "" },
@@ -604,6 +618,11 @@ export function mergeDefaults(
       enabled: p.statsDock?.enabled === true,
       side: clampSpawnDockSide(p.statsDock?.side),
       width: clampDockWidth(p.statsDock?.width),
+    },
+    conversationDock: {
+      enabled: p.conversationDock?.enabled === true,
+      side: clampSpawnDockSide(p.conversationDock?.side),
+      width: clampDockWidth(p.conversationDock?.width),
     },
     resourceMonitor: {
       machines: clampMonitoredMachines(p.resourceMonitor?.machines),
@@ -939,6 +958,20 @@ class Settings {
       enabled: this.state.statsDock.enabled === true,
       side: clampSpawnDockSide(this.state.statsDock.side),
       width: clampDockWidth(this.state.statsDock.width),
+    };
+  }
+
+  // Docked conversation: on/off, which edge it pins to and its dragged width.
+  setConversationDock(patch: Partial<ConversationDockSettings>) {
+    this.state.conversationDock = { ...this.state.conversationDock, ...patch };
+    this.persist();
+  }
+
+  get conversationDock(): ConversationDockSettings {
+    return {
+      enabled: this.state.conversationDock?.enabled === true,
+      side: clampSpawnDockSide(this.state.conversationDock?.side),
+      width: clampDockWidth(this.state.conversationDock?.width),
     };
   }
 

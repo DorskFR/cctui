@@ -279,6 +279,29 @@ describe("Settings save → load round-trip through the blob", () => {
     expect(merged.statsDock.side).toBe("right");
   });
 
+  it("the docked conversation survives a persist then reload, width included", () => {
+    settings.setConversationDock({ enabled: true, side: "left", width: 720 });
+
+    const loaded = loadFromCache();
+    expect(loaded.conversationDock.enabled).toBe(true);
+    expect(loaded.conversationDock.side).toBe("left");
+    expect(loaded.conversationDock.width).toBe(720);
+    expect(settings.conversationDock).toEqual({ enabled: true, side: "left", width: 720 });
+  });
+
+  it("the docked conversation defaults off on the right and clamps an unknown side", () => {
+    expect(mergeDefaults(null).conversationDock).toEqual({
+      enabled: false,
+      side: "right",
+    });
+    const merged = mergeDefaults({
+      conversationDock: { enabled: "yes", side: "top", width: "wide" },
+    } as unknown as Record<string, unknown>);
+    expect(merged.conversationDock.enabled).toBe(false);
+    expect(merged.conversationDock.side).toBe("right");
+    expect(merged.conversationDock.width).toBeUndefined();
+  });
+
   it("each width maps to a CSS length, the default keeping --content-wide", () => {
     expect(sessionListWidthSize("default")).toBeUndefined();
     expect(sessionListWidthSize("wide")).toBe("80rem");
