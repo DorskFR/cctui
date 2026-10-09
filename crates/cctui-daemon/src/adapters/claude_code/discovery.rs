@@ -38,10 +38,21 @@ enum Probe {
     /// Hard `ECONNREFUSED`: the socket file exists but nothing is listening
     /// (the daemon that created it is gone). Safe to unlink the corpse.
     Refused,
+    /// Listener exists but the probe exceeded its deadline. Not proof of death.
+    Busy,
     /// Connected but didn't answer in time, or any other connect error
     /// (ENOENT race, non-socket file, …). Skip it but do NOT reap — a slow
     /// daemon must survive a single sluggish probe.
     Unreachable,
+}
+
+/// A slow local daemon must not be confused with a missing one: tearing down
+/// healthy attach sockets can trigger the native first-paint respawn watchdog.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Availability {
+    Live(PathBuf),
+    Busy(PathBuf),
+    Missing,
 }
 
 #[derive(Debug, Clone)]
@@ -99,9 +110,22 @@ impl Discovery {
     /// `None` when no candidate is reachable — letting the caller's kickstart
     /// self-heal fire to bring a fresh daemon up.
     pub async fn locate_live(&self) -> Option<PathBuf> {
+        match self.availability().await {
+            Availability::Live(path) => Some(path),
+            Availability::Busy(_) | Availability::Missing => None,
+        }
+    }
+
+    pub(super) async fn availability(&self) -> Availability {
+        let mut busy = None;
         for candidate in self.candidates() {
             match probe(&candidate).await {
-                Probe::Live => return Some(candidate),
+                Probe::Live => return Availability::Live(candidate),
+                Probe::Busy => {
+                    if busy.is_none() {
+                        busy = Some(candidate);
+                    }
+                }
                 Probe::Refused => {
                     // Connect to a *regular* file also yields ECONNREFUSED, so
                     // only reap when the path is genuinely a socket inode — we
@@ -125,7 +149,7 @@ impl Discovery {
                 }
             }
         }
-        None
+        busy.map_or(Availability::Missing, Availability::Busy)
     }
 }
 
@@ -142,6 +166,7 @@ async fn probe(socket: &Path) -> Probe {
     match tokio::time::timeout(PROBE_TIMEOUT, probe_inner(socket)).await {
         Ok(Ok(())) => Probe::Live,
         Ok(Err(err)) if err.kind() == ErrorKind::ConnectionRefused => Probe::Refused,
+        Err(_) if is_socket(socket) => Probe::Busy,
         Ok(Err(_)) | Err(_) => Probe::Unreachable,
     }
 }
@@ -223,6 +248,33 @@ mod tests {
                 });
             }
         });
+    }
+
+    #[tokio::test]
+    async fn silent_listener_is_busy_and_not_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("hash");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("control.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+        let discovery = Discovery::with_base(tmp.path().to_path_buf());
+        assert_eq!(discovery.availability().await, Availability::Busy(path.clone()));
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn responsive_daemon_wins_over_an_earlier_busy_listener() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            std::fs::create_dir(tmp.path().join(name)).unwrap();
+        }
+        let busy = tmp.path().join("a/control.sock");
+        let _listener = UnixListener::bind(&busy).unwrap();
+        let live = tmp.path().join("b/control.sock");
+        spawn_live_socket(&live);
+        let discovery = Discovery::with_base(tmp.path().to_path_buf());
+        assert_eq!(discovery.availability().await, Availability::Live(live));
+        assert!(busy.exists());
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-//! Auto-resume after a mid-stream connection loss (opt-in per user via the
+//! Auto-resume after a connection loss or recoverable gateway auth failure (opt-in via the
 //! `autoResumeOnConnectionLoss` setting).
 //!
 //! A Claude Code worker that loses the API mid-reply writes `API Error:
@@ -12,6 +12,7 @@
 
 use std::time::Duration as StdDuration;
 
+use cctui_proto::adapter::is_gateway_auth_error;
 use cctui_proto::backoff::Backoff;
 use chrono::{DateTime, Duration, Utc};
 
@@ -93,17 +94,17 @@ pub enum Action {
 ///   tracked.
 /// * `error_event_id` / `error_at` describe the error message found now.
 ///
-/// A different `error_event_id` means a new occurrence after a successful
-/// resume: the budget starts again from the error's own timestamp.
+/// A new error alone is not progress: repeated failures share the same budget.
+/// The caller clears `tracked` only after an intervening successful reply/tool.
 #[must_use]
 pub fn plan(
     tracked: Option<(i64, i32, DateTime<Utc>, bool)>,
-    error_event_id: i64,
+    _error_event_id: i64,
     error_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Action {
     let (attempts, due) = match tracked {
-        Some((id, attempts, next_attempt_at, exhausted)) if id == error_event_id => {
+        Some((_, attempts, next_attempt_at, exhausted)) => {
             if exhausted {
                 return Action::Skip;
             }
@@ -136,18 +137,37 @@ pub fn backoff_after(attempt: i32) -> i64 {
 /// the partial index `idx_stream_events_api_error`: reword one side and the
 /// planner stops using the index.
 const STUCK_SELECT: &str = concat!(
-    "WITH last_err AS ( \
-        SELECT DISTINCT ON (e.session_id) \
-               e.session_id, e.id, e.created_at, e.payload->>'text' AS text \
+    "WITH error_candidates AS ( \
+        SELECT e.session_id, e.id, e.created_at, e.payload->>'text' AS text \
         FROM stream_events e \
         WHERE e.event_type = 'message' \
           AND e.payload->>'role' = 'assistant' \
           AND e.payload->>'text' LIKE 'API Error:%' \
           AND e.created_at >= now() - ($1 || ' seconds')::interval \
-        ORDER BY e.session_id, e.created_at DESC, e.id DESC \
-     ) \
+        UNION ALL \
+        SELECT e.session_id, e.id, e.created_at, e.payload->>'text' AS text \
+        FROM stream_events e \
+        WHERE e.event_type = 'message' \
+          AND e.payload->>'role' = 'assistant' \
+          AND e.payload->>'text' LIKE 'Please run /login%' \
+          AND e.created_at >= now() - ($1 || ' seconds')::interval \
+     ), last_err AS ( \
+        SELECT DISTINCT ON (session_id) * FROM error_candidates \
+        ORDER BY session_id, created_at DESC, id DESC \
+     ), eligible AS ( \
      SELECT le.session_id, s.session_name, le.id AS event_id, le.created_at AS error_at, \
-            le.text, \
+            le.text, s.machine_uuid, s.adapter_id, \
+            EXISTS (SELECT 1 FROM session_tokens st \
+                    JOIN account_providers ap ON ap.id = st.account_id \
+                    WHERE st.session_id = s.id AND ap.family = 'anthropic') AS gateway_bound, \
+            EXISTS (SELECT 1 FROM stream_events p \
+                    WHERE p.session_id = s.id AND p.id > r.error_event_id AND p.id < le.id \
+                      AND (p.event_type = 'tool_use' OR (p.event_type = 'message' \
+                           AND p.payload->>'role' = 'assistant' \
+                           AND COALESCE(p.payload->>'text', '') <> '' \
+                           AND p.payload->>'text' NOT LIKE 'API Error:%' \
+                           AND p.payload->>'text' NOT LIKE 'Please run /login%' \
+                           AND p.payload->>'text' NOT ILIKE '%automatically restarted%'))) AS made_progress, \
             r.error_event_id AS tracked_event_id, r.attempts AS tracked_attempts, \
             r.next_attempt_at AS tracked_next_at, r.state AS tracked_state \
      FROM last_err le \
@@ -155,16 +175,28 @@ const STUCK_SELECT: &str = concat!(
      LEFT JOIN session_auto_resume r ON r.session_id = le.session_id \
      WHERE ",
     live_sessions_predicate!("s"),
-    " AND s.status <> ALL($3) \
+    " AND s.machine_uuid IS NOT NULL AND s.status <> ALL($3) AND ($5::text IS NULL OR s.id = $5) \
        AND COALESCE((SELECT us.data->'autoResumeOnConnectionLoss' = 'true'::jsonb \
                      FROM user_settings us WHERE us.user_id = s.user_id), false) \
+       AND NOT EXISTS (SELECT 1 FROM events ev WHERE ev.session_id = s.id \
+                       AND ev.occurred_at >= le.created_at \
+                       AND ev.kind IN ('session.killed', 'session.interrupted')) \
        AND NOT EXISTS ( \
            SELECT 1 FROM stream_events n \
            WHERE n.session_id = le.session_id AND n.id > le.id \
              AND (n.event_type = 'tool_use' \
                   OR (n.event_type = 'message' \
                       AND n.payload->>'role' IN ('assistant', 'user')))) \
-     LIMIT $2"
+     ) SELECT * FROM eligible WHERE ( \
+       (text LIKE 'API Error:%' AND text ILIKE ANY(ARRAY[ \
+           '%connection lost%', '%server error mid-response%', '%the response stopped arriving%', \
+           '%stalled before a response%', '%went to sleep%'])) \
+       OR (adapter_id = 'claude-code' AND gateway_bound AND machine_uuid = ANY($4) \
+           AND (text LIKE 'API Error: 401 %' OR text LIKE 'Please run /login · API Error: 401 %') \
+           AND (text LIKE '%Invalid bearer token%' \
+                OR text LIKE '%cctui gateway rejected the session token%'))) \
+       AND (tracked_state IS DISTINCT FROM 'exhausted' OR made_progress) \
+     ORDER BY error_at, event_id LIMIT $2"
 );
 
 #[derive(sqlx::FromRow)]
@@ -174,10 +206,37 @@ struct StuckRow {
     event_id: i64,
     error_at: DateTime<Utc>,
     text: Option<String>,
+    machine_uuid: uuid::Uuid,
+    adapter_id: String,
+    gateway_bound: bool,
+    made_progress: bool,
     tracked_event_id: Option<i64>,
     tracked_attempts: Option<i32>,
     tracked_next_at: Option<DateTime<Utc>>,
     tracked_state: Option<String>,
+}
+
+/// A manual retry may repair a gateway-bound Claude worker even when automatic
+/// recovery is disabled. The daemon rechecks its live turn and local transcript
+/// before touching the worker; a cached server error alone never authorizes it.
+pub async fn should_recover_gateway_auth(state: &AppState, session_id: &str) -> bool {
+    let row: Option<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT s.machine_uuid, e.payload->>'text' FROM sessions s \
+         JOIN LATERAL (SELECT event_type, payload FROM stream_events \
+                       WHERE session_id = s.id AND (event_type = 'tool_use' OR \
+                             (event_type = 'message' AND payload->>'role' IN ('assistant','user'))) \
+                       ORDER BY id DESC LIMIT 1) e ON true \
+         WHERE s.id = $1 AND s.machine_uuid IS NOT NULL AND s.adapter_id = 'claude-code' \
+           AND s.status IN ('new','active','inactive') \
+           AND e.event_type = 'message' AND e.payload->>'role' = 'assistant' \
+           AND e.payload->>'text' IS NOT NULL \
+           AND EXISTS (SELECT 1 FROM session_tokens st \
+                       JOIN account_providers ap ON ap.id = st.account_id \
+                       WHERE st.session_id=s.id AND ap.family='anthropic')"
+    ).bind(session_id).fetch_optional(&state.pool).await.unwrap_or(None);
+    row.is_some_and(|(machine, text)| {
+        state.auth_recovery_daemons.contains_key(&machine) && is_gateway_auth_error(&text)
+    })
 }
 
 /// One reaper-cadence sweep: nudge every stuck session whose backoff is due.
@@ -193,6 +252,8 @@ pub async fn sweep(state: &AppState) {
         .bind(LOOKBACK_SECS.to_string())
         .bind(BATCH)
         .bind(SessionRowStatus::names(SessionRowStatus::NOT_RESUMABLE))
+        .bind(state.auth_recovery_daemons.iter().map(|entry| *entry.key()).collect::<Vec<_>>())
+        .bind(None::<&str>)
         .fetch_all(&state.pool)
         .await
     {
@@ -205,7 +266,15 @@ pub async fn sweep(state: &AppState) {
 
     let now = Utc::now();
     for row in rows {
-        if !row.text.as_deref().is_some_and(is_connection_loss) {
+        let recover_auth = row.text.as_deref().is_some_and(is_gateway_auth_error);
+        if recover_auth {
+            if row.adapter_id != "claude-code"
+                || !row.gateway_bound
+                || !state.auth_recovery_daemons.contains_key(&row.machine_uuid)
+            {
+                continue;
+            }
+        } else if !row.text.as_deref().is_some_and(is_connection_loss) {
             continue;
         }
         let tracked = match (row.tracked_event_id, row.tracked_attempts, row.tracked_next_at) {
@@ -214,9 +283,10 @@ pub async fn sweep(state: &AppState) {
             }
             _ => None,
         };
+        let tracked = if row.made_progress { None } else { tracked };
         match plan(tracked, row.event_id, row.error_at, now) {
             Action::Skip => {}
-            Action::Fire { attempt } => fire(state, &row, attempt, now).await,
+            Action::Fire { attempt } => fire(state, &row, attempt, now, recover_auth).await,
             Action::Exhaust => exhaust(state, &row).await,
         }
     }
@@ -226,9 +296,29 @@ pub async fn sweep(state: &AppState) {
 /// a sweep that loses the race to record the same attempt sends nothing. A
 /// daemon that is away right now gets the next attempt after the backoff,
 /// exactly like a nudge that reached the worker but did not wake it.
-async fn fire(state: &AppState, row: &StuckRow, attempt: i32, now: DateTime<Utc>) {
+async fn fire(
+    state: &AppState,
+    row: &StuckRow,
+    attempt: i32,
+    now: DateTime<Utc>,
+    recover_auth: bool,
+) {
     let session_id = &row.session_id;
-    match claim_attempt(&state.pool, session_id, row.event_id, attempt).await {
+    // Re-read immediately before claiming: a human reply/interrupt or progress
+    // may have arrived while this batch waited on another daemon.
+    let current = sqlx::query_as::<_, StuckRow>(STUCK_SELECT)
+        .bind(LOOKBACK_SECS.to_string())
+        .bind(BATCH)
+        .bind(SessionRowStatus::names(SessionRowStatus::NOT_RESUMABLE))
+        .bind(state.auth_recovery_daemons.iter().map(|entry| *entry.key()).collect::<Vec<_>>())
+        .bind(session_id)
+        .fetch_optional(&state.pool)
+        .await;
+    if !current.is_ok_and(|value| value.is_some_and(|latest| latest.event_id == row.event_id)) {
+        return;
+    }
+    let previous = row.tracked_event_id.zip(row.tracked_attempts);
+    match claim_attempt(&state.pool, session_id, row.event_id, attempt, previous).await {
         Ok(true) => {}
         Ok(false) => return,
         Err(e) => {
@@ -239,22 +329,32 @@ async fn fire(state: &AppState, row: &StuckRow, attempt: i32, now: DateTime<Utc>
     // Carry re-minted gateway env so a reply-driven cold-resume revives a
     // hibernated worker with a fresh token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(state, session_id).await;
+    let command_id = uuid::Uuid::new_v4();
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        Some(session_id.clone()),
+        None,
+    );
     let dispatch = crate::bus::dispatch(
         state,
         session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: session_id.clone(),
-            text: resume_prompt(now, attempt),
+            text: if recover_auth {
+                format!("[cctui auto-resume {} attempt {attempt}/{MAX_ATTEMPTS}] The worker's gateway configuration was restored for this retry. Continue from where you left off.", now.format("%Y-%m-%dT%H:%M:%SZ"))
+            } else { resume_prompt(now, attempt) },
             ask_picks: None,
             env,
-            command_id: None,
+            recover_auth,
+            command_id: Some(command_id),
             turn_id: None,
         },
     )
     .await;
     match dispatch {
         Ok(()) => {
-            tracing::info!(%session_id, attempt, "auto-resume nudge sent after connection loss");
+            tracing::info!(%session_id, attempt, "auto-resume nudge sent");
             crate::events::record(
                 state,
                 crate::events::Event::new(
@@ -263,10 +363,11 @@ async fn fire(state: &AppState, row: &StuckRow, attempt: i32, now: DateTime<Utc>
                 )
                 .severity(crate::events::Severity::Warn)
                 .session(session_id)
-                .detail(serde_json::json!({ "attempt": attempt, "max_attempts": MAX_ATTEMPTS })),
+                .detail(serde_json::json!({ "attempt": attempt, "max_attempts": MAX_ATTEMPTS, "recover_auth": recover_auth })),
             );
         }
         Err(err) => {
+            state.pending_commands.remove(&command_id);
             tracing::warn!(%session_id, attempt, %err, "auto-resume nudge could not be dispatched");
             let _ = sqlx::query(
                 "UPDATE session_auto_resume SET last_error = $3, updated_at = now() \
@@ -289,6 +390,7 @@ async fn claim_attempt(
     session_id: &str,
     error_event_id: i64,
     attempt: i32,
+    previous: Option<(i64, i32)>,
 ) -> sqlx::Result<bool> {
     sqlx::query_scalar::<_, String>(
         "INSERT INTO session_auto_resume \
@@ -301,14 +403,18 @@ async fn claim_attempt(
             next_attempt_at = EXCLUDED.next_attempt_at, \
             last_error = NULL, \
             updated_at = now() \
-         WHERE session_auto_resume.error_event_id <> EXCLUDED.error_event_id \
-            OR session_auto_resume.attempts < EXCLUDED.attempts \
+         WHERE session_auto_resume.error_event_id = $5 \
+           AND session_auto_resume.attempts = $6 \
+           AND (session_auto_resume.error_event_id <> EXCLUDED.error_event_id \
+                OR session_auto_resume.attempts < EXCLUDED.attempts) \
          RETURNING session_id",
     )
     .bind(session_id)
     .bind(error_event_id)
     .bind(attempt)
     .bind(backoff_after(attempt).to_string())
+    .bind(previous.map(|v| v.0))
+    .bind(previous.map(|v| v.1))
     .fetch_optional(pool)
     .await
     .map(|claimed| claimed.is_some())
@@ -317,15 +423,18 @@ async fn claim_attempt(
 /// Mark the row exhausted and tell a human, once.
 async fn exhaust(state: &AppState, row: &StuckRow) {
     let session_id = &row.session_id;
-    let _ = sqlx::query(
+    let marked = sqlx::query(
         "UPDATE session_auto_resume SET state = 'exhausted', updated_at = now() \
-         WHERE session_id = $1 AND error_event_id = $2",
+         WHERE session_id = $1 AND error_event_id = $2 AND attempts = $3 AND state <> 'exhausted'",
     )
     .bind(session_id)
-    .bind(row.event_id)
+    .bind(row.tracked_event_id)
+    .bind(row.tracked_attempts)
     .execute(&state.pool)
-    .await
-    .map_err(|e| tracing::warn!(%session_id, "auto-resume row update failed: {e}"));
+    .await;
+    if !marked.is_ok_and(|result| result.rows_affected() == 1) {
+        return;
+    }
     let name = row.session_name.clone().unwrap_or_else(|| session_id.clone());
     tracing::error!(%session_id, "auto-resume gave up after {MAX_ATTEMPTS} nudges: {name}");
     crate::events::record(
@@ -439,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_error_after_a_successful_resume_restarts_the_budget() {
+    fn a_new_error_without_success_does_not_restart_the_budget() {
         let first_error = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
         let second_error = first_error + Duration::minutes(20);
         let exhausted_on_first = Some((10, MAX_ATTEMPTS, first_error, true));
@@ -449,6 +558,10 @@ mod tests {
         );
         assert_eq!(
             plan(exhausted_on_first, 11, second_error, second_error + Duration::seconds(60)),
+            Action::Skip
+        );
+        assert_eq!(
+            plan(None, 11, second_error, second_error + Duration::seconds(60)),
             Action::Fire { attempt: 1 }
         );
     }
@@ -512,19 +625,246 @@ mod tests {
             .expect("connect test db");
         let sid = seed_session(&pool, name).await;
 
-        let (a, b) =
-            tokio::join!(claim_attempt(&pool, &sid, 10, 1), claim_attempt(&pool, &sid, 10, 1));
+        let (a, b) = tokio::join!(
+            claim_attempt(&pool, &sid, 10, 1, None),
+            claim_attempt(&pool, &sid, 10, 1, None)
+        );
         assert_eq!(
             [a.unwrap(), b.unwrap()].iter().filter(|won| **won).count(),
             1,
             "two sweeps racing on the first nudge send it once"
         );
-        assert!(!claim_attempt(&pool, &sid, 10, 1).await.unwrap(), "already recorded");
-        assert!(claim_attempt(&pool, &sid, 10, 2).await.unwrap(), "the next nudge is free");
-        assert!(!claim_attempt(&pool, &sid, 10, 1).await.unwrap(), "never goes backwards");
+        assert!(!claim_attempt(&pool, &sid, 10, 1, None).await.unwrap(), "already recorded");
         assert!(
-            claim_attempt(&pool, &sid, 11, 1).await.unwrap(),
+            claim_attempt(&pool, &sid, 10, 2, Some((10, 1))).await.unwrap(),
+            "the next nudge is free"
+        );
+        assert!(!claim_attempt(&pool, &sid, 10, 1, None).await.unwrap(), "never goes backwards");
+        assert!(
+            claim_attempt(&pool, &sid, 11, 1, Some((10, 2))).await.unwrap(),
             "a new error restarts the budget"
         );
+    }
+    async fn message(pool: &sqlx::PgPool, sid: &str, role: &str, text: &str) -> i64 {
+        sqlx::query_scalar("INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, 'message', $2) RETURNING id")
+            .bind(sid).bind(serde_json::json!({"role":role,"text":text}))
+            .fetch_one(pool).await.unwrap()
+    }
+
+    async fn selected(pool: &sqlx::PgPool, sid: &str) -> Option<super::StuckRow> {
+        let machine: uuid::Uuid =
+            sqlx::query_scalar("SELECT machine_uuid FROM sessions WHERE id=$1")
+                .bind(sid)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        sqlx::query_as(STUCK_SELECT)
+            .bind(super::LOOKBACK_SECS.to_string())
+            .bind(super::BATCH)
+            .bind(crate::store::sessions::SessionRowStatus::names(
+                crate::store::sessions::SessionRowStatus::NOT_RESUMABLE,
+            ))
+            .bind(vec![machine])
+            .bind(sid)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn opt_in(pool: &sqlx::PgPool, sid: &str) {
+        sqlx::query("INSERT INTO user_settings(user_id, data) SELECT user_id, '{\"autoResumeOnConnectionLoss\":true}'::jsonb FROM sessions WHERE id=$1")
+            .bind(sid).execute(pool).await.unwrap();
+    }
+
+    #[test]
+    fn login_index_matches_union_branch() {
+        let migration = include_str!("../../../migrations/170_stream_events_login_error.up.sql");
+        for condition in [
+            "event_type = 'message'",
+            "payload->>'role' = 'assistant'",
+            "payload->>'text' LIKE 'Please run /login%'",
+        ] {
+            assert!(migration.contains(condition));
+            assert!(STUCK_SELECT.contains(&format!("e.{condition}")));
+        }
+        assert!(STUCK_SELECT.contains("UNION ALL"));
+    }
+
+    async fn bind_gateway(pool: &sqlx::PgPool, sid: &str, uid: uuid::Uuid) {
+        let account = uuid::Uuid::new_v4();
+        let provider = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts(id,user_id,name) VALUES($1,$2,'auth-test')")
+            .bind(account)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO account_providers(id,user_id,provider,encrypted_refresh_token,account_id) VALUES($1,$2,'anthropic','test',$3)").bind(provider).bind(uid).bind(account).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO session_tokens(token_hash,session_id,account_id,revoked_at) VALUES($1,$2,$3,now())").bind(uuid::Uuid::new_v4().to_string()).bind(sid).bind(provider).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn login_error_requires_opt_in_and_stays_bounded_until_real_progress() {
+        let Some(url) = crate::routes::gateway::test_db_url("auto_resume_login") else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let sid = seed_session(&pool, "login").await;
+        let first = message(
+            &pool,
+            &sid,
+            "assistant",
+            "Please run /login · API Error: 401 Invalid bearer token",
+        )
+        .await;
+        assert!(selected(&pool, &sid).await.is_none(), "default is opt-out");
+        opt_in(&pool, &sid).await;
+        assert!(
+            selected(&pool, &sid).await.is_none(),
+            "an unrelated local account is not recoverable"
+        );
+        // A revoked gateway credential still proves the family binding needed
+        // to mint a replacement; it is never reused as a credential.
+        let uid: uuid::Uuid = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id=$1")
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        bind_gateway(&pool, &sid, uid).await;
+        assert!(selected(&pool, &sid).await.unwrap().gateway_bound);
+        let state = crate::state::AppState::for_test(pool.clone());
+        assert!(
+            !super::should_recover_gateway_auth(&state, &sid).await,
+            "manual retry requires a capable daemon"
+        );
+        let machine: uuid::Uuid =
+            sqlx::query_scalar("SELECT machine_uuid FROM sessions WHERE id=$1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        state.auth_recovery_daemons.insert(machine, ());
+        sqlx::query("UPDATE user_settings SET data='{}'::jsonb WHERE user_id=$1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            super::should_recover_gateway_auth(&state, &sid).await,
+            "an explicit retry does not need auto-resume opt-in"
+        );
+        sqlx::query("UPDATE user_settings SET data='{\"autoResumeOnConnectionLoss\":true}'::jsonb WHERE user_id=$1").bind(uid).execute(&pool).await.unwrap();
+        let no_capability: Vec<super::StuckRow> = sqlx::query_as(STUCK_SELECT)
+            .bind(super::LOOKBACK_SECS.to_string())
+            .bind(super::BATCH)
+            .bind(crate::store::sessions::SessionRowStatus::names(
+                crate::store::sessions::SessionRowStatus::NOT_RESUMABLE,
+            ))
+            .bind(Vec::<uuid::Uuid>::new())
+            .bind(&sid)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(no_capability.is_empty(), "old daemons must not receive a blind auth retry");
+        assert!(claim_attempt(&pool, &sid, first, 1, None).await.unwrap());
+        message(&pool, &sid, "user", "[cctui auto-resume attempt 1] continue").await;
+        assert!(
+            !super::should_recover_gateway_auth(&state, &sid).await,
+            "a newer human message blocks manual stale error recovery"
+        );
+        assert!(selected(&pool, &sid).await.is_none(), "never replay past a later user message");
+        let second = message(
+            &pool,
+            &sid,
+            "assistant",
+            "Please run /login · API Error: 401 Invalid bearer token again",
+        )
+        .await;
+        let row = selected(&pool, &sid).await.unwrap();
+        assert!(!row.made_progress, "an auto reply then another 401 is not success");
+        let tracked =
+            Some((row.tracked_event_id.unwrap(), row.tracked_attempts.unwrap(), Utc::now(), false));
+        assert_eq!(plan(tracked, second, row.error_at, Utc::now()), Action::Fire { attempt: 2 });
+        assert!(claim_attempt(&pool, &sid, second, 2, Some((first, 1))).await.unwrap());
+        assert!(
+            !claim_attempt(&pool, &sid, first, 1, Some((first, 1))).await.unwrap(),
+            "a stale sweep cannot rewind the budget"
+        );
+        message(
+            &pool,
+            &sid,
+            "assistant",
+            "This session was automatically restarted after its process exited unexpectedly.",
+        )
+        .await;
+        message(&pool, &sid, "assistant", "API Error: 401 Invalid bearer token after restart")
+            .await;
+        assert!(!selected(&pool, &sid).await.unwrap().made_progress);
+        message(&pool, &sid, "assistant", "The build completed successfully.").await;
+        message(&pool, &sid, "assistant", "API Error: 401 Invalid bearer token").await;
+        assert!(selected(&pool, &sid).await.unwrap().made_progress);
+    }
+
+    #[tokio::test]
+    async fn human_cancellation_new_message_and_terminal_sessions_are_not_resumed() {
+        let Some(url) = crate::routes::gateway::test_db_url("auto_resume_cancel") else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        for kind in ["session.killed", "session.interrupted"] {
+            let sid = seed_session(&pool, kind).await;
+            opt_in(&pool, &sid).await;
+            message(&pool, &sid, "assistant", "API Error: Connection lost mid-response").await;
+            assert!(selected(&pool, &sid).await.is_some());
+            sqlx::query(
+                "INSERT INTO events(session_id,kind,actor,summary) VALUES($1,$2,'user','stop')",
+            )
+            .bind(&sid)
+            .bind(kind)
+            .execute(&pool)
+            .await
+            .unwrap();
+            assert!(selected(&pool, &sid).await.is_none());
+        }
+        let sid = seed_session(&pool, "later-message").await;
+        opt_in(&pool, &sid).await;
+        message(&pool, &sid, "assistant", "API Error: Connection lost mid-response").await;
+        assert!(selected(&pool, &sid).await.is_some());
+        message(&pool, &sid, "user", "Do something else").await;
+        assert!(selected(&pool, &sid).await.is_none());
+        for status in ["archived", "ended", "failed", "draft"] {
+            let sid = seed_session(&pool, status).await;
+            opt_in(&pool, &sid).await;
+            message(&pool, &sid, "assistant", "API Error: Connection lost mid-response").await;
+            sqlx::query("UPDATE sessions SET status=$2 WHERE id=$1")
+                .bind(&sid)
+                .bind(status)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(selected(&pool, &sid).await.is_none(), "{status}");
+        }
+    }
+    #[tokio::test]
+    async fn non_retryable_errors_do_not_consume_the_sweep_batch() {
+        let Some(url) = crate::routes::gateway::test_db_url("auto_resume_batch") else { return };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let sid = seed_session(&pool, "batch").await;
+        opt_in(&pool, &sid).await;
+        for i in 0..55 {
+            let other = seed_session(&pool, &format!("nonretryable-{i}")).await;
+            opt_in(&pool, &other).await;
+            message(&pool, &other, "assistant", "API Error: 400 prompt is too long").await;
+        }
+        message(&pool, &sid, "assistant", "API Error: Connection lost mid-response").await;
+        let rows: Vec<super::StuckRow> = sqlx::query_as(STUCK_SELECT)
+            .bind(super::LOOKBACK_SECS.to_string())
+            .bind(super::BATCH)
+            .bind(crate::store::sessions::SessionRowStatus::names(
+                crate::store::sessions::SessionRowStatus::NOT_RESUMABLE,
+            ))
+            .bind(Vec::<uuid::Uuid>::new())
+            .bind(None::<&str>)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(rows.iter().any(|row| row.session_id == sid));
+        assert!(rows.iter().all(|row| row.text.as_deref().is_some_and(super::is_connection_loss)));
     }
 }

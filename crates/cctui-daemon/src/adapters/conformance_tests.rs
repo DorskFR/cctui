@@ -59,6 +59,7 @@ fn every_command(adapter: &str) -> Vec<AdapterCommand> {
         },
         AdapterCommand::Reply {
             local_id: GHOST.into(),
+            recover_auth: false,
             text: "hi".into(),
             ask_picks: None,
             env: BTreeMap::new(),

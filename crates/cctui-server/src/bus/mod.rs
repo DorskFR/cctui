@@ -1252,6 +1252,7 @@ mod tests {
             adapter_id: "claude-code".into(),
             command: Box::new(AdapterCommand::Reply {
                 local_id: local_id.into(),
+                recover_auth: false,
                 text: "hi".into(),
                 ask_picks: None,
                 env: std::collections::BTreeMap::new(),

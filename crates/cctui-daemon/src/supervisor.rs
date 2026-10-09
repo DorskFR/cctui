@@ -563,6 +563,7 @@ impl Supervisor {
             claude_jobs: claude_jobs_root(running).map(|root| jobs_on_disk(&root)),
             harness: Some(crate::harness_update::report()),
             mark_acks: Some(true),
+            auth_recovery: Some(true),
         };
         let payload = serde_json::to_string(&hb)?;
         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
@@ -2574,6 +2575,7 @@ mod tests {
             claude_jobs: None,
             harness: None,
             mark_acks: None,
+            auth_recovery: None,
         };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")

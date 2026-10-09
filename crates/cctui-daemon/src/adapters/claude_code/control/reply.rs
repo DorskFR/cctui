@@ -1,6 +1,60 @@
 use super::{AdapterEvent, Driver, json, socket, transcript};
 
 impl Driver {
+    /// Repair only the idle worker named by a recovery request. Resolve its
+    /// durable gateway binding BEFORE stopping it, then resume the same saved
+    /// conversation. Never delete job metadata or emit a terminal session event.
+    pub(super) async fn recover_gateway_auth(
+        &self,
+        sock: &std::path::Path,
+        local_id: &str,
+        hint: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<()> {
+        let short = self.resolve_short_for_removal(local_id)?;
+        anyhow::ensure!(
+            self.auth_recovery_quiescent(&short),
+            "auth recovery refused: worker is busy"
+        );
+        let st = super::StateJson::read(&self.cfg.jobs_root, &short)
+            .ok_or_else(|| anyhow::anyhow!("auth recovery: missing saved job identity"))?;
+        let cwd = st.cwd.as_deref().ok_or_else(|| anyhow::anyhow!("auth recovery: missing cwd"))?;
+        let session_id = st
+            .resume_session_id
+            .as_deref()
+            .or(st.session_id.as_deref())
+            .ok_or_else(|| anyhow::anyhow!("auth recovery: missing transcript identity"))?;
+        let path = transcript::transcript_path(&self.cfg.projects_root, cwd, session_id);
+        anyhow::ensure!(
+            tail_has_gateway_auth_error(&path)?,
+            "auth recovery refused: transcript has advanced beyond the authentication failure"
+        );
+        let launch = self.resolve_launch_env(local_id, hint).await?;
+        anyhow::ensure!(
+            valid_recovery_env(&launch.env),
+            "auth recovery refused: no complete gateway credential"
+        );
+        // Recheck after the server round-trip; a user may have resumed meanwhile.
+        anyhow::ensure!(
+            self.auth_recovery_quiescent(&short) && tail_has_gateway_auth_error(&path)?,
+            "auth recovery refused: worker made progress"
+        );
+        self.stop_worker(sock, &short).await;
+        anyhow::ensure!(
+            Self::await_worker_exit(sock, &short).await,
+            "auth recovery aborted: old worker did not exit"
+        );
+        self.resume_if_hibernated(sock, &short, local_id, &launch.env).await?;
+        tracing::info!(%local_id, "recovered gateway authentication in a fresh worker");
+        Ok(())
+    }
+
+    fn auth_recovery_quiescent(&self, short: &str) -> bool {
+        self.last_status
+            .get(short)
+            .and_then(|s| s.tempo.as_deref())
+            .is_none_or(|tempo| matches!(tempo, "idle" | "blocked"))
+    }
+
     /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
     /// form. With structured `ask_picks` and the hook-captured questions we
     /// answer the form *natively* — keystrokes on the real form, so claude
@@ -181,6 +235,46 @@ impl Driver {
     }
 }
 
+/// Read a bounded tail, ignoring metadata but refusing to restart after a new
+/// user message, a tool call, or a successful assistant response.
+fn tail_has_gateway_auth_error(path: &std::path::Path) -> anyhow::Result<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let start = file.metadata()?.len().saturating_sub(256 * 1024);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(gateway_auth_at_tail(&String::from_utf8_lossy(&bytes)))
+}
+
+fn gateway_auth_at_tail(tail: &str) -> bool {
+    for line in tail.lines().rev() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        match value["type"].as_str() {
+            Some("user") => return false,
+            Some("assistant") => {
+                let content = &value["message"]["content"];
+                if let Some(text) = content.as_str() {
+                    return cctui_proto::adapter::is_gateway_auth_error(text);
+                }
+                let Some(blocks) = content.as_array() else { return false };
+                return blocks.len() == 1
+                    && blocks[0]["type"] == "text"
+                    && blocks[0]["text"]
+                        .as_str()
+                        .is_some_and(cctui_proto::adapter::is_gateway_auth_error);
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn valid_recovery_env(env: &std::collections::BTreeMap<String, String>) -> bool {
+    env.get("ANTHROPIC_AUTH_TOKEN").is_some_and(|t| t.starts_with("cctui_s_"))
+        && env.get("ANTHROPIC_BASE_URL").is_some_and(|url| !url.trim().is_empty())
+}
+
 /// Translate a structured ask answer into the keystroke chunks that drive the
 /// real `AskUserQuestion` form. `questions` is the raw
 /// `tool_input.questions` array captured by the ask-hook; `picks` is one list
@@ -291,5 +385,169 @@ mod tests {
         assert_eq!(ask_keystrokes(&mq, &[vec![0, 0]]), None);
         // not an array at all
         assert_eq!(ask_keystrokes(&json!({}), &[vec![0]]), None);
+    }
+}
+
+#[cfg(test)]
+mod auth_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn auth_recovery_stops_at_real_progress_or_user_input() {
+        let failure = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Please run /login · API Error: 401 Invalid bearer token"}]}}"#;
+        assert!(gateway_auth_at_tail(failure));
+        assert!(gateway_auth_at_tail(&format!("{failure}\n{{\"type\":\"system\"}}")));
+        for next in [
+            r#"{"type":"user","message":{"content":"retry"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Done"}]}}"#,
+        ] {
+            assert!(!gateway_auth_at_tail(&format!("{failure}\n{next}")));
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_refuses_a_busy_worker_before_touching_the_socket() {
+        let (mut driver, _events) = super::super::test_support::driver();
+        let short = "aabbccdd";
+        let status = super::super::StatusSnapshot {
+            tempo: Some("active".into()),
+            state: None,
+            detail: None,
+            name: None,
+            activity: None,
+            model: None,
+            effort: None,
+        };
+        driver.last_status.insert(short.into(), status);
+        let error = driver
+            .recover_gateway_auth(
+                std::path::Path::new("/nonexistent/socket"),
+                "aabbccdd-0000-0000-0000-000000000000",
+                &std::collections::BTreeMap::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("worker is busy"));
+    }
+
+    #[tokio::test]
+    async fn recovery_refuses_missing_gateway_credentials_without_killing() {
+        let (driver, _events) = super::super::test_support::driver();
+        let short = "aabbccdd";
+        let session = "aabbccdd-0000-0000-0000-000000000000";
+        let job = driver.cfg.jobs_root.join(short);
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(
+            job.join("state.json"),
+            serde_json::json!({"sessionId":session,"cwd":"/project"}).to_string(),
+        )
+        .unwrap();
+        let transcript =
+            transcript::transcript_path(&driver.cfg.projects_root, "/project", session);
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(transcript, r#"{"type":"assistant","message":{"content":[{"type":"text","text":"API Error: 401 Invalid bearer token"}]}}"#).unwrap();
+        let error = driver
+            .recover_gateway_auth(
+                std::path::Path::new("/nonexistent/socket"),
+                session,
+                &std::collections::BTreeMap::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no complete gateway credential"), "{error}");
+        assert!(job.join("state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn recovery_restarts_only_the_failed_worker_with_gateway_settings() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (driver, _events) = super::super::test_support::driver();
+        let session = uuid::Uuid::new_v4().to_string();
+        let short = session[..8].to_owned();
+        let job = driver.cfg.jobs_root.join(&short);
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(
+            job.join("state.json"),
+            json!({"sessionId":session,"cwd":"/project"}).to_string(),
+        )
+        .unwrap();
+        let transcript =
+            transcript::transcript_path(&driver.cfg.projects_root, "/project", &session);
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(transcript, r#"{"type":"assistant","message":{"content":[{"type":"text","text":"API Error: 401 Invalid bearer token"}]}}"#).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("daemon.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let expected_short = short.clone();
+        let expected_session = session.clone();
+        let mock = tokio::spawn(async move {
+            let mut dispatched = false;
+            let mut killed = false;
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut line = String::new();
+                tokio::io::BufReader::new(read).read_line(&mut line).await.unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let operation = request["op"].as_str().unwrap();
+                let response = match operation {
+                    "kill" => {
+                        assert_eq!(request["short"], expected_short);
+                        killed = true;
+                        json!({"ok":true})
+                    }
+                    "has" => {
+                        assert_eq!(request["short"], expected_short);
+                        json!({"ok":true,"alive":dispatched})
+                    }
+                    "dispatch" => {
+                        assert!(killed);
+                        assert_eq!(request["d"]["short"], expected_short);
+                        assert_eq!(request["d"]["sessionId"], expected_session);
+                        assert_eq!(
+                            request["d"]["env"]["ANTHROPIC_BASE_URL"],
+                            "https://gateway.test/gateway/anthropic"
+                        );
+                        let args = request["d"]["launch"]["args"].as_array().unwrap();
+                        assert!(args.iter().any(|a| a == "--settings"));
+                        assert!(args.iter().any(|a| a == "--resume"));
+                        dispatched = true;
+                        json!({"ok":true})
+                    }
+                    other => panic!("unexpected {other}"),
+                };
+                write.write_all(format!("{response}\n").as_bytes()).await.unwrap();
+                if dispatched && operation == "has" {
+                    break;
+                }
+            }
+        });
+        let env = super::super::test_support::env_of(&[
+            ("ANTHROPIC_AUTH_TOKEN", "cctui_s_example"),
+            ("ANTHROPIC_BASE_URL", "https://gateway.test/gateway/anthropic"),
+        ]);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            driver.recover_gateway_auth(&sock, &session, &env),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        mock.await.unwrap();
+        assert!(job.join("state.json").exists());
+        crate::configsweep::remove_session_files(&short);
+    }
+
+    #[test]
+    fn recovery_requires_both_gateway_keys_and_a_session_token() {
+        let mut env = std::collections::BTreeMap::new();
+        assert!(!valid_recovery_env(&env));
+        env.insert("ANTHROPIC_AUTH_TOKEN".into(), "cctui_s_example".into());
+        assert!(!valid_recovery_env(&env));
+        env.insert("ANTHROPIC_BASE_URL".into(), "https://gateway.test/gateway/anthropic".into());
+        assert!(valid_recovery_env(&env));
+        env.insert("ANTHROPIC_AUTH_TOKEN".into(), "provider-token".into());
+        assert!(!valid_recovery_env(&env));
     }
 }

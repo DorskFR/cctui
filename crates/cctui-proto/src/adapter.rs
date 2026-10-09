@@ -580,6 +580,10 @@ pub enum AdapterCommand {
     /// Inject `text` into the worker as a user turn.
     Reply {
         local_id: String,
+        /// Repair gateway routing in a fresh worker before delivering this reply.
+        /// Only sent to daemons supporting auth recovery; never a blind 401 retry.
+        #[serde(default)]
+        recover_auth: bool,
         text: String,
         /// 0-based option picks per question for a pending `AskUserQuestion`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1217,6 +1221,7 @@ mod tests {
         let id = Uuid::new_v4();
         let cmd = AdapterCommand::Reply {
             local_id: "s1".into(),
+            recover_auth: false,
             text: "go on".into(),
             ask_picks: None,
             env: std::collections::BTreeMap::default(),
@@ -1329,6 +1334,7 @@ mod tests {
         let cases = vec![
             AdapterCommand::Reply {
                 local_id: "s1".into(),
+                recover_auth: false,
                 text: "go on".into(),
                 ask_picks: None,
                 env: std::collections::BTreeMap::default(),
@@ -1492,5 +1498,41 @@ mod tests {
         };
         let json = serde_json::to_string(&spec).unwrap();
         let _back: SessionSpec = serde_json::from_str(&json).unwrap();
+    }
+}
+
+/// Authentication failures that replacing a gateway-bound worker can repair.
+///
+/// Provider OAuth rejection is deliberately excluded: it needs account recovery,
+/// not a replay of the same request with the same upstream credential.
+#[must_use]
+pub fn is_gateway_auth_error(text: &str) -> bool {
+    let text = text.trim();
+    let text = text.strip_prefix("Please run /login · ").unwrap_or(text);
+    let Some(error) = text.strip_prefix("API Error:") else { return false };
+    let error = error.trim_start();
+    error.starts_with("401 ")
+        && (error.contains("Invalid bearer token")
+            || error.contains("cctui gateway rejected the session token"))
+}
+
+#[cfg(test)]
+mod gateway_auth_tests {
+    use super::is_gateway_auth_error;
+
+    #[test]
+    fn only_gateway_repairable_auth_errors_match() {
+        assert!(is_gateway_auth_error("Please run /login · API Error: 401 Invalid bearer token"));
+        assert!(is_gateway_auth_error(
+            "API Error: 401 cctui gateway rejected the session token: unknown"
+        ));
+        for text in [
+            "API Error: 401 cctui accepted the session token, but the upstream LLM provider returned 401 for the bound account's OAuth credentials",
+            "API Error: 400 Invalid bearer token",
+            "API Error: 401 authentication_error",
+            "Documentation: API Error: 401 Invalid bearer token",
+        ] {
+            assert!(!is_gateway_auth_error(text), "{text}");
+        }
     }
 }
