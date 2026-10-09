@@ -381,6 +381,8 @@ impl Driver {
             activity: activity.clone(),
             model: model.clone(),
             effort: effort.clone(),
+            source: job.source.clone(),
+            started_at: job.started_at,
         };
         if self.last_status.get(&job.short) == Some(&snap) {
             return;
