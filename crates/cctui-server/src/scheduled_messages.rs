@@ -183,6 +183,7 @@ pub async fn deliver(state: &AppState, row: ClaimedRow) -> Result<(), String> {
         &row.session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: row.session_id.clone(),
+            recover_auth: false,
             text: row.body,
             ask_picks,
             env,

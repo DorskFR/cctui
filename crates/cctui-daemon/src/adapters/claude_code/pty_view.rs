@@ -566,6 +566,7 @@ mod tests {
         cmd_tx
             .send(cctui_proto::adapter::AdapterCommand::Reply {
                 local_id: "sess-1".to_owned(),
+                recover_auth: false,
                 text: "hi".to_owned(),
                 ask_picks: None,
                 env: std::collections::BTreeMap::new(),

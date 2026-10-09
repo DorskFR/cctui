@@ -202,6 +202,7 @@ async fn handle_message(
         &session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: session_id.clone(),
+            recover_auth: false,
             text: content,
             ask_picks,
             env,

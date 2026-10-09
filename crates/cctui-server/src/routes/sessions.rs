@@ -2302,6 +2302,8 @@ pub async fn send_message(
         &session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: session_id.clone(),
+            recover_auth: crate::auto_resume::should_recover_gateway_auth(&state, &session_id)
+                .await,
             text: req.content,
             ask_picks: None,
             env,
@@ -2386,6 +2388,16 @@ pub async fn kill_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    // Persist the user's stop before dispatch so the recovery reaper cannot
+    // revive the same failed turn while the native worker is stopping.
+    sqlx::query(
+        "INSERT INTO commands(session_id,kind,payload,status) VALUES($1,$2,'{}','completed')",
+    )
+    .bind(&session_id)
+    .bind("session.killed")
+    .execute(&state.pool)
+    .await?;
+
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
@@ -2424,6 +2436,16 @@ pub async fn interrupt_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
+    // Persist the user's stop before dispatch so the recovery reaper cannot
+    // revive the same failed turn while the native worker is stopping.
+    sqlx::query(
+        "INSERT INTO commands(session_id,kind,payload,status) VALUES($1,$2,'{}','completed')",
+    )
+    .bind(&session_id)
+    .bind("session.interrupted")
+    .execute(&state.pool)
+    .await?;
+
     let command_id = uuid::Uuid::new_v4();
     crate::state::track_command(
         &state.pending_commands,

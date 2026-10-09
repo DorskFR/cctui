@@ -240,6 +240,16 @@ pub trait SessionDriver: Send {
         turn_id: Option<Uuid>,
     ) -> CommandOutcome;
 
+    /// Recreate an idle gateway-bound worker after an authentication failure.
+    /// Unsupported adapters fail closed rather than retrying the same credential.
+    async fn recover_auth(
+        &mut self,
+        _local_id: &str,
+        _env: &BTreeMap<String, String>,
+    ) -> CommandOutcome {
+        unsupported("recover_auth")
+    }
+
     async fn kill(&mut self, local_id: String, signal: Option<i32>) -> CommandOutcome;
 
     async fn resume_marks(&mut self, _marks: Vec<(String, u64)>) -> CommandOutcome {
@@ -332,8 +342,24 @@ pub async fn dispatch_command<D: SessionDriver + ?Sized>(
         AdapterCommand::Fork { parent_local_id, spec, command_id, session_id, extract } => {
             driver.fork(parent_local_id, spec, command_id, session_id, extract).await
         }
-        AdapterCommand::Reply { local_id, text, ask_picks, env, command_id, turn_id } => {
-            driver.reply(local_id, text, ask_picks, env, command_id, turn_id).await
+        AdapterCommand::Reply {
+            local_id,
+            text,
+            ask_picks,
+            env,
+            command_id,
+            turn_id,
+            recover_auth,
+        } => {
+            let recovery = if recover_auth {
+                driver.recover_auth(&local_id, &env).await
+            } else {
+                Ok(Handled::Done)
+            };
+            match recovery {
+                Ok(_) => driver.reply(local_id, text, ask_picks, env, command_id, turn_id).await,
+                Err(err) => Err(err),
+            }
         }
         AdapterCommand::Interrupt { local_id, command_id } => {
             driver.interrupt(local_id, command_id).await
