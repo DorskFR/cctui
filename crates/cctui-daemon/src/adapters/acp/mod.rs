@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::adapter_runtime::{
     Adapter, AdapterCtx, AdapterFactory, CommandOutcome, Handled, SessionDriver, dispatch_command,
 };
+use crate::adapters::agent_mcp::AgentMcp;
 use crate::client::ServerClient;
 use persist::SessionStore;
 use rows::AgentRow;
@@ -251,6 +252,7 @@ impl SessionDriver for Pump {
                 permission_mode: None,
                 parent_local_id: None,
                 started_at_ms: crate::neighbours::now_ms(),
+                spawn_relay: false,
             },
             (None, None) => {
                 return Err(anyhow::anyhow!("no recorded {} session {local_id}", self.row.id));
@@ -397,8 +399,10 @@ impl Pump {
                 return;
             }
         };
+        let agent_mcp = AgentMcp::for_capability(&key, launch.spawn_capability.as_ref());
         let preflight = crate::preflight::Preflight::new(self.events.clone(), spec.model.clone())
-            .with_limits(self.server.as_ref(), self.machine_key.as_deref());
+            .with_limits(self.server.as_ref(), self.machine_key.as_deref())
+            .with_relay(agent_mcp.as_ref().map(|relay| relay.session_key().to_owned()));
         let params = SpawnParams {
             row: self.row,
             bin: self.bin.clone(),
@@ -413,6 +417,7 @@ impl Pump {
             attachments,
             command_id,
             parent_local_id: spec.parent_local_id.clone(),
+            agent_mcp,
             preflight: Some(preflight),
             context: launch.context,
             resume: None,
@@ -463,6 +468,9 @@ impl Pump {
                 return;
             }
         };
+        let agent_mcp = crate::adapters::agent_mcp::recall(&local_id)
+            .or_else(|| record.spawn_relay.then(|| AgentMcp::for_session(&local_id)).flatten())
+            .or_else(|| AgentMcp::for_capability(&local_id, launch.spawn_capability.as_ref()));
         tracing::info!(%local_id, agent = self.row.id, "acp: re-attaching session");
         self.run_session(SpawnParams {
             row: self.row,
@@ -478,6 +486,7 @@ impl Pump {
             attachments: Vec::new(),
             command_id: None,
             parent_local_id: record.parent_local_id,
+            agent_mcp,
             preflight: None,
             context: Vec::new(),
             resume: Some(Resume { session_id: local_id, started_at_ms: record.started_at_ms }),

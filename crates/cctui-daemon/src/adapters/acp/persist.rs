@@ -23,6 +23,9 @@ pub struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_local_id: Option<String>,
     pub started_at_ms: u64,
+    /// The launch declared the `CctuiAgent` relay, so a re-attach declares it again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spawn_relay: bool,
 }
 
 pub type Records = BTreeMap<String, Record>;
@@ -161,6 +164,7 @@ mod tests {
             permission_mode: Some(PermissionMode::Auto),
             parent_local_id: Some("parent".to_owned()),
             started_at_ms: 1_784_143_530_428,
+            spawn_relay: true,
         }
     }
 

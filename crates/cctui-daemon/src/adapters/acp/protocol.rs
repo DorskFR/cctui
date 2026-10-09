@@ -9,6 +9,8 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::adapters::agent_mcp::AgentMcp;
+
 pub const PROTOCOL_VERSION: u64 = 1;
 pub const CLIENT_NAME: &str = "cctui-daemon";
 
@@ -70,19 +72,19 @@ pub fn parse_initialize(resp: &Value) -> InitInfo {
 }
 
 #[must_use]
-pub fn new_session_params(cwd: &Path) -> Value {
-    json!({ "cwd": cwd, "mcpServers": mcp_servers() })
+pub fn new_session_params(cwd: &Path, relay: Option<&AgentMcp>) -> Value {
+    json!({ "cwd": cwd, "mcpServers": mcp_servers(relay) })
 }
 
-const fn mcp_servers() -> Value {
-    Value::Array(Vec::new())
+fn mcp_servers(relay: Option<&AgentMcp>) -> Value {
+    Value::Array(relay.map(AgentMcp::acp_server).into_iter().collect())
 }
 
 /// `session/resume` or `session/load`: same body, re-declaring what
 /// `session/new` declared.
 #[must_use]
-pub fn reattach_params(session_id: &str, cwd: &Path) -> Value {
-    json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": mcp_servers() })
+pub fn reattach_params(session_id: &str, cwd: &Path, relay: Option<&AgentMcp>) -> Value {
+    json!({ "sessionId": session_id, "cwd": cwd, "mcpServers": mcp_servers(relay) })
 }
 
 /// A resume or load answer is a `session/new` answer without the id.
@@ -371,10 +373,16 @@ mod tests {
 
     #[test]
     fn reattach_redeclares_cwd_and_mcp_servers_and_reads_the_answer_like_new() {
-        let p = reattach_params("sess_1", Path::new("/repo"));
+        let relay = AgentMcp::new("/bin/cctui-daemon".into(), "key-1".into(), "/run/a.sock".into());
+        let p = reattach_params("sess_1", Path::new("/repo"), Some(&relay));
         assert_eq!(p["sessionId"], "sess_1");
         assert_eq!(p["cwd"], "/repo");
-        assert_eq!(p["mcpServers"], new_session_params(Path::new("/repo"))["mcpServers"]);
+        assert_eq!(p["mcpServers"], json!([relay.acp_server()]));
+        assert_eq!(
+            p["mcpServers"],
+            new_session_params(Path::new("/repo"), Some(&relay))["mcpServers"]
+        );
+        assert_eq!(new_session_params(Path::new("/repo"), None)["mcpServers"], json!([]));
         let s = parse_reattach(
             "sess_1",
             &json!({ "modes": { "currentModeId": "yolo", "availableModes": [] } }),

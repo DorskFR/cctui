@@ -100,7 +100,7 @@ pub fn tool_schema() -> Value {
                 "adapter": {
                     "type": "string",
                     "description": "Harness to run the child under, e.g. \"opencode\", \
-    \"codex\", \"claude_code\". Only the adapters this session is permitted to spawn are \
+    \"codex\", \"claude_code\", or an ACP agent such as \"gemini\". Only the adapters this session is permitted to spawn are \
     accepted. Ignored when session_id is set.",
                 },
                 "prompt": {
@@ -250,7 +250,7 @@ pub fn peers_tool_schema() -> Value {
         "name": PEERS_TOOL_NAME,
         "description": "List the cctui sessions this session is allowed to talk to: its parent, \
     its children, its siblings, and any session explicitly shared with it — across machines and \
-    across harnesses (claude_code, codex, opencode). Each entry gives session_id, name, adapter, \
+    across harnesses (claude_code, codex, opencode, ACP agents such as gemini). Each entry gives session_id, name, adapter, \
     machine, state (live / ended / archived) and the relation. Use it before CctuiSend or \
     CctuiHistory: an id not on this list is refused.",
         "inputSchema": {
@@ -738,6 +738,19 @@ mod tests {
 
     fn handle(session_id: &str, sock: &Path, req: &Value) -> Option<Value> {
         handle_request(session_id, sock, req, &Outbox::new())
+    }
+
+    #[test]
+    fn the_tool_text_names_every_acp_agent_as_a_harness() {
+        let adapter = tool_schema()["inputSchema"]["properties"]["adapter"]["description"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let peers = peers_tool_schema()["description"].as_str().unwrap().to_owned();
+        for row in crate::adapters::acp::rows::ROWS {
+            assert!(adapter.contains(&format!("\"{}\"", row.id)), "{adapter}");
+            assert!(peers.contains(row.id), "{peers}");
+        }
     }
 
     #[test]

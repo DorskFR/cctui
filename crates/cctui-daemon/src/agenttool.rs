@@ -306,6 +306,7 @@ pub fn normalize_adapter(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
         "claude" | "claude-code" => "claude-code".to_owned(),
         "codex" | "codex-cli" => "codex".to_owned(),
+        "gemini" | "gemini-cli" => "gemini".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -1402,6 +1403,7 @@ mod tests {
         assert_eq!(normalize_adapter("Claude"), "claude-code");
         assert_eq!(normalize_adapter("codex-cli"), "codex");
         assert_eq!(normalize_adapter(" opencode "), "opencode");
+        assert_eq!(normalize_adapter("Gemini_CLI"), "gemini");
     }
 
     #[test]

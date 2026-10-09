@@ -24,6 +24,7 @@ use super::persist::{self, SessionStore};
 use super::process::Launch;
 use super::protocol::{self, InitInfo, NewSession, PromptOutcome, TurnUsage};
 use super::rows::AgentRow;
+use crate::adapters::agent_mcp::AgentMcp;
 use crate::adapters::traffic_rings::TrafficRings;
 
 const RPC_TIMEOUT: Duration = Duration::from_mins(1);
@@ -111,6 +112,8 @@ pub struct SpawnParams {
     pub attachments: Vec<String>,
     pub command_id: Option<Uuid>,
     pub parent_local_id: Option<String>,
+    /// The `CctuiAgent` relay declared in `mcpServers`, when the session may spawn.
+    pub agent_mcp: Option<AgentMcp>,
     pub preflight: Option<crate::preflight::Preflight>,
     pub context: Vec<cctui_proto::api::SessionContextItem>,
     pub resume: Option<Resume>,
@@ -341,7 +344,10 @@ impl AcpSession {
         let created = match self
             .request(
                 "session/new",
-                protocol::new_session_params(std::path::Path::new(&self.params.cwd)),
+                protocol::new_session_params(
+                    std::path::Path::new(&self.params.cwd),
+                    self.params.agent_mcp.as_ref(),
+                ),
                 NEW_SESSION_TIMEOUT,
             )
             .await
@@ -377,7 +383,11 @@ impl AcpSession {
                 self.params.row.id
             );
         };
-        let params = protocol::reattach_params(session_id, std::path::Path::new(&self.params.cwd));
+        let params = protocol::reattach_params(
+            session_id,
+            std::path::Path::new(&self.params.cwd),
+            self.params.agent_mcp.as_ref(),
+        );
         let resp = self
             .request(method, params, NEW_SESSION_TIMEOUT)
             .await
@@ -464,6 +474,9 @@ impl AcpSession {
         if !self.params.key.is_empty() && self.params.key != local_id {
             crate::agenttool::bind_session_alias(&self.params.key, &local_id);
         }
+        if let Some(relay) = &self.params.agent_mcp {
+            crate::adapters::agent_mcp::remember(&local_id, relay);
+        }
         let started_at_ms =
             self.params.resume.as_ref().map_or_else(crate::neighbours::now_ms, |r| r.started_at_ms);
         self.store.upsert(
@@ -477,6 +490,7 @@ impl AcpSession {
                 permission_mode: self.params.permission_mode,
                 parent_local_id: self.params.parent_local_id.clone(),
                 started_at_ms,
+                spawn_relay: self.params.agent_mcp.is_some(),
             },
         );
         let meta = SessionMeta {
