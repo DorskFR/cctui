@@ -224,6 +224,9 @@ pub(super) struct LiveSnapshot {
     pub status: Option<String>,
     #[serde(default, alias = "cliVersion")]
     pub cli_version: Option<String>,
+    /// Epoch milliseconds at which the supervisor (re)started this worker.
+    #[serde(default, alias = "startedAt")]
+    pub started_at: Option<i64>,
 }
 
 impl LiveSnapshot {
@@ -552,6 +555,11 @@ struct StatusSnapshot {
     activity: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    /// Who launched the live worker (`fleet`, `respawn`, …) and when, as the
+    /// supervisor reports it. Auth recovery needs both to tell a worker the
+    /// native daemon revived from one that is genuinely mid-turn.
+    source: Option<String>,
+    started_at: Option<i64>,
 }
 
 /// Everything the launch chokepoint pulls from the server's durable binding for

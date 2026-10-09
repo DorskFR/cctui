@@ -98,6 +98,7 @@ pub(super) fn snap(short: &str, state: &str, name: Option<&str>) -> LiveSnapshot
         alive: None,
         status: None,
         cli_version: Some("2.1.145".into()),
+        started_at: None,
     }
 }
 

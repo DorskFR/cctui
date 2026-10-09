@@ -49,10 +49,12 @@ impl Driver {
     }
 
     fn auth_recovery_quiescent(&self, short: &str) -> bool {
-        self.last_status
-            .get(short)
-            .and_then(|s| s.tempo.as_deref())
-            .is_none_or(|tempo| matches!(tempo, "idle" | "blocked"))
+        let Some(status) = self.last_status.get(short) else { return true };
+        if status.tempo.as_deref().is_none_or(|tempo| matches!(tempo, "idle" | "blocked")) {
+            return true;
+        }
+        let on_disk = super::StateJson::read(&self.cfg.jobs_root, short);
+        silent_since_native_respawn(status, on_disk.as_ref())
     }
 
     /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
@@ -270,6 +272,31 @@ fn gateway_auth_at_tail(tail: &str) -> bool {
     false
 }
 
+/// A worker the native supervisor revived keeps the `active` tempo it was
+/// respawned with until the worker itself reports again. When the worker has
+/// persisted nothing since that respawn and its last durable tempo is idle, the
+/// live `active` is the supervisor's stale seed, not a turn in flight. Live
+/// workers rewrite `state.json` as soon as they start a turn, so any write after
+/// the respawn keeps the busy guard in force.
+fn silent_since_native_respawn(
+    status: &super::StatusSnapshot,
+    on_disk: Option<&super::StateJson>,
+) -> bool {
+    let (Some("respawn"), Some(started_at), Some(on_disk)) =
+        (status.source.as_deref(), status.started_at, on_disk)
+    else {
+        return false;
+    };
+    if on_disk.tempo.as_deref() != Some("idle") {
+        return false;
+    }
+    on_disk
+        .updated_at
+        .as_deref()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .is_some_and(|at| at.timestamp_millis() <= started_at)
+}
+
 fn valid_recovery_env(env: &std::collections::BTreeMap<String, String>) -> bool {
     env.get("ANTHROPIC_AUTH_TOKEN").is_some_and(|t| t.starts_with("cctui_s_"))
         && env.get("ANTHROPIC_BASE_URL").is_some_and(|url| !url.trim().is_empty())
@@ -418,6 +445,8 @@ mod auth_recovery_tests {
             activity: None,
             model: None,
             effort: None,
+            source: None,
+            started_at: None,
         };
         driver.last_status.insert(short.into(), status);
         let error = driver
@@ -537,6 +566,84 @@ mod auth_recovery_tests {
         mock.await.unwrap();
         assert!(job.join("state.json").exists());
         crate::configsweep::remove_session_files(&short);
+    }
+
+    fn respawned_status(started_at: i64) -> super::super::StatusSnapshot {
+        super::super::StatusSnapshot {
+            tempo: Some("active".into()),
+            state: Some("running".into()),
+            detail: None,
+            name: None,
+            activity: None,
+            model: None,
+            effort: None,
+            source: Some("respawn".into()),
+            started_at: Some(started_at),
+        }
+    }
+
+    fn on_disk(tempo: &str, updated_at: &str) -> super::super::StateJson {
+        let mut st: super::super::StateJson = serde_json::from_value(json!({})).unwrap();
+        st.tempo = Some(tempo.into());
+        st.updated_at = Some(updated_at.into());
+        st
+    }
+
+    #[test]
+    fn a_native_respawn_that_never_reported_is_not_busy() {
+        // Observed on 2.1.295: respawned 11:35:58.474Z, last write 11:35:58.384Z.
+        let started = 1_791_545_758_474;
+        let status = respawned_status(started);
+        assert!(silent_since_native_respawn(
+            &status,
+            Some(&on_disk("idle", "2026-10-09T11:35:58.384Z"))
+        ));
+        // The worker wrote after its respawn: it may be mid-turn.
+        assert!(!silent_since_native_respawn(
+            &status,
+            Some(&on_disk("idle", "2026-10-09T11:35:59.000Z"))
+        ));
+        // Durable tempo is not idle.
+        assert!(!silent_since_native_respawn(
+            &status,
+            Some(&on_disk("active", "2026-10-09T11:35:58.384Z"))
+        ));
+        // Missing evidence never relaxes the guard.
+        assert!(!silent_since_native_respawn(&status, None));
+        assert!(!silent_since_native_respawn(&status, Some(&on_disk("idle", "garbage"))));
+        let mut fleet = respawned_status(started);
+        fleet.source = Some("fleet".into());
+        assert!(!silent_since_native_respawn(
+            &fleet,
+            Some(&on_disk("idle", "2026-10-09T11:35:58.384Z"))
+        ));
+        let mut unknown_start = respawned_status(started);
+        unknown_start.started_at = None;
+        assert!(!silent_since_native_respawn(
+            &unknown_start,
+            Some(&on_disk("idle", "2026-10-09T11:35:58.384Z"))
+        ));
+    }
+
+    #[test]
+    fn recovery_guard_reads_the_durable_state_of_a_silent_respawn() {
+        let (mut driver, _events) = super::super::test_support::driver();
+        let short = "aabbccdd";
+        let job = driver.cfg.jobs_root.join(short);
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(
+            job.join("state.json"),
+            json!({"sessionId":"s","cwd":"/p","tempo":"idle","state":"stopped","updatedAt":"2026-10-09T11:35:58.384Z"}).to_string(),
+        )
+        .unwrap();
+        driver.last_status.insert(short.into(), respawned_status(1_791_545_758_474));
+        assert!(driver.auth_recovery_quiescent(short));
+        std::fs::write(
+            job.join("state.json"),
+            json!({"sessionId":"s","cwd":"/p","tempo":"active","updatedAt":"2026-10-09T11:40:00.000Z"}).to_string(),
+        )
+        .unwrap();
+        assert!(!driver.auth_recovery_quiescent(short));
     }
 
     #[test]

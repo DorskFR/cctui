@@ -45,6 +45,12 @@ pub struct StateJson {
     /// resets on re-discovery, so age lies after a daemon restart.
     #[serde(default)]
     pub created_at: Option<String>,
+    /// Last tempo the worker persisted (`idle`, `active`, …).
+    #[serde(default)]
+    pub tempo: Option<String>,
+    /// `updatedAt` (ISO-8601) of the last persisted status write.
+    #[serde(default)]
+    pub updated_at: Option<String>,
     #[serde(default)]
     pub children: Vec<StateChild>,
 }
@@ -107,6 +113,8 @@ impl StateJson {
             session_id: get_str("sessionId"),
             cwd: get_str("cwd"),
             created_at: get_str("createdAt"),
+            tempo: get_str("tempo"),
+            updated_at: get_str("updatedAt"),
             children,
         }
     }
