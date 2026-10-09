@@ -65,7 +65,8 @@
 		editorWindowKeys(
 			windows,
 			p.soft_limits ?? null,
-			edit.isFireworks ? 'fireworks' : (p.family ?? null)
+			edit.isFireworks ? 'fireworks' : (p.family ?? null),
+			!!p.usage_probe
 		)
 	);
 	$effect(() => edit.seedWindows(softRows.map((r) => r.key)));

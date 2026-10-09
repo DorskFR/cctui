@@ -1,8 +1,8 @@
 //! Adapter-agnostic `CctuiAgent` MCP wiring.
 //!
 //! The same relay `claude_code` gets via `--mcp-config`, rendered for codex
-//! (`-c mcp_servers.…` process overrides) and opencode (the `mcp` block of its
-//! per-session config).
+//! (`-c mcp_servers.…` process overrides), opencode (the `mcp` block of its
+//! per-session config) and ACP agents (a stdio entry of `mcpServers`).
 //!
 //! The session id baked into the relay's argv is the LAUNCH key, not the id the
 //! harness eventually mints: codex mints a thread id and opencode a `ses_…` only
@@ -102,6 +102,18 @@ impl AgentMcp {
                 "command": command,
                 "enabled": true,
             }
+        })
+    }
+
+    /// The stdio entry of an ACP `session/new` / `load` / `resume`
+    /// `mcpServers` list.
+    #[must_use]
+    pub fn acp_server(&self) -> Value {
+        json!({
+            "name": SERVER_NAME,
+            "command": self.exe,
+            "args": self.argv(),
+            "env": [],
         })
     }
 }
@@ -240,7 +252,7 @@ mod tests {
 
     /// Harness parity is structural: all three harnesses launch the SAME relay
     /// argv, so whatever `mcp::tool_schemas` advertises — the peer tools
-    /// included — is offered identically under `claude_code`, codex and opencode.
+    /// included — is offered identically under `claude_code`, codex, opencode and ACP.
     /// A per-harness allowlist appearing here would break that and must fail.
     #[test]
     fn every_harness_registers_the_same_relay_and_therefore_the_same_tools() {
@@ -267,6 +279,7 @@ mod tests {
 
         assert_eq!(claude_args, mcp.argv());
         assert_eq!(opencode[1..], mcp.argv()[..]);
+        assert_eq!(mcp.acp_server()["args"], serde_json::json!(mcp.argv()));
         for arg in mcp.argv() {
             assert!(codex_args.contains(&arg), "{arg} missing from the codex override");
         }
@@ -290,6 +303,19 @@ mod tests {
                 "{tool} is not advertised by the shared relay"
             );
         }
+    }
+
+    #[test]
+    fn acp_server_is_a_stdio_entry_running_the_relay() {
+        assert_eq!(
+            fixture().acp_server(),
+            serde_json::json!({
+                "name": "cctui",
+                "command": "/usr/bin/cctui-daemon",
+                "args": ["mcp-agent", "--session", "spawn-key-1", "--sock", "/run/cctui-agent.sock"],
+                "env": [],
+            })
+        );
     }
 
     #[test]

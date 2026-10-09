@@ -25,6 +25,7 @@ use cctui_daemon::adapters::acp::AcpAdapter;
 use cctui_daemon::adapters::acp::modes::{GEMINI_STYLE, ModeTable};
 use cctui_daemon::adapters::acp::persist::SessionStore;
 use cctui_daemon::adapters::acp::rows::AgentRow;
+use cctui_daemon::client::ServerClient;
 use cctui_proto::adapter::{
     AdapterCommand, AdapterEvent, AdapterId, EndReason, PermissionMode, SessionSpec,
 };
@@ -41,9 +42,18 @@ const SPAWN: Uuid = Uuid::from_u128(0x51);
 const REPLY: Uuid = Uuid::from_u128(0x52);
 const INTERRUPT: Uuid = Uuid::from_u128(0x53);
 const DIAGNOSE: Uuid = Uuid::from_u128(0x54);
+const MACHINE_KEY: &str = "test-machine-key";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "mcp-agent") {
+        let flag = |name: &str| args.iter().skip_while(|a| *a != name).nth(1).cloned();
+        let (Some(session), Some(sock)) = (flag("--session"), flag("--sock")) else {
+            std::process::exit(2);
+        };
+        cctui_daemon::mcp::run(&session, std::path::Path::new(&sock)).unwrap();
+        return;
+    }
     if std::env::var_os(AGENT_ENV).is_some() || args.iter().any(|a| a == AGENT_ARG) {
         fake_agent::main();
         return;
@@ -54,6 +64,7 @@ fn main() {
         }
         return;
     }
+    isolate_runtime_dir();
     let ignored = args.iter().any(|a| a == "--ignored" || a == "--include-ignored");
     let filters: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -88,6 +99,16 @@ fn main() {
         std::process::exit(1);
     }
     println!("\nall acp scenarios passed");
+}
+
+/// The `CctuiAgent` socket lives in the runtime dir; a scenario serving it
+/// must never bind over the socket of a daemon running on this machine.
+#[allow(unsafe_code)]
+fn isolate_runtime_dir() {
+    let dir = std::env::temp_dir().join(format!("cctui-acp-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // SAFETY: called from `main` before the runtime or any other thread exists.
+    unsafe { std::env::set_var("XDG_RUNTIME_DIR", &dir) };
 }
 
 fn report(name: &str, outcome: anyhow::Result<()>, failures: &mut u32) {
@@ -160,6 +181,7 @@ mod fake_agent {
             }
         });
         let mut agent = Agent {
+            relay: None,
             script,
             out: tokio::io::stdout(),
             next_id: 1000,
@@ -204,7 +226,60 @@ mod fake_agent {
         }
     }
 
+    struct Relay {
+        stdin: tokio::process::ChildStdin,
+        lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        _child: tokio::process::Child,
+        next_id: u64,
+    }
+
+    impl Relay {
+        /// Start the stdio MCP server the client declared, as a real agent does
+        /// when it opens the session.
+        async fn launch(server: &Value) -> Option<Self> {
+            let args: Vec<&str> =
+                server["args"].as_array()?.iter().filter_map(Value::as_str).collect();
+            let mut child = tokio::process::Command::new(server["command"].as_str()?)
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .ok()?;
+            let stdin = child.stdin.take()?;
+            let lines = BufReader::new(child.stdout.take()?).lines();
+            let mut relay = Self { stdin, lines, _child: child, next_id: 1 };
+            relay
+                .call("initialize", json!({ "protocolVersion": "2025-06-18", "capabilities": {} }))
+                .await?;
+            relay.write(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).await;
+            Some(relay)
+        }
+
+        async fn write(&mut self, msg: Value) {
+            let mut line = msg.to_string();
+            line.push('\n');
+            let _ = self.stdin.write_all(line.as_bytes()).await;
+            let _ = self.stdin.flush().await;
+        }
+
+        async fn call(&mut self, method: &str, params: Value) -> Option<Value> {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.write(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+                .await;
+            while let Ok(Some(line)) = self.lines.next_line().await {
+                let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+                if msg["id"] == id {
+                    return Some(msg);
+                }
+            }
+            None
+        }
+    }
+
     struct Agent {
+        relay: Option<Relay>,
         script: Script,
         out: tokio::io::Stdout,
         next_id: u64,
@@ -290,11 +365,13 @@ mod fake_agent {
                         self.respond_error(id, -32000, "Authentication required").await;
                         return true;
                     }
+                    self.open_relay(params).await;
                     let mut result = self.session_state();
                     result["sessionId"] = json!("fake-session-1");
                     self.respond(id, result).await;
                 }
                 "session/resume" => {
+                    self.open_relay(params).await;
                     let result = self.session_state();
                     self.respond(id, result).await;
                 }
@@ -346,6 +423,48 @@ mod fake_agent {
             true
         }
 
+        async fn open_relay(&mut self, params: &Value) {
+            let declared = params["mcpServers"]
+                .as_array()
+                .and_then(|servers| servers.iter().find(|s| s["name"] == "cctui"));
+            if let Some(server) = declared {
+                self.relay = Relay::launch(server).await;
+            }
+        }
+
+        /// One `CctuiAgent` call through the relay; the answer becomes the
+        /// turn's whole reply.
+        async fn relay_turn(&mut self, id: Value, session_id: &str) {
+            let answer = match self.relay.as_mut() {
+                Some(relay) => relay
+                    .call(
+                        "tools/call",
+                        json!({
+                            "name": "CctuiAgent",
+                            "arguments": {
+                                "prompt": "hello child",
+                                "model": "claude-opus-5-5",
+                                "adapter": "claude-code",
+                            },
+                        }),
+                    )
+                    .await
+                    .map_or_else(|| "relay closed".to_owned(), |r| r["result"].to_string()),
+                None => "no relay declared".to_owned(),
+            };
+            self.update(
+                session_id,
+                json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": format!("relay: {answer}") },
+                    "messageId": format!("relay-{}", self.next_id),
+                }),
+            )
+            .await;
+            self.next_id += 1;
+            self.respond(id, json!({ "stopReason": "end_turn" })).await;
+        }
+
         fn session_state(&self) -> Value {
             let mut result = json!({});
             if let Some(modes) = self.script.get("modes") {
@@ -386,6 +505,10 @@ mod fake_agent {
         #[allow(clippy::too_many_lines)]
         async fn on_prompt(&mut self, id: Value, session_id: &str, text: &str) {
             let turn = self.script.turn();
+            if turn == "relay" {
+                self.relay_turn(id, session_id).await;
+                return;
+            }
             self.message_id = format!(
                 "msg-{}",
                 std::time::SystemTime::now()
@@ -566,6 +689,7 @@ struct Harness {
     bin: String,
     store: Arc<SessionStore>,
     reexec: CancellationToken,
+    server: Option<ServerClient>,
 }
 
 static FAKE_ROW: AgentRow = AgentRow {
@@ -581,7 +705,7 @@ static FAKE_ROW: AgentRow = AgentRow {
 fn start(row: &'static AgentRow, bin: &str) -> Harness {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(SessionStore::at(tmp.path().join("acp-sessions.json")));
-    start_in(row, bin, tmp, store)
+    start_in(row, bin, tmp, store, None)
 }
 
 fn start_in(
@@ -589,6 +713,7 @@ fn start_in(
     bin: &str,
     tmp: tempfile::TempDir,
     store: Arc<SessionStore>,
+    server: Option<ServerClient>,
 ) -> Harness {
     let cwd = tmp.path().display().to_string();
     let (events_tx, events) = mpsc::channel(512);
@@ -602,8 +727,8 @@ fn start_in(
         interrupts: None,
         shutdown: shutdown.clone(),
         config: json!({ "bin": bin }),
-        server: None,
-        machine_key: None,
+        server: server.clone(),
+        machine_key: server.as_ref().map(|_| MACHINE_KEY.to_owned()),
         connected,
     };
     let reexec = CancellationToken::new();
@@ -621,6 +746,7 @@ fn start_in(
         bin: bin.to_owned(),
         store,
         reexec,
+        server,
     }
 }
 
@@ -705,11 +831,11 @@ impl Harness {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let Self { shutdown, task, tmp, row, bin, store, events, .. } = self;
+        let Self { shutdown, task, tmp, row, bin, store, events, server, .. } = self;
         shutdown.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
         drop(events);
-        Ok(start_in(row, &bin, tmp, store))
+        Ok(start_in(row, &bin, tmp, store, server))
     }
 
     async fn agent_pid(&mut self, local_id: &str) -> anyhow::Result<u32> {
@@ -840,10 +966,20 @@ mod scenarios {
         scenario!(a_reexec_reattaches_through_session_resume),
         scenario!(a_reexec_reattaches_through_session_load_without_replaying_rows),
         scenario!(an_agent_that_cannot_resume_ends_the_session_as_not_resumable),
+        scenario!(the_agent_calls_cctui_agent_through_the_declared_relay),
+        scenario!(a_reattached_session_redeclares_the_relay),
     ];
 
     fn exe() -> String {
         std::env::current_exe().unwrap().display().to_string()
+    }
+
+    pub async fn the_agent_calls_cctui_agent_through_the_declared_relay() -> anyhow::Result<()> {
+        super::relay::run(false).await
+    }
+
+    pub async fn a_reattached_session_redeclares_the_relay() -> anyhow::Result<()> {
+        super::relay::run(true).await
     }
 
     pub async fn spawn_streams_every_update_variant_then_ends_the_turn() -> anyhow::Result<()> {
@@ -1749,6 +1885,157 @@ mod real_agent {
         h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
             .await?;
         h.finish().await;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The CctuiAgent relay, end to end against a recording server
+// ---------------------------------------------------------------------------
+
+mod relay {
+    use super::{
+        Duration, MACHINE_KEY, PermissionMode, SPAWN, ServerClient, SessionStore, Value, argv_row,
+        command_result, is_idle, json, messages, start_in, started,
+    };
+    use std::sync::Arc;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    const REFUSAL: &str = "refused by the recording server";
+
+    /// A daemon API that grants spawn rights, then records and refuses every
+    /// `spawn-child` so the call returns without a child to follow.
+    async fn recording_server() -> (String, mpsc::UnboundedReceiver<(String, Value)>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(answer(stream, tx.clone()));
+            }
+        });
+        (url, rx)
+    }
+
+    async fn answer(stream: tokio::net::TcpStream, seen: mpsc::UnboundedSender<(String, Value)>) {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line).await.is_err() {
+            return;
+        }
+        let mut length = 0;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).await.unwrap_or(0) == 0 || header.trim().is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0; length];
+        let _ = reader.read_exact(&mut body).await;
+        let path = request_line.split_whitespace().nth(1).unwrap_or_default().to_owned();
+        let (status, reply) = if path.ends_with("/gateway-env") {
+            (
+                "200 OK",
+                json!({ "account_bound": false, "spawn_capability": { "adapters": ["claude-code"] } }),
+            )
+        } else if path.ends_with("/spawn-child") {
+            ("403 Forbidden", json!({ "error": REFUSAL }))
+        } else {
+            ("404 Not Found", json!({}))
+        };
+        let _ = seen.send((path, serde_json::from_slice(&body).unwrap_or(Value::Null)));
+        let reply = reply.to_string();
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+            reply.len()
+        );
+        let _ = reader.into_inner().write_all(response.as_bytes()).await;
+    }
+
+    fn spawn_children(seen: &mut mpsc::UnboundedReceiver<(String, Value)>) -> Vec<(String, Value)> {
+        std::iter::from_fn(|| seen.try_recv().ok())
+            .filter(|(path, _)| path.ends_with("/spawn-child"))
+            .collect()
+    }
+
+    fn relayed(events: &[cctui_proto::adapter::AdapterEvent]) -> anyhow::Result<()> {
+        let assistant = messages(events, "assistant");
+        anyhow::ensure!(
+            assistant.iter().any(|m| m["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("relay: ") && t.contains(REFUSAL))),
+            "the server's answer travels back through the relay: {assistant:#?}"
+        );
+        Ok(())
+    }
+
+    pub async fn run(reattach: bool) -> anyhow::Result<()> {
+        let (url, mut seen) = recording_server().await;
+        let server = ServerClient::new(url);
+        let stop = CancellationToken::new();
+        let sock = cctui_daemon::agenttool::socket_for_launch().to_path_buf();
+        tokio::spawn(cctui_daemon::agenttool::serve(
+            sock,
+            server.clone(),
+            MACHINE_KEY.to_owned(),
+            stop.clone(),
+        ));
+
+        let script = json!({ "turn": "relay", "capabilities": { "resume": true } });
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let tmp = tempfile::tempdir()?;
+        let store = Arc::new(SessionStore::at(tmp.path().join("acp-sessions.json")));
+        let mut h = start_in(argv_row(&script), &exe, tmp, store, Some(server));
+        h.spawn(&script, Some(PermissionMode::Auto), "spawn a child").await;
+        let events = h.until(is_idle, Duration::from_secs(45)).await?;
+        let local_id = started(&events)
+            .ok_or_else(|| anyhow::anyhow!("no SessionStarted: {events:#?}"))?
+            .to_owned();
+        anyhow::ensure!(command_result(&events, SPAWN) == Some((true, None)), "{events:#?}");
+        relayed(&events)?;
+        let calls = spawn_children(&mut seen);
+        anyhow::ensure!(calls.len() == 1, "one spawn-child reached the server: {calls:#?}");
+        let (path, body) = &calls[0];
+        anyhow::ensure!(
+            path == &format!("/api/v1/daemon/sessions/{local_id}/spawn-child"),
+            "the launch key resolves onto the agent's session id: {path}"
+        );
+        anyhow::ensure!(
+            body["prompt"] == "hello child" && body["adapter"] == "claude-code",
+            "{body:#}"
+        );
+        anyhow::ensure!(
+            h.store.get(&local_id).is_some_and(|r| r.spawn_relay),
+            "the record remembers the relay for a re-attach"
+        );
+
+        if reattach {
+            let pid = h.agent_pid(&local_id).await?;
+            h = h.restart(pid).await?;
+            h.until(
+                |e| matches!(e, cctui_proto::adapter::AdapterEvent::SessionStarted { .. }),
+                Duration::from_secs(30),
+            )
+            .await?;
+            h.reply(&local_id, "again").await;
+            let events = h.until(is_idle, Duration::from_secs(45)).await?;
+            relayed(&events)?;
+            let calls = spawn_children(&mut seen);
+            anyhow::ensure!(
+                calls.len() == 1
+                    && calls[0].0 == format!("/api/v1/daemon/sessions/{local_id}/spawn-child"),
+                "the re-attached agent reaches the server through a re-declared relay: {calls:#?}"
+            );
+        }
+        h.finish().await;
+        stop.cancel();
         Ok(())
     }
 }
