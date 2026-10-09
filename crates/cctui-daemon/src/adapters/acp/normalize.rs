@@ -159,7 +159,7 @@ impl Coalescer {
         let state = self.tools.entry(id.clone()).or_default();
         state.name.clone_from(&name);
         let mut out = Vec::new();
-        if !state.call_emitted {
+        if !state.call_emitted && (!awaits_input(update) || is_final(update)) {
             state.call_emitted = true;
             out.push(Out::ToolUse(tool_call_payload(&name, update, &id)));
         }
@@ -172,9 +172,10 @@ impl Coalescer {
         let mut out = Vec::new();
         let known = self.tools.contains_key(&id);
         let state = self.tools.entry(id.clone()).or_default();
-        if !known || !state.call_emitted {
-            // The agent skipped the initial `tool_call`; synthesize it.
-            state.name = tool_name(update);
+        if !state.call_emitted && (!known || has_input(update) || is_final(update)) {
+            if !known || state.name.is_empty() {
+                state.name = tool_name(update);
+            }
             state.call_emitted = true;
             out.push(Out::ToolUse(tool_call_payload(&state.name.clone(), update, &id)));
         }
@@ -235,6 +236,23 @@ fn emit_chunk(slot: Slot, chunk: &Chunk, seq: u64) -> Option<Out> {
             "line_id": message_id.map_or_else(|| format!("acp-user-{seq}"), str::to_owned),
         }),
     }))
+}
+
+/// Some agents announce a call with `rawInput: {}` and fill it in later.
+fn awaits_input(update: &Value) -> bool {
+    update.get("rawInput").and_then(Value::as_object).is_some_and(serde_json::Map::is_empty)
+}
+
+fn has_input(update: &Value) -> bool {
+    match update.get("rawInput") {
+        None | Some(Value::Null) => false,
+        Some(Value::Object(m)) => !m.is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn is_final(update: &Value) -> bool {
+    matches!(update.get("status").and_then(Value::as_str), Some("completed" | "failed"))
 }
 
 fn tool_id(update: &Value) -> String {
@@ -553,6 +571,53 @@ mod tests {
         assert_eq!(r["is_error"], false);
         assert_eq!(r["tool_use_id"], "call_1");
         assert!(c.update(&done).is_empty(), "a repeated completion is not a second result");
+    }
+
+    fn tool(o: &Out) -> &Value {
+        let Out::ToolUse(v) = o else { panic!("{o:?}") };
+        v
+    }
+
+    #[test]
+    fn a_call_announced_with_empty_input_waits_for_the_update_that_carries_it() {
+        let mut c = Coalescer::default();
+        let call = json!({
+            "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "read",
+            "kind": "read", "status": "pending", "rawInput": {},
+        });
+        assert!(c.update(&call).is_empty());
+        let running = json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "call_1", "title": "secret.txt",
+            "kind": "read", "status": "in_progress", "rawInput": { "filePath": "/w/secret.txt" },
+        });
+        let out = c.update(&running);
+        assert_eq!(out.len(), 1);
+        let Out::ToolUse(t) = &out[0] else { panic!("{out:?}") };
+        assert_eq!(t["tool"], "read");
+        assert_eq!(t["input"]["filePath"], "/w/secret.txt");
+        let done = json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed",
+            "rawInput": { "filePath": "/w/secret.txt" },
+        });
+        let out = c.update(&done);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(tool(&out[0])["type"], "tool_result");
+    }
+
+    #[test]
+    fn a_call_that_never_gets_input_is_still_emitted_before_its_result() {
+        let mut c = Coalescer::default();
+        c.update(&json!({
+            "sessionUpdate": "tool_call", "toolCallId": "c", "title": "ls", "status": "pending",
+            "rawInput": {},
+        }));
+        let out = c.update(&json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "completed",
+        }));
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(tool(&out[0])["type"], "tool_call");
+        assert_eq!(tool(&out[0])["tool"], "ls");
+        assert_eq!(tool(&out[1])["type"], "tool_result");
     }
 
     #[test]
