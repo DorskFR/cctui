@@ -66,4 +66,5 @@ pub mod update_hook;
 pub mod usage_history;
 pub mod usage_probes;
 pub mod user_actions;
+pub mod voice;
 pub mod web;

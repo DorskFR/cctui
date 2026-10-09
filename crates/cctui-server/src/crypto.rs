@@ -24,7 +24,9 @@ pub async fn has_vault_data<'e, E: sqlx::PgExecutor<'e>>(db: E) -> Result<bool, 
                         WHERE encrypted_refresh_token IS NOT NULL \
                            OR encrypted_access_token IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM accounts WHERE env_json IS NOT NULL) \
-             OR EXISTS (SELECT 1 FROM session_tokens WHERE encrypted_token IS NOT NULL)",
+             OR EXISTS (SELECT 1 FROM session_tokens WHERE encrypted_token IS NOT NULL) \
+             OR EXISTS (SELECT 1 FROM instance_settings \
+                        WHERE key = 'speech' AND value ? 'encrypted_key')",
     )
     .fetch_one(db)
     .await
@@ -47,10 +49,29 @@ mod tests {
             "DELETE FROM session_tokens",
             "DELETE FROM account_providers",
             "DELETE FROM accounts",
+            "DELETE FROM instance_settings WHERE key = 'speech'",
         ] {
             sqlx::query(sql).execute(&mut *tx).await.unwrap();
         }
         assert!(!has_vault_data(&mut *tx).await.unwrap());
+        sqlx::query(
+            "INSERT INTO instance_settings (key, value) VALUES ('speech', '{\"enabled\": false}')",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        assert!(!has_vault_data(&mut *tx).await.unwrap());
+        sqlx::query(
+            "UPDATE instance_settings SET value = '{\"encrypted_key\": \"v1:00\"}' WHERE key = 'speech'",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        assert!(has_vault_data(&mut *tx).await.unwrap());
+        sqlx::query("DELETE FROM instance_settings WHERE key = 'speech'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO api_keys (name, encrypted_key) VALUES ('k', 'v1:00')")
             .execute(&mut *tx)
             .await

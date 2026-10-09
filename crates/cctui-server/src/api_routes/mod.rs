@@ -33,6 +33,7 @@ mod skills;
 mod user_actions;
 mod users;
 mod version;
+mod voice;
 
 use axum::http::Method;
 
@@ -84,6 +85,7 @@ pub fn register(r: Routes) -> Routes {
     let r = skills::register(r);
     let r = user_actions::register(r);
     let r = drafts::register(r);
+    let r = voice::register(r);
     users::register(r)
 }
 
