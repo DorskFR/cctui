@@ -602,6 +602,7 @@ impl Driver {
                     request_id,
                     tool,
                     input: json!({ "description": description, "needs": n }),
+                    options: Vec::new(),
                 })
                 .await;
             }
@@ -915,7 +916,7 @@ mod tests {
 
         let mut request: Option<(String, String, String)> = None;
         while let Ok(evt) = rx.try_recv() {
-            if let AdapterEvent::PermissionRequest { local_id, request_id, tool, input } = evt {
+            if let AdapterEvent::PermissionRequest { local_id, request_id, tool, input, .. } = evt {
                 assert_eq!(tool, "Bash");
                 assert_eq!(input.get("description").and_then(|d| d.as_str()), Some("touch /tmp/x"));
                 request = Some((local_id, request_id, tool));

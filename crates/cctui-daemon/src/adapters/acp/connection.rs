@@ -30,6 +30,8 @@ pub enum Incoming {
     /// `session/request_permission`; answer by sending the response JSON on
     /// `reply`, or drop it to answer `cancelled`.
     Permission { params: Value, reply: oneshot::Sender<Value> },
+    /// `elicitation/create`; dropping `reply` answers `cancel`.
+    Elicitation { params: Value, reply: oneshot::Sender<Value> },
     /// The connection ended: agent EOF, process exit or a transport failure.
     Closed { detail: Option<String> },
 }
@@ -127,21 +129,25 @@ impl AcpConnection {
                 async move |req: UntypedMessage,
                             responder: Responder<Value>,
                             cx: ConnectionTo<Agent>| {
-                    if req.method != "session/request_permission" {
-                        return responder.respond_with_error(
-                            agent_client_protocol::Error::method_not_found().data(req.method),
-                        );
-                    }
                     let (reply, answer) = oneshot::channel::<Value>();
-                    if request_inbox
-                        .send(Incoming::Permission { params: req.params, reply })
-                        .is_err()
-                    {
-                        return responder.respond(cancelled());
+                    let (incoming, fallback) = match req.method.as_str() {
+                        "session/request_permission" => {
+                            (Incoming::Permission { params: req.params, reply }, cancelled())
+                        }
+                        "elicitation/create" => (
+                            Incoming::Elicitation { params: req.params, reply },
+                            serde_json::json!({ "action": "cancel" }),
+                        ),
+                        _ => {
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::method_not_found().data(req.method),
+                            );
+                        }
+                    };
+                    if request_inbox.send(incoming).is_err() {
+                        return responder.respond(fallback);
                     }
-                    cx.spawn(async move {
-                        responder.respond(answer.await.unwrap_or_else(|_| cancelled()))
-                    })
+                    cx.spawn(async move { responder.respond(answer.await.unwrap_or(fallback)) })
                 },
                 agent_client_protocol::on_receive_request!(),
             );

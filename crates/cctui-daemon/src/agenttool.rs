@@ -74,6 +74,12 @@ enum CallKind {
     /// server, which owns the list and answers with all of it.
     UserActionAdd(Value),
     UserActionTick(Value),
+    /// `CctuiSpeak`: synthesize `text` into a voice note posted in the caller's
+    /// own conversation.
+    Speak {
+        text: String,
+        voice: Option<String>,
+    },
     /// The relay announcing that it answered `initialize`.
     RelayReady,
     /// The session's `SessionStart` hook holding the first turn until the relay
@@ -130,6 +136,7 @@ fn parse_call(line: &str) -> Result<Call, String> {
             None => return Err("session_id is required: the child to archive".to_owned()),
         },
         Some("peers") => CallKind::Peers,
+        Some("speak") => parse_speak(&args)?,
         Some("send_peer") => parse_send_peer(&args)?,
         Some("room") => parse_room(&args)?,
         Some("peer_history") => parse_peer_history(&args)?,
@@ -275,6 +282,15 @@ fn roles_arg(args: &Value) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
+fn parse_speak(args: &Value) -> Result<CallKind, String> {
+    let text = string_arg(args, "text").ok_or("text is required: what to say")?;
+    let max = crate::mcp::SPEAK_MAX_CHARS;
+    if text.chars().count() > max {
+        return Err(format!("text is too long: at most {max} characters"));
+    }
+    Ok(CallKind::Speak { text, voice: string_arg(args, "voice") })
+}
+
 fn string_arg(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(Value::as_str)
@@ -339,6 +355,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Speak { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
@@ -836,6 +853,15 @@ async fn run_unfollowed_call(
         CallKind::UserActionTick(body) => {
             run_user_action(server, machine_key, me, "/tick", body).await
         }
+        CallKind::Speak { text, voice } => {
+            match server.speak(machine_key, me, text, voice.as_deref()).await {
+                Ok(v) => {
+                    let duration = v.get("duration_s").cloned().unwrap_or(Value::Null);
+                    json!({ "ok": true, "result": json!({ "ok": true, "duration_s": duration }).to_string() })
+                }
+                Err(err) => json!({ "ok": false, "error": err.to_string() }),
+            }
+        }
         CallKind::RelayReady => {
             crate::mcpready::announce(me);
             json!({ "ok": true, "result": "ready" })
@@ -907,6 +933,7 @@ async fn run_call(
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Speak { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
@@ -1774,6 +1801,23 @@ mod tests {
             !should_nudge(&outcome),
             "a killed child must never be nudged even on truncated text"
         );
+    }
+
+    #[test]
+    fn a_speak_call_needs_text_within_the_cap_and_keeps_the_voice() {
+        let ok = json!({ "kind": "speak", "session_id": "p", "args": { "text": " hi ", "voice": "af_bella" } });
+        let CallKind::Speak { text, voice } = parse_call(&ok.to_string()).unwrap().kind else {
+            panic!("expected speak")
+        };
+        assert_eq!(text, "hi");
+        assert_eq!(voice.as_deref(), Some("af_bella"));
+
+        let empty = json!({ "kind": "speak", "session_id": "p", "args": { "text": "  " } });
+        assert!(parse_call(&empty.to_string()).unwrap_err().contains("text is required"));
+
+        let long = "a".repeat(crate::mcp::SPEAK_MAX_CHARS + 1);
+        let too_long = json!({ "kind": "speak", "session_id": "p", "args": { "text": long } });
+        assert!(parse_call(&too_long.to_string()).unwrap_err().contains("too long"));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 	import LineDelivery from './LineDelivery.svelte';
 	import LineFooter from './LineFooter.svelte';
 	import MessageBubble from './MessageBubble.svelte';
+	import VoiceNote from './VoiceNote.svelte';
 	import MarkerBody from './MarkerBody.svelte';
 	import TaskNotificationCard from './TaskNotificationCard.svelte';
 	import ThinkingBubble from './ThinkingBubble.svelte';
@@ -168,6 +169,8 @@
 		<TaskNotificationCard note={ln.notification} />
 	{:else if ln.command}
 		<HarnessCommandCard command={ln.command} />
+	{:else if ln.voiceNoteId && sessionId}
+		<VoiceNote {sessionId} noteId={ln.voiceNoteId} text={ln.text ?? ''} ts={ln.ts} />
 	{:else}
 		<MessageBubble
 			role={ln.role}

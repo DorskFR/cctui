@@ -462,7 +462,7 @@
 				askPreambleHtml={renderer.askPreambleHtml}
 				planPreambleHtml={renderer.planPreambleHtml}
 				onedit={editPending}
-				onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}
+				onrespondperm={(rid, allow, optionId) => ws.respondPermission(id, rid, allow, optionId)}
 				{forkable}
 				selectMode={forkSelect.active}
 				selected={forkSelect.selected}

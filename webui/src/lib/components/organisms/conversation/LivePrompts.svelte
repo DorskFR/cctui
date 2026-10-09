@@ -23,7 +23,7 @@
 		archived: boolean;
 		askPreambleHtml: string | null;
 		planPreambleHtml: string | null;
-		onrespondperm: (requestId: string, allow: boolean) => void;
+		onrespondperm: (requestId: string, allow: boolean, optionId?: string) => void;
 	} = $props();
 
 	// Suppress the live preamble block when the same assistant prose has already
@@ -94,7 +94,7 @@
 {/if}
 
 {#each stream.perms as p (p.request_id)}
-	<PermissionCard req={p} onrespond={(rid, allow) => onrespondperm(rid, allow)} />
+	<PermissionCard req={p} onrespond={(rid, allow, optionId) => onrespondperm(rid, allow, optionId)} />
 {/each}
 
 <style>

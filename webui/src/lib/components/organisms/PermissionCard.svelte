@@ -7,7 +7,13 @@
 	let {
 		req,
 		onrespond
-	}: { req: PermReq; onrespond: (rid: string, allow: boolean) => void } = $props();
+	}: {
+		req: PermReq;
+		onrespond: (rid: string, allow: boolean, optionId?: string) => void;
+	} = $props();
+
+	const options = $derived(req.options ?? []);
+	const allows = (kind: string) => kind.startsWith('allow');
 
 	// ExitPlanMode fallback: the preview is the tool-input JSON with a `.plan`
 	// markdown string. Render it as markdown (mirroring PlanCard) instead of a
@@ -33,8 +39,18 @@
 		<div class="plan-body">{@html renderMarkdown(planMarkdown)}</div>
 	{:else if req.input_preview}<pre class="prev mono">{req.input_preview}</pre>{/if}
 	<div class="row acts">
-		<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
-		<Button variant="primary" block onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
+		{#if options.length}
+			{#each options as o (o.option_id)}
+				<Button
+					variant={allows(o.kind) ? 'primary' : 'danger'}
+					block
+					onclick={() => onrespond(req.request_id, allows(o.kind), o.option_id)}>{o.name || o.kind}</Button
+				>
+			{/each}
+		{:else}
+			<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
+			<Button variant="primary" block onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
+		{/if}
 	</div>
 </Card>
 
@@ -62,5 +78,6 @@
 	}
 	.acts {
 		gap: var(--sp-2);
+		flex-wrap: wrap;
 	}
 </style>

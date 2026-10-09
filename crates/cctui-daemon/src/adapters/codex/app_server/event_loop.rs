@@ -636,6 +636,7 @@ impl<'a> EventLoop<'a> {
                         request_id,
                         tool,
                         input,
+                        options: Vec::new(),
                     })
                     .await
                     .ok();

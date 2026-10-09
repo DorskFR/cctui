@@ -68,7 +68,7 @@
 		askPreambleHtml: string | null;
 		planPreambleHtml: string | null;
 		onedit: (text: string, ts: number) => void;
-		onrespondperm: (requestId: string, allow: boolean) => void;
+		onrespondperm: (requestId: string, allow: boolean, optionId?: string) => void;
 		// Subset-fork affordances; off for codex/archived sessions.
 		forkable?: boolean;
 		selectMode?: boolean;

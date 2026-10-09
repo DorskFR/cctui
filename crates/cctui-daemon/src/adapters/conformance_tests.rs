@@ -71,6 +71,7 @@ fn every_command(adapter: &str) -> Vec<AdapterCommand> {
             local_id: GHOST.into(),
             request_id: "r1".into(),
             allow: true,
+            option_id: None,
         },
         AdapterCommand::Rename { local_id: GHOST.into(), name: "renamed".into() },
         AdapterCommand::Remove {

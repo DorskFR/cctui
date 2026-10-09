@@ -386,7 +386,12 @@ pub fn posture(table: &ModeTable, agent_mode: &str) -> Option<PermissionMode> {
 /// `session/request_permission` → the prompt the clients render. The request
 /// id is the tool call id, which is what the agent correlates on too.
 #[must_use]
-pub fn permission_request(local_id: &str, request_id: &str, tool_call: &Value) -> AdapterEvent {
+pub fn permission_request(
+    local_id: &str,
+    request_id: &str,
+    tool_call: &Value,
+    options: &[super::protocol::PermissionOption],
+) -> AdapterEvent {
     AdapterEvent::PermissionRequest {
         local_id: local_id.to_owned(),
         request_id: request_id.to_owned(),
@@ -395,6 +400,14 @@ pub fn permission_request(local_id: &str, request_id: &str, tool_call: &Value) -
             Some(raw) if !raw.is_null() => raw.clone(),
             _ => json!({ "title": tool_call.get("title").and_then(Value::as_str) }),
         },
+        options: options
+            .iter()
+            .map(|o| cctui_proto::adapter::PermissionChoice {
+                option_id: o.id.clone(),
+                name: o.name.clone(),
+                kind: o.kind.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -760,10 +773,19 @@ mod tests {
             "call_3",
             &json!({ "toolCallId": "call_3", "title": "Run `rm -rf dist`", "kind": "execute",
                      "rawInput": { "command": "rm -rf dist" } }),
+            &[super::super::protocol::PermissionOption {
+                id: "a1".into(),
+                name: "Always".into(),
+                kind: "allow_always".into(),
+            }],
         );
-        let AdapterEvent::PermissionRequest { local_id, request_id, tool, input } = evt else {
+        let AdapterEvent::PermissionRequest { local_id, request_id, tool, input, options } = evt
+        else {
             panic!()
         };
+        assert_eq!(options[0].option_id, "a1");
+        assert_eq!(options[0].name, "Always");
+        assert_eq!(options[0].kind, "allow_always");
         assert_eq!(local_id, "s1");
         assert_eq!(request_id, "call_3");
         assert_eq!(tool, "execute");

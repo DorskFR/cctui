@@ -597,6 +597,8 @@ pub enum TuiCommand {
         session_id: String,
         request_id: String,
         behavior: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
     },
 }
 
@@ -640,6 +642,8 @@ pub enum ServerEvent {
         tool_name: String,
         description: String,
         input_preview: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<crate::adapter::PermissionChoice>,
     },
     PermissionResolved {
         session_id: String,

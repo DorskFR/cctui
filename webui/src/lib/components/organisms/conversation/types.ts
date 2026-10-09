@@ -219,5 +219,7 @@ export interface Line {
 	// attachment encodings were stripped out of the displayed prose.
 	uploads?: UserUploadRefs;
 	messageId?: string;
+	/** Set on an agent voice note: the audio to play beside `text`. */
+	voiceNoteId?: string;
 	usage?: TokenUsageT;
 }

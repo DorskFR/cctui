@@ -1660,3 +1660,9 @@ id = "post_voice_speak"
 # POST /voice/speak
 tui = "waived"
 reason = "voice input and playback need a browser audio stack; the TUI has none"
+
+[[route]]
+id = "get_sessions_by_id_voice_notes_by_note"
+# GET /sessions/{id}/voice-notes/{note_id} — Fetch an agent voice note's audio.
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none; the transcript still shows as text"

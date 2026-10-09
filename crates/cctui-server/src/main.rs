@@ -452,6 +452,10 @@ fn outer_routes() -> Router<AppState> {
         // outside the user-token `api_router`. Cap the body a little over the
         // 5 MiB per-image limit so an over-cap upload 413s in-handler.
         .route(
+            "/api/v1/daemon/sessions/{id}/voice-notes",
+            post(routes::voice_notes::create_voice_note),
+        )
+        .route(
             "/api/v1/daemon/sessions/{id}/images",
             post(routes::images::upload_session_image)
                 .layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
@@ -1232,6 +1236,7 @@ mod tests {
             r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/user-actions Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/user-actions/{aid}/tick Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/voice-notes/{note_id} Bearer Resource(Session, Read, Path("id"))"#,
             "GET /settings Bearer Authenticated",
             "PUT /settings Bearer Authenticated",
             "GET /settings/rescrub Bearer Authenticated",

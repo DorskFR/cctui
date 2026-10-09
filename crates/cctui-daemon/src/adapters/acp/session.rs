@@ -41,12 +41,29 @@ pub struct LiveSession {
 
 #[derive(Debug)]
 pub enum SessionCommand {
-    Prompt { text: String, command_id: Option<Uuid>, turn_id: Option<Uuid> },
-    Interrupt { command_id: Option<Uuid> },
+    Prompt {
+        text: String,
+        ask_picks: Option<Vec<Vec<usize>>>,
+        command_id: Option<Uuid>,
+        turn_id: Option<Uuid>,
+    },
+    Interrupt {
+        command_id: Option<Uuid>,
+    },
     Kill,
-    Permission { request_id: String, allow: bool },
-    SetModel { model: Option<String>, effort: Option<String>, command_id: Option<Uuid> },
-    Diagnose { reply: mpsc::Sender<Snapshot> },
+    Permission {
+        request_id: String,
+        allow: bool,
+        option_id: Option<String>,
+    },
+    SetModel {
+        model: Option<String>,
+        effort: Option<String>,
+        command_id: Option<Uuid>,
+    },
+    Diagnose {
+        reply: mpsc::Sender<Snapshot>,
+    },
 }
 
 impl SessionCommand {
@@ -116,6 +133,11 @@ struct Pending {
     reply: tokio::sync::oneshot::Sender<Value>,
 }
 
+struct PendingForm {
+    form: super::elicitation::Form,
+    reply: tokio::sync::oneshot::Sender<Value>,
+}
+
 pub struct AcpSession {
     params: SpawnParams,
     events: mpsc::Sender<AdapterEvent>,
@@ -139,6 +161,7 @@ pub struct AcpSession {
     turns: u64,
     queued: VecDeque<(String, Option<Uuid>, Option<Uuid>)>,
     pending: HashMap<String, Pending>,
+    form: Option<PendingForm>,
     current_mode: Option<String>,
     model: Option<String>,
     catalog: super::catalog::Catalog,
@@ -182,6 +205,7 @@ impl AcpSession {
             turns: 0,
             queued: VecDeque::new(),
             pending: HashMap::new(),
+            form: None,
             current_mode: None,
             model: None,
             catalog: super::catalog::Catalog::default(),
@@ -546,7 +570,10 @@ impl AcpSession {
     async fn on_command(&mut self, cmd: SessionCommand) -> bool {
         let local_id = self.local_id();
         match cmd {
-            SessionCommand::Prompt { text, command_id, turn_id } => {
+            SessionCommand::Prompt { text, ask_picks, command_id, turn_id } => {
+                if self.answer_form(&text, ask_picks.as_deref(), command_id).await {
+                    return true;
+                }
                 if self.turn.is_some() {
                     self.queued.push_back((text, command_id, turn_id));
                 } else {
@@ -554,6 +581,7 @@ impl AcpSession {
                 }
             }
             SessionCommand::Interrupt { command_id } => {
+                self.close_form(super::elicitation::Action::Cancel).await;
                 let outcome = if self.turn.is_some() {
                     self.notify("session/cancel", protocol::cancel_params(&local_id))
                 } else {
@@ -572,8 +600,8 @@ impl AcpSession {
                 self.kill(EndReason::Killed).await;
                 return false;
             }
-            SessionCommand::Permission { request_id, allow } => {
-                self.answer_permission(&request_id, allow).await;
+            SessionCommand::Permission { request_id, allow, option_id } => {
+                self.answer_permission(&request_id, allow, option_id.as_deref()).await;
             }
             SessionCommand::SetModel { model, effort, command_id } => {
                 let outcome = self.set_model(&local_id, model, effort).await;
@@ -603,6 +631,9 @@ impl AcpSession {
             }
             Incoming::Permission { params, reply } => {
                 self.on_permission(&local_id, &params, reply).await;
+            }
+            Incoming::Elicitation { params, reply } => {
+                self.on_elicitation(&local_id, &params, reply).await;
             }
             Incoming::Closed { detail } => {
                 if self.ending {
@@ -679,28 +710,84 @@ impl AcpSession {
             .and_then(Value::as_str)
             .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned);
         if matches!(self.params.permission_mode, Some(PermissionMode::Yolo | PermissionMode::Whip))
+            && let Some(answer) = protocol::auto_allow(&options)
         {
-            let _ = reply.send(protocol::permission_response(&options, true));
+            let _ = reply.send(answer);
             return;
         }
-        self.pending.insert(request_id.clone(), Pending { options, reply });
-        let _ = self
-            .events
-            .send(normalize::permission_request(local_id, &request_id, &tool_call))
-            .await;
+        let event = normalize::permission_request(local_id, &request_id, &tool_call, &options);
+        self.pending.insert(request_id, Pending { options, reply });
+        let _ = self.events.send(event).await;
     }
 
-    async fn answer_permission(&mut self, request_id: &str, allow: bool) {
+    async fn answer_permission(&mut self, request_id: &str, allow: bool, option_id: Option<&str>) {
         let local_id = self.local_id();
         let Some(pending) = self.pending.remove(request_id) else {
             tracing::warn!(%request_id, "acp: no pending permission request");
             return;
         };
-        let _ = pending.reply.send(protocol::permission_response(&pending.options, allow));
+        let answer = option_id
+            .and_then(|id| protocol::permission_selected(&pending.options, id))
+            .unwrap_or_else(|| protocol::permission_response(&pending.options, allow));
+        let _ = pending.reply.send(answer);
         let _ = self
             .events
             .send(AdapterEvent::PermissionResolved { local_id, request_id: request_id.to_owned() })
             .await;
+    }
+
+    async fn on_elicitation(
+        &mut self,
+        local_id: &str,
+        params: &Value,
+        reply: tokio::sync::oneshot::Sender<Value>,
+    ) {
+        use super::elicitation::{Action, Form, response};
+        let Some(form) = Form::parse(params) else {
+            let _ = reply.send(response(Action::Decline));
+            return;
+        };
+        self.close_form(Action::Cancel).await;
+        let event = AdapterEvent::AskQuestion {
+            local_id: local_id.to_owned(),
+            question: form.message.clone(),
+            questions: Some(form.questions(params)),
+            preamble: (!form.message.is_empty()).then(|| form.message.clone()),
+        };
+        self.form = Some(PendingForm { form, reply });
+        let _ = self.events.send(event).await;
+    }
+
+    /// `true` when the reply was the pending form's answer. Any other message
+    /// declines the form and then goes on as a prompt.
+    async fn answer_form(
+        &mut self,
+        text: &str,
+        picks: Option<&[Vec<usize>]>,
+        command_id: Option<Uuid>,
+    ) -> bool {
+        use super::elicitation::{Action, is_answer};
+        let Some(pending) = self.form.as_ref() else { return false };
+        if !is_answer(text, picks) {
+            self.close_form(Action::Decline).await;
+            return false;
+        }
+        let content = pending.form.content(text, picks);
+        self.close_form(Action::Accept(content)).await;
+        if let Some(command_id) = command_id {
+            crate::adapters::emit(
+                &self.events,
+                AdapterEvent::CommandResult { command_id, ok: true, error: None },
+            )
+            .await;
+        }
+        true
+    }
+
+    async fn close_form(&mut self, action: super::elicitation::Action) {
+        let Some(pending) = self.form.take() else { return };
+        let _ = pending.reply.send(super::elicitation::response(action));
+        let _ = self.events.send(AdapterEvent::AskResolved { local_id: self.local_id() }).await;
     }
 
     fn begin_turn(
@@ -904,6 +991,7 @@ impl AcpSession {
         for (_, pending) in self.pending.drain() {
             drop(pending.reply);
         }
+        self.form = None;
         let Some(mut connection) = self.connection.take() else { return };
         if self.init.can_close
             && let Some(session_id) = self.session.as_ref().map(|s| s.session_id.clone())
@@ -935,6 +1023,7 @@ impl AcpSession {
             task.abort();
         }
         self.pending.clear();
+        self.form = None;
         self.commands_rx.close();
         while let Ok(cmd) = self.commands_rx.try_recv() {
             if let Some(command_id) = cmd.command_id() {
