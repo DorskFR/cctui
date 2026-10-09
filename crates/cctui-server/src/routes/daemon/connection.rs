@@ -210,6 +210,8 @@ impl Conn {
         let (state, machine_id) = (&self.state, self.machine_id);
         // Register the daemon for command fan-out with the bus. If a
         // stale entry exists, overwrite it (newest connection wins).
+        // A replacement or downgraded daemon must advertise support again.
+        state.auth_recovery_daemons.remove(&machine_id);
         state.bus.register_daemon(machine_id, self.id, tx.clone());
         state.bus.register_daemon_priority(self.id, priority_tx);
         PENDING_DAEMON_LOST.cancel(machine_id);
@@ -317,6 +319,7 @@ impl Conn {
             state.preview.detach_session(&state.pool, session).await;
         }
         if state.bus.unregister_daemon(machine_id, self.id, tx) {
+            state.auth_recovery_daemons.remove(&machine_id);
             state.preview.detach_machine(&state.pool, machine_id).await;
             crate::presence::unregister(state, crate::presence::Kind::Daemon, machine_id).await;
             schedule_daemon_lost(state, machine_id, sessions);

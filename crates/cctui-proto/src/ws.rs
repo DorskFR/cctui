@@ -86,6 +86,9 @@ pub enum DaemonFrameUp {
         /// Omitted by daemons that cannot parse [`DaemonFrameDown::TranscriptAck`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mark_acks: Option<bool>,
+        /// Supports targeted worker authentication recovery before a reply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth_recovery: Option<bool>,
     },
     /// Reply to [`DaemonFrameDown::StageFiles`].
     StageFilesResult {
@@ -1104,6 +1107,7 @@ mod tests {
             claude_jobs: Some(vec!["deadbeef".into()]),
             harness: Some(crate::harness::HarnessReport::default()),
             mark_acks: Some(true),
+            auth_recovery: Some(true),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
@@ -1111,6 +1115,7 @@ mod tests {
         assert!(json.contains(r#""cpu_pct":12.5"#), "{json}");
         assert!(json.contains(r#""blob_put":42"#), "{json}");
         assert!(json.contains(r#""update_hook":true"#), "{json}");
+        assert!(json.contains(r#""auth_recovery":true"#), "{json}");
 
         let legacy = r#"{"type":"heartbeat","sent_at":"2026-07-21T00:00:00Z"}"#;
         let back: DaemonFrameUp = serde_json::from_str(legacy).unwrap();
@@ -1124,10 +1129,12 @@ mod tests {
                 claude_jobs,
                 harness,
                 mark_acks,
+                auth_recovery,
                 ..
             } => {
                 assert!(harness.is_none());
                 assert!(mark_acks.is_none(), "silence is not support");
+                assert!(auth_recovery.is_none(), "legacy daemons cannot recover authentication");
                 assert!(bandwidth.is_none());
                 assert!(update_hook.is_none());
                 assert!(resources.is_none());

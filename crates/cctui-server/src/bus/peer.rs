@@ -665,6 +665,7 @@ mod tests {
             adapter_id: "claude-code".into(),
             command: Box::new(cctui_proto::adapter::AdapterCommand::Reply {
                 local_id: "sess-1".into(),
+                recover_auth: false,
                 text: "hi".into(),
                 ask_picks: None,
                 env: std::collections::BTreeMap::new(),

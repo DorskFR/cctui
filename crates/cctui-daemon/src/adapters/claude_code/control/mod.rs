@@ -1004,13 +1004,18 @@ impl Driver {
     /// needs a few seconds to start the supervisor and bind the socket, so the
     /// window is generous.
     async fn ensure_socket(&self) -> anyhow::Result<PathBuf> {
-        if let Some(sock) = self.cfg.discovery.locate_live().await {
+        if let super::discovery::Availability::Live(sock)
+        | super::discovery::Availability::Busy(sock) = self.cfg.discovery.availability().await
+        {
             return Ok(sock);
         }
         self.kickstarter.kick(true);
         for _ in 0..120 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            if let Some(sock) = self.cfg.discovery.locate_live().await {
+            if let super::discovery::Availability::Live(sock)
+            | super::discovery::Availability::Busy(sock) =
+                self.cfg.discovery.availability().await
+            {
                 return Ok(sock);
             }
         }
@@ -1075,7 +1080,12 @@ impl Driver {
     }
 
     async fn poll_once(&mut self) -> anyhow::Result<()> {
-        let Some(sock) = self.cfg.discovery.locate_live().await else {
+        let availability = self.cfg.discovery.availability().await;
+        if let super::discovery::Availability::Busy(sock) = &availability {
+            tracing::debug!(sock = %sock.display(), "claude daemon is slow; retaining workers and attach sockets");
+            return Ok(());
+        }
+        let super::discovery::Availability::Live(sock) = availability else {
             // Boot the daemon (rate-limited) so it self-heals before the next
             // dispatch; every known session has ended.
             self.kickstarter.kick(false);
@@ -1248,6 +1258,16 @@ impl SessionDriver for Driver {
     ) -> CommandOutcome {
         let sock = self.ensure_socket().await?;
         Box::pin(self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id)).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn recover_auth(
+        &mut self,
+        local_id: &str,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        self.recover_gateway_auth(&sock, local_id, env).await?;
         Ok(Handled::Done)
     }
 

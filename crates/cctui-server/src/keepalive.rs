@@ -365,6 +365,7 @@ async fn fire(state: &AppState, session_id: &str, tick: u32, max_ticks: u32) {
         session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: session_id.to_owned(),
+            recover_auth: false,
             text: tick_prompt(Utc::now()),
             ask_picks: None,
             env,
