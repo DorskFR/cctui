@@ -20,11 +20,13 @@ const SPAWN_KEY: &str = "spawn_defaults";
 const UPSTREAM_KEY: &str = "upstream_allowed_hosts";
 const UPLOAD_CAPS_KEY: &str = "upload_caps";
 
+/// Built-in layer: only the depth is capped. Child count and tree budget are
+/// unlimited unless a saved setting or env sets a ceiling explicitly.
 const fn builtin_spawn_defaults() -> SpawnDefaults {
     SpawnDefaults {
-        max_children: Some(cctui_proto::api::DEFAULT_MAX_CHILDREN),
+        max_children: None,
         max_depth: Some(cctui_proto::api::DEFAULT_MAX_DEPTH),
-        max_tree_budget_usd: Some(cctui_proto::api::DEFAULT_TREE_BUDGET_USD),
+        max_tree_budget_usd: None,
     }
 }
 
@@ -36,29 +38,25 @@ const fn env_spawn_defaults(config: &crate::config::Config) -> SpawnDefaults {
     }
 }
 
-fn pick<T: Copy>(settings: Option<T>, env: Option<T>, default: T) -> (T, SettingSource) {
+fn pick<T: Copy>(
+    settings: Option<T>,
+    env: Option<T>,
+    default: Option<T>,
+) -> (Option<T>, SettingSource) {
     settings
-        .map(|v| (v, SettingSource::Settings))
-        .or_else(|| env.map(|v| (v, SettingSource::Env)))
+        .map(|v| (Some(v), SettingSource::Settings))
+        .or_else(|| env.map(|v| (Some(v), SettingSource::Env)))
         .unwrap_or((default, SettingSource::Default))
 }
 
 pub fn resolve_spawn_defaults(settings: SpawnDefaults, env: SpawnDefaults) -> SpawnDefaultsInfo {
     let defaults = builtin_spawn_defaults();
-    let (c, cs) =
-        pick(settings.max_children, env.max_children, cctui_proto::api::DEFAULT_MAX_CHILDREN);
-    let (d, ds) = pick(settings.max_depth, env.max_depth, cctui_proto::api::DEFAULT_MAX_DEPTH);
-    let (b, bs) = pick(
-        settings.max_tree_budget_usd,
-        env.max_tree_budget_usd,
-        cctui_proto::api::DEFAULT_TREE_BUDGET_USD,
-    );
+    let (c, cs) = pick(settings.max_children, env.max_children, defaults.max_children);
+    let (d, ds) = pick(settings.max_depth, env.max_depth, defaults.max_depth);
+    let (b, bs) =
+        pick(settings.max_tree_budget_usd, env.max_tree_budget_usd, defaults.max_tree_budget_usd);
     SpawnDefaultsInfo {
-        effective: SpawnDefaults {
-            max_children: Some(c),
-            max_depth: Some(d),
-            max_tree_budget_usd: Some(b),
-        },
+        effective: SpawnDefaults { max_children: c, max_depth: d, max_tree_budget_usd: b },
         sources: SpawnDefaultsSources { max_children: cs, max_depth: ds, max_tree_budget_usd: bs },
         settings,
         env,
@@ -392,11 +390,18 @@ mod tests {
         assert_eq!(info.sources.max_children, SettingSource::Settings);
         assert_eq!(info.effective.max_depth, Some(1));
         assert_eq!(info.sources.max_depth, SettingSource::Env);
-        assert_eq!(
-            info.effective.max_tree_budget_usd,
-            Some(cctui_proto::api::DEFAULT_TREE_BUDGET_USD)
-        );
+        assert_eq!(info.effective.max_tree_budget_usd, None, "unset budget is unlimited");
         assert_eq!(info.sources.max_tree_budget_usd, SettingSource::Default);
+    }
+
+    #[test]
+    fn spawn_defaults_are_unlimited_unless_set_explicitly() {
+        let info = resolve_spawn_defaults(SpawnDefaults::default(), SpawnDefaults::default());
+        assert_eq!(info.effective.max_children, None);
+        assert_eq!(info.effective.max_tree_budget_usd, None);
+        assert_eq!(info.effective.max_depth, Some(cctui_proto::api::DEFAULT_MAX_DEPTH));
+        assert_eq!(info.defaults.max_children, None);
+        assert_eq!(info.defaults.max_tree_budget_usd, None);
     }
 
     #[test]
@@ -591,7 +596,9 @@ mod tests {
         assert_eq!(denied.unwrap_err().status(), StatusCode::FORBIDDEN);
 
         let cap = spawn_default_capability(&state).await;
-        assert_eq!(cap.max_children, Some(cctui_proto::api::DEFAULT_MAX_CHILDREN));
+        assert_eq!(cap.max_children, None, "no child-count cap unless one is set");
+        assert_eq!(cap.max_tree_budget_usd, None, "no tree budget unless one is set");
+        assert_eq!(cap.max_budget_usd, None, "no per-child budget unless one is set");
         assert_eq!(cap.max_depth, Some(2));
 
         let Json(info) = update_spawn_defaults(
