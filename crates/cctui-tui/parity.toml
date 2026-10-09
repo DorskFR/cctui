@@ -1618,3 +1618,45 @@ module = "app/server_event.rs"
 name = "limit_reset_redeemed"
 tui = "handled"
 module = "app/server_event.rs"
+
+[[route]]
+id = "get_admin_instance_speech"
+# GET /admin/instance/speech
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_instance_speech"
+# PUT /admin/instance/speech
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_admin_instance_speech_catalog"
+# GET /admin/instance/speech/catalog
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_admin_instance_speech_test"
+# POST /admin/instance/speech/test
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_voice_config"
+# GET /voice/config
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none"
+
+[[route]]
+id = "post_voice_transcribe"
+# POST /voice/transcribe
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none"
+
+[[route]]
+id = "post_voice_speak"
+# POST /voice/speak
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none"
