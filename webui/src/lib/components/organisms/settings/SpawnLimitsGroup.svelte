@@ -8,7 +8,7 @@
 	import type { SpawnDefaultsInfo } from '@bindings/SpawnDefaultsInfo';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { parseSpawnDraft, sourceLabel } from './serverSettings.logic';
+	import { limitLabel, parseSpawnDraft, sourceLabel } from './serverSettings.logic';
 
 	type Field = keyof SpawnDefaults;
 	const FIELDS: { key: Field; label: () => string }[] = [
@@ -53,11 +53,12 @@
 	function effective(key: Field): string {
 		if (!info) return '';
 		const source: SettingSource = info.sources[key];
-		return m.settings_spawn_effective({ value: String(info.effective[key] ?? ''), source: sourceLabel(source) });
+		return m.settings_spawn_effective({ value: limitLabel(info.effective[key]), source: sourceLabel(source) });
 	}
 
 	function fallback(key: Field): string {
-		return String(info?.env[key] ?? info?.defaults[key] ?? '');
+		if (!info) return '';
+		return limitLabel(info.env[key] ?? info.defaults[key]);
 	}
 </script>
 
