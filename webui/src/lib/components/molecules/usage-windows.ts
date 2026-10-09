@@ -112,9 +112,13 @@ export function mergeUsageWindows(
 export function editorWindowKeys(
 	windows: UsageWindow[],
 	softLimits: Record<string, SoftLimitConfig> | null | undefined,
-	family?: string | null
+	family?: string | null,
+	probed = false
 ): { key: string; label: string }[] {
-	const order = family === 'fireworks' ? [...USD_WINDOW_KEYS] : ['session', 'weekly_all'];
+	const order =
+		family === 'fireworks'
+			? [...USD_WINDOW_KEYS]
+			: ['session', 'weekly_all', ...(probed ? USD_WINDOW_KEYS : [])];
 	const labels: Record<string, string> = {};
 	for (const w of windows) {
 		if (!order.includes(w.key)) order.push(w.key);

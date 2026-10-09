@@ -28,7 +28,9 @@
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 
-use crate::soft_limit::{KEY_USD_5H, KEY_USD_7D, KEY_USD_MONTHLY, UsageWindow, usd_window};
+use crate::soft_limit::{
+    KEY_SESSION, KEY_USD_5H, KEY_USD_7D, KEY_USD_MONTHLY, UsageWindow, usd_window,
+};
 
 /// One probe's HTTP call, fully resolved.
 pub struct ProbeRequest {
@@ -52,10 +54,11 @@ pub trait UsageProbe: Send + Sync {
 
 static OPENROUTER: OpenRouterProbe = OpenRouterProbe;
 static LITELLM: LiteLlmProbe = LiteLlmProbe;
+static SYNTHETIC: SyntheticProbe = SyntheticProbe;
 
 /// Every registered probe, in the order the picker lists them. A `static`, not a
 /// `const`: a constant may not refer to a static.
-static PROBES: &[&'static dyn UsageProbe] = &[&OPENROUTER, &LITELLM];
+static PROBES: &[&'static dyn UsageProbe] = &[&OPENROUTER, &LITELLM, &SYNTHETIC];
 
 /// Look up a probe by its stored id.
 #[must_use]
@@ -281,10 +284,68 @@ fn litellm_root(base_url: Option<&str>) -> String {
     base.strip_suffix("/v1").unwrap_or(base).to_owned()
 }
 
+/// Synthetic: `GET /v2/quotas` reports the subscription's request allowance,
+/// which is its rolling 5h request limit, so it lands on `session`.
+pub struct SyntheticProbe;
+
+const SYNTHETIC_BASE: &str = "https://api.synthetic.new";
+
+impl UsageProbe for SyntheticProbe {
+    fn id(&self) -> &'static str {
+        "synthetic"
+    }
+
+    fn label(&self) -> &'static str {
+        "Synthetic (5h requests)"
+    }
+
+    fn request(&self, base_url: Option<&str>, token: &str) -> ProbeRequest {
+        ProbeRequest {
+            url: format!(
+                "{}/v2/quotas",
+                origin(base_url).unwrap_or_else(|| SYNTHETIC_BASE.to_owned())
+            ),
+            headers: vec![("authorization".to_owned(), format!("Bearer {token}"))],
+        }
+    }
+
+    fn parse(&self, body: &serde_json::Value, _now: DateTime<Utc>) -> Vec<UsageWindow> {
+        let Some(sub) = body.get("subscription") else { return Vec::new() };
+        let limit = sub.get("limit").and_then(serde_json::Value::as_f64).filter(|l| *l > 0.0);
+        let used = sub.get("requests").and_then(serde_json::Value::as_f64);
+        let (Some(limit), Some(used)) = (limit, used) else { return Vec::new() };
+        let resets_at = sub
+            .get("renewsAt")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+        vec![UsageWindow {
+            key: KEY_SESSION.to_owned(),
+            kind: "session".to_owned(),
+            label: "5h".to_owned(),
+            utilization: used / limit * 100.0,
+            amount_usd: None,
+            resets_at,
+            model_id: None,
+            model_display_name: None,
+        }]
+    }
+}
+
+/// `scheme://host[:port]` of a configured base URL: the credential points at an
+/// inference path (`…/anthropic`, `…/openai/v1`) while account endpoints hang
+/// off the host.
+fn origin(base_url: Option<&str>) -> Option<String> {
+    let url = reqwest::Url::parse(base_url?.trim()).ok()?;
+    let host = url.host_str()?;
+    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    Some(format!("{}://{host}{port}", url.scheme()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::soft_limit::{KEY_SESSION, normalize_usage_windows};
+    use crate::soft_limit::normalize_usage_windows;
 
     fn now() -> DateTime<Utc> {
         // A Wednesday.
@@ -293,7 +354,7 @@ mod tests {
 
     #[test]
     fn the_registry_resolves_only_registered_ids() {
-        assert_eq!(ids(), vec!["openrouter", "litellm"]);
+        assert_eq!(ids(), vec!["openrouter", "litellm", "synthetic"]);
         assert_eq!(probe("openrouter").map(UsageProbe::id), Some("openrouter"));
         assert_eq!(probe("litellm").map(UsageProbe::id), Some("litellm"));
         assert!(probe("zai").is_none());
@@ -513,5 +574,52 @@ mod tests {
     fn no_windows_serialize_to_an_empty_object_not_a_null_payload() {
         assert_eq!(windows_to_usage_json(&[]), serde_json::json!({}));
         assert!(normalize_usage_windows(&windows_to_usage_json(&[])).is_empty());
+    }
+
+    #[test]
+    fn synthetic_reports_its_request_allowance_as_the_session_window() {
+        let body = serde_json::json!({
+            "subscription": { "limit": 135, "requests": 27, "renewsAt": "2025-09-21T14:36:14.288Z" }
+        });
+        let windows = SYNTHETIC.parse(&body, now());
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].key, KEY_SESSION);
+        assert!((windows[0].utilization - 20.0).abs() < 1e-9);
+        assert_eq!(
+            windows[0].resets_at,
+            Some(
+                DateTime::parse_from_rfc3339("2025-09-21T14:36:14.288Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        let back = normalize_usage_windows(&windows_to_usage_json(&windows));
+        assert_eq!(back[0].key, KEY_SESSION);
+    }
+
+    #[test]
+    fn synthetic_says_nothing_for_an_empty_or_zero_limit_body() {
+        assert!(SYNTHETIC.parse(&serde_json::json!({}), now()).is_empty());
+        let zero = serde_json::json!({ "subscription": { "limit": 0, "requests": 0 } });
+        assert!(SYNTHETIC.parse(&zero, now()).is_empty());
+        let partial = serde_json::json!({ "subscription": { "limit": 135 } });
+        assert!(SYNTHETIC.parse(&partial, now()).is_empty());
+    }
+
+    #[test]
+    fn synthetic_hangs_quotas_off_the_host_of_any_inference_base() {
+        let url = |b| SYNTHETIC.request(b, "k").url;
+        assert_eq!(url(None), "https://api.synthetic.new/v2/quotas");
+        assert_eq!(
+            url(Some("https://api.synthetic.new/anthropic")),
+            "https://api.synthetic.new/v2/quotas"
+        );
+        assert_eq!(
+            url(Some("https://api.synthetic.new/openai/v1/")),
+            "https://api.synthetic.new/v2/quotas"
+        );
+        assert_eq!(url(Some("http://127.0.0.1:8080/v1")), "http://127.0.0.1:8080/v2/quotas");
+        assert_eq!(url(Some("not a url")), "https://api.synthetic.new/v2/quotas");
+        assert_eq!(SYNTHETIC.request(None, "k").headers[0].1, "Bearer k");
     }
 }
