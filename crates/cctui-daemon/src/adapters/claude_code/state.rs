@@ -136,6 +136,53 @@ impl StateJson {
         std::fs::rename(&tmp, &path)
     }
 
+    /// Preserve the managed settings reference in the native daemon's durable
+    /// respawn flags. Some spare-claim versions persist only model changes,
+    /// overriding the complete flags supplied in the dispatch request.
+    /// This is an optimistic repair, not a CAS with the native writer: callers
+    /// rescan and retry if Claude rewrites the state again.
+    pub fn repair_settings_flag(
+        jobs_root: &Path,
+        short: &str,
+        settings: &Path,
+    ) -> std::io::Result<bool> {
+        use std::io::Write;
+        let path = jobs_root.join(short).join("state.json");
+        if std::fs::symlink_metadata(&path)?.file_type().is_symlink()
+            || std::fs::symlink_metadata(settings)?.file_type().is_symlink()
+        {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(&path)?;
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let Some(obj) = value.as_object_mut() else { return Ok(false) };
+        // Do not manufacture a native job or overwrite a caller-owned setting.
+        if obj.get("sessionId").and_then(serde_json::Value::as_str).is_none()
+            || obj.get("cwd").and_then(serde_json::Value::as_str).is_none()
+        {
+            return Ok(false);
+        }
+        let Some(flags) = obj.get_mut("respawnFlags").and_then(serde_json::Value::as_array_mut)
+        else {
+            return Ok(false);
+        };
+        if flags.iter().any(|flag| {
+            flag.as_str().is_none_or(|f| f == "--settings" || f.starts_with("--settings="))
+        }) {
+            return Ok(false);
+        }
+        flags.extend([serde_json::json!("--settings"), serde_json::json!(settings)]);
+        // A unique sibling avoids colliding with either Claude's temp file or
+        // another cctui write. NamedTempFile also keeps the state private (0600).
+        let mut tmp = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+        tmp.write_all(&serde_json::to_vec(&value)?)?;
+        if std::fs::read(&path)? != bytes {
+            return Ok(false);
+        }
+        tmp.persist(&path).map_err(|e| e.error)?;
+        Ok(true)
+    }
+
     #[must_use]
     pub fn proto_children(&self) -> Vec<SessionChild> {
         self.children
@@ -273,5 +320,54 @@ mod tests {
         // token-shaped of its own — the only token here is the one the fixture
         // planted, never one cctui introduced.
         assert_eq!(raw.matches(token).count(), 2, "write_name must not add token copies");
+    }
+}
+
+#[cfg(test)]
+mod respawn_settings_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn repairs_missing_settings_without_overwriting_native_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = tmp.path().join("aabbccdd");
+        std::fs::create_dir(&job).unwrap();
+        let settings = tmp.path().join("settings.json");
+        std::fs::write(&settings, "{}").unwrap();
+        let state = job.join("state.json");
+        let original = json!({"sessionId":"s", "cwd":"/project", "tokens":123, "respawnFlags":["--model","opus"],"unknown":{"preserve":true}});
+        std::fs::write(&state, original.to_string()).unwrap();
+        assert!(StateJson::repair_settings_flag(tmp.path(), "aabbccdd", &settings).unwrap());
+        let got: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+        assert_eq!(got["tokens"], 123);
+        assert_eq!(got["unknown"], original["unknown"]);
+        assert_eq!(got["respawnFlags"], json!(["--model", "opus", "--settings", settings]));
+        assert!(!StateJson::repair_settings_flag(tmp.path(), "aabbccdd", &settings).unwrap());
+        for value in [
+            json!({}),
+            json!({"sessionId":"s","cwd":"/p","respawnFlags":["--settings","/other"]}),
+            json!({"sessionId":"s","cwd":"/p","respawnFlags":["--settings=/other"]}),
+        ] {
+            std::fs::write(&state, value.to_string()).unwrap();
+            assert!(!StateJson::repair_settings_flag(tmp.path(), "aabbccdd", &settings).unwrap());
+            assert_eq!(std::fs::read_to_string(&state).unwrap(), value.to_string());
+        }
+        std::fs::write(&state, "broken JSON").unwrap();
+        assert!(StateJson::repair_settings_flag(tmp.path(), "aabbccdd", &settings).is_err());
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), "broken JSON");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_job_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = tmp.path().join("aabbccdd");
+        std::fs::create_dir(&job).unwrap();
+        let target = tmp.path().join("other.json");
+        std::fs::write(&target, "{}").unwrap();
+        std::os::unix::fs::symlink(&target, job.join("state.json")).unwrap();
+        assert!(!StateJson::repair_settings_flag(tmp.path(), "aabbccdd", &target).unwrap());
     }
 }

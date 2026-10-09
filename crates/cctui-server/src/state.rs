@@ -86,6 +86,8 @@ pub struct AppState {
     /// Machines whose daemon advertised `mark_acks`; only they may be sent
     /// [`cctui_proto::ws::DaemonFrameDown::TranscriptAck`].
     pub mark_ack_daemons: Arc<DashMap<Uuid, ()>>,
+    /// Machines advertising targeted authentication recovery in their current connection.
+    pub auth_recovery_daemons: Arc<DashMap<Uuid, ()>>,
     /// Rolling RPM/TPM windows, keyed by provider row id.
     pub gateway_rate_windows: Arc<DashMap<Uuid, crate::routes::gateway::RateWindow>>,
     /// Cached `instance_settings.upload_caps`, so the upload path never hits
@@ -181,6 +183,7 @@ impl AppState {
             spawn_capabilities: Arc::new(DashMap::new()),
             session_usd_budgets: Arc::new(DashMap::new()),
             mark_ack_daemons: Arc::new(DashMap::new()),
+            auth_recovery_daemons: Arc::new(DashMap::new()),
             gateway_rate_windows: Arc::new(DashMap::new()),
             upload_caps: Arc::new(std::sync::RwLock::new(crate::uploads::UploadCaps::default())),
             update_check: crate::update_check::UpdateCheck::shared(),

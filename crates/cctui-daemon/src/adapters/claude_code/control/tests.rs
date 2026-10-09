@@ -257,3 +257,26 @@ async fn resolve_short_for_removal_uses_live_map_then_derives() {
     // Non-hex / malformed first group: refuse rather than guess.
     assert!(d.resolve_short_for_removal("zzzzzzzz-0000").is_err());
 }
+
+#[tokio::test]
+async fn slow_discovery_keeps_the_roster_and_does_not_kickstart() {
+    let (mut d, mut events) = driver();
+    let tmp = tempfile::tempdir().unwrap();
+    let hash = tmp.path().join("hash");
+    std::fs::create_dir(&hash).unwrap();
+    let sock = hash.join("control.sock");
+    let _listener = tokio::net::UnixListener::bind(&sock).unwrap();
+    d.cfg.discovery = Discovery::with_base(tmp.path().to_path_buf());
+    d.roster.insert("aabbccdd".into());
+    d.short_by_session.insert("session".into(), "aabbccdd".into());
+    d.poll_once().await.unwrap();
+    assert!(d.roster.contains("aabbccdd"));
+    assert_eq!(d.short_by_session.get("session").as_deref(), Some("aabbccdd"));
+    assert!(!d.churned, "a slow probe must not trigger reattachment churn");
+    assert!(events.try_recv().is_err(), "no false session end may be emitted");
+    assert_eq!(
+        d.ensure_socket().await.unwrap(),
+        sock,
+        "a listening daemon needs no duplicate supervisor"
+    );
+}

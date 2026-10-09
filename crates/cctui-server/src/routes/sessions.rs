@@ -2313,6 +2313,8 @@ pub async fn send_message(
         &session_id,
         cctui_proto::adapter::AdapterCommand::Reply {
             local_id: session_id.clone(),
+            recover_auth: crate::auto_resume::should_recover_gateway_auth(&state, &session_id)
+                .await,
             text: req.content,
             ask_picks: None,
             env,

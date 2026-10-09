@@ -865,6 +865,7 @@ impl Harness {
     async fn reply(&self, local_id: &str, text: &str) {
         self.send(AdapterCommand::Reply {
             local_id: local_id.to_owned(),
+            recover_auth: false,
             text: text.to_owned(),
             ask_picks: None,
             env: BTreeMap::new(),
@@ -1225,6 +1226,7 @@ mod scenarios {
         anyhow::ensure!(questions[0]["options"][1]["label"] == "Production", "{questions}");
         h.send(AdapterCommand::Reply {
             local_id: local_id.clone(),
+            recover_auth: false,
             text: "**Environment** — Environment\n→ Production\n\n**Replicas** — Replicas\n→ 3\n\n**Verbose** — Verbose\n→ No".to_owned(),
             ask_picks: None,
             env: std::collections::BTreeMap::new(),
@@ -1775,6 +1777,7 @@ mod real_agent {
         anyhow::ensure!(acp.agent_version.is_some(), "agentInfo.version: {acp:#?}");
         h.send(AdapterCommand::Reply {
             local_id: local_id.clone(),
+            recover_auth: false,
             text: "And now: ping".to_owned(),
             ask_picks: None,
             env: BTreeMap::new(),
@@ -1790,6 +1793,7 @@ mod real_agent {
         )?;
         h.send(AdapterCommand::Reply {
             local_id: local_id.clone(),
+            recover_auth: false,
             text: "Use your file-read tool on secret.txt in the working directory and tell me the codeword.".to_owned(),
             ask_picks: None,
             env: BTreeMap::new(),

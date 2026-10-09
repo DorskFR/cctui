@@ -153,13 +153,25 @@ impl Driver {
         // dead — clear the sticky flag so live status flows again.
         self.dead_shorts.remove(&job.short);
 
-        // Gateway-env delivery is handled entirely at the launch chokepoint
-        // (`resolve_launch_env`): the resolved env rides the per-session
-        // `--settings` file + `reattachEnv`, both of which the claude daemon
-        // re-applies on its own autonomous respawns (`/clear`, `/compact`,
-        // spare-claim), so a revived worker keeps its routing without cctui
-        // killing it. A genuinely env-less launch fails LOUD in
-        // `launch_env_decision`.
+        // The native daemon can overwrite dispatch respawnFlags while claiming
+        // a spare. Its autonomous respawn prefers state.json and drops
+        // reattachEnv, so the managed --settings path must survive there too.
+        // Never touch jobs cctui did not launch, or invent a missing settings file.
+        if (!self.foreign_shorts.contains(&job.short) || job.source.as_deref() == Some("respawn"))
+            && let Some(settings) =
+                super::settings::hook_settings_path(&format!("hook-settings-{}.json", job.short))
+            && super::settings::is_managed_gateway_settings(&settings, &local_id)
+        {
+            match StateJson::repair_settings_flag(&self.cfg.jobs_root, &job.short, &settings) {
+                Ok(true) => {
+                    tracing::info!(short = %job.short, "restored managed settings in native respawn flags");
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::debug!(short = %job.short, %err, "respawn settings repair deferred");
+                }
+            }
+        }
 
         // Surface (or clear) a tool-permission prompt from the live
         // `tempo`/`needs` signal, before the Status emit below.

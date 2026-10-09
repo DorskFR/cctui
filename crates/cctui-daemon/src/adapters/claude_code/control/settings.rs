@@ -130,6 +130,19 @@ pub(super) fn config_root() -> Option<PathBuf> {
     Some(base.join("cctui"))
 }
 
+/// A native respawn changes `source` away from cctui. The private settings
+/// file's session binding is the durable evidence that this remains our job.
+pub(super) fn is_managed_gateway_settings(path: &std::path::Path, session_id: &str) -> bool {
+    if !std::fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink()) {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else { return false };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+    value["env"]["CCTUI_SESSION_ID"].as_str() == Some(session_id)
+        && value["env"]["ANTHROPIC_AUTH_TOKEN"].as_str().is_some_and(|t| t.starts_with("cctui_s_"))
+        && value["env"]["ANTHROPIC_BASE_URL"].as_str().is_some_and(|u| !u.trim().is_empty())
+}
+
 pub(super) fn hook_settings_path(file: &str) -> Option<PathBuf> {
     Some(config_root()?.join(file))
 }
@@ -529,6 +542,17 @@ pub(super) fn managed_settings(
 mod tests {
     use super::super::test_support::*;
     use super::*;
+
+    #[test]
+    fn only_the_matching_gateway_session_settings_authorize_a_respawn_repair() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("settings.json");
+        std::fs::write(&file, json!({"env": {"CCTUI_SESSION_ID":"ours", "ANTHROPIC_AUTH_TOKEN":"cctui_s_example", "ANTHROPIC_BASE_URL":"https://gateway.test"}}).to_string()).unwrap();
+        assert!(is_managed_gateway_settings(&file, "ours"));
+        assert!(!is_managed_gateway_settings(&file, "another"));
+        std::fs::write(&file, "{}").unwrap();
+        assert!(!is_managed_gateway_settings(&file, "ours"));
+    }
 
     #[test]
     fn no_capability_means_no_mcp_config_and_so_no_tool() {

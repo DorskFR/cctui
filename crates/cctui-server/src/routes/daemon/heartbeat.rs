@@ -12,12 +12,14 @@ pub(super) fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFram
         claude_jobs,
         harness,
         mark_acks,
+        auth_recovery,
         ..
     } = frame
     else {
         return;
     };
-    note_mark_ack_support(&state.mark_ack_daemons, machine_id, mark_acks);
+    note_capability_support(&state.mark_ack_daemons, machine_id, mark_acks);
+    note_capability_support(&state.auth_recovery_daemons, machine_id, auth_recovery);
     crate::machine_liveness::record_and_broadcast(
         state,
         machine_id,
@@ -56,15 +58,14 @@ pub(super) fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFram
     });
 }
 
-/// Track whether this machine's daemon can parse
-/// [`DaemonFrameDown::TranscriptAck`]. Silence means it cannot — including a
-/// daemon downgraded under a machine that advertised support before.
-fn note_mark_ack_support(
+/// Track an explicitly advertised daemon capability. Silence withdraws support,
+/// including when a machine reconnects with an older daemon.
+fn note_capability_support(
     daemons: &dashmap::DashMap<Uuid, ()>,
     machine_id: Uuid,
-    mark_acks: Option<bool>,
+    supported: Option<bool>,
 ) {
-    if mark_acks == Some(true) {
+    if supported == Some(true) {
         daemons.insert(machine_id, ());
     } else {
         daemons.remove(&machine_id);
@@ -143,24 +144,24 @@ async fn reconcile_claude_jobs(state: &AppState, machine_id: Uuid, shorts: &[Str
 
 #[cfg(test)]
 mod tests {
-    use super::note_mark_ack_support;
+    use super::note_capability_support;
 
     #[test]
-    fn only_an_explicit_advertisement_marks_a_daemon_ack_capable() {
+    fn only_an_explicit_advertisement_marks_a_daemon_capable() {
         let daemons = dashmap::DashMap::new();
         let machine = uuid::Uuid::new_v4();
 
-        note_mark_ack_support(&daemons, machine, None);
+        note_capability_support(&daemons, machine, None);
         assert!(!daemons.contains_key(&machine), "an old daemon's silence is not support");
 
-        note_mark_ack_support(&daemons, machine, Some(true));
+        note_capability_support(&daemons, machine, Some(true));
         assert!(daemons.contains_key(&machine));
 
-        note_mark_ack_support(&daemons, machine, None);
+        note_capability_support(&daemons, machine, None);
         assert!(!daemons.contains_key(&machine), "a downgrade withdraws support");
 
-        note_mark_ack_support(&daemons, machine, Some(true));
-        note_mark_ack_support(&daemons, machine, Some(false));
+        note_capability_support(&daemons, machine, Some(true));
+        note_capability_support(&daemons, machine, Some(false));
         assert!(!daemons.contains_key(&machine));
     }
 }

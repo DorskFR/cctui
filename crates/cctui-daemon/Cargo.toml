@@ -36,8 +36,9 @@ hex.workspace = true
 base64.workspace = true
 agent-client-protocol = { version = "=2.2.0", features = ["unstable_end_turn_token_usage"] }
 
-[dev-dependencies]
 tempfile = { workspace = true }
+
+[dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 
 [[test]]
