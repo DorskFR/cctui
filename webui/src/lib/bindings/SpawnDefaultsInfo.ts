@@ -4,6 +4,6 @@ import type { SpawnDefaultsSources } from "./SpawnDefaultsSources";
 
 export type SpawnDefaultsInfo = { 
 /**
- * Every field set: the values new sessions get.
+ * The values new sessions get; `null` = unlimited.
  */
 effective: SpawnDefaults, sources: SpawnDefaultsSources, settings: SpawnDefaults, env: SpawnDefaults, defaults: SpawnDefaults, };

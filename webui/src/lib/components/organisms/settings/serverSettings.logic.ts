@@ -8,6 +8,11 @@ export function sourceLabel(source: SettingSource): string {
 	return m.settings_source_default();
 }
 
+/** A spawn limit as shown to the admin: unset means unlimited. */
+export function limitLabel(value: number | null | undefined): string {
+	return value == null ? m.settings_spawn_unlimited() : String(value);
+}
+
 /** Empty fields become `null`; `null` overall when any field is invalid. */
 export function parseSpawnDraft(draft: Record<keyof SpawnDefaults, string>): SpawnDefaults | null {
 	const int = (raw: string): number | null | undefined => {

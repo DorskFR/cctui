@@ -30,7 +30,8 @@ pub enum SettingSource {
     Default,
 }
 
-/// Default `CctuiAgent` limits; `null` fields are unset at that layer.
+/// Default `CctuiAgent` limits; `null` fields are unset at that layer, and an
+/// unset `max_children` or `max_tree_budget_usd` in `effective` means unlimited.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[allow(clippy::struct_field_names)]
@@ -55,7 +56,7 @@ pub struct SpawnDefaultsSources {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnDefaultsInfo {
-    /// Every field set: the values new sessions get.
+    /// The values new sessions get; `null` = unlimited.
     pub effective: SpawnDefaults,
     pub sources: SpawnDefaultsSources,
     pub settings: SpawnDefaults,

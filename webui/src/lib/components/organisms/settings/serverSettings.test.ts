@@ -42,11 +42,11 @@ const type = (el: HTMLInputElement, value: string) => {
 };
 
 const spawnInfo = (over: Partial<SpawnDefaultsInfo> = {}): SpawnDefaultsInfo => ({
-	effective: { max_children: 16, max_depth: 2, max_tree_budget_usd: 400 },
+	effective: { max_children: null, max_depth: 2, max_tree_budget_usd: null },
 	sources: { max_children: 'default', max_depth: 'env', max_tree_budget_usd: 'default' },
 	settings: { max_children: null, max_depth: null, max_tree_budget_usd: null },
 	env: { max_children: null, max_depth: 2, max_tree_budget_usd: null },
-	defaults: { max_children: 16, max_depth: 3, max_tree_budget_usd: 400 },
+	defaults: { max_children: null, max_depth: 3, max_tree_budget_usd: null },
 	...over
 });
 
@@ -74,12 +74,13 @@ describe('CctuiAgent limits', () => {
 		comp = mount(SpawnLimitsGroup, { target: document.body });
 		await settle();
 		expect(document.body.textContent).toContain('Effective: 2 (from env)');
-		expect(document.body.textContent).toContain('Effective: 16 (built-in default)');
+		expect(document.body.textContent).toContain('Effective: unlimited (built-in default)');
+		expect(input('Max live children')?.placeholder).toBe('unlimited');
 		expect(button('Save')?.disabled).toBe(true);
 
 		api.setSpawnDefaults.mockResolvedValue(
 			spawnInfo({
-				effective: { max_children: 4, max_depth: 2, max_tree_budget_usd: 400 },
+				effective: { max_children: 4, max_depth: 2, max_tree_budget_usd: null },
 				sources: { max_children: 'settings', max_depth: 'env', max_tree_budget_usd: 'default' },
 				settings: { max_children: 4, max_depth: null, max_tree_budget_usd: null }
 			})
