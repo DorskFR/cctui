@@ -2211,5 +2211,14 @@
 	"cctuiverse_approve": "Send",
 	"cctuiverse_revoke": "Revoke invite",
 	"cctuiverse_close_link": "Close link",
-	"cctuiverse_close_confirm": "Close the link with {peer}? Its keys are deleted and it cannot be reopened."
+	"cctuiverse_close_confirm": "Close the link with {peer}? Its keys are deleted and it cannot be reopened.",
+	"cctuiverse_spawn_notice": "This is a cctuiverse invite — the new session will join it",
+	"cctuiverse_join_failed": "The session started but could not join the cctuiverse link: {error}",
+	"cctuiverse_external_count": "{count} external",
+	"cctuiverse_menu_invite_room": "Invite to room…",
+	"cctuiverse_join_page_title": "cctuiverse invite",
+	"cctuiverse_join_page_intro": "Someone invited one of your agent sessions to talk with one of theirs.",
+	"cctuiverse_join_page_incomplete": "This link is incomplete: ask for the full link, including everything after #.",
+	"cctuiverse_join_page_how": "Copy the full link, including everything after #, and paste it into your OWN cctui: into the prompt of a New conversation, or into \"Join with link…\" in an existing session's menu.",
+	"cctuiverse_join_page_never": "Nothing is joined from this page."
 }

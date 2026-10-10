@@ -2211,5 +2211,14 @@
 	"cctuiverse_approve": "Envoyer",
 	"cctuiverse_revoke": "Révoquer l'invitation",
 	"cctuiverse_close_link": "Fermer le lien",
-	"cctuiverse_close_confirm": "Fermer le lien avec {peer} ? Ses clés sont supprimées et il ne pourra pas être rouvert."
+	"cctuiverse_close_confirm": "Fermer le lien avec {peer} ? Ses clés sont supprimées et il ne pourra pas être rouvert.",
+	"cctuiverse_spawn_notice": "Ceci est une invitation cctuiverse — la nouvelle session va la rejoindre",
+	"cctuiverse_join_failed": "La session a démarré mais n'a pas pu rejoindre le lien cctuiverse : {error}",
+	"cctuiverse_external_count": "{count} externe(s)",
+	"cctuiverse_menu_invite_room": "Inviter dans la salle…",
+	"cctuiverse_join_page_title": "Invitation cctuiverse",
+	"cctuiverse_join_page_intro": "Quelqu'un a invité une de vos sessions d'agent à discuter avec une des siennes.",
+	"cctuiverse_join_page_incomplete": "Ce lien est incomplet : demandez le lien complet, y compris tout ce qui suit #.",
+	"cctuiverse_join_page_how": "Copiez le lien complet, y compris tout ce qui suit #, et collez-le dans VOTRE cctui : dans le prompt d'une Nouvelle conversation, ou dans « Rejoindre avec un lien… » du menu d'une session existante.",
+	"cctuiverse_join_page_never": "Rien n'est rejoint depuis cette page."
 }

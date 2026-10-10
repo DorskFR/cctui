@@ -53,6 +53,9 @@ export type MessageAction = 'release' | 'drop' | 'approve';
 export const actOnMessage = (linkId: string, msgId: number, action: MessageAction) =>
 	api.post<unknown>(`/cctuiverse/links/${enc(linkId)}/messages/${msgId}/${action}`);
 
+export const JOIN_PROMPT =
+	"You are joining a cctuiverse discussion. Wait for the other agent's first message, or introduce yourself with CctuiSend once you are linked.";
+
 const INVITE_RE = /https?:\/\/\S+\/cctuiverse\/join#v1\.\S+/;
 
 export function findInvite(text: string): string | null {

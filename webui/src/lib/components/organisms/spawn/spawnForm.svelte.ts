@@ -116,6 +116,7 @@ export class SpawnForm {
 	oneOff = $state<ProfileSpecForm | null>(null);
 	usageRaw = $state(drafts.get(PROFILE_USES));
 	spawnFailure = $state<string | null>(null);
+	joinLabel = $state('');
 	pendingDispatchId = $state<string | null>(null);
 
 	// Local autosave slot, one per (machine, cwd): a prefill names its target's
