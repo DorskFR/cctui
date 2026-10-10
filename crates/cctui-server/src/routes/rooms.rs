@@ -349,7 +349,7 @@ async fn remote_room_tool(
     let fallback = link.peer_room_name.clone().unwrap_or_default();
     match req.action.trim().to_ascii_lowercase().as_str() {
         "post" => {
-            let body = rooms::check_body(req.message.as_deref().unwrap_or_default())?;
+            let body = rooms::check_body(req.message.as_deref().unwrap_or_default(), true)?;
             let key = format!("send:{session_id}");
             if !crate::routes::peer::limiter().admit(
                 &key,

@@ -135,7 +135,12 @@ impl Driver {
         // `reply` just presses Enter on the highlighted option — claude
         // records option 1 ("Proceed"-style) and the user's text is
         // swallowed.
-        let pending_ask = self.pending_asks.lock().ok().and_then(|mut m| m.remove(local_id));
+        let peer = crate::adapters::is_peer_envelope(text);
+        let pending_ask = match self.pending_asks.lock() {
+            Ok(m) if peer && m.contains_key(local_id) => return Err(AskOpened.into()),
+            Ok(mut m) => m.remove(local_id),
+            Err(_) => None,
+        };
         let had_pending_ask = pending_ask.is_some();
         if let Some(questions) = pending_ask {
             // Native answer first: drive the real form via keystrokes.
@@ -385,6 +390,19 @@ pub(super) fn ask_keystrokes(
     }
     Some(chunks)
 }
+
+/// A peer turn reached the reply path while an ask form was up: it was not
+/// delivered, and the form was left alone.
+#[derive(Debug)]
+pub(super) struct AskOpened;
+
+impl std::fmt::Display for AskOpened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("an ask form is open; the peer turn waits for it")
+    }
+}
+
+impl std::error::Error for AskOpened {}
 
 #[cfg(test)]
 mod tests {

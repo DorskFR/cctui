@@ -290,3 +290,10 @@ fn a_peer_turn_waits_for_an_open_ask_form_and_a_human_reply_does_not() {
     assert!(!super::defers_for_ask(false, peer), "no form up: delivered at once");
     assert!(!super::defers_for_ask(true, "go with option 2"), "the human still answers the form");
 }
+
+#[test]
+fn an_ask_that_opens_mid_flush_is_recognised_so_the_turn_is_requeued() {
+    let err: anyhow::Error = super::reply::AskOpened.into();
+    assert!(err.is::<super::reply::AskOpened>());
+    assert!(!anyhow::anyhow!("socket gone").is::<super::reply::AskOpened>());
+}
