@@ -25,6 +25,7 @@ pub async fn has_vault_data<'e, E: sqlx::PgExecutor<'e>>(db: E) -> Result<bool, 
                            OR encrypted_access_token IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM accounts WHERE env_json IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM session_tokens WHERE encrypted_token IS NOT NULL) \
+             OR EXISTS (SELECT 1 FROM cctuiverse_links WHERE encrypted_private_key IS NOT NULL) \
              OR EXISTS (SELECT 1 FROM instance_settings \
                         WHERE key = 'speech' AND value ? 'encrypted_key')",
     )
@@ -47,6 +48,7 @@ mod tests {
         for sql in [
             "DELETE FROM api_keys",
             "DELETE FROM session_tokens",
+            "DELETE FROM cctuiverse_links",
             "DELETE FROM account_providers",
             "DELETE FROM accounts",
             "DELETE FROM instance_settings WHERE key = 'speech'",

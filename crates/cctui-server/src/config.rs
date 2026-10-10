@@ -135,6 +135,11 @@ pub struct Config {
     /// trusted hop, which is the spoofable case this exists to prevent; too low
     /// only collapses callers into fewer buckets. When in doubt, go lower.
     pub trusted_proxy_hops: usize,
+    /// `CCTUI_CCTUIVERSE=0` turns cross-instance links off entirely.
+    pub cctuiverse_enabled: bool,
+    /// `CCTUI_CCTUIVERSE_ALLOW_PRIVATE=1` lets peers sit on http and private
+    /// addresses, for a LAN or a dev setup.
+    pub cctuiverse_allow_private: bool,
     /// Optional GitHub PAT (read access to the releases repo). When set, the
     /// daemon-binary manifest points clients at this server's proxy endpoint
     /// and the server streams the release asset itself (so a private releases
@@ -328,6 +333,9 @@ impl Config {
             archive_after_secs: secs_from_hours(get("CCTUI_SESSION_ARCHIVE_TTL_HOURS"), 24),
             max_daemon_ws_conns: daemon_ws_cap(get("CCTUI_MAX_DAEMON_WS_CONNS")),
             trusted_proxy_hops: trusted_hops(get("CCTUI_TRUSTED_PROXY_HOPS")),
+            cctuiverse_enabled: get("CCTUI_CCTUIVERSE").is_none_or(|v| v.trim() != "0"),
+            cctuiverse_allow_private: get("CCTUI_CCTUIVERSE_ALLOW_PRIVATE")
+                .is_some_and(|v| v.trim() == "1"),
             github_token: get("CCTUI_GITHUB_TOKEN")
                 .or_else(|| get("GH_TOKEN"))
                 .filter(|s| !s.trim().is_empty()),
@@ -410,6 +418,8 @@ impl Config {
             archive_after_secs: 0,
             max_daemon_ws_conns: DEFAULT_MAX_DAEMON_WS_CONNS,
             trusted_proxy_hops: 0,
+            cctuiverse_enabled: true,
+            cctuiverse_allow_private: false,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],
@@ -535,6 +545,8 @@ mod tests {
             archive_after_secs: 0,
             max_daemon_ws_conns: DEFAULT_MAX_DAEMON_WS_CONNS,
             trusted_proxy_hops: 0,
+            cctuiverse_enabled: true,
+            cctuiverse_allow_private: false,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],
@@ -584,6 +596,25 @@ mod tests {
         assert_eq!(cfg.database_url, "postgres://x");
         assert_eq!(cfg.port, 8700);
         assert!(cfg.http_dispatchers.is_empty());
+    }
+
+    #[test]
+    fn cctuiverse_is_on_and_public_only_by_default() {
+        let with = |pairs: &'static [(&'static str, &'static str)]| {
+            Config::from_lookup(move |k: &str| {
+                if k == "DATABASE_URL" {
+                    return Some("postgres://x".to_owned());
+                }
+                pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned())
+            })
+            .unwrap()
+        };
+        let cfg = with(&[]);
+        assert!(cfg.cctuiverse_enabled && !cfg.cctuiverse_allow_private);
+        let cfg = with(&[("CCTUI_CCTUIVERSE", "0"), ("CCTUI_CCTUIVERSE_ALLOW_PRIVATE", "1")]);
+        assert!(!cfg.cctuiverse_enabled && cfg.cctuiverse_allow_private);
+        let cfg = with(&[("CCTUI_CCTUIVERSE", "1"), ("CCTUI_CCTUIVERSE_ALLOW_PRIVATE", "yes")]);
+        assert!(cfg.cctuiverse_enabled && !cfg.cctuiverse_allow_private);
     }
 
     #[test]
