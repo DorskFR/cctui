@@ -196,6 +196,8 @@
 					onspawned={() => void queryClient.invalidateQueries({ queryKey: qk.sessionsAll })}
 				/>
 			{/if}
+		{:else if page.route.id === '/cctuiverse/join'}
+			<main class="content">{@render children?.()}</main>
 		{:else if !auth.checking}
 			<Login />
 		{/if}

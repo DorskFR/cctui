@@ -459,6 +459,9 @@ pub struct Driver {
     /// `Mutex` because the reply path takes `&self` while the poll loop holds
     /// `&mut self`.
     pending_turns: std::sync::Mutex<HashMap<String, PendingTurn>>,
+    /// Peer turns that arrived while an ask form was up, delivered by the poll
+    /// once the form is gone so they never decline it.
+    deferred_peer: HashMap<String, std::collections::VecDeque<String>>,
     /// Fingerprints of text this daemon delivered per session, so a transcript
     /// user line it wrote is never mistaken for harness-injected text.
     delivered: delivered::Delivered,
@@ -653,6 +656,13 @@ fn with_resume_guard(
 /// never re-sends a whole context.
 const RESUME_INTERRUPTED_TURN_MAX_AGE_MS: &str = "60000";
 
+const MAX_DEFERRED_PEER: usize = 32;
+
+/// A peer turn never touches an open ask form: it waits until the form resolves.
+fn defers_for_ask(ask_up: bool, text: &str) -> bool {
+    ask_up && crate::adapters::is_peer_envelope(text)
+}
+
 /// Parse `CCTUI_GATEWAY_RESEED_SECS` (positive integer seconds) or fall back to
 /// one hour — comfortably under the server's default 12h token TTL.
 fn reseed_interval_from(var: Option<String>) -> Duration {
@@ -723,6 +733,7 @@ impl Driver {
             acked_marks: HashMap::new(),
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             pending_turns: std::sync::Mutex::new(HashMap::new()),
+            deferred_peer: HashMap::new(),
             delivered: delivered::Delivered::default(),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
             server: None,
@@ -1116,11 +1127,46 @@ impl Driver {
             self.churned = false;
             self.reconcile_tail(true).await;
         }
+        self.flush_deferred_peer(&sock).await;
         if reseed_due(self.last_reseed, Self::reseed_interval(), reattached) {
             self.reseed_gateway_env().await;
             self.last_reseed = Some(Instant::now());
         }
         Ok(())
+    }
+
+    fn defer_peer(&mut self, local_id: &str, text: String) {
+        let queue = self.deferred_peer.entry(local_id.to_owned()).or_default();
+        if queue.len() >= MAX_DEFERRED_PEER {
+            queue.pop_front();
+            tracing::warn!(%local_id, "deferred peer queue full; dropped the oldest");
+        }
+        queue.push_back(text);
+        tracing::info!(%local_id, "peer turn deferred until the ask form resolves");
+    }
+
+    async fn flush_deferred_peer(&mut self, sock: &std::path::Path) {
+        let ready: Vec<String> = self
+            .deferred_peer
+            .keys()
+            .filter(|id| !self.pending_asks.lock().is_ok_and(|m| m.contains_key(*id)))
+            .cloned()
+            .collect();
+        for local_id in ready {
+            let Some(mut queue) = self.deferred_peer.remove(&local_id) else { continue };
+            while let Some(text) = queue.pop_front() {
+                let env = std::collections::BTreeMap::default();
+                match Box::pin(self.deliver_reply(sock, &local_id, &text, None, &env, None)).await {
+                    Ok(()) => {}
+                    Err(err) if err.is::<reply::AskOpened>() => {
+                        queue.push_front(text);
+                        self.deferred_peer.insert(local_id.clone(), queue);
+                        break;
+                    }
+                    Err(err) => tracing::warn!(%local_id, %err, "deferred peer turn not delivered"),
+                }
+            }
+        }
     }
 
     /// Renew each live account-bound worker's gateway token by re-pulling its
@@ -1242,16 +1288,17 @@ impl SessionDriver for Driver {
     }
 
     async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
+        let ask_up = self.pending_asks.lock().is_ok_and(|m| m.contains_key(&local_id));
+        if defers_for_ask(ask_up, &text) {
+            self.defer_peer(&local_id, text);
+            return Ok(Handled::Done);
+        }
         let sock = self.ensure_socket().await?;
-        Box::pin(self.deliver_reply(
-            &sock,
-            &local_id,
-            &text,
-            None,
-            &std::collections::BTreeMap::default(),
-            None,
-        ))
-        .await?;
+        let env = std::collections::BTreeMap::default();
+        match Box::pin(self.deliver_reply(&sock, &local_id, &text, None, &env, None)).await {
+            Err(err) if err.is::<reply::AskOpened>() => self.defer_peer(&local_id, text),
+            other => other?,
+        }
         Ok(Handled::Done)
     }
 

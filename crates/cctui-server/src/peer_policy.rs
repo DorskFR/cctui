@@ -32,6 +32,10 @@ pub enum Relation {
     Sibling,
     /// Both sessions carry the same `sessions.room_id`.
     Room,
+    /// A cctuiverse link on another cctui. Never produced by [`decide`]: a
+    /// remote peer is resolved through `cctuiverse::link_for_session` before
+    /// the same-owner check is ever reached.
+    Remote,
 }
 
 impl Relation {
@@ -43,6 +47,7 @@ impl Relation {
             Self::Child => "child",
             Self::Sibling => "sibling",
             Self::Room => "room",
+            Self::Remote => "remote",
         }
     }
 }
@@ -459,6 +464,10 @@ mod tests {
                 relation.as_str()
             );
         }
+        assert!(
+            !ROSTER_SQL.contains(&format!("'{}'", Relation::Remote.as_str())),
+            "remote peers come from cctuiverse links, never from the owner-scoped roster"
+        );
         assert!(ROSTER_SQL.contains("s.user_id = me.user_id"), "the roster must stay owner-scoped");
         assert!(
             ROSTER_SQL.contains("s.room_id = me.room_id"),

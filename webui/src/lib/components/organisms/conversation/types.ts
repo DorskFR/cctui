@@ -215,6 +215,8 @@ export interface Line {
 	peerFrom?: string;
 	/** Room a peer line arrived through; absent for a direct peer message. */
 	peerRoom?: string;
+	/** A peer line from a session on another cctui. */
+	peerRemote?: boolean;
 	// Uploads this turn carried, parsed from the raw text before the harness's
 	// attachment encodings were stripped out of the displayed prose.
 	uploads?: UserUploadRefs;

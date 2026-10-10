@@ -8,6 +8,7 @@ pub mod blobs;
 pub mod bookmarks;
 pub mod cache_loss;
 pub mod capabilities;
+pub mod cctuiverse;
 pub mod codex_models;
 pub mod context;
 pub mod credentials;

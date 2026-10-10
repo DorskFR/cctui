@@ -13,6 +13,7 @@ import {
   parseHarnessCommand,
   parsePeerMessage,
   parseRoomJoined,
+  parseCctuiverseLinked,
   parsePlan,
   parseTaskNotification,
   parseToolBlock,
@@ -123,7 +124,14 @@ function userOrSystem(
       text: peer.body,
       peerFrom: peer.from ?? undefined,
       peerRoom: peer.room,
+      peerRemote: peer.remote || undefined,
     };
+  }
+  const linked = parseCctuiverseLinked(content);
+  if (linked) {
+    if (!ctx.visible("marker")) return null;
+    const label = m.cctuiverse_linked_marker({ peer: linked.peer });
+    return { role: "marker", ts, text: label, markerTexts: [label] };
   }
   const joined = parseRoomJoined(content);
   if (joined) {
@@ -630,7 +638,8 @@ export function buildLines(
       if (
         looksMeta(body) ||
         parsePeerMessage(body) ||
-        parseRoomJoined(body) !== null
+        parseRoomJoined(body) !== null ||
+        parseCctuiverseLinked(body) !== null
       )
         continue;
       if (!body || !ctx.visible("user")) continue;

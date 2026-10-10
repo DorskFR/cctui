@@ -251,7 +251,9 @@ pub fn peers_tool_schema() -> Value {
         "description": "List the cctui sessions this session is allowed to talk to: its parent, \
     its children, its siblings, and any session explicitly shared with it — across machines and \
     across harnesses (claude_code, codex, opencode, ACP agents such as gemini). Each entry gives session_id, name, adapter, \
-    machine, state (live / ended / archived) and the relation. Use it before CctuiSend or \
+    machine, state (live / ended / archived) and the relation. A session on ANOTHER cctui that \
+    its owner linked to yours appears as `remote:<id>` with relation `remote` (`remote-room` for \
+    a room hosted elsewhere): someone else's agent, not yours. Use it before CctuiSend or \
     CctuiHistory: an id not on this list is refused.",
         "inputSchema": {
             "type": "object",
@@ -273,7 +275,9 @@ pub fn send_tool_schema() -> Value {
     session with its own work, not a subagent — it answers when and if it chooses, by calling \
     CctuiSend back at you. Only sessions CctuiPeers lists may be addressed; an ended or archived \
     peer cannot receive anything (read it with CctuiHistory instead). Rate-limited to 10 messages \
-    a minute, and capped in size — send a pointer (a path, a session id), not a payload.",
+    a minute, and capped in size — send a pointer (a path, a session id), not a payload. A \
+    `remote:<id>` peer lives on another cctui: the message may come back `queued` (retried until \
+    the other side takes it) or held for your owner's review instead of delivered.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -304,7 +308,8 @@ pub fn history_tool_schema() -> Value {
     longer exists: cctui keeps the transcript. Same addressing rules as CctuiSend (see \
     CctuiPeers). Returns compact markdown by default, newest events first-priority within a size \
     budget; page backwards with `before` using the oldest seq the previous call reported. The \
-    human running the target session sees that you consulted it.",
+    human running the target session sees that you consulted it. A `remote:<id>` peer can be \
+    read only if its owner shares its transcript; otherwise the call is refused.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -361,8 +366,10 @@ pub fn room_tool_schema() -> Value {
     Messages you receive wrapped in <cctui-room> came from another session in the room, not from \
     the human who runs you. `peek` reads the room's past messages, `members` lists who is in it. \
     Being in a room also lets you use CctuiPeers, CctuiSend and CctuiHistory on its sessions. Omit \
-    room_id: you are in at most one room. A post counts against the same rate limit as CctuiSend \
-    and is size-capped — post a pointer, not a payload.",
+    room_id: you are in at most one room. A room may include remote members (sessions on another \
+    cctui), and your room may itself be hosted on another cctui: then post, peek and members go \
+    through its host. A post counts against the same rate limit as CctuiSend and is size-capped \
+    — post a pointer, not a payload.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -841,6 +848,7 @@ mod tests {
             "the loop guard must be in the tool description too: {desc}"
         );
         assert!(desc.contains("<cctui-room>"), "{desc}");
+        assert!(desc.contains("remote members"), "{desc}");
         assert!(desc.contains("at most one room"), "{desc}");
         assert!(
             desc.contains("skipped and named, not queued"),
@@ -883,7 +891,7 @@ mod tests {
         assert_eq!(schema["inputSchema"]["required"], json!([]));
         assert!(schema["inputSchema"]["properties"].as_object().unwrap().is_empty());
         let desc = schema["description"].as_str().unwrap();
-        for word in ["parent", "children", "siblings", "shared", "archived"] {
+        for word in ["parent", "children", "siblings", "shared", "archived", "remote:<id>"] {
             assert!(desc.contains(word), "{word} missing: {desc}");
         }
     }
@@ -896,6 +904,7 @@ mod tests {
         assert_eq!(schema["inputSchema"]["required"], json!(["session_id", "message"]));
         let desc = schema["description"].as_str().unwrap();
         assert!(desc.contains("not a request/response"), "{desc}");
+        assert!(desc.contains("remote:<id>") && desc.contains("queued"), "{desc}");
         assert!(desc.contains("CctuiPeers"), "{desc}");
         assert!(desc.contains("archived"), "{desc}");
     }
@@ -913,6 +922,7 @@ mod tests {
         let desc = schema["description"].as_str().unwrap();
         assert!(desc.contains("archived"), "{desc}");
         assert!(desc.contains("no longer exists"), "{desc}");
+        assert!(desc.contains("shares its transcript"), "{desc}");
     }
 
     #[test]

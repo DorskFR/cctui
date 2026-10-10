@@ -5,6 +5,7 @@ mod accounts;
 mod admin_instance;
 mod admin_users;
 mod catalog;
+mod cctuiverse;
 mod context;
 mod daemon;
 mod device_auth;
@@ -77,6 +78,7 @@ pub fn register(r: Routes) -> Routes {
     let r = profiles::register(r);
     let r = account_usage::register(r);
     let r = rooms::register(r);
+    let r = cctuiverse::register(r);
     let r = shares::register(r);
     let r = machines::register(r);
     let r = me::register(r);

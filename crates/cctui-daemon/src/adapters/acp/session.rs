@@ -585,6 +585,10 @@ impl AcpSession {
         let local_id = self.local_id();
         match cmd {
             SessionCommand::Prompt { text, ask_picks, command_id, turn_id } => {
+                if holds_for_form(self.form.is_some(), &text) {
+                    self.queued.push_back((text, command_id, turn_id));
+                    return true;
+                }
                 if self.answer_form(&text, ask_picks.as_deref(), command_id).await {
                     return true;
                 }
@@ -1157,9 +1161,25 @@ fn status_model(local_id: &str, model: String) -> AdapterEvent {
     }
 }
 
+/// A peer turn arriving while a form is open waits behind it: it must neither
+/// decline the form nor be taken as its answer.
+fn holds_for_form(form_open: bool, text: &str) -> bool {
+    form_open && crate::adapters::is_peer_envelope(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_peer_turn_waits_behind_an_open_form_and_a_human_answer_does_not() {
+        let peer = "<cross-session-message from=\"remote:x\" origin=\"remote\">\nyes\n\
+                    </cross-session-message>";
+        assert!(holds_for_form(true, peer));
+        assert!(holds_for_form(true, "<cctui-room name=\"ops\" from=\"a\">\nhi\n</cctui-room>"));
+        assert!(!holds_for_form(false, peer), "no form: delivered as a turn");
+        assert!(!holds_for_form(true, "yes"), "the human's answer still answers the form");
+    }
 
     #[test]
     fn status_mirrors_tempo_into_state() {

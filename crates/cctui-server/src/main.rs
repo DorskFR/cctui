@@ -10,11 +10,13 @@ mod bandwidth_watch;
 mod brief;
 mod bus;
 mod cache_bust;
+mod cctuiverse;
 mod config;
 mod cost;
 mod crypto;
 mod db;
 mod dispatchers;
+mod envelope_guard;
 mod error;
 mod events;
 mod fireworks_billing;
@@ -502,13 +504,35 @@ fn outer_routes() -> Router<AppState> {
             post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
+        // Server-to-server cctuiverse calls, authenticated by each link's
+        // Ed25519 signature rather than any cctui credential.
+        .merge(cctuiverse_routes())
         // Preview leg for a browser that landed on a pod without the daemon
         // link. Same secret; serves locally only, so it cannot loop.
         .route("/internal/preview/{id}/", any(routes::internal::preview_serve_root))
         .route("/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
 }
 
+fn cctuiverse_routes() -> Router<AppState> {
+    Router::new()
+        .route("/cctuiverse/v1/join", post(cctuiverse::wire::join))
+        .route("/cctuiverse/v1/links/{id}/messages", post(cctuiverse::wire::messages))
+        .route("/cctuiverse/v1/links/{id}/close", post(cctuiverse::wire::close))
+        .route("/cctuiverse/v1/links/{id}/history", post(cctuiverse::wire::history))
+        .route("/cctuiverse/v1/links/{id}/room", post(cctuiverse::wire::room))
+        .layer(DefaultBodyLimit::max(64 * 1024))
+}
+
+const CCTUIVERSE_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn spawn_sweeps(state: &AppState) {
+    spawn_periodic(CCTUIVERSE_SWEEP_PERIOD, {
+        let state = state.clone();
+        move || {
+            let state = state.clone();
+            async move { cctuiverse::outbox::sweep(&state).await }
+        }
+    });
     spawn_periodic(REAPER_PERIOD, {
         let state = state.clone();
         move || webhook_sweep(state.clone())
@@ -1092,6 +1116,14 @@ mod tests {
             "DELETE /bookmarks/{id} Bearer Authenticated",
             "PATCH /bookmarks/{id} Bearer Authenticated",
             "GET /capabilities Bearer Authenticated",
+            "GET /cctuiverse/config Bearer Authenticated",
+            "POST /cctuiverse/join Bearer Human",
+            "PATCH /cctuiverse/links/{id} Bearer Human",
+            "POST /cctuiverse/links/{id}/close Bearer Human",
+            "GET /cctuiverse/links/{id}/messages Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/approve Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/drop Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/release Bearer Human",
             "GET /context Bearer Human",
             "POST /context Bearer Human",
             "GET /context/resolve Bearer Human",
@@ -1167,6 +1199,8 @@ mod tests {
             "GET /rooms Bearer Authenticated",
             "DELETE /rooms/{id} Bearer Authenticated",
             "PATCH /rooms/{id} Bearer Authenticated",
+            "POST /rooms/{id}/cctuiverse/invites Bearer Human",
+            "GET /rooms/{id}/cctuiverse/links Bearer Human",
             "GET /sessions Bearer Authenticated",
             "POST /sessions/archive Bearer Authenticated",
             "POST /sessions/dispatch Bearer Scope(Dispatch)",
@@ -1192,6 +1226,8 @@ mod tests {
             r#"GET /sessions/{id}/blobs/{hash} Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/brief Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/cancel-launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/cctuiverse/invites Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/cctuiverse/links Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/conversation Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/deregister Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,

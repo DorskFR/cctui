@@ -3,6 +3,9 @@
 	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
+	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
+	import CctuiverseInviteModal from './CctuiverseInviteModal.svelte';
+	import CctuiverseLinkChips from './CctuiverseLinkChips.svelte';
 	import {
 		archivableMembers,
 		canCreate,
@@ -10,6 +13,7 @@
 		listRooms,
 		matchByName,
 		pickable,
+		remoteMembers,
 		renameRoom,
 		setRoomArchived,
 		type Room
@@ -39,6 +43,7 @@
 	let renameTo = $state('');
 	// Archiving a room archives its sessions, so it is confirmed with the count.
 	let archiving = $state<Room | null>(null);
+	let inviting = $state<Room | null>(null);
 
 	const ROW = 'justify-content:flex-start;text-align:left;min-width:0;font-size:var(--fs-sm)';
 	const live = $derived(pickable(rooms));
@@ -59,6 +64,7 @@
 
 	$effect(() => {
 		void load();
+		void loadCctuiverseConfig();
 	});
 
 	function submit() {
@@ -154,7 +160,22 @@
 					<span class="glyph" aria-hidden="true">{current === room.id ? '✓' : '◎'}</span>
 					<span class="rowname">{room.name}</span>
 					<Badge size="xs">{m.rooms_members_count({ count: room.members.length })}</Badge>
+					{#if remoteMembers(room).length > 0}
+						<Badge size="xs" title={m.cctuiverse_external_title()}>
+							{m.cctuiverse_external_count({ count: remoteMembers(room).length })}
+						</Badge>
+					{/if}
 				</Button>
+				{#if cctuiverseConfig.enabled}
+					<IconButton
+						icon="link"
+						label={m.cctuiverse_menu_invite_room()}
+						inline
+						size={13}
+						disabled={working}
+						onclick={() => (inviting = room)}
+					/>
+				{/if}
 				<IconButton
 					icon="edit"
 					label={m.rooms_rename()}
@@ -185,6 +206,11 @@
 				/>
 			{/if}
 		</div>
+		{#if cctuiverseConfig.enabled}
+			<div class="links">
+				<CctuiverseLinkChips target={{ room: room.id }} />
+			</div>
+		{/if}
 	{/each}
 
 	{#if filtered.length === 0 && !offerCreate}
@@ -207,6 +233,14 @@
 
 	<Text size="xs" tone="muted">{m.rooms_menu_hint()}</Text>
 </div>
+
+{#if inviting}
+	<CctuiverseInviteModal
+		target={{ room: inviting.id }}
+		defaultLabel={inviting.name}
+		onclose={() => (inviting = null)}
+	/>
+{/if}
 
 {#if archiving}
 	{@const count = archivableMembers(archiving).length}
@@ -242,6 +276,12 @@
 		gap: var(--sp-1);
 		align-items: center;
 		min-width: 0;
+	}
+	.links {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-1);
+		padding-left: var(--sp-4);
 	}
 	.glyph {
 		flex: none;

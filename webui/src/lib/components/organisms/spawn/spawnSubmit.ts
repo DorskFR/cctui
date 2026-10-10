@@ -18,6 +18,8 @@ import { buildDispatchBody } from './dispatchBody';
 import { attachLabelsTo } from './labelAttach';
 import { envMap } from './spawnBody';
 import type { SpawnForm } from './spawnForm.svelte';
+import { findInvite, joinInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
+import { cctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 
 /** Identity of the form's file set: what decides whether a save has to ship
  *  the bytes again. */
@@ -107,6 +109,19 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	sf.cancelAutosave();
 	sf.spawnFailure = null;
 	const body: SpawnRequest = sf.buildSpawnBody();
+	const invite = findInvite(sf.form.prompt);
+	const joinLabel = (sf.joinLabel.trim() || sf.form.name.trim()).slice(0, 80);
+	if (invite) {
+		if (!cctuiverseConfig.enabled) {
+			toasts.error(m.cctuiverse_disabled_invite());
+			return;
+		}
+		if (!joinLabel) {
+			toasts.error(m.cctuiverse_label_required());
+			return;
+		}
+		body.prompt = stripInvite(sf.form.prompt.trim(), invite, JOIN_PROMPT);
+	}
 	const labelIds = [...sf.form.labels];
 	const memoryCwd = normalizeDir(sf.form.working_dir.trim());
 	const memoryMachine = sf.form.machine_id;
@@ -128,6 +143,12 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	const result = await ws.awaitSpawn(res.command_id, sessionId, {
 		probe: sessionId ? () => spawnProbe(sf, sessionId) : undefined
 	});
+	if (invite && sessionId && (result.ok || result.timedOut)) {
+		void joinInvite(invite, sessionId, joinLabel).then(
+			(link) => toasts.ok(m.cctuiverse_linked_with({ peer: link.peer_label ?? '' })),
+			(e) => toasts.error(m.cctuiverse_join_failed({ error: errMessage(e) }))
+		);
+	}
 	if (sf.followupParent) drafts.set(FOLLOWUP_ARCHIVE_SOURCE, sf.archiveSource ? '1' : '');
 	if (result.ok) {
 		toasts.ok(m.spawn_toast_spawned());
@@ -150,6 +171,10 @@ export async function spawnOnMachine(sf: SpawnForm) {
 export async function dispatchToK8s(sf: SpawnForm) {
 	// Stable across retries so the server's idempotency dedup makes a
 	// re-submit a genuine retry, not a second pod. Cleared on success.
+	if (findInvite(sf.form.prompt)) {
+		toasts.error(m.cctuiverse_dispatch_unsupported());
+		return;
+	}
 	sf.pendingDispatchId ??= crypto.randomUUID();
 	const body = buildDispatchBody(sf.form, envMap(sf.envRows), sf.dispatchProvider, sf.pendingDispatchId);
 	const labelIds = [...sf.form.labels];
