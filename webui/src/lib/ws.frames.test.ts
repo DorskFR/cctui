@@ -151,7 +151,7 @@ const fixtures = {
 	},
 	heartbeat: { type: 'heartbeat' },
 	resync: { type: 'resync', session_id: SID },
-	cctuiverse_changed: { type: 'cctuiverse_changed', session_id: SID, room_id: null }
+	cctuiverse_changed: { type: 'cctuiverse_changed', user_id: USER, session_id: SID, room_id: null }
 } satisfies { [K in ServerEvent['type']]: Extract<ServerEvent, { type: K }> };
 
 class FakeSocket {
