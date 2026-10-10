@@ -3,6 +3,7 @@
 pub mod client;
 pub mod handshake;
 pub mod invite;
+pub mod limits;
 pub mod outbox;
 pub mod sig;
 pub mod wire;
@@ -15,7 +16,7 @@ use uuid::Uuid;
 pub use cctui_proto::api::cctuiverse::{
     CctuiverseLinkView, InboundMode, LinkKind, LinkRole, LinkSettings, LinkState, OutboundMode,
 };
-pub use outbox::{Payload, SendOutcome, send};
+pub use outbox::{Payload, SendOutcome, enqueue, send};
 pub use wire::{peer_history, peer_room};
 
 use crate::error::AppError;
@@ -25,6 +26,9 @@ use crate::state::AppState;
 pub const INVITE_TTL: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 pub const DEFAULT_EXPIRY: chrono::TimeDelta = chrono::TimeDelta::hours(24);
 pub const MAX_LABEL_CHARS: usize = 80;
+/// New links start capped so two auto-forwarding agents cannot loop unbounded;
+/// the owner can raise or clear it.
+pub const DEFAULT_MAX_MESSAGES: i32 = 100;
 pub const MAX_TEXT_BYTES: usize = crate::routes::peer::MAX_MESSAGE_BYTES;
 const REMOTE_PREFIX: &str = "remote:";
 
@@ -50,6 +54,7 @@ pub struct Link {
     invite_token_hash: Option<Vec<u8>>,
     invite_expires_at: Option<DateTime<Utc>>,
     sent_count: i32,
+    preamble_pending: bool,
     created_at: DateTime<Utc>,
     activated_at: Option<DateTime<Utc>>,
     closed_at: Option<DateTime<Utc>>,
@@ -77,6 +82,7 @@ struct LinkRow {
     envelope_nonce: String,
     settings: serde_json::Value,
     sent_count: i32,
+    preamble_pending: bool,
     created_at: DateTime<Utc>,
     activated_at: Option<DateTime<Utc>>,
     closed_at: Option<DateTime<Utc>>,
@@ -105,6 +111,7 @@ impl From<LinkRow> for Link {
             invite_token_hash: r.invite_token_hash,
             invite_expires_at: r.invite_expires_at,
             sent_count: r.sent_count,
+            preamble_pending: r.preamble_pending,
             created_at: r.created_at,
             activated_at: r.activated_at,
             closed_at: r.closed_at,
@@ -114,7 +121,7 @@ impl From<LinkRow> for Link {
 
 const COLS: &str = "id, user_id, session_id, room_id, kind, role, state, label, peer_label, \
      peer_room_name, public_key, encrypted_private_key, peer_public_key, peer_link_id, peer_url, \
-     invite_token_hash, invite_expires_at, envelope_nonce, settings, sent_count, created_at, \
+     invite_token_hash, invite_expires_at, envelope_nonce, settings, sent_count, preamble_pending, created_at, \
      activated_at, closed_at";
 
 impl Link {
@@ -168,9 +175,11 @@ pub fn parse_remote_ref(s: &str) -> Option<Uuid> {
 }
 
 /// Non-pending links bound to `session_id` (active first, then closed, newest first).
+/// A closed link drops out 24 h after closing.
 pub async fn session_links(pool: &PgPool, session_id: &str) -> Result<Vec<Link>, sqlx::Error> {
     let rows: Vec<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM cctuiverse_links WHERE session_id = $1 AND state <> 'pending' \
+           AND (state <> 'closed' OR closed_at > now() - interval '24 hours') \
          ORDER BY (state = 'active') DESC, created_at DESC"
     )))
     .bind(session_id)
@@ -296,13 +305,30 @@ pub fn token_hash(token: &[u8]) -> Vec<u8> {
     Sha256::digest(token).to_vec()
 }
 
-/// Labels land in envelope attributes on both sides, so markup characters are refused.
+/// Controls, bidi overrides and zero-width characters let a label read
+/// differently from what it is.
+fn invisible(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+}
+
+/// An owner-typed label. Labels land in envelope attributes on both sides, so
+/// markup characters are refused; invisible characters are stripped.
 pub fn clean_label(raw: &str) -> Option<String> {
-    let t = raw.trim();
+    let visible: String = raw.chars().filter(|c| !invisible(*c)).collect();
+    let t = visible.trim();
     let n = t.chars().count();
-    ((1..=MAX_LABEL_CHARS).contains(&n)
-        && !t.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | '"')))
-    .then(|| t.to_owned())
+    ((1..=MAX_LABEL_CHARS).contains(&n) && !t.contains(['<', '>', '"'])).then(|| t.to_owned())
+}
+
+/// A peer-supplied name (room names, sender labels): made safe rather than
+/// refused, so a name the peer allows never breaks the link.
+pub fn sanitize_label(raw: &str) -> Option<String> {
+    let kept: String =
+        raw.chars().filter(|c| !invisible(*c) && !matches!(c, '<' | '>' | '"')).collect();
+    let t: String = kept.trim().chars().take(MAX_LABEL_CHARS).collect();
+    let t = t.trim_end();
+    (!t.is_empty()).then(|| t.to_owned())
 }
 
 fn attr(raw: &str) -> String {
@@ -406,25 +432,51 @@ async fn room_name(pool: &PgPool, room_id: Uuid) -> Option<String> {
         .flatten()
 }
 
-/// Tell the bound session(s) the link is live.
-pub async fn announce_active(state: &AppState, link: &Link) {
+/// Tell the bound session(s) the link is live. `false` when the bound session
+/// could not take the turn yet; room members are told best-effort.
+async fn announce_active(state: &AppState, link: &Link) -> bool {
     let peer = link.peer_name();
     match (link.kind, link.session_id.as_deref(), link.room_id) {
         (LinkKind::Session, Some(sid), _) => {
-            deliver_local(state, sid, session_preamble(link.id, peer)).await;
+            deliver_local(state, sid, session_preamble(link.id, peer)).await != Delivery::Offline
         }
         (LinkKind::Room, Some(sid), _) => {
             let room = link.peer_room_name.as_deref().unwrap_or("room");
-            deliver_local(state, sid, room_joiner_preamble(link.id, peer, room)).await;
+            deliver_local(state, sid, room_joiner_preamble(link.id, peer, room)).await
+                != Delivery::Offline
         }
         (LinkKind::Room, None, Some(room_id)) => {
             let room = room_name(&state.pool, room_id).await.unwrap_or_default();
-            let Ok(members) = crate::rooms::members(&state.pool, room_id).await else { return };
+            let Ok(members) = crate::rooms::members(&state.pool, room_id).await else {
+                return false;
+            };
             for m in members.iter().filter(|m| m.state == "live") {
                 deliver_local(state, &m.session_id, room_host_preamble(link.id, peer, &room)).await;
             }
+            true
         }
-        _ => {}
+        _ => true,
+    }
+}
+
+/// Deliver a link's pending linked-with turn, once. The claim keeps the sweep
+/// and an inbound message from both delivering it.
+pub async fn flush_preamble(state: &AppState, link_id: Uuid) {
+    let claimed: Result<Option<LinkRow>, _> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE cctuiverse_links SET preamble_pending = false \
+         WHERE id = $1 AND preamble_pending AND state = 'active' RETURNING {COLS}"
+    )))
+    .bind(link_id)
+    .fetch_optional(&state.pool)
+    .await;
+    let Ok(Some(link)) = claimed.map(|r| r.map(Link::from)) else { return };
+    if !announce_active(state, &link).await {
+        let _ = sqlx::query(
+            "UPDATE cctuiverse_links SET preamble_pending = true WHERE id = $1 AND state = 'active'",
+        )
+        .bind(link_id)
+        .execute(&state.pool)
+        .await;
     }
 }
 
@@ -434,6 +486,8 @@ pub enum CloseReason {
     Peer,
     Expired,
     Archived,
+    /// The peer answered 404: it no longer knows this link.
+    Gone,
 }
 
 /// Close `link`, drop its private key and pending outbound messages, mark the
@@ -466,6 +520,9 @@ pub async fn close(state: &AppState, link: &Link, reason: CloseReason) -> Result
             CloseReason::Owner => format!("closed the cctuiverse link with {peer}"),
             CloseReason::Peer => format!("{peer} closed the cctuiverse link"),
             CloseReason::Expired => format!("the cctuiverse link with {peer} expired"),
+            CloseReason::Gone => {
+                format!("{peer} no longer recognises the cctuiverse link; closed")
+            }
             CloseReason::Archived => {
                 format!("the cctuiverse link with {peer} closed: session archived")
             }
@@ -473,7 +530,7 @@ pub async fn close(state: &AppState, link: &Link, reason: CloseReason) -> Result
         audit(&state.pool, sid, &text).await;
     }
     publish_changed(state, &closed);
-    if reason != CloseReason::Peer
+    if !matches!(reason, CloseReason::Peer | CloseReason::Gone)
         && link.state == LinkState::Active
         && let (Some(seed), Some(url), Some(peer_id)) =
             (seed, link.peer_url.clone(), link.peer_link_id)
@@ -559,7 +616,7 @@ async fn forward_turn(state: &AppState, session_id: &str, text: &str, id: impl F
             },
             (LinkKind::Room, None) => continue,
         };
-        let outcome = outbox::send_with_id(state, link, payload, id()).await;
+        let outcome = outbox::send_with_id(state, link, payload, id(), true).await;
         if let SendOutcome::Refused(why) = outcome {
             tracing::info!(link = %link.id, "auto-forward refused: {why}");
         }

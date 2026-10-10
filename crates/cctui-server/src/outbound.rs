@@ -345,6 +345,18 @@ pub fn guarded_client(allow: fn() -> Arc<Vec<AllowedHost>>) -> reqwest::Client {
         .expect("build guarded client")
 }
 
+/// [`guarded_client`] that also ignores proxy environment variables, so the
+/// resolver always sees the real target name.
+pub fn guarded_direct_client(allow: fn() -> Arc<Vec<AllowedHost>>) -> reqwest::Client {
+    crate::install_crypto_provider();
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .dns_resolver(Arc::new(GuardedResolver { allow }))
+        .build()
+        .expect("build guarded client")
+}
+
 /// Client for user-supplied upstreams.
 pub fn upstream_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();

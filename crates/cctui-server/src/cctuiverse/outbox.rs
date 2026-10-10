@@ -67,7 +67,12 @@ fn permanent(status: StatusCode) -> bool {
 }
 
 pub async fn send(state: &AppState, link: &Link, payload: Payload) -> SendOutcome {
-    send_with_id(state, link, payload, Uuid::new_v4()).await
+    send_with_id(state, link, payload, Uuid::new_v4(), true).await
+}
+
+/// Like [`send`], but never waits on the peer: the attempt runs on its own task.
+pub async fn enqueue(state: &AppState, link: &Link, payload: Payload) -> SendOutcome {
+    send_with_id(state, link, payload, Uuid::new_v4(), false).await
 }
 
 fn refusal(link: &Link, payload: &Payload) -> Option<String> {
@@ -97,6 +102,7 @@ pub(super) async fn send_with_id(
     link: &Link,
     payload: Payload,
     message_id: Uuid,
+    inline: bool,
 ) -> SendOutcome {
     if !enabled(state) {
         return SendOutcome::Refused("cctuiverse is disabled on this server".into());
@@ -120,7 +126,12 @@ pub(super) async fn send_with_id(
     if review {
         return SendOutcome::AwaitingReview;
     }
-    attempt(state, link, row).await
+    if inline {
+        return attempt(state, link, row).await;
+    }
+    let (state, link) = (state.clone(), link.clone());
+    tokio::spawn(async move { attempt(&state, &link, row).await });
+    SendOutcome::Queued
 }
 
 enum Reserved {
@@ -152,8 +163,11 @@ async fn reserve(
     }
     let row: Option<i64> = sqlx::query_scalar(
         "INSERT INTO cctuiverse_messages \
-             (link_id, message_id, direction, kind, body, status, next_attempt_at) \
-         VALUES ($1, $2, 'out', $3, $4, $5, CASE WHEN $5 = 'queued' THEN now() END) \
+             (link_id, message_id, direction, kind, body, status, next_attempt_at, \
+              first_queued_at) \
+         VALUES ($1, $2, 'out', $3, $4, $5, \
+                 CASE WHEN $5 = 'queued' THEN now() + interval '1 minute' END, \
+                 CASE WHEN $5 = 'queued' THEN now() END) \
          ON CONFLICT (link_id, direction, message_id) DO NOTHING RETURNING id",
     )
     .bind(link_id)
@@ -172,14 +186,15 @@ type OutRow = (Uuid, String, Value, i32, DateTime<Utc>);
 
 pub async fn attempt(state: &AppState, link: &Link, row: i64) -> SendOutcome {
     let loaded: Result<Option<OutRow>, _> = sqlx::query_as(
-        "SELECT message_id, kind, body, attempts, created_at FROM cctuiverse_messages \
+        "SELECT message_id, kind, body, attempts, COALESCE(first_queued_at, created_at) \
+         FROM cctuiverse_messages \
          WHERE id = $1 AND link_id = $2 AND direction = 'out' AND status = 'queued'",
     )
     .bind(row)
     .bind(link.id)
     .fetch_optional(&state.pool)
     .await;
-    let Ok(Some((message_id, kind, body, attempts, created_at))) = loaded else {
+    let Ok(Some((message_id, kind, body, attempts, queued_at))) = loaded else {
         return SendOutcome::Refused("no such queued message".into());
     };
     let (Some(seed), Some(url), Some(peer_id)) =
@@ -199,7 +214,7 @@ pub async fn attempt(state: &AppState, link: &Link, row: i64) -> SendOutcome {
             let _ = sqlx::query(
                 "UPDATE cctuiverse_messages SET status = 'delivered', delivered_at = now(), \
                      attempts = attempts + 1, next_attempt_at = NULL, last_error = NULL \
-                 WHERE id = $1",
+                 WHERE id = $1 AND status = 'queued'",
             )
             .bind(row)
             .execute(&state.pool)
@@ -211,26 +226,33 @@ pub async fn attempt(state: &AppState, link: &Link, row: i64) -> SendOutcome {
                 .ok()
                 .and_then(|v| v["error"].as_str().map(|s| s.chars().take(200).collect()))
                 .unwrap_or_else(|| format!("peer answered {status}"));
-            fail(state, link, row, &why).await
+            let outcome = fail(state, link, row, &why).await;
+            if status == StatusCode::NOT_FOUND
+                && let Err(e) = super::close(state, link, CloseReason::Gone).await
+            {
+                tracing::warn!(link = %link.id, "cctuiverse close after peer 404 failed: {e}");
+            }
+            outcome
         }
         Ok((status, _)) => {
-            retry(state, link, row, attempts, created_at, &format!("peer answered {status}")).await
+            retry(state, link, row, attempts, queued_at, &format!("peer answered {status}")).await
         }
         Err(ClientError::Url(e)) => fail(state, link, row, &e).await,
-        Err(e) => retry(state, link, row, attempts, created_at, &e.to_string()).await,
+        Err(e) => retry(state, link, row, attempts, queued_at, &e.to_string()).await,
     }
 }
 
 async fn fail(state: &AppState, link: &Link, row: i64, why: &str) -> SendOutcome {
-    let _ = sqlx::query(
+    let changed = sqlx::query(
         "UPDATE cctuiverse_messages SET status = 'failed', attempts = attempts + 1, \
-             next_attempt_at = NULL, last_error = $2 WHERE id = $1",
+             next_attempt_at = NULL, last_error = $2 WHERE id = $1 AND status = 'queued'",
     )
     .bind(row)
     .bind(why)
     .execute(&state.pool)
-    .await;
-    if let Some(sid) = link.session_id.as_deref() {
+    .await
+    .is_ok_and(|r| r.rows_affected() == 1);
+    if changed && let Some(sid) = link.session_id.as_deref() {
         audit(&state.pool, sid, &format!("message to {} not delivered: {why}", link.peer_name()))
             .await;
     }
@@ -242,16 +264,17 @@ async fn retry(
     link: &Link,
     row: i64,
     attempts: i32,
-    created_at: DateTime<Utc>,
+    queued_at: DateTime<Utc>,
     why: &str,
 ) -> SendOutcome {
-    if Utc::now() - created_at > GIVE_UP_AFTER {
+    if Utc::now() - queued_at > GIVE_UP_AFTER {
         return fail(state, link, row, &format!("gave up after 24 h ({why})")).await;
     }
     let delay = backoff(attempts + 1);
     let _ = sqlx::query(
         "UPDATE cctuiverse_messages SET attempts = attempts + 1, last_error = $2, \
-             next_attempt_at = now() + make_interval(secs => $3) WHERE id = $1",
+             next_attempt_at = now() + make_interval(secs => $3) \
+         WHERE id = $1 AND status = 'queued'",
     )
     .bind(row)
     .bind(why)
@@ -285,6 +308,15 @@ async fn sweep_inner(state: &AppState) -> Result<(), sqlx::Error> {
         if let Some(link) = super::load(&state.pool, link_id).await? {
             attempt(state, &link, row).await;
         }
+    }
+
+    let preambles: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM cctuiverse_links WHERE preamble_pending AND state = 'active' LIMIT 50",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    for id in preambles {
+        super::flush_preamble(state, id).await;
     }
 
     sqlx::query("DELETE FROM cctuiverse_nonces WHERE seen_at < now() - interval '5 minutes'")

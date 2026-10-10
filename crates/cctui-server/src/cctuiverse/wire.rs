@@ -17,7 +17,6 @@ use crate::routes::device_auth::PeerAddr;
 use crate::routes::peer::Delivery;
 use crate::state::AppState;
 
-const IN_PER_MIN: usize = 30;
 const DEFAULT_HISTORY_EVENTS: i64 = 200;
 const MAX_HISTORY_EVENTS: i64 = 1_000;
 const HISTORY_BUDGET_BYTES: usize = 64 * 1024;
@@ -40,22 +39,40 @@ pub async fn fresh_nonce(
     Ok(r.rows_affected() == 1)
 }
 
+/// What a request to one link spends, once its signature verified.
+#[derive(Debug, Clone, Copy)]
+enum Budget {
+    Inbound,
+    Read,
+}
+
+struct Request<'a> {
+    peer: Option<std::net::SocketAddr>,
+    raw_id: &'a str,
+    uri: &'a Uri,
+    headers: &'a HeaderMap,
+    body: &'a [u8],
+}
+
+/// IP gate, then the signature, then the link's own budget: an unsigned
+/// caller can neither spend a link's budget nor mint per-link limiter keys.
 async fn verified(
     state: &AppState,
-    raw_id: &str,
-    uri: &Uri,
-    headers: &HeaderMap,
-    body: &[u8],
+    req: &Request<'_>,
     allow_expired: bool,
+    budget: Budget,
 ) -> Result<Link, AppError> {
     if !super::enabled(state) {
         return Err(not_found());
     }
+    let caller = crate::routes::device_auth::caller_key(
+        req.headers,
+        req.peer,
+        state.config.trusted_proxy_hops,
+    );
+    super::limits::ip(&caller)?;
+    let (raw_id, uri, headers, body) = (req.raw_id, req.uri, req.headers, req.body);
     let id = Uuid::parse_str(raw_id).map_err(|_| not_found())?;
-    let limiter = crate::routes::peer::limiter();
-    if !limiter.admit(&format!("cv-in:{id}"), IN_PER_MIN, std::time::Instant::now()) {
-        return Err(AppError::new(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
-    }
     let link = super::load(&state.pool, id).await?.ok_or_else(not_found)?;
     if link.state != LinkState::Active || (!allow_expired && link.expired(chrono::Utc::now())) {
         return Err(not_found());
@@ -79,6 +96,11 @@ async fn verified(
     if !fresh_nonce(&state.pool, id, &nonce).await? {
         return Err(not_found());
     }
+    let (key, max) = match budget {
+        Budget::Inbound => ("in", super::limits::INBOUND_PER_LINK_PER_MIN),
+        Budget::Read => ("read", super::limits::READS_PER_LINK_PER_MIN),
+    };
+    super::limits::link(&format!("{key}:{id}"), max)?;
     Ok(link)
 }
 
@@ -124,9 +146,11 @@ pub fn inbound_turn(link: &Link, kind: &str, body: &Value) -> Option<String> {
             &link.envelope_nonce,
             text,
         )),
-        (LinkKind::Room, "room_post") => Some(crate::rooms::envelope(
+        (LinkKind::Room, "room_post") => Some(crate::rooms::remote_envelope(
             body["room_name"].as_str()?,
             body["sender_label"].as_str()?,
+            link.peer_name(),
+            &link.envelope_nonce,
             text,
         )),
         _ => None,
@@ -147,11 +171,12 @@ fn delivery_status(d: Delivery) -> Result<(), AppError> {
     }
 }
 
-async fn set_status(pool: &sqlx::PgPool, row: i64, status: &str) {
+/// Settle a claimed inbound row: `queued` lets the sender's retry redeliver.
+async fn settle(pool: &sqlx::PgPool, row: i64, status: &str) {
     let _ = sqlx::query(
-        "UPDATE cctuiverse_messages SET status = $2, \
-             delivered_at = CASE WHEN $2 IN ('delivered', 'released') THEN now() END \
-         WHERE id = $1",
+        "UPDATE cctuiverse_messages SET status = $2, next_attempt_at = NULL, \
+             delivered_at = CASE WHEN $2 = 'delivered' THEN now() END \
+         WHERE id = $1 AND status = 'delivering'",
     )
     .bind(row)
     .bind(status)
@@ -159,9 +184,60 @@ async fn set_status(pool: &sqlx::PgPool, row: i64, status: &str) {
     .await;
 }
 
-async fn forget(pool: &sqlx::PgPool, row: i64) {
-    let _ =
-        sqlx::query("DELETE FROM cctuiverse_messages WHERE id = $1").bind(row).execute(pool).await;
+enum Claim {
+    Mine(i64),
+    Settled(String),
+}
+
+/// Record an inbound message and claim its delivery. A duplicate whose earlier
+/// delivery failed transiently (`queued`) or whose claim went stale is claimed
+/// again; any other duplicate reports how it ended.
+async fn claim(
+    pool: &sqlx::PgPool,
+    link_id: Uuid,
+    msg: &MessageIn,
+    body: &Value,
+    hold: bool,
+) -> Result<Claim, sqlx::Error> {
+    let inserted: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO cctuiverse_messages \
+             (link_id, message_id, direction, kind, body, status, next_attempt_at) \
+         VALUES ($1, $2, 'in', $3, $4, $5, now()) \
+         ON CONFLICT (link_id, direction, message_id) DO NOTHING RETURNING id",
+    )
+    .bind(link_id)
+    .bind(msg.message_id)
+    .bind(&msg.kind)
+    .bind(body)
+    .bind(if hold { "held" } else { "delivering" })
+    .fetch_optional(pool)
+    .await?;
+    if let Some(id) = inserted {
+        return Ok(if hold { Claim::Settled("held".into()) } else { Claim::Mine(id) });
+    }
+    let retaken: Option<i64> = sqlx::query_scalar(
+        "UPDATE cctuiverse_messages SET status = 'delivering', next_attempt_at = now() \
+         WHERE link_id = $1 AND direction = 'in' AND message_id = $2 \
+           AND (status = 'queued' \
+                OR (status = 'delivering' AND next_attempt_at < now() - interval '2 minutes')) \
+         RETURNING id",
+    )
+    .bind(link_id)
+    .bind(msg.message_id)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(id) = retaken {
+        return Ok(Claim::Mine(id));
+    }
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM cctuiverse_messages \
+         WHERE link_id = $1 AND direction = 'in' AND message_id = $2",
+    )
+    .bind(link_id)
+    .bind(msg.message_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(Claim::Settled(status))
 }
 
 enum Inbound {
@@ -173,12 +249,14 @@ enum Inbound {
 /// `POST /cctuiverse/v1/links/{id}/messages`.
 pub async fn messages(
     State(state): State<AppState>,
+    PeerAddr(peer): PeerAddr,
     Path(id): Path<String>,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let link = verified(&state, &id, &uri, &headers, &body, false).await?;
+    let req = Request { peer, raw_id: &id, uri: &uri, headers: &headers, body: &body };
+    let link = verified(&state, &req, false, Budget::Inbound).await?;
     let msg: MessageIn =
         serde_json::from_slice(&body).map_err(|_| bad_request("malformed message"))?;
     if msg.text.trim().is_empty() || msg.text.len() > MAX_TEXT_BYTES {
@@ -193,10 +271,9 @@ pub async fn messages(
     };
     let stored = match route {
         Inbound::JoinerRoom => {
-            let (Some(room), Some(sender)) = (
-                msg.room_name.as_deref().and_then(super::clean_label),
-                msg.sender_label.as_deref().and_then(super::clean_label),
-            ) else {
+            let room = msg.room_name.as_deref().and_then(super::sanitize_label);
+            let sender = msg.sender_label.as_deref().and_then(super::sanitize_label);
+            let (Some(room), Some(sender)) = (room, sender) else {
                 return Err(bad_request("room_name and sender_label are required"));
             };
             json!({ "room_name": room, "sender_label": sender, "text": msg.text })
@@ -205,30 +282,29 @@ pub async fn messages(
     };
     let hold =
         !matches!(route, Inbound::Host(_)) && link.settings.inbound == super::InboundMode::Hold;
-    let row: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO cctuiverse_messages (link_id, message_id, direction, kind, body, status) \
-         VALUES ($1, $2, 'in', $3, $4, $5) \
-         ON CONFLICT (link_id, direction, message_id) DO NOTHING RETURNING id",
-    )
-    .bind(link.id)
-    .bind(msg.message_id)
-    .bind(&msg.kind)
-    .bind(&stored)
-    .bind(if hold { "held" } else { "delivered" })
-    .fetch_optional(&state.pool)
-    .await?;
-    let Some(row) = row else { return Ok(accepted()) };
-    if hold {
-        super::publish_changed(&state, &link);
-        return Ok(accepted());
-    }
+    let row = match claim(&state.pool, link.id, &msg, &stored, hold).await? {
+        Claim::Mine(row) => row,
+        Claim::Settled(status) => {
+            if hold && status == "held" {
+                super::publish_changed(&state, &link);
+            }
+            return match status.as_str() {
+                "delivering" => Err(AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "delivery in progress",
+                )),
+                "failed" => Err(AppError::new(StatusCode::CONFLICT, "peer session unavailable")),
+                _ => Ok(accepted()),
+            };
+        }
+    };
     let delivery = match route {
         Inbound::Host(room) => {
             let sender = format!("{} (remote)", link.peer_name());
             if let Err(e) =
                 crate::rooms::fanout_remote_post(&state, room, link.id, &sender, &msg.text).await
             {
-                forget(&state.pool, row).await;
+                settle(&state.pool, row, "queued").await;
                 return Err(e);
             }
             Delivery::Delivered
@@ -237,17 +313,21 @@ pub async fn messages(
             let (Some(sid), Some(turn)) =
                 (link.session_id.as_deref(), inbound_turn(&link, &msg.kind, &stored))
             else {
-                forget(&state.pool, row).await;
+                settle(&state.pool, row, "failed").await;
                 return Err(not_found());
             };
+            if link.preamble_pending {
+                super::flush_preamble(&state, link.id).await;
+            }
             super::deliver_local(&state, sid, turn).await
         }
     };
-    match delivery {
-        Delivery::Delivered => {}
-        Delivery::Offline => forget(&state.pool, row).await,
-        Delivery::Archived | Delivery::Ended => set_status(&state.pool, row, "failed").await,
-    }
+    let status = match delivery {
+        Delivery::Delivered => "delivered",
+        Delivery::Offline => "queued",
+        Delivery::Archived | Delivery::Ended => "failed",
+    };
+    settle(&state.pool, row, status).await;
     delivery_status(delivery)?;
     Ok(accepted())
 }
@@ -255,12 +335,14 @@ pub async fn messages(
 /// `POST /cctuiverse/v1/links/{id}/close`.
 pub async fn close(
     State(state): State<AppState>,
+    PeerAddr(peer): PeerAddr,
     Path(id): Path<String>,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, AppError> {
-    let link = verified(&state, &id, &uri, &headers, &body, true).await?;
+    let req = Request { peer, raw_id: &id, uri: &uri, headers: &headers, body: &body };
+    let link = verified(&state, &req, true, Budget::Inbound).await?;
     super::close(&state, &link, CloseReason::Peer).await?;
     Ok(Json(json!({ "closed": true })))
 }
@@ -276,12 +358,14 @@ struct HistoryIn {
 /// `POST /cctuiverse/v1/links/{id}/history`.
 pub async fn history(
     State(state): State<AppState>,
+    PeerAddr(peer): PeerAddr,
     Path(id): Path<String>,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, AppError> {
-    let link = verified(&state, &id, &uri, &headers, &body, false).await?;
+    let req = Request { peer, raw_id: &id, uri: &uri, headers: &headers, body: &body };
+    let link = verified(&state, &req, false, Budget::Read).await?;
     let (LinkKind::Session, Some(sid)) = (link.kind, link.session_id.as_deref()) else {
         return Err(not_found());
     };
@@ -335,12 +419,14 @@ pub async fn history(
 /// `POST /cctuiverse/v1/links/{id}/room`.
 pub async fn room(
     State(state): State<AppState>,
+    PeerAddr(peer): PeerAddr,
     Path(id): Path<String>,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, AppError> {
-    let link = verified(&state, &id, &uri, &headers, &body, false).await?;
+    let req = Request { peer, raw_id: &id, uri: &uri, headers: &headers, body: &body };
+    let link = verified(&state, &req, false, Budget::Read).await?;
     let (LinkKind::Room, LinkRole::Inviter, Some(room_id)) = (link.kind, link.role, link.room_id)
     else {
         return Err(not_found());
@@ -358,18 +444,28 @@ pub async fn room(
         }
     }
     let mut rows: Vec<RoomRow> = sqlx::query_as(
-        "SELECT seq, sender_label, body, created_at FROM room_messages \
-         WHERE room_id = $1 ORDER BY seq DESC LIMIT $2",
+        "SELECT rm.seq, \
+                CASE WHEN rm.sender_session_id IS NOT NULL \
+                     THEN COALESCE(NULLIF(btrim(s.session_name), ''), 'session') \
+                     ELSE rm.sender_label END, \
+                rm.body, rm.created_at \
+           FROM room_messages rm LEFT JOIN sessions s ON s.id = rm.sender_session_id \
+          WHERE rm.room_id = $1 AND rm.created_at >= $3 \
+          ORDER BY rm.seq DESC LIMIT $2",
     )
     .bind(room_id)
     .bind(ROOM_SNAPSHOT)
+    .bind(link.activated_at)
     .fetch_all(&state.pool)
     .await?;
     rows.reverse();
+    let host_human = format!("{}'s human", link.label);
     let messages: Vec<Value> = rows
         .into_iter()
         .map(|(seq, sender_label, body, created_at)| {
-            json!({ "seq": seq, "sender_label": sender_label, "body": body, "created_at": created_at })
+            let sender =
+                if sender_label == crate::rooms::HUMAN_LABEL { host_human.clone() } else { sender_label };
+            json!({ "seq": seq, "sender_label": sender, "body": body, "created_at": created_at })
         })
         .collect();
     Ok(Json(json!({ "room_name": name, "members": members, "messages": messages })))

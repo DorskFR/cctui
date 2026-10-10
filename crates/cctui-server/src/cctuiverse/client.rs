@@ -65,11 +65,12 @@ fn http(allow_private: bool) -> &'static reqwest::Client {
             crate::install_crypto_provider();
             reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
                 .build()
                 .expect("build cctuiverse client")
         })
     } else {
-        GUARDED.get_or_init(|| crate::outbound::guarded_client(crate::outbound::no_allowlist))
+        GUARDED.get_or_init(|| crate::outbound::guarded_direct_client(crate::outbound::no_allowlist))
     }
 }
 
@@ -89,7 +90,17 @@ pub async fn post_signed(
     body: &serde_json::Value,
 ) -> Result<(StatusCode, Vec<u8>), ClientError> {
     let raw = join_url(base_url, route);
-    let url = check_url(state, &raw).await.map_err(ClientError::Url)?;
+    let allow_private = state.config.cctuiverse.allow_private;
+    let url = shape_ok(&raw, allow_private).map_err(ClientError::Url)?;
+    if !allow_private {
+        match crate::outbound::validate_outbound_url(&raw, &[]).await {
+            Ok(()) => {}
+            Err(e @ crate::outbound::OutboundUrlError::Unresolvable) => {
+                return Err(ClientError::Network(e.to_string()));
+            }
+            Err(e) => return Err(ClientError::Url(e.to_string())),
+        }
+    }
     let bytes = serde_json::to_vec(body).map_err(|e| ClientError::Network(e.to_string()))?;
     let signed = sig::sign(
         seed,
@@ -100,7 +111,7 @@ pub async fn post_signed(
         chrono::Utc::now().timestamp(),
         &sig::random_b64url::<16>(),
     );
-    let mut resp = http(state.config.cctuiverse.allow_private)
+    let mut resp = http(allow_private)
         .post(url)
         .timeout(TIMEOUT)
         .header("content-type", "application/json")

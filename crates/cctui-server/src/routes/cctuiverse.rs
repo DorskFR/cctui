@@ -25,14 +25,25 @@ fn not_found() -> AppError {
     AppError::new(StatusCode::NOT_FOUND, "not found")
 }
 
-fn require_human(ctx: &AuthContext) -> Result<(), AppError> {
-    if ctx.machine_id.is_some() {
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "cctuiverse links are managed by their owner, not by an agent",
-        ));
+fn agent_refused() -> AppError {
+    AppError::new(
+        StatusCode::FORBIDDEN,
+        "cctuiverse links are managed by their owner, not by an agent",
+    )
+}
+
+fn refuse_machine(ctx: &AuthContext) -> Result<(), AppError> {
+    if ctx.machine_id.is_some() { Err(agent_refused()) } else { Ok(()) }
+}
+
+/// Machine, dispatcher and ephemeral keys are all refused.
+async fn require_human(state: &AppState, ctx: &AuthContext) -> Result<(), AppError> {
+    refuse_machine(ctx)?;
+    if crate::auth::is_human_credential(&state.pool, ctx).await? {
+        Ok(())
+    } else {
+        Err(agent_refused())
     }
-    Ok(())
 }
 
 fn require_enabled(state: &AppState) -> Result<(), AppError> {
@@ -91,7 +102,7 @@ pub async fn invite_session(
     Path(id): Path<String>,
     Json(req): Json<InviteRequest>,
 ) -> Result<Json<Value>, AppError> {
-    require_human(&ctx)?;
+    require_human(&state, &ctx).await?;
     require_enabled(&state)?;
     own_session(&state, &ctx, &id).await?;
     let label = label(&req.label)?;
@@ -110,7 +121,7 @@ pub async fn invite_room(
     Path(id): Path<Uuid>,
     Json(req): Json<InviteRequest>,
 ) -> Result<Json<Value>, AppError> {
-    require_human(&ctx)?;
+    require_human(&state, &ctx).await?;
     require_enabled(&state)?;
     let room = own_room(&state, &ctx, id).await?;
     let label = label(&req.label)?;
@@ -135,7 +146,7 @@ pub async fn join(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<JoinRequest>,
 ) -> Result<Json<Value>, AppError> {
-    require_human(&ctx)?;
+    require_human(&state, &ctx).await?;
     require_enabled(&state)?;
     own_session(&state, &ctx, &req.session_id).await?;
     let label = label(&req.label)?;
@@ -254,11 +265,20 @@ pub async fn update(
     Path(id): Path<Uuid>,
     Json(patch): Json<SettingsPatch>,
 ) -> Result<Json<Value>, AppError> {
-    require_human(&ctx)?;
+    require_human(&state, &ctx).await?;
     require_enabled(&state)?;
     let link = own_link(&state, &ctx, id).await?;
     if link.state == LinkState::Closed {
         return Err(AppError::new(StatusCode::CONFLICT, "the link is closed"));
+    }
+    if link.kind == cctuiverse::LinkKind::Room
+        && link.role == cctuiverse::LinkRole::Inviter
+        && patch.inbound == Some(InboundMode::Hold)
+    {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "a room's own links cannot hold: posts go to every member",
+        ));
     }
     let settings = patch
         .apply(link.settings.clone())
@@ -280,7 +300,7 @@ pub async fn close(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    require_human(&ctx)?;
+    require_human(&state, &ctx).await?;
     let link = own_link(&state, &ctx, id).await?;
     let link = cctuiverse::close(&state, &link, cctuiverse::CloseReason::Owner).await?;
     link_json(&state, &link).await
@@ -346,7 +366,7 @@ async fn decide(
     msg: i64,
     decision: Decision,
 ) -> Result<Json<Value>, AppError> {
-    require_human(ctx)?;
+    require_human(state, ctx).await?;
     let link = own_link(state, ctx, id).await?;
     let row: Option<(String, String, String, Value)> = sqlx::query_as(
         "SELECT direction, kind, status, body FROM cctuiverse_messages WHERE id = $1 AND link_id = $2",
@@ -383,7 +403,8 @@ async fn decide(
                 return Err(conflict("the link is closed or expired"));
             }
             sqlx::query(
-                "UPDATE cctuiverse_messages SET status = 'queued', next_attempt_at = now() \
+                "UPDATE cctuiverse_messages SET status = 'queued', \
+                     next_attempt_at = now() + interval '1 minute', first_queued_at = now() \
                  WHERE id = $1 AND status = 'review'",
             )
             .bind(msg)
@@ -505,8 +526,8 @@ mod tests {
             machine_id: machine,
             scopes: std::collections::BTreeSet::new(),
         };
-        assert!(require_human(&ctx(None)).is_ok());
-        let err = require_human(&ctx(Some(Uuid::nil()))).unwrap_err();
+        assert!(refuse_machine(&ctx(None)).is_ok());
+        let err = refuse_machine(&ctx(Some(Uuid::nil()))).unwrap_err();
         assert_eq!(err.status(), StatusCode::FORBIDDEN);
     }
 }

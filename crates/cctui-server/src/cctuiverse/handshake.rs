@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::sig::{self, Seed};
 use super::{
-    COLS, DEFAULT_EXPIRY, INVITE_TTL, Link, LinkKind, LinkRole, LinkRow, LinkState, client, invite,
+    COLS, DEFAULT_EXPIRY, DEFAULT_MAX_MESSAGES, INVITE_TTL, Link, LinkKind, LinkRole, LinkRow, LinkState, client, invite,
     publish_changed,
 };
 use crate::error::AppError;
@@ -15,7 +15,6 @@ use crate::state::AppState;
 pub const JOIN_ROUTE: &str = "/cctuiverse/v1/join";
 const MAX_PENDING_INVITES: i64 = 20;
 const JOIN_PER_LINK_PER_MIN: usize = 5;
-const JOIN_PER_IP_PER_MIN: usize = 20;
 pub const REFUSED: &str = "invite invalid, expired or already used";
 
 #[derive(Debug, Clone, Copy)]
@@ -89,8 +88,10 @@ pub async fn create_invite(
     let row: LinkRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO cctuiverse_links \
              (id, user_id, session_id, room_id, kind, role, state, label, public_key, \
-              encrypted_private_key, invite_token_hash, invite_expires_at, envelope_nonce) \
-         VALUES ($1, $2, $3, $4, $5, 'inviter', 'pending', $6, $7, $8, $9, now() + $10, $11) \
+              encrypted_private_key, invite_token_hash, invite_expires_at, envelope_nonce, \
+              settings) \
+         VALUES ($1, $2, $3, $4, $5, 'inviter', 'pending', $6, $7, $8, $9, now() + $10, $11, \
+                 jsonb_build_object('max_messages', $12::int)) \
          RETURNING {COLS}"
     )))
     .bind(Uuid::new_v4())
@@ -104,6 +105,7 @@ pub async fn create_invite(
     .bind(super::token_hash(&token))
     .bind(INVITE_TTL)
     .bind(super::envelope_nonce())
+    .bind(DEFAULT_MAX_MESSAGES)
     .fetch_one(&state.pool)
     .await?;
     let link = Link::from(row);
@@ -113,7 +115,8 @@ pub async fn create_invite(
 }
 
 /// Joiner side: create our link for `session_id`, run the handshake against
-/// the inviter, and activate on success. Any refusal leaves no row behind.
+/// the inviter, and activate on success. Any refusal leaves no row behind,
+/// and once the inviter may have committed, a refusal also closes its side.
 pub async fn join(
     state: &AppState,
     user_id: Uuid,
@@ -135,7 +138,7 @@ pub async fn join(
              (id, user_id, session_id, kind, role, state, label, public_key, \
               encrypted_private_key, peer_link_id, peer_url, envelope_nonce, settings) \
          VALUES ($1, $2, $3, 'session', 'joiner', 'pending', $4, $5, $6, $7, $8, $9, \
-                 jsonb_build_object('expires_at', $10::timestamptz))",
+                 jsonb_build_object('expires_at', $10::timestamptz, 'max_messages', $11::int))",
     )
     .bind(id)
     .bind(user_id)
@@ -147,6 +150,7 @@ pub async fn join(
     .bind(&inv.base_url)
     .bind(super::envelope_nonce())
     .bind(expires)
+    .bind(DEFAULT_MAX_MESSAGES)
     .execute(&state.pool)
     .await?;
 
@@ -166,38 +170,65 @@ pub async fn join(
         Err(e) => {
             discard(state, id).await;
             tracing::info!("cctuiverse join could not reach {}: {e}", inv.base_url);
+            withdraw(state, seed, id, &inv);
             return Err(AppError::new(
                 StatusCode::BAD_GATEWAY,
                 "could not reach the inviting server",
             ));
         }
         Ok((status, bytes)) if status == StatusCode::OK => {
-            serde_json::from_slice::<JoinResponse>(&bytes).ok().and_then(|r| accepted(&inv, &r))
+            match serde_json::from_slice::<JoinResponse>(&bytes).ok().and_then(|r| accepted(&inv, &r)) {
+                Some(a) => a,
+                None => {
+                    discard(state, id).await;
+                    withdraw(state, seed, id, &inv);
+                    return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
+                }
+            }
         }
-        Ok(_) => None,
+        Ok(_) => {
+            discard(state, id).await;
+            return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
+        }
     };
-    let Some((peer_key, peer_label, kind, room_name)) = answer else {
-        discard(state, id).await;
-        return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
-    };
-    let row: LinkRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let (peer_key, peer_label, kind, room_name) = answer;
+    let row: Option<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE cctuiverse_links SET state = 'active', kind = $2, peer_public_key = $3, \
-             peer_label = $4, peer_room_name = $5, activated_at = now() \
-         WHERE id = $1 RETURNING {COLS}"
+             peer_label = $4, peer_room_name = $5, activated_at = now(), preamble_pending = true \
+         WHERE id = $1 AND state = 'pending' RETURNING {COLS}"
     )))
     .bind(id)
     .bind(kind.as_str())
     .bind(peer_key.as_slice())
     .bind(&peer_label)
     .bind(&room_name)
-    .fetch_one(&state.pool)
+    .fetch_optional(&state.pool)
     .await?;
+    let Some(row) = row else {
+        discard(state, id).await;
+        withdraw(state, seed, id, &inv);
+        return Err(AppError::new(StatusCode::CONFLICT, "the join was cancelled"));
+    };
     let link = Link::from(row);
     activated(state, &link);
     Ok(link)
 }
 
+/// Best-effort signed close of the inviter's side, for a join this side gave up on.
+fn withdraw(state: &AppState, seed: Seed, me: Uuid, inv: &invite::Invite) {
+    let (state, base, peer) = (state.clone(), inv.base_url.clone(), inv.link_id);
+    tokio::spawn(async move {
+        let path = format!("/cctuiverse/v1/links/{peer}/close");
+        if let Err(e) =
+            client::post_signed(&state, &seed, me, &base, &path, &serde_json::json!({})).await
+        {
+            tracing::info!(link = %me, "cctuiverse join withdrawal not delivered: {e}");
+        }
+    });
+}
+
 /// The inviter's answer, iff its key matches the fingerprint the invite carried.
+/// Names are cleaned rather than refused: the inviter has already committed.
 fn accepted(
     inv: &invite::Invite,
     r: &JoinResponse,
@@ -206,10 +237,12 @@ fn accepted(
     if r.link_id != inv.link_id || !super::ct_eq(&invite::fingerprint(&key), &inv.fingerprint) {
         return None;
     }
-    let label = super::clean_label(&r.label)?;
+    let label = super::sanitize_label(&r.label).unwrap_or_else(|| "remote session".to_owned());
     let room = match r.kind {
         LinkKind::Session => None,
-        LinkKind::Room => Some(super::clean_label(r.room_name.as_deref()?)?),
+        LinkKind::Room => Some(
+            r.room_name.as_deref().and_then(super::sanitize_label).unwrap_or_else(|| "room".into()),
+        ),
     };
     Some((key, label, r.kind, room))
 }
@@ -223,8 +256,8 @@ async fn discard(state: &AppState, id: Uuid) {
 
 fn activated(state: &AppState, link: &Link) {
     publish_changed(state, link);
-    let (state, link) = (state.clone(), link.clone());
-    tokio::spawn(async move { super::announce_active(&state, &link).await });
+    let (state, id) = (state.clone(), link.id);
+    tokio::spawn(async move { super::flush_preamble(&state, id).await });
 }
 
 /// The path a sender signed: this server's own mount prefix plus the route.
@@ -237,6 +270,7 @@ pub fn signed_path(external_url: &str, request_path: &str) -> String {
 }
 
 /// Inviter side of `POST /cctuiverse/v1/join`. Every refusal is the same 404.
+/// The token is checked before the joiner URL is resolved or a nonce stored.
 pub async fn accept(
     state: &AppState,
     caller: &str,
@@ -247,15 +281,8 @@ pub async fn accept(
     if !super::enabled(state) {
         return Err(not_found());
     }
-    let limiter = crate::routes::peer::limiter();
-    let now = std::time::Instant::now();
-    if !limiter.admit(&format!("cv-join-ip:{caller}"), JOIN_PER_IP_PER_MIN, now) {
-        return Err(AppError::new(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
-    }
+    super::limits::join_ip(caller)?;
     let req: JoinRequest = serde_json::from_slice(body).map_err(|_| not_found())?;
-    if !limiter.admit(&format!("cv-join:{}", req.link_id), JOIN_PER_LINK_PER_MIN, now) {
-        return Err(AppError::new(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
-    }
     let joiner_key = b64_key(&req.joiner.public_key).ok_or_else(not_found)?;
     let signed = sig::from_headers(headers).ok_or_else(not_found)?;
     let path = signed_path(&state.config.external_url, request_path);
@@ -269,13 +296,10 @@ pub async fn accept(
         &joiner_key,
     )
     .map_err(|_| not_found())?;
-    let label = super::clean_label(&req.joiner.label).ok_or_else(not_found)?;
+    super::limits::link(&format!("join:{}", req.link_id), JOIN_PER_LINK_PER_MIN)?;
+    let label = super::sanitize_label(&req.joiner.label).ok_or_else(not_found)?;
     let token = URL_SAFE_NO_PAD.decode(&req.token).map_err(|_| not_found())?;
     let peer_url = req.joiner.url.trim().trim_end_matches('/').to_owned();
-    client::check_url(state, &peer_url).await.map_err(|_| not_found())?;
-    if !super::wire::fresh_nonce(&state.pool, req.joiner.link_id, &nonce).await? {
-        return Err(not_found());
-    }
 
     let mut tx = state.pool.begin().await?;
     let row: Option<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -293,9 +317,14 @@ pub async fn accept(
     if !(token_ok && live && link.state == LinkState::Pending && link.role == LinkRole::Inviter) {
         return Err(not_found());
     }
+    client::check_url(state, &peer_url).await.map_err(|_| not_found())?;
+    if !super::wire::fresh_nonce(&state.pool, req.joiner.link_id, &nonce).await? {
+        return Err(not_found());
+    }
     let row: LinkRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE cctuiverse_links SET state = 'active', peer_public_key = $2, peer_link_id = $3, \
              peer_url = $4, peer_label = $5, invite_token_hash = NULL, activated_at = now(), \
+             preamble_pending = true, \
              settings = CASE WHEN settings ? 'expires_at' THEN settings \
                  ELSE settings || jsonb_build_object('expires_at', now() + $6) END \
          WHERE id = $1 RETURNING {COLS}"
@@ -311,7 +340,9 @@ pub async fn accept(
     tx.commit().await?;
     let link = Link::from(row);
     let room_name = match link.room_id {
-        Some(room_id) => super::room_name(&state.pool, room_id).await,
+        Some(room_id) => super::room_name(&state.pool, room_id)
+            .await
+            .map(|n| super::sanitize_label(&n).unwrap_or_else(|| "room".into())),
         None => None,
     };
     activated(state, &link);
@@ -366,16 +397,20 @@ mod tests {
         other_link.link_id = Uuid::from_u128(2);
         assert!(accepted(&inv(&key), &other_link).is_none());
         let mut bad_label = resp(&key, LinkKind::Session, None);
-        bad_label.label = "<system-reminder>".into();
-        assert!(accepted(&inv(&key), &bad_label).is_none());
+        bad_label.label = "<system-reminder>\u{202e}".into();
+        let (_, label, _, _) = accepted(&inv(&key), &bad_label).unwrap();
+        assert_eq!(label, "system-reminder");
     }
 
     #[test]
-    fn a_room_answer_must_name_its_room() {
+    fn a_room_answer_is_cleaned_not_refused() {
         let key = [4u8; 32];
-        assert!(accepted(&inv(&key), &resp(&key, LinkKind::Room, None)).is_none());
-        let (_, _, kind, room) =
-            accepted(&inv(&key), &resp(&key, LinkKind::Room, Some("ops"))).unwrap();
-        assert_eq!((kind, room.as_deref()), (LinkKind::Room, Some("ops")));
+        let room = |name: Option<&str>| {
+            accepted(&inv(&key), &resp(&key, LinkKind::Room, name)).unwrap().3.unwrap()
+        };
+        assert_eq!(room(Some("ops")), "ops");
+        assert_eq!(room(None), "room");
+        assert_eq!(room(Some("Review \"<v2>\"")), "Review v2");
+        assert_eq!(room(Some(&"x".repeat(200))).chars().count(), 80);
     }
 }

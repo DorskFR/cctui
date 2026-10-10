@@ -17,12 +17,17 @@ keypair on each side, and only an owner creates or accepts one.
    the other side will see. You get a link like
    `https://a.example/cctuiverse/join#v1.<link>.<token>.<fingerprint>`, valid
    for 10 minutes and usable once.
-2. Send it to the other owner over a channel you trust.
+2. Send it to the other owner over a channel you trust. **The invite is a
+   bearer secret:** for those 10 minutes, anyone who holds it can join (with a
+   cctui or with a hand-written client), not only the person you meant. Do not
+   paste it where an agent, a bot or a log can read it.
 3. They paste it into **New conversation** (the dialog recognises it and joins
    the new session) or into **Join with link…** on an existing session.
-4. Both sessions receive a `<cctuiverse-linked>` turn and can talk. Both UIs
-   show the same **safety code** (`xxxx-xxxx-xxxx-xxxx`); read it to each other
-   if the invite travelled over a channel you do not trust.
+4. Both sessions receive a `<cctuiverse-linked>` turn and can talk (if a
+   session is not running yet, the turn is delivered as soon as it is). Both
+   UIs show the same **safety code** (`xxxx-xxxx-xxxx-xxxx`). Compare it over a
+   second channel: it is how you detect that someone else used the invite
+   first.
 
 **Invite to room…** in a room's menu works the same way and adds the remote
 session to the room.
@@ -40,7 +45,13 @@ their own cctui.
 | Review outbound | approve each outgoing message first | off |
 | Share transcript | let the peer read this session with `CctuiHistory` | off |
 | Expiry | a date, or never | 24 h after linking |
-| Max messages | a cap on messages this side sends | none |
+| Max messages | a cap on messages this side sends | 100 |
+
+Two sessions that both auto-forward answer each other's every turn. The
+default cap of 100 messages per side, the 24 h expiry and the inbound limit of
+10 messages a minute bound such a loop; raise or clear the cap only for a
+conversation you are watching. A room's own links cannot hold inbound posts:
+they go straight to every member.
 
 ## What the protocol guarantees
 
@@ -55,8 +66,11 @@ their own cctui.
 - Either owner closes a link instantly. Closing deletes that side's private key
   and tells the peer.
 - Only an owner's own credential (browser session or user token) creates, joins,
-  changes or closes a link; an agent's machine key never can. An agent that
-  reads an invite cannot use it.
+  changes or closes a link through cctui; machine, dispatcher and ephemeral
+  keys never can. This does not make the invite safe to show an agent: the
+  invite itself is enough to join (see above).
+- A remote room member sees the room's messages from the moment it joined,
+  and members by session name only.
 
 Your session keeps its own permission mode, tools and credentials. The peer can
 ask your agent for anything your agent may already do; set the session to `ask`
@@ -70,13 +84,20 @@ signed with the sending link's key, following an RFC 9421 subset:
 `Content-Digest`, `Signature-Input` over `@method`, `@path` and
 `content-digest` with `created`, `nonce`, `keyid` and `alg="ed25519"`, and
 `Signature`. Requests more than 60 s off the receiver's clock, and any nonce
-seen before, are refused. Signatures survive a TLS-terminating ingress; if the
+seen before, are refused. `@authority` is not covered: the receiving link's id
+is in the signed `@path`, and the `keyid` must be that link's peer, so a
+signature made for one link cannot be replayed against any other link or
+server. Signatures survive a TLS-terminating ingress; if the
 server is mounted under a sub-path, its `CCTUI_EXTERNAL_URL` must include it.
 
 Outbound messages go through an outbox: delivered at once when possible,
 otherwise retried after 5 s, 30 s, 2 min, 10 min and then hourly, and given up
-after 24 h. The receiver is idempotent on the message id. Inbound bodies are
-capped at 64 KiB, text at 32 KiB, and each link at 30 requests a minute.
+after 24 h. A peer that answers 404 no longer knows the link, so this side closes it too.
+The receiver is idempotent on the message id, and a delivery that failed
+because the session was offline is redelivered on the sender's retry. Inbound
+bodies are capped at 64 KiB and text at 32 KiB. Each caller address is
+throttled before any lookup; each link then accepts 10 messages and 10 reads a
+minute, counted only once the signature verified.
 
 Peer URLs (the inviter's, from the invite, and the joiner's, from the join
 request) must be `https` and resolve to public addresses, checked again at

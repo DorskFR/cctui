@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS cctuiverse_links (
     envelope_nonce        TEXT NOT NULL,
     settings              JSONB NOT NULL DEFAULT '{}'::jsonb,
     sent_count            INTEGER NOT NULL DEFAULT 0,
+    -- The linked-with turn still has to reach the bound session.
+    preamble_pending      BOOLEAN NOT NULL DEFAULT false,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     activated_at          TIMESTAMPTZ,
     closed_at             TIMESTAMPTZ,
@@ -43,9 +45,13 @@ CREATE TABLE IF NOT EXISTS cctuiverse_messages (
     kind            TEXT NOT NULL CHECK (kind IN ('direct', 'room_post', 'close')),
     body            JSONB NOT NULL,
     status          TEXT NOT NULL CHECK (status IN
-                        ('review', 'queued', 'delivered', 'held', 'released', 'dropped', 'failed')),
+                        ('review', 'queued', 'delivering', 'delivered', 'held', 'released',
+                         'dropped', 'failed')),
     attempts        INTEGER NOT NULL DEFAULT 0,
+    -- Outbound: next retry, or the end of the current attempt's lease.
+    -- Inbound `delivering`: when the delivery was claimed.
     next_attempt_at TIMESTAMPTZ,
+    first_queued_at TIMESTAMPTZ,
     last_error      TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     delivered_at    TIMESTAMPTZ,

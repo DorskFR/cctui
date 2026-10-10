@@ -195,7 +195,7 @@ pub fn verify(
     if !crate::cctuiverse::ct_eq(digest.as_bytes(), headers.content_digest.trim().as_bytes()) {
         return Err(SigError::Digest);
     }
-    if (now - parsed.created).abs() > MAX_SKEW_SECS {
+    if now.abs_diff(parsed.created) > MAX_SKEW_SECS.unsigned_abs() {
         return Err(SigError::Skew);
     }
     if parsed.keyid != keyid {
@@ -309,6 +309,11 @@ mod tests {
         let mut forged_digest = h.clone();
         forged_digest.content_digest = content_digest(b"evil");
         assert_eq!(ok(&forged_digest, "POST", PATH, b"evil", 1000, KEYID, &pk), Err(SigError::Bad));
+
+        let mut extreme = h.clone();
+        extreme.signature_input =
+            extreme.signature_input.replace("created=1000", "created=-9223372036854775808");
+        assert_eq!(ok(&extreme, "POST", PATH, b"body", 1000, KEYID, &pk), Err(SigError::Skew));
 
         let mut later = h;
         later.signature_input = later.signature_input.replace("created=1000", "created=2000");

@@ -23,9 +23,18 @@ fn remote_refs_round_trip() {
 fn labels_are_bounded_and_markup_free() {
     assert_eq!(clean_label("  alice  ").as_deref(), Some("alice"));
     assert_eq!(clean_label(&"é".repeat(80)).map(|l| l.chars().count()), Some(80));
-    for bad in ["", "   ", "a\nb", "<b>", "say \"hi\"", &"x".repeat(81)] {
+    for bad in ["", "   ", "\u{202e}", "<b>", "say \"hi\"", &"x".repeat(81)] {
         assert!(clean_label(bad).is_none(), "{bad:?}");
     }
+    assert_eq!(clean_label("a\nb\u{202e}c\u{200b}").as_deref(), Some("abc"));
+}
+
+#[test]
+fn peer_names_are_cleaned_not_refused() {
+    assert_eq!(sanitize_label(" Review \"<v2>\" ").as_deref(), Some("Review v2"));
+    assert_eq!(sanitize_label(&"y".repeat(300)).map(|l| l.chars().count()), Some(80));
+    assert_eq!(sanitize_label("you\u{202e} (human)").as_deref(), Some("you (human)"));
+    assert!(sanitize_label("<>\"\u{200b}").is_none());
 }
 
 #[test]
@@ -240,6 +249,7 @@ async fn inbound_messages_are_verified_held_and_idempotent() {
     let call = |h: HeaderMap, b: Vec<u8>| {
         wire::messages(
             State(state.clone()),
+            crate::routes::device_auth::PeerAddr(None),
             Path(j.inviter.id.to_string()),
             uri.clone(),
             h,
@@ -284,6 +294,30 @@ async fn inbound_messages_are_verified_held_and_idempotent() {
     .unwrap();
     let h = signed_post(&j.joiner_seed, j.joiner_id, &path, &room_post);
     assert_eq!(call(h, room_post).await.unwrap_err().status(), StatusCode::NOT_FOUND);
+
+    sqlx::query("UPDATE cctuiverse_links SET settings = settings || '{\"inbound\": \"deliver\"}' WHERE id = $1")
+        .bind(j.inviter.id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let offline_id = Uuid::new_v4();
+    let offline =
+        serde_json::to_vec(&json!({ "message_id": offline_id, "kind": "direct", "text": "again" }))
+            .unwrap();
+    for _ in 0..2 {
+        let h = signed_post(&j.joiner_seed, j.joiner_id, &path, &offline);
+        let err = call(h, offline.clone()).await.unwrap_err();
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let statuses: Vec<String> = sqlx::query_scalar(
+            "SELECT status FROM cctuiverse_messages WHERE link_id = $1 AND message_id = $2",
+        )
+        .bind(j.inviter.id)
+        .bind(offline_id)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(statuses, ["queued"], "an offline delivery stays retryable");
+    }
 
     close(&state, &j.inviter, CloseReason::Owner).await.unwrap();
     let h = signed_post(&j.joiner_seed, j.joiner_id, &path, &body);
