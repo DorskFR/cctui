@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::client::{self, ClientError};
-use super::{CloseReason, Link, LinkKind, LinkState, MAX_TEXT_BYTES, audit, enabled, publish_changed};
+use super::{
+    CloseReason, Link, LinkKind, LinkState, MAX_TEXT_BYTES, audit, enabled, publish_changed,
+};
 use crate::state::AppState;
 
 pub enum Payload {
@@ -76,7 +78,8 @@ fn refusal(link: &Link, payload: &Payload) -> Option<String> {
         return Some("the cctuiverse link has expired".into());
     }
     match (link.kind, payload) {
-        (LinkKind::Session, Payload::Direct { .. }) | (LinkKind::Room, Payload::RoomPost { .. }) => {}
+        (LinkKind::Session, Payload::Direct { .. })
+        | (LinkKind::Room, Payload::RoomPost { .. }) => {}
         _ => return Some("this message kind does not fit this link".into()),
     }
     let texts = payload.texts();

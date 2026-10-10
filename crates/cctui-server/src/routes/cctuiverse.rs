@@ -54,7 +54,11 @@ async fn own_session(state: &AppState, ctx: &AuthContext, id: &str) -> Result<()
     }
 }
 
-async fn own_room(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<crate::rooms::Room, AppError> {
+async fn own_room(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: Uuid,
+) -> Result<crate::rooms::Room, AppError> {
     crate::rooms::load(&state.pool, id, ctx.user_id)
         .await?
         .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such room"))
@@ -140,7 +144,11 @@ pub async fn join(
     link_json(&state, &link).await
 }
 
-async fn list(state: &AppState, session: Option<&str>, room: Option<Uuid>) -> Result<Json<Value>, AppError> {
+async fn list(
+    state: &AppState,
+    session: Option<&str>,
+    room: Option<Uuid>,
+) -> Result<Json<Value>, AppError> {
     let mut views = Vec::new();
     for link in cctuiverse::links_of(&state.pool, session, room).await? {
         views.push(cctuiverse::view(&state.pool, &link).await?);
@@ -281,7 +289,9 @@ pub async fn messages(
     let statuses: Vec<&str> = match q.status.as_deref() {
         None | Some("") => vec!["held", "review"],
         Some(s @ ("held" | "review")) => vec![s],
-        Some(_) => return Err(AppError::new(StatusCode::BAD_REQUEST, "status must be held or review")),
+        Some(_) => {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "status must be held or review"));
+        }
     };
     type Row = (i64, Uuid, String, String, Value, String, DateTime<Utc>);
     let rows: Vec<Row> = sqlx::query_as(
@@ -345,9 +355,14 @@ async fn decide(
             match cctuiverse::deliver_local(state, sid, turn).await {
                 Delivery::Delivered => set(state, msg, "held", "released").await?,
                 Delivery::Offline => {
-                    return Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "the session is offline"));
+                    return Err(AppError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "the session is offline",
+                    ));
                 }
-                Delivery::Archived | Delivery::Ended => return Err(conflict("the session has ended")),
+                Delivery::Archived | Delivery::Ended => {
+                    return Err(conflict("the session has ended"));
+                }
             }
         }
         (Decision::Approve, "out", "review") => {
@@ -449,13 +464,15 @@ mod tests {
             max_messages: Some(5),
             ..LinkSettings::default()
         };
-        let s = patch(json!({ "expires_at": null, "max_messages": null })).apply(base.clone()).unwrap();
+        let s =
+            patch(json!({ "expires_at": null, "max_messages": null })).apply(base.clone()).unwrap();
         assert_eq!((s.expires_at, s.max_messages), (None, None));
         let s = patch(json!({})).apply(base.clone()).unwrap();
         assert_eq!(s, base);
-        let s = patch(json!({ "outbound": "both", "share_transcript": true, "review_outbound": true }))
-            .apply(base)
-            .unwrap();
+        let s =
+            patch(json!({ "outbound": "both", "share_transcript": true, "review_outbound": true }))
+                .apply(base)
+                .unwrap();
         assert!(s.share_transcript && s.review_outbound);
         assert_eq!(s.outbound, OutboundMode::Both);
     }

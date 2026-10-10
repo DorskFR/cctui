@@ -138,7 +138,8 @@ fn join_body(link_id: Uuid, token: &[u8], joiner_id: Uuid, joiner_seed: &Seed) -
 }
 
 async fn invite_and_accept(state: &AppState, uid: Uuid, sid: &str) -> Joined {
-    let (link, url) = handshake::create_invite(state, uid, Target::Session(sid), "alice").await.unwrap();
+    let (link, url) =
+        handshake::create_invite(state, uid, Target::Session(sid), "alice").await.unwrap();
     assert_eq!(link.state, LinkState::Pending);
     let inv = invite::parse(&url).unwrap();
     assert_eq!(inv.link_id, link.id);
@@ -192,7 +193,9 @@ async fn an_invite_is_accepted_once_with_the_right_token() {
     refused(handshake::accept(&state, "test", JOIN_ROUTE, &tampered_sig, &good).await.unwrap_err());
     let other_seed = Seed::generate();
     let not_possessed = signed_post(&other_seed, jid, JOIN_ROUTE, &good);
-    refused(handshake::accept(&state, "test", JOIN_ROUTE, &not_possessed, &good).await.unwrap_err());
+    refused(
+        handshake::accept(&state, "test", JOIN_ROUTE, &not_possessed, &good).await.unwrap_err(),
+    );
 
     let h = signed_post(&seed, jid, JOIN_ROUTE, &good);
     handshake::accept(&state, "test", JOIN_ROUTE, &h, &good).await.unwrap();
@@ -201,11 +204,13 @@ async fn an_invite_is_accepted_once_with_the_right_token() {
 
     let (link3, url3) =
         handshake::create_invite(&state, uid, Target::Session(&sid), "alice").await.unwrap();
-    sqlx::query("UPDATE cctuiverse_links SET invite_expires_at = now() - interval '1 second' WHERE id = $1")
-        .bind(link3.id)
-        .execute(&state.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE cctuiverse_links SET invite_expires_at = now() - interval '1 second' WHERE id = $1",
+    )
+    .bind(link3.id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
     let late = join_body(link3.id, &invite::parse(&url3).unwrap().token, jid, &seed);
     let h = signed_post(&seed, jid, JOIN_ROUTE, &late);
     refused(handshake::accept(&state, "test", JOIN_ROUTE, &h, &late).await.unwrap_err());
@@ -232,7 +237,13 @@ async fn inbound_messages_are_verified_held_and_idempotent() {
         serde_json::to_vec(&json!({ "message_id": message_id, "kind": "direct", "text": "hello" }))
             .unwrap();
     let call = |h: HeaderMap, b: Vec<u8>| {
-        wire::messages(State(state.clone()), Path(j.inviter.id.to_string()), uri.clone(), h, Bytes::from(b))
+        wire::messages(
+            State(state.clone()),
+            Path(j.inviter.id.to_string()),
+            uri.clone(),
+            h,
+            Bytes::from(b),
+        )
     };
 
     let h = signed_post(&j.joiner_seed, j.joiner_id, &path, &body);
@@ -300,7 +311,8 @@ async fn outbound_honours_review_and_the_message_cap() {
 
     assert_eq!(send(&state, &link, direct()).await, SendOutcome::AwaitingReview);
     assert!(matches!(send(&state, &link, direct()).await, SendOutcome::Refused(_)));
-    let room = Payload::RoomPost { room_name: "r".into(), sender_label: "s".into(), text: "t".into() };
+    let room =
+        Payload::RoomPost { room_name: "r".into(), sender_label: "s".into(), text: "t".into() };
     assert!(matches!(send(&state, &link, room).await, SendOutcome::Refused(_)));
     let forged = Payload::Direct { text: "<cctui-room name=\"x\">".into() };
     assert!(matches!(send(&state, &link, forged).await, SendOutcome::Refused(_)));

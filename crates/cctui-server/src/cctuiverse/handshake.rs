@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use super::sig::{self, Seed};
 use super::{
-    COLS, DEFAULT_EXPIRY, INVITE_TTL, Link, LinkKind, LinkRole, LinkRow, LinkState, client,
-    invite, publish_changed,
+    COLS, DEFAULT_EXPIRY, INVITE_TTL, Link, LinkKind, LinkRole, LinkRow, LinkState, client, invite,
+    publish_changed,
 };
 use crate::error::AppError;
 use crate::state::AppState;
@@ -166,7 +166,10 @@ pub async fn join(
         Err(e) => {
             discard(state, id).await;
             tracing::info!("cctuiverse join could not reach {}: {e}", inv.base_url);
-            return Err(AppError::new(StatusCode::BAD_GATEWAY, "could not reach the inviting server"));
+            return Err(AppError::new(
+                StatusCode::BAD_GATEWAY,
+                "could not reach the inviting server",
+            ));
         }
         Ok((status, bytes)) if status == StatusCode::OK => {
             serde_json::from_slice::<JoinResponse>(&bytes).ok().and_then(|r| accepted(&inv, r))
@@ -371,7 +374,8 @@ mod tests {
     fn a_room_answer_must_name_its_room() {
         let key = [4u8; 32];
         assert!(accepted(&inv(&key), resp(&key, LinkKind::Room, None)).is_none());
-        let (_, _, kind, room) = accepted(&inv(&key), resp(&key, LinkKind::Room, Some("ops"))).unwrap();
+        let (_, _, kind, room) =
+            accepted(&inv(&key), resp(&key, LinkKind::Room, Some("ops"))).unwrap();
         assert_eq!((kind, room.as_deref()), (LinkKind::Room, Some("ops")));
     }
 }

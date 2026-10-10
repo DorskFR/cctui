@@ -137,7 +137,8 @@ fn quoted(v: &str) -> Option<&str> {
 }
 
 fn nonce_ok(n: &str) -> bool {
-    (16..=64).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    (16..=64).contains(&n.len())
+        && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn parse_input(raw: &str) -> Option<Parsed> {

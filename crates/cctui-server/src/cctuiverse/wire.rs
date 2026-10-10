@@ -23,7 +23,11 @@ const MAX_HISTORY_EVENTS: i64 = 1_000;
 const HISTORY_BUDGET_BYTES: usize = 64 * 1024;
 const ROOM_SNAPSHOT: i64 = 50;
 
-pub async fn fresh_nonce(pool: &sqlx::PgPool, link_id: Uuid, nonce: &str) -> Result<bool, sqlx::Error> {
+pub async fn fresh_nonce(
+    pool: &sqlx::PgPool,
+    link_id: Uuid,
+    nonce: &str,
+) -> Result<bool, sqlx::Error> {
     let r = sqlx::query(
         "INSERT INTO cctuiverse_nonces (link_id, nonce) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
@@ -60,9 +64,16 @@ async fn verified(
     };
     let signed = sig::from_headers(headers).ok_or_else(not_found)?;
     let path = handshake::signed_path(&state.config.external_url, uri.path());
-    let nonce =
-        sig::verify(&signed, "POST", &path, body, chrono::Utc::now().timestamp(), peer_id, peer_key)
-            .map_err(|_| not_found())?;
+    let nonce = sig::verify(
+        &signed,
+        "POST",
+        &path,
+        body,
+        chrono::Utc::now().timestamp(),
+        peer_id,
+        peer_key,
+    )
+    .map_err(|_| not_found())?;
     if !fresh_nonce(&state.pool, id, &nonce).await? {
         return Err(not_found());
     }
@@ -77,7 +88,8 @@ pub async fn join(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<JoinResponse>, AppError> {
-    let caller = crate::routes::device_auth::caller_key(&headers, peer, state.config.trusted_proxy_hops);
+    let caller =
+        crate::routes::device_auth::caller_key(&headers, peer, state.config.trusted_proxy_hops);
     handshake::accept(&state, &caller, uri.path(), &headers, &body).await.map(Json)
 }
 
@@ -127,7 +139,9 @@ fn delivery_status(d: Delivery) -> Result<(), AppError> {
         Delivery::Archived | Delivery::Ended => {
             Err(AppError::new(StatusCode::CONFLICT, "peer session unavailable"))
         }
-        Delivery::Offline => Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "peer session offline")),
+        Delivery::Offline => {
+            Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "peer session offline"))
+        }
     }
 }
 
@@ -144,7 +158,8 @@ async fn set_status(pool: &sqlx::PgPool, row: i64, status: &str) {
 }
 
 async fn forget(pool: &sqlx::PgPool, row: i64) {
-    let _ = sqlx::query("DELETE FROM cctuiverse_messages WHERE id = $1").bind(row).execute(pool).await;
+    let _ =
+        sqlx::query("DELETE FROM cctuiverse_messages WHERE id = $1").bind(row).execute(pool).await;
 }
 
 enum Inbound {
@@ -162,7 +177,8 @@ pub async fn messages(
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let link = verified(&state, &id, &uri, &headers, &body, false).await?;
-    let msg: MessageIn = serde_json::from_slice(&body).map_err(|_| bad_request("malformed message"))?;
+    let msg: MessageIn =
+        serde_json::from_slice(&body).map_err(|_| bad_request("malformed message"))?;
     if msg.text.trim().is_empty() || msg.text.len() > MAX_TEXT_BYTES {
         return Err(bad_request(format!("text must be 1..={MAX_TEXT_BYTES} bytes")));
     }
@@ -185,8 +201,8 @@ pub async fn messages(
         }
         Inbound::Session | Inbound::Host(_) => json!({ "text": msg.text }),
     };
-    let hold = !matches!(route, Inbound::Host(_))
-        && link.settings.inbound == super::InboundMode::Hold;
+    let hold =
+        !matches!(route, Inbound::Host(_)) && link.settings.inbound == super::InboundMode::Hold;
     let row: Option<i64> = sqlx::query_scalar(
         "INSERT INTO cctuiverse_messages (link_id, message_id, direction, kind, body, status) \
          VALUES ($1, $2, 'in', $3, $4, $5) \
@@ -271,11 +287,12 @@ pub async fn history(
         return Err(AppError::new(StatusCode::FORBIDDEN, "transcript not shared"));
     }
     let req: HistoryIn = serde_json::from_slice(&body).unwrap_or_default();
-    let adapter: Option<String> = sqlx::query_scalar("SELECT adapter_id FROM sessions WHERE id = $1")
-        .bind(sid)
-        .fetch_optional(&state.pool)
-        .await?
-        .flatten();
+    let adapter: Option<String> =
+        sqlx::query_scalar("SELECT adapter_id FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
     let query = crate::routes::sessions::ConversationQuery {
         limit: Some(req.limit.unwrap_or(DEFAULT_HISTORY_EVENTS).clamp(1, MAX_HISTORY_EVENTS)),
         before: req.before,
@@ -357,7 +374,12 @@ pub async fn room(
     Ok(Json(json!({ "room_name": name, "members": members, "messages": messages })))
 }
 
-async fn ask_peer(state: &AppState, link: &Link, route: &str, body: &Value) -> Result<Value, AppError> {
+async fn ask_peer(
+    state: &AppState,
+    link: &Link,
+    route: &str,
+    body: &Value,
+) -> Result<Value, AppError> {
     if !super::enabled(state) {
         return Err(AppError::new(StatusCode::NOT_FOUND, "cctuiverse is disabled on this server"));
     }
@@ -379,7 +401,9 @@ async fn ask_peer(state: &AppState, link: &Link, route: &str, body: &Value) -> R
         Ok((StatusCode::NOT_FOUND, _)) => {
             Err(AppError::new(StatusCode::CONFLICT, "the peer no longer recognises this link"))
         }
-        Ok((status, _)) => Err(AppError::new(StatusCode::BAD_GATEWAY, format!("the peer answered {status}"))),
+        Ok((status, _)) => {
+            Err(AppError::new(StatusCode::BAD_GATEWAY, format!("the peer answered {status}")))
+        }
         Err(e) => {
             tracing::info!(link = %link.id, "cctuiverse peer unreachable: {e}");
             Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "the peer server is unreachable"))
@@ -395,9 +419,13 @@ pub async fn peer_history(
     limit: Option<i64>,
 ) -> Result<Value, AppError> {
     if link.kind != LinkKind::Session {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "this is a room link: use CctuiRoom peek"));
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "this is a room link: use CctuiRoom peek",
+        ));
     }
-    let mut out = ask_peer(state, link, "history", &json!({ "before": before, "limit": limit })).await?;
+    let mut out =
+        ask_peer(state, link, "history", &json!({ "before": before, "limit": limit })).await?;
     out["session_id"] = json!(super::remote_ref(link.id));
     out["name"] = json!(link.peer_name());
     out["relation"] = json!("remote");

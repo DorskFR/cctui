@@ -148,8 +148,10 @@ impl Link {
     }
 
     fn seed(&self) -> Option<sig::Seed> {
-        let hex_seed =
-            crate::crypto::decrypt(self.encrypted_private_key.as_deref()?, &crate::crypto::vault_key())?;
+        let hex_seed = crate::crypto::decrypt(
+            self.encrypted_private_key.as_deref()?,
+            &crate::crypto::vault_key(),
+        )?;
         sig::Seed::from_bytes(&hex::decode(hex_seed).ok()?)
     }
 }
@@ -207,11 +209,12 @@ pub async fn room_links(pool: &PgPool, room_id: Uuid) -> Result<Vec<Link>, sqlx:
 }
 
 pub async fn load(pool: &PgPool, link_id: Uuid) -> Result<Option<Link>, sqlx::Error> {
-    let row: Option<LinkRow> =
-        sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {COLS} FROM cctuiverse_links WHERE id = $1")))
-            .bind(link_id)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {COLS} FROM cctuiverse_links WHERE id = $1"
+    )))
+    .bind(link_id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row.map(Link::from))
 }
 
@@ -463,7 +466,9 @@ pub async fn close(state: &AppState, link: &Link, reason: CloseReason) -> Result
             CloseReason::Owner => format!("closed the cctuiverse link with {peer}"),
             CloseReason::Peer => format!("{peer} closed the cctuiverse link"),
             CloseReason::Expired => format!("the cctuiverse link with {peer} expired"),
-            CloseReason::Archived => format!("the cctuiverse link with {peer} closed: session archived"),
+            CloseReason::Archived => {
+                format!("the cctuiverse link with {peer} closed: session archived")
+            }
         };
         audit(&state.pool, sid, &text).await;
     }

@@ -272,10 +272,7 @@ pub async fn remote_hosts(
             .bind(link_ids)
             .fetch_all(pool)
             .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(id, url)| Some((id, host_of(url.as_deref()?)?)))
-        .collect())
+    Ok(rows.into_iter().filter_map(|(id, url)| Some((id, host_of(url.as_deref()?)?))).collect())
 }
 
 fn host_of(url: &str) -> Option<String> {

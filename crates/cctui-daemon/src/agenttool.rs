@@ -2283,7 +2283,9 @@ mod tests {
               "machine": "b.example", "state": "live", "relation": "remote" },
         ] }));
         assert!(
-            out.contains("- remote:5f0c [remote] bob's agent · on another cctui (b.example) · live"),
+            out.contains(
+                "- remote:5f0c [remote] bob's agent · on another cctui (b.example) · live"
+            ),
             "{out}"
         );
     }
