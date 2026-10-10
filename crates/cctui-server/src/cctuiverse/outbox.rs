@@ -97,7 +97,7 @@ fn refusal(link: &Link, payload: &Payload) -> Option<String> {
     if texts.iter().any(|t| t.len() > MAX_TEXT_BYTES) {
         return Some(format!("the message exceeds {MAX_TEXT_BYTES} bytes"));
     }
-    texts.iter().find_map(|t| crate::envelope_guard::check(t).err())
+    texts.iter().find_map(|t| crate::envelope_guard::check_remote(t).err())
 }
 
 pub(super) async fn send_with_id(
@@ -280,30 +280,25 @@ fn gone(count: i32, span: chrono::TimeDelta) -> bool {
     count >= GONE_AFTER_404S && span >= GONE_AFTER
 }
 
-/// Queue the close notice for a just-closed link. It is retried like any
-/// message, 404s included, since a joiner's withdrawal can reach the inviter
-/// before the inviter committed; the link's key is wiped once it settles.
+/// Queue the close notice for a just-closed link; the sweep sends it within
+/// seconds. It is retried like any message, 404s included, since a joiner's
+/// withdrawal can reach the inviter before the inviter committed; the link's
+/// key is wiped once it settles. Not attempted inline: `attempt` can close a
+/// link, which lands here, so spawning `attempt` would make the futures recursive.
 pub async fn enqueue_close(state: &AppState, link: &Link) {
-    let row: Result<i64, _> = sqlx::query_scalar(
+    let queued = sqlx::query(
         "INSERT INTO cctuiverse_messages \
              (link_id, message_id, direction, kind, body, status, next_attempt_at, \
               first_queued_at) \
-         VALUES ($1, $2, 'out', 'close', '{}'::jsonb, 'queued', now() + interval '1 minute', now()) \
-         RETURNING id",
+         VALUES ($1, $2, 'out', 'close', '{}'::jsonb, 'queued', now(), now())",
     )
     .bind(link.id)
     .bind(Uuid::new_v4())
-    .fetch_one(&state.pool)
+    .execute(&state.pool)
     .await;
-    match row {
-        Ok(row) => {
-            let (state, link) = (state.clone(), link.clone());
-            tokio::spawn(async move { attempt(&state, &link, row).await });
-        }
-        Err(e) => {
-            tracing::warn!(link = %link.id, "cctuiverse close notice not queued: {e}");
-            wipe_key(state, link.id).await;
-        }
+    if let Err(e) = queued {
+        tracing::warn!(link = %link.id, "cctuiverse close notice not queued: {e}");
+        wipe_key(state, link.id).await;
     }
 }
 

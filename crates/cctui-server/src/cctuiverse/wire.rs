@@ -266,7 +266,7 @@ pub async fn messages(
     if msg.text.trim().is_empty() || msg.text.len() > MAX_TEXT_BYTES {
         return Err(bad_request(format!("text must be 1..={MAX_TEXT_BYTES} bytes")));
     }
-    crate::envelope_guard::check(&msg.text).map_err(bad_request)?;
+    crate::envelope_guard::check_remote(&msg.text).map_err(bad_request)?;
     let route = match (link.kind, link.role, msg.kind.as_str(), link.room_id, &link.session_id) {
         (LinkKind::Session, _, "direct", _, Some(_)) => Inbound::Session,
         (LinkKind::Room, LinkRole::Joiner, "room_post", _, Some(_)) => Inbound::JoinerRoom,
