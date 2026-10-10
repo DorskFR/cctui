@@ -168,9 +168,8 @@ pub async fn join(
     let outcome = client::post_signed(state, &seed, id, &inv.base_url, JOIN_ROUTE, &body).await;
     let answer = match outcome {
         Err(e) => {
-            discard(state, id).await;
             tracing::info!("cctuiverse join could not reach {}: {e}", inv.base_url);
-            withdraw(state, seed, id, &inv);
+            withdraw(state, &seed, id).await;
             return Err(AppError::new(
                 StatusCode::BAD_GATEWAY,
                 "could not reach the inviting server",
@@ -181,13 +180,18 @@ pub async fn join(
             if let Some(a) = parsed.and_then(|r| accepted(&inv, &r)) {
                 a
             } else {
-                discard(state, id).await;
-                withdraw(state, seed, id, &inv);
+                withdraw(state, &seed, id).await;
                 return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
             }
         }
-        Ok(_) => {
+        Ok((status, _))
+            if matches!(status, StatusCode::NOT_FOUND | StatusCode::TOO_MANY_REQUESTS) =>
+        {
             discard(state, id).await;
+            return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
+        }
+        Ok(_) => {
+            withdraw(state, &seed, id).await;
             return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
         }
     };
@@ -205,8 +209,7 @@ pub async fn join(
     .fetch_optional(&state.pool)
     .await?;
     let Some(row) = row else {
-        discard(state, id).await;
-        withdraw(state, seed, id, &inv);
+        withdraw(state, &seed, id).await;
         return Err(AppError::new(StatusCode::CONFLICT, "the join was cancelled"));
     };
     let link = Link::from(row);
@@ -214,17 +217,23 @@ pub async fn join(
     Ok(link)
 }
 
-/// Best-effort signed close of the inviter's side, for a join this side gave up on.
-fn withdraw(state: &AppState, seed: Seed, me: Uuid, inv: &invite::Invite) {
-    let (state, base, peer) = (state.clone(), inv.base_url.clone(), inv.link_id);
-    tokio::spawn(async move {
-        let path = format!("/cctuiverse/v1/links/{peer}/close");
-        if let Err(e) =
-            client::post_signed(&state, &seed, me, &base, &path, &serde_json::json!({})).await
-        {
-            tracing::info!(link = %me, "cctuiverse join withdrawal not delivered: {e}");
-        }
-    });
+/// Give up on a join the inviter may already have committed: close this side,
+/// keeping (or restoring) its key until the queued close notice settles.
+async fn withdraw(state: &AppState, seed: &Seed, id: Uuid) {
+    let row: Result<Option<LinkRow>, _> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE cctuiverse_links SET state = 'closed', closed_at = COALESCE(closed_at, now()), \
+             encrypted_private_key = $2, invite_token_hash = NULL \
+         WHERE id = $1 AND state IN ('pending', 'closed') RETURNING {COLS}"
+    )))
+    .bind(id)
+    .bind(sealed(seed))
+    .fetch_optional(&state.pool)
+    .await;
+    match row {
+        Ok(Some(row)) => super::outbox::enqueue_close(state, &Link::from(row)).await,
+        Ok(None) => {}
+        Err(e) => tracing::warn!(link = %id, "cctuiverse join withdrawal not recorded: {e}"),
+    }
 }
 
 /// The inviter's answer, iff its key matches the fingerprint the invite carried.

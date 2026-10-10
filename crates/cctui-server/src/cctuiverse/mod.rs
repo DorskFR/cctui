@@ -179,6 +179,7 @@ pub fn parse_remote_ref(s: &str) -> Option<Uuid> {
 pub async fn session_links(pool: &PgPool, session_id: &str) -> Result<Vec<Link>, sqlx::Error> {
     let rows: Vec<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM cctuiverse_links WHERE session_id = $1 AND state <> 'pending' \
+           AND activated_at IS NOT NULL \
            AND (state <> 'closed' OR closed_at > now() - interval '24 hours') \
          ORDER BY (state = 'active') DESC, created_at DESC"
     )))
@@ -490,16 +491,23 @@ pub enum CloseReason {
     Gone,
 }
 
-/// Close `link`, drop its private key and pending outbound messages, mark the
-/// bound session, and tell the peer unless the peer asked.
+/// Close `link`, drop its pending messages, mark the bound session, and queue a
+/// close notice unless the peer asked. The private key is dropped at once, or
+/// as soon as that notice settles.
 pub async fn close(state: &AppState, link: &Link, reason: CloseReason) -> Result<Link, AppError> {
-    let seed = link.seed();
+    let notify = !matches!(reason, CloseReason::Peer | CloseReason::Gone)
+        && link.state == LinkState::Active
+        && link.peer_url.is_some()
+        && link.peer_link_id.is_some()
+        && link.encrypted_private_key.is_some();
     let closed: Option<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE cctuiverse_links SET state = 'closed', closed_at = now(), \
-             encrypted_private_key = NULL, invite_token_hash = NULL \
+             encrypted_private_key = CASE WHEN $2 THEN encrypted_private_key END, \
+             invite_token_hash = NULL \
          WHERE id = $1 AND state <> 'closed' RETURNING {COLS}"
     )))
     .bind(link.id)
+    .bind(notify)
     .fetch_optional(&state.pool)
     .await?;
     let Some(closed) = closed.map(Link::from) else {
@@ -530,20 +538,8 @@ pub async fn close(state: &AppState, link: &Link, reason: CloseReason) -> Result
         audit(&state.pool, sid, &text).await;
     }
     publish_changed(state, &closed);
-    if !matches!(reason, CloseReason::Peer | CloseReason::Gone)
-        && link.state == LinkState::Active
-        && let (Some(seed), Some(url), Some(peer_id)) =
-            (seed, link.peer_url.clone(), link.peer_link_id)
-    {
-        let (state, me) = (state.clone(), link.id);
-        tokio::spawn(async move {
-            let path = format!("/cctuiverse/v1/links/{peer_id}/close");
-            if let Err(e) =
-                client::post_signed(&state, &seed, me, &url, &path, &serde_json::json!({})).await
-            {
-                tracing::info!(link = %me, "cctuiverse close notice not delivered: {e}");
-            }
-        });
+    if notify {
+        outbox::enqueue_close(state, &closed).await;
     }
     Ok(closed)
 }

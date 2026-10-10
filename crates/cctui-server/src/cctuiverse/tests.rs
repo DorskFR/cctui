@@ -363,7 +363,15 @@ async fn outbound_honours_review_and_the_message_cap() {
             .fetch_one(&state.pool)
             .await
             .unwrap();
-    assert!(key.is_none());
+    assert!(key.is_some(), "the key outlives the close until the notice settles");
+    let notices: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM cctuiverse_messages WHERE link_id = $1 AND kind = 'close'",
+    )
+    .bind(link.id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(notices, ["queued"]);
     let v = view(&state.pool, &closed).await.unwrap();
     assert_eq!(v.review_count, 0);
     assert!(matches!(send(&state, &closed, direct()).await, SendOutcome::Refused(_)));

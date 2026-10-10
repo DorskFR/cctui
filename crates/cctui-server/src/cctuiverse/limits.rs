@@ -13,6 +13,8 @@ use crate::routes::peer::Limiter;
 const PER_IP_PER_MIN: usize = 120;
 const JOIN_PER_IP_PER_MIN: usize = 20;
 pub const INBOUND_PER_LINK_PER_MIN: usize = crate::routes::peer::SEND_PER_MIN;
+/// A host relays every member's posts to a joiner over one link.
+pub const INBOUND_PER_ROOM_LINK_PER_MIN: usize = 60;
 pub const READS_PER_LINK_PER_MIN: usize = 10;
 
 static BY_IP: LazyLock<Limiter> = LazyLock::new(Limiter::default);

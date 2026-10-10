@@ -44,6 +44,8 @@ pub async fn fresh_nonce(
 enum Budget {
     Inbound,
     Read,
+    /// Closing is idempotent and must get through a busy minute.
+    Free,
 }
 
 struct Request<'a> {
@@ -96,9 +98,11 @@ async fn verified(
     if !fresh_nonce(&state.pool, id, &nonce).await? {
         return Err(not_found());
     }
-    let (key, max) = match budget {
-        Budget::Inbound => ("in", super::limits::INBOUND_PER_LINK_PER_MIN),
-        Budget::Read => ("read", super::limits::READS_PER_LINK_PER_MIN),
+    let (key, max) = match (budget, link.kind) {
+        (Budget::Free, _) => return Ok(link),
+        (Budget::Inbound, LinkKind::Session) => ("in", super::limits::INBOUND_PER_LINK_PER_MIN),
+        (Budget::Inbound, LinkKind::Room) => ("in", super::limits::INBOUND_PER_ROOM_LINK_PER_MIN),
+        (Budget::Read, _) => ("read", super::limits::READS_PER_LINK_PER_MIN),
     };
     super::limits::link(&format!("{key}:{id}"), max)?;
     Ok(link)
@@ -341,7 +345,7 @@ pub async fn close(
     body: Bytes,
 ) -> Result<Json<Value>, AppError> {
     let req = Request { peer, raw_id: &id, uri: &uri, headers: &headers, body: &body };
-    let link = verified(&state, &req, true, Budget::Inbound).await?;
+    let link = verified(&state, &req, true, Budget::Free).await?;
     super::close(&state, &link, CloseReason::Peer).await?;
     Ok(Json(json!({ "closed": true })))
 }

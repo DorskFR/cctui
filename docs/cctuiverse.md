@@ -49,7 +49,8 @@ their own cctui.
 
 Two sessions that both auto-forward answer each other's every turn. The
 default cap of 100 messages per side, the 24 h expiry and the inbound limit of
-10 messages a minute bound such a loop; raise or clear the cap only for a
+10 messages a minute per session link bound such a loop (there is no smarter
+loop detection yet); raise or clear the cap only for a
 conversation you are watching. A room's own links cannot hold inbound posts:
 they go straight to every member.
 
@@ -92,12 +93,18 @@ server is mounted under a sub-path, its `CCTUI_EXTERNAL_URL` must include it.
 
 Outbound messages go through an outbox: delivered at once when possible,
 otherwise retried after 5 s, 30 s, 2 min, 10 min and then hourly, and given up
-after 24 h. A peer that answers 404 no longer knows the link, so this side closes it too.
+after 24 h. A single `404` from the peer fails only that message, because the
+receiver answers `404` for clock skew or a redeploy too; after 5 in a row,
+spread over at least 10 minutes and with no success in between, this side
+treats the link as gone and closes it. Close notices, including a joiner
+withdrawing from a handshake it gave up on, are retried the same way for up to
+an hour, and the closing side keeps its key only until the notice settles.
 The receiver is idempotent on the message id, and a delivery that failed
 because the session was offline is redelivered on the sender's retry. Inbound
 bodies are capped at 64 KiB and text at 32 KiB. Each caller address is
-throttled before any lookup; each link then accepts 10 messages and 10 reads a
-minute, counted only once the signature verified.
+throttled before any lookup; each link then accepts 10 messages a minute (60
+for room links, which carry every member's posts) and 10 reads a minute,
+counted only once the signature verified. Close requests are not counted.
 
 Peer URLs (the inviter's, from the invite, and the joiner's, from the join
 request) must be `https` and resolve to public addresses, checked again at
@@ -110,6 +117,31 @@ connect time; redirects are not followed.
 | `CCTUI_EXTERNAL_URL` | The base URL invites carry and peers call back. Must be reachable by the other server. |
 | `CCTUI_CCTUIVERSE=0` | Disable the feature: the routes answer `404` and the UI hides its entries. |
 | `CCTUI_CCTUIVERSE_ALLOW_PRIVATE=1` | Allow `http` and private addresses for peers, for a LAN or a dev setup. |
-| `CCTUI_TRUSTED_PROXY_HOPS` | Lets the join rate limit see the real client address behind an ingress. |
+| `CCTUI_TRUSTED_PROXY_HOPS` | Lets the cctuiverse rate limits see the real client address behind an ingress. Set it: at `0` every caller behind the ingress shares one bucket. |
 
 Private keys are stored encrypted with the vault key (`CCTUI_VAULT_KEY`).
+
+## Known limitations
+
+- **No loop detection.** Two sessions that both auto-forward keep answering
+  each other until the message cap (100 per side by default), the inbound
+  limit or the expiry stops them.
+- **Shared rate limit behind a proxy.** With `CCTUI_TRUSTED_PROXY_HOPS=0`
+  behind an ingress, every caller shares one per-address bucket, so one noisy
+  client can slow down all cross-instance traffic on the server.
+- **A message parked by the agent's harness can be lost.** When a session has
+  a question or permission prompt open, the Claude Code daemon holds incoming
+  peer messages in memory until it closes. A daemon restart in that window
+  loses them, although both servers already recorded them as delivered, and a
+  prompt that ends without the usual signal can keep them parked.
+- **The "you are linked" turn can arrive late.** If the session is offline it is
+  retried every few seconds; in rare races a first message from the peer can
+  land before it, and a server crash at the wrong moment can lose it.
+- **Holding is not retroactive.** A message whose first delivery failed because
+  the session was offline is delivered on the sender's retry even if you switched
+  the link to hold in between.
+- **Joining briefly holds the invite row.** The inviting server checks the
+  joiner's address while holding a lock on the invite; concurrent joins of the
+  same invite wait for it.
+- **Early test databases.** Migration 171 changed during development; a database
+  that applied an early version of it must be recreated.

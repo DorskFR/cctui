@@ -3,6 +3,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
+use futures_util::StreamExt;
 use uuid::Uuid;
 
 use super::client::{self, ClientError};
@@ -54,6 +55,8 @@ pub enum SendOutcome {
 const BACKOFF_SECS: [u64; 5] = [5, 30, 120, 600, 3600];
 const GIVE_UP_AFTER: chrono::TimeDelta = chrono::TimeDelta::hours(24);
 const SWEEP_BATCH: i64 = 50;
+/// 50 rows, 8 at a time, at most 15 s each: a pass ends well inside the 3 min lease.
+const SWEEP_CONCURRENCY: usize = 8;
 
 #[must_use]
 pub fn backoff(attempts: i32) -> Duration {
@@ -197,6 +200,9 @@ pub async fn attempt(state: &AppState, link: &Link, row: i64) -> SendOutcome {
     let Ok(Some((message_id, kind, body, attempts, queued_at))) = loaded else {
         return SendOutcome::Refused("no such queued message".into());
     };
+    if kind == "close" {
+        return attempt_close(state, link, row, attempts, queued_at).await;
+    }
     let (Some(seed), Some(url), Some(peer_id)) =
         (link.seed(), link.peer_url.as_deref(), link.peer_link_id)
     else {
@@ -219,6 +225,13 @@ pub async fn attempt(state: &AppState, link: &Link, row: i64) -> SendOutcome {
             .bind(row)
             .execute(&state.pool)
             .await;
+            let _ = sqlx::query(
+                "UPDATE cctuiverse_links SET peer_404_count = 0, peer_404_since = NULL \
+                 WHERE id = $1 AND peer_404_count > 0",
+            )
+            .bind(link.id)
+            .execute(&state.pool)
+            .await;
             SendOutcome::Delivered
         }
         Ok((status, body)) if permanent(status) => {
@@ -228,9 +241,10 @@ pub async fn attempt(state: &AppState, link: &Link, row: i64) -> SendOutcome {
                 .unwrap_or_else(|| format!("peer answered {status}"));
             let outcome = fail(state, link, row, &why).await;
             if status == StatusCode::NOT_FOUND
+                && peer_gone(state, link.id).await
                 && let Err(e) = super::close(state, link, CloseReason::Gone).await
             {
-                tracing::warn!(link = %link.id, "cctuiverse close after peer 404 failed: {e}");
+                tracing::warn!(link = %link.id, "cctuiverse close after peer 404s failed: {e}");
             }
             outcome
         }
@@ -240,6 +254,128 @@ pub async fn attempt(state: &AppState, link: &Link, row: i64) -> SendOutcome {
         Err(ClientError::Url(e)) => fail(state, link, row, &e).await,
         Err(e) => retry(state, link, row, attempts, queued_at, &e.to_string()).await,
     }
+}
+
+/// The receiver's uniform 404 also covers clock skew, a redeploy or a peer that
+/// briefly disabled cctuiverse, so one 404 only fails its message. The link is
+/// treated as gone after this many in a row, the first at least this long ago.
+const GONE_AFTER_404S: i32 = 5;
+const GONE_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+
+async fn peer_gone(state: &AppState, link_id: Uuid) -> bool {
+    let counted: Option<(i32, DateTime<Utc>)> = sqlx::query_as(
+        "UPDATE cctuiverse_links SET peer_404_count = peer_404_count + 1, \
+             peer_404_since = COALESCE(peer_404_since, now()) \
+         WHERE id = $1 RETURNING peer_404_count, peer_404_since",
+    )
+    .bind(link_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+    counted.is_some_and(|(n, since)| gone(n, Utc::now() - since))
+}
+
+fn gone(count: i32, span: chrono::TimeDelta) -> bool {
+    count >= GONE_AFTER_404S && span >= GONE_AFTER
+}
+
+/// Queue the close notice for a just-closed link. It is retried like any
+/// message, 404s included, since a joiner's withdrawal can reach the inviter
+/// before the inviter committed; the link's key is wiped once it settles.
+pub async fn enqueue_close(state: &AppState, link: &Link) {
+    let row: Result<i64, _> = sqlx::query_scalar(
+        "INSERT INTO cctuiverse_messages \
+             (link_id, message_id, direction, kind, body, status, next_attempt_at, \
+              first_queued_at) \
+         VALUES ($1, $2, 'out', 'close', '{}'::jsonb, 'queued', now() + interval '1 minute', now()) \
+         RETURNING id",
+    )
+    .bind(link.id)
+    .bind(Uuid::new_v4())
+    .fetch_one(&state.pool)
+    .await;
+    match row {
+        Ok(row) => {
+            let (state, link) = (state.clone(), link.clone());
+            tokio::spawn(async move { attempt(&state, &link, row).await });
+        }
+        Err(e) => {
+            tracing::warn!(link = %link.id, "cctuiverse close notice not queued: {e}");
+            wipe_key(state, link.id).await;
+        }
+    }
+}
+
+const CLOSE_GIVE_UP_AFTER: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
+async fn wipe_key(state: &AppState, link_id: Uuid) {
+    let _ = sqlx::query(
+        "UPDATE cctuiverse_links SET encrypted_private_key = NULL \
+         WHERE id = $1 AND state = 'closed'",
+    )
+    .bind(link_id)
+    .execute(&state.pool)
+    .await;
+}
+
+async fn settle_close(state: &AppState, link: &Link, row: i64, status: &str, why: Option<&str>) {
+    let _ = sqlx::query(
+        "UPDATE cctuiverse_messages SET status = $2, attempts = attempts + 1, \
+             next_attempt_at = NULL, last_error = $3, \
+             delivered_at = CASE WHEN $2 = 'delivered' THEN now() END \
+         WHERE id = $1 AND status = 'queued'",
+    )
+    .bind(row)
+    .bind(status)
+    .bind(why)
+    .execute(&state.pool)
+    .await;
+    wipe_key(state, link.id).await;
+}
+
+async fn attempt_close(
+    state: &AppState,
+    link: &Link,
+    row: i64,
+    attempts: i32,
+    queued_at: DateTime<Utc>,
+) -> SendOutcome {
+    let (Some(seed), Some(url), Some(peer_id)) =
+        (link.seed(), link.peer_url.as_deref(), link.peer_link_id)
+    else {
+        settle_close(state, link, row, "failed", Some("the link has no key")).await;
+        return SendOutcome::Refused("the link has no key".into());
+    };
+    let route = format!("/cctuiverse/v1/links/{peer_id}/close");
+    let why = match client::post_signed(state, &seed, link.id, url, &route, &json!({})).await {
+        Ok((status, _)) if status.is_success() => {
+            settle_close(state, link, row, "delivered", None).await;
+            return SendOutcome::Delivered;
+        }
+        Ok((status, _)) if permanent(status) && status != StatusCode::NOT_FOUND => {
+            let why = format!("peer answered {status}");
+            settle_close(state, link, row, "failed", Some(&why)).await;
+            return SendOutcome::Refused(why);
+        }
+        Ok((status, _)) => format!("peer answered {status}"),
+        Err(e) => e.to_string(),
+    };
+    if Utc::now() - queued_at > CLOSE_GIVE_UP_AFTER {
+        settle_close(state, link, row, "failed", Some(&why)).await;
+        return SendOutcome::Refused(why);
+    }
+    let _ = sqlx::query(
+        "UPDATE cctuiverse_messages SET attempts = attempts + 1, last_error = $2, \
+             next_attempt_at = now() + make_interval(secs => $3) \
+         WHERE id = $1 AND status = 'queued'",
+    )
+    .bind(row)
+    .bind(&why)
+    .bind(backoff(attempts + 1).as_secs_f64())
+    .execute(&state.pool)
+    .await;
+    SendOutcome::Queued
 }
 
 async fn fail(state: &AppState, link: &Link, row: i64, why: &str) -> SendOutcome {
@@ -294,22 +430,6 @@ pub async fn sweep(state: &AppState) {
 }
 
 async fn sweep_inner(state: &AppState) -> Result<(), sqlx::Error> {
-    let due: Vec<(i64, Uuid)> = sqlx::query_as(
-        "UPDATE cctuiverse_messages SET next_attempt_at = now() + interval '1 minute' \
-         WHERE id IN (SELECT id FROM cctuiverse_messages \
-                      WHERE direction = 'out' AND status = 'queued' AND next_attempt_at <= now() \
-                      ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED) \
-         RETURNING id, link_id",
-    )
-    .bind(SWEEP_BATCH)
-    .fetch_all(&state.pool)
-    .await?;
-    for (row, link_id) in due {
-        if let Some(link) = super::load(&state.pool, link_id).await? {
-            attempt(state, &link, row).await;
-        }
-    }
-
     let preambles: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM cctuiverse_links WHERE preamble_pending AND state = 'active' LIMIT 50",
     )
@@ -348,6 +468,37 @@ async fn sweep_inner(state: &AppState) -> Result<(), sqlx::Error> {
             }
         }
     }
+
+    sqlx::query(
+        "UPDATE cctuiverse_links l SET encrypted_private_key = NULL \
+         WHERE l.state = 'closed' AND l.encrypted_private_key IS NOT NULL \
+           AND NOT EXISTS (SELECT 1 FROM cctuiverse_messages m \
+                           WHERE m.link_id = l.id AND m.kind = 'close' AND m.status = 'queued')",
+    )
+    .execute(&state.pool)
+    .await?;
+
+    let due: Vec<(i64, Uuid)> = sqlx::query_as(
+        "UPDATE cctuiverse_messages SET next_attempt_at = now() + interval '3 minutes' \
+         WHERE id IN (SELECT id FROM cctuiverse_messages \
+                      WHERE direction = 'out' AND status = 'queued' AND next_attempt_at <= now() \
+                      ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED) \
+         RETURNING id, link_id",
+    )
+    .bind(SWEEP_BATCH)
+    .fetch_all(&state.pool)
+    .await?;
+    futures_util::stream::iter(due)
+        .for_each_concurrent(SWEEP_CONCURRENCY, |(row, link_id)| async move {
+            match super::load(&state.pool, link_id).await {
+                Ok(Some(link)) => {
+                    attempt(state, &link, row).await;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(link = %link_id, "cctuiverse sweep load: {e}"),
+            }
+        })
+        .await;
     Ok(())
 }
 
@@ -359,6 +510,16 @@ mod tests {
     fn backoff_climbs_then_caps_at_an_hour() {
         let secs: Vec<u64> = (0..=8).map(|n| backoff(n).as_secs()).collect();
         assert_eq!(secs, [5, 5, 30, 120, 600, 3600, 3600, 3600, 3600]);
+    }
+
+    #[test]
+    fn a_link_is_gone_only_after_repeated_404s_over_ten_minutes() {
+        let min = chrono::TimeDelta::minutes;
+        assert!(!gone(1, min(60)));
+        assert!(!gone(4, min(60)));
+        assert!(!gone(5, min(9)));
+        assert!(gone(5, min(10)));
+        assert!(gone(9, min(30)));
     }
 
     #[test]
