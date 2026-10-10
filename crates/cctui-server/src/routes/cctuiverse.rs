@@ -383,6 +383,9 @@ async fn decide(
             set(state, msg, &status, "dropped").await?;
         }
         (Decision::Release, "in", "held") => {
+            if link.state == LinkState::Closed {
+                return Err(conflict("the link is closed"));
+            }
             let sid = link.session_id.as_deref().ok_or_else(not_found)?;
             let turn = cctuiverse::wire::inbound_turn(&link, &kind, &body).ok_or_else(not_found)?;
             match cctuiverse::deliver_local(state, sid, turn).await {

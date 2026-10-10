@@ -307,7 +307,7 @@ pub fn token_hash(token: &[u8]) -> Vec<u8> {
 
 /// Controls, bidi overrides and zero-width characters let a label read
 /// differently from what it is.
-fn invisible(c: char) -> bool {
+const fn invisible(c: char) -> bool {
     c.is_control()
         || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
@@ -507,7 +507,7 @@ pub async fn close(state: &AppState, link: &Link, reason: CloseReason) -> Result
     };
     sqlx::query(
         "UPDATE cctuiverse_messages SET status = 'dropped', next_attempt_at = NULL \
-         WHERE link_id = $1 AND direction = 'out' AND status IN ('queued', 'review')",
+         WHERE link_id = $1 AND status IN ('queued', 'review', 'held')",
     )
     .bind(link.id)
     .execute(&state.pool)

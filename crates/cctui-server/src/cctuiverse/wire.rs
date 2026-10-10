@@ -399,12 +399,18 @@ pub async fn history(
         state: st,
     };
     let rendered = crate::transcript_md::render(&header, &events, &[], HISTORY_BUDGET_BYTES);
-    super::audit(
-        &state.pool,
-        sid,
-        &format!("{} read this session's history — {} events", link.peer_name(), rendered.events),
-    )
-    .await;
+    if super::limits::link(&format!("history-audit:{}", link.id), 1).is_ok() {
+        super::audit(
+            &state.pool,
+            sid,
+            &format!(
+                "{} read this session's history — {} events",
+                link.peer_name(),
+                rendered.events
+            ),
+        )
+        .await;
+    }
     Ok(Json(json!({
         "name": link.label,
         "state": st,

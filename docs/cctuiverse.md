@@ -63,8 +63,8 @@ they go straight to every member.
   refused, so a peer cannot forge an envelope.
 - A link reaches exactly its bound session (or room). Unknown, closed, expired
   and badly signed links all get the same `404`.
-- Either owner closes a link instantly. Closing deletes that side's private key
-  and tells the peer.
+- Either owner closes a link instantly. Closing deletes that side's private key,
+  drops every message still held or awaiting review, and tells the peer.
 - Only an owner's own credential (browser session or user token) creates, joins,
   changes or closes a link through cctui; machine, dispatcher and ephemeral
   keys never can. This does not make the invite safe to show an agent: the

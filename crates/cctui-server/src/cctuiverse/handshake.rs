@@ -177,13 +177,13 @@ pub async fn join(
             ));
         }
         Ok((status, bytes)) if status == StatusCode::OK => {
-            match serde_json::from_slice::<JoinResponse>(&bytes).ok().and_then(|r| accepted(&inv, &r)) {
-                Some(a) => a,
-                None => {
-                    discard(state, id).await;
-                    withdraw(state, seed, id, &inv);
-                    return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
-                }
+            let parsed = serde_json::from_slice::<JoinResponse>(&bytes).ok();
+            if let Some(a) = parsed.and_then(|r| accepted(&inv, &r)) {
+                a
+            } else {
+                discard(state, id).await;
+                withdraw(state, seed, id, &inv);
+                return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
             }
         }
         Ok(_) => {
