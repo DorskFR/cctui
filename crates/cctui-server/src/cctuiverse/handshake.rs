@@ -86,13 +86,13 @@ pub async fn create_invite(
         Target::Session(id) => (Some(id), None, LinkKind::Session),
         Target::Room(id) => (None, Some(id), LinkKind::Room),
     };
-    let row: LinkRow = sqlx::query_as(&format!(
+    let row: LinkRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO cctuiverse_links \
              (id, user_id, session_id, room_id, kind, role, state, label, public_key, \
               encrypted_private_key, invite_token_hash, invite_expires_at, envelope_nonce) \
          VALUES ($1, $2, $3, $4, $5, 'inviter', 'pending', $6, $7, $8, $9, now() + $10, $11) \
          RETURNING {COLS}"
-    ))
+    )))
     .bind(Uuid::new_v4())
     .bind(user_id)
     .bind(session_id)
@@ -177,11 +177,11 @@ pub async fn join(
         discard(state, id).await;
         return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
     };
-    let row: LinkRow = sqlx::query_as(&format!(
+    let row: LinkRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE cctuiverse_links SET state = 'active', kind = $2, peer_public_key = $3, \
              peer_label = $4, peer_room_name = $5, activated_at = now() \
          WHERE id = $1 RETURNING {COLS}"
-    ))
+    )))
     .bind(id)
     .bind(kind.as_str())
     .bind(peer_key.as_slice())
@@ -275,9 +275,9 @@ pub async fn accept(
     }
 
     let mut tx = state.pool.begin().await?;
-    let row: Option<LinkRow> = sqlx::query_as(&format!(
+    let row: Option<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM cctuiverse_links WHERE id = $1 FOR UPDATE"
-    ))
+    )))
     .bind(req.link_id)
     .fetch_optional(&mut *tx)
     .await?;
@@ -290,13 +290,13 @@ pub async fn accept(
     if !(token_ok && live && link.state == LinkState::Pending && link.role == LinkRole::Inviter) {
         return Err(not_found());
     }
-    let row: LinkRow = sqlx::query_as(&format!(
+    let row: LinkRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE cctuiverse_links SET state = 'active', peer_public_key = $2, peer_link_id = $3, \
              peer_url = $4, peer_label = $5, invite_token_hash = NULL, activated_at = now(), \
              settings = CASE WHEN settings ? 'expires_at' THEN settings \
                  ELSE settings || jsonb_build_object('expires_at', now() + $6) END \
          WHERE id = $1 RETURNING {COLS}"
-    ))
+    )))
     .bind(link.id)
     .bind(joiner_key.as_slice())
     .bind(req.joiner.link_id)

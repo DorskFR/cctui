@@ -167,10 +167,10 @@ pub fn parse_remote_ref(s: &str) -> Option<Uuid> {
 
 /// Non-pending links bound to `session_id` (active first, then closed, newest first).
 pub async fn session_links(pool: &PgPool, session_id: &str) -> Result<Vec<Link>, sqlx::Error> {
-    let rows: Vec<LinkRow> = sqlx::query_as(&format!(
+    let rows: Vec<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM cctuiverse_links WHERE session_id = $1 AND state <> 'pending' \
          ORDER BY (state = 'active') DESC, created_at DESC"
-    ))
+    )))
     .bind(session_id)
     .fetch_all(pool)
     .await?;
@@ -183,9 +183,9 @@ pub async fn link_for_session(
     session_id: &str,
     link_id: Uuid,
 ) -> Result<Option<Link>, sqlx::Error> {
-    let row: Option<LinkRow> = sqlx::query_as(&format!(
+    let row: Option<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM cctuiverse_links WHERE id = $1 AND session_id = $2"
-    ))
+    )))
     .bind(link_id)
     .bind(session_id)
     .fetch_optional(pool)
@@ -195,11 +195,11 @@ pub async fn link_for_session(
 
 /// Active host-side room links of `room_id`.
 pub async fn room_links(pool: &PgPool, room_id: Uuid) -> Result<Vec<Link>, sqlx::Error> {
-    let rows: Vec<LinkRow> = sqlx::query_as(&format!(
+    let rows: Vec<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM cctuiverse_links \
          WHERE room_id = $1 AND kind = 'room' AND role = 'inviter' AND state = 'active' \
          ORDER BY activated_at, id"
-    ))
+    )))
     .bind(room_id)
     .fetch_all(pool)
     .await?;
@@ -208,7 +208,7 @@ pub async fn room_links(pool: &PgPool, room_id: Uuid) -> Result<Vec<Link>, sqlx:
 
 pub async fn load(pool: &PgPool, link_id: Uuid) -> Result<Option<Link>, sqlx::Error> {
     let row: Option<LinkRow> =
-        sqlx::query_as(&format!("SELECT {COLS} FROM cctuiverse_links WHERE id = $1"))
+        sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {COLS} FROM cctuiverse_links WHERE id = $1")))
             .bind(link_id)
             .fetch_optional(pool)
             .await?;
@@ -230,11 +230,11 @@ pub async fn links_of(
     session_id: Option<&str>,
     room_id: Option<Uuid>,
 ) -> Result<Vec<Link>, sqlx::Error> {
-    let rows: Vec<LinkRow> = sqlx::query_as(&format!(
+    let rows: Vec<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM cctuiverse_links \
          WHERE ($1::text IS NOT NULL AND session_id = $1) OR ($2::uuid IS NOT NULL AND room_id = $2) \
          ORDER BY (state = 'closed'), created_at DESC LIMIT 200"
-    ))
+    )))
     .bind(session_id)
     .bind(room_id)
     .fetch_all(pool)
@@ -437,11 +437,11 @@ pub enum CloseReason {
 /// bound session, and tell the peer unless the peer asked.
 pub async fn close(state: &AppState, link: &Link, reason: CloseReason) -> Result<Link, AppError> {
     let seed = link.seed();
-    let closed: Option<LinkRow> = sqlx::query_as(&format!(
+    let closed: Option<LinkRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE cctuiverse_links SET state = 'closed', closed_at = now(), \
              encrypted_private_key = NULL, invite_token_hash = NULL \
          WHERE id = $1 AND state <> 'closed' RETURNING {COLS}"
-    ))
+    )))
     .bind(link.id)
     .fetch_optional(&state.pool)
     .await?;

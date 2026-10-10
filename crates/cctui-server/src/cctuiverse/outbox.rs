@@ -59,7 +59,7 @@ pub fn backoff(attempts: i32) -> Duration {
     Duration::from_secs(BACKOFF_SECS[i])
 }
 
-const fn permanent(status: StatusCode) -> bool {
+fn permanent(status: StatusCode) -> bool {
     !(status.is_server_error()
         || matches!(status, StatusCode::TOO_MANY_REQUESTS | StatusCode::REQUEST_TIMEOUT))
 }
