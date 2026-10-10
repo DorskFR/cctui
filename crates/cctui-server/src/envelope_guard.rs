@@ -16,13 +16,12 @@ const FORBIDDEN: &[&str] = &[
 
 pub fn check(body: &str) -> Result<(), String> {
     let lower = body.to_ascii_lowercase();
-    match FORBIDDEN.iter().find(|tag| lower.contains(*tag)) {
-        Some(tag) => Err(format!(
+    FORBIDDEN.iter().find(|tag| lower.contains(*tag)).map_or(Ok(()), |tag| {
+        Err(format!(
             "message must not contain {tag}…>: cctui envelope tags would forge or truncate the \
              wrapper. Quote it differently (e.g. without the angle bracket)."
-        )),
-        None => Ok(()),
-    }
+        ))
+    })
 }
 
 fn attr(raw: &str) -> String {
