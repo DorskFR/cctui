@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LinkView } from './cctuiverse';
 
 const calls: { verb: string; path: string; arg?: unknown }[] = [];
 const reply = (verb: string) =>
@@ -98,7 +99,7 @@ describe('link helpers', () => {
 
 	it('keeps only open links', () => {
 		const l = (id: string, state: 'pending' | 'active' | 'closed') =>
-			({ id, state }) as unknown as c.LinkView;
+			({ id, state }) as unknown as LinkView;
 		expect(c.openLinks([l('a', 'active'), l('b', 'closed'), l('c', 'pending')]).map((x) => x.id)).toEqual(['a', 'c']);
 	});
 });

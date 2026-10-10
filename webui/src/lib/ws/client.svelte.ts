@@ -139,11 +139,6 @@ export class WsClient {
 			return;
 		}
 		if (this.prompts.handleFrame(msg)) return;
-		if ((msg as { type: string }).type === 'cctuiverse_changed') {
-			const ev = msg as unknown as CctuiverseChangedEvent;
-			for (const cb of this.cctuiverseCbs) cb(ev);
-			return;
-		}
 		switch (msg.type) {
 			case 'stream': {
 				const { session_id: sid, data } = msg;
@@ -208,6 +203,11 @@ export class WsClient {
 			case 'room_members':
 				this.markListDirty();
 				break;
+			case 'cctuiverse_changed': {
+				const ev = { session_id: msg.session_id ?? null, room_id: msg.room_id ?? null };
+				for (const cb of this.cctuiverseCbs) cb(ev);
+				break;
+			}
 			case 'machine_resources': {
 				const { type: _, ...p } = msg;
 				for (const cb of this.machineResourcesCbs) cb(p);
