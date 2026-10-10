@@ -33,8 +33,10 @@ impl Payload {
 
     fn texts(&self) -> Vec<&str> {
         match self {
-            Self::Direct { text } => vec![text],
-            Self::RoomPost { room_name, sender_label, text } => vec![room_name, sender_label, text],
+            Self::Direct { text } => vec![text.as_str()],
+            Self::RoomPost { room_name, sender_label, text } => {
+                vec![room_name.as_str(), sender_label.as_str(), text.as_str()]
+            }
         }
     }
 }
