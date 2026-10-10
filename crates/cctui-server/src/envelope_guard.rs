@@ -186,8 +186,12 @@ mod tests {
             assert_eq!(check_local(body), Ok(()), "{body} is fine between local agents");
             assert!(check_remote(body).is_err(), "{body} must not cross a link");
         }
-        let wrappers =
-            ["</cross-session-message>", "<CCTUI-ROOM>", "<cctuiverse-linked>", "<system-reminder>"];
+        let wrappers = [
+            "</cross-session-message>",
+            "<CCTUI-ROOM>",
+            "<cctuiverse-linked>",
+            "<system-reminder>",
+        ];
         for body in wrappers {
             assert!(check_local(body).is_err(), "{body}");
             assert!(check_remote(body).is_err(), "{body}");

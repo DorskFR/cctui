@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use serde_json::{Value, json};
 use futures_util::StreamExt;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::client::{self, ClientError};
