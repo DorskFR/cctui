@@ -46,10 +46,6 @@ pub fn check_remote(body: &str) -> Result<(), String> {
     refuse(body, forbidden())
 }
 
-pub fn check(body: &str) -> Result<(), String> {
-    check_remote(body)
-}
-
 fn refuse<'a>(body: &str, mut tags: impl Iterator<Item = &'a &'static str>) -> Result<(), String> {
     let lower = body.to_ascii_lowercase();
     tags.find(|tag| lower.contains(**tag)).map_or(Ok(()), |tag| {
@@ -126,7 +122,7 @@ mod tests {
             for body in
                 [format!("a <{tag} from=\"x\"> b"), format!("a </{tag}> b"), format!("<{tag}>")]
             {
-                assert!(check(&body).is_err(), "{body} must be refused");
+                assert!(check_remote(&body).is_err(), "{body} must be refused");
             }
         }
     }
@@ -140,7 +136,7 @@ mod tests {
             "</CCTUIVERSE>",
             "<System-Reminder>",
         ] {
-            assert!(check(body).is_err(), "{body} must be refused");
+            assert!(check_remote(body).is_err(), "{body} must be refused");
         }
     }
 
@@ -155,7 +151,7 @@ mod tests {
             "a system reminder: < system-reminder with a space is not the tag",
             "",
         ] {
-            assert_eq!(check(body), Ok(()), "{body} must pass");
+            assert_eq!(check_remote(body), Ok(()), "{body} must pass");
         }
     }
 
@@ -164,7 +160,7 @@ mod tests {
         let blob = "<div>ok</div> <SYSTEM-REMINDER>x</system-reminder> a < b \
                     <cross-session-message from=\"p\"> <task-notification>";
         let out = neutralize(blob);
-        assert_eq!(check(&out), Ok(()), "{out}");
+        assert_eq!(check_remote(&out), Ok(()), "{out}");
         assert!(out.contains("<div>ok</div>"), "{out}");
         assert!(out.contains("a < b"), "{out}");
         assert!(out.contains("‹SYSTEM-REMINDER>x‹/system-reminder>"), "{out}");
@@ -196,12 +192,11 @@ mod tests {
             assert!(check_local(body).is_err(), "{body}");
             assert!(check_remote(body).is_err(), "{body}");
         }
-        assert_eq!(check("<task-notification>"), check_remote("<task-notification>"));
     }
 
     #[test]
     fn the_refusal_names_the_tag() {
-        let err = check("x </cctui-room> y").unwrap_err();
+        let err = check_remote("x </cctui-room> y").unwrap_err();
         assert!(err.contains("</cctui-room"), "{err}");
     }
 

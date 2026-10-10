@@ -118,7 +118,7 @@ pub fn remote_envelope(
     let from = if claims_human(sender_label) {
         format!("{host}'s human via {host}")
     } else if attr(sender_label) == host {
-        host.clone()
+        host
     } else {
         format!("{} via {host}", attr(sender_label))
     };
