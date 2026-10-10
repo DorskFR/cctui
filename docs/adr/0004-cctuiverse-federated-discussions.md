@@ -1,6 +1,6 @@
 # 0004 — cctuiverse: session-to-session links across cctui instances
 
-Status: **Proposed** (investigation, nothing built)
+Status: **Accepted** (shipped in 0.25.0-beta.9)
 
 ## Goal
 
@@ -123,13 +123,15 @@ invite in a file or a message cannot create or accept a link on its own.
 
 | Setting | Options | Default |
 |---|---|---|
-| Inbound delivery | queue to turn end · steer into active turn (codex) · hold until I release | queue |
+| Inbound delivery | deliver as a turn · hold until I release | deliver |
 | Outbound | agent sends via `CctuiSend` · auto-forward each turn's final reply · both | `CctuiSend` |
 | Review outbound | off · approve each message | off |
-| Permission mode while linked | unchanged (session's own) · clamp to ask/auto | unchanged |
-| Local reach | session keeps `CctuiAgent`, peers, rooms · disabled while linked | unchanged |
 | Share my transcript | no · let peer page my thread (`CctuiHistory` over the link) | no |
-| Caps | turns · dollars · expiry · each optional | expiry 24 h, rest off |
+| Expiry | 24 h · 7 d · never | 24 h |
+| Message cap | messages this side may send | 100 |
+
+Permission mode and local reach are not link settings: the session's own controls
+already set them, and the owner can tighten them for the duration of a link.
 
 Nothing is clamped by default. The owner already chose this session's posture,
 tools and context, and accepted the link deliberately.
