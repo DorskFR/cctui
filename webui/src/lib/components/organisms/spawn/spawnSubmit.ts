@@ -109,9 +109,19 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	sf.cancelAutosave();
 	sf.spawnFailure = null;
 	const body: SpawnRequest = sf.buildSpawnBody();
-	const invite = cctuiverseConfig.enabled ? findInvite(sf.form.prompt) : null;
-	const joinLabel = (sf.joinLabel.trim() || sf.form.name.trim() || body.working_dir).slice(0, 80);
-	if (invite) body.prompt = stripInvite(sf.form.prompt.trim(), invite, JOIN_PROMPT);
+	const invite = findInvite(sf.form.prompt);
+	const joinLabel = (sf.joinLabel.trim() || sf.form.name.trim()).slice(0, 80);
+	if (invite) {
+		if (!cctuiverseConfig.enabled) {
+			toasts.error(m.cctuiverse_disabled_invite());
+			return;
+		}
+		if (!joinLabel) {
+			toasts.error(m.cctuiverse_label_required());
+			return;
+		}
+		body.prompt = stripInvite(sf.form.prompt.trim(), invite, JOIN_PROMPT);
+	}
 	const labelIds = [...sf.form.labels];
 	const memoryCwd = normalizeDir(sf.form.working_dir.trim());
 	const memoryMachine = sf.form.machine_id;
@@ -161,6 +171,10 @@ export async function spawnOnMachine(sf: SpawnForm) {
 export async function dispatchToK8s(sf: SpawnForm) {
 	// Stable across retries so the server's idempotency dedup makes a
 	// re-submit a genuine retry, not a second pod. Cleared on success.
+	if (findInvite(sf.form.prompt)) {
+		toasts.error(m.cctuiverse_dispatch_unsupported());
+		return;
+	}
 	sf.pendingDispatchId ??= crypto.randomUUID();
 	const body = buildDispatchBody(sf.form, envMap(sf.envRows), sf.dispatchProvider, sf.pendingDispatchId);
 	const labelIds = [...sf.form.labels];

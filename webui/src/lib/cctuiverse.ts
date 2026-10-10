@@ -62,6 +62,10 @@ export function findInvite(text: string): string | null {
 	return INVITE_RE.exec(text)?.[0] ?? null;
 }
 
+export function withoutInvite(text: string): string {
+	return text.replace(new RegExp(INVITE_RE.source, 'g'), '').trim();
+}
+
 export function stripInvite(text: string, invite: string, fallback: string): string {
 	const rest = text.replace(invite, '').trim();
 	return rest || fallback;

@@ -5,6 +5,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 	import CctuiverseInviteModal from './CctuiverseInviteModal.svelte';
+	import CctuiverseLinkChips from './CctuiverseLinkChips.svelte';
 	import {
 		archivableMembers,
 		canCreate,
@@ -205,6 +206,11 @@
 				/>
 			{/if}
 		</div>
+		{#if cctuiverseConfig.enabled}
+			<div class="links">
+				<CctuiverseLinkChips target={{ room: room.id }} />
+			</div>
+		{/if}
 	{/each}
 
 	{#if filtered.length === 0 && !offerCreate}
@@ -270,6 +276,12 @@
 		gap: var(--sp-1);
 		align-items: center;
 		min-width: 0;
+	}
+	.links {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-1);
+		padding-left: var(--sp-4);
 	}
 	.glyph {
 		flex: none;
