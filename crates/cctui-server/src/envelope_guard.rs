@@ -3,7 +3,8 @@
 
 use uuid::Uuid;
 
-const FORBIDDEN: &[&str] = &[
+/// cctui's own wrappers: refused in every body, local or remote.
+const LOCAL: &[&str] = &[
     "<cross-session-message",
     "</cross-session-message",
     "<cctui-room",
@@ -12,6 +13,11 @@ const FORBIDDEN: &[&str] = &[
     "</cctuiverse",
     "<system-reminder",
     "</system-reminder",
+];
+
+/// Harness markup an agent trusts. Local agents quote it legitimately; a body
+/// crossing a cctuiverse link may not carry it.
+const REMOTE_ONLY: &[&str] = &[
     "<task-notification",
     "</task-notification",
     "<session-context",
@@ -26,9 +32,27 @@ const FORBIDDEN: &[&str] = &[
     "</user-prompt-submit-hook",
 ];
 
+fn forbidden() -> impl Iterator<Item = &'static &'static str> {
+    LOCAL.iter().chain(REMOTE_ONLY)
+}
+
+/// A body that stays on this cctui.
+pub fn check_local(body: &str) -> Result<(), String> {
+    refuse(body, LOCAL.iter())
+}
+
+/// A body that arrived over, or will cross, a cctuiverse link.
+pub fn check_remote(body: &str) -> Result<(), String> {
+    refuse(body, forbidden())
+}
+
 pub fn check(body: &str) -> Result<(), String> {
+    check_remote(body)
+}
+
+fn refuse<'a>(body: &str, mut tags: impl Iterator<Item = &'a &'static str>) -> Result<(), String> {
     let lower = body.to_ascii_lowercase();
-    FORBIDDEN.iter().find(|tag| lower.contains(*tag)).map_or(Ok(()), |tag| {
+    tags.find(|tag| lower.contains(**tag)).map_or(Ok(()), |tag| {
         Err(format!(
             "message must not contain {tag}…>: cctui envelope tags would forge or truncate the \
              wrapper. Quote it differently (e.g. without the angle bracket)."
@@ -43,7 +67,7 @@ pub fn neutralize(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let mut out = String::with_capacity(text.len());
     for (i, c) in text.char_indices() {
-        if c == '<' && FORBIDDEN.iter().any(|tag| lower[i..].starts_with(tag)) {
+        if c == '<' && forbidden().any(|tag| lower[i..].starts_with(tag)) {
             out.push('‹');
         } else {
             out.push(c);
@@ -147,6 +171,28 @@ mod tests {
         assert!(out.contains("‹cross-session-message from=\"p\">"), "{out}");
         assert_eq!(neutralize("héllo <cctui-room>"), "héllo ‹cctui-room>");
         assert_eq!(neutralize("plain"), "plain");
+    }
+
+    #[test]
+    fn harness_markup_is_refused_only_when_it_crosses_a_link() {
+        for body in [
+            "the hook printed <command-name>/clear</command-name>",
+            "<task-notification> arrived",
+            "<session-context> block",
+            "<local-command-stdout>ok</local-command-stdout>",
+            "<user-prompt-submit-hook>",
+            "<command-message>x</command-message>",
+        ] {
+            assert_eq!(check_local(body), Ok(()), "{body} is fine between local agents");
+            assert!(check_remote(body).is_err(), "{body} must not cross a link");
+        }
+        let wrappers =
+            ["</cross-session-message>", "<CCTUI-ROOM>", "<cctuiverse-linked>", "<system-reminder>"];
+        for body in wrappers {
+            assert!(check_local(body).is_err(), "{body}");
+            assert!(check_remote(body).is_err(), "{body}");
+        }
+        assert_eq!(check("<task-notification>"), check_remote("<task-notification>"));
     }
 
     #[test]
