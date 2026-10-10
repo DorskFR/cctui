@@ -376,6 +376,17 @@ fn render_peers(v: &Value) -> String {
     for p in peers {
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("?");
         let name = p.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+        if s("relation").starts_with("remote") {
+            lines.push(format!(
+                "- {} [{}] {} · on another cctui ({}) · {}",
+                s("session_id"),
+                s("relation"),
+                name.unwrap_or("(unnamed)"),
+                s("machine"),
+                s("state"),
+            ));
+            continue;
+        }
         lines.push(format!(
             "- {} [{}] {} · {} on {} · {}",
             s("session_id"),
@@ -392,9 +403,35 @@ fn render_peers(v: &Value) -> String {
 /// A room reply, rendered per action. `post` confirms the reach so a model knows
 /// how many agents it just interrupted; `peek` and `members` render the timeline
 /// and the roster as lines.
+fn render_sent(to: &str, relation: &str, status: &str) -> String {
+    let head = match status {
+        "queued" => format!(
+            "queued for {to} ({relation}): the other cctui did not take it yet and it is retried \
+             in the background."
+        ),
+        "awaiting_review" => format!(
+            "held for {to} ({relation}): your owner reviews outbound messages on this link \
+             before they leave."
+        ),
+        _ => format!("delivered to {to} ({relation})."),
+    };
+    format!(
+        "{head} It arrives as a turn in that session; it will not reply through this tool — \
+         watch for its own CctuiSend back."
+    )
+}
+
 fn render_room(action: &str, me: &str, v: &Value) -> String {
     let room = v.get("room").and_then(Value::as_str).unwrap_or("the room");
     match action {
+        "post" if v.get("remote").and_then(Value::as_bool) == Some(true) => {
+            let status = v.get("status").and_then(Value::as_str).unwrap_or("?");
+            format!(
+                "posted to {room}, a room hosted on another cctui ({status}); its host delivers \
+                 it to the members. They answer when they choose — nothing comes back through \
+                 this call."
+            )
+        }
         "post" => {
             let seq = v.get("seq").and_then(Value::as_i64).unwrap_or(0);
             let delivered = v.get("delivered").and_then(Value::as_u64).unwrap_or(0);
@@ -428,7 +465,21 @@ fn render_room(action: &str, me: &str, v: &Value) -> String {
                 v.get("members").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
             let mut lines = vec![format!("{room} — {} member(s), plus the human:", members.len())];
             for mem in members {
+                if let Some(label) = mem.as_str() {
+                    lines.push(format!("- {label}"));
+                    continue;
+                }
                 let s = |k: &str| mem.get(k).and_then(Value::as_str).unwrap_or("?");
+                if mem.get("remote").and_then(Value::as_bool) == Some(true) {
+                    let name = mem.get("name").and_then(Value::as_str).unwrap_or("(unnamed)");
+                    lines.push(format!(
+                        "- {} [remote] {name} · on another cctui ({}) · {}",
+                        s("session_id"),
+                        s("machine"),
+                        s("state"),
+                    ));
+                    continue;
+                }
                 let name = mem.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
                 lines.push(format!(
                     "- {} [{}] {} · {} on {} · {}",
@@ -830,13 +881,8 @@ async fn run_unfollowed_call(
             Ok(v) => {
                 let to = v.get("delivered_to").and_then(Value::as_str).unwrap_or(&req.session_id);
                 let relation = v.get("relation").and_then(Value::as_str).unwrap_or("peer");
-                json!({
-                    "ok": true,
-                    "result": format!(
-                        "delivered to {to} ({relation}). It arrives as a turn in that session; \
-                         it will not reply through this tool — watch for its own CctuiSend back."
-                    ),
-                })
+                let status = v.get("status").and_then(Value::as_str).unwrap_or("delivered");
+                json!({ "ok": true, "result": render_sent(to, relation, status) })
             }
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
         },
@@ -2227,6 +2273,64 @@ mod tests {
         assert!(
             out.contains("- b [observer] (unnamed) · claude-code on box-a · archived"),
             "{out}"
+        );
+    }
+
+    #[test]
+    fn remote_peers_render_as_another_cctui_not_an_unknown_adapter() {
+        let out = render_peers(&json!({ "peers": [
+            { "session_id": "remote:5f0c", "name": "bob's agent", "adapter": null,
+              "machine": "b.example", "state": "live", "relation": "remote" },
+        ] }));
+        assert!(
+            out.contains("- remote:5f0c [remote] bob's agent · on another cctui (b.example) · live"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_remote_send_says_whether_it_was_delivered_queued_or_held() {
+        let sent = render_sent("remote:x", "remote", "delivered");
+        assert!(sent.starts_with("delivered to remote:x"), "{sent}");
+        assert!(render_sent("remote:x", "remote", "queued").starts_with("queued for remote:x"));
+        let held = render_sent("remote:x", "remote", "awaiting_review");
+        assert!(held.contains("reviews outbound"), "{held}");
+        assert!(render_sent("s1", "sibling", "delivered").contains("CctuiSend back"));
+    }
+
+    #[test]
+    fn a_remote_room_renders_its_post_status_and_label_only_members() {
+        let post = render_room(
+            "post",
+            "me",
+            &json!({
+                "room": "wave 23", "room_id": "remote:x", "remote": true, "status": "queued",
+            }),
+        );
+        assert!(post.contains("another cctui (queued)"), "{post}");
+        assert!(!post.contains("#0"), "{post}");
+
+        let members = render_room(
+            "members",
+            "me",
+            &json!({
+                "room": "wave 23", "members": ["alice (claude-code on box-a)", "bob (remote)"],
+            }),
+        );
+        assert!(members.contains("- alice (claude-code on box-a)"), "{members}");
+        assert!(members.contains("- bob (remote)"), "{members}");
+
+        let local = render_room(
+            "members",
+            "me",
+            &json!({ "room": "wave 23", "members": [
+                { "session_id": "remote:y", "name": "carol", "adapter": null,
+                  "machine": "c.example", "state": "live", "remote": true },
+            ] }),
+        );
+        assert!(
+            local.contains("- remote:y [remote] carol · on another cctui (c.example)"),
+            "{local}"
         );
     }
 
