@@ -363,7 +363,7 @@ async fn remote_room_tool(
                 sender_label: link.label.clone(),
                 text: body.to_owned(),
             };
-            let status = match crate::cctuiverse::send(state, link, payload).await {
+            let status = match crate::cctuiverse::enqueue(state, link, payload).await {
                 SendOutcome::Delivered => "delivered",
                 SendOutcome::Queued => "queued",
                 SendOutcome::AwaitingReview => "awaiting_review",

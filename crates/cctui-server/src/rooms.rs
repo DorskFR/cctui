@@ -559,7 +559,7 @@ pub async fn post(
 
 /// Host side: a remote member posted. Record in `room_messages` (`sender_session_id`
 /// NULL, `sender_label` as given), deliver to every live local member, and forward to
-/// every other active room link (not `from_link`) via `cctuiverse::send(RoomPost)`.
+/// every other active room link (not `from_link`) via `cctuiverse::enqueue(RoomPost)`.
 ///
 /// Never forwarded back to `from_link`, and a joiner side only delivers what it
 /// receives into its own session, so a post cannot loop between servers.
