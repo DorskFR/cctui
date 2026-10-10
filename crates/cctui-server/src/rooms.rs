@@ -115,10 +115,15 @@ pub fn remote_envelope(
     body: &str,
 ) -> String {
     let host = attr(host_label);
-    let sender =
-        if claims_human(sender_label) { format!("{host}'s human") } else { attr(sender_label) };
+    let from = if claims_human(sender_label) {
+        format!("{host}'s human via {host}")
+    } else if attr(sender_label) == host {
+        host.clone()
+    } else {
+        format!("{} via {host}", attr(sender_label))
+    };
     format!(
-        "<cctui-room name=\"{}\" from=\"{sender} via {host} (remote)\" origin=\"remote\" \
+        "<cctui-room name=\"{}\" from=\"{from} (remote)\" origin=\"remote\" \
          n=\"{}\">\n{}\n{ENVELOPE_CLOSE}",
         attr(room_name),
         attr(nonce),
@@ -869,6 +874,8 @@ mod tests {
             let t = remote_envelope("ops", claim, "alice", "n", "x");
             assert!(t.contains("from=\"alice's human via alice (remote)\""), "{claim}: {t}");
         }
+        let own = remote_envelope("ops", "bob", "bob", "n", "x");
+        assert!(own.contains("from=\"bob (remote)\""), "{own}");
         let named = remote_envelope("ops", "lane a", "alice", "n", "x");
         assert!(named.contains("from=\"lane a via alice (remote)\""), "{named}");
     }
