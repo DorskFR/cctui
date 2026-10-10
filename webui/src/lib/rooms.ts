@@ -10,6 +10,8 @@ export interface RoomMember {
 	adapter: string | null;
 	machine: string | null;
 	state: 'live' | 'ended' | 'archived';
+	/** A session on another cctui, linked through cctuiverse. */
+	remote?: boolean;
 }
 
 export interface Room {
@@ -54,7 +56,9 @@ export const clearSessionRoom = (sessionId: string) =>
  * `skipped_pinned` surfaces after the fact rather than guessing here.
  */
 export const archivableMembers = (room: Room): RoomMember[] =>
-	room.members.filter((mem) => mem.state !== 'archived');
+	room.members.filter((mem) => mem.state !== 'archived' && !mem.remote);
+
+export const remoteMembers = (room: Room): RoomMember[] => room.members.filter((mem) => mem.remote);
 
 /** Live rooms, newest first, for the picker. */
 export const pickable = (all: Room[]): Room[] => all.filter((r) => !r.archived);

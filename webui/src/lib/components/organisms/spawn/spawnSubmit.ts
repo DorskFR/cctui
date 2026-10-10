@@ -18,6 +18,8 @@ import { buildDispatchBody } from './dispatchBody';
 import { attachLabelsTo } from './labelAttach';
 import { envMap } from './spawnBody';
 import type { SpawnForm } from './spawnForm.svelte';
+import { findInvite, joinInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
+import { cctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 
 /** Identity of the form's file set: what decides whether a save has to ship
  *  the bytes again. */
@@ -107,6 +109,9 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	sf.cancelAutosave();
 	sf.spawnFailure = null;
 	const body: SpawnRequest = sf.buildSpawnBody();
+	const invite = cctuiverseConfig.enabled ? findInvite(sf.form.prompt) : null;
+	const joinLabel = (sf.joinLabel.trim() || sf.form.name.trim() || body.working_dir).slice(0, 80);
+	if (invite) body.prompt = stripInvite(sf.form.prompt.trim(), invite, JOIN_PROMPT);
 	const labelIds = [...sf.form.labels];
 	const memoryCwd = normalizeDir(sf.form.working_dir.trim());
 	const memoryMachine = sf.form.machine_id;
@@ -128,6 +133,12 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	const result = await ws.awaitSpawn(res.command_id, sessionId, {
 		probe: sessionId ? () => spawnProbe(sf, sessionId) : undefined
 	});
+	if (invite && sessionId && (result.ok || result.timedOut)) {
+		void joinInvite(invite, sessionId, joinLabel).then(
+			(link) => toasts.ok(m.cctuiverse_linked_with({ peer: link.peer_label ?? '' })),
+			(e) => toasts.error(m.cctuiverse_join_failed({ error: errMessage(e) }))
+		);
+	}
 	if (sf.followupParent) drafts.set(FOLLOWUP_ARCHIVE_SOURCE, sf.archiveSource ? '1' : '');
 	if (result.ok) {
 		toasts.ok(m.spawn_toast_spawned());

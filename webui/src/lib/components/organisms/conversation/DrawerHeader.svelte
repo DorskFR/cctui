@@ -15,6 +15,10 @@
 	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
 	import RoomBadge from '$lib/components/molecules/RoomBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
+	import CctuiverseInviteModal from '$lib/components/molecules/CctuiverseInviteModal.svelte';
+	import CctuiverseJoinModal from '$lib/components/molecules/CctuiverseJoinModal.svelte';
+	import CctuiverseLinkChips from '$lib/components/molecules/CctuiverseLinkChips.svelte';
+	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 	import { Button, Icon, IconButton, Input, Menu, Modal, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -133,6 +137,12 @@
 
 	let keepaliveOpen = $state(false);
 	let roomOpen = $state(false);
+	let inviteOpen = $state(false);
+	let joinOpen = $state(false);
+
+	$effect(() => {
+		void loadCctuiverseConfig();
+	});
 
 
 	const followupItem = $derived<MenuItem | null>(
@@ -223,6 +233,20 @@
 					}
 				]
 			: []),
+		...(cctuiverseConfig.enabled && !archived
+			? [
+					{
+						label: m.cctuiverse_menu_invite(),
+						icon: 'link' as const,
+						onselect: () => (inviteOpen = true)
+					},
+					{
+						label: m.cctuiverse_menu_join(),
+						icon: 'link' as const,
+						onselect: () => (joinOpen = true)
+					}
+				]
+			: []),
 		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
@@ -297,6 +321,9 @@
 					/>
 				{/if}
 				<RoomBadge name={session.room_name} />
+				{#if !compact}
+					<CctuiverseLinkChips target={{ session: session.id }} />
+				{/if}
 			{/if}
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
@@ -396,6 +423,18 @@
 
 {#if keepaliveOpen}
 	<KeepaliveModal {session} onclose={() => (keepaliveOpen = false)} />
+{/if}
+
+{#if inviteOpen}
+	<CctuiverseInviteModal
+		target={{ session: session.id }}
+		defaultLabel={headTitle}
+		onclose={() => (inviteOpen = false)}
+	/>
+{/if}
+
+{#if joinOpen}
+	<CctuiverseJoinModal sessionId={session.id} defaultLabel={headTitle} onclose={() => (joinOpen = false)} />
 {/if}
 
 {#if roomOpen}

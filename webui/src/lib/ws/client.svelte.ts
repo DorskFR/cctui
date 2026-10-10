@@ -35,6 +35,11 @@ import { SessionStreams, type StreamCb } from './stream';
 import { LiveSocket, type Status } from './socket.svelte';
 import { DeliveryTracker, type DeliverySnapshot } from './delivery';
 
+export interface CctuiverseChangedEvent {
+	session_id: string | null;
+	room_id: string | null;
+}
+
 type PtyCb = (data: Uint8Array) => void;
 type GithubCb = (ev: GithubEvent) => void;
 
@@ -134,6 +139,11 @@ export class WsClient {
 			return;
 		}
 		if (this.prompts.handleFrame(msg)) return;
+		if ((msg as { type: string }).type === 'cctuiverse_changed') {
+			const ev = msg as unknown as CctuiverseChangedEvent;
+			for (const cb of this.cctuiverseCbs) cb(ev);
+			return;
+		}
 		switch (msg.type) {
 			case 'stream': {
 				const { session_id: sid, data } = msg;
@@ -238,6 +248,12 @@ export class WsClient {
 	onMachineResources(cb: (ev: MachineResourcesEvent) => void): () => void {
 		this.machineResourcesCbs.add(cb);
 		return () => this.machineResourcesCbs.delete(cb);
+	}
+
+	private cctuiverseCbs = new Set<(ev: CctuiverseChangedEvent) => void>();
+	onCctuiverseChanged(cb: (ev: CctuiverseChangedEvent) => void): () => void {
+		this.cctuiverseCbs.add(cb);
+		return () => this.cctuiverseCbs.delete(cb);
 	}
 
 	private accountUsageCbs = new Set<(ev: AccountUsageEvent) => void>();

@@ -136,6 +136,9 @@
 		{#if ln.role === 'peer' && ln.peerRoom}
 			<Badge size="xs" color="var(--bc)">{m.rooms_line_from_room({ room: ln.peerRoom })}</Badge>
 		{/if}
+		{#if ln.role === 'peer' && ln.peerRemote}
+			<Badge size="xs" color="var(--bc)" title={m.cctuiverse_external_title()}>{m.cctuiverse_external_badge()}</Badge>
+		{/if}
 		{#if ln.role === 'peer' && ln.peerFrom}
 			<span class="who peer-from" title={ln.peerFrom}>· {ln.peerFrom}</span>
 		{/if}

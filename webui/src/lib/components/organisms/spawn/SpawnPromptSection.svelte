@@ -4,8 +4,16 @@
 	import ProfileList from './ProfileList.svelte';
 	import type { SpawnForm } from './spawnForm.svelte';
 	import { createProfile, deleteProfile, saveProfile } from './profileCrud';
+	import CctuiverseSpawnNotice from '$lib/components/molecules/CctuiverseSpawnNotice.svelte';
+	import { findInvite } from '$lib/cctuiverse';
+	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 
 	let { sf }: { sf: SpawnForm } = $props();
+
+	$effect(() => {
+		void loadCctuiverseConfig();
+	});
+	const hasInvite = $derived(cctuiverseConfig.enabled && findInvite(sf.form.prompt) !== null);
 </script>
 
 {#if sf.target === 'dispatch'}
@@ -24,6 +32,9 @@
 		att={sf.att}
 		bind:promptEl={sf.promptEl}
 	/>
+	{#if hasInvite}
+		<CctuiverseSpawnNotice bind:label={sf.joinLabel} placeholder={sf.form.name.trim()} />
+	{/if}
 	<ProfileList
 		profiles={sf.profiles}
 		bind:selectedId={sf.selectedProfileId}
