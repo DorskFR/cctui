@@ -67,12 +67,16 @@ const PEER_ATTR_RE = /([a-z-]+)="([^"]*)"/g;
 // The standing block a session gets when the human adds it to a room. It is
 // addressed to the agent, not from a peer, so it reads as a system marker.
 const ROOM_JOINED_RE = /^<cctui-room-joined\b[^>]*>([\s\S]*?)<\/cctui-room-joined>/m;
+// The standing block a session gets when a cctuiverse link becomes active.
+const CCTUIVERSE_LINKED_RE = /^<cctuiverse-linked\b([^>]*)>([\s\S]*?)<\/cctuiverse-linked>/m;
 
 export interface PeerMessage {
 	/** `from-name` when the sender supplied one, else the raw `from` address. */
 	from: string | null;
 	/** The room a post came through; absent for a direct peer message. */
 	room?: string;
+	/** Sent by a session on another cctui through a cctuiverse link. */
+	remote: boolean;
 	body: string;
 }
 
@@ -83,6 +87,16 @@ export function parseRoomJoined(text: string): string | null {
 	const before = text.slice(0, m.index);
 	if (before.split('\n').some((l) => l.trim() && !isPeerPreamble(l))) return null;
 	return m[1].trim();
+}
+
+/** The linked peer's label of a cctuiverse link notice, or null when this is not one. */
+export function parseCctuiverseLinked(text: string): { peer: string } | null {
+	const m = CCTUIVERSE_LINKED_RE.exec(text);
+	if (!m) return null;
+	const before = text.slice(0, m.index);
+	if (before.split('\n').some((l) => l.trim() && !isPeerPreamble(l))) return null;
+	const peer = /\bpeer="([^"]*)"/.exec(m[1])?.[1].trim() ?? '';
+	return { peer };
 }
 
 function isPeerPreamble(line: string): boolean {
@@ -109,7 +123,8 @@ export function parsePeerMessage(text: string): PeerMessage | null {
 	const name = attrs.get('from-name')?.trim();
 	const addr = attrs.get('from')?.trim();
 	const room = tag[1] === 'cctui-room' ? attrs.get('name')?.trim() : undefined;
-	return { from: name || addr || null, room: room || undefined, body: tag[3].trim() };
+	const remote = attrs.get('origin') === 'remote' || (addr?.startsWith('remote:') ?? false);
+	return { from: name || addr || null, room: room || undefined, remote, body: tag[3].trim() };
 }
 
 const TASK_NOTIFICATION_RE = /<task-notification\b[^>]*>([\s\S]*?)(?:<\/task-notification>|$)/;
