@@ -15,6 +15,7 @@ mod cost;
 mod crypto;
 mod db;
 mod dispatchers;
+mod envelope_guard;
 mod error;
 mod events;
 mod fireworks_billing;
