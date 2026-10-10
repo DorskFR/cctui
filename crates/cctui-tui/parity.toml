@@ -932,6 +932,77 @@ tui = "waived"
 reason = "the TUI session list does not group by room"
 
 [[route]]
+id = "get_cctuiverse_config"
+# GET /cctuiverse/config — Whether cctuiverse links are enabled on this server.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_join"
+# POST /cctuiverse/join — Join a cctuiverse invite with one of your sessions.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "patch_cctuiverse_links_by_id"
+# PATCH /cctuiverse/links/{id} — Change a cctuiverse link's settings.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_close"
+# POST /cctuiverse/links/{id}/close — Close a cctuiverse link, or revoke a pending invite.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "get_cctuiverse_links_by_id_messages"
+# GET /cctuiverse/links/{id}/messages — Held inbound and review-pending outbound messages of a link.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_messages_by_msg_approve"
+# POST /cctuiverse/links/{id}/messages/{msg}/approve — Send a review-pending outbound message.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_messages_by_msg_drop"
+# POST /cctuiverse/links/{id}/messages/{msg}/drop — Discard a held or review-pending message.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_messages_by_msg_release"
+# POST /cctuiverse/links/{id}/messages/{msg}/release — Deliver a held inbound message now.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_rooms_by_id_cctuiverse_invites"
+# POST /rooms/{id}/cctuiverse/invites — Invite a session on another cctui into this room.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "get_rooms_by_id_cctuiverse_links"
+# GET /rooms/{id}/cctuiverse/links — This room's cctuiverse links, pending invites included.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_sessions_by_id_cctuiverse_invites"
+# POST /sessions/{id}/cctuiverse/invites — Invite a session on another cctui to link with this one.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "get_sessions_by_id_cctuiverse_links"
+# GET /sessions/{id}/cctuiverse/links — This session's cctuiverse links, pending invites included.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+[[route]]
 id = "post_sessions_archive"
 # POST /sessions/archive — Archive a batch of sessions by id.
 tui = "handled"
@@ -1593,6 +1664,11 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 name = "room_members"
 tui = "waived"
 reason = "the TUI session list does not group by room"
+
+[[ws_event]]
+name = "cctuiverse_changed"
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
 
 [[ws_event]]
 name = "user_actions"

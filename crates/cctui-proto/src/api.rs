@@ -6,6 +6,7 @@ pub mod attachments;
 pub mod bookmarks;
 pub mod cache_loss;
 pub mod capabilities;
+pub mod cctuiverse;
 pub mod context;
 pub mod device_auth;
 pub mod dispatchers;

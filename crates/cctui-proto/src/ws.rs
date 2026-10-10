@@ -787,6 +787,16 @@ pub enum ServerEvent {
         /// Whose rooms these are; scopes delivery to the owner.
         user_id: uuid::Uuid,
     },
+    /// A cctuiverse link of this session or room changed state, or its held or
+    /// review queue changed.
+    CctuiverseChanged {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room_id: Option<uuid::Uuid>,
+        /// The link's owner; scopes delivery.
+        user_id: uuid::Uuid,
+    },
     /// The session's "needs you" list changed. Carries the whole list: a tab
     /// that missed an earlier frame must not have to reconstruct it.
     UserActions {
