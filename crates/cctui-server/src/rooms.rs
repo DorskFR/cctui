@@ -115,11 +115,8 @@ pub fn remote_envelope(
     body: &str,
 ) -> String {
     let host = attr(host_label);
-    let sender = if claims_human(sender_label) {
-        format!("{host}'s human")
-    } else {
-        attr(sender_label)
-    };
+    let sender =
+        if claims_human(sender_label) { format!("{host}'s human") } else { attr(sender_label) };
     format!(
         "<cctui-room name=\"{}\" from=\"{sender} via {host} (remote)\" origin=\"remote\" \
          n=\"{}\">\n{}\n{ENVELOPE_CLOSE}",
@@ -588,8 +585,7 @@ pub async fn fanout_remote_post(
     check_sender(&room, None)?;
     let message = record(state, room_id, None, sender_label, body).await?;
     let wire = WireSender::Named(sender_label);
-    let receipts =
-        deliver_all(state, &room, sender_label, wire, body, None, Some(from_link)).await;
+    let receipts = deliver_all(state, &room, sender_label, wire, body, None, Some(from_link)).await;
     tracing::info!(
         room = %room_id,
         seq = message.seq,

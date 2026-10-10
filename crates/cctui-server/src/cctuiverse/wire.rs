@@ -289,10 +289,9 @@ pub async fn messages(
                 super::publish_changed(&state, &link);
             }
             return match status.as_str() {
-                "delivering" => Err(AppError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "delivery in progress",
-                )),
+                "delivering" => {
+                    Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "delivery in progress"))
+                }
                 "failed" => Err(AppError::new(StatusCode::CONFLICT, "peer session unavailable")),
                 _ => Ok(accepted()),
             };
@@ -469,8 +468,11 @@ pub async fn room(
     let messages: Vec<Value> = rows
         .into_iter()
         .map(|(seq, sender_label, body, created_at)| {
-            let sender =
-                if sender_label == crate::rooms::HUMAN_LABEL { host_human.clone() } else { sender_label };
+            let sender = if sender_label == crate::rooms::HUMAN_LABEL {
+                host_human.clone()
+            } else {
+                sender_label
+            };
             json!({ "seq": seq, "sender_label": sender, "body": body, "created_at": created_at })
         })
         .collect();

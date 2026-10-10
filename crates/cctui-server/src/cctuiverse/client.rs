@@ -70,7 +70,8 @@ fn http(allow_private: bool) -> &'static reqwest::Client {
                 .expect("build cctuiverse client")
         })
     } else {
-        GUARDED.get_or_init(|| crate::outbound::guarded_direct_client(crate::outbound::no_allowlist))
+        GUARDED
+            .get_or_init(|| crate::outbound::guarded_direct_client(crate::outbound::no_allowlist))
     }
 }
 

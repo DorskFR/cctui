@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use super::sig::{self, Seed};
 use super::{
-    COLS, DEFAULT_EXPIRY, DEFAULT_MAX_MESSAGES, INVITE_TTL, Link, LinkKind, LinkRole, LinkRow, LinkState, client, invite,
-    publish_changed,
+    COLS, DEFAULT_EXPIRY, DEFAULT_MAX_MESSAGES, INVITE_TTL, Link, LinkKind, LinkRole, LinkRow,
+    LinkState, client, invite, publish_changed,
 };
 use crate::error::AppError;
 use crate::state::AppState;
