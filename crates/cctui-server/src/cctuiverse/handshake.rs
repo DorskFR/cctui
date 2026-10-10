@@ -184,9 +184,7 @@ pub async fn join(
                 return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
             }
         }
-        Ok((status, _))
-            if matches!(status, StatusCode::NOT_FOUND | StatusCode::TOO_MANY_REQUESTS) =>
-        {
+        Ok((StatusCode::NOT_FOUND | StatusCode::TOO_MANY_REQUESTS, _)) => {
             discard(state, id).await;
             return Err(AppError::new(StatusCode::NOT_FOUND, REFUSED));
         }
