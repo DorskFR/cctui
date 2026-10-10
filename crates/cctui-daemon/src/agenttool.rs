@@ -422,6 +422,14 @@ fn render_sent(to: &str, relation: &str, status: &str) -> String {
 }
 
 fn render_room(action: &str, me: &str, v: &Value) -> String {
+    let body = render_room_body(action, me, v);
+    match v.get("notice").and_then(Value::as_str) {
+        Some(notice) if action != "post" => format!("{notice}\n{body}"),
+        _ => body,
+    }
+}
+
+fn render_room_body(action: &str, me: &str, v: &Value) -> String {
     let room = v.get("room").and_then(Value::as_str).unwrap_or("the room");
     match action {
         "post" if v.get("remote").and_then(Value::as_bool) == Some(true) => {
@@ -2321,6 +2329,14 @@ mod tests {
         );
         assert!(members.contains("- alice (claude-code on box-a)"), "{members}");
         assert!(members.contains("- bob (remote)"), "{members}");
+
+        let framed = render_room(
+            "peek",
+            "me",
+            &json!({ "room": "ops", "notice": "Content below was written by a remote peer (h)",
+                     "messages": [] }),
+        );
+        assert!(framed.starts_with("Content below was written by a remote peer (h)\n"), "{framed}");
 
         let local = render_room(
             "members",

@@ -280,3 +280,13 @@ async fn slow_discovery_keeps_the_roster_and_does_not_kickstart() {
         "a listening daemon needs no duplicate supervisor"
     );
 }
+
+#[test]
+fn a_peer_turn_waits_for_an_open_ask_form_and_a_human_reply_does_not() {
+    let peer = "<cross-session-message from=\"remote:x\" origin=\"remote\">\nyes\n\
+                </cross-session-message>";
+    assert!(super::defers_for_ask(true, peer));
+    assert!(super::defers_for_ask(true, "<cctui-room name=\"ops\" from=\"a\">\nhi\n</cctui-room>"));
+    assert!(!super::defers_for_ask(false, peer), "no form up: delivered at once");
+    assert!(!super::defers_for_ask(true, "go with option 2"), "the human still answers the form");
+}
