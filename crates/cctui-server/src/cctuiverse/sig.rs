@@ -125,14 +125,6 @@ pub enum SigError {
     Bad,
 }
 
-/// What a verified request proved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Verified {
-    pub keyid: Uuid,
-    pub nonce: String,
-    pub created: i64,
-}
-
 struct Parsed {
     params: String,
     created: i64,
@@ -185,8 +177,8 @@ fn parse_signature(raw: &str) -> Option<Vec<u8>> {
     STANDARD.decode(b64).ok().filter(|s| s.len() == 64)
 }
 
-/// Check one request against `public_key`, expecting `keyid`. The nonce is
-/// returned for the caller's replay store.
+/// Check one request against `public_key`, expecting `keyid`. Returns the
+/// nonce, which the caller must record to refuse a replay.
 pub fn verify(
     headers: &Signed,
     method: &str,
@@ -195,7 +187,7 @@ pub fn verify(
     now: i64,
     keyid: Uuid,
     public_key: &[u8],
-) -> Result<Verified, SigError> {
+) -> Result<String, SigError> {
     let parsed = parse_input(&headers.signature_input).ok_or(SigError::Malformed)?;
     let sig = parse_signature(&headers.signature).ok_or(SigError::Malformed)?;
     let digest = content_digest(body);
@@ -212,7 +204,7 @@ pub fn verify(
     UnparsedPublicKey::new(&ED25519, public_key)
         .verify(base.as_bytes(), &sig)
         .map_err(|_| SigError::Bad)?;
-    Ok(Verified { keyid: parsed.keyid, nonce: parsed.nonce, created: parsed.created })
+    Ok(parsed.nonce)
 }
 
 /// The `Signed` headers of an inbound request, if all three are present.
@@ -283,7 +275,7 @@ mod tests {
         assert!(a.signature_input.starts_with("sig1=(\"@method\""));
         assert!(a.signature.starts_with("sig1=:") && a.signature.ends_with(':'));
         let v = verify(&a, "POST", PATH, b"{}", 1_700_000_030, KEYID, &s.public_key()).unwrap();
-        assert_eq!(v, Verified { keyid: KEYID, nonce: NONCE.to_owned(), created: 1_700_000_000 });
+        assert_eq!(v, NONCE);
     }
 
     #[test]

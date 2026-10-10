@@ -532,6 +532,8 @@ fn derived_message_id(session_id: &str, event_id: i64) -> Uuid {
 }
 
 /// Called by ingest when a turn of `session_id` completes with final assistant text.
+/// Ingest itself goes through [`turn_ended`], which also dedupes replayed turns.
+#[allow(dead_code)]
 pub async fn on_turn_complete(state: &AppState, session_id: &str, final_text: &str) {
     forward_turn(state, session_id, final_text, Uuid::new_v4).await;
 }

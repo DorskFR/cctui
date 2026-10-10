@@ -60,10 +60,10 @@ async fn verified(
     };
     let signed = sig::from_headers(headers).ok_or_else(not_found)?;
     let path = handshake::signed_path(&state.config.external_url, uri.path());
-    let proof =
+    let nonce =
         sig::verify(&signed, "POST", &path, body, chrono::Utc::now().timestamp(), peer_id, peer_key)
             .map_err(|_| not_found())?;
-    if !fresh_nonce(&state.pool, id, &proof.nonce).await? {
+    if !fresh_nonce(&state.pool, id, &nonce).await? {
         return Err(not_found());
     }
     Ok(link)

@@ -256,7 +256,7 @@ pub async fn accept(
     let joiner_key = b64_key(&req.joiner.public_key).ok_or_else(not_found)?;
     let signed = sig::from_headers(headers).ok_or_else(not_found)?;
     let path = signed_path(&state.config.external_url, request_path);
-    let proof = sig::verify(
+    let nonce = sig::verify(
         &signed,
         "POST",
         &path,
@@ -270,7 +270,7 @@ pub async fn accept(
     let token = URL_SAFE_NO_PAD.decode(&req.token).map_err(|_| not_found())?;
     let peer_url = req.joiner.url.trim().trim_end_matches('/').to_owned();
     client::check_url(state, &peer_url).await.map_err(|_| not_found())?;
-    if !super::wire::fresh_nonce(&state.pool, req.joiner.link_id, &proof.nonce).await? {
+    if !super::wire::fresh_nonce(&state.pool, req.joiner.link_id, &nonce).await? {
         return Err(not_found());
     }
 
