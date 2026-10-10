@@ -1135,8 +1135,8 @@ impl Driver {
         Ok(())
     }
 
-    fn defer_peer(&mut self, local_id: String, text: String) {
-        let queue = self.deferred_peer.entry(local_id.clone()).or_default();
+    fn defer_peer(&mut self, local_id: &str, text: String) {
+        let queue = self.deferred_peer.entry(local_id.to_owned()).or_default();
         if queue.len() >= MAX_DEFERRED_PEER {
             queue.pop_front();
             tracing::warn!(%local_id, "deferred peer queue full; dropped the oldest");
@@ -1290,13 +1290,13 @@ impl SessionDriver for Driver {
     async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
         let ask_up = self.pending_asks.lock().is_ok_and(|m| m.contains_key(&local_id));
         if defers_for_ask(ask_up, &text) {
-            self.defer_peer(local_id, text);
+            self.defer_peer(&local_id, text);
             return Ok(Handled::Done);
         }
         let sock = self.ensure_socket().await?;
         let env = std::collections::BTreeMap::default();
         match Box::pin(self.deliver_reply(&sock, &local_id, &text, None, &env, None)).await {
-            Err(err) if err.is::<reply::AskOpened>() => self.defer_peer(local_id, text),
+            Err(err) if err.is::<reply::AskOpened>() => self.defer_peer(&local_id, text),
             other => other?,
         }
         Ok(Handled::Done)
