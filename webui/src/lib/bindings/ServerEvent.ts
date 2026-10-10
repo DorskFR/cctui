@@ -33,4 +33,8 @@ user_id?: string | null, state: ScheduledLaunchState, launch_at?: string | null,
 /**
  * Whose rooms these are; scopes delivery to the owner.
  */
+user_id: string, } | { "type": "cctuiverse_changed", session_id?: string | null, room_id?: string | null, 
+/**
+ * The link's owner; scopes delivery.
+ */
 user_id: string, } | { "type": "user_actions", session_id: string, actions: Array<UserAction>, } | { "type": "event", event: EventRecord, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };

@@ -1595,6 +1595,11 @@ tui = "waived"
 reason = "the TUI session list does not group by room"
 
 [[ws_event]]
+name = "cctuiverse_changed"
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[ws_event]]
 name = "user_actions"
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"

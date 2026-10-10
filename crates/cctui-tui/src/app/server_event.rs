@@ -128,6 +128,9 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             waived("a draft is a session row the list refresh carries")
         }
         ServerEvent::RoomMembers { .. } => waived("the TUI list does not group by room"),
+        ServerEvent::CctuiverseChanged { .. } => {
+            waived("cctuiverse links are managed from the webui")
+        }
         ServerEvent::UserActions { .. } => waived("no needs-you list; the counts ride on the rows"),
         ServerEvent::Event { .. } => {
             waived("the TUI has no event log view; the list refresh carries status")

@@ -610,7 +610,8 @@ fn audience(event: &ServerEvent) -> Audience {
         ServerEvent::DispatcherLiveness { dispatcher_id, .. } => {
             SharedWith(Owned::Dispatcher(*dispatcher_id))
         }
-        ServerEvent::RoomMembers { user_id, .. } => OwnerOf(Owned::User(*user_id)),
+        ServerEvent::RoomMembers { user_id, .. }
+        | ServerEvent::CctuiverseChanged { user_id, .. } => OwnerOf(Owned::User(*user_id)),
         ServerEvent::GithubEvent { .. } => AdminsOnly,
         ServerEvent::ScheduledLaunch { user_id, .. } => {
             user_id.map_or(AdminsOnly, |u| OwnerOf(Owned::User(u)))
