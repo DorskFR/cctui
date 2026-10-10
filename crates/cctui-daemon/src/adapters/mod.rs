@@ -34,7 +34,8 @@ pub async fn emit(events: &mpsc::Sender<AdapterEvent>, event: AdapterEvent) {
 /// never answer, decline or dismiss a form the human has open.
 #[must_use]
 pub fn is_peer_envelope(text: &str) -> bool {
-    let head = text.trim_start().get(..32).unwrap_or(text.trim_start()).to_ascii_lowercase();
+    let trimmed = text.trim_start();
+    let head = trimmed.get(..32).unwrap_or(trimmed).to_ascii_lowercase();
     ["<cross-session-message", "<cctui-room", "<cctuiverse-"]
         .iter()
         .any(|t| head.starts_with(t))
