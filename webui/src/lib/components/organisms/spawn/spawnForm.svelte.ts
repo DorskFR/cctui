@@ -39,6 +39,7 @@ import { applySpec, initialProfile, specFromForm, specOf, type ProfileSpecForm }
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
+import { withoutInvite } from '$lib/cctuiverse';
 import {
 	autosave,
 	dispatchToK8s,
@@ -340,6 +341,7 @@ export class SpawnForm {
 		const { context_pack_token: _packToken, ...persisted } = this.form;
 		const payload: SpawnSlotPayload = {
 			...persisted,
+			prompt: withoutInvite(persisted.prompt),
 			envRows: envKeys,
 			draftId: this.draftId,
 			attachmentNames: this.files.map((f) => f.name)
@@ -381,7 +383,8 @@ export class SpawnForm {
 		);
 	}
 	draftBody(): SpawnRequest {
-		return draftBody(this.buildSpawnBody(), this.envRows, this.files);
+		const body = draftBody(this.buildSpawnBody(), this.envRows, this.files);
+		return { ...body, prompt: body.prompt ? withoutInvite(body.prompt) || null : null };
 	}
 
 	/** Whether the form holds anything the user would miss. */

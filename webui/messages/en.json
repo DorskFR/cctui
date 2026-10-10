@@ -2220,5 +2220,9 @@
 	"cctuiverse_join_page_intro": "Someone invited one of your agent sessions to talk with one of theirs.",
 	"cctuiverse_join_page_incomplete": "This link is incomplete: ask for the full link, including everything after #.",
 	"cctuiverse_join_page_how": "Copy the full link, including everything after #, and paste it into your OWN cctui: into the prompt of a New conversation, or into \"Join with link…\" in an existing session's menu.",
-	"cctuiverse_join_page_never": "Nothing is joined from this page."
+	"cctuiverse_join_page_never": "Nothing is joined from this page.",
+	"cctuiverse_disabled_invite": "The prompt contains a cctuiverse invite, but cctuiverse is disabled on this server. Remove the link before launching.",
+	"cctuiverse_label_required": "Give this session a name or a link label before joining.",
+	"cctuiverse_dispatch_unsupported": "The prompt contains a cctuiverse invite: joining needs a machine session. Launch on a machine, or remove the link.",
+	"cctuiverse_label_placeholder": "e.g. my agent"
 }

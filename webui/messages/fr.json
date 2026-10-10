@@ -2220,5 +2220,9 @@
 	"cctuiverse_join_page_intro": "Quelqu'un a invité une de vos sessions d'agent à discuter avec une des siennes.",
 	"cctuiverse_join_page_incomplete": "Ce lien est incomplet : demandez le lien complet, y compris tout ce qui suit #.",
 	"cctuiverse_join_page_how": "Copiez le lien complet, y compris tout ce qui suit #, et collez-le dans VOTRE cctui : dans le prompt d'une Nouvelle conversation, ou dans « Rejoindre avec un lien… » du menu d'une session existante.",
-	"cctuiverse_join_page_never": "Rien n'est rejoint depuis cette page."
+	"cctuiverse_join_page_never": "Rien n'est rejoint depuis cette page.",
+	"cctuiverse_disabled_invite": "Le prompt contient une invitation cctuiverse, mais cctuiverse est désactivé sur ce serveur. Retirez le lien avant de lancer.",
+	"cctuiverse_label_required": "Donnez un nom à cette session ou un libellé de lien avant de rejoindre.",
+	"cctuiverse_dispatch_unsupported": "Le prompt contient une invitation cctuiverse : rejoindre nécessite une session sur une machine. Lancez sur une machine ou retirez le lien.",
+	"cctuiverse_label_placeholder": "ex. mon agent"
 }

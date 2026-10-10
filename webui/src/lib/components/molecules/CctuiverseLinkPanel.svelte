@@ -14,6 +14,7 @@
 		type MessageAction
 	} from '$lib/cctuiverse';
 	import { toasts } from '$lib/toast.svelte';
+	import CctuiverseQueuedMessage from './CctuiverseQueuedMessage.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let { link, onchange }: { link: LinkView; onchange: (link: LinkView) => void } = $props();
@@ -58,10 +59,20 @@
 		if (next) onchange(next);
 	}
 
+	let failures = $state<Record<number, string>>({});
+
 	async function act(msg: LinkMessage, action: MessageAction) {
-		await run(() => actOnMessage(link.id, msg.id, action));
-		held = held.filter((x) => x.id !== msg.id);
-		review = review.filter((x) => x.id !== msg.id);
+		busy = true;
+		try {
+			await actOnMessage(link.id, msg.id, action);
+			held = held.filter((x) => x.id !== msg.id);
+			review = review.filter((x) => x.id !== msg.id);
+			delete failures[msg.id];
+		} catch (e) {
+			failures[msg.id] = errMessage(e);
+		} finally {
+			busy = false;
+		}
 	}
 
 	function saveMax() {
@@ -74,6 +85,7 @@
 
 	const expiry = $derived<ExpiryChoice | ''>(link.settings.expires_at === null ? 'never' : '');
 	const active = $derived(link.state === 'active');
+	const hostRoom = $derived(link.kind === 'room' && link.session_id === null);
 </script>
 
 <div class="panel">
@@ -94,17 +106,19 @@
 	/>
 
 	{#if active}
-		<Text size="xs" tone="muted">{m.cctuiverse_inbound()}</Text>
-		<SegmentedControl
-			size="sm"
-			label={m.cctuiverse_inbound()}
-			value={link.settings.inbound}
-			options={[
-				{ value: 'deliver', label: m.cctuiverse_inbound_deliver() },
-				{ value: 'hold', label: m.cctuiverse_inbound_hold() }
-			]}
-			onchange={(v) => void patch({ inbound: v as LinkSettings['inbound'] })}
-		/>
+		{#if !hostRoom}
+			<Text size="xs" tone="muted">{m.cctuiverse_inbound()}</Text>
+			<SegmentedControl
+				size="sm"
+				label={m.cctuiverse_inbound()}
+				value={link.settings.inbound}
+				options={[
+					{ value: 'deliver', label: m.cctuiverse_inbound_deliver() },
+					{ value: 'hold', label: m.cctuiverse_inbound_hold() }
+				]}
+				onchange={(v) => void patch({ inbound: v as LinkSettings['inbound'] })}
+			/>
+		{/if}
 		<Text size="xs" tone="muted">{m.cctuiverse_outbound()}</Text>
 		<SegmentedControl
 			size="sm"
@@ -154,30 +168,32 @@
 	{#if held.length > 0}
 		<Text size="xs" weight="semibold">{m.cctuiverse_held({ count: held.length })}</Text>
 		{#each held as msg (msg.id)}
-			<div class="msg">
-				<Text size="xs" truncate>{msg.text}</Text>
-				<Button size="sm" variant="ghost" disabled={busy} onclick={() => act(msg, 'release')}>
-					{m.cctuiverse_release()}
-				</Button>
-				<Button size="sm" variant="ghost" disabled={busy} onclick={() => act(msg, 'drop')}>
-					{m.cctuiverse_drop()}
-				</Button>
-			</div>
+			<CctuiverseQueuedMessage
+				{msg}
+				{busy}
+				error={failures[msg.id] ?? null}
+				actions={[
+					{ action: 'release', label: m.cctuiverse_release() },
+					{ action: 'drop', label: m.cctuiverse_drop() }
+				]}
+				onact={(a) => act(msg, a)}
+			/>
 		{/each}
 	{/if}
 
 	{#if review.length > 0}
 		<Text size="xs" weight="semibold">{m.cctuiverse_review({ count: review.length })}</Text>
 		{#each review as msg (msg.id)}
-			<div class="msg">
-				<Text size="xs" truncate>{msg.text}</Text>
-				<Button size="sm" variant="ghost" disabled={busy} onclick={() => act(msg, 'approve')}>
-					{m.cctuiverse_approve()}
-				</Button>
-				<Button size="sm" variant="ghost" disabled={busy} onclick={() => act(msg, 'drop')}>
-					{m.cctuiverse_drop()}
-				</Button>
-			</div>
+			<CctuiverseQueuedMessage
+				{msg}
+				{busy}
+				error={failures[msg.id] ?? null}
+				actions={[
+					{ action: 'approve', label: m.cctuiverse_approve() },
+					{ action: 'drop', label: m.cctuiverse_drop() }
+				]}
+				onact={(a) => act(msg, a)}
+			/>
 		{/each}
 	{/if}
 
@@ -208,11 +224,5 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		min-width: 16rem;
-	}
-	.msg {
-		display: flex;
-		gap: var(--sp-1);
-		align-items: center;
-		min-width: 0;
 	}
 </style>

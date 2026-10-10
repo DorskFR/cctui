@@ -4,6 +4,8 @@
 	import ProfileList from './ProfileList.svelte';
 	import type { SpawnForm } from './spawnForm.svelte';
 	import { createProfile, deleteProfile, saveProfile } from './profileCrud';
+	import { Callout } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import CctuiverseSpawnNotice from '$lib/components/molecules/CctuiverseSpawnNotice.svelte';
 	import { findInvite } from '$lib/cctuiverse';
 	import { cctuiverseConfig, loadCctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
@@ -13,10 +15,13 @@
 	$effect(() => {
 		void loadCctuiverseConfig();
 	});
-	const hasInvite = $derived(cctuiverseConfig.enabled && findInvite(sf.form.prompt) !== null);
+	const hasInvite = $derived(findInvite(sf.form.prompt) !== null);
 </script>
 
 {#if sf.target === 'dispatch'}
+	{#if hasInvite}
+		<Callout tone="warn" style="flex-basis:100%">{m.cctuiverse_dispatch_unsupported()}</Callout>
+	{/if}
 	<DispatchFields
 		bind:form={sf.form}
 		dispatcherIds={sf.dispatcherIds}
@@ -32,7 +37,9 @@
 		att={sf.att}
 		bind:promptEl={sf.promptEl}
 	/>
-	{#if hasInvite}
+	{#if hasInvite && !cctuiverseConfig.enabled}
+		<Callout tone="warn" style="flex-basis:100%">{m.cctuiverse_disabled_invite()}</Callout>
+	{:else if hasInvite}
 		<CctuiverseSpawnNotice bind:label={sf.joinLabel} placeholder={sf.form.name.trim()} />
 	{/if}
 	<ProfileList

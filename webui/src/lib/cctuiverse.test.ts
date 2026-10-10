@@ -75,6 +75,12 @@ describe('findInvite / stripInvite', () => {
 		expect(c.stripInvite(`join this ${url} and say hi`, url, 'fb')).toBe('join this  and say hi');
 	});
 
+	it('removes every invite for anything persisted', () => {
+		expect(c.withoutInvite(`a ${url} b ${url}`)).toBe('a  b');
+		expect(c.withoutInvite(` ${url} `)).toBe('');
+		expect(c.withoutInvite('no link')).toBe('no link');
+	});
+
 	it('falls back when only the invite was typed', () => {
 		expect(c.stripInvite(`  ${url}\n`, url, 'fb')).toBe('fb');
 	});
