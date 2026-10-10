@@ -19,6 +19,8 @@ use crate::state::AppState;
 
 const MAX_MESSAGES_CAP: i32 = 1_000_000;
 
+type MessageRow = (i64, Uuid, String, String, Value, String, DateTime<Utc>);
+
 fn not_found() -> AppError {
     AppError::new(StatusCode::NOT_FOUND, "not found")
 }
@@ -178,13 +180,29 @@ pub async fn room_links(
     list(&state, None, Some(id)).await
 }
 
-/// Absent stays `None`; an explicit `null` becomes `Some(None)`.
-fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(d).map(Some)
+/// A nullable PATCH field: absent keeps the value, `null` clears it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Nullable<T> {
+    #[default]
+    Absent,
+    Null,
+    Value(T),
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Nullable<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Option::<T>::deserialize(d)?.map_or(Self::Null, Self::Value))
+    }
+}
+
+impl<T> Nullable<T> {
+    fn apply(self, slot: &mut Option<T>) {
+        match self {
+            Self::Absent => {}
+            Self::Null => *slot = None,
+            Self::Value(v) => *slot = Some(v),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -198,15 +216,15 @@ pub struct SettingsPatch {
     pub review_outbound: Option<bool>,
     #[serde(default)]
     pub share_transcript: Option<bool>,
-    #[serde(default, deserialize_with = "present")]
-    pub expires_at: Option<Option<DateTime<Utc>>>,
-    #[serde(default, deserialize_with = "present")]
-    pub max_messages: Option<Option<i32>>,
+    #[serde(default)]
+    pub expires_at: Nullable<DateTime<Utc>>,
+    #[serde(default)]
+    pub max_messages: Nullable<i32>,
 }
 
 impl SettingsPatch {
     pub fn apply(self, mut s: LinkSettings) -> Result<LinkSettings, String> {
-        if let Some(Some(n)) = self.max_messages
+        if let Nullable::Value(n) = self.max_messages
             && !(0..=MAX_MESSAGES_CAP).contains(&n)
         {
             return Err(format!("max_messages must be 0..={MAX_MESSAGES_CAP}"));
@@ -223,12 +241,8 @@ impl SettingsPatch {
         if let Some(v) = self.share_transcript {
             s.share_transcript = v;
         }
-        if let Some(v) = self.expires_at {
-            s.expires_at = v;
-        }
-        if let Some(v) = self.max_messages {
-            s.max_messages = v;
-        }
+        self.expires_at.apply(&mut s.expires_at);
+        self.max_messages.apply(&mut s.max_messages);
         Ok(s)
     }
 }
@@ -293,8 +307,7 @@ pub async fn messages(
             return Err(AppError::new(StatusCode::BAD_REQUEST, "status must be held or review"));
         }
     };
-    type Row = (i64, Uuid, String, String, Value, String, DateTime<Utc>);
-    let rows: Vec<Row> = sqlx::query_as(
+    let rows: Vec<MessageRow> = sqlx::query_as(
         "SELECT id, message_id, direction, kind, body, status, created_at FROM cctuiverse_messages \
          WHERE link_id = $1 AND status = ANY($2) ORDER BY id LIMIT 500",
     )

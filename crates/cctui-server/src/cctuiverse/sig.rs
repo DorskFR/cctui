@@ -310,7 +310,7 @@ mod tests {
         forged_digest.content_digest = content_digest(b"evil");
         assert_eq!(ok(&forged_digest, "POST", PATH, b"evil", 1000, KEYID, &pk), Err(SigError::Bad));
 
-        let mut later = h.clone();
+        let mut later = h;
         later.signature_input = later.signature_input.replace("created=1000", "created=2000");
         assert_eq!(ok(&later, "POST", PATH, b"body", 2000, KEYID, &pk), Err(SigError::Bad));
     }

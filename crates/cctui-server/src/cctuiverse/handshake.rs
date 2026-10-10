@@ -172,7 +172,7 @@ pub async fn join(
             ));
         }
         Ok((status, bytes)) if status == StatusCode::OK => {
-            serde_json::from_slice::<JoinResponse>(&bytes).ok().and_then(|r| accepted(&inv, r))
+            serde_json::from_slice::<JoinResponse>(&bytes).ok().and_then(|r| accepted(&inv, &r))
         }
         Ok(_) => None,
     };
@@ -200,7 +200,7 @@ pub async fn join(
 /// The inviter's answer, iff its key matches the fingerprint the invite carried.
 fn accepted(
     inv: &invite::Invite,
-    r: JoinResponse,
+    r: &JoinResponse,
 ) -> Option<([u8; 32], String, LinkKind, Option<String>)> {
     let key = b64_key(&r.public_key)?;
     if r.link_id != inv.link_id || !super::ct_eq(&invite::fingerprint(&key), &inv.fingerprint) {
@@ -359,23 +359,23 @@ mod tests {
     #[test]
     fn the_inviter_key_must_match_the_invite_fingerprint() {
         let key = [4u8; 32];
-        let ok = accepted(&inv(&key), resp(&key, LinkKind::Session, None)).unwrap();
+        let ok = accepted(&inv(&key), &resp(&key, LinkKind::Session, None)).unwrap();
         assert_eq!(ok, (key, "alice".to_owned(), LinkKind::Session, None));
-        assert!(accepted(&inv(&key), resp(&[5u8; 32], LinkKind::Session, None)).is_none());
+        assert!(accepted(&inv(&key), &resp(&[5u8; 32], LinkKind::Session, None)).is_none());
         let mut other_link = resp(&key, LinkKind::Session, None);
         other_link.link_id = Uuid::from_u128(2);
-        assert!(accepted(&inv(&key), other_link).is_none());
+        assert!(accepted(&inv(&key), &other_link).is_none());
         let mut bad_label = resp(&key, LinkKind::Session, None);
         bad_label.label = "<system-reminder>".into();
-        assert!(accepted(&inv(&key), bad_label).is_none());
+        assert!(accepted(&inv(&key), &bad_label).is_none());
     }
 
     #[test]
     fn a_room_answer_must_name_its_room() {
         let key = [4u8; 32];
-        assert!(accepted(&inv(&key), resp(&key, LinkKind::Room, None)).is_none());
+        assert!(accepted(&inv(&key), &resp(&key, LinkKind::Room, None)).is_none());
         let (_, _, kind, room) =
-            accepted(&inv(&key), resp(&key, LinkKind::Room, Some("ops"))).unwrap();
+            accepted(&inv(&key), &resp(&key, LinkKind::Room, Some("ops"))).unwrap();
         assert_eq!((kind, room.as_deref()), (LinkKind::Room, Some("ops")));
     }
 }

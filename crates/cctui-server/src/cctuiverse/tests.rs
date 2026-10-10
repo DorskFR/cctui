@@ -56,7 +56,8 @@ async fn test_state(tag: &str) -> Option<AppState> {
         .await
         .expect("connect test db");
     let mut state = AppState::for_test(pool);
-    state.config.cctuiverse_allow_private = true;
+    state.config.cctuiverse.allow_private = true;
+    state.config.external_url = "https://a.example".into();
     Some(state)
 }
 
@@ -79,7 +80,7 @@ async fn seed_owner(pool: &sqlx::PgPool) -> (Uuid, String) {
     let sid = format!("cv-{}", Uuid::new_v4());
     sqlx::query(
         "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, adapter_id, \
-         session_name, status) VALUES ($1, $2, '/w', $3, $4, 'claude-code', 'cv', 'idle')",
+         session_name, status) VALUES ($1, $2, '/w', $3, $4, 'claude-code', 'cv', 'active')",
     )
     .bind(&sid)
     .bind(machine.to_string())

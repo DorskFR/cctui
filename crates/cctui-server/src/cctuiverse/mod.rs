@@ -315,8 +315,8 @@ pub fn envelope_nonce() -> String {
 }
 
 #[must_use]
-pub fn enabled(state: &AppState) -> bool {
-    state.config.cctuiverse_enabled
+pub const fn enabled(state: &AppState) -> bool {
+    state.config.cctuiverse.enabled
 }
 
 /// A local session's roster state, `None` when it no longer exists.

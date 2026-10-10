@@ -49,7 +49,7 @@ pub fn shape_ok(raw: &str, allow_private: bool) -> Result<reqwest::Url, String> 
 
 /// Shape check plus, unless private peers are allowed, the public-address guard.
 pub async fn check_url(state: &AppState, raw: &str) -> Result<reqwest::Url, String> {
-    let allow_private = state.config.cctuiverse_allow_private;
+    let allow_private = state.config.cctuiverse.allow_private;
     let url = shape_ok(raw, allow_private)?;
     if !allow_private {
         crate::outbound::validate_outbound_url(raw, &[]).await.map_err(|e| e.to_string())?;
@@ -100,7 +100,7 @@ pub async fn post_signed(
         chrono::Utc::now().timestamp(),
         &sig::random_b64url::<16>(),
     );
-    let mut resp = http(state.config.cctuiverse_allow_private)
+    let mut resp = http(state.config.cctuiverse.allow_private)
         .post(url)
         .timeout(TIMEOUT)
         .header("content-type", "application/json")

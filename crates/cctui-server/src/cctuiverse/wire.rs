@@ -23,6 +23,8 @@ const MAX_HISTORY_EVENTS: i64 = 1_000;
 const HISTORY_BUDGET_BYTES: usize = 64 * 1024;
 const ROOM_SNAPSHOT: i64 = 50;
 
+type RoomRow = (i64, String, String, chrono::DateTime<chrono::Utc>);
+
 pub async fn fresh_nonce(
     pool: &sqlx::PgPool,
     link_id: Uuid,
@@ -355,8 +357,7 @@ pub async fn room(
             members.push(format!("{} (remote)", other.peer_name()));
         }
     }
-    type Row = (i64, String, String, chrono::DateTime<chrono::Utc>);
-    let mut rows: Vec<Row> = sqlx::query_as(
+    let mut rows: Vec<RoomRow> = sqlx::query_as(
         "SELECT seq, sender_label, body, created_at FROM room_messages \
          WHERE room_id = $1 ORDER BY seq DESC LIMIT $2",
     )
