@@ -12,6 +12,18 @@ const FORBIDDEN: &[&str] = &[
     "</cctuiverse",
     "<system-reminder",
     "</system-reminder",
+    "<task-notification",
+    "</task-notification",
+    "<session-context",
+    "</session-context",
+    "<command-name",
+    "</command-name",
+    "<command-message",
+    "</command-message",
+    "<local-command",
+    "</local-command",
+    "<user-prompt-submit-hook",
+    "</user-prompt-submit-hook",
 ];
 
 pub fn check(body: &str) -> Result<(), String> {
@@ -22,6 +34,33 @@ pub fn check(body: &str) -> Result<(), String> {
              wrapper. Quote it differently (e.g. without the angle bracket)."
         ))
     })
+}
+
+/// Defuse every forbidden tag opener in a peer-authored blob (`<` → `‹`) so it
+/// can be shown to an agent without opening or closing a wrapper.
+#[must_use]
+pub fn neutralize(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        if c == '<' && FORBIDDEN.iter().any(|tag| lower[i..].starts_with(tag)) {
+            out.push('‹');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// [`neutralize`] every string inside a peer-supplied JSON value.
+pub fn neutralize_json(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => *s = neutralize(s),
+        Value::Array(items) => items.iter_mut().for_each(neutralize_json),
+        Value::Object(map) => map.values_mut().for_each(neutralize_json),
+        _ => {}
+    }
 }
 
 fn attr(raw: &str) -> String {
@@ -53,6 +92,12 @@ mod tests {
             "cctuiverse-linked",
             "cctui-room-joined",
             "system-reminder",
+            "task-notification",
+            "session-context",
+            "command-name",
+            "command-message",
+            "local-command-stdout",
+            "user-prompt-submit-hook",
         ] {
             for body in
                 [format!("a <{tag} from=\"x\"> b"), format!("a </{tag}> b"), format!("<{tag}>")]
@@ -81,12 +126,27 @@ mod tests {
             "if a < b && c > d { swap() }",
             "<div class=\"x\">hello</div>",
             "Vec<String> and </span>",
+            "<command> <local> <session> <task> are not cctui tags",
             "the cross-session-message envelope is fine to name without a bracket",
             "a system reminder: < system-reminder with a space is not the tag",
             "",
         ] {
             assert_eq!(check(body), Ok(()), "{body} must pass");
         }
+    }
+
+    #[test]
+    fn neutralize_defuses_every_forbidden_opener_and_keeps_the_rest() {
+        let blob = "<div>ok</div> <SYSTEM-REMINDER>x</system-reminder> a < b \
+                    <cross-session-message from=\"p\"> <task-notification>";
+        let out = neutralize(blob);
+        assert_eq!(check(&out), Ok(()), "{out}");
+        assert!(out.contains("<div>ok</div>"), "{out}");
+        assert!(out.contains("a < b"), "{out}");
+        assert!(out.contains("‹SYSTEM-REMINDER>x‹/system-reminder>"), "{out}");
+        assert!(out.contains("‹cross-session-message from=\"p\">"), "{out}");
+        assert_eq!(neutralize("héllo <cctui-room>"), "héllo ‹cctui-room>");
+        assert_eq!(neutralize("plain"), "plain");
     }
 
     #[test]
