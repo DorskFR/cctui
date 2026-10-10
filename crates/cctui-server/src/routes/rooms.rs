@@ -302,6 +302,103 @@ async fn resolve_room(
     owned(state, id, owner).await
 }
 
+/// The joiner-side room link a tool call means: the `remote:` id it named, or,
+/// for a session in no local room, its one active joiner room link. `None`
+/// leaves the call to the local room.
+async fn joined_remote_room(
+    state: &AppState,
+    caller: &str,
+    named: Option<&str>,
+) -> Result<Option<crate::cctuiverse::Link>, AppError> {
+    use crate::cctuiverse::{LinkKind, LinkRole, LinkState};
+    let is_joined_room = |l: &crate::cctuiverse::Link| {
+        matches!(l.kind, LinkKind::Room)
+            && matches!(l.role, LinkRole::Joiner)
+            && matches!(l.state, LinkState::Active)
+    };
+    match named.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(raw) if raw.starts_with("remote:") => {
+            let id = crate::cctuiverse::parse_remote_ref(raw).ok_or_else(not_found)?;
+            crate::cctuiverse::link_for_session(&state.pool, caller, id)
+                .await?
+                .filter(is_joined_room)
+                .map(Some)
+                .ok_or_else(not_found)
+        }
+        Some(_) => Ok(None),
+        None => {
+            if rooms::room_of_session(&state.pool, caller).await?.is_some() {
+                return Ok(None);
+            }
+            let links = crate::cctuiverse::session_links(&state.pool, caller).await?;
+            Ok(links.into_iter().find(is_joined_room))
+        }
+    }
+}
+
+/// `CctuiRoom` on a room hosted by another cctui: posts go to the host, which
+/// fans them out; peek and members read the host's snapshot.
+async fn remote_room_tool(
+    state: &AppState,
+    session_id: &str,
+    link: &crate::cctuiverse::Link,
+    req: &cctui_proto::api::RoomToolRequest,
+) -> Result<Json<Value>, AppError> {
+    use crate::cctuiverse::{Payload, SendOutcome};
+    let room_id = crate::cctuiverse::remote_ref(link.id);
+    let fallback = link.peer_room_name.clone().unwrap_or_default();
+    match req.action.trim().to_ascii_lowercase().as_str() {
+        "post" => {
+            let body = rooms::check_body(req.message.as_deref().unwrap_or_default())?;
+            let key = format!("send:{session_id}");
+            if !crate::routes::peer::limiter().admit(
+                &key,
+                crate::routes::peer::SEND_PER_MIN,
+                std::time::Instant::now(),
+            ) {
+                return Err(rooms::PostRefusal::RateLimited.into());
+            }
+            let payload = Payload::RoomPost {
+                room_name: fallback.clone(),
+                sender_label: link.label.clone(),
+                text: body.to_owned(),
+            };
+            let status = match crate::cctuiverse::send(state, link, payload).await {
+                SendOutcome::Delivered => "delivered",
+                SendOutcome::Queued => "queued",
+                SendOutcome::AwaitingReview => "awaiting_review",
+                SendOutcome::Refused(reason) => {
+                    return Err(AppError::new(
+                        StatusCode::CONFLICT,
+                        format!("could not post to the remote room: {reason}"),
+                    ));
+                }
+            };
+            Ok(Json(json!({
+                "room": fallback,
+                "room_id": room_id,
+                "remote": true,
+                "status": status,
+            })))
+        }
+        action @ ("peek" | "members") => {
+            let snapshot = crate::cctuiverse::peer_room(state, link).await?;
+            let room = snapshot.get("room_name").cloned().unwrap_or_else(|| json!(fallback));
+            let key = if action == "peek" { "messages" } else { "members" };
+            Ok(Json(json!({
+                "room": room,
+                "room_id": room_id,
+                "remote": true,
+                key: snapshot.get(key).cloned().unwrap_or_else(|| json!([])),
+            })))
+        }
+        other => Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("unknown action {other:?}; use \"post\", \"peek\" or \"members\""),
+        )),
+    }
+}
+
 /// `POST /api/v1/daemon/sessions/{id}/room` — the server side of `CctuiRoom`.
 pub async fn room_tool(
     State(state): State<AppState>,
@@ -313,6 +410,9 @@ pub async fn room_tool(
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     own_session(&state, &session_id, owner).await?;
+    if let Some(link) = joined_remote_room(&state, &session_id, req.room_id.as_deref()).await? {
+        return remote_room_tool(&state, &session_id, &link, &req).await;
+    }
     let room = resolve_room(&state, &session_id, owner, req.room_id.as_deref()).await?;
     let me: Option<Member> = room.members.iter().find(|m| m.session_id == session_id).cloned();
 
