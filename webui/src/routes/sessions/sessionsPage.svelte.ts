@@ -1,6 +1,7 @@
 import { untrack } from "svelte";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { Label } from "@bindings/Label";
+import type { LabelOwner } from "$lib/labels";
 import type { endpoints, useSessionActions } from "$lib/queries";
 import type { toasts, ToastAction } from "$lib/toast.svelte";
 import type { DockLayout } from "$lib/dock";
@@ -380,9 +381,22 @@ export class SessionsPage {
     return this.#d.settings.archiveDoneButton;
   }
 
+  // By name as well as id: a session carries its owner's labels, so an
+  // admin filtering on one user's "ops" also finds the other users' "ops".
+  #labelFilterNames = $derived(
+    new Set(
+      this.allLabels
+        .filter((l) => this.labelFilter.has(l.id))
+        .map((l) => l.name.toLowerCase()),
+    ),
+  );
   matchesLabelFilter = (s: SessionListItem): boolean =>
     this.labelFilter.size === 0 ||
-    s.labels.some((l) => this.labelFilter.has(l.id));
+    s.labels.some(
+      (l) =>
+        this.labelFilter.has(l.id) ||
+        this.#labelFilterNames.has(l.name.toLowerCase()),
+    );
   matchesClient = (s: SessionListItem): boolean =>
     matchesClientFilters(s, this.#clientFilters);
   // One predicate for search results AND the archive browse so the two
@@ -393,8 +407,8 @@ export class SessionsPage {
     this.matchesClient(s) &&
     matchesUnreadFilter(s, this.sections);
 
-  createLabel = (name: string, color: string) =>
-    this.#d.actions.createLabel(name, color);
+  createLabel = (name: string, color: string, owner?: LabelOwner) =>
+    this.#d.actions.createLabel(name, color, owner);
   attachLabel = (id: string, labelId: string) =>
     this.#d.actions.attachLabel(id, labelId);
   detachLabel = (id: string, labelId: string) =>

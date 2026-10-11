@@ -6,6 +6,10 @@
 
 import { hashHue } from '$lib/format';
 
+/** Who a new label is for (see `createLabel`): the session, else the machine,
+ *  whose owner's vocabulary it joins when an admin creates it. */
+export type LabelOwner = { session_id?: string; machine_id?: string };
+
 /** Preset hues offered for label colors, matching the per-machine palette.
  *  `null` (Auto) → deterministic name hash. */
 export const LABEL_HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];

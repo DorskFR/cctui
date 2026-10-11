@@ -795,6 +795,8 @@ impl Client {
         let body = serde_json::to_value(CreateLabelRequest {
             name: name.to_owned(),
             color: color.to_owned(),
+            session_id: None,
+            machine_id: None,
         })
         .map_err(|source| ClientError::Decode { route: route.id, source })?;
         self.json(route, &[], &[], Some(&body)).await

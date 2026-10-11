@@ -3358,7 +3358,8 @@ pub async fn update_draft(
     if res.rows_affected() == 0 {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     }
-    crate::spawn_labels::sync_draft(&state.pool, &session_id, &req.label_ids).await;
+    crate::spawn_labels::sync_draft(&state.pool, &session_id, &req.label_ids, ctx.owner_filter())
+        .await;
     tracing::info!(draft = %session_id, "draft updated");
     Ok(Json(SpawnResponse {
         command_id: draft_id,

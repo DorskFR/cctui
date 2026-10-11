@@ -65,7 +65,7 @@
 				ontoggle: () => sp.list.toggleGroup(s.id, g.key)
 			}))}
 			allLabels={sp.allLabels}
-			onCreateLabel={sp.createLabel}
+			onCreateLabel={(name, color) => sp.createLabel(name, color, { session_id: s.id })}
 			onAttachLabel={depth > 0 ? undefined : sp.attachLabel}
 			onDetachLabel={depth > 0 ? undefined : sp.detachLabel}
 			onUpdateLabel={sp.updateLabel}
@@ -118,7 +118,7 @@
 					ontoggle: () => sp.list.toggleGroup(s.id, g.key)
 				}))}
 				allLabels={sp.allLabels}
-				onCreateLabel={sp.createLabel}
+				onCreateLabel={(name, color) => sp.createLabel(name, color, { session_id: s.id })}
 				onAttachLabel={depth > 0 ? undefined : sp.attachLabel}
 				onDetachLabel={depth > 0 ? undefined : sp.detachLabel}
 				onUpdateLabel={sp.updateLabel}
