@@ -381,9 +381,22 @@ export class SessionsPage {
     return this.#d.settings.archiveDoneButton;
   }
 
+  // By name as well as id: a session carries its owner's labels, so an
+  // admin filtering on one user's "ops" also finds the other users' "ops".
+  #labelFilterNames = $derived(
+    new Set(
+      this.allLabels
+        .filter((l) => this.labelFilter.has(l.id))
+        .map((l) => l.name.toLowerCase()),
+    ),
+  );
   matchesLabelFilter = (s: SessionListItem): boolean =>
     this.labelFilter.size === 0 ||
-    s.labels.some((l) => this.labelFilter.has(l.id));
+    s.labels.some(
+      (l) =>
+        this.labelFilter.has(l.id) ||
+        this.#labelFilterNames.has(l.name.toLowerCase()),
+    );
   matchesClient = (s: SessionListItem): boolean =>
     matchesClientFilters(s, this.#clientFilters);
   // One predicate for search results AND the archive browse so the two

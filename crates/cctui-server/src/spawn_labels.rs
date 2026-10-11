@@ -91,26 +91,52 @@ pub async fn owner_label_ids(
             .bind(ids)
             .fetch_all(&mut *conn)
             .await?;
+    // The owner's copy of every foreign label, keyed by lowercased name.
+    // Resolved in name order with a lock-free get-or-create (no row lock on an
+    // existing copy, a stable order on new ones), so two concurrent spawns
+    // mapping the same labels in opposite orders cannot deadlock.
+    let mut foreign: Vec<&(Uuid, String, String, Uuid)> =
+        rows.iter().filter(|r| r.3 != owner).collect();
+    foreign.sort_by_key(|r| r.1.to_lowercase());
+    foreign.dedup_by_key(|r| r.1.to_lowercase());
+    let mut copies: Vec<(String, Uuid)> = Vec::with_capacity(foreign.len());
+    for (_, name, color, _) in foreign {
+        let created: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO labels (name, color, user_id) VALUES ($1, $2, $3) \
+             ON CONFLICT (user_id, lower(name)) DO NOTHING RETURNING id",
+        )
+        .bind(name)
+        .bind(color)
+        .bind(owner)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let id = match created {
+            Some(id) => id,
+            None => {
+                sqlx::query_scalar(
+                    "SELECT id FROM labels WHERE user_id = $1 AND lower(name) = lower($2)",
+                )
+                .bind(owner)
+                .bind(name)
+                .fetch_one(&mut *conn)
+                .await?
+            }
+        };
+        copies.push((name.to_lowercase(), id));
+    }
     let mut out: Vec<Uuid> = Vec::with_capacity(ids.len());
     for id in ids {
-        let Some((_, name, color, user_id)) = rows.iter().find(|r| r.0 == *id) else {
+        let Some((_, name, _, user_id)) = rows.iter().find(|r| r.0 == *id) else {
             continue;
         };
         let mapped = if *user_id == owner {
             *id
         } else {
-            // The no-op update makes RETURNING yield the existing row on a
-            // name clash, and keeps the owner's own name and color.
-            sqlx::query_scalar(
-                "INSERT INTO labels (name, color, user_id) VALUES ($1, $2, $3) \
-                 ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = labels.name \
-                 RETURNING id",
-            )
-            .bind(name)
-            .bind(color)
-            .bind(owner)
-            .fetch_one(&mut *conn)
-            .await?
+            let key = name.to_lowercase();
+            match copies.iter().find(|(n, _)| *n == key) {
+                Some((_, copy)) => *copy,
+                None => continue,
+            }
         };
         if !out.contains(&mapped) {
             out.push(mapped);
