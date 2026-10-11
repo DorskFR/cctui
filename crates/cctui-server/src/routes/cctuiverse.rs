@@ -1,6 +1,6 @@
 //! Owner-facing cctuiverse endpoints. Only a human credential creates, joins,
-//! changes or closes a link; an agent's machine key never does. Every link
-//! query is scoped to the caller, so another owner's link answers 404.
+//! changes or closes a link; an agent's machine key never does. A session link
+//! is managed by whoever may write to its session, a room link by its owner.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -59,12 +59,17 @@ fn label(raw: &str) -> Result<String, AppError> {
     })
 }
 
-/// The caller's own session; the route guard admits admins, this does not.
-async fn own_session(state: &AppState, ctx: &AuthContext, id: &str) -> Result<(), AppError> {
-    match crate::authz::session_owner(id, &state.pool).await? {
-        Some(owner) if owner == ctx.user_id => Ok(()),
-        _ => Err(AppError::new(StatusCode::NOT_FOUND, "no such session")),
-    }
+/// Whoever may write to a session may link it: its owner or an admin, never a
+/// read-only share grantee.
+async fn writable_session(state: &AppState, ctx: &AuthContext, id: &str) -> Result<(), AppError> {
+    crate::authz::authorize_session_write(ctx, id, &state.pool).await.map_err(|status| {
+        let msg = if status == StatusCode::FORBIDDEN {
+            "only the session's owner can link it"
+        } else {
+            "no such session"
+        };
+        AppError::new(status, msg)
+    })
 }
 
 async fn own_room(
@@ -78,7 +83,16 @@ async fn own_room(
 }
 
 async fn own_link(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<Link, AppError> {
-    cctuiverse::load_owned(&state.pool, id, ctx.user_id).await?.ok_or_else(not_found)
+    let link = cctuiverse::load(&state.pool, id).await?.ok_or_else(not_found)?;
+    if link.user_id == ctx.user_id {
+        return Ok(link);
+    }
+    match link.session_id.as_deref() {
+        Some(sid) if crate::authz::authorize_session_write(ctx, sid, &state.pool).await.is_ok() => {
+            Ok(link)
+        }
+        _ => Err(not_found()),
+    }
 }
 
 async fn link_json(state: &AppState, link: &Link) -> Result<Json<Value>, AppError> {
@@ -104,7 +118,7 @@ pub async fn invite_session(
 ) -> Result<Json<Value>, AppError> {
     require_human(&state, &ctx).await?;
     require_enabled(&state)?;
-    own_session(&state, &ctx, &id).await?;
+    writable_session(&state, &ctx, &id).await?;
     let label = label(&req.label)?;
     if cctuiverse::session_state(&state.pool, &id).await == Some("archived") {
         return Err(AppError::new(StatusCode::CONFLICT, "the session is archived"));
@@ -148,7 +162,7 @@ pub async fn join(
 ) -> Result<Json<Value>, AppError> {
     require_human(&state, &ctx).await?;
     require_enabled(&state)?;
-    own_session(&state, &ctx, &req.session_id).await?;
+    writable_session(&state, &ctx, &req.session_id).await?;
     let label = label(&req.label)?;
     if cctuiverse::session_state(&state.pool, &req.session_id).await == Some("archived") {
         return Err(AppError::new(StatusCode::CONFLICT, "the session is archived"));
@@ -172,11 +186,9 @@ async fn list(
 /// `GET /api/v1/sessions/{id}/cctuiverse/links`.
 pub async fn session_links(
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_enabled(&state)?;
-    own_session(&state, &ctx, &id).await?;
     list(&state, Some(&id), None).await
 }
 
@@ -283,10 +295,9 @@ pub async fn update(
     let settings = patch
         .apply(link.settings.clone())
         .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
-    sqlx::query("UPDATE cctuiverse_links SET settings = $2 WHERE id = $1 AND user_id = $3")
+    sqlx::query("UPDATE cctuiverse_links SET settings = $2 WHERE id = $1")
         .bind(id)
         .bind(serde_json::to_value(&settings)?)
-        .bind(ctx.user_id)
         .execute(&state.pool)
         .await?;
     let link = own_link(&state, &ctx, id).await?;
