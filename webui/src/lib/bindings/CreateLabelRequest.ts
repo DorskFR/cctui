@@ -3,4 +3,15 @@
 /**
  * Get-or-create by name.
  */
-export type CreateLabelRequest = { name: string, color: string, };
+export type CreateLabelRequest = { name: string, color: string, 
+/**
+ * Admin only: create the label for this session's owner, whose
+ * vocabulary the session's labels live in. Ignored for other callers,
+ * whose labels are always their own.
+ */
+session_id?: string | null, 
+/**
+ * Admin only: create the label for this machine's owner (the spawn form,
+ * before a session exists). `session_id` wins when both resolve.
+ */
+machine_id?: string | null, };

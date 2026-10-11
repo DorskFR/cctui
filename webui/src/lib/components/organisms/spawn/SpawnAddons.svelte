@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
+	import type { LabelOwner } from '$lib/labels';
 	import { AutoGrid, Badge, Button, FileButton, Icon, Popover } from '@dorsk/tsumikit';
 	import { labelTint, hueToColor } from '$lib/labels';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
@@ -16,6 +17,7 @@
 		allLabels,
 		envInvalid,
 		attachments,
+		machineId,
 		labelActions
 	}: {
 		labelIds: string[];
@@ -24,8 +26,10 @@
 		allLabels: Label[];
 		envInvalid: boolean;
 		attachments: boolean;
+		/** The target machine: a label created here joins its owner's labels. */
+		machineId?: string;
 		labelActions: {
-			createLabel: (name: string, color: string) => Promise<Label>;
+			createLabel: (name: string, color: string, owner?: LabelOwner) => Promise<Label>;
 			updateLabel: (id: string, patch: { name?: string; color?: string }) => Promise<Label>;
 			deleteLabel: (id: string) => Promise<void>;
 		};
@@ -38,7 +42,8 @@
 	}
 	async function createAndAttach(name: string) {
 		if (!name.trim()) return;
-		const label = await labelActions.createLabel(name, hueToColor(null));
+		const owner = machineId ? { machine_id: machineId } : undefined;
+		const label = await labelActions.createLabel(name, hueToColor(null), owner);
 		if (!labelIds.includes(label.id)) labelIds = [...labelIds, label.id];
 	}
 

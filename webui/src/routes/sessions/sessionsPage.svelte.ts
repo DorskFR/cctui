@@ -1,6 +1,7 @@
 import { untrack } from "svelte";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { Label } from "@bindings/Label";
+import type { LabelOwner } from "$lib/labels";
 import type { endpoints, useSessionActions } from "$lib/queries";
 import type { toasts, ToastAction } from "$lib/toast.svelte";
 import type { DockLayout } from "$lib/dock";
@@ -393,8 +394,8 @@ export class SessionsPage {
     this.matchesClient(s) &&
     matchesUnreadFilter(s, this.sections);
 
-  createLabel = (name: string, color: string) =>
-    this.#d.actions.createLabel(name, color);
+  createLabel = (name: string, color: string, owner?: LabelOwner) =>
+    this.#d.actions.createLabel(name, color, owner);
   attachLabel = (id: string, labelId: string) =>
     this.#d.actions.attachLabel(id, labelId);
   detachLabel = (id: string, labelId: string) =>

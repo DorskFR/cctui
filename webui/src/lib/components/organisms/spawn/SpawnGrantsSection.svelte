@@ -14,6 +14,7 @@
 	allLabels={sf.allLabels}
 	envInvalid={sf.badEnvKeys.length > 0}
 	attachments={sf.target === 'machine'}
+	machineId={sf.target === 'machine' ? sf.form.machine_id : undefined}
 	labelActions={sf.actions}
 />
 {#if sf.followupParent}

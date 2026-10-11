@@ -1,4 +1,4 @@
-//! Labels chosen at spawn time.
+//! Labels chosen at spawn time, and the rule every attach path shares.
 //!
 //! A spawn that carries `label_ids` leaves an intent row keyed by its spawn key
 //! (the pre-minted session id for claude-code, the command id for adapters
@@ -7,10 +7,19 @@
 //! This is what lets a draft launch keep its labels: the launch returns before
 //! the worker registers, so nothing on the client side knows the session id.
 //!
+//! Labels are per-user vocabulary, and a label on a session always lives in
+//! the session owner's vocabulary. Which labels a spawn may carry is the
+//! caller's visibility (its own, or any for an admin); each one is then mapped
+//! onto the owner's label of the same name, created when missing, once at
+//! spawn time ([`for_spawn`]) and again at attach time, so an intent recorded
+//! under older rules still lands. An admin spawning on
+//! a user's machine with a label from the admin picker therefore lands that
+//! user's label, instead of nothing.
+//!
 //! A label deleted between the spawn and the registration is skipped, never
 //! an error: labels are best-effort and must not fail the spawn.
 
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 /// Unclaimed intents older than this are dropped: the spawn never registered.
@@ -27,6 +36,153 @@ pub fn parse_label_ids(raw: &[String]) -> Vec<Uuid> {
         }
     }
     out
+}
+
+/// The labels of `ids` the caller may put on a session: its own labels, or any
+/// label for an admin (`visible_to = None`, the god-view). Unknown ids drop.
+async fn visible_label_ids(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+    visible_to: Option<Uuid>,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let found: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM labels WHERE id = ANY($1) AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(ids)
+    .bind(visible_to)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(ids.iter().copied().filter(|id| found.contains(id)).collect())
+}
+
+/// The user a session's labels belong to: the session's owner, else its
+/// machine's. `None` when the row is gone or unowned.
+pub async fn session_owner(
+    conn: &mut PgConnection,
+    session_id: &str,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let owner: Option<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT COALESCE(s.user_id, m.user_id) FROM sessions s \
+           LEFT JOIN machines m ON m.id = s.machine_uuid WHERE s.id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(owner.flatten())
+}
+
+/// Map label ids onto `owner`'s vocabulary, in order and deduplicated: an
+/// owner's label is kept, another user's label is swapped for the owner's
+/// label of the same (case-insensitive) name, created with the source color
+/// when the owner has none. Unknown ids drop.
+pub async fn owner_label_ids(
+    conn: &mut PgConnection,
+    owner: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(Uuid, String, String, Uuid)> =
+        sqlx::query_as("SELECT id, name, color, user_id FROM labels WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    let mut out: Vec<Uuid> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some((_, name, color, user_id)) = rows.iter().find(|r| r.0 == *id) else {
+            continue;
+        };
+        let mapped = if *user_id == owner {
+            *id
+        } else {
+            // The no-op update makes RETURNING yield the existing row on a
+            // name clash, and keeps the owner's own name and color.
+            sqlx::query_scalar(
+                "INSERT INTO labels (name, color, user_id) VALUES ($1, $2, $3) \
+                 ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = labels.name \
+                 RETURNING id",
+            )
+            .bind(name)
+            .bind(color)
+            .bind(owner)
+            .fetch_one(&mut *conn)
+            .await?
+        };
+        if !out.contains(&mapped) {
+            out.push(mapped);
+        }
+    }
+    Ok(out)
+}
+
+/// Attach labels to a session in its owner's vocabulary (see
+/// [`owner_label_ids`]). Returns how many attachments were new. A legacy row
+/// with no owner at all takes the existing labels as they are.
+pub async fn attach_to_session(
+    conn: &mut PgConnection,
+    session_id: &str,
+    ids: &[Uuid],
+) -> Result<u64, sqlx::Error> {
+    let mapped = match session_owner(conn, session_id).await? {
+        Some(owner) => owner_label_ids(conn, owner, ids).await?,
+        None => visible_label_ids(conn, ids, None).await?,
+    };
+    if mapped.is_empty() {
+        return Ok(0);
+    }
+    let res = sqlx::query(
+        "INSERT INTO session_labels (session_id, label_id) SELECT $1, unnest($2::uuid[]) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(session_id)
+    .bind(&mapped)
+    .execute(&mut *conn)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// The labels a spawn carries, as the owner of the target machine will hold
+/// them: the requested ids the caller may use (`visible_to`, `None` for an
+/// admin), mapped onto `owner`'s vocabulary. Best-effort, like every label
+/// path: a lookup failure spawns without labels rather than refusing.
+pub async fn for_spawn(
+    pool: &PgPool,
+    label_ids: &[String],
+    visible_to: Option<Uuid>,
+    owner: Uuid,
+) -> Vec<String> {
+    let requested = parse_label_ids(label_ids);
+    if requested.is_empty() {
+        return Vec::new();
+    }
+    let res = async {
+        let mut tx = pool.begin().await?;
+        let visible = visible_label_ids(&mut tx, &requested, visible_to).await?;
+        let mapped = owner_label_ids(&mut tx, owner, &visible).await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>((visible.len(), mapped))
+    }
+    .await;
+    match res {
+        Ok((visible, mapped)) => {
+            if visible < requested.len() {
+                tracing::warn!(
+                    requested = requested.len(),
+                    kept = visible,
+                    "spawn labels skipped: unknown or not the caller's"
+                );
+            }
+            mapped.iter().map(ToString::to_string).collect()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not resolve the spawn labels");
+            Vec::new()
+        }
+    }
 }
 
 /// Remember the labels the session spawned under `spawn_key` should carry.
@@ -76,51 +232,41 @@ pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&st
     attach(pool, session_id, &ids).await;
 }
 
-/// Attach existing labels to a session, skipping any that no longer exist or
-/// that belong to another user.
+/// Attach a claimed intent's labels, logging what landed.
 async fn attach(pool: &PgPool, session_id: &str, ids: &[Uuid]) {
-    match sqlx::query(
-        "INSERT INTO session_labels (session_id, label_id) \
-         SELECT $1, l.id FROM labels l WHERE l.id = ANY($2) AND l.user_id = (\
-             SELECT COALESCE(s.user_id, m.user_id) FROM sessions s \
-               LEFT JOIN machines m ON m.id = s.machine_uuid WHERE s.id = $1) \
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(session_id)
-    .bind(ids)
-    .execute(pool)
-    .await
-    {
-        Ok(res) => {
-            tracing::info!(%session_id, attached = res.rows_affected(), "spawn labels attached");
+    let res = async {
+        let mut tx = pool.begin().await?;
+        let n = attach_to_session(&mut tx, session_id, ids).await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>(n)
+    }
+    .await;
+    match res {
+        Ok(n) => {
+            tracing::info!(%session_id, requested = ids.len(), attached = n, "spawn labels attached");
         }
         Err(e) => tracing::warn!(%session_id, error = %e, "could not attach the spawn labels"),
     }
 }
 
 /// Make a draft row show the labels its payload carries, so the draft card
-/// displays what the launch will attach.
-pub async fn sync_draft(pool: &PgPool, draft_id: &str, label_ids: &[String]) {
-    let ids = parse_label_ids(label_ids);
+/// displays what the launch will attach. Same rules as a spawn: the caller's
+/// visible labels, in the draft owner's vocabulary.
+pub async fn sync_draft(
+    pool: &PgPool,
+    draft_id: &str,
+    label_ids: &[String],
+    visible_to: Option<Uuid>,
+) {
+    let requested = parse_label_ids(label_ids);
     let res = async {
         let mut tx = pool.begin().await?;
         sqlx::query("DELETE FROM session_labels WHERE session_id = $1")
             .bind(draft_id)
             .execute(&mut *tx)
             .await?;
-        if !ids.is_empty() {
-            sqlx::query(
-                "INSERT INTO session_labels (session_id, label_id) \
-                 SELECT $1, l.id FROM labels l WHERE l.id = ANY($2) AND l.user_id = (\
-                     SELECT COALESCE(s.user_id, m.user_id) FROM sessions s \
-                       LEFT JOIN machines m ON m.id = s.machine_uuid WHERE s.id = $1) \
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(draft_id)
-            .bind(&ids)
-            .execute(&mut *tx)
-            .await?;
-        }
+        let ids = visible_label_ids(&mut tx, &requested, visible_to).await?;
+        attach_to_session(&mut tx, draft_id, &ids).await?;
         tx.commit().await
     }
     .await;
@@ -162,7 +308,9 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    use super::{claim_intent, draft_label_ids, parse_label_ids, remember_intent, sync_draft};
+    use super::{
+        claim_intent, draft_label_ids, for_spawn, parse_label_ids, remember_intent, sync_draft,
+    };
 
     #[test]
     fn parse_label_ids_drops_malformed_and_duplicates() {
@@ -198,6 +346,31 @@ mod tests {
         .fetch_one(pool)
         .await
         .unwrap()
+    }
+
+    /// A label named `name` owned by a fresh user, as an admin's picker would
+    /// offer it. Returns `(that user, label id)`.
+    async fn named_label(pool: &PgPool, name: &str) -> (Uuid, Uuid) {
+        let them = user(pool).await;
+        let id = sqlx::query_scalar(
+            "INSERT INTO labels (name, color, user_id) VALUES ($1, '#abcdef', $2) RETURNING id",
+        )
+        .bind(name)
+        .bind(them)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (them, id)
+    }
+
+    /// `owner`'s label of that (case-insensitive) name, if any.
+    async fn owned_label(pool: &PgPool, owner: Uuid, name: &str) -> Option<Uuid> {
+        sqlx::query_scalar("SELECT id FROM labels WHERE user_id = $1 AND lower(name) = lower($2)")
+            .bind(owner)
+            .bind(name)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
     }
 
     async fn user(pool: &PgPool) -> Uuid {
@@ -287,12 +460,72 @@ mod tests {
         claim_intent(&pool, &pre, None).await;
         assert_eq!(labels_of(&pool, &pre).await, vec![a]);
 
-        // Another user's label never lands on this session.
-        let theirs = label(&pool, user(&pool).await).await;
+        // An intent recorded with another user's label (older rules, or an
+        // admin's raw pick) lands as the owner's label of the same name.
+        let (_, theirs) = named_label(&pool, "Ops").await;
         let other = session(&pool, uid, "active").await;
         remember_intent(&pool, &other, &[theirs.to_string(), a.to_string()]).await;
         claim_intent(&pool, &other, None).await;
-        assert_eq!(labels_of(&pool, &other).await, vec![a]);
+        let mine = owned_label(&pool, uid, "ops").await.expect("owner copy created");
+        let mut want = vec![a, mine];
+        want.sort();
+        assert_eq!(labels_of(&pool, &other).await, want);
+        assert_ne!(mine, theirs);
+    }
+
+    /// The spawn-time rule: a non-admin only spawns with its own labels; an
+    /// admin's pick of any user's label maps onto the machine owner's label of
+    /// the same name, reused when it exists and created otherwise.
+    #[tokio::test]
+    async fn spawn_labels_for_spawn_maps_onto_the_owner() {
+        let Some(pool) = test_pool("spawn_labels_for_spawn_maps_onto_the_owner").await else {
+            return;
+        };
+        let owner = user(&pool).await;
+        let own = label(&pool, owner).await;
+        let (_, admin_new) = named_label(&pool, "Dorsk").await;
+        let (_, admin_dup) = named_label(&pool, "Infra").await;
+        let existing: Uuid = sqlx::query_scalar(
+            "INSERT INTO labels (name, color, user_id) VALUES ('infra', '1', $1) RETURNING id",
+        )
+        .bind(owner)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let raw = [own.to_string(), admin_new.to_string(), admin_dup.to_string()];
+
+        // A non-admin caller cannot smuggle another user's label in.
+        assert_eq!(for_spawn(&pool, &raw, Some(owner), owner).await, vec![own.to_string()]);
+
+        // The admin (god-view) keeps all three, in the owner's vocabulary.
+        let got = for_spawn(&pool, &raw, None, owner).await;
+        let created = owned_label(&pool, owner, "dorsk").await.expect("created for the owner");
+        assert_eq!(got, vec![own.to_string(), created.to_string(), existing.to_string()]);
+        let (name, color): (String, String) =
+            sqlx::query_as("SELECT name, color FROM labels WHERE id = $1")
+                .bind(created)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (name.as_str(), color.as_str()),
+            ("Dorsk", "#abcdef"),
+            "name and color carry over"
+        );
+        let (name, color): (String, String) =
+            sqlx::query_as("SELECT name, color FROM labels WHERE id = $1")
+                .bind(existing)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (name.as_str(), color.as_str()),
+            ("infra", "1"),
+            "the owner's label is kept as is"
+        );
+
+        // Mapping twice reuses the copy instead of minting another.
+        assert_eq!(for_spawn(&pool, &raw, None, owner).await, got);
     }
 
     /// A draft row mirrors its payload's labels, and every save replaces them.
@@ -305,15 +538,24 @@ mod tests {
         let (a, b) = (label(&pool, uid).await, label(&pool, uid).await);
         let draft = session(&pool, uid, "draft").await;
 
-        sync_draft(&pool, &draft, &[a.to_string(), b.to_string()]).await;
+        sync_draft(&pool, &draft, &[a.to_string(), b.to_string()], Some(uid)).await;
         let mut want = vec![a, b];
         want.sort();
         assert_eq!(labels_of(&pool, &draft).await, want);
 
-        sync_draft(&pool, &draft, &[b.to_string()]).await;
+        sync_draft(&pool, &draft, &[b.to_string()], Some(uid)).await;
         assert_eq!(draft_label_ids(&pool, &draft).await, vec![b.to_string()]);
 
-        sync_draft(&pool, &draft, &[]).await;
+        sync_draft(&pool, &draft, &[], Some(uid)).await;
         assert!(labels_of(&pool, &draft).await.is_empty());
+
+        // Another user's label: dropped for a non-admin, mapped onto the
+        // draft owner's label for an admin.
+        let (_, theirs) = named_label(&pool, "Recette").await;
+        sync_draft(&pool, &draft, &[theirs.to_string()], Some(uid)).await;
+        assert!(labels_of(&pool, &draft).await.is_empty());
+        sync_draft(&pool, &draft, &[theirs.to_string()], None).await;
+        let mine = owned_label(&pool, uid, "recette").await.expect("owner copy created");
+        assert_eq!(labels_of(&pool, &draft).await, vec![mine]);
     }
 }

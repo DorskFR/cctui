@@ -761,6 +761,15 @@ pub struct Label {
 pub struct CreateLabelRequest {
     pub name: String,
     pub color: String,
+    /// Admin only: create the label for this session's owner, whose
+    /// vocabulary the session's labels live in. Ignored for other callers,
+    /// whose labels are always their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Admin only: create the label for this machine's owner (the spawn form,
+    /// before a session exists). `session_id` wins when both resolve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
 }
 
 /// Omitted fields are unchanged.
