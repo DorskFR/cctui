@@ -389,10 +389,63 @@ async fn a_pending_invite_is_never_listed_to_agents() {
         handshake::create_invite(&state, uid, Target::Session(&sid), "alice").await.unwrap();
     assert!(session_links(&state.pool, &sid).await.unwrap().is_empty());
     assert_eq!(links_of(&state.pool, Some(&sid), None).await.unwrap().len(), 1);
-    assert!(load_owned(&state.pool, link.id, Uuid::new_v4()).await.unwrap().is_none());
-    assert!(load_owned(&state.pool, link.id, uid).await.unwrap().is_some());
     let revoked = close(&state, &link, CloseReason::Owner).await.unwrap();
     assert_eq!(revoked.state, LinkState::Closed);
     assert!(revoked.invite_token_hash.is_none());
     cleanup(&state.pool, &[uid]).await;
+}
+
+fn caller(user_id: Uuid, admin: bool) -> crate::auth::AuthContext {
+    use crate::auth::Scope;
+    crate::auth::AuthContext {
+        user_id,
+        key_id: Uuid::new_v4(),
+        machine_id: None,
+        scopes: if admin { Scope::all().into_iter().collect() } else { [Scope::Read].into() },
+    }
+}
+
+async fn invite_as(
+    state: &AppState,
+    ctx: crate::auth::AuthContext,
+    sid: &str,
+) -> Result<Uuid, StatusCode> {
+    let res = crate::routes::cctuiverse::invite_session(
+        State(state.clone()),
+        axum::Extension(ctx),
+        Path(sid.to_owned()),
+        axum::Json(crate::routes::cctuiverse::InviteRequest { label: "x".into() }),
+    )
+    .await;
+    match res {
+        Ok(body) => Ok(Uuid::parse_str(body.0["link"]["id"].as_str().unwrap()).unwrap()),
+        Err(e) => Err(e.status()),
+    }
+}
+
+#[tokio::test]
+async fn whoever_may_write_the_session_may_link_it() {
+    let Some(state) = test_state("whoever_may_write_the_session_may_link_it").await else {
+        return;
+    };
+    let (uid, sid) = seed_owner(&state.pool).await;
+    let (stranger, _) = seed_owner(&state.pool).await;
+
+    assert!(invite_as(&state, caller(uid, false), &sid).await.is_ok());
+    assert_eq!(invite_as(&state, caller(stranger, false), &sid).await, Err(StatusCode::FORBIDDEN));
+    assert_eq!(
+        invite_as(&state, caller(uid, false), "cv-missing").await,
+        Err(StatusCode::NOT_FOUND)
+    );
+
+    let admin_link = invite_as(&state, caller(stranger, true), &sid).await.unwrap();
+    let closed = crate::routes::cctuiverse::close(
+        State(state.clone()),
+        axum::Extension(caller(uid, false)),
+        Path(admin_link),
+    )
+    .await
+    .expect("the session's owner manages a link an admin made on it");
+    assert_eq!(closed.0["link"]["state"], "closed");
+    cleanup(&state.pool, &[uid, stranger]).await;
 }

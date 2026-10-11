@@ -228,15 +228,6 @@ pub async fn load(pool: &PgPool, link_id: Uuid) -> Result<Option<Link>, sqlx::Er
     Ok(row.map(Link::from))
 }
 
-/// `link_id` iff `owner` owns it.
-pub async fn load_owned(
-    pool: &PgPool,
-    link_id: Uuid,
-    owner: Uuid,
-) -> Result<Option<Link>, sqlx::Error> {
-    Ok(load(pool, link_id).await?.filter(|l| l.user_id == owner))
-}
-
 /// Every link of a session or a room, pending invites included, for its owner.
 pub async fn links_of(
     pool: &PgPool,
