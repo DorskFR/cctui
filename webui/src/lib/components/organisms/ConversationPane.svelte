@@ -406,7 +406,7 @@
 				onTogglePin={togglePin}
 				onAccountClick={() => (acctModalOpen = true)}
 				{allLabels}
-				onCreateLabel={actions.createLabel}
+				onCreateLabel={(name, color) => actions.createLabel(name, color, { session_id: id })}
 				onAttachLabel={actions.attachLabel}
 				onDetachLabel={actions.detachLabel}
 				onUpdateLabel={actions.updateLabel}

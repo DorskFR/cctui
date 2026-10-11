@@ -9,6 +9,7 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { Label } from "@bindings/Label";
+import type { LabelOwner } from "../labels";
 import type { KeepaliveState } from "@bindings/KeepaliveState";
 import type { SessionKeepaliveRequest } from "@bindings/SessionKeepaliveRequest";
 
@@ -130,9 +131,16 @@ export function useSessionActions() {
     },
     // Labels. `createLabel` is get-or-create by name (and recolors an
     // existing one); attach/detach wire a label to a session. Each mutation
-    // refreshes the session list so the chips update in place.
-    createLabel: async (name: string, color: string): Promise<Label> => {
-      const label = await api.post<Label>("/labels", { name, color });
+    // refreshes the session list so the chips update in place. `owner` names
+    // the session or machine the label is for: an admin, who sees every
+    // user's labels, then creates it in that owner's vocabulary (a session's
+    // labels always live there). The server ignores it for anyone else.
+    createLabel: async (
+      name: string,
+      color: string,
+      owner?: LabelOwner,
+    ): Promise<Label> => {
+      const label = await api.post<Label>("/labels", { name, color, ...owner });
       invalLabels();
       return label;
     },

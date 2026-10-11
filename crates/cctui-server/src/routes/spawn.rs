@@ -166,9 +166,14 @@ async fn validate_spawn(
     if req.auto_archive {
         crate::auto_archive::remember_intent(state, &token_session_id).await;
     }
-    crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &req.label_ids).await;
+    // In the machine owner's vocabulary: an admin's picker holds labels of
+    // every user, and the session belongs to the owner.
+    let label_ids =
+        crate::spawn_labels::for_spawn(&state.pool, &req.label_ids, ctx.owner_filter(), owner)
+            .await;
+    crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &label_ids).await;
     crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
-    let context = resolve_spawn_context(state, ctx, req, owner, machine_uuid).await;
+    let context = resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid).await;
     crate::routes::context::remember_intent(&state.pool, &token_session_id, &context).await;
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
@@ -199,6 +204,7 @@ async fn resolve_spawn_context(
     state: &AppState,
     ctx: &AuthContext,
     req: &SpawnRequest,
+    label_ids: &[String],
     owner: Uuid,
     machine_uuid: Uuid,
 ) -> Vec<crate::routes::context::ContextItem> {
@@ -220,7 +226,7 @@ async fn resolve_spawn_context(
     let scope = SpawnScope {
         machine_id: Some(machine_uuid.to_string()),
         working_dir: Some(req.working_dir.clone()),
-        label_ids: req.label_ids.clone(),
+        label_ids: label_ids.to_vec(),
     };
     resolve_for_spawn(&items, &picks, asked.auto, &scope)
 }
@@ -984,7 +990,8 @@ async fn save_draft(
                 AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
             })?;
     }
-    crate::spawn_labels::sync_draft(&state.pool, &draft_key, &req.label_ids).await;
+    crate::spawn_labels::sync_draft(&state.pool, &draft_key, &req.label_ids, ctx.owner_filter())
+        .await;
     tracing::info!(machine = %req.machine_id, draft = %draft_id, files = uploads.len(), "draft session saved");
     Ok((
         StatusCode::CREATED,
