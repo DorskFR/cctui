@@ -38,13 +38,25 @@
 	let busy = $state(false);
 	let menu = $state<LabelMenu>();
 
-	const attachedIds = $derived(new Set(labels.map((l) => l.id)));
+	// A session carries its owner's labels, while an admin's picker lists every
+	// user's: a picker row counts as attached when the session holds a label of
+	// the same name, and toggling it off detaches the session's own row.
+	const attachedByName = $derived(new Map(labels.map((l) => [l.name.toLowerCase(), l.id])));
+	const attachedIds = $derived(
+		new Set([
+			...labels.map((l) => l.id),
+			...(allLabels ?? [])
+				.filter((l) => attachedByName.has(l.name.toLowerCase()))
+				.map((l) => l.id)
+		])
+	);
 
 	async function toggleExisting(l: Label) {
 		if (busy) return;
 		busy = true;
 		try {
-			if (attachedIds.has(l.id)) await onDetach?.(l.id);
+			const onSession = attachedByName.get(l.name.toLowerCase());
+			if (onSession) await onDetach?.(onSession);
 			else await onAttach?.(l.id);
 		} finally {
 			busy = false;
@@ -56,7 +68,7 @@
 		busy = true;
 		try {
 			const label = await onCreate(name, hueToColor(null));
-			if (!attachedIds.has(label.id)) await onAttach?.(label.id);
+			if (!attachedByName.has(label.name.toLowerCase())) await onAttach?.(label.id);
 		} finally {
 			busy = false;
 		}
