@@ -1,6 +1,6 @@
 import { defineJourney } from '@dorsk/journey';
 
-const BOARD = '/settings/accounts';
+const BOARD = '/accounts';
 // Every step anchors on board furniture rather than on a card: a user who has no
 // account yet is exactly who this guide is for, and `optional` cannot rescue a
 // missing target once a human is driving.

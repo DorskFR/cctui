@@ -16,7 +16,7 @@
 	import SecuritySection from './SecuritySection.svelte';
 	import GuidesSection from './GuidesSection.svelte';
 	import AccessPanel from '$lib/components/organisms/access/AccessPanel.svelte';
-	import AccountsPanel from '$lib/components/organisms/accounts/AccountsPanel.svelte';
+	import EventsPanel from '$lib/components/organisms/events/EventsPanel.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import InstanceSection from './InstanceSection.svelte';
 	import UploadsSection from './UploadsSection.svelte';
@@ -59,18 +59,18 @@
 <div class="pg" class:on={current === 'guides'} data-settings-page="guides" data-journey="page" data-journey-key="guides">
 	<GuidesSection />
 </div>
-<!-- Users, AI accounts and dispatchers are screens, not rows of settings: the
+<!-- Events, users and dispatchers are screens, not rows of settings: the
      cross-page filter has nothing to match in them, and mounting their queries
      on every other settings page would be pure cost. They render only when
      they are the page being shown. -->
+{#if current === 'events'}
+	<div class="pg on" data-settings-page="events" data-journey="page" data-journey-key="events">
+		<EventsPanel />
+	</div>
+{/if}
 {#if current === 'users'}
 	<div class="pg on" data-settings-page="users" data-journey="page" data-journey-key="users">
 		<AccessPanel />
-	</div>
-{/if}
-{#if current === 'accounts'}
-	<div class="pg on" data-settings-page="accounts" data-journey="page" data-journey-key="accounts">
-		<AccountsPanel />
 	</div>
 {/if}
 {#if current === 'dispatchers'}

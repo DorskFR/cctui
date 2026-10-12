@@ -36,25 +36,29 @@
 </script>
 
 <li class="row" class:compact data-kind={event.kind} data-severity={row.severity}>
-	<Dot status={row.dot} label={row.severity} />
-	<Timestamp value={row.occurredAt} mode="relative" short size="xs" tone="faint" />
-	<Badge size="xs" tone={row.severity === 'info' ? 'neutral' : row.severity === 'warn' ? 'warn' : 'danger'} mono>
-		{compact ? row.verb : `${familyLabel[row.family]()} · ${row.verb}`}
-	</Badge>
-	<Text size="sm" truncate title={row.summary}>{row.summary}</Text>
+	<span class="dot"><Dot status={row.dot} role="img" aria-label={row.severity} title={row.severity} /></span>
+	<span class="time"><Timestamp value={row.occurredAt} mode="relative" short size="xs" tone="faint" /></span>
+	<span class="verb">
+		<Badge size="xs" tone={row.severity === 'info' ? 'neutral' : row.severity === 'warn' ? 'warn' : 'danger'} mono>
+			{compact ? row.verb : `${familyLabel[row.family]()} · ${row.verb}`}
+		</Badge>
+	</span>
+	<span class="summary" class:blank={!row.summary}><Text size="sm" truncate title={row.summary}>{row.summary}</Text></span>
 	{#if showSubjects && !compact}
 		<span class="subjects">
 			{#if row.sessionName || row.sessionHref}
 				{#if row.sessionHref}
 					<span class="link">
 						<NavLink href={row.sessionHref}>
-							<Badge size="xs" icon="list">{row.sessionName ?? m.events_session_fallback()}</Badge>
+							<Badge size="xs" icon="list" title={row.sessionName ?? undefined}>{row.sessionName ?? m.events_session_fallback()}</Badge>
 						</NavLink>
 					</span>
 				{:else}
-					<Badge size="xs" icon="list" tone="muted" title={m.events_session_deleted()}>
-						{row.sessionName ?? m.events_session_fallback()}
-					</Badge>
+					<span class="link">
+						<Badge size="xs" icon="list" tone="muted" title={m.events_session_deleted()}>
+							{row.sessionName ?? m.events_session_fallback()}
+						</Badge>
+					</span>
 				{/if}
 			{/if}
 			{#if row.machineId}
@@ -62,13 +66,13 @@
 			{/if}
 		</span>
 	{/if}
-	<Text size="xs" tone="faint" nowrap>{actorLabel[row.actor]()}</Text>
+	<span class="actor"><Text size="xs" tone="faint" nowrap>{actorLabel[row.actor]()}</Text></span>
 </li>
 
 <style>
 	.row {
 		display: grid;
-		grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
+		grid-template-columns: auto auto auto minmax(0, 1fr) minmax(0, auto) auto;
 		align-items: center;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
@@ -82,13 +86,53 @@
 	.row:last-child {
 		border-bottom: 0;
 	}
-	.subjects {
+	.row > span {
 		display: inline-flex;
 		align-items: center;
-		gap: var(--sp-1);
 		min-width: 0;
+	}
+	.subjects {
+		gap: var(--sp-1);
+		max-width: 24rem;
 	}
 	.link {
 		display: inline-flex;
+		min-width: 0;
+		max-width: 100%;
+		overflow: hidden;
+	}
+	/* Phones: kind and time on one line, then what happened, then to what. */
+	@media (max-width: 47.999rem) {
+		.row:not(.compact) {
+			grid-template-columns: auto auto minmax(0, 1fr) auto;
+			grid-template-areas:
+				'dot time verb actor'
+				'summary summary summary summary'
+				'subjects subjects subjects subjects';
+			row-gap: var(--sp-1);
+		}
+		.row:not(.compact) .dot {
+			grid-area: dot;
+		}
+		.row:not(.compact) .time {
+			grid-area: time;
+		}
+		.row:not(.compact) .verb {
+			grid-area: verb;
+		}
+		.row:not(.compact) .actor {
+			grid-area: actor;
+		}
+		.row:not(.compact) .summary {
+			grid-area: summary;
+		}
+		.row:not(.compact) .summary.blank {
+			display: none;
+		}
+		.row:not(.compact) .subjects {
+			grid-area: subjects;
+			flex-wrap: wrap;
+			max-width: 100%;
+		}
 	}
 </style>

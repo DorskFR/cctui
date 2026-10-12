@@ -11,6 +11,7 @@ import {
 	pageForHash,
 	pagerNeighbours,
 	pagesInScope,
+	MOVED_OUT,
 	SETTINGS_PAGES,
 	SETTINGS_SCOPES,
 	settingsHref,
@@ -140,8 +141,8 @@ describe('cross-page search', () => {
 });
 
 describe('the admin screens moved out of the main nav', () => {
-	it('routes users, accounts and dispatchers as instance-scoped settings pages', () => {
-		for (const page of ['users', 'accounts', 'dispatchers'] as const) {
+	it('routes users and dispatchers as instance-scoped settings pages', () => {
+		for (const page of ['users', 'dispatchers'] as const) {
 			expect(isSettingsPage(page)).toBe(true);
 			expect(settingsScope(page)).toBe('instance');
 			expect(settingsHref(page)).toBe(`/settings/${page}`);
@@ -152,6 +153,11 @@ describe('the admin screens moved out of the main nav', () => {
 		for (const hash of ['#access', '#keys', '#machines', '#tokens']) {
 			expect(pageForHash(hash)).toBe('users');
 		}
-		expect(pageForHash('#pools')).toBe('accounts');
+	});
+
+	it('scopes the event log to you, and sends accounts back to its own screen', () => {
+		expect(settingsScope('events')).toBe('you');
+		expect(isSettingsPage('accounts')).toBe(false);
+		expect(MOVED_OUT.accounts).toBe('/accounts');
 	});
 });

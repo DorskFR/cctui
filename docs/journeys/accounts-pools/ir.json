@@ -1,7 +1,7 @@
 {
 	"id": "accounts-pools",
 	"version": 1,
-	"route": "/settings/accounts",
+	"route": "/accounts",
 	"level": "checked",
 	"steps": [
 		{
@@ -11,7 +11,7 @@
 			},
 			"guide": "next",
 			"timeout": 10000,
-			"route": "/settings/accounts",
+			"route": "/accounts",
 			"target": "accounts",
 			"say": {
 				"title": {

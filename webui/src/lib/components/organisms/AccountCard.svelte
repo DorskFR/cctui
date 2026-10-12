@@ -163,7 +163,7 @@
 	}
 </script>
 
-<article class="acct" class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
+<article class="acct" class:compact class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
 	<header class="head">
 		{#if onmovepool && !managed && !compact}
 			<span
@@ -201,24 +201,22 @@
 			</span>
 		{/if}
 		{#each upstream as u (u.provider)}
+			{@const detail = m.provider_status_account_badge({
+				provider: providerLabel(u.provider),
+				detail: componentNames(u.status).join(', ') || u.status.description || u.status.indicator
+			})}
 			<a
 				class="upstream"
+				class:dense={compact}
 				href={u.status.url}
 				target="_blank"
 				rel="noopener"
 				data-tone={indicatorTone(u.status.indicator)}
-				title={u.status.description}
+				title={compact ? detail : u.status.description}
+				aria-label={detail}
 			>
 				<span class="dot"></span>
-				<Text as="span" size="xs" tone="inherit">
-					{m.provider_status_account_badge({
-						provider: providerLabel(u.provider),
-						detail:
-							componentNames(u.status).join(', ') ||
-							u.status.description ||
-							u.status.indicator
-					})}
-				</Text>
+				<Text as="span" size="xs" tone="inherit">{compact ? providerLabel(u.provider) : detail}</Text>
 			</a>
 		{/each}
 		{#each redirects as r (r.id)}
@@ -287,6 +285,7 @@
 				usageEnabled={enabled}
 				canManage={!p.managed && !compact}
 				canRemove={!p.managed && !compact}
+				dense={compact}
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
 				onremove={() => onremoveprovider?.(p)}
@@ -402,11 +401,20 @@
 	.upstream[data-tone='warn'] .dot {
 		background: var(--warn);
 	}
+	.upstream.dense {
+		flex-wrap: nowrap;
+		gap: var(--sp-1);
+		white-space: nowrap;
+	}
 	.upstream:hover {
 		text-decoration: underline;
 	}
 	.spacer {
 		flex: 1;
+	}
+	.acct.compact .head {
+		gap: var(--sp-1) var(--sp-2);
+		padding: var(--sp-2) var(--sp-3);
 	}
 	.redirect-form {
 		display: flex;

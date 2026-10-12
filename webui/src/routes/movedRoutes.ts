@@ -2,6 +2,6 @@
  *  permanent redirects so existing deep links and guides keep resolving. */
 export const MOVED_ROUTES = {
 	'/access': '/settings/users',
-	'/accounts': '/settings/accounts',
-	'/dispatchers': '/settings/dispatchers'
+	'/dispatchers': '/settings/dispatchers',
+	'/events': '/settings/events'
 } as const;

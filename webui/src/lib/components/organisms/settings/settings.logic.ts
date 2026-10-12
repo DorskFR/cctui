@@ -103,10 +103,10 @@ export const SETTINGS_PAGES = [
 	'privacy',
 	'notifications',
 	'monitoring',
+	'events',
 	'security',
 	'guides',
 	'users',
-	'accounts',
 	'dispatchers',
 	'instance',
 	'uploads'
@@ -121,7 +121,6 @@ export type SettingsScope = (typeof SETTINGS_SCOPES)[number];
 
 const INSTANCE_PAGES: readonly SettingsPage[] = [
 	'users',
-	'accounts',
 	'dispatchers',
 	'instance',
 	'uploads'
@@ -161,8 +160,12 @@ const HASH_ALIASES: Record<string, SettingsPage> = {
 	access: 'users',
 	keys: 'users',
 	machines: 'users',
-	tokens: 'users',
-	pools: 'accounts'
+	tokens: 'users'
+};
+
+/** Former settings pages that are top-level screens again. */
+export const MOVED_OUT: Record<string, string> = {
+	accounts: '/accounts'
 };
 
 export function isSettingsPage(slug: string | null | undefined): slug is SettingsPage {
