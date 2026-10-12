@@ -379,6 +379,94 @@ async fn outbound_honours_review_and_the_message_cap() {
     cleanup(&state.pool, &[uid]).await;
 }
 
+async fn markers(pool: &sqlx::PgPool, sid: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT payload->>'text' FROM stream_events \
+         WHERE session_id = $1 AND payload->>'role' = 'system_marker' ORDER BY id",
+    )
+    .bind(sid)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+async fn close_notices(pool: &sqlx::PgPool, link_id: Uuid) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT status FROM cctuiverse_messages WHERE link_id = $1 AND kind = 'close' ORDER BY id",
+    )
+    .bind(link_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn archiving_a_session_closes_its_links_and_tells_the_peer() {
+    let Some(state) = test_state("archiving_a_session_closes_its_links_and_tells_the_peer").await
+    else {
+        return;
+    };
+    let (uid, sid) = seed_owner(&state.pool).await;
+    let j = invite_and_accept(&state, uid, &sid).await;
+    sqlx::query("UPDATE cctuiverse_links SET peer_url = 'http://127.0.0.1:9' WHERE id = $1")
+        .bind(j.inviter.id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
+        .bind(&sid)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    outbox::sweep(&state).await;
+
+    let link = load(&state.pool, j.inviter.id).await.unwrap().unwrap();
+    assert_eq!(link.state, LinkState::Closed);
+    let notices = close_notices(&state.pool, link.id).await;
+    assert_eq!(notices.len(), 1, "one close notice goes to the peer");
+    assert_ne!(notices[0], "dropped");
+    assert!(
+        markers(&state.pool, &sid)
+            .await
+            .contains(&"the cctuiverse link with bob closed: session archived".to_owned())
+    );
+
+    cleanup(&state.pool, &[uid]).await;
+}
+
+#[tokio::test]
+async fn a_peer_close_notice_closes_the_link_without_echoing_back() {
+    let Some(state) = test_state("a_peer_close_notice_closes_the_link_without_echoing_back").await
+    else {
+        return;
+    };
+    let (uid, sid) = seed_owner(&state.pool).await;
+    let j = invite_and_accept(&state, uid, &sid).await;
+    let path = format!("/cctuiverse/v1/links/{}/close", j.inviter.id);
+    let h = signed_post(&j.joiner_seed, j.joiner_id, &path, b"{}");
+    let resp = wire::close(
+        State(state.clone()),
+        crate::routes::device_auth::PeerAddr(None),
+        Path(j.inviter.id.to_string()),
+        path.parse().unwrap(),
+        h,
+        Bytes::from_static(b"{}"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.0, json!({ "closed": true }));
+
+    let link = load(&state.pool, j.inviter.id).await.unwrap().unwrap();
+    assert_eq!(link.state, LinkState::Closed);
+    assert!(close_notices(&state.pool, link.id).await.is_empty());
+    assert!(
+        markers(&state.pool, &sid).await.contains(&"bob closed the cctuiverse link".to_owned())
+    );
+
+    cleanup(&state.pool, &[uid]).await;
+}
+
 #[tokio::test]
 async fn a_pending_invite_is_never_listed_to_agents() {
     let Some(state) = test_state("a_pending_invite_is_never_listed_to_agents").await else {
