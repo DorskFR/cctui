@@ -32,6 +32,7 @@ pub mod harness_update;
 pub mod imagepost;
 pub mod launchgate;
 pub mod listdirs;
+pub mod maintenance;
 pub mod mcp;
 pub mod mcpready;
 pub mod neighbours;
