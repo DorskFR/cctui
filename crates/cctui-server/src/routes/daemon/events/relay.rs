@@ -46,6 +46,13 @@ pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
                     Err(e) => tracing::error!(%command_id, "db error (failed spawn): {e}"),
                 }
             }
+            // After the failed row is written, so a request answering with the
+            // refusal never races the session list.
+            crate::state::resolve_verdict(
+                &state.command_waiters,
+                command_id,
+                crate::state::CommandVerdict { ok, error: error.clone() },
+            );
             state.bus.publish_server(cctui_proto::ws::ServerEvent::CommandResult {
                 command_id: command_id.to_string(),
                 ok,
@@ -54,5 +61,83 @@ pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
             });
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A refused spawn's waiting request hears of it only once the failed row
+    /// is on the list, so the caller and the session list agree.
+    #[tokio::test]
+    async fn a_refused_spawn_is_written_before_the_waiting_request_hears_of_it() {
+        let Some(url) = crate::routes::gateway::test_db_url("relay_refused_spawn") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("relay-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let mid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        let state = AppState::for_test(pool.clone());
+        let command_id = uuid::Uuid::new_v4();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let rx = crate::state::wait_for_verdict(&state.command_waiters, command_id);
+        crate::state::track_command(
+            &state.pending_commands,
+            command_id,
+            None,
+            Some(crate::state::FailedSpawnRow {
+                session_id: session_id.clone(),
+                machine_id: mid,
+                user_id: uid,
+                adapter_id: "claude-code".into(),
+                working_dir: "/w".into(),
+                name: None,
+                model: None,
+                effort: None,
+            }),
+        );
+
+        on_relay_event(
+            &state,
+            AdapterEvent::CommandResult {
+                command_id,
+                ok: false,
+                error: Some("adapter claude-code command queue is full".into()),
+            },
+        )
+        .await;
+
+        let verdict = rx.await.expect("the waiting request is told");
+        assert!(!verdict.ok);
+        assert_eq!(verdict.error.as_deref(), Some("adapter claude-code command queue is full"));
+        let (status, end_reason): (String, Option<String>) =
+            sqlx::query_as("SELECT status, end_reason FROM sessions WHERE id = $1")
+                .bind(&session_id)
+                .fetch_one(&pool)
+                .await
+                .expect("the failed row exists");
+        assert_eq!(status, "ended");
+        assert_eq!(end_reason.as_deref(), Some("spawn_failed"));
+        assert!(state.command_waiters.is_empty());
     }
 }

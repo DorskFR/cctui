@@ -87,6 +87,11 @@ const ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// which is still an edge — the signal carries no payload.
 const CONNECT_SIGNAL_BUFFER: usize = 8;
 
+/// Share of the command channel (one slot in this many) a transcript ack
+/// leaves free for the commands that cannot be dropped (spawns, prompts,
+/// permission answers): 16 of the 64 slots.
+const ACK_HEADROOM_DIVISOR: usize = 4;
+
 /// One WS send, bounded by [`SEND_TIMEOUT`]. An expiry is an error so the
 /// caller tears the connection down and the reconnect loop takes over.
 async fn send_bounded(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
@@ -638,21 +643,12 @@ impl Supervisor {
                 // both, and the server evicts the daemon as dead.
                 #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
                 let outcome = match running.get(&adapter_id) {
-                    None => Err(("is not running on this machine", *command)),
-                    Some(running) => {
-                        running.commands_tx.try_send(*command).map_err(|err| match err {
-                            mpsc::error::TrySendError::Full(command) => {
-                                ("command queue is full", command)
-                            }
-                            mpsc::error::TrySendError::Closed(command) => {
-                                ("is shutting down", command)
-                            }
-                        })
-                    }
+                    None => Err(("is not running on this machine", command.command_id())),
+                    Some(running) => running.route_command(*command),
                 };
-                let error = outcome.err().and_then(|(reason, command)| {
+                let error = outcome.err().and_then(|(reason, command_id)| {
                     tracing::warn!(%adapter_id, reason, "rejecting command");
-                    command.command_id().map(|id| (id, format!("adapter {adapter_id} {reason}")))
+                    command_id.map(|id| (id, format!("adapter {adapter_id} {reason}")))
                 });
                 // A silent drop leaves the server-side waiter hanging, so a full
                 // event channel falls through to the WS lane rather than giving
@@ -692,11 +688,16 @@ impl Supervisor {
                 self.purge_archived_jobs(running, &archived);
             }
             DaemonFrameDown::TranscriptAck { adapter_id, session_marks } => {
+                // An ack never takes the last free slots of the command
+                // channel: a busy adapter would otherwise fill them with acks
+                // and turn the next spawn away.
                 if let Some(running) = running.get(&adapter_id)
-                    && running
-                        .commands_tx
-                        .try_send(AdapterCommand::AckMarks { marks: session_marks })
-                        .is_err()
+                    && (running.commands_tx.capacity()
+                        <= running.commands_tx.max_capacity() / ACK_HEADROOM_DIVISOR
+                        || running
+                            .commands_tx
+                            .try_send(AdapterCommand::AckMarks { marks: session_marks })
+                            .is_err())
                 {
                     // A dropped ack only costs one more re-sent window.
                     tracing::debug!(%adapter_id, "adapter busy; transcript ack dropped");
@@ -913,6 +914,10 @@ impl Supervisor {
                     tracing::error!(adapter_id = %id_for_task, %err, "adapter exited with error");
                 }
             });
+            let (maintenance, feeder) = crate::maintenance::MaintenanceLane::spawn(
+                channels.commands_tx.clone(),
+                token.clone(),
+            );
             running.insert(
                 id.clone(),
                 AdapterRunning {
@@ -921,9 +926,10 @@ impl Supervisor {
                     // next reconcile can detect a change.
                     config: cfg.config,
                     commands_tx: channels.commands_tx,
+                    maintenance: Some(maintenance),
                     pty_watch_tx: channels.pty_watch_tx,
                     interrupts: channels.interrupts,
-                    tasks: vec![pump, driver],
+                    tasks: vec![pump, driver, feeder],
                 },
             );
             tracing::info!(adapter_id = %id, "started adapter");
@@ -1049,6 +1055,11 @@ struct AdapterRunning {
     config: serde_json::Value,
     /// Command sink the supervisor routes server `Command` frames into.
     commands_tx: mpsc::Sender<cctui_proto::adapter::AdapterCommand>,
+    /// Low-priority lane for `Remove`s (server archives and the archived-job
+    /// purge): they reach `commands_tx` one at a time, only when it is empty,
+    /// so a backlog can never leave a spawn "command queue is full". `None`
+    /// sends them straight into `commands_tx`.
+    maintenance: Option<crate::maintenance::MaintenanceLane>,
     /// Out-of-band sink for `WatchPty`, so a live view can't be rejected with
     /// "command queue is full" or wait behind a 30s socket round-trip. `None`
     /// for adapters without a live view.
@@ -1060,6 +1071,36 @@ struct AdapterRunning {
 }
 
 impl AdapterRunning {
+    /// Hand a server command to the adapter without waiting: a `Remove` to the
+    /// maintenance lane, anything else (a spawn first of all) straight into the
+    /// command channel, which removals therefore never fill. A refusal comes
+    /// back as its reason and the refused command's id.
+    fn route_command(
+        &self,
+        command: AdapterCommand,
+    ) -> Result<(), (&'static str, Option<uuid::Uuid>)> {
+        if let Some(lane) = self.maintenance.as_ref()
+            && crate::maintenance::is_maintenance(&command)
+        {
+            return lane.try_push(command).map_err(|err| match *err {
+                mpsc::error::TrySendError::Full(command) => {
+                    ("maintenance queue is full", command.command_id())
+                }
+                mpsc::error::TrySendError::Closed(command) => {
+                    ("is shutting down", command.command_id())
+                }
+            });
+        }
+        self.commands_tx.try_send(command).map_err(|err| match err {
+            mpsc::error::TrySendError::Full(command) => {
+                ("command queue is full", command.command_id())
+            }
+            mpsc::error::TrySendError::Closed(command) => {
+                ("is shutting down", command.command_id())
+            }
+        })
+    }
+
     /// Cancel and wait for the tasks to observe it: a replacement must not
     /// overlap its predecessor, two codex `LogTail`s sharing one
     /// `codex-offsets.json` corrupt the offsets.
@@ -1094,12 +1135,12 @@ impl Supervisor {
             previous.abort();
         }
         tracing::info!(count = leaked.len(), "removing claude jobs of archived sessions");
-        let task = tokio::spawn(purge_leaked_jobs(
-            claude.commands_tx.clone(),
-            claude.shutdown.clone(),
-            jobs_root,
-            leaked,
-        ));
+        let sink = claude
+            .maintenance
+            .clone()
+            .map_or_else(|| PurgeSink::Direct(claude.commands_tx.clone()), PurgeSink::Lane);
+        let task =
+            tokio::spawn(purge_leaked_jobs(sink, claude.shutdown.clone(), jobs_root, leaked));
         *purge = Some(task.abort_handle());
     }
 }
@@ -1365,14 +1406,32 @@ fn classify(bytes: Vec<u8>, codec: Option<String>) -> Prepared {
 
 const CLAUDE_ADAPTER_ID: &str = "claude-code";
 
+/// Where the purge queues its removals: the adapter's maintenance lane, or its
+/// command channel for an adapter built without one.
+enum PurgeSink {
+    Lane(crate::maintenance::MaintenanceLane),
+    Direct(mpsc::Sender<AdapterCommand>),
+}
+
+impl PurgeSink {
+    async fn send(&self, command: AdapterCommand) -> Result<(), ()> {
+        match self {
+            Self::Lane(lane) => lane.push(command).await.map_err(drop),
+            Self::Direct(tx) => tx.send(command).await.map_err(drop),
+        }
+    }
+}
+
 /// Feed one `Remove` per leaked job into the claude adapter, at the adapter's
 /// own pace. Each removal is slow (kill the worker, wait for it to exit, then
 /// `claude rm`), so a backlog of hundreds (a daemon updated after weeks of
 /// archives) takes minutes to hours: this must never run on the transport
 /// loop, which has to keep pinging the server meanwhile. Skips jobs that
 /// vanished in the meantime, so an overlapping purge can't double-remove.
+/// Through the maintenance lane, the backlog also leaves the adapter's command
+/// channel free for spawns (incident of 11/10/2026).
 async fn purge_leaked_jobs(
-    commands_tx: mpsc::Sender<AdapterCommand>,
+    sink: PurgeSink,
     shutdown: CancellationToken,
     jobs_root: std::path::PathBuf,
     leaked: Vec<String>,
@@ -1395,7 +1454,7 @@ async fn purge_leaked_jobs(
                 tracing::info!(sent, total, "adapter stopped; leaked job purge interrupted");
                 return;
             }
-            res = commands_tx.send(command) => {
+            res = sink.send(command) => {
                 if res.is_err() {
                     tracing::info!(sent, total, "adapter command channel closed; leaked job purge interrupted");
                     return;
@@ -1665,6 +1724,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
                 commands_tx,
+                maintenance: None,
                 pty_watch_tx: None,
                 interrupts: None,
                 tasks: Vec::new(),
@@ -1729,6 +1789,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
                 commands_tx,
+                maintenance: None,
                 pty_watch_tx: Some(pty_watch_tx),
                 interrupts: None,
                 tasks: Vec::new(),
@@ -1780,6 +1841,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
                 commands_tx,
+                maintenance: None,
                 pty_watch_tx: None,
                 interrupts: Some(interrupts.clone()),
                 tasks: Vec::new(),
@@ -1838,6 +1900,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
                 commands_tx,
+                maintenance: None,
                 pty_watch_tx: None,
                 interrupts: None,
                 tasks: Vec::new(),
@@ -1871,6 +1934,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({}),
                 commands_tx,
+                maintenance: None,
                 pty_watch_tx: None,
                 interrupts: None,
                 tasks: Vec::new(),
@@ -1930,6 +1994,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
                 commands_tx,
+                maintenance: None,
                 pty_watch_tx: None,
                 interrupts: None,
                 tasks: Vec::new(),
@@ -2005,6 +2070,7 @@ mod tests {
                 shutdown: CancellationToken::new(),
                 config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
                 commands_tx,
+                maintenance: None,
                 pty_watch_tx: None,
                 interrupts: None,
                 tasks: Vec::new(),
