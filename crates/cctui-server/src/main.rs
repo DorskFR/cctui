@@ -266,6 +266,7 @@ async fn build_state(
         provider_status: provider_status::ProviderStatusCache::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
+        command_waiters: Arc::new(dashmap::DashMap::new()),
     })
 }
 
