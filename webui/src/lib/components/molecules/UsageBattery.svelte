@@ -280,5 +280,6 @@
 		max-width: 100%;
 		max-height: 75dvh;
 		overflow: hidden auto;
+		overscroll-behavior: contain;
 	}
 </style>
