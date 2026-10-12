@@ -408,24 +408,18 @@ async fn archiving_a_session_closes_its_links_and_tells_the_peer() {
     };
     let (uid, sid) = seed_owner(&state.pool).await;
     let j = invite_and_accept(&state, uid, &sid).await;
-    sqlx::query("UPDATE cctuiverse_links SET peer_url = 'http://127.0.0.1:9' WHERE id = $1")
-        .bind(j.inviter.id)
-        .execute(&state.pool)
-        .await
-        .unwrap();
     sqlx::query("UPDATE sessions SET status = 'archived' WHERE id = $1")
         .bind(&sid)
         .execute(&state.pool)
         .await
         .unwrap();
 
-    outbox::sweep(&state).await;
+    outbox::close_ending(&state).await.unwrap();
 
     let link = load(&state.pool, j.inviter.id).await.unwrap().unwrap();
     assert_eq!(link.state, LinkState::Closed);
     let notices = close_notices(&state.pool, link.id).await;
-    assert_eq!(notices.len(), 1, "one close notice goes to the peer");
-    assert_ne!(notices[0], "dropped");
+    assert_eq!(notices, ["queued"], "one close notice goes to the peer");
     assert!(
         markers(&state.pool, &sid)
             .await
