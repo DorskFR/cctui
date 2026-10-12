@@ -558,6 +558,7 @@ async fn execute_spawn(
         }),
     };
 
+    let verdict = crate::state::wait_for_verdict(&state.command_waiters, command_id);
     crate::state::track_command(
         &state.pending_commands,
         command_id,
@@ -575,23 +576,32 @@ async fn execute_spawn(
     );
     if let Err(err) = state.bus.command_daemon(machine_uuid, frame).await {
         state.pending_commands.remove(&command_id);
+        state.command_waiters.remove(&command_id);
         if let Err(e) =
             crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
         {
             tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
         }
-        return Err(match err {
-            crate::bus::BusError::NoDaemon(_) => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError {
-                    error: "daemon for that machine is offline — start `cctui-daemon` first".into(),
-                }),
-            ),
-            _ => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
-            ),
-        });
+        return Err(dispatch_error(&err));
+    }
+
+    // A daemon that refuses the spawn on receipt (its command queue is full,
+    // the adapter is not running) answers within milliseconds: tell the caller
+    // now rather than accept a session that is already over. The failed row is
+    // written before the verdict is handed over, so it is on the list too.
+    if let Some(detail) = crate::state::await_early_verdict(
+        &state.command_waiters,
+        command_id,
+        verdict,
+        crate::state::EARLY_VERDICT_WAIT,
+    )
+    .await
+    {
+        tracing::warn!(machine = %req.machine_id, %command_id, %adapter_id, %detail, "spawn refused by the daemon");
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError { error: format!("the daemon refused the spawn: {detail}") }),
+        ));
     }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
@@ -604,6 +614,17 @@ async fn execute_spawn(
             session_id: pre_session_id,
         }),
     ))
+}
+
+/// The 503 a spawn answers when its command never reached the daemon.
+fn dispatch_error(err: &crate::bus::BusError) -> (StatusCode, Json<ApiError>) {
+    let error = match err {
+        crate::bus::BusError::NoDaemon(_) => {
+            "daemon for that machine is offline — start `cctui-daemon` first"
+        }
+        _ => "daemon disconnected mid-dispatch",
+    };
+    (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: error.into() }))
 }
 
 /// Keyed by the id the worker will register as, and stored before dispatch so
