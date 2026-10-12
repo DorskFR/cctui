@@ -21,7 +21,12 @@ RUN npm run prepare && npm run build
 
 # ---- serve ----
 FROM nginx:1.27-alpine@sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8
-COPY webui/nginx.conf /etc/nginx/conf.d/default.conf
+# nginx.conf is a template: the image's entrypoint renders it into
+# conf.d/default.conf at start, substituting CCTUI_FRAME_ANCESTORS only (the
+# filter keeps nginx's own $variables and any other env var untouched).
+ENV CCTUI_FRAME_ANCESTORS="" \
+	NGINX_ENVSUBST_FILTER="^CCTUI_FRAME_ANCESTORS$"
+COPY webui/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/webui/build /usr/share/nginx/html
 # config.js is overridable at deploy time (mount over this path) to point the
 # SPA at a different API origin without rebuilding the image.
