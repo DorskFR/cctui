@@ -438,31 +438,7 @@ async fn sweep_inner(state: &AppState) -> Result<(), sqlx::Error> {
         .execute(&state.pool)
         .await?;
 
-    let ending: Vec<(Uuid, bool)> = sqlx::query_as(
-        "SELECT l.id, (l.state = 'active' AND (l.settings->>'expires_at') IS NOT NULL \
-                       AND (l.settings->>'expires_at')::timestamptz <= now()) AS expired \
-           FROM cctuiverse_links l \
-           LEFT JOIN sessions s ON s.id = l.session_id \
-           LEFT JOIN rooms r ON r.id = l.room_id \
-          WHERE l.state <> 'closed' \
-            AND ((l.state = 'active' AND (l.settings->>'expires_at') IS NOT NULL \
-                  AND (l.settings->>'expires_at')::timestamptz <= now()) \
-                 OR s.status = 'archived' OR r.archived_at IS NOT NULL \
-                 OR (l.state = 'pending' AND l.invite_expires_at < now()) \
-                 OR (l.state = 'pending' AND l.role = 'joiner' \
-                     AND l.created_at < now() - interval '10 minutes')) \
-          LIMIT 200",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    for (id, expired) in ending {
-        if let Some(link) = super::load(&state.pool, id).await? {
-            let reason = if expired { CloseReason::Expired } else { CloseReason::Archived };
-            if let Err(e) = super::close(state, &link, reason).await {
-                tracing::warn!(link = %id, "cctuiverse close failed: {e}");
-            }
-        }
-    }
+    close_ending(state).await?;
 
     sqlx::query(
         "UPDATE cctuiverse_links l SET encrypted_private_key = NULL \
@@ -494,6 +470,37 @@ async fn sweep_inner(state: &AppState) -> Result<(), sqlx::Error> {
             }
         })
         .await;
+    Ok(())
+}
+
+/// Close every link whose session or room is archived, whose expiry passed, or
+/// whose invite went unanswered.
+pub(super) async fn close_ending(state: &AppState) -> Result<(), sqlx::Error> {
+    let ending: Vec<(Uuid, bool)> = sqlx::query_as(
+        "SELECT l.id, (l.state = 'active' AND (l.settings->>'expires_at') IS NOT NULL \
+                       AND (l.settings->>'expires_at')::timestamptz <= now()) AS expired \
+           FROM cctuiverse_links l \
+           LEFT JOIN sessions s ON s.id = l.session_id \
+           LEFT JOIN rooms r ON r.id = l.room_id \
+          WHERE l.state <> 'closed' \
+            AND ((l.state = 'active' AND (l.settings->>'expires_at') IS NOT NULL \
+                  AND (l.settings->>'expires_at')::timestamptz <= now()) \
+                 OR s.status = 'archived' OR r.archived_at IS NOT NULL \
+                 OR (l.state = 'pending' AND l.invite_expires_at < now()) \
+                 OR (l.state = 'pending' AND l.role = 'joiner' \
+                     AND l.created_at < now() - interval '10 minutes')) \
+          LIMIT 200",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    for (id, expired) in ending {
+        if let Some(link) = super::load(&state.pool, id).await? {
+            let reason = if expired { CloseReason::Expired } else { CloseReason::Archived };
+            if let Err(e) = super::close(state, &link, reason).await {
+                tracing::warn!(link = %id, "cctuiverse close failed: {e}");
+            }
+        }
+    }
     Ok(())
 }
 
