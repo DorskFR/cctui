@@ -104,6 +104,25 @@ async fn send_bounded(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
     }
 }
 
+/// Queue a correlated reply without awaiting the channel: the transport loop
+/// is its only reader, so blocking here on a full channel would deadlock it.
+fn send_reply(frame_up_tx: &mpsc::Sender<DaemonFrameUp>, up: DaemonFrameUp) {
+    match frame_up_tx.try_send(up) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(up)) => {
+            let tx = frame_up_tx.clone();
+            tokio::spawn(async move {
+                if tx.send(up).await.is_err() {
+                    tracing::warn!("frame_up channel closed; dropping a correlated reply");
+                }
+            });
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            tracing::warn!("frame_up channel closed; dropping a correlated reply");
+        }
+    }
+}
+
 /// Same, on the shorter shutdown budget.
 async fn send_shutdown(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
     match tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, sink.send(msg)).await {
@@ -395,6 +414,12 @@ impl Supervisor {
                             }
                         }
                     }
+                    // Ahead of the chunk branch, or a server round-trip times out
+                    // behind a whole transfer.
+                    Some(frame) = frame_up_rx.recv() => {
+                        let payload = serde_json::to_string(&frame)?;
+                        send_bounded(&mut sink, Message::Text(payload.into())).await?;
+                    }
                     () = std::future::ready(()), if active.as_ref().is_some_and(PendingTransfer::has_unsent) => {
                         if let Some(t) = active.as_mut() {
                             let (frame, retransmit) = t.next_frame();
@@ -404,10 +429,6 @@ impl Supervisor {
                             self.counters.add(subsystem, payload.len() as u64);
                             send_bounded(&mut sink, Message::Text(payload.into())).await?;
                         }
-                    }
-                    Some(frame) = frame_up_rx.recv() => {
-                        let payload = serde_json::to_string(&frame)?;
-                        send_bounded(&mut sink, Message::Text(payload.into())).await?;
                     }
                     // Pause new events while a chunked transfer is in flight so a
                     // single WS carries one large transfer at a time.
@@ -715,9 +736,7 @@ impl Supervisor {
             }
             DaemonFrameDown::StageFiles { request_id, adapter_id, local_id, uploads } => {
                 let up = stage_files_result(request_id, &adapter_id, &local_id, &uploads);
-                if frame_up_tx.send(up).await.is_err() {
-                    tracing::warn!("frame_up channel closed; dropping StageFilesResult");
-                }
+                send_reply(frame_up_tx, up);
             }
             DaemonFrameDown::ListDirs { request_id, path } => {
                 let up = match crate::listdirs::list_dirs(&path) {
@@ -731,9 +750,7 @@ impl Supervisor {
                         error: Some(err.to_string()),
                     },
                 };
-                if frame_up_tx.send(up).await.is_err() {
-                    tracing::warn!("frame_up channel closed; dropping ListDirsResult");
-                }
+                send_reply(frame_up_tx, up);
             }
             DaemonFrameDown::GitInfo { request_id, path, include_dirty } => {
                 let roots = crate::git::default_roots();
@@ -751,9 +768,7 @@ impl Supervisor {
                         error: Some(err.to_string()),
                     },
                 };
-                if frame_up_tx.send(up).await.is_err() {
-                    tracing::warn!("frame_up channel closed; dropping GitInfoResult");
-                }
+                send_reply(frame_up_tx, up);
             }
             DaemonFrameDown::ReadFile { request_id, path, max_bytes, cwd } => {
                 self.spawn_read_file(request_id, path, max_bytes, cwd, frame_up_tx.clone());
@@ -3059,5 +3074,27 @@ mod tests {
         let up = super::stage_files_result(uuid::Uuid::new_v4(), "gemini", "test-x", &[file]);
         let DaemonFrameUp::StageFilesResult { ok, .. } = up else { panic!() };
         assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn send_reply_on_a_full_channel_does_not_block_and_still_delivers() {
+        let (tx, mut rx) = mpsc::channel::<DaemonFrameUp>(1);
+        let reply = |request_id| DaemonFrameUp::StageFilesResult {
+            request_id,
+            ok: true,
+            paths: Vec::new(),
+            error: None,
+        };
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        super::send_reply(&tx, reply(first));
+        super::send_reply(&tx, reply(second));
+        for expected in [first, second] {
+            let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let DaemonFrameUp::StageFilesResult { request_id, .. } = got else { panic!() };
+            assert_eq!(request_id, expected);
+        }
     }
 }

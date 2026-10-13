@@ -726,7 +726,7 @@ impl Bus {
                     self.inner.pending_stage.remove(&request_id);
                     return Err(BusError::Closed);
                 }
-                match tokio::time::timeout(STAGE_TIMEOUT, reply_rx).await {
+                match tokio::time::timeout(STAGE_TIMEOUT, unless_closed(&tx, reply_rx)).await {
                     Ok(Ok(Ok(paths))) => Ok(DaemonResponse::StagedFiles(paths)),
                     Ok(Ok(Err(msg))) => Err(BusError::Staging(msg)),
                     // Sender dropped (daemon disconnected mid-request) — clean
@@ -748,7 +748,7 @@ impl Bus {
                     self.inner.pending_listdirs.remove(&request_id);
                     return Err(BusError::Closed);
                 }
-                match tokio::time::timeout(LIST_DIRS_TIMEOUT, reply_rx).await {
+                match tokio::time::timeout(LIST_DIRS_TIMEOUT, unless_closed(&tx, reply_rx)).await {
                     Ok(Ok(Ok(dirs))) => Ok(DaemonResponse::Dirs(dirs)),
                     Ok(Ok(Err(msg))) => Err(BusError::ListDirs(msg)),
                     Ok(Err(_)) => {
@@ -769,7 +769,7 @@ impl Bus {
                     self.inner.pending_gitinfo.remove(&request_id);
                     return Err(BusError::Closed);
                 }
-                match tokio::time::timeout(LIST_DIRS_TIMEOUT, reply_rx).await {
+                match tokio::time::timeout(LIST_DIRS_TIMEOUT, unless_closed(&tx, reply_rx)).await {
                     Ok(Ok(Ok(info))) => Ok(DaemonResponse::GitInfo(info)),
                     Ok(Ok(Err(msg))) => Err(BusError::GitInfo(msg)),
                     Ok(Err(_)) => {
@@ -800,7 +800,7 @@ impl Bus {
                     self.inner.pending_diagnose.remove(&request_id);
                     return Err(BusError::Closed);
                 }
-                match tokio::time::timeout(DIAGNOSE_TIMEOUT, reply_rx).await {
+                match tokio::time::timeout(DIAGNOSE_TIMEOUT, unless_closed(&tx, reply_rx)).await {
                     Ok(Ok(report)) => Ok(DaemonResponse::Diagnose(report)),
                     Ok(Err(_)) => {
                         self.inner.pending_diagnose.remove(&request_id);
@@ -830,7 +830,7 @@ impl Bus {
             self.inner.pending_readfile.remove(&request_id);
             return Err(BusError::Closed);
         }
-        match tokio::time::timeout(READ_FILE_TIMEOUT, reply_rx).await {
+        match tokio::time::timeout(READ_FILE_TIMEOUT, unless_closed(&tx, reply_rx)).await {
             Ok(Ok(Ok(file))) => Ok(DaemonResponse::File(file)),
             Ok(Ok(Err(refusal))) => Err(BusError::ReadFile(refusal)),
             Ok(Err(_)) => {
@@ -1074,6 +1074,23 @@ pub async fn dispatch(
             DaemonFrameDown::Command { adapter_id, command: Box::new(command) },
         )
         .await
+}
+
+/// A parked daemon reply, abandoned as soon as the connection the request went
+/// out on closes: a reply can only come back on that connection.
+async fn unless_closed<T>(
+    tx: &mpsc::Sender<DaemonFrameDown>,
+    reply_rx: oneshot::Receiver<T>,
+) -> Result<T, oneshot::error::RecvError> {
+    tokio::select! {
+        biased;
+        reply = reply_rx => reply,
+        () = tx.closed() => {
+            let (abandoned, reply_rx) = oneshot::channel::<T>();
+            drop(abandoned);
+            reply_rx.await
+        }
+    }
 }
 
 fn is_interrupt(frame: &DaemonFrameDown) -> bool {
@@ -1736,6 +1753,39 @@ mod tests {
             .unwrap();
         assert!(matches!(response, DaemonResponse::StagedFiles(p) if p == vec!["/tmp/a.txt"]));
         fake_daemon.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stage_files_fails_fast_when_its_connection_closes() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
+
+        let fake_daemon = tokio::spawn(async move {
+            let Some(DaemonFrameDown::StageFiles { request_id, .. }) = rx.recv().await else {
+                panic!("expected StageFiles");
+            };
+            drop(rx);
+            request_id
+        });
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            bus.request_daemon(
+                machine,
+                DaemonRequest::StageFiles {
+                    adapter_id: "claude-code".into(),
+                    local_id: "sess-1".into(),
+                    uploads: Vec::new(),
+                },
+            ),
+        )
+        .await
+        .expect("a closed connection must not wait out the stage timeout");
+        assert!(matches!(outcome, Err(BusError::Closed)));
+        let request_id = fake_daemon.await.unwrap();
+        assert!(!bus.resolve_stage_files(request_id, Ok(Vec::new())));
     }
 
     #[tokio::test]
