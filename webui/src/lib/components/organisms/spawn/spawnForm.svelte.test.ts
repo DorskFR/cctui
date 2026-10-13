@@ -5,7 +5,7 @@ import { drafts, LAST_SPAWN_NAME, SPAWN_SLOT, spawnSlotKey } from '$lib/drafts';
 import { FOLLOWUP_RELATION } from '$lib/followup';
 import { attachmentStore } from '$lib/attachmentStore';
 import { SpawnForm, type SpawnFormOptions } from './spawnForm.svelte';
-import { saveDraft } from './spawnSubmit';
+import { saveDraft, spawnOnMachine } from './spawnSubmit';
 import { NO_ACCOUNT } from './options';
 
 const machineList = [{ id: 'm-uuid-1', name: 'box', display_name: 'box', kind: 'persistent', hue: null }];
@@ -13,6 +13,8 @@ let dispatcherList: string[] = [];
 const spawn = vi.fn();
 const updateDraft = vi.fn();
 const setDraftAttachments = vi.fn();
+const listSessions = vi.fn();
+const discardDraft = vi.fn();
 
 vi.mock('$lib/queries', () => {
 	const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
@@ -35,9 +37,9 @@ vi.mock('$lib/queries', () => {
 			spawn,
 			updateDraft,
 			setDraftAttachments,
-			discardDraft: async () => {}
+			discardDraft
 		}),
-		endpoints: { machineDirs: async () => [], sessions: async () => ({ sessions: [] }) }
+		endpoints: { machineDirs: async () => [], sessions: () => listSessions() }
 	};
 });
 
@@ -51,7 +53,16 @@ vi.mock('$lib/settings.svelte', () => ({
 	}
 }));
 
-vi.mock('$lib/ws.svelte', () => ({ ws: { sessions: [] } }));
+vi.mock('$lib/ws.svelte', async () => {
+	const { CommandWaiters } = await import('$lib/ws/commands');
+	return { ws: {
+		sessions: [],
+		awaitSpawn: (commandId: string, sessionId: string | null, opts: object) =>
+			new CommandWaiters().awaitSpawn(commandId, sessionId, {
+				...opts, probeIntervalMs: 1, timeoutMs: 100
+			})
+	} };
+});
 
 const SLOT = spawnSlotKey('m-uuid-1', '/w');
 const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -77,6 +88,8 @@ beforeEach(() => {
 	spawn.mockReset();
 	updateDraft.mockReset();
 	setDraftAttachments.mockReset();
+	listSessions.mockReset().mockResolvedValue({ sessions: [] });
+	discardDraft.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => {
 	stop?.();
@@ -421,5 +434,49 @@ describe('SpawnForm draft attachments', () => {
 		await settle();
 		expect(sf.files.map((f) => f.name)).toEqual(['restored.png', 'pasted.txt']);
 		expect(sf.form.prompt).toBe('[restored.png] [pasted.txt]');
+	});
+});
+
+
+describe('SpawnForm native-id launch confirmation', () => {
+	it('clears the dock and its persisted draft when Codex registers without an ack', async () => {
+		const onspawned = vi.fn();
+		const onclose = vi.fn();
+		const sf = open({ docked: () => true, onspawned, onclose });
+		await settle();
+		sf.form.working_dir = '/w';
+		sf.form.adapter_id = 'codex';
+		sf.form.name = 'Native thread';
+		sf.form.prompt = 'Do the work';
+		sf.files = [new File(['brief'], 'brief.txt')];
+		sf.draftId = 'draft-mirror';
+		flushSync();
+		spawn.mockResolvedValue({ command_id: 'codex-command', session_id: null });
+		listSessions.mockResolvedValue({ sessions: [{
+			id: 'native-thread', machine_id: 'm-uuid-1',
+			metadata: { spawn_key: 'codex-command' }, end_reason: null
+		}] });
+		await spawnOnMachine(sf);
+		flushSync();
+		expect(onspawned).toHaveBeenCalledWith('native-thread');
+		expect(onclose).toHaveBeenCalledOnce();
+		expect(discardDraft).toHaveBeenCalledWith('draft-mirror');
+		expect(sf.form.prompt).toBe('');
+		expect(sf.form.name).toBe('');
+		expect(sf.files).toEqual([]);
+		// Remounting the permanent dock must not resurrect the submitted prompt.
+		stop?.();
+		const reopened = open({ docked: () => true });
+		expect(reopened.form.prompt).toBe('');
+	});
+
+	it('keeps the draft when no session or ack confirms the launch', async () => {
+		const sf = open({ docked: () => true });
+		sf.form.prompt = 'Keep this unconfirmed request';
+		sf.draftId = 'draft-mirror';
+		spawn.mockResolvedValue({ command_id: 'missing-command', session_id: null });
+		await spawnOnMachine(sf);
+		expect(sf.form.prompt).toBe('Keep this unconfirmed request');
+		expect(discardDraft).not.toHaveBeenCalled();
 	});
 });

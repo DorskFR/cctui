@@ -16,6 +16,7 @@ import { settings } from '$lib/settings.svelte';
 import { m } from '$lib/paraglide/messages';
 import { buildDispatchBody } from './dispatchBody';
 import { attachLabelsTo } from './labelAttach';
+import { findSpawnedSession } from './spawnMatch';
 import { envMap } from './spawnBody';
 import type { SpawnForm } from './spawnForm.svelte';
 import { findInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
@@ -140,12 +141,20 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	});
 	sf.rememberProfileUse(profile);
 	toasts.info(m.spawn_toast_spawning());
-	const sessionId = res.session_id ?? null;
+	let sessionId = res.session_id ?? null;
 	const result = await ws.awaitSpawn(res.command_id, sessionId, {
-		probe: sessionId ? () => spawnProbe(sf, sessionId) : undefined
+		// Codex/OpenCode choose their id after dispatch. Their persisted spawn_key
+		// lets the list recover even an ack lost before this waiter was installed.
+		probe: async () => {
+			const { sessions } = await sf.labelApi.listSessions();
+			const hit = findSpawnedSession(sessions, memoryMachine, res.command_id, sessionId);
+			if (hit) sessionId = hit.id;
+			return hit;
+		}
 	});
 	if (invite && sessionId && (result.ok || result.timedOut)) {
-		void joinAfterSpawn(invite, sessionId, joinLabel, { probe: () => spawnProbe(sf, sessionId) }).then(
+		const confirmedId = sessionId;
+		void joinAfterSpawn(invite, confirmedId, joinLabel, { probe: () => spawnProbe(sf, confirmedId) }).then(
 			(link) => toasts.ok(m.cctuiverse_linked_with({ peer: link.peer_label ?? '' })),
 			(e) => toasts.error(m.cctuiverse_join_failed({ error: errMessage(e) }), 0)
 		);
