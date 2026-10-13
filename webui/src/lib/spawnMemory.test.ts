@@ -16,6 +16,9 @@ import {
 	machineMemoryKey,
 	memoryFieldsOf,
 	putSpawnMemory,
+	recalledAccount,
+	storableSpawnMemory,
+	storedAccount,
 	SPAWN_MEMORY_CAP,
 	type SpawnMemoryEntry,
 	type SpawnMemoryMap
@@ -343,5 +346,41 @@ describe('profile usage log', () => {
 		let raw = '[]';
 		for (let i = 0; i < 250; i++) raw = recordProfileUse(raw, 'p1', now - i);
 		expect(JSON.parse(raw).p1).toHaveLength(200);
+	});
+});
+
+describe('account sentinels in the settings blob', () => {
+	// JSONB refuses \u0000: an entry holding a raw pool or no-account sentinel
+	// failed every settings PUT, so the panel kept recalling an older spawn.
+	const POOL = '\u0000pool:Pool A';
+	const NONE = '\u0000no-account';
+
+	it('stores a sentinel without NUL and recalls it intact', () => {
+		for (const picked of [POOL, NONE]) {
+			const stored = storedAccount(picked);
+			expect(stored).not.toContain('\u0000');
+			expect(stored.startsWith(SEP)).toBe(true);
+			expect(recalledAccount(stored)).toBe(picked);
+		}
+		for (const plain of ['', 'work']) {
+			expect(storedAccount(plain)).toBe(plain);
+			expect(recalledAccount(plain)).toBe(plain);
+		}
+	});
+
+	it('a pool spawn survives the JSON round trip and seeds the form back', () => {
+		const remembered = entryFromForm({ ...fields(), account: POOL, account_provider: '' });
+		const json = JSON.stringify(remembered);
+		expect(json).not.toContain('\\u0000');
+		const back = JSON.parse(json) as SpawnMemoryEntry;
+		const initial = fields({ account: '' });
+		const patch = applyMemory(MACHINE_MEMORY_FIELDS, initial, initial, null, { ...back, at: 1 });
+		expect(patch.account).toBe(POOL);
+	});
+
+	it('heals a local mirror written before the encoding', () => {
+		const healed = storableSpawnMemory({ k: entry({ account: POOL }), j: entry() });
+		expect(healed.k.account).toBe(storedAccount(POOL));
+		expect(healed.j.account).toBe('work');
 	});
 });

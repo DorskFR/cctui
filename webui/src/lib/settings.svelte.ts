@@ -19,6 +19,7 @@ import {
   latestDirFor,
   latestEntryFor,
   putSpawnMemory,
+  storableSpawnMemory,
   type SpawnMemoryEntry,
   type SpawnMemoryMap,
 } from "./spawnMemory";
@@ -667,7 +668,7 @@ export function mergeDefaults(
       config: clampPluginsConfig(p.plugins?.config),
     },
     toastPosition: clampToastPosition(p.toastPosition),
-    spawnMemory: p.spawnMemory ?? {},
+    spawnMemory: storableSpawnMemory(p.spawnMemory ?? {}),
     shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
     keymap: p.keymap ?? DEFAULTS.keymap,
     locale: clampLocale(p.locale),
