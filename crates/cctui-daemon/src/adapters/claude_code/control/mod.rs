@@ -35,6 +35,7 @@ use crate::adapter_runtime::{CommandOutcome, Handled, Interrupter, SessionDriver
 
 mod delivered;
 mod diagnose;
+mod liveness;
 mod removal;
 mod reply;
 mod settings;
@@ -358,6 +359,7 @@ pub struct Driver {
     /// Cleared when the worker revives (reports alive again) or drops
     /// off the roster.
     dead_shorts: HashSet<String>,
+    liveness: liveness::Liveness,
     /// Shorts the last `list` reported with a non-fleet `source`. No automatic
     /// path may attach to, kill or `claude rm` one of these.
     foreign_shorts: HashSet<String>,
@@ -712,6 +714,7 @@ impl Driver {
             roster: HashSet::new(),
             last_status: HashMap::new(),
             dead_shorts: HashSet::new(),
+            liveness: liveness::Liveness::default(),
             foreign_shorts: HashSet::new(),
             native_live: false,
             session_to_local: Arc::new(Mutex::new(HashMap::new())),
@@ -1102,6 +1105,7 @@ impl Driver {
         let availability = self.cfg.discovery.availability().await;
         if let super::discovery::Availability::Busy(sock) = &availability {
             tracing::debug!(sock = %sock.display(), "claude daemon is slow; retaining workers and attach sockets");
+            self.probe_liveness(sock).await;
             return Ok(());
         }
         let super::discovery::Availability::Live(sock) = availability else {
@@ -1120,8 +1124,17 @@ impl Driver {
             return Ok(());
         };
 
-        let resp: ListResponse = socket::call(&sock, &json!({"proto": 1, "op": "list"})).await?;
+        let resp: ListResponse = match socket::call(&sock, &json!({"proto": 1, "op": "list"})).await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                self.probe_liveness(&sock).await;
+                return Err(err);
+            }
+        };
+        self.liveness.set_host(&sock);
         self.apply_snapshot(resp.jobs).await;
+        self.probe_liveness(&sock).await;
         let reattached = self.churned;
         if self.churned {
             self.churned = false;
