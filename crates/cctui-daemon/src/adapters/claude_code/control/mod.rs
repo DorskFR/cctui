@@ -470,6 +470,14 @@ pub struct Driver {
     /// link the server resolves into `parent_id`). `Mutex` for the same reason as
     /// `spawn_model_effort`.
     fork_parent_by_short: std::sync::Mutex<HashMap<String, (String, &'static str)>>,
+    /// The `SessionStarted` last emitted per listed short (`local_id`, meta),
+    /// replayed on every connect edge. A registration lost with a dropped WS
+    /// otherwise never reaches the server again: the short stays in `roster`,
+    /// so roster discovery never re-announces it, and the session works for
+    /// hours with no row (404, every usage frame an FK error).
+    announced_meta: std::sync::Mutex<HashMap<String, (String, SessionMeta)>>,
+    /// Connect edges from the supervisor (see [`Self::with_connected`]).
+    connected: Option<tokio::sync::broadcast::Receiver<()>>,
     /// Authenticated server client + machine key for the launch-time gateway-env
     /// pull. Every worker (re)launch resolves the session's account
     /// env here from the server's durable `sessions.account_id` binding, so
@@ -519,13 +527,31 @@ struct PendingPerm {
     needs: String,
 }
 
-/// How many consecutive idle polls mark a subagent's transcript as done.
-/// Subagents run to completion without waiting for input, so a quiescent
-/// transcript reliably signals the subagent has finished (~30s at the 2s
-/// default poll). Lifecycle end never arrives over the control socket
-/// (subagents aren't `list` jobs), so quiescence is the primary signal,
-/// with parent-session end as a backstop.
+/// How many consecutive idle polls end a subagent whose transcript closes on a
+/// finished turn (~30s at the 2s default poll). Lifecycle end never arrives
+/// over the control socket (subagents aren't `list` jobs), so quiescence is
+/// the primary signal, with parent-session end as a backstop.
+///
+/// Quiescence alone is not enough: a subagent blocked in a long tool call (a
+/// test suite, a `flock` wait) or a long thought writes nothing for minutes
+/// while it is still working. Only a transcript whose last entry is a finished
+/// assistant turn counts as done after this short window.
 const SUBAGENT_IDLE_TICKS_TO_END: u32 = 15;
+
+/// Backstop for a subagent whose transcript stops mid-turn (a pending tool
+/// call, a reply still streaming): ~45 min at the 2s default poll, longer than
+/// any single foreground tool call, so a crashed subagent still ends.
+const SUBAGENT_STALL_TICKS_TO_END: u32 = 1350;
+
+/// The next supervisor connect edge, or never when there is no receiver.
+async fn next_edge(
+    rx: Option<&mut tokio::sync::broadcast::Receiver<()>>,
+) -> Result<(), tokio::sync::broadcast::error::RecvError> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
 
 #[derive(Debug, Clone)]
 struct TranscriptLocation {
@@ -542,6 +568,9 @@ struct TranscriptLocation {
 struct SubagentState {
     /// The parent session id (== parent's `local_id` / DB row id).
     parent_local_id: String,
+    /// The subagent's own transcript, read to tell a finished turn from a
+    /// quiet one.
+    path: PathBuf,
     /// Consecutive polls during which the transcript did not grow.
     idle_ticks: u32,
 }
@@ -725,6 +754,8 @@ impl Driver {
             pending_turns: std::sync::Mutex::new(HashMap::new()),
             delivered: delivered::Delivered::default(),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
+            announced_meta: std::sync::Mutex::new(HashMap::new()),
+            connected: None,
             server: None,
             machine_key: None,
             dispatch_done: std::sync::Mutex::new(None),
@@ -735,6 +766,13 @@ impl Driver {
             pty_view,
             last_reseed: None,
         }
+    }
+
+    /// Re-announce every live session on each supervisor connect edge.
+    #[must_use]
+    pub fn with_connected(mut self, connected: tokio::sync::broadcast::Receiver<()>) -> Self {
+        self.connected = Some(connected);
+        self
     }
 
     /// Attach the authenticated server client + machine key used by the
@@ -815,6 +853,7 @@ impl Driver {
         let mut tick = tokio::time::interval(self.cfg.poll_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let events = self.events.clone();
+        let mut connected = self.connected.take();
         loop {
             tokio::select! {
                 // Biased: the interval's first tick is ready immediately, so an
@@ -828,6 +867,15 @@ impl Driver {
                 }
                 Some(cmd) = self.commands.recv() => {
                     crate::adapter_runtime::dispatch_command(&mut self, &events, cmd).await;
+                }
+                edge = next_edge(connected.as_mut()), if connected.is_some() => {
+                    // Lagged is an edge like any other; Closed only retires
+                    // the arm (a closed receiver is ready forever).
+                    if matches!(edge, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                        connected = None;
+                        continue;
+                    }
+                    self.reannounce_live().await;
                 }
                 _ = tick.tick() => {
                     if let Err(err) = self.poll_once().await {

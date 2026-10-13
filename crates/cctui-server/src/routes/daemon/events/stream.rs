@@ -23,12 +23,16 @@ async fn insert_token_usage(
     let cc = i64::try_from(cache_creation_tokens).unwrap_or(i64::MAX);
     // Opencode is metered by the gateway capture (model stamped); the daemon's
     // model-NULL row for the same message would double-count. Gate it to a no-op
-    // for opencode sessions so exactly one path meters them.
+    // for opencode sessions so exactly one path meters them. A session with no
+    // row (its registration was lost with a dropped WS, and the daemon
+    // re-announces it on the next connect) is skipped like `Message` is,
+    // rather than failing the FK once per usage frame.
     sqlx::query(
         "INSERT INTO session_token_usage \
             (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) \
          SELECT $1, $2, $3, $4, $5, $6 \
-         WHERE NOT EXISTS ( \
+         WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+         AND NOT EXISTS ( \
              SELECT 1 FROM sessions WHERE id = $1 AND adapter_id LIKE 'opencode%') \
          ON CONFLICT (session_id, message_id) DO NOTHING",
     )
