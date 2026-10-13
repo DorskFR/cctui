@@ -18,7 +18,8 @@ import { buildDispatchBody } from './dispatchBody';
 import { attachLabelsTo } from './labelAttach';
 import { envMap } from './spawnBody';
 import type { SpawnForm } from './spawnForm.svelte';
-import { findInvite, joinInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
+import { findInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
+import { joinAfterSpawn } from '$lib/cctuiverseJoin';
 import { cctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
 
 /** Identity of the form's file set: what decides whether a save has to ship
@@ -144,9 +145,9 @@ export async function spawnOnMachine(sf: SpawnForm) {
 		probe: sessionId ? () => spawnProbe(sf, sessionId) : undefined
 	});
 	if (invite && sessionId && (result.ok || result.timedOut)) {
-		void joinInvite(invite, sessionId, joinLabel).then(
+		void joinAfterSpawn(invite, sessionId, joinLabel, { probe: () => spawnProbe(sf, sessionId) }).then(
 			(link) => toasts.ok(m.cctuiverse_linked_with({ peer: link.peer_label ?? '' })),
-			(e) => toasts.error(m.cctuiverse_join_failed({ error: errMessage(e) }))
+			(e) => toasts.error(m.cctuiverse_join_failed({ error: errMessage(e) }), 0)
 		);
 	}
 	if (sf.followupParent) drafts.set(FOLLOWUP_ARCHIVE_SOURCE, sf.archiveSource ? '1' : '');
