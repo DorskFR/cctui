@@ -56,7 +56,8 @@ export class CommandWaiters {
 	 * for `commandId`, any event for the pre-minted `sessionId` on this
 	 * socket, or `probe` finding the session's row. The ack is the only one of
 	 * those the server never replays, so the other two cover a lost or late
-	 * frame; the timeout is the last resort and still not a failure (see
+	 * frame. A probe may also correlate a native-id spawn by its dispatch key
+	 * without a pre-minted session id. The timeout is still not a failure (see
 	 * `awaitCommand`). */
 	awaitSpawn(
 		commandId: string,
@@ -67,7 +68,7 @@ export class CommandWaiters {
 			timeoutMs?: number;
 		} = {}
 	): Promise<CommandOutcome> {
-		if (!sessionId) return this.awaitCommand(commandId, opts.timeoutMs);
+		if (!sessionId && !opts.probe) return this.awaitCommand(commandId, opts.timeoutMs);
 		const interval = opts.probeIntervalMs ?? SPAWN_PROBE_INTERVAL_MS;
 		return new Promise((resolve) => {
 			let settled = false;
@@ -76,12 +77,12 @@ export class CommandWaiters {
 				if (settled) return;
 				settled = true;
 				this.waiters.delete(commandId);
-				this.spawnWaiters.delete(sessionId);
+				if (sessionId) this.spawnWaiters.delete(sessionId);
 				if (probeTimer) clearTimeout(probeTimer);
 				resolve(r);
 			};
 			void this.awaitCommand(commandId, opts.timeoutMs).then(finish);
-			this.spawnWaiters.set(sessionId, finish);
+			if (sessionId) this.spawnWaiters.set(sessionId, finish);
 			const { probe } = opts;
 			if (!probe) return;
 			const tick = async () => {

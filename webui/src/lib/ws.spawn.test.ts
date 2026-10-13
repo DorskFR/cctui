@@ -65,6 +65,26 @@ const settled = async <T>(p: Promise<T>): Promise<T | 'pending'> => {
 };
 
 describe('awaitSpawn', () => {
+	it('recovers a native-id spawn from its probe without a pre-minted id or ack', async () => {
+		const c = openClient();
+		const probe = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ end_reason: null });
+		const p = c.awaitSpawn('codex-command', null, { probe, probeIntervalMs: 1000 });
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(await settled(p)).toBe('pending');
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(await p).toEqual({ ok: true });
+		await vi.advanceTimersByTimeAsync(SPAWN_ACK_TIMEOUT_MS);
+		expect(probe).toHaveBeenCalledTimes(2);
+	});
+
+	it('preserves a native-id spawn failure found by the probe', async () => {
+		const c = openClient();
+		const probe = vi.fn().mockResolvedValue({ end_reason: 'spawn_failed', end_detail: 'failed' });
+		const p = c.awaitSpawn('codex-command', null, { probe, probeIntervalMs: 1000 });
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(await p).toEqual({ ok: false, error: 'failed' });
+	});
+
 	it('resolves on the command_result ack as before', async () => {
 		const c = openClient();
 		const p = c.awaitSpawn('cmd-1', 'sess-1');
