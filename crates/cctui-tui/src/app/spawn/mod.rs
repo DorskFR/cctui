@@ -305,7 +305,7 @@ impl SpawnForm {
             model_account: self.fields.model_account.clone(),
             effort_claude: self.fields.effort_claude.clone(),
             effort_codex: self.fields.effort_codex.clone(),
-            account: self.fields.account.clone(),
+            account: cctui_proto::drafts::stored_account(&self.fields.account),
             account_provider: self.fields.account_provider.clone(),
             permission_mode: self.fields.permission_mode.clone(),
             name: self.fields.name.clone(),
@@ -327,7 +327,7 @@ impl SpawnForm {
         f.model_account.clone_from(&entry.model_account);
         f.effort_claude.clone_from(&entry.effort_claude);
         f.effort_codex.clone_from(&entry.effort_codex);
-        f.account.clone_from(&entry.account);
+        f.account = cctui_proto::drafts::recalled_account(&entry.account);
         f.account_provider.clone_from(&entry.account_provider);
         f.permission_mode.clone_from(&entry.permission_mode);
         f.name.clone_from(&entry.name);
@@ -1163,6 +1163,20 @@ mod reduce_tests {
             at,
             ..cctui_proto::drafts::SpawnMemoryEntry::default()
         }
+    }
+
+    #[test]
+    fn a_pool_pick_is_remembered_without_nul_and_recalled_intact() {
+        let mut app = app();
+        reduce(&mut app, SpawnAction::Open);
+        let form = app.spawn.as_mut().expect("a form");
+        let pool = cctui_clientcore::spawn::pool_value("Pool A");
+        form.fields.account.clone_from(&pool);
+        let entry = form.memory_entry(1);
+        assert!(!entry.account.contains('\0'), "JSONB refuses NUL: {:?}", entry.account);
+        form.fields.account.clear();
+        form.apply_memory(&entry);
+        assert_eq!(form.fields.account, pool);
     }
 
     #[test]
