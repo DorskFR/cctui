@@ -102,35 +102,74 @@ enum Inbound {
     Idle,
 }
 
-/// One poll of the inbound WS: the next frame, or a liveness-ticker tick. Any
-/// yielded frame — including a ping/pong tungstenite surfaces mid data-message —
-/// refreshes `last_frame`, so liveness tracks frame arrival rather than
-/// data-message completion. `stream.next()` is cancel-safe, so dropping
-/// it on a ticker tick loses nothing.
-async fn next_inbound<S>(
-    stream: &mut S,
-    last_frame: &mut tokio::time::Instant,
-    liveness: &mut tokio::time::Interval,
-    timeout: std::time::Duration,
-) -> Inbound
+/// The inbound half of a daemon WS plus its liveness clock.
+///
+/// The read loop is serial: a decoded frame is processed (often against the
+/// database) before the next one is read, so while the server is slow the
+/// daemon's frames wait in the socket buffer. Peer silence is therefore only
+/// measured while we are actually listening — the clock restarts when the loop
+/// comes back for the next frame — and a frame already buffered always wins
+/// over the liveness tick. A slow database never evicts a live daemon; a
+/// half-open one is still evicted one timeout after we resume listening.
+struct InboundReader<'a, S> {
+    stream: &'a mut S,
+    last_frame: tokio::time::Instant,
+    liveness: tokio::time::Interval,
+    timeout: Duration,
+    /// A data frame was handed to the caller, so the time until the next call
+    /// was spent processing it, not waiting on the peer.
+    handed_out: bool,
+}
+
+impl<'a, S> InboundReader<'a, S>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
 {
-    tokio::select! {
-        item = stream.next() => match item {
-            Some(Ok(msg)) => {
-                *last_frame = tokio::time::Instant::now();
-                match msg {
-                    Message::Text(t) => Inbound::Data(t.to_string()),
-                    Message::Binary(b) => Inbound::Binary(b.to_vec()),
-                    Message::Close(_) => Inbound::Done,
-                    _ => Inbound::Skip,
+    async fn new(stream: &'a mut S, timeout: Duration, check: Duration) -> Self {
+        let mut liveness = tokio::time::interval(check);
+        liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        liveness.tick().await;
+        Self {
+            stream,
+            last_frame: tokio::time::Instant::now(),
+            liveness,
+            timeout,
+            handed_out: false,
+        }
+    }
+
+    /// One poll of the inbound WS: the next frame, or a liveness-ticker tick.
+    /// Any yielded frame — including a ping/pong tungstenite surfaces mid
+    /// data-message — refreshes the clock, so liveness tracks frame arrival
+    /// rather than data-message completion. `stream.next()` is cancel-safe, so
+    /// dropping it on a ticker tick loses nothing.
+    async fn next(&mut self) -> Inbound {
+        if std::mem::take(&mut self.handed_out) {
+            self.last_frame = tokio::time::Instant::now();
+        }
+        tokio::select! {
+            biased;
+            item = self.stream.next() => match item {
+                Some(Ok(msg)) => {
+                    self.last_frame = tokio::time::Instant::now();
+                    match msg {
+                        Message::Text(t) => {
+                            self.handed_out = true;
+                            Inbound::Data(t.to_string())
+                        }
+                        Message::Binary(b) => {
+                            self.handed_out = true;
+                            Inbound::Binary(b.to_vec())
+                        }
+                        Message::Close(_) => Inbound::Done,
+                        _ => Inbound::Skip,
+                    }
                 }
+                Some(Err(_)) | None => Inbound::Done,
+            },
+            _ = self.liveness.tick() => {
+                if self.last_frame.elapsed() >= self.timeout { Inbound::Idle } else { Inbound::Skip }
             }
-            Some(Err(_)) | None => Inbound::Done,
-        },
-        _ = liveness.tick() => {
-            if last_frame.elapsed() >= timeout { Inbound::Idle } else { Inbound::Skip }
         }
     }
 }
@@ -226,25 +265,20 @@ impl Conn {
         stream: &mut SplitStream<WebSocket>,
         tx: &mpsc::Sender<DaemonFrameDown>,
     ) {
-        let mut last_frame = tokio::time::Instant::now();
-        let mut liveness = tokio::time::interval(DAEMON_LIVENESS_CHECK);
-        liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        liveness.tick().await;
+        let mut reader =
+            InboundReader::new(stream, DAEMON_READ_TIMEOUT, DAEMON_LIVENESS_CHECK).await;
         let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
         loop {
             reasm.evict_older_than(STALE_TRANSFER);
-            let inbound =
-                match next_inbound(stream, &mut last_frame, &mut liveness, DAEMON_READ_TIMEOUT)
-                    .await
-                {
-                    data @ (Inbound::Data(_) | Inbound::Binary(_)) => data,
-                    Inbound::Skip => continue,
-                    Inbound::Done => break,
-                    Inbound::Idle => {
-                        note_idle_eviction(&self.state, self.machine_id);
-                        break;
-                    }
-                };
+            let inbound = match reader.next().await {
+                data @ (Inbound::Data(_) | Inbound::Binary(_)) => data,
+                Inbound::Skip => continue,
+                Inbound::Done => break,
+                Inbound::Idle => {
+                    note_idle_eviction(&self.state, self.machine_id);
+                    break;
+                }
+            };
             let Some(frame) = decode_inbound(inbound) else { continue };
             match leaves_of(frame, &mut reasm, tx).await {
                 Leaves::Frames(leaves) => self.ingest_leaves(leaves).await,
@@ -617,15 +651,66 @@ mod tests {
     where
         S: Stream<Item = Result<Message, axum::Error>> + Unpin,
     {
-        let mut last = tokio::time::Instant::now();
-        let mut liveness = tokio::time::interval(check);
-        liveness.tick().await;
+        let mut reader = InboundReader::new(&mut stream, timeout, check).await;
         loop {
-            match next_inbound(&mut stream, &mut last, &mut liveness, timeout).await {
+            match reader.next().await {
                 Inbound::Data(_) | Inbound::Binary(_) | Inbound::Skip => {}
                 term @ (Inbound::Done | Inbound::Idle) => return term,
             }
         }
+    }
+
+    #[allow(clippy::unnecessary_wraps)] // the item type of the WS stream
+    fn text(s: &str) -> Result<Message, axum::Error> {
+        Ok(Message::Text(s.to_owned().into()))
+    }
+
+    /// The production loop processes each frame before reading the next. A
+    /// database stall longer than the read timeout leaves the daemon's next
+    /// frames buffered; they must be read, not lost to an eviction.
+    #[tokio::test(start_paused = true)]
+    async fn processing_slower_than_the_read_timeout_never_evicts_a_live_daemon() {
+        let stall = DAEMON_READ_TIMEOUT + Duration::from_secs(30);
+        let mut stream = futures_util::stream::iter([text("a"), text("b"), text("c")]);
+        let mut reader =
+            InboundReader::new(&mut stream, DAEMON_READ_TIMEOUT, DAEMON_LIVENESS_CHECK).await;
+        let mut seen = Vec::new();
+        loop {
+            match reader.next().await {
+                Inbound::Data(t) => {
+                    seen.push(t);
+                    tokio::time::sleep(stall).await;
+                }
+                Inbound::Skip => {}
+                Inbound::Idle => panic!("live daemon evicted after {seen:?}"),
+                Inbound::Binary(_) | Inbound::Done => break,
+            }
+        }
+        assert_eq!(seen, ["a", "b", "c"]);
+    }
+
+    /// The stall does not hide a real disconnect: once the loop listens again,
+    /// a silent peer is evicted one read timeout later, not sooner.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_peer_is_evicted_one_timeout_after_a_slow_frame() {
+        let stall = DAEMON_READ_TIMEOUT * 2;
+        let mut stream = futures_util::stream::iter([text("a")])
+            .chain(futures_util::stream::pending::<Result<Message, axum::Error>>());
+        let mut reader =
+            InboundReader::new(&mut stream, DAEMON_READ_TIMEOUT, DAEMON_LIVENESS_CHECK).await;
+        assert!(matches!(reader.next().await, Inbound::Data(ref t) if t == "a"));
+        tokio::time::sleep(stall).await;
+        let resumed = tokio::time::Instant::now();
+        let out = loop {
+            match reader.next().await {
+                Inbound::Skip => {}
+                other => break other,
+            }
+        };
+        assert!(matches!(out, Inbound::Idle));
+        let silent = resumed.elapsed();
+        assert!(silent >= DAEMON_READ_TIMEOUT, "evicted after only {silent:?}");
+        assert!(silent <= DAEMON_READ_TIMEOUT + DAEMON_LIVENESS_CHECK, "{silent:?}");
     }
 
     fn command(command: cctui_proto::adapter::AdapterCommand) -> DaemonFrameDown {
@@ -726,11 +811,9 @@ mod tests {
         let mut stream = futures_util::stream::iter([Ok::<_, axum::Error>(Message::Binary(
             vec![1_u8, 2, 3].into(),
         ))]);
-        let mut last = tokio::time::Instant::now();
-        let mut liveness = tokio::time::interval(Duration::from_hours(1));
-        liveness.tick().await;
-        let out =
-            next_inbound(&mut stream, &mut last, &mut liveness, Duration::from_hours(1)).await;
+        let mut reader =
+            InboundReader::new(&mut stream, Duration::from_hours(1), Duration::from_hours(1)).await;
+        let out = reader.next().await;
         assert!(matches!(out, Inbound::Binary(ref b) if b == &[1, 2, 3]));
     }
 
