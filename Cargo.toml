@@ -85,7 +85,7 @@ hmac = "0.12"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 ts-rs = { version = "12", features = ["chrono-impl", "serde-json-impl", "uuid-impl"] }
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 semver = "1"
 
 [profile.dev]
