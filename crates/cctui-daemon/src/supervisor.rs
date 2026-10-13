@@ -199,6 +199,11 @@ pub struct Supervisor {
     connected: tokio::sync::broadcast::Sender<()>,
     /// WS keepalive cadence; [`PING_INTERVAL`] outside tests.
     ping_interval: Duration,
+    /// Set once the current connection has received its first `Reconcile`.
+    /// A connection that got that far was healthy, so its failure starts the
+    /// reconnect schedule over instead of inheriting the escalated delay of
+    /// failures hours earlier.
+    established: std::sync::atomic::AtomicBool,
     /// The in-flight purge of leaked claude jobs (see `purge_leaked_jobs`),
     /// aborted and restarted whenever a fresh archived list arrives.
     purge: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
@@ -277,6 +282,7 @@ impl Supervisor {
             resources: std::sync::Mutex::new(crate::resources::ResourceSampler::new()),
             connected: tokio::sync::broadcast::Sender::new(CONNECT_SIGNAL_BUFFER),
             ping_interval: PING_INTERVAL,
+            established: std::sync::atomic::AtomicBool::new(false),
             purge: std::sync::Mutex::new(None),
             purge_attempts: std::sync::Mutex::new(HashMap::new()),
         }
@@ -322,9 +328,16 @@ impl Supervisor {
             match self.run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx).await {
                 Ok(()) => {
                     tracing::info!("daemon WS closed cleanly, reconnecting");
+                    self.established.store(false, std::sync::atomic::Ordering::Relaxed);
                     backoff.reset();
                 }
                 Err(err) => {
+                    // Only a clean close used to reset the schedule, so a link
+                    // that lived for hours and then reset waited the 60 s cap
+                    // on every drop, with spawns queued behind it.
+                    if self.established.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        backoff.reset();
+                    }
                     let attempt = backoff.attempt();
                     tracing::warn!(%err, attempt, "daemon connection failed; retry in ~{:?}", backoff.peek());
                     if !backoff.sleep(&shutdown).await {
@@ -409,7 +422,7 @@ impl Supervisor {
                                 // reconcile has built (and subscribed) the adapters.
                                 if reconciled && !announced {
                                     announced = true;
-                                    let _ = self.connected.send(());
+                                    self.announce_connected();
                                 }
                             }
                         }
@@ -429,6 +442,21 @@ impl Supervisor {
                             self.counters.add(subsystem, payload.len() as u64);
                             send_bounded(&mut sink, Message::Text(payload.into())).await?;
                         }
+                    }
+                    // The flush and the keepalive come before new events: under
+                    // `biased`, a steady event stream would otherwise starve
+                    // both, the server would hear nothing (not even a ping) and
+                    // evict a live daemon. Each is ready only when due, so the
+                    // event lane loses nothing.
+                    // Flush the coalesced batch once its window elapses.
+                    () = wait_deadline(batch.deadline), if active.is_none() => {
+                        let frames = batch.take();
+                        if !frames.is_empty() {
+                            self.send_batch(&mut sink, frames, &mut active).await?;
+                        }
+                    }
+                    _ = ping.tick() => {
+                        self.send_heartbeat(&mut sink, running, last_rx).await?;
                     }
                     // Pause new events while a chunked transfer is in flight so a
                     // single WS carries one large transfer at a time.
@@ -453,16 +481,6 @@ impl Supervisor {
                         let event = scrub_event(event, &scrub);
                         batch.push_event(adapter_id, event)?;
                     }
-                    // Flush the coalesced batch once its window elapses.
-                    () = wait_deadline(batch.deadline), if active.is_none() => {
-                        let frames = batch.take();
-                        if !frames.is_empty() {
-                            self.send_batch(&mut sink, frames, &mut active).await?;
-                        }
-                    }
-                    _ = ping.tick() => {
-                        self.send_heartbeat(&mut sink, running, last_rx).await?;
-                    }
                 }
             }
         }
@@ -471,6 +489,13 @@ impl Supervisor {
         crate::preview::set_uplink(None);
         self.park_transfer(active);
         outcome
+    }
+
+    /// The connection is healthy: remember it for the reconnect schedule and
+    /// signal the edge to every adapter (they re-announce their sessions).
+    fn announce_connected(&self) {
+        self.established.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.connected.send(());
     }
 
     /// Drain the shutdown tail (buffered batch plus late adapter events) onto

@@ -116,6 +116,38 @@ pub struct SubagentEntry {
     pub meta: Option<SubagentMeta>,
 }
 
+/// Bytes read from the end of a subagent transcript to find its last entry.
+const LAST_ENTRY_WINDOW: u64 = 256 * 1024;
+
+/// Whether the transcript's last entry is a finished assistant turn
+/// (`stop_reason` `end_turn` / `stop_sequence`). A pending tool call, a tool
+/// result awaiting the model, an unreadable or oversized tail all answer
+/// `false`: the caller then keeps the subagent alive.
+#[must_use]
+pub fn ends_on_finished_turn(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return false };
+    let start = len.saturating_sub(LAST_ENTRY_WINDOW);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut tail = Vec::new();
+    if std::io::Read::read_to_end(&mut file, &mut tail).is_err() {
+        return false;
+    }
+    let Some(last) =
+        tail.split(|b| *b == b'\n').map(<[u8]>::trim_ascii).rfind(|line| !line.is_empty())
+    else {
+        return false;
+    };
+    let Ok(entry) = serde_json::from_slice::<Value>(last) else { return false };
+    entry.get("type").and_then(Value::as_str) == Some("assistant")
+        && matches!(
+            entry.pointer("/message/stop_reason").and_then(Value::as_str),
+            Some("end_turn" | "stop_sequence")
+        )
+}
+
 /// Discover every subagent transcript reachable from a parent session's
 /// `subagents/` dir. Covers two layouts:
 ///
@@ -2531,5 +2563,24 @@ mod tests {
         s.flush();
         let s2 = OffsetStore::open(Some(path));
         assert_eq!(s2.get("sess1"), 42);
+    }
+
+    #[test]
+    fn finished_turn_is_read_from_the_last_entry_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-x.jsonl");
+        let end = r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}}"#;
+        let tool = r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[]}}"#;
+        let result = r#"{"type":"user","message":{"content":[{"type":"tool_result"}]}}"#;
+
+        std::fs::write(&path, format!("{tool}\n{end}\n")).unwrap();
+        assert!(ends_on_finished_turn(&path), "closes on end_turn");
+        std::fs::write(&path, format!("{end}\n{tool}\n")).unwrap();
+        assert!(!ends_on_finished_turn(&path), "a pending tool call is still working");
+        std::fs::write(&path, format!("{end}\n{result}\n\n")).unwrap();
+        assert!(!ends_on_finished_turn(&path), "a tool result awaits the model");
+        std::fs::write(&path, format!("{end}\n{{\"type\":\"assist")).unwrap();
+        assert!(!ends_on_finished_turn(&path), "a half-written line is not a finished turn");
+        assert!(!ends_on_finished_turn(&dir.path().join("missing.jsonl")));
     }
 }
