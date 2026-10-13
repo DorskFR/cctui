@@ -137,7 +137,8 @@ async fn start_bg(mut ctx: AdapterCtx) -> anyhow::Result<()> {
     let interrupts = ctx.interrupts.take();
     let driver = control::Driver::new(cfg, ctx.events.clone(), ctx.commands, ctx.shutdown.clone())
         // Gateway-env launch chokepoint source.
-        .with_server(ctx.server.clone(), ctx.machine_key.clone());
+        .with_server(ctx.server.clone(), ctx.machine_key.clone())
+        .with_connected(ctx.connected.resubscribe());
     if let Some(watches) = pty_watch {
         let (views, roster) = driver.pty_watch_pump();
         let pump = pty_view::PtyWatchPump::new(views, roster, ctx.shutdown.clone());

@@ -1,6 +1,6 @@
 use super::{
-    AdapterEvent, Driver, EndReason, PathBuf, SUBAGENT_IDLE_TICKS_TO_END, SessionMeta,
-    SubagentState, json, transcript,
+    AdapterEvent, Driver, EndReason, PathBuf, SUBAGENT_IDLE_TICKS_TO_END,
+    SUBAGENT_STALL_TICKS_TO_END, SessionMeta, SubagentState, json, transcript,
 };
 
 impl Driver {
@@ -81,12 +81,24 @@ impl Driver {
             for entry in transcript::discover_subagents(&dir) {
                 let transcript::SubagentEntry { agent_id, path, workflow, meta } = entry;
                 if self.ended_subagents.contains(&agent_id) {
-                    continue;
+                    // Ended, but its transcript grew since: it was still
+                    // working (or got resumed). Re-announce it rather than
+                    // leave a live subagent shown as finished.
+                    let len = std::fs::metadata(&path).map_or(0, |m| m.len());
+                    if len <= self.offsets.get(&agent_id) {
+                        continue;
+                    }
+                    tracing::info!(%agent_id, "subagent transcript grew after its end; reviving");
+                    self.ended_subagents.remove(&agent_id);
                 }
                 if !self.subagents.contains_key(&agent_id) {
                     self.subagents.insert(
                         agent_id.clone(),
-                        SubagentState { parent_local_id: parent_id.clone(), idle_ticks: 0 },
+                        SubagentState {
+                            parent_local_id: parent_id.clone(),
+                            path: path.clone(),
+                            idle_ticks: 0,
+                        },
                     );
                     self.emit(AdapterEvent::SessionStarted {
                         local_id: agent_id.clone(),
@@ -137,11 +149,16 @@ impl Driver {
         }
 
         // Quiescence-based end: a subagent whose transcript has not grown for
-        // SUBAGENT_IDLE_TICKS_TO_END consecutive polls has finished.
+        // SUBAGENT_IDLE_TICKS_TO_END polls and closes on a finished turn has
+        // finished; one stopped mid-turn only after SUBAGENT_STALL_TICKS_TO_END.
         let done: Vec<String> = self
             .subagents
             .iter()
-            .filter(|(_, st)| st.idle_ticks >= SUBAGENT_IDLE_TICKS_TO_END)
+            .filter(|(_, st)| {
+                st.idle_ticks >= SUBAGENT_STALL_TICKS_TO_END
+                    || (st.idle_ticks >= SUBAGENT_IDLE_TICKS_TO_END
+                        && transcript::ends_on_finished_turn(&st.path))
+            })
             .map(|(id, _)| id.clone())
             .collect();
         for agent_id in done {
@@ -437,7 +454,9 @@ mod tests {
             &d,
             "abcd1234",
             "deadbeefcafe00001",
-            &[r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#],
+            &[
+                r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"hi"}]}}"#,
+            ],
         );
         // First poll: discover + announce.
         d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
@@ -491,5 +510,99 @@ mod tests {
             }
         }
         assert!(child_ended, "subagent should end when its parent leaves the roster");
+    }
+
+    /// Count `SessionStarted` / `SessionEnded` for `agent` over `polls` idle
+    /// snapshots of parent `abcd1234`.
+    async fn lifecycle_over(
+        d: &mut Driver,
+        rx: &mut tokio::sync::mpsc::Receiver<AdapterEvent>,
+        agent: &str,
+        polls: u32,
+    ) -> (u32, u32) {
+        let (mut started, mut ended) = (0, 0);
+        for _ in 0..polls {
+            d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+            while let Ok(evt) = rx.try_recv() {
+                match evt {
+                    AdapterEvent::SessionStarted { local_id, .. } if local_id == agent => {
+                        started += 1;
+                    }
+                    AdapterEvent::SessionEnded { local_id, .. } if local_id == agent => ended += 1,
+                    _ => {}
+                }
+            }
+        }
+        (started, ended)
+    }
+
+    /// A subagent blocked in a long tool call writes nothing until the call
+    /// returns. Its transcript closes on the pending `tool_use`, so it must not
+    /// be ended after the short quiescence window.
+    #[tokio::test]
+    async fn subagent_in_a_long_tool_call_is_not_ended() {
+        let (mut d, mut rx) = driver();
+        let agent = "a0c0ffee000000001";
+        write_subagent(
+            &d,
+            "abcd1234",
+            agent,
+            &[
+                r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"bun test"}}]}}"#,
+            ],
+        );
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        while rx.try_recv().is_ok() {}
+        let (_, ended) =
+            lifecycle_over(&mut d, &mut rx, agent, SUBAGENT_IDLE_TICKS_TO_END * 4).await;
+        assert_eq!(ended, 0, "a subagent waiting on its tool call is still working");
+    }
+
+    /// The stall backstop still ends a subagent that stopped mid-turn for good.
+    #[tokio::test]
+    async fn subagent_stalled_mid_turn_ends_on_the_backstop() {
+        let (mut d, mut rx) = driver();
+        let agent = "a0c0ffee000000002";
+        write_subagent(
+            &d,
+            "abcd1234",
+            agent,
+            &[
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}"#,
+            ],
+        );
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        while rx.try_recv().is_ok() {}
+        let (_, ended) =
+            lifecycle_over(&mut d, &mut rx, agent, SUBAGENT_STALL_TICKS_TO_END + 1).await;
+        assert_eq!(ended, 1, "the stall backstop ends a dead subagent exactly once");
+    }
+
+    /// An ended subagent whose transcript grows again is re-announced instead of
+    /// staying shown as finished while it works.
+    #[tokio::test]
+    async fn ended_subagent_is_revived_when_its_transcript_grows() {
+        let (mut d, mut rx) = driver();
+        let agent = "a0c0ffee000000003";
+        let done = r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done?"}]}}"#;
+        write_subagent(&d, "abcd1234", agent, &[done]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        while rx.try_recv().is_ok() {}
+        let (_, ended) =
+            lifecycle_over(&mut d, &mut rx, agent, SUBAGENT_IDLE_TICKS_TO_END + 2).await;
+        assert_eq!(ended, 1);
+
+        write_subagent(
+            &d,
+            "abcd1234",
+            agent,
+            &[
+                done,
+                r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls"}}]}}"#,
+            ],
+        );
+        let (started, ended) = lifecycle_over(&mut d, &mut rx, agent, 3).await;
+        assert_eq!(started, 1, "a grown transcript re-announces the subagent once");
+        assert_eq!(ended, 0);
     }
 }

@@ -88,9 +88,21 @@ impl Driver {
         // carry the parent link so the server resolves it into
         // `parent_id`. Consumed once.
         let parent = self.fork_parent_by_short.lock().ok().and_then(|mut m| m.remove(&job.short));
+        // A rediscovery (after a roster flush) no longer has the consumed
+        // fork link: keep the one the first announcement carried.
+        let earlier = self.announced_meta.lock().ok().and_then(|m| m.get(&job.short).cloned());
         let (parent_local_id, relation) = match parent {
-            Some((parent, relation)) => (Some(parent), relation),
-            None => (None, "root"),
+            Some((parent, relation)) => (Some(parent), relation.to_owned()),
+            None => earlier
+                .as_ref()
+                .and_then(|(_, meta)| {
+                    let relation = meta.extra.get("relation").and_then(|r| r.as_str())?;
+                    Some((meta.parent_local_id.clone()?, relation.to_owned()))
+                })
+                .map_or_else(
+                    || (None, "root".to_owned()),
+                    |(parent, relation)| (Some(parent), relation),
+                ),
         };
         let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
         let created_at = on_disk.as_ref().and_then(|s| s.created_at.clone());
@@ -115,11 +127,42 @@ impl Driver {
                 extra[key] = json!(value);
             }
         }
-        self.emit(AdapterEvent::SessionStarted {
-            local_id: session_id,
-            meta: SessionMeta { working_dir: job.cwd.clone(), parent_local_id, extra },
-        })
-        .await;
+        let meta = SessionMeta { working_dir: job.cwd.clone(), parent_local_id, extra };
+        if let Ok(mut m) = self.announced_meta.lock() {
+            m.insert(job.short.clone(), (session_id.clone(), meta.clone()));
+        }
+        self.emit(AdapterEvent::SessionStarted { local_id: session_id, meta }).await;
+    }
+
+    /// Replay the registration of every listed, not-dead job on a connect
+    /// edge. The server upsert is idempotent (status, parent, name and account
+    /// survive; only a spurious `daemon_lost` end is revived), so this costs
+    /// one upsert per session and recovers any `SessionStarted` the previous
+    /// connection lost.
+    pub(super) async fn reannounce_live(&self) {
+        let pending: Vec<(String, SessionMeta)> = {
+            let Ok(cache) = self.announced_meta.lock() else { return };
+            self.roster
+                .iter()
+                .filter(|short| !self.dead_shorts.contains(*short))
+                .filter_map(|short| {
+                    let (local_id, meta) = cache.get(short)?;
+                    // Same id `reconcile_job` streams under: a session rotated
+                    // in place (`/clear`) must not grow a phantom row.
+                    let local_id = self
+                        .transcript_locations
+                        .get(short)
+                        .map_or_else(|| local_id.clone(), |loc| loc.local_id.clone());
+                    Some((local_id, meta.clone()))
+                })
+                .collect()
+        };
+        if !pending.is_empty() {
+            tracing::info!(count = pending.len(), "re-announcing live claude sessions on connect");
+        }
+        for (local_id, meta) in pending {
+            self.emit(AdapterEvent::SessionStarted { local_id, meta }).await;
+        }
     }
 
     /// Status update for one listed job: live snapshot + on-disk state.json
@@ -472,6 +515,9 @@ impl Driver {
 
     async fn reap_gone(&mut self, short: &str) {
         self.last_status.remove(short);
+        if let Ok(mut m) = self.announced_meta.lock() {
+            m.remove(short);
+        }
         let was_dead = self.dead_shorts.remove(short);
         self.clear_permission(short).await;
         if let Some(loc) = self.transcript_locations.remove(short) {
@@ -1138,5 +1184,45 @@ mod tests {
             gone.sort();
             assert_eq!(gone, case.gone, "{}: gone", case.name);
         }
+    }
+
+    fn started(rx: &mut tokio::sync::mpsc::Receiver<AdapterEvent>) -> Vec<(String, SessionMeta)> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionStarted { local_id, meta } = evt {
+                out.push((local_id, meta));
+            }
+        }
+        out
+    }
+
+    /// A `SessionStarted` lost with a dropped WS must reach the server on the
+    /// next connect edge: the job stays in `roster`, so discovery alone never
+    /// re-announces it.
+    #[tokio::test]
+    async fn connect_edge_re_announces_listed_sessions_with_their_first_meta() {
+        let (mut d, mut rx) = driver();
+        d.fork_parent_by_short
+            .lock()
+            .unwrap()
+            .insert("abcd1234".into(), ("parent-uuid".into(), "subagent"));
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let first = started(&mut rx);
+        assert_eq!(first.len(), 1);
+
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        assert!(started(&mut rx).is_empty(), "a listed job is announced once per discovery");
+
+        d.reannounce_live().await;
+        let again = started(&mut rx);
+        assert_eq!(again.len(), 1, "the edge replays the registration");
+        assert_eq!(again[0].0, first[0].0, "same local_id");
+        assert_eq!(again[0].1.parent_local_id.as_deref(), Some("parent-uuid"));
+        assert_eq!(again[0].1.extra["relation"], "subagent");
+
+        d.apply_snapshot(vec![]).await;
+        while rx.try_recv().is_ok() {}
+        d.reannounce_live().await;
+        assert!(started(&mut rx).is_empty(), "a reaped job is not re-announced");
     }
 }
