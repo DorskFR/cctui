@@ -470,7 +470,7 @@ impl Driver {
             if off != prev {
                 dirty_offsets = true;
             }
-            match transcript::tail_once(&loc.path, &loc.local_id, off) {
+            match transcript::tail_bounded(&loc.path, &loc.local_id, off, super::LIVE_TAIL_BUDGET) {
                 Ok((events, new_off)) => {
                     if new_off != off {
                         self.offsets.set(loc.offset_key.clone(), new_off);
