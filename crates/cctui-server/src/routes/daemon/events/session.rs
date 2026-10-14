@@ -228,10 +228,17 @@ pub(super) async fn on_session_event(
             ack_transcript_mark(state, machine_id, adapter_id, &local_id, offset).await;
         }
         AdapterEvent::SessionModel { local_id, model } => {
+            // Claude Code's local API-error messages report the placeholder
+            // `<synthetic>`; storing it would break a later `--model` resume.
+            // Older daemons still send it, so the server filters too.
+            let Some(model) = cctui_proto::adapter::observed_model_id(&model) else {
+                tracing::debug!(%local_id, model, "ignoring placeholder session model");
+                return Ok(());
+            };
             // Transcript ground truth overrides the requested `--model`.
             sqlx::query("UPDATE sessions SET model = $2 WHERE id = $1")
                 .bind(&local_id)
-                .bind(&model)
+                .bind(model)
                 .execute(&state.pool)
                 .await
                 .map_err(|e| {
@@ -371,6 +378,55 @@ mod tests {
         let cut = super::truncate_end_detail(&long);
         assert!(cut.len() <= 2048);
         assert!(cut.chars().all(|c| c == 'é'));
+    }
+
+    /// A `<synthetic>` model (Claude Code's local API-error messages) never
+    /// overwrites the recorded model; a real id still does.
+    #[tokio::test]
+    async fn session_model_ignores_synthetic_placeholder() {
+        let Some(url) = crate::routes::gateway::test_db_url("session_model_synthetic") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "session-model-synthetic").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let model_of = |sid: String| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Option<String>>("SELECT model FROM sessions WHERE id = $1")
+                    .bind(sid)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read model")
+            }
+        };
+        let send = |model: &str| {
+            super::on_session_event(
+                &state,
+                mid,
+                uid,
+                "claude-code",
+                AdapterEvent::SessionModel { local_id: sid.clone(), model: model.to_owned() },
+            )
+        };
+
+        send("deepseek-v4-flash").await.expect("real model");
+        assert_eq!(model_of(sid.clone()).await.as_deref(), Some("deepseek-v4-flash"));
+        for placeholder in ["<synthetic>", "  ", ""] {
+            send(placeholder).await.expect("placeholder model");
+            assert_eq!(
+                model_of(sid.clone()).await.as_deref(),
+                Some("deepseek-v4-flash"),
+                "{placeholder:?} must not overwrite the model"
+            );
+        }
+
+        crate::routes::daemon::test_support::drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
     #[tokio::test]
