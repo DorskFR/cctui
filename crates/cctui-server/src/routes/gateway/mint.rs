@@ -863,7 +863,7 @@ pub async fn account_env_json(
 /// these keys. It does NOT block this path: those keys are tagged MANAGED in the
 /// settings catalog and rejected by `Catalog::validate_settings`, so no
 /// per-account `settings_json` can carry them yet — whatever arrives here is
-/// safe/care keys that `--settings` honors.
+/// safe/care or out-of-schema keys, passed to `--settings` as-is.
 /// Whether a session has an account of `family` bound, by the same token-then-
 /// `sessions.account_id` resolution [`resolve_session_accounts`] uses.
 pub async fn session_has_family(state: &AppState, session_id: &str, family: super::Family) -> bool {

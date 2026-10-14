@@ -7,8 +7,8 @@ import type { SettingKey } from "./SettingKey";
  * The settings catalog as served to the webui account-settings editor.
  *
  * Everything here comes from the embedded catalog — the webui carries NO mirror of the key list,
- * so it cannot drift from the server that validates the writes. `managed`/`system` keys are
- * omitted entirely.
+ * so it cannot drift from the server that validates the writes. `managed`/`system` keys appear
+ * only by name, in `blocked`.
  */
 export type SettingsCatalogResponse = { 
 /**
@@ -25,4 +25,9 @@ env: Array<EnvVar>,
  * The "Quiet defaults" preset, with its `settings` filtered to exposable
  * keys (the server-applied MANAGED keys are not offerable per-account).
  */
-preset: Preset, };
+preset: Preset, 
+/**
+ * Catalogued `managed`/`system` key names: rejected per-account. Any other
+ * key the catalog lacks is accepted as out of schema.
+ */
+blocked: Array<string>, };

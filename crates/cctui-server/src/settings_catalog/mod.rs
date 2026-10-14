@@ -65,8 +65,10 @@ pub struct Violation {
 /// Outcome of validating a settings or env blob against the catalog allowlist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ValidationReport {
-    /// Keys that are not exposable per-account (unknown, managed, or system).
+    /// Keys that are not exposable per-account (managed or system).
     pub violations: Vec<Violation>,
+    /// Accepted keys the catalog does not know (newer than the vendored schema).
+    pub out_of_schema: Vec<String>,
 }
 
 impl ValidationReport {
@@ -80,7 +82,6 @@ impl ValidationReport {
 /// The parsed, enriched settings catalog. Access the singleton via [`catalog`].
 #[derive(Debug)]
 pub struct Catalog {
-    label: &'static str,
     keys: Vec<SettingKey>,
     keys_by_name: BTreeMap<String, usize>,
     env: Vec<EnvVar>,
@@ -127,11 +128,17 @@ impl Catalog {
         self.keys.iter().filter(|k| k.account_exposable())
     }
 
+    /// Names of the catalogued `managed`/`system` keys, which no account may set.
+    pub fn blocked_key_names(&self) -> impl Iterator<Item = &str> {
+        self.keys.iter().filter(|k| !k.account_exposable()).map(|k| k.name.as_str())
+    }
+
     /// Validate a `settings.json` object against the per-account allowlist policy.
     ///
-    /// Each top-level key must be known to the catalog AND tagged `safe`/`care`.
-    /// Unknown keys, `managed`, and `system` keys are violations. `value` must be a
-    /// JSON object; a non-object is a single violation.
+    /// `managed` and `system` keys are violations. Unknown keys pass but are listed
+    /// in `out_of_schema`: the harness ships settings faster than the vendored
+    /// schema tracks them. `value` must be a JSON object; a non-object is a single
+    /// violation.
     ///
     /// Note: this checks TOP-LEVEL keys only. Nested footguns (e.g.
     /// `permissions.defaultMode: bypassPermissions`) are out of scope here and are the
@@ -139,19 +146,17 @@ impl Catalog {
     #[must_use]
     pub fn validate_settings(&self, value: &Value) -> ValidationReport {
         let mut violations = Vec::new();
+        let mut out_of_schema = Vec::new();
         let Some(obj) = value.as_object() else {
             violations.push(Violation {
                 key: "$".to_string(),
                 reason: "settings must be a JSON object".to_string(),
             });
-            return ValidationReport { violations };
+            return ValidationReport { violations, out_of_schema };
         };
         for (name, value) in obj {
             match self.key(name) {
-                None => violations.push(Violation {
-                    key: name.clone(),
-                    reason: format!("unknown settings key (not in the {} catalog)", self.label),
-                }),
+                None => out_of_schema.push(name.clone()),
                 Some(k) if !k.account_exposable() => violations.push(Violation {
                     key: name.clone(),
                     reason: format!(
@@ -168,7 +173,7 @@ impl Catalog {
                 self.validate_settings_env(value, &mut violations);
             }
         }
-        ValidationReport { violations }
+        ValidationReport { violations, out_of_schema }
     }
 
     /// Validate the nested `settings_json.env` block: a JSON object of
@@ -234,7 +239,7 @@ impl Catalog {
                 });
             }
         }
-        ValidationReport { violations }
+        ValidationReport { violations, out_of_schema: Vec::new() }
     }
 }
 
@@ -325,12 +330,12 @@ fn enrich_from_schema(
 /// Parse both embedded artifacts into a [`Catalog`]. Panics on malformed embedded data
 /// (a build-time invariant — the files are checked into the repo and covered by tests).
 fn build() -> Catalog {
-    build_from("Claude Code", RAW_CATALOG, Some(RAW_SCHEMA))
+    build_from(RAW_CATALOG, Some(RAW_SCHEMA))
 }
 
 /// Parse one catalog TOML, enriching `source = "schema"` keys from `schema` when a
 /// vendored JSON Schema backs this family.
-fn build_from(label: &'static str, raw_toml: &str, raw_schema: Option<&str>) -> Catalog {
+fn build_from(raw_toml: &str, raw_schema: Option<&str>) -> Catalog {
     let raw: RawCatalog = toml::from_str(raw_toml).expect("catalog.toml parses");
     let schema: Value = raw_schema
         .map_or(Value::Null, |s| serde_json::from_str(s).expect("vendored schema parses"));
@@ -393,7 +398,7 @@ fn build_from(label: &'static str, raw_toml: &str, raw_schema: Option<&str>) -> 
         "catalog.toml must define the `{QUIET_DEFAULTS_ID}` preset"
     );
 
-    Catalog { label, keys, keys_by_name, env, env_by_name, presets }
+    Catalog { keys, keys_by_name, env, env_by_name, presets }
 }
 
 static CATALOG: LazyLock<Catalog> = LazyLock::new(build);
@@ -494,20 +499,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_settings_allows_safe_rejects_managed_and_unknown() {
+    fn validate_settings_allows_safe_and_unknown_rejects_managed() {
         let c = catalog();
         let ok = serde_json::json!({ "model": "x", "disableBundledSkills": true });
-        assert!(c.validate_settings(&ok).ok(), "safe keys should pass");
+        let report = c.validate_settings(&ok);
+        assert!(report.ok(), "safe keys should pass");
+        assert!(report.out_of_schema.is_empty());
 
-        let bad = serde_json::json!({
-            "forceLoginMethod": "console", // managed
-            "totallyNotAKey": 1            // unknown
-        });
+        let unknown = serde_json::json!({ "idleCompaction": false });
+        let report = c.validate_settings(&unknown);
+        assert!(report.ok(), "keys newer than the schema should pass");
+        assert_eq!(report.out_of_schema, ["idleCompaction"]);
+
+        let bad = serde_json::json!({ "forceLoginMethod": "console", "totallyNotAKey": 1 });
         let report = c.validate_settings(&bad);
-        assert!(!report.ok());
         let keys: Vec<&str> = report.violations.iter().map(|v| v.key.as_str()).collect();
-        assert!(keys.contains(&"forceLoginMethod"));
-        assert!(keys.contains(&"totallyNotAKey"));
+        assert_eq!(keys, ["forceLoginMethod"]);
+        assert_eq!(report.out_of_schema, ["totallyNotAKey"]);
+        assert!(c.blocked_key_names().any(|k| k == "forceLoginMethod"));
+        assert!(!c.blocked_key_names().any(|k| k == "model"));
 
         // Non-object payload is a single violation.
         assert!(!c.validate_settings(&serde_json::json!([1, 2, 3])).ok());
