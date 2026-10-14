@@ -16,6 +16,19 @@ pub struct AdapterId(pub String);
 /// config or disable; a missing binary surfaces as a failed spawn.
 pub const KNOWN_ADAPTERS: &[&str] = &["claude-code", "codex", "opencode"];
 
+/// The model id to record for a `SessionModel` observation, if `raw` is one.
+///
+/// Claude Code writes its own local assistant messages (API errors such as
+/// "API Error: 502 ...") with the placeholder model `<synthetic>`; persisting
+/// that would make a later `--model <synthetic>` resume fail. Empty values and
+/// any `<...>` placeholder are rejected; the rest is returned trimmed.
+#[must_use]
+pub fn observed_model_id(raw: &str) -> Option<&str> {
+    let model = raw.trim();
+    let placeholder = model.starts_with('<') && model.ends_with('>');
+    (!model.is_empty() && !placeholder).then_some(model)
+}
+
 impl AdapterId {
     #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
@@ -203,8 +216,8 @@ pub enum AdapterEvent {
         #[serde(default)]
         cache_creation_tokens: u64,
     },
-    /// Model observed on an assistant message. Written only when the session
-    /// model is unset.
+    /// Model observed on an assistant message. Emitters and the server only
+    /// keep values that pass [`observed_model_id`].
     SessionModel {
         local_id: String,
         model: String,
@@ -703,6 +716,16 @@ impl std::fmt::Debug for BootstrapFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_model_id_rejects_placeholders() {
+        assert_eq!(observed_model_id("claude-opus-4-8"), Some("claude-opus-4-8"));
+        assert_eq!(observed_model_id("  deepseek-v4-flash \n"), Some("deepseek-v4-flash"));
+        assert_eq!(observed_model_id("claude-opus-4-8[1m]"), Some("claude-opus-4-8[1m]"));
+        for bad in ["", "   ", "<synthetic>", " <synthetic> ", "<none>", "<>"] {
+            assert_eq!(observed_model_id(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn every_permission_mode_maps_to_an_approval_policy_codex_accepts() {

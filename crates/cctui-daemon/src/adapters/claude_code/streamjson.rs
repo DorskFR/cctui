@@ -73,8 +73,10 @@ fn parse_system(local_id: &str, v: &Value, out: &mut Vec<AdapterEvent>) -> Strea
             // The model the run resolved to (e.g. "claude-opus-4-8"); fills
             // `sessions.model` for runs launched without an explicit --model,
             // mirroring the transcript SessionModel path.
-            if let Some(model) =
-                v.get("model").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty())
+            if let Some(model) = v
+                .get("model")
+                .and_then(Value::as_str)
+                .and_then(cctui_proto::adapter::observed_model_id)
             {
                 out.push(AdapterEvent::SessionModel {
                     local_id: local_id.to_owned(),
@@ -256,6 +258,20 @@ mod tests {
             }
             other => panic!("expected one SessionModel, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn synthetic_model_is_never_reported() {
+        let init = r#"{"type":"system","subtype":"init","session_id":"s","model":"<synthetic>"}"#;
+        let (events, _) = parse(init);
+        assert!(events.is_empty(), "{events:?}");
+        let assistant = r#"{"type":"assistant","message":{"id":"m1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: 502"}]}}"#;
+        let (events, _) = parse(assistant);
+        assert!(
+            !events.iter().any(|e| matches!(e, AdapterEvent::SessionModel { .. })),
+            "{events:?}"
+        );
+        assert!(events.iter().any(|e| matches!(e, AdapterEvent::Message { .. })));
     }
 
     #[test]

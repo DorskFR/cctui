@@ -954,11 +954,12 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     // flag; the server writes it only when `sessions.model` is still unset, so
     // an explicit `--model` alias keeps priority. Subagent transcripts carry
     // the parent's model too, so each gets labelled.
+    // Claude Code's own local messages (API errors) carry `<synthetic>`: not a
+    // model, so never reported.
     if let Some(model) = message
         .and_then(|m| m.get("model"))
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|m| !m.is_empty())
+        .and_then(cctui_proto::adapter::observed_model_id)
     {
         out.push(AdapterEvent::SessionModel {
             local_id: local_id.to_owned(),
@@ -1918,6 +1919,23 @@ mod tests {
         );
         let (events, _) = tail_once(&path, "s", 0).unwrap();
         assert!(!events.iter().any(|e| matches!(e, AdapterEvent::SessionModel { .. })));
+    }
+
+    #[test]
+    fn no_session_model_for_synthetic_api_error_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+        write_lines(
+            &path,
+            // Claude Code writes local API errors as assistant messages with
+            // the placeholder model `<synthetic>`.
+            &[
+                r#"{"type":"assistant","message":{"id":"m1","model":"<synthetic>","content":[{"type":"text","text":"API Error: 502 Bad Gateway"}]}}"#,
+            ],
+        );
+        let (events, _) = tail_once(&path, "s", 0).unwrap();
+        assert!(!events.iter().any(|e| matches!(e, AdapterEvent::SessionModel { .. })));
+        assert!(events.iter().any(|e| matches!(e, AdapterEvent::Message { .. })));
     }
 
     #[test]
