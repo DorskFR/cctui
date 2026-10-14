@@ -269,7 +269,21 @@ fn subagent_meta(dir: &Path, agent_id: &str) -> Option<SubagentMeta> {
 pub fn tail_once(
     path: &Path,
     local_id: &str,
+    offset: u64,
+) -> std::io::Result<(Vec<AdapterEvent>, u64)> {
+    tail_bounded(path, local_id, offset, u64::MAX)
+}
+
+/// [`tail_once`], stopping at the first line boundary past `max_bytes` read.
+/// The live poll uses it so a large backlog (a resume replay, a revived
+/// subagent catching up hours of transcript) is spread over several polls:
+/// the driver serves commands, spawns included, between polls, and a poll that
+/// emits megabytes at once holds them until a slow server has ingested it all.
+pub fn tail_bounded(
+    path: &Path,
+    local_id: &str,
     mut offset: u64,
+    max_bytes: u64,
 ) -> std::io::Result<(Vec<AdapterEvent>, u64)> {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -290,7 +304,7 @@ pub fn tail_once(
     let mut reader = BufReader::new(file);
     let mut events = Vec::new();
     let mut new_offset = offset;
-    loop {
+    while new_offset - offset < max_bytes {
         let mut line = String::new();
         let n = reader.read_line(&mut line)?;
         if n == 0 {
@@ -2582,5 +2596,33 @@ mod tests {
         std::fs::write(&path, format!("{end}\n{{\"type\":\"assist")).unwrap();
         assert!(!ends_on_finished_turn(&path), "a half-written line is not a finished turn");
         assert!(!ends_on_finished_turn(&dir.path().join("missing.jsonl")));
+    }
+
+    #[test]
+    fn bounded_tail_resumes_on_line_boundaries_until_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}"#;
+        let body = format!("{line}\n").repeat(10);
+        std::fs::write(&path, &body).unwrap();
+        let one = line.len() as u64 + 1;
+
+        let (mut seen, mut off, mut polls) = (0, 0, 0);
+        loop {
+            let (events, next) = tail_bounded(&path, "s", off, one * 3).unwrap();
+            if next == off {
+                break;
+            }
+            assert_eq!((next - off) % one, 0, "never stops mid-line");
+            assert!(next - off <= one * 3);
+            seen += events.len();
+            off = next;
+            polls += 1;
+        }
+        assert_eq!(off, body.len() as u64);
+        assert_eq!(polls, 4, "10 lines at 3 per poll");
+        assert_eq!(seen, tail_once(&path, "s", 0).unwrap().0.len());
+        let (_, whole) = tail_bounded(&path, "s", 0, 1).unwrap();
+        assert_eq!(whole, one, "a line longer than the budget is still read whole");
     }
 }
