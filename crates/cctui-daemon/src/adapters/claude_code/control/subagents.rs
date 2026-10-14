@@ -119,7 +119,7 @@ impl Driver {
                 }
 
                 let off = self.offsets.get(&agent_id);
-                match transcript::tail_once(&path, &agent_id, off) {
+                match transcript::tail_bounded(&path, &agent_id, off, super::LIVE_TAIL_BUDGET) {
                     Ok((events, new_off)) => {
                         let grew = new_off != off;
                         if grew {
@@ -604,5 +604,41 @@ mod tests {
         let (started, ended) = lifecycle_over(&mut d, &mut rx, agent, 3).await;
         assert_eq!(started, 1, "a grown transcript re-announces the subagent once");
         assert_eq!(ended, 0);
+    }
+
+    /// A subagent with a backlog larger than one poll's budget catches up over
+    /// several polls, and each partial read counts as growth, not quiescence.
+    #[tokio::test]
+    async fn a_large_subagent_backlog_drains_over_several_polls() {
+        let (mut d, mut rx) = driver();
+        let agent = "a0c0ffee000000004";
+        // ~16 KiB lines: ~16 per 256 KiB poll, well inside the test channel.
+        let pad = "y".repeat(16 * 1024);
+        let line = format!(
+            r#"{{"type":"assistant","message":{{"stop_reason":"tool_use","content":[{{"type":"text","text":"{pad}"}}]}}}}"#
+        );
+        let lines: Vec<&str> = std::iter::repeat_n(line.as_str(), 60).collect();
+        write_subagent(&d, "abcd1234", agent, &lines);
+        let mut texts = 0;
+        let mut polls_with_text = 0;
+        for _ in 0..10 {
+            d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+            let mut this_poll = 0;
+            while let Ok(evt) = rx.try_recv() {
+                if matches!(&evt, AdapterEvent::Message { local_id, .. } if local_id == agent) {
+                    this_poll += 1;
+                }
+                assert!(
+                    !matches!(&evt, AdapterEvent::SessionEnded { local_id, .. } if local_id == agent),
+                    "a draining subagent is not quiescent"
+                );
+            }
+            texts += this_poll;
+            if this_poll > 0 {
+                polls_with_text += 1;
+            }
+        }
+        assert_eq!(texts, 60, "every line is delivered");
+        assert!(polls_with_text >= 3, "~960 KiB at 256 KiB per poll: {polls_with_text} polls");
     }
 }

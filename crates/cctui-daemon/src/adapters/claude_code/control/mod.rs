@@ -543,6 +543,12 @@ const SUBAGENT_IDLE_TICKS_TO_END: u32 = 15;
 /// any single foreground tool call, so a crashed subagent still ends.
 const SUBAGENT_STALL_TICKS_TO_END: u32 = 1350;
 
+/// Transcript bytes one live poll reads per session (see
+/// [`transcript::tail_bounded`]). Far above a poll's normal growth, so live
+/// streaming is unchanged; a backlog drains at this pace per 2s poll instead
+/// of in one blocking burst.
+const LIVE_TAIL_BUDGET: u64 = 256 * 1024;
+
 /// The next supervisor connect edge, or never when there is no receiver.
 async fn next_edge(
     rx: Option<&mut tokio::sync::broadcast::Receiver<()>>,
