@@ -358,7 +358,10 @@ mod tests {
             "transcript_path": transcript,
             "last_assistant_message": "needs input: your call on the merge.",
         });
-        assert_eq!(final_message(&payload).as_deref(), Some("needs input: your call on the merge."));
+        assert_eq!(
+            final_message(&payload).as_deref(),
+            Some("needs input: your call on the merge.")
+        );
         assert_eq!(decide(&payload, None), 2);
 
         let without = serde_json::json!({ "transcript_path": transcript });
