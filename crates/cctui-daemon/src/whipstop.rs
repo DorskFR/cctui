@@ -119,13 +119,7 @@ fn decide(payload: &Value, phrases_path: Option<&std::path::Path>) -> i32 {
         return 0;
     }
 
-    let Some(path) = payload.get("transcript_path").and_then(Value::as_str) else {
-        return 0;
-    };
-    let Ok(body) = std::fs::read_to_string(path) else {
-        return 0;
-    };
-    let Some(last) = last_assistant_text(&body) else {
+    let Some(last) = final_message(payload) else {
         return 0;
     };
 
@@ -188,6 +182,20 @@ fn guidance_of(config: Option<&Value>) -> Option<String> {
         .map(str::trim)
         .filter(|g| !g.is_empty())
         .map(str::to_owned)
+}
+
+/// Claude Code fires `Stop` before the final message reaches the transcript, so
+/// `last_assistant_message` wins; the transcript only covers versions without it.
+fn final_message(payload: &Value) -> Option<String> {
+    if let Some(text) = payload
+        .get("last_assistant_message")
+        .and_then(Value::as_str)
+        .filter(|t| !t.trim().is_empty())
+    {
+        return Some(text.to_owned());
+    }
+    let path = payload.get("transcript_path").and_then(Value::as_str)?;
+    last_assistant_text(&std::fs::read_to_string(path).ok()?)
 }
 
 /// The most recent `type:"assistant"` message's concatenated text blocks, or
@@ -334,6 +342,29 @@ mod tests {
             "\n",
         );
         assert_eq!(last_assistant_text(body).as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn payload_message_wins_over_unflushed_transcript() {
+        let dir = std::env::temp_dir().join(format!("whipstop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("t.jsonl");
+        std::fs::write(
+            &transcript,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working on it"}]}}"#,
+        )
+        .unwrap();
+        let payload = serde_json::json!({
+            "transcript_path": transcript,
+            "last_assistant_message": "needs input: your call on the merge.",
+        });
+        assert_eq!(final_message(&payload).as_deref(), Some("needs input: your call on the merge."));
+        assert_eq!(decide(&payload, None), 2);
+
+        let without = serde_json::json!({ "transcript_path": transcript });
+        assert_eq!(final_message(&without).as_deref(), Some("working on it"));
+        assert_eq!(decide(&without, None), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
