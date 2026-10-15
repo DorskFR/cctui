@@ -327,7 +327,7 @@ export class SessionsPage {
   items = $derived.by(() => this.#d.sessions());
   sessionsLoading = $derived.by(() => this.#d.sessionsLoading());
   allLabels = $derived.by(() => this.#d.labels() ?? []);
-  #loaded = $derived([...this.items, ...this.pageRows]);
+  #loaded = $derived.by(() => [...this.items, ...this.pageRows]);
 
   // Server-evaluable clauses + free text ride the raw string to the search
   // endpoint; `id`/`created` clauses are peeled off and narrowed client-side.
@@ -353,12 +353,13 @@ export class SessionsPage {
       .flatMap((p) => p.sessions)
       .filter((s) => !seen.has(s.id) && !!seen.add(s.id));
   });
-  pageDone = $derived(!this.#pager.hasNextPage);
-  pageLoading = $derived(
-    this.pagerActive &&
+  pageDone = $derived.by(() => !this.#pager.hasNextPage);
+  pageLoading = $derived.by(
+    () =>
+      this.pagerActive &&
       (this.#pager.isLoading || this.#pager.isFetchingNextPage),
   );
-  pageError = $derived(
+  pageError = $derived.by(() =>
     this.pagerActive && this.#pager.error ? errMessage(this.#pager.error) : "",
   );
 
