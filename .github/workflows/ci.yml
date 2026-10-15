@@ -261,10 +261,37 @@ jobs:
             exit 1
           fi
 
+  release-scope:
+    name: release scope
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.scope.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Would a release of this commit rebuild Rust
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CCTUI_RELEASED_TAGS="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --exclude-drafts --json tagName --jq '.[].tagName' | tr '\n' ' ')"
+          export CCTUI_RELEASED_TAGS
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          out="$(bash scripts/release-scope.sh "v$version" "$(git rev-parse HEAD)")"
+          echo "$out"
+          grep '^rust=' <<<"$out" >> "$GITHUB_OUTPUT"
+
   release-cache:
     name: warm release cache ${{ matrix.target }}
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    needs: release-scope
+    if: needs.release-scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -323,8 +350,8 @@ jobs:
 
   release-cache-server:
     name: warm release cache cctui-server
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    needs: release-scope
+    if: needs.release-scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
