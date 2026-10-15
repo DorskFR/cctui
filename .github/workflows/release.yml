@@ -13,6 +13,10 @@ on:
         description: "Publish a vX.Y.Z tag as a pre-release that moves :candidate, not :latest"
         type: boolean
         default: false
+      full:
+        description: "Rebuild every component instead of carrying unchanged ones from the previous release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,6 +46,11 @@ jobs:
       make_latest: ${{ steps.channel.outputs.make_latest }}
       floating_tag: ${{ steps.channel.outputs.floating_tag }}
       minor_tag: ${{ steps.channel.outputs.minor_tag }}
+      prev_tag: ${{ steps.scope.outputs.prev_tag }}
+      prev_version: ${{ steps.scope.outputs.prev_version }}
+      rust: ${{ steps.scope.outputs.rust }}
+      modes: ${{ steps.scope.outputs.modes }}
+      summary: ${{ steps.scope.outputs.summary }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,6 +79,20 @@ jobs:
           echo "$out"
           { echo "tag=$TAG"; echo "$out"; } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve what changed since the previous release
+        id: scope
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          CCTUI_FULL_RELEASE: ${{ inputs.full && 'true' || '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CCTUI_RELEASED_TAGS="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --exclude-drafts --json tagName --jq '.[].tagName' | tr '\n' ' ')"
+          export CCTUI_RELEASED_TAGS
+          out="$(bash scripts/release-scope.sh "$TAG" "$(git rev-parse HEAD)")"
+          echo "$out"
+          echo "$out" >> "$GITHUB_OUTPUT"
+
   # Only the publish steps (GitHub Release, image pushes) wait on this; builds
   # start right away and run alongside the ci.yml run for the same commit.
   ci-green:
@@ -93,6 +116,7 @@ jobs:
   plugin-catalog:
     name: plugin catalog resolves
     needs: [meta]
+    if: needs.meta.outputs.rust == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,6 +144,7 @@ jobs:
   build:
     name: build ${{ matrix.os }}-${{ matrix.arch }}
     needs: [meta]
+    if: needs.meta.outputs.rust == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -216,6 +241,7 @@ jobs:
   # of deploy/Dockerfile (2.41); the build script enforces it.
   build-server:
     needs: [meta]
+    if: needs.meta.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -240,26 +266,42 @@ jobs:
           retention-days: 1
           path: image-bins/
 
+
   release:
     needs: [meta, ci-green, plugin-catalog, build]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.ci-green.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.meta.outputs.sha }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: needs.meta.outputs.rust == 'true'
         with:
           path: dist
           pattern: cctui-bins-*
           merge-multiple: true
       - name: Compute checksums
+        if: needs.meta.outputs.rust == 'true'
         working-directory: dist
         run: sha256sum cctui-* > SHA256SUMS
+      # The binaries embed their version, so a release without Rust changes
+      # ships the previous release's signed assets unchanged.
+      - name: Carry the previous release's assets
+        if: needs.meta.outputs.rust != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREV_TAG: ${{ needs.meta.outputs.prev_tag }}
+        run: |
+          [ -n "$PREV_TAG" ] || { echo "no previous release to carry assets from" >&2; exit 1; }
+          gh release download "$PREV_TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern 'cctui-*' --pattern 'SHA256SUMS*'
       - name: Install minisign
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
       # MINISIGN_SECRET_KEY is the whole .key file (comment line + key line) of a
       # password-less key (`minisign -G -W`) whose public half is keys/release.minisign.pub.
       - name: Sign release assets
+        if: needs.meta.outputs.rust == 'true'
         working-directory: dist
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
@@ -272,9 +314,10 @@ jobs:
           for f in cctui-* SHA256SUMS; do
             minisign -S -s "$key" -m "$f" < /dev/null
           done
-      - name: Verify signatures against the committed public key
+      - name: Verify checksums and signatures against the committed public key
         working-directory: dist
         run: |
+          sha256sum -c SHA256SUMS
           for f in cctui-* SHA256SUMS; do
             case "$f" in *.minisig) continue ;; esac
             minisign -V -p ../keys/release.minisign.pub -m "$f"
@@ -289,155 +332,191 @@ jobs:
             stable/false/true | stable/false/false | stable/true/false | beta/true/false) ;;
             *) echo "unresolved release channel: '$CHANNEL/$PRERELEASE/$MAKE_LATEST'" >&2; exit 1 ;;
           esac
+      # Read by the infra rollout to bump only the rebuilt components.
+      - name: Record the release scope
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          PREV_TAG: ${{ needs.meta.outputs.prev_tag }}
+          RUST: ${{ needs.meta.outputs.rust }}
+          MODES: ${{ needs.meta.outputs.modes }}
+        run: |
+          jq -n --arg version "$VERSION" --arg prev_tag "$PREV_TAG" \
+            --argjson rust "$RUST" --argjson modes "$MODES" \
+            '{version: $version, prev_tag: $prev_tag, rust: $rust, modes: $modes}' > dist/release-scope.json
+          cat dist/release-scope.json
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           target_commitish: ${{ needs.meta.outputs.sha }}
           prerelease: ${{ needs.meta.outputs.prerelease }}
           make_latest: ${{ needs.meta.outputs.make_latest }}
+          body: ${{ needs.meta.outputs.summary }}
           generate_release_notes: true
           files: |
             dist/cctui-*
             dist/SHA256SUMS*
+            dist/release-scope.json
 
-  # linux/amd64 only: rust-via-QEMU arm64 is too slow to justify here. Each
-  # image keeps its own gha layer cache scope so unchanged layers (apt, node,
-  # harness binaries) are reused across releases.
-  #
-  # Images are built (not pushed) as soon as the run starts; `images-push`
-  # replays the build from the layer cache once ci is green, so nothing lands
-  # on ghcr before the gate. The `bins` build context replaces the Dockerfile's
-  # builder stage with the linux-amd64 binaries from the build job, so no Rust
-  # compiles inside docker.
+  # Every image is pushed by digest only, so nothing is tagged before ci-green;
+  # `images-push` then just tags those digests (or the previous release's image
+  # for a carried component). linux/amd64 only: rust-via-QEMU arm64 is too slow.
+  # The ui needs no Rust, so it starts as soon as the scope is known.
+  image-ui:
+    name: image cctui-ui
+    needs: [meta]
+    if: fromJSON(needs.meta.outputs.modes)['cctui-ui'] != 'retag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Log in to ghcr
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: webui/Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            CLIENT_VERSION=${{ needs.meta.outputs.version }}
+          cache-from: type=gha,scope=cctui-ui
+          cache-to: type=gha,mode=max,scope=cctui-ui
+          tags: ghcr.io/dorskfr/cctui-ui
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+      - name: Record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: mkdir -p digest && echo "$DIGEST" > digest/cctui-ui
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: digest-cctui-ui
+          retention-days: 1
+          path: digest/
+
+  # `build` takes the linux-amd64 binaries from this run; `prevbins` (a Dockerfile
+  # change without a Rust change) takes them from the previous release's image.
+  # The `bins` build context replaces each Dockerfile's builder stage either way.
   images:
     name: image ${{ matrix.image }}
     needs: [meta, build, build-server]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.meta.result == 'success' }}
     runs-on: ubuntu-latest
+    env:
+      MODE: ${{ fromJSON(needs.meta.outputs.modes)[matrix.image] }}
+      IMAGE: ghcr.io/dorskfr/${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - image: cctui
-            context: .
             file: deploy/Dockerfile
-            bins: true
+            bins: cctui-server
           - image: cctui-worker
-            context: .
             file: deploy/worker.Dockerfile
-            bins: true
+            bins: cctui-daemon cctui-guard-proxy cctui-supervisor cctui-guard
           - image: cctui-dispatcher-kube
-            context: .
             file: deploy/dispatcher.Dockerfile
-            bins: true
+            bins: cctui-dispatcher-kube
           - image: cctui-orchestrator
-            context: .
             file: deploy/orchestrator.Dockerfile
-            bins: true
-          - image: cctui-ui
-            context: .
-            file: webui/Dockerfile
-            bins: false
+            bins: cctui-orchestrator
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.MODE != 'retag'
         with:
           ref: ${{ needs.meta.outputs.sha }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        if: matrix.bins
+        if: env.MODE == 'build'
         with:
           pattern: image-bins*
           merge-multiple: true
           path: image-bins
 
       - name: Restore executable bits
-        if: matrix.bins
+        if: env.MODE == 'build'
         run: chmod 0755 image-bins/*
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Log in to ghcr
+        if: env.MODE != 'retag'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Loaded locally so the worker's harness floors are checked against the
-      # real binaries before anything is published.
-      - name: Build
+      - name: Take the binaries from the previous release's image
+        if: env.MODE == 'prevbins'
+        env:
+          PREV_VERSION: ${{ needs.meta.outputs.prev_version }}
+          BINS: ${{ matrix.bins }}
+        run: |
+          read -ra bins <<< "$BINS"
+          bash scripts/release-prev-bins.sh "$IMAGE:$PREV_VERSION" image-bins "${bins[@]}"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        if: env.MODE != 'retag'
+
+      - name: Build and push by digest
+        id: build
+        if: env.MODE != 'retag'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
-          context: ${{ matrix.context }}
+          context: .
           file: ${{ matrix.file }}
-          build-contexts: ${{ matrix.bins && 'bins=image-bins' || '' }}
+          build-contexts: bins=image-bins
           platforms: linux/amd64
-          load: ${{ matrix.image == 'cctui-worker' }}
-          push: false
           build-args: |
             CCTUI_GIT_HASH=${{ needs.meta.outputs.sha }}
-            CLIENT_VERSION=${{ needs.meta.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-          tags: ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.meta.outputs.version }}
+          tags: ${{ env.IMAGE }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
+      # Still untagged, so a harness below the floor fails the release here.
       - name: Verify harness version floors in the worker image
-        if: matrix.image == 'cctui-worker'
-        run: bash scripts/check-worker-image-harness.sh ghcr.io/dorskfr/cctui-worker:${{ needs.meta.outputs.version }}
+        if: matrix.image == 'cctui-worker' && env.MODE != 'retag'
+        run: bash scripts/check-worker-image-harness.sh "$IMAGE@${{ steps.build.outputs.digest }}"
+
+      - name: Record digest
+        if: env.MODE != 'retag'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: mkdir -p digest && echo "$DIGEST" > "digest/${{ matrix.image }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: env.MODE != 'retag'
+        with:
+          name: digest-${{ matrix.image }}
+          retention-days: 1
+          path: digest/
 
   images-push:
     name: push ${{ matrix.image }}
-    needs: [meta, ci-green, plugin-catalog, build, images]
+    needs: [meta, ci-green, plugin-catalog, image-ui, images]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.ci-green.result == 'success' }}
     runs-on: ubuntu-latest
+    env:
+      MODE: ${{ fromJSON(needs.meta.outputs.modes)[matrix.image] }}
+      IMAGE: ghcr.io/dorskfr/${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: cctui
-            context: .
-            file: deploy/Dockerfile
-            bins: true
-          - image: cctui-worker
-            context: .
-            file: deploy/worker.Dockerfile
-            bins: true
-          - image: cctui-dispatcher-kube
-            context: .
-            file: deploy/dispatcher.Dockerfile
-            bins: true
-          - image: cctui-orchestrator
-            context: .
-            file: deploy/orchestrator.Dockerfile
-            bins: true
-          - image: cctui-ui
-            context: .
-            file: webui/Dockerfile
-            bins: false
+        image: [cctui, cctui-worker, cctui-dispatcher-kube, cctui-orchestrator, cctui-ui]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.meta.outputs.sha }}
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        if: matrix.bins
+        if: env.MODE != 'retag'
         with:
-          pattern: image-bins*
-          merge-multiple: true
-          path: image-bins
-
-      - name: Restore executable bits
-        if: matrix.bins
-        run: chmod 0755 image-bins/*
+          name: digest-${{ matrix.image }}
+          path: digest
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-
-      - name: Compose image tags
-        id: tags
-        env:
-          IMAGE: ghcr.io/dorskfr/${{ matrix.image }}
-          VERSION: ${{ needs.meta.outputs.version }}
-          FLOATING: ${{ needs.meta.outputs.floating_tag }}
-          MINOR: ${{ needs.meta.outputs.minor_tag }}
-        run: |
-          {
-            echo 'tags<<TAGS_EOF'
-            for t in "$VERSION" "$FLOATING" "$MINOR"; do
-              [ -n "$t" ] && echo "$IMAGE:$t"
-            done
-            echo TAGS_EOF
-          } >> "$GITHUB_OUTPUT"
 
       - name: Log in to ghcr
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -446,17 +525,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Same inputs as the `images` build, so every layer is a cache hit.
-      - name: Push
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          build-contexts: ${{ matrix.bins && 'bins=image-bins' || '' }}
-          platforms: linux/amd64
-          push: true
-          build-args: |
-            CCTUI_GIT_HASH=${{ needs.meta.outputs.sha }}
-            CLIENT_VERSION=${{ needs.meta.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          tags: ${{ steps.tags.outputs.tags }}
+      - name: Tag
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          PREV_VERSION: ${{ needs.meta.outputs.prev_version }}
+          FLOATING: ${{ needs.meta.outputs.floating_tag }}
+          MINOR: ${{ needs.meta.outputs.minor_tag }}
+        run: |
+          if [ "$MODE" = retag ]; then
+            [ -n "$PREV_VERSION" ] || { echo "no previous release to carry $IMAGE from" >&2; exit 1; }
+            src="$IMAGE:$PREV_VERSION"
+          else
+            src="$IMAGE@$(cat "digest/${{ matrix.image }}")"
+          fi
+          args=()
+          for t in "$VERSION" "$FLOATING" "$MINOR"; do
+            [ -n "$t" ] && args+=(--tag "$IMAGE:$t")
+          done
+          echo "$src -> ${args[*]}"
+          docker buildx imagetools create "${args[@]}" "$src"

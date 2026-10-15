@@ -2,11 +2,18 @@
 
 # ---- build the static SPA ----
 # Build context is the repo ROOT (see `make ui/image/build`).
-FROM node:22-alpine@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c AS build
-WORKDIR /app
-
-WORKDIR /app/webui
+FROM node:22-alpine@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c AS deps-manifest
+WORKDIR /src
 COPY webui/package.json webui/package-lock.json ./
+# Every release bumps the version; blanking it keeps the npm ci layer cached.
+RUN node -e 'for (const f of ["package.json", "package-lock.json"]) { \
+      const j = JSON.parse(require("fs").readFileSync(f)); \
+      j.version = "0.0.0"; if (j.packages?.[""]) j.packages[""].version = "0.0.0"; \
+      require("fs").writeFileSync(f, JSON.stringify(j, null, 2) + "\n"); }'
+
+FROM node:22-alpine@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c AS build
+WORKDIR /app/webui
+COPY --from=deps-manifest /src/package.json /src/package-lock.json ./
 # --ignore-scripts: the `prepare` script compiles the paraglide i18n catalog,
 # which needs project.inlang/ + messages/ that aren't copied yet.
 RUN npm ci --ignore-scripts
