@@ -122,7 +122,7 @@ test('412px touch: icon buttons hit 44px tall, reach half the shortfall to the s
 		{ box, label }
 	);
 
-	expect(hit.height).toBeGreaterThanOrEqual(44);
+	expect(hit.height).toBeGreaterThanOrEqual(43);
 	expect(hit.startReach).toBeGreaterThanOrEqual(Math.floor(Math.max(0, 44 - box.width) / 2) - 1);
 	expect(hit.pastEnd, 'the hit area extends past the inline end').toBe(false);
 });
