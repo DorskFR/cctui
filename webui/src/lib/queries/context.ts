@@ -4,6 +4,7 @@ import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { AttachContextResponse } from "@bindings/AttachContextResponse";
 import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
 import type { SessionContextResponse } from "@bindings/SessionContextResponse";
+import type { AttachedContextRef } from "@bindings/AttachedContextRef";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 
@@ -25,6 +26,15 @@ export const asSessionContext = (v: unknown): SessionContextResponse => ({
   rules: list(field(v, "rules")),
   memories: list(field(v, "memories")),
 });
+/** The owner's current version of an item a session received, when it has
+ * moved past the one delivered. */
+export const newerVersion = (
+  delivered: AttachedContextRef,
+  items: readonly ContextItem[] | undefined,
+): number | null => {
+  const now = items?.find((i) => i.id === delivered.id)?.version;
+  return now !== undefined && now > delivered.version ? now : null;
+};
 export const asAttached = (v: unknown): AttachContextResponse => ({
   attached: list(field(v, "attached")),
   unknown: list(field(v, "unknown")),

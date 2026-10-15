@@ -543,8 +543,20 @@ pub async fn propose(
     Ok(row.map(ContextItem::from))
 }
 
-/// Promote the pending spec to live (bumping `version`) or drop it. `None`
-/// when the item is not the caller's or has nothing pending.
+/// An agent's new item that was never approved: its live half is an empty,
+/// disabled placeholder.
+#[must_use]
+pub fn is_unborn_proposal(item: &ContextItem) -> bool {
+    item.pending.is_some()
+        && item.created_by_session.is_some()
+        && item.version == 1
+        && !item.enabled
+        && item.body.is_empty()
+}
+
+/// Promote the pending spec to live (bumping `version`) or drop it; dropping
+/// an unborn proposal deletes the item. `None` when the item is not the
+/// caller's or has nothing pending.
 pub async fn settle_pending(
     pool: &PgPool,
     user_id: Uuid,
@@ -552,6 +564,18 @@ pub async fn settle_pending(
     approve: bool,
 ) -> Result<Option<ContextItem>, sqlx::Error> {
     let Some(item) = get_one(pool, user_id, id).await? else { return Ok(None) };
+    if !approve && is_unborn_proposal(&item) {
+        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM context_items \
+             WHERE id = $1 AND user_id = $2 AND pending IS NOT NULL AND version = 1 \
+             RETURNING {COLS}"
+        )))
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
+        return Ok(row.map(|r| ContextItem { pending: None, ..ContextItem::from(r) }));
+    }
     let Some(pending) = item.pending else { return Ok(None) };
     let row: Option<Row> = if approve {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -625,10 +649,10 @@ pub async fn remember_intent(
 pub async fn claim_intent(pool: &PgPool, session_id: &str, spawn_key: Option<&str>) {
     let Some(spawn_key) = spawn_key.filter(|k| *k != session_id) else { return };
     let done = sqlx::query(
-        "INSERT INTO session_context (spawn_key, item_ids, scope, rules) \
-         SELECT $1, item_ids, scope, rules FROM session_context WHERE spawn_key = $2 \
+        "INSERT INTO session_context (spawn_key, item_ids, scope, rules, memories) \
+         SELECT $1, item_ids, scope, rules, memories FROM session_context WHERE spawn_key = $2 \
          ON CONFLICT (spawn_key) DO UPDATE SET item_ids = EXCLUDED.item_ids, \
-             scope = EXCLUDED.scope, rules = EXCLUDED.rules",
+             scope = EXCLUDED.scope, rules = EXCLUDED.rules, memories = EXCLUDED.memories",
     )
     .bind(session_id)
     .bind(spawn_key)
@@ -645,61 +669,235 @@ pub async fn inherit_intent(pool: &PgPool, child_key: &str, parent_id: &str) {
     claim_intent(pool, child_key, Some(parent_id)).await;
 }
 
-type IntentRow = (Vec<Uuid>, Option<Jsonb<StoredScope>>, Jsonb<Vec<AttachedContextRef>>);
+/// Like [`claim_intent`], but nothing else vouches for a fork's key, so only a
+/// set recorded for `user_id` is claimed, and only once: the fork re-announces
+/// itself, and a later claim would drop what was granted since.
+pub async fn claim_fork_intent(
+    pool: &PgPool,
+    session_id: &str,
+    context_key: &str,
+    user_id: Uuid,
+) {
+    if context_key == session_id {
+        return;
+    }
+    let done = sqlx::query(
+        "INSERT INTO session_context (spawn_key, item_ids, scope, rules, memories) \
+         SELECT $1, item_ids, scope, rules, memories FROM session_context \
+          WHERE spawn_key = $2 AND scope->>'user_id' = $3 \
+         ON CONFLICT (spawn_key) DO NOTHING",
+    )
+    .bind(session_id)
+    .bind(context_key)
+    .bind(user_id.to_string())
+    .execute(pool)
+    .await;
+    if let Err(e) = done {
+        tracing::warn!(%session_id, error = %e, "could not re-key the fork's context set");
+    }
+}
 
-async fn intent_of(pool: &PgPool, session_id: &str) -> Result<Option<IntentRow>, sqlx::Error> {
-    sqlx::query_as("SELECT item_ids, scope, rules FROM session_context WHERE spawn_key = $1")
-        .bind(session_id)
-        .fetch_optional(pool)
-        .await
+struct Intent {
+    item_ids: Vec<Uuid>,
+    scope: Option<StoredScope>,
+    rules: Vec<AttachedContextRef>,
+    memories: Vec<AttachedContextRef>,
+}
+
+type IntentRow = (
+    Vec<Uuid>,
+    Option<Jsonb<StoredScope>>,
+    Jsonb<Vec<AttachedContextRef>>,
+    Jsonb<Vec<AttachedContextRef>>,
+);
+
+async fn intent_of(pool: &PgPool, session_id: &str) -> Result<Option<Intent>, sqlx::Error> {
+    let row: Option<IntentRow> = sqlx::query_as(
+        "SELECT item_ids, scope, rules, memories FROM session_context WHERE spawn_key = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(item_ids, scope, Jsonb(rules), Jsonb(memories))| Intent {
+        item_ids,
+        scope: scope.map(|s| s.0),
+        rules,
+        memories,
+    }))
 }
 
 /// The coordinates the session was spawned with, if cctui spawned it.
 pub async fn stored_scope(pool: &PgPool, session_id: &str) -> Option<StoredScope> {
-    intent_of(pool, session_id).await.ok().flatten().and_then(|(_, scope, _)| scope.map(|s| s.0))
+    intent_of(pool, session_id).await.ok().flatten().and_then(|i| i.scope)
+}
+
+/// Coordinates for a session with none stored (spawned before scopes were
+/// recorded, or adopted), read off its row and labels.
+async fn scope_of_session(
+    pool: &PgPool,
+    session_id: &str,
+) -> Result<Option<StoredScope>, sqlx::Error> {
+    type SessionRow = (Option<Uuid>, Option<Uuid>, Option<String>, Option<String>);
+    let row: Option<SessionRow> = sqlx::query_as(
+        "SELECT user_id, machine_uuid, working_dir, adapter_id FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((Some(user_id), machine, working_dir, adapter)) = row else { return Ok(None) };
+    let label_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT label_id FROM session_labels WHERE session_id = $1 ORDER BY label_id",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    let text = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    Ok(Some(StoredScope {
+        user_id,
+        coords: SpawnScope {
+            machine_id: machine.map(|m| m.to_string()),
+            working_dir: text(working_dir),
+            label_ids: label_ids.iter().map(ToString::to_string).collect(),
+            adapter: text(adapter),
+        },
+        dispatched: false,
+    }))
+}
+
+/// Never overwrites a scope the spawn stored.
+async fn adopt_scope(pool: &PgPool, session_id: &str) -> Option<StoredScope> {
+    let scope = match scope_of_session(pool, session_id).await {
+        Ok(scope) => scope?,
+        Err(e) => {
+            tracing::warn!(%session_id, error = %e, "session scope lookup failed");
+            return None;
+        }
+    };
+    let done = sqlx::query(
+        "INSERT INTO session_context (spawn_key, scope) VALUES ($1, $2) \
+         ON CONFLICT (spawn_key) DO UPDATE SET scope = EXCLUDED.scope \
+          WHERE session_context.scope IS NULL",
+    )
+    .bind(session_id)
+    .bind(Jsonb(&scope))
+    .execute(pool)
+    .await;
+    if let Err(e) = done {
+        tracing::warn!(%session_id, error = %e, "could not record the session scope");
+    }
+    Some(scope)
 }
 
 /// What one launch of `session_id` carries: its rules, re-resolved now against
-/// the owner's current set, then the memories and prompt frozen at spawn. The
-/// delivered rules are recorded for the session card.
+/// the owner's current set, then the memories and prompt frozen at spawn. What
+/// was delivered, at which version, is recorded for the session card.
 pub async fn for_launch(pool: &PgPool, session_id: &str) -> Vec<ContextItem> {
-    let row = match intent_of(pool, session_id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return Vec::new(),
+    let (ids, scope) = match intent_of(pool, session_id).await {
+        Ok(Some(intent)) => (intent.item_ids, intent.scope),
+        Ok(None) => (Vec::new(), None),
         Err(e) => {
             tracing::warn!(%session_id, error = %e, "context intent lookup failed");
             return Vec::new();
         }
     };
-    let (ids, scope, _) = row;
-    let mut out = Vec::new();
-    if let Some(Jsonb(scope)) = scope {
+    let scope = match scope {
+        Some(scope) => Some(scope),
+        None => adopt_scope(pool, session_id).await,
+    };
+    let mut rules = Vec::new();
+    if let Some(scope) = scope {
         match list_for_user(pool, scope.user_id).await {
-            Ok(items) => {
-                let rules = resolve_rules(&items, &scope.coords);
-                record_rules(pool, session_id, &rules).await;
-                out.extend(rules);
-            }
+            Ok(items) => rules = resolve_rules(&items, &scope.coords),
             Err(e) => tracing::warn!(%session_id, error = %e, "rule lookup failed"),
         }
     }
-    match get_many(pool, &ids).await {
-        Ok(items) => out.extend(items.into_iter().filter(|i| i.kind != "rule")),
-        Err(e) => tracing::warn!(%session_id, error = %e, "context item lookup failed"),
+    let frozen = match get_many(pool, &ids).await {
+        Ok(items) => items.into_iter().filter(|i| i.kind != "rule").collect(),
+        Err(e) => {
+            tracing::warn!(%session_id, error = %e, "context item lookup failed");
+            Vec::new()
+        }
+    };
+    record_delivery(pool, session_id, &rules, &frozen).await;
+    rules.extend(frozen);
+    rules
+}
+
+fn memory_refs(items: &[ContextItem]) -> Vec<AttachedContextRef> {
+    items.iter().filter(|i| i.kind == "memory").map(attached_ref).collect()
+}
+
+async fn record_delivery(
+    pool: &PgPool,
+    session_id: &str,
+    rules: &[ContextItem],
+    frozen: &[ContextItem],
+) {
+    let rules: Vec<AttachedContextRef> = rules.iter().map(attached_ref).collect();
+    let done =
+        sqlx::query("UPDATE session_context SET rules = $2, memories = $3 WHERE spawn_key = $1")
+            .bind(session_id)
+            .bind(Jsonb(rules))
+            .bind(Jsonb(memory_refs(frozen)))
+            .execute(pool)
+            .await;
+    if let Err(e) = done {
+        tracing::warn!(%session_id, error = %e, "could not record the delivered context");
     }
+}
+
+#[must_use]
+pub fn merge_delivered(
+    delivered: Vec<AttachedContextRef>,
+    fresh: &[AttachedContextRef],
+) -> Vec<AttachedContextRef> {
+    let mut out: Vec<AttachedContextRef> =
+        delivered.into_iter().filter(|d| !fresh.iter().any(|f| f.id == d.id)).collect();
+    out.extend(fresh.iter().cloned());
     out
 }
 
-async fn record_rules(pool: &PgPool, session_id: &str, rules: &[ContextItem]) {
-    let refs: Vec<AttachedContextRef> = rules.iter().map(attached_ref).collect();
-    let done = sqlx::query("UPDATE session_context SET rules = $2 WHERE spawn_key = $1")
+async fn record_attached(pool: &PgPool, session_id: &str, picked: &[ContextItem]) {
+    let delivered = match intent_of(pool, session_id).await {
+        Ok(intent) => intent.map(|i| i.memories).unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(%session_id, error = %e, "could not read the delivered memories");
+            return;
+        }
+    };
+    let merged = merge_delivered(delivered, &memory_refs(picked));
+    let done = sqlx::query("UPDATE session_context SET memories = $2 WHERE spawn_key = $1")
         .bind(session_id)
-        .bind(Jsonb(refs))
+        .bind(Jsonb(merged))
         .execute(pool)
         .await;
     if let Err(e) = done {
-        tracing::warn!(%session_id, error = %e, "could not record the delivered rules");
+        tracing::warn!(%session_id, error = %e, "could not record the attached memories");
     }
+}
+
+/// The memories a session holds, at the version delivered. One with no
+/// delivery on record shows its current version; one deleted since delivery
+/// still shows, since the session still has it.
+#[must_use]
+pub fn held_memories(
+    granted: &[Uuid],
+    current: &[ContextItem],
+    delivered: &[AttachedContextRef],
+) -> Vec<AttachedContextRef> {
+    let granted: Vec<String> = granted.iter().map(ToString::to_string).collect();
+    let mut out: Vec<AttachedContextRef> = delivered
+        .iter()
+        .filter(|d| d.kind == "memory" && granted.contains(&d.id))
+        .cloned()
+        .collect();
+    for item in current.iter().filter(|i| i.kind == "memory") {
+        if !out.iter().any(|d| d.id == item.id.to_string()) {
+            out.push(attached_ref(item));
+        }
+    }
+    out.sort_by(|a, b| (a.title.to_lowercase(), &a.id).cmp(&(b.title.to_lowercase(), &b.id)));
+    out
 }
 
 /// Add items to a live session's granted set, so a relaunch restages them.
@@ -793,6 +991,7 @@ pub async fn attach_memories(
         crate::bus::stage_files(state, session_id, vec![file]).await.map_err(staging_error)?;
     let ids: Vec<Uuid> = picked.iter().map(|i| i.id).collect();
     grant(&state.pool, session_id, &ids).await?;
+    record_attached(&state.pool, session_id, &picked).await;
     Ok((paths.into_iter().next(), out))
 }
 
@@ -987,21 +1186,17 @@ async fn require_session_owner(
 }
 
 /// `GET /sessions/{id}/context` — the rules the latest launch delivered and
-/// the memories the session holds.
+/// the memories the session holds, each at the version it received.
 pub async fn session_context(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionContextResponse>, AppError> {
-    let Some((ids, _, Jsonb(rules))) = intent_of(&state.pool, &session_id).await? else {
+    let Some(intent) = intent_of(&state.pool, &session_id).await? else {
         return Ok(Json(SessionContextResponse::default()));
     };
-    let memories = get_many(&state.pool, &ids)
-        .await?
-        .iter()
-        .filter(|i| i.kind == "memory")
-        .map(attached_ref)
-        .collect();
-    Ok(Json(SessionContextResponse { rules, memories }))
+    let current = get_many(&state.pool, &intent.item_ids).await?;
+    let memories = held_memories(&intent.item_ids, &current, &intent.memories);
+    Ok(Json(SessionContextResponse { rules: intent.rules, memories }))
 }
 
 /// `POST /sessions/{id}/context` — stage memories into a live session and tell
@@ -1604,10 +1799,13 @@ mod tests {
         assert_eq!(names(&resumed), ["house", "note"], "the resume keeps the kit");
         assert_eq!(resumed[0].body, "v2 body", "the edit reaches the next launch");
 
-        let Some((_, _, Jsonb(rules))) = intent_of(&pool, &session).await.expect("row") else {
+        let Some(Intent { rules, memories, .. }) = intent_of(&pool, &session).await.expect("row")
+        else {
             panic!("the re-keyed row exists");
         };
         assert_eq!(rules.len(), 1);
+        assert_eq!(memories.len(), 1);
+        assert_eq!((memories[0].name.as_str(), memories[0].version), ("note", 1));
         assert_eq!((rules[0].name.as_str(), rules[0].version), ("house", 2));
 
         let claude = StoredScope { coords: at("claude-code", "/w"), ..stored };
@@ -1651,6 +1849,305 @@ mod tests {
         assert!(rejected.pending.is_none());
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    fn memory_ref(id: Uuid, title: &str, version: i32) -> AttachedContextRef {
+        AttachedContextRef {
+            id: id.to_string(),
+            kind: "memory".into(),
+            name: title.to_lowercase(),
+            title: title.into(),
+            version,
+        }
+    }
+
+    #[test]
+    fn a_session_shows_the_memory_version_it_received() {
+        let mut note = item("memory", "note", "user", None);
+        note.version = 5;
+        let fresh = item("memory", "fresh", "user", None);
+        let gone = Uuid::new_v4();
+        let granted = [note.id, fresh.id, gone];
+        let delivered = [memory_ref(note.id, "note", 3), memory_ref(gone, "gone", 2)];
+        let held = held_memories(&granted, &[note.clone(), fresh.clone()], &delivered);
+        let got: Vec<(&str, i32)> = held.iter().map(|r| (r.title.as_str(), r.version)).collect();
+        assert_eq!(
+            got,
+            [("fresh", 1), ("gone", 2), ("note", 3)],
+            "delivered versions win; undelivered show current; a deleted one stays"
+        );
+
+        let revoked = held_memories(&[fresh.id], &[fresh], &delivered);
+        assert_eq!(revoked.len(), 1, "a delivery no longer granted is not held");
+    }
+
+    #[test]
+    fn an_attach_lays_the_new_versions_over_the_delivered_ones() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let merged = merge_delivered(
+            vec![memory_ref(a, "a", 1), memory_ref(b, "b", 1)],
+            &[memory_ref(b, "b", 4)],
+        );
+        let got: Vec<(String, i32)> = merged.into_iter().map(|r| (r.title, r.version)).collect();
+        assert_eq!(got, [("a".to_owned(), 1), ("b".to_owned(), 4)]);
+    }
+
+    #[test]
+    fn only_a_never_approved_agent_item_is_unborn() {
+        let mut unborn = rule("new", ContextMatch::default());
+        unborn.enabled = false;
+        unborn.body = String::new();
+        unborn.created_by_session = Some("agent-1".into());
+        unborn.pending = Some(ContextItemSpec { body: "proposed".into(), ..Default::default() });
+        assert!(is_unborn_proposal(&unborn));
+
+        let approved_once = ContextItem { version: 2, ..unborn.clone() };
+        assert!(!is_unborn_proposal(&approved_once));
+        let human_made = ContextItem { created_by_session: None, ..unborn.clone() };
+        assert!(!is_unborn_proposal(&human_made), "a human's empty item is theirs to keep");
+        let live = ContextItem { body: "live".into(), enabled: true, ..unborn.clone() };
+        assert!(!is_unborn_proposal(&live));
+        let settled = ContextItem { pending: None, ..unborn };
+        assert!(!is_unborn_proposal(&settled));
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_brand_new_agent_rule_deletes_it() {
+        let Some(pool) = test_pool("context_reject_unborn").await else { return };
+        let uid = seed_user(&pool).await;
+        let proposed = rule_spec("fresh", "do the thing", ContextMatch::default());
+        let placeholder =
+            ContextItemSpec { body: String::new(), enabled: false, ..proposed.clone() };
+        let r = insert(&pool, uid, &placeholder, Some(&proposed), Some("agent-1"))
+            .await
+            .expect("insert");
+
+        let gone = settle_pending(&pool, uid, r.id, false).await.expect("reject").expect("row");
+        assert_eq!(gone.id, r.id);
+        assert!(gone.pending.is_none());
+        assert!(get_one(&pool, uid, r.id).await.expect("lookup").is_none(), "no empty husk");
+
+        let kept = insert(&pool, uid, &placeholder, Some(&proposed), Some("agent-1"))
+            .await
+            .expect("insert");
+        settle_pending(&pool, uid, kept.id, true).await.expect("approve").expect("row");
+        propose(&pool, uid, kept.id, &proposed, "agent-1").await.expect("propose");
+        settle_pending(&pool, uid, kept.id, false).await.expect("reject").expect("row");
+        let after = get_one(&pool, uid, kept.id).await.expect("lookup").expect("still there");
+        assert_eq!(after.body, "do the thing", "an approved rule survives a later rejection");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    async fn seed_session(pool: &PgPool, uid: Uuid, dir: &str, adapter: &str) -> (Uuid, String) {
+        let mid = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(pool)
+            .await
+            .expect("seed machine");
+        let sid = format!("ctx-legacy-{}", Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO sessions \
+                 (id, machine_id, machine_uuid, working_dir, status, user_id, adapter_id) \
+             VALUES ($1, $2, $3, $4, 'active', $5, $6)",
+        )
+        .bind(&sid)
+        .bind(mid.to_string())
+        .bind(mid)
+        .bind(dir)
+        .bind(uid)
+        .bind(adapter)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        (mid, sid)
+    }
+
+    /// A session with no stored scope resolves its rules against its own row
+    /// and labels, and keeps those coordinates from then on.
+    #[tokio::test]
+    async fn a_session_without_a_stored_scope_still_gets_its_rules() {
+        let Some(pool) = test_pool("context_legacy_scope").await else { return };
+        let uid = seed_user(&pool).await;
+        let (mid, sid) = seed_session(&pool, uid, "/w/repo", "codex").await;
+        let label: Uuid = sqlx::query_scalar(
+            "INSERT INTO labels (user_id, name, color) VALUES ($1, $2, '#888') RETURNING id",
+        )
+        .bind(uid)
+        .bind(format!("lab-{sid}"))
+        .fetch_one(&pool)
+        .await
+        .expect("seed label");
+        sqlx::query("INSERT INTO session_labels (session_id, label_id) VALUES ($1, $2)")
+            .bind(&sid)
+            .bind(label)
+            .execute(&pool)
+            .await
+            .expect("label the session");
+        let here = ContextMatch {
+            machines: vec![mid.to_string()],
+            paths: vec!["/w".into()],
+            labels: vec![label.to_string()],
+            adapters: vec!["codex".into()],
+        };
+        insert(&pool, uid, &rule_spec("here", "b", here), None, None).await.expect("rule");
+        let claude = ContextMatch { adapters: vec!["claude-code".into()], ..Default::default() };
+        insert(&pool, uid, &rule_spec("claude", "b", claude), None, None).await.expect("rule");
+
+        assert_eq!(names(&for_launch(&pool, &sid).await), ["here"]);
+        let stored = stored_scope(&pool, &sid).await.expect("adopted");
+        assert_eq!(stored.user_id, uid);
+        assert_eq!(stored.coords.working_dir.as_deref(), Some("/w/repo"));
+        assert_eq!(stored.coords.label_ids, [label.to_string()]);
+        assert!(!stored.dispatched);
+        let Some(Intent { rules, .. }) = intent_of(&pool, &sid).await.expect("row") else {
+            panic!("the adopted row exists");
+        };
+        assert_eq!(rules.len(), 1, "the delivery is recorded for the card");
+
+        let granted = format!("ctx-granted-{}", Uuid::new_v4());
+        grant(&pool, &granted, &[]).await.expect("grant-only row");
+        assert!(for_launch(&pool, &granted).await.is_empty(), "no session row, no scope");
+
+        let elsewhere = StoredScope {
+            user_id: uid,
+            coords: at("claude-code", "/elsewhere"),
+            dispatched: true,
+        };
+        sqlx::query("UPDATE session_context SET scope = $2 WHERE spawn_key = $1")
+            .bind(&sid)
+            .bind(Jsonb(&elsewhere))
+            .execute(&pool)
+            .await
+            .expect("store a scope");
+        assert_eq!(names(&for_launch(&pool, &sid).await), ["claude"], "a stored scope wins");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
+            .bind(vec![sid.clone(), granted])
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(mid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn a_fork_claims_its_own_set_once_and_only_its_owners() {
+        let Some(pool) = test_pool("context_fork_claim").await else { return };
+        let uid = seed_user(&pool).await;
+        let stranger = seed_user(&pool).await;
+        let codex = ContextMatch { adapters: vec!["codex".into()], ..Default::default() };
+        insert(&pool, uid, &rule_spec("house", "b", codex), None, None).await.expect("rule");
+
+        let parent = format!("ctx-parent-{}", Uuid::new_v4());
+        let stored = StoredScope { user_id: uid, coords: at("codex", "/w"), dispatched: false };
+        remember_intent(&pool, &parent, &[], &stored).await;
+        let command_id = Uuid::new_v4().to_string();
+        inherit_intent(&pool, &command_id, &parent).await;
+
+        let thread = format!("ctx-fork-{}", Uuid::new_v4());
+        claim_fork_intent(&pool, &thread, &command_id, stranger).await;
+        assert!(intent_of(&pool, &thread).await.expect("lookup").is_none(), "not theirs");
+
+        claim_fork_intent(&pool, &thread, &command_id, uid).await;
+        assert_eq!(names(&for_launch(&pool, &thread).await), ["house"]);
+
+        let note = clean_spec(ContextItemSpec {
+            kind: "memory".into(),
+            name: "note".into(),
+            title: "Note".into(),
+            body: "remember".into(),
+            ..ContextItemSpec::default()
+        })
+        .expect("valid memory");
+        let m = insert(&pool, uid, &note, None, None).await.expect("memory");
+        grant(&pool, &thread, &[m.id]).await.expect("grant");
+        claim_fork_intent(&pool, &thread, &command_id, uid).await;
+        let kept = intent_of(&pool, &thread).await.expect("lookup").expect("row");
+        assert_eq!(kept.item_ids, [m.id], "a re-announce never drops a later grant");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
+            .bind(vec![parent, command_id, thread])
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![uid, stranger])
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    async fn an_attach_records_the_version_it_staged() {
+        let Some(pool) = test_pool("context_attach_version").await else { return };
+        let uid = seed_user(&pool).await;
+        let note = clean_spec(ContextItemSpec {
+            kind: "memory".into(),
+            name: "note".into(),
+            title: "Note".into(),
+            body: "v1".into(),
+            ..ContextItemSpec::default()
+        })
+        .expect("valid memory");
+        let m = insert(&pool, uid, &note, None, None).await.expect("memory");
+        let sid = format!("ctx-attach-{}", Uuid::new_v4());
+        grant(&pool, &sid, &[m.id]).await.expect("grant");
+        record_attached(&pool, &sid, std::slice::from_ref(&m)).await;
+
+        let edited = ContextItemSpec { body: "v2".into(), ..spec_of(&m) };
+        update(&pool, uid, m.id, &edited, None).await.expect("edit").expect("found");
+
+        let intent = intent_of(&pool, &sid).await.expect("lookup").expect("row");
+        let current = get_many(&pool, &intent.item_ids).await.expect("items");
+        assert_eq!(current[0].version, 2);
+        let held = held_memories(&intent.item_ids, &current, &intent.memories);
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].version, 1, "the session still holds what it was staged");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn migration_175_adds_and_drops_the_delivered_memories() {
+        let Some(pool) = test_pool("migration_175").await else { return };
+        let mut conn = pool.acquire().await.expect("acquire");
+        sqlx::raw_sql(
+            "CREATE TEMP TABLE session_context ( \
+                 spawn_key TEXT PRIMARY KEY, item_ids UUID[] NOT NULL DEFAULT '{}', \
+                 scope JSONB, rules JSONB NOT NULL DEFAULT '[]'::jsonb, \
+                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
+             INSERT INTO session_context (spawn_key) VALUES ('old');",
+        )
+        .execute(&mut *conn)
+        .await
+        .expect("shadow table");
+        let up = include_str!("../../../../migrations/175_session_context_delivered.up.sql");
+        let down = include_str!("../../../../migrations/175_session_context_delivered.down.sql");
+        sqlx::raw_sql(up).execute(&mut *conn).await.expect("175 up");
+        sqlx::raw_sql(up).execute(&mut *conn).await.expect("175 up is idempotent");
+        let memories: serde_json::Value =
+            sqlx::query_scalar("SELECT memories FROM session_context WHERE spawn_key = 'old'")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("an existing row reads an empty delivery");
+        assert_eq!(memories, serde_json::json!([]));
+        sqlx::raw_sql(down).execute(&mut *conn).await.expect("175 down");
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM session_context")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count");
+        assert_eq!(rows, 1, "the down keeps every row");
     }
 
     /// Migration 174 runs against temp tables that shadow `context_items`,

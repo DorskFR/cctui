@@ -6,6 +6,7 @@ use ratatui_textarea::TextArea;
 
 use super::account_switch::Picker as AccountSwitchPicker;
 use super::attention::PermissionInbox;
+use super::context_items::Browser as ContextBrowser;
 use super::conversation_store::ConversationStore;
 use super::diagnose::DiagnosePanel;
 use super::harness_mode::Picker as HarnessPicker;
@@ -44,6 +45,7 @@ pub enum View {
     Overview,
     HarnessMode,
     AccountSwitch,
+    ContextItems,
 }
 
 /// A pending permission request from Claude Code that needs TUI approval.
@@ -360,6 +362,8 @@ pub struct App {
     /// The harness-mode picker, `None` when closed.
     pub harness_picker: Option<HarnessPicker>,
     pub account_switch: Option<AccountSwitchPicker>,
+    /// The context browser, `None` when closed.
+    pub context_items: Option<ContextBrowser>,
     /// Interrupt/fork confirmations and the model picker.
     pub controls: super::controls::Controls,
     /// Cursor state of the todo/subagent sidebar.
@@ -494,6 +498,7 @@ impl App {
             settings_blob: None,
             harness_picker: None,
             account_switch: None,
+            context_items: None,
             controls: super::controls::Controls::default(),
             sidebar: super::sidebar::Sidebar::default(),
             unread: super::unread::Unread::default(),

@@ -179,6 +179,25 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    pub async fn launch_context(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+    ) -> anyhow::Result<cctui_proto::api::LaunchContextResponse> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/context",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.get(&url).bearer_auth(machine_key).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("launch_context failed ({status}): {text}");
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Ask the server to spawn a `CctuiAgent` child of `session_id`. The server
     /// decides whether the calling session is permitted to spawn it; a refusal
     /// comes back as a non-2xx whose body is the reason to show the model.

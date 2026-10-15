@@ -514,6 +514,7 @@ async fn run(server: &Client, ws: &WsClient, drafts: &DraftSaver, effect: Effect
                 vec![Action::DeepLink(DeepLinkAction::Failed { session_id, error: e.to_string() })]
             }
         },
+        Effect::Context(effect) => super::context_items::run(server, effect).await,
         // The accounts, usage and spend arms live in their own runner: one
         // function holding every arm builds a future too large for the stack.
         rest @ (Effect::FetchMachines

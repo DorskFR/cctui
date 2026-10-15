@@ -2,6 +2,7 @@ pub mod account_switch;
 pub mod attach;
 pub mod banner;
 pub mod cards;
+pub mod context_items;
 pub mod conversation;
 pub mod diagnose;
 pub mod fileview;
@@ -52,6 +53,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             draw_below(frame, app);
             if let Some(picker) = app.account_switch.as_ref() {
                 account_switch::draw(frame, picker);
+            }
+        }
+        View::ContextItems => {
+            draw_below(frame, app);
+            if let Some(browser) = app.context_items.as_ref() {
+                context_items::draw(frame, browser);
             }
         }
         View::Overview => overview::draw(frame, app),

@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use super::account_switch::AccountSwitchAction;
 use super::attach::AttachAction;
 use super::attention::AttentionAction;
+use super::context_items::{ContextAction, ContextEffect};
 use super::controls::ControlsAction;
 use super::conversation::ConversationAction;
 use super::conversation_store::{PageKind, PageRequest};
@@ -115,6 +116,7 @@ pub enum Action {
     Slice(SliceAction),
     HarnessMode(HarnessModeAction),
     AccountSwitch(AccountSwitchAction),
+    ContextItems(ContextAction),
     DeepLink(DeepLinkAction),
 
     StreamLine {
@@ -372,6 +374,8 @@ pub enum Effect {
         account_name: String,
         family: String,
     },
+    /// The context browser's reads and writes.
+    Context(ContextEffect),
     /// `GET /labels`: the whole catalogue.
     FetchLabels,
     CreateLabel {

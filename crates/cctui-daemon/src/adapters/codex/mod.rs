@@ -96,6 +96,23 @@ async fn resolve_launch(
     .await
 }
 
+/// The rules and memories a launch carries, pulled without minting a
+/// credential. `None` when no server is configured or the pull fails.
+async fn resolve_context(
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    key: &str,
+) -> Option<Vec<cctui_proto::api::SessionContextItem>> {
+    let (Some(server), Some(mk)) = (server, machine_key) else { return None };
+    match server.launch_context(mk, key).await {
+        Ok(resp) => Some(resp.context),
+        Err(e) => {
+            tracing::warn!(%key, "codex: context pull failed: {e}");
+            None
+        }
+    }
+}
+
 /// The tier for a codex launch: the spawn spec's resolved value, else the one
 /// the gateway-env pull served. `None` on both leaves codex's own default.
 fn spec_service_tier(
@@ -618,7 +635,7 @@ impl CommandPump {
         // thread id when absent), and fail closed on an account-bound fork
         // with empty env — same contract as Spawn.
         let launch_key = session_id.clone().unwrap_or_else(|| parent_local_id.clone());
-        let (env, served_settings, plugins, context) = match resolve_launch(
+        let (env, served_settings, plugins, mut context) = match resolve_launch(
             self.server.as_ref(),
             self.machine_key.as_ref(),
             &launch_key,
@@ -633,6 +650,13 @@ impl CommandPump {
                 return;
             }
         };
+        let context_key = fork_context_key(session_id.as_deref(), command_id);
+        if let Some(key) = &context_key
+            && let Some(own) =
+                resolve_context(self.server.as_ref(), self.machine_key.as_ref(), key).await
+        {
+            context = own;
+        }
         let cfg = self.launch_cfg(spec, served_settings.as_ref());
         let preflight = self.preflight(cfg.model.clone(), None);
         let skills =
@@ -664,7 +688,7 @@ impl CommandPump {
             self.shutdown.clone(),
         )
         .with_preflight(Some(preflight))
-        .with_session_context(context, Some(launch_key.clone()))
+        .with_session_context(context, Some(context_key.unwrap_or(launch_key)))
         .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
@@ -916,6 +940,16 @@ enum DispatchOutcome {
     Missing,
 }
 
+/// The key a fork's own context set is recorded under when its env is pulled
+/// under another id: codex mints the fork's thread id itself, so the server
+/// records the set under the fork's `command_id`.
+fn fork_context_key(session_id: Option<&str>, command_id: Option<uuid::Uuid>) -> Option<String> {
+    match session_id {
+        Some(_) => None,
+        None => command_id.map(|id| id.to_string()),
+    }
+}
+
 /// Whether a resume must re-pull the gateway env. A stored credential means the
 /// launch already resolved one, so pulling again would be redundant; a restored
 /// record keeps its base URL, so emptiness alone does not answer this.
@@ -945,12 +979,10 @@ async fn dispatch(
             // the launch resolved, and a rediscovered thread re-derives them
             // from the same pull that re-mints its credential.
             let mut skills = crate::plugins::recall_skills(local_id).unwrap_or_default();
-            let mut context = Vec::new();
-            if resume_needs_env_pull(&record.env) {
+            let context = if resume_needs_env_pull(&record.env) {
                 match resolve_launch(server, machine_key, local_id, &record.env).await {
                     Ok(launch) => {
                         let settings = launch.settings;
-                        context = launch.context;
                         skills = crate::plugins::resolve_session_skills(
                             server,
                             local_id,
@@ -966,6 +998,7 @@ async fn dispatch(
                             record.cfg.service_tier.take().or_else(|| {
                                 app_server::service_tier_from_settings(settings.as_ref())
                             });
+                        launch.context
                     }
                     Err(err) => {
                         tracing::error!(%local_id, %err, "codex resume: refusing env-less launch");
@@ -974,7 +1007,9 @@ async fn dispatch(
                         return DispatchOutcome::Handled(false);
                     }
                 }
-            }
+            } else {
+                resolve_context(server, machine_key, local_id).await.unwrap_or_default()
+            };
             spawn_resumed_session(
                 record,
                 local_id,
@@ -1477,5 +1512,68 @@ mod tests {
             recv(&mut rx).await,
             AdapterEvent::Status { state: Some(s), .. } if s == "failed"
         ));
+    }
+
+    #[test]
+    fn a_codex_fork_reads_its_own_context_under_its_command_id() {
+        let command_id = uuid::Uuid::new_v4();
+        assert_eq!(fork_context_key(None, Some(command_id)), Some(command_id.to_string()));
+        assert_eq!(
+            fork_context_key(Some("pre-minted"), Some(command_id)),
+            None,
+            "a pre-minted id already keys env and context alike"
+        );
+        assert_eq!(fork_context_key(None, None), None);
+    }
+
+    /// One canned HTTP response; yields the request head it was sent.
+    async fn serve_once(response: String) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            sock.write_all(response.as_bytes()).await.unwrap();
+            sock.shutdown().await.ok();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn http_json(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn a_context_pull_reads_the_credential_free_route() {
+        let body = r#"{"context":[{"kind":"rule","name":"house","title":"House","body":"be terse","version":4}]}"#;
+        let (base, request) = serve_once(http_json("200 OK", body)).await;
+        let server = ServerClient::new(base);
+        let key = "mk-1".to_owned();
+        let got = resolve_context(Some(&server), Some(&key), "thread-9").await.expect("pulled");
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].kind.as_str(), got[0].version), ("rule", 4));
+        let head = request.await.unwrap();
+        assert!(
+            head.starts_with("GET /api/v1/daemon/sessions/thread-9/context "),
+            "never the minting gateway-env route: {head}"
+        );
+        assert!(head.to_ascii_lowercase().contains("authorization: bearer mk-1"), "{head}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_context_pull_is_none_not_an_error() {
+        let (base, request) = serve_once(http_json("500 Internal Server Error", "{}")).await;
+        let server = ServerClient::new(base);
+        let key = "mk-1".to_owned();
+        assert!(resolve_context(Some(&server), Some(&key), "thread-9").await.is_none());
+        request.await.unwrap();
+        assert!(resolve_context(None, Some(&key), "thread-9").await.is_none());
     }
 }

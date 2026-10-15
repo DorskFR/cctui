@@ -402,6 +402,7 @@
 	"conversation_context_rules": "Rules",
 	"conversation_context_memories": "Memory notes",
 	"conversation_context_none": "None.",
+	"conversation_context_newer": "v{version} available",
 	"conversation_context_attach": "Attach context…",
 	"conversation_context_attach_btn": "Attach {count}",
 	"conversation_context_attached": "Attached: {names}",

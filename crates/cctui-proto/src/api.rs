@@ -288,6 +288,14 @@ pub struct SessionContextItem {
     pub version: i32,
 }
 
+/// `GET /daemon/sessions/{id}/context`: the context of
+/// [`GatewayEnvResponse`] alone, with no credential minted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LaunchContextResponse {
+    #[serde(default)]
+    pub context: Vec<SessionContextItem>,
+}
+
 /// What a spawn asks for by way of reusable context.
 ///
 /// `auto` adds every filter-matching memory on top of the explicit picks; an
