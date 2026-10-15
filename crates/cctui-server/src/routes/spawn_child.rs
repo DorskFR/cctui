@@ -639,15 +639,26 @@ pub async fn spawn_child(
     // Same resolution the webui spawn runs, keyed on the child's own launch
     // key, so a profile's context set means the same thing from the tool as
     // from the browser.
+    let scope = crate::routes::context::StoredScope {
+        user_id: parent.user_id,
+        coords: crate::routes::context::SpawnScope {
+            machine_id: Some(parent.machine_uuid.to_string()),
+            working_dir: child_cwd.clone(),
+            label_ids: Vec::new(),
+            adapter: Some(authorized.adapter.clone()),
+        },
+        dispatched: crate::routes::context::stored_scope(&state.pool, &parent.session_id)
+            .await
+            .is_some_and(|s| s.dispatched),
+    };
     let context = crate::routes::context::resolve_for_child(
         &state.pool,
         parent.user_id,
         req.agent_profile.as_deref(),
-        Some(&parent.machine_uuid.to_string()),
-        child_cwd.as_deref(),
+        &scope.coords,
     )
     .await;
-    crate::routes::context::remember_intent(&state.pool, &child_key, &context).await;
+    crate::routes::context::remember_intent(&state.pool, &child_key, &context, &scope).await;
     let spec = SessionSpec {
         adapter_id: AdapterId::new(&authorized.adapter),
         working_dir: child_cwd,

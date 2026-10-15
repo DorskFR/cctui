@@ -140,14 +140,15 @@ pub async fn session_gateway_env(
     }))
 }
 
-/// The memory notes and prompt template this session was launched with, as the
-/// daemon needs them. Re-served on every (re)launch so a resume keeps the kit
-/// its spawn resolved, and read through the spawn key the adapters echo.
+/// The context this launch carries, as the daemon needs it: the rules,
+/// re-resolved now so an edited rule reaches the next launch, then the memory
+/// notes and prompt template the spawn froze. Read through the spawn key the
+/// adapters echo.
 async fn session_context(
     state: &AppState,
     session_id: &str,
 ) -> Vec<cctui_proto::api::SessionContextItem> {
-    crate::routes::context::for_session(&state.pool, session_id)
+    crate::routes::context::for_launch(&state.pool, session_id)
         .await
         .into_iter()
         .map(|i| cctui_proto::api::SessionContextItem {

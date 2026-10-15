@@ -13,6 +13,13 @@ use cctui_proto::api::SessionContextItem;
 /// Filename the session's memory notes are staged under.
 const CONTEXT_FILE: &str = "context.md";
 
+/// Told to every session that has the cctui MCP relay: without it agents never
+/// reach for the tool on their own.
+pub const CONTEXT_TOOL_LINE: &str = "CctuiContext: use `mcp__cctui__CctuiContext` `save` to keep \
+    a durable note for future sessions (rules you save need the user's approval); `list` and \
+    `show` read what is saved, `attach` stages saved memories into this session. Never store \
+    secrets in it.\n";
+
 /// The shared-checkout warning for a session about to work in `cwd`.
 ///
 /// `None` when no other live session shares its working tree. `local_id` is
@@ -21,6 +28,33 @@ const CONTEXT_FILE: &str = "context.md";
 #[must_use]
 pub fn shared_checkout(cwd: &str, local_id: Option<&str>) -> Option<String> {
     crate::neighbours::notice(&crate::neighbours::cwd_neighbours(cwd, local_id), SystemTime::now())
+}
+
+/// The session's rules, inline, or `None` when none apply. Rules are short by
+/// construction (the server caps them), so unlike memories they are not staged
+/// behind a file the agent may never open.
+#[must_use]
+pub fn render_rules(items: &[SessionContextItem]) -> Option<String> {
+    use std::fmt::Write as _;
+
+    let rules: Vec<&SessionContextItem> =
+        items.iter().filter(|i| i.kind == "rule" && !i.body.trim().is_empty()).collect();
+    if rules.is_empty() {
+        return None;
+    }
+    let mut out = String::from("rules: the user's standing instructions; follow them.\n");
+    for rule in rules {
+        let _ = write!(out, "\n### {}\n{}\n", rule.title.trim(), rule.body.trim());
+    }
+    Some(out)
+}
+
+/// The rules, then the staged-memory notice: the one context block every
+/// harness delivers. `session_id` keys the staging dir; without it the notes
+/// are skipped, never the rules.
+#[must_use]
+pub fn context_block(session_id: Option<&str>, items: &[SessionContextItem]) -> Option<String> {
+    merge(render_rules(items), session_id.and_then(|id| stage_context(id, items)))
 }
 
 /// The memory notes as one markdown document, or `None` when the session was
@@ -77,8 +111,10 @@ pub fn stage_context(session_id: &str, items: &[SessionContextItem]) -> Option<S
     }
 }
 
-/// The whole neutral preamble for one launch: the shared-checkout warning and
-/// the session's attached context, in one block a harness delivers verbatim.
+/// The whole neutral preamble for one launch: the shared-checkout warning, the
+/// session's rules and attached context, and — when the session has the cctui
+/// MCP relay (`tools`) — the `CctuiContext` line, in one block a harness
+/// delivers verbatim.
 ///
 /// `session_id` keys the staging dir (the launch key, so a relaunch restages
 /// in place); `None` means this launch has no stable key and its notes are
@@ -90,9 +126,10 @@ pub fn for_launch(
     cwd: &str,
     local_id: Option<&str>,
     items: &[SessionContextItem],
+    tools: bool,
 ) -> Option<String> {
-    let staged = session_id.and_then(|id| stage_context(id, items));
-    let body = merge(shared_checkout(cwd, local_id), staged)?;
+    let context = merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()));
+    let body = merge(shared_checkout(cwd, local_id), context)?;
     Some(format!("<session-context>\n{}\n</session-context>", body.trim_end()))
 }
 
@@ -109,7 +146,8 @@ pub fn merge(base: Option<String>, extra: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionContextItem, context_notice, for_launch, merge, render_context, stage_context,
+        CONTEXT_TOOL_LINE, SessionContextItem, context_block, context_notice, for_launch, merge,
+        render_context, render_rules, stage_context,
     };
 
     fn item(kind: &str, title: &str, body: &str) -> SessionContextItem {
@@ -125,7 +163,7 @@ mod tests {
     #[test]
     fn a_session_alone_with_no_context_gets_no_block() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(for_launch(Some("s1"), &tmp.path().to_string_lossy(), None, &[]).is_none());
+        assert!(for_launch(Some("s1"), &tmp.path().to_string_lossy(), None, &[], false).is_none());
     }
 
     #[test]
@@ -179,16 +217,68 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let session = format!("test-{}", uuid::Uuid::new_v4());
         let items = vec![item("memory", "House style", "be terse")];
-        let block = for_launch(Some(&session), &tmp.path().to_string_lossy(), None, &items)
+        let block = for_launch(Some(&session), &tmp.path().to_string_lossy(), None, &items, false)
             .expect("a block");
         assert!(
-            for_launch(None, &tmp.path().to_string_lossy(), None, &items).is_none(),
+            for_launch(None, &tmp.path().to_string_lossy(), None, &items, false).is_none(),
             "without a staging key the notes are skipped, not written blind"
         );
         assert!(block.starts_with("<session-context>\n"), "{block}");
         assert!(block.ends_with("</session-context>"), "{block}");
         assert!(block.contains("context: 1 attached"), "{block}");
         crate::adapters::uploads::remove_session_dir(&session);
+    }
+
+    #[test]
+    fn rules_render_inline_and_skip_blanks_and_other_kinds() {
+        let items = vec![
+            item("rule", "Worktrees", "  use a worktree  "),
+            item("memory", "Ops", "no prod"),
+            item("rule", "Blank", "   "),
+            item("prompt", "Reviewer", "review it"),
+        ];
+        let block = render_rules(&items).expect("a rules section");
+        assert!(block.starts_with("rules:"), "{block}");
+        assert!(block.contains("### Worktrees\nuse a worktree\n"), "{block}");
+        assert!(!block.contains("Blank"), "{block}");
+        assert!(!block.contains("no prod"), "a memory is staged, not inlined: {block}");
+        assert!(!block.contains("review it"), "{block}");
+        assert!(render_rules(&[item("memory", "Ops", "no prod")]).is_none());
+    }
+
+    /// One block for every harness: the rules ride inline ahead of the staged
+    /// notes' pointer, and survive a launch with no staging key.
+    #[test]
+    fn the_context_block_puts_rules_before_the_staged_notice() {
+        let session = format!("test-{}", uuid::Uuid::new_v4());
+        let items = vec![item("memory", "House style", "be terse"), item("rule", "Wt", "worktree")];
+        let block = context_block(Some(&session), &items).expect("a block");
+        let rules = block.find("### Wt").expect("rule inline");
+        let notice = block.find("context: 1 attached").expect("notice");
+        assert!(rules < notice, "{block}");
+        assert!(!block.contains("be terse"), "the memory body stays in the file: {block}");
+        crate::adapters::uploads::remove_session_dir(&session);
+
+        let unkeyed = context_block(None, &items).expect("rules still render");
+        assert!(unkeyed.contains("### Wt"), "{unkeyed}");
+        assert!(!unkeyed.contains("context:"), "{unkeyed}");
+    }
+
+    #[test]
+    fn a_session_with_the_relay_is_told_about_cctui_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_string_lossy();
+        let block = for_launch(None, &cwd, None, &[], true).expect("the tool line alone is a block");
+        assert!(block.contains(CONTEXT_TOOL_LINE.trim_end()), "{block}");
+        assert!(block.contains("need the user's approval"), "{block}");
+        assert!(for_launch(None, &cwd, None, &[], false).is_none());
+
+        let rules = vec![item("rule", "Wt", "worktree")];
+        let block = for_launch(None, &cwd, None, &rules, true).expect("a block");
+        assert!(
+            block.find("### Wt").expect("rule") < block.find("CctuiContext").expect("line"),
+            "{block}"
+        );
     }
 
     #[test]

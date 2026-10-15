@@ -321,7 +321,7 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 
 [[route]]
 id = "get_context_resolve"
-# GET /context/resolve — The context a spawn into these coordinates would attach on its own.
+# GET /context/resolve — The rules and memories a spawn into these coordinates would carry.
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
@@ -334,6 +334,18 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 [[route]]
 id = "delete_context_by_id"
 # DELETE /context/{id} — Edit or delete a context item.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_context_by_id_pending_approve"
+# POST /context/{id}/pending/approve — Make an agent's proposed change to a context item live.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_context_by_id_pending_reject"
+# POST /context/{id}/pending/reject — Drop an agent's proposed change to a context item.
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
@@ -1415,6 +1427,18 @@ id = "get_skills_by_name"
 # GET /skills/{name} — Upload or fetch a skill bundle by name.
 tui = "waived"
 reason = "the skills editor is webui-only"
+
+[[route]]
+id = "get_sessions_by_id_context"
+# GET /sessions/{id}/context — The rules and memories a session was given.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_sessions_by_id_context"
+# POST /sessions/{id}/context — Attach memories to a live session (owner only).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
 id = "get_sessions_by_id_user_actions"

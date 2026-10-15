@@ -269,8 +269,8 @@ pub struct GatewayEnvResponse {
     /// whatever channel that harness has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<SessionPlugin>,
-    /// Memory notes and the prompt template this session was launched with,
-    /// already scope-resolved by the server.
+    /// Rules, memory notes and the prompt template this launch carries,
+    /// already resolved by the server.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<SessionContextItem>,
 }
@@ -279,7 +279,8 @@ pub struct GatewayEnvResponse {
 /// and name it to the agent. Server-side scoping is already applied.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionContextItem {
-    /// `memory` or `prompt`.
+    /// `rule`, `memory` or `prompt`. A daemon that predates rules stages only
+    /// memories, so a rule degrades to absent rather than misdelivered.
     pub kind: String,
     pub name: String,
     pub title: String,
@@ -289,9 +290,8 @@ pub struct SessionContextItem {
 
 /// What a spawn asks for by way of reusable context.
 ///
-/// `auto` adds every scope-matching memory on top of the explicit picks. It
-/// defaults to OFF: until the spawn panel can show what a scope would pull
-/// in, a session gets context only when someone named it.
+/// `auto` adds every filter-matching memory on top of the explicit picks; an
+/// omitted `auto` is off. Matching rules attach whatever it says.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnContext {

@@ -297,6 +297,7 @@ mod tests {
             crate::mcp::HISTORY_TOOL_NAME,
             crate::mcp::ROOM_TOOL_NAME,
             crate::mcp::SPEAK_TOOL_NAME,
+            crate::mcp::CONTEXT_TOOL_NAME,
         ] {
             assert!(
                 names.iter().any(|n| n == tool),

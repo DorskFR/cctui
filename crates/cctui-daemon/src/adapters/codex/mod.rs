@@ -945,10 +945,12 @@ async fn dispatch(
             // the launch resolved, and a rediscovered thread re-derives them
             // from the same pull that re-mints its credential.
             let mut skills = crate::plugins::recall_skills(local_id).unwrap_or_default();
+            let mut context = Vec::new();
             if resume_needs_env_pull(&record.env) {
                 match resolve_launch(server, machine_key, local_id, &record.env).await {
                     Ok(launch) => {
                         let settings = launch.settings;
+                        context = launch.context;
                         skills = crate::plugins::resolve_session_skills(
                             server,
                             local_id,
@@ -978,6 +980,7 @@ async fn dispatch(
                 local_id,
                 vec![command],
                 skills,
+                context,
                 events.clone(),
                 live.clone(),
                 registry.clone(),

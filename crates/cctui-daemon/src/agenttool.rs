@@ -13,6 +13,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use cctui_proto::api::context::{
+    ContextMatch, ContextToolEntry, ContextToolRequest, ContextToolResponse,
+};
 use cctui_proto::api::{
     ArchiveChildRequest, ArchiveChildResponse, MessageChildRequest, PeerMessageRequest,
     RoomToolRequest, SpawnChildRequest,
@@ -74,6 +77,7 @@ enum CallKind {
     /// server, which owns the list and answers with all of it.
     UserActionAdd(Value),
     UserActionTick(Value),
+    Context(ContextToolRequest),
     /// `CctuiSpeak`: synthesize `text` into a voice note posted in the caller's
     /// own conversation.
     Speak {
@@ -142,6 +146,7 @@ fn parse_call(line: &str) -> Result<Call, String> {
         Some("peer_history") => parse_peer_history(&args)?,
         Some("user_action_add") => parse_user_action_add(&args),
         Some("user_action_tick") => parse_user_action_tick(&args)?,
+        Some("context") => parse_context(&args)?,
         Some("relay_ready") => CallKind::RelayReady,
         Some("relay_wait") => CallKind::RelayWait,
         Some(kind @ ("preview_open" | "preview_close")) => {
@@ -291,6 +296,66 @@ fn parse_speak(args: &Value) -> Result<CallKind, String> {
     Ok(CallKind::Speak { text, voice: string_arg(args, "voice") })
 }
 
+fn parse_context(args: &Value) -> Result<CallKind, String> {
+    let action = string_arg(args, "action")
+        .map(|a| a.to_ascii_lowercase())
+        .ok_or("action is required: \"list\", \"show\", \"save\" or \"attach\"")?;
+    let kind = string_arg(args, "kind").map(|k| k.to_ascii_lowercase());
+    let name = string_arg(args, "name");
+    let mut req = ContextToolRequest { action: action.clone(), ..ContextToolRequest::default() };
+    match action.as_str() {
+        "list" => req.kind = kind,
+        "show" => {
+            req.name = Some(name.ok_or("name is required to show an item")?);
+            req.kind = Some(kind.unwrap_or_else(|| "memory".to_owned()));
+        }
+        "save" => {
+            let kind = kind.filter(|k| k == "memory" || k == "rule");
+            req.kind = Some(kind.ok_or("kind must be memory or rule")?);
+            let name = name.ok_or("name is required to save an item")?;
+            let mode = string_arg(args, "mode").map_or_else(|| "create".to_owned(), |m| m.to_ascii_lowercase());
+            if !["create", "replace", "append"].contains(&mode.as_str()) {
+                return Err(format!("mode must be \"create\", \"replace\" or \"append\", got {mode}"));
+            }
+            let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+            if body.trim().is_empty() {
+                return Err("body is required to save an item".to_owned());
+            }
+            req.title = string_arg(args, "title").or_else(|| (mode == "create").then(|| name.clone()));
+            req.body = Some(body.to_owned());
+            req.match_ = args
+                .get("match")
+                .filter(|m| !m.is_null())
+                .map(|m| serde_json::from_value::<ContextMatch>(m.clone()))
+                .transpose()
+                .map_err(|e| format!("match is malformed: {e}"))?;
+            req.name = Some(name);
+            req.mode = Some(mode);
+        }
+        "attach" => {
+            let mut names: Vec<String> = Vec::new();
+            for n in args.get("names").and_then(Value::as_array).into_iter().flatten() {
+                let Some(n) = n.as_str().map(str::trim).filter(|n| !n.is_empty()) else {
+                    continue;
+                };
+                if !names.iter().any(|seen| seen == n) {
+                    names.push(n.to_owned());
+                }
+            }
+            if names.is_empty() {
+                return Err("names is required: the memories to attach".to_owned());
+            }
+            req.names = names;
+        }
+        other => {
+            return Err(format!(
+                "action must be \"list\", \"show\", \"save\" or \"attach\", got {other}"
+            ));
+        }
+    }
+    Ok(CallKind::Context(req))
+}
+
 fn string_arg(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(Value::as_str)
@@ -356,6 +421,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Context(_)
         | CallKind::Speak { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
@@ -846,6 +912,50 @@ fn render_user_action_result(v: &Value) -> String {
     out.join("\n")
 }
 
+fn render_context_entry(e: &ContextToolEntry) -> String {
+    let state = if e.enabled { "enabled" } else { "disabled" };
+    let mut line = format!("{} ({}) — {} · v{} · {state}", e.name, e.kind, e.title, e.version);
+    if e.pending {
+        line.push_str(" · pending approval");
+    }
+    if let Some(by) = e.updated_by_session.as_deref().or(e.created_by_session.as_deref()) {
+        let _ = write!(line, " · saved by session {by}");
+    }
+    line
+}
+
+fn render_context_result(action: &str, r: &ContextToolResponse) -> String {
+    match action {
+        "list" if r.items.is_empty() => "no context items".to_owned(),
+        "list" => r.items.iter().map(render_context_entry).collect::<Vec<_>>().join("\n"),
+        "show" => {
+            let head = r.item.as_ref().map_or_else(|| "(unknown item)".to_owned(), render_context_entry);
+            format!("{head}\n\n{}", r.body.as_deref().unwrap_or("").trim_end())
+        }
+        "save" => match &r.item {
+            Some(e) if r.pending => format!(
+                "proposed {} `{}` — pending the user's approval; it does not apply until they \
+                 approve it",
+                e.kind, e.name
+            ),
+            Some(e) => format!("saved {} `{}` (v{})", e.kind, e.name, e.version),
+            None => "saved".to_owned(),
+        },
+        _ => {
+            let mut out = if r.attached.is_empty() {
+                "nothing attached".to_owned()
+            } else {
+                let path = r.path.as_deref().unwrap_or("(no path)");
+                format!("attached {} — read `{path}`", r.attached.join(", "))
+            };
+            if !r.unknown.is_empty() {
+                let _ = write!(out, "\nunknown: {}", r.unknown.join(", "));
+            }
+            out
+        }
+    }
+}
+
 async fn run_user_action(
     server: &ServerClient,
     machine_key: &str,
@@ -908,6 +1018,10 @@ async fn run_unfollowed_call(
         CallKind::UserActionTick(body) => {
             run_user_action(server, machine_key, me, "/tick", body).await
         }
+        CallKind::Context(req) => match server.context_call(machine_key, me, req).await {
+            Ok(r) => json!({ "ok": true, "result": render_context_result(&req.action, &r) }),
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
         CallKind::Speak { text, voice } => {
             match server.speak(machine_key, me, text, voice.as_deref()).await {
                 Ok(v) => {
@@ -988,6 +1102,7 @@ async fn run_call(
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Context(_)
         | CallKind::Speak { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
@@ -1287,6 +1402,154 @@ mod tests {
         }));
         assert!(text.starts_with("rejected: title is required"), "{text}");
         assert!(text.contains("the user action list is empty"), "{text}");
+    }
+
+    fn context_call(args: Value) -> Result<ContextToolRequest, String> {
+        let line = json!({ "kind": "context", "session_id": "s1", "args": args }).to_string();
+        match parse_call(&line)?.kind {
+            CallKind::Context(req) => Ok(req),
+            other => panic!("expected a context call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_context_call_needs_a_known_action() {
+        assert!(context_call(json!({})).unwrap_err().contains("action is required"));
+        let err = context_call(json!({ "action": "delete", "name": "x" })).unwrap_err();
+        assert!(err.contains("got delete"), "{err}");
+        let list = context_call(json!({ "action": "List", "kind": "rule" })).unwrap();
+        assert_eq!(list.action, "list");
+        assert_eq!(list.kind.as_deref(), Some("rule"));
+    }
+
+    #[test]
+    fn a_context_show_needs_a_name_and_defaults_to_a_memory() {
+        assert!(context_call(json!({ "action": "show" })).is_err());
+        let req = context_call(json!({ "action": "show", "name": " wt " })).unwrap();
+        assert_eq!(req.name.as_deref(), Some("wt"));
+        assert_eq!(req.kind.as_deref(), Some("memory"));
+    }
+
+    #[test]
+    fn a_context_save_validates_kind_mode_name_and_body() {
+        let base = |extra: Value| {
+            let mut a = json!({ "action": "save", "kind": "memory", "name": "wt", "body": "b" });
+            a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            context_call(a)
+        };
+        let err = base(json!({ "kind": "prompt" })).unwrap_err();
+        assert_eq!(err, "kind must be memory or rule");
+        assert!(base(json!({ "kind": null })).is_err());
+        assert!(base(json!({ "name": "" })).is_err());
+        assert!(base(json!({ "body": "   " })).unwrap_err().contains("body is required"));
+        assert!(base(json!({ "mode": "upsert" })).unwrap_err().contains("mode must be"));
+
+        let created = base(json!({})).unwrap();
+        assert_eq!(created.mode.as_deref(), Some("create"));
+        assert_eq!(created.title.as_deref(), Some("wt"), "a create titles itself by its name");
+        assert!(created.match_.is_none());
+
+        let appended = base(json!({ "mode": "append" })).unwrap();
+        assert!(appended.title.is_none(), "an append keeps the item's own title");
+
+        let rule = base(json!({
+            "kind": "rule",
+            "title": "Worktrees",
+            "match": { "adapters": ["codex"], "paths": ["/w/repo"] },
+        }))
+        .unwrap();
+        assert_eq!(rule.kind.as_deref(), Some("rule"));
+        assert_eq!(rule.title.as_deref(), Some("Worktrees"));
+        let m = rule.match_.expect("match passes through");
+        assert_eq!(m.adapters, ["codex"]);
+        assert_eq!(m.paths, ["/w/repo"]);
+        assert!(base(json!({ "match": { "adapters": "codex" } })).is_err());
+    }
+
+    #[test]
+    fn a_context_attach_needs_names_and_dedupes_them() {
+        assert!(context_call(json!({ "action": "attach" })).is_err());
+        assert!(context_call(json!({ "action": "attach", "names": ["  ", ""] })).is_err());
+        let req =
+            context_call(json!({ "action": "attach", "names": [" wt ", "wt", "ops", 3] })).unwrap();
+        assert_eq!(req.names, ["wt", "ops"]);
+    }
+
+    fn entry(name: &str, kind: &str) -> ContextToolEntry {
+        ContextToolEntry {
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            title: format!("{name} title"),
+            enabled: true,
+            version: 2,
+            ..ContextToolEntry::default()
+        }
+    }
+
+    #[test]
+    fn a_context_list_renders_one_line_per_item_with_provenance() {
+        assert_eq!(render_context_result("list", &ContextToolResponse::default()), "no context items");
+        let mut proposed = entry("wt", "rule");
+        proposed.enabled = false;
+        proposed.pending = true;
+        proposed.created_by_session = Some("s-9".to_owned());
+        let r = ContextToolResponse {
+            items: vec![entry("ops", "memory"), proposed],
+            ..ContextToolResponse::default()
+        };
+        let text = render_context_result("list", &r);
+        assert_eq!(
+            text,
+            "ops (memory) — ops title · v2 · enabled\n\
+             wt (rule) — wt title · v2 · disabled · pending approval · saved by session s-9"
+        );
+    }
+
+    #[test]
+    fn a_context_show_renders_the_header_then_the_body() {
+        let r = ContextToolResponse {
+            item: Some(entry("ops", "memory")),
+            body: Some("no prod\n".to_owned()),
+            ..ContextToolResponse::default()
+        };
+        assert_eq!(
+            render_context_result("show", &r),
+            "ops (memory) — ops title · v2 · enabled\n\nno prod"
+        );
+    }
+
+    #[test]
+    fn a_context_save_says_whether_it_is_live_or_awaiting_approval() {
+        let saved =
+            ContextToolResponse { item: Some(entry("ops", "memory")), ..ContextToolResponse::default() };
+        assert_eq!(render_context_result("save", &saved), "saved memory `ops` (v2)");
+        let proposed = ContextToolResponse {
+            item: Some(entry("wt", "rule")),
+            pending: true,
+            ..ContextToolResponse::default()
+        };
+        let text = render_context_result("save", &proposed);
+        assert!(text.starts_with("proposed rule `wt` — pending the user's approval"), "{text}");
+        assert!(text.contains("does not apply until they approve it"), "{text}");
+    }
+
+    #[test]
+    fn a_context_attach_names_the_file_and_the_unknown_names() {
+        let r = ContextToolResponse {
+            path: Some("/tmp/cctui-uploads/s1/context.md".to_owned()),
+            attached: vec!["wt".to_owned(), "ops".to_owned()],
+            unknown: vec!["ghost".to_owned()],
+            ..ContextToolResponse::default()
+        };
+        assert_eq!(
+            render_context_result("attach", &r),
+            "attached wt, ops — read `/tmp/cctui-uploads/s1/context.md`\nunknown: ghost"
+        );
+        let none = ContextToolResponse {
+            unknown: vec!["ghost".to_owned()],
+            ..ContextToolResponse::default()
+        };
+        assert_eq!(render_context_result("attach", &none), "nothing attached\nunknown: ghost");
     }
 
     #[test]
