@@ -561,6 +561,9 @@ jobs:
       - name: Path scoping classifies changes
         run: bash scripts/ci-changes.test.sh
 
+      - name: Release scoping picks what to rebuild
+        run: bash scripts/release-scope.test.sh
+
       - name: Path scoping tests did not leak into this checkout
         run: bash scripts/check-git-untouched.sh
 
