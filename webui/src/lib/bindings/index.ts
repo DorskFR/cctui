@@ -51,6 +51,7 @@ export type * from './CodexModelCatalog';
 export type * from './CodexSandbox';
 export type * from './CommentAnchor';
 export type * from './ConnectorInfo';
+export type * from './ContextCounts';
 export type * from './ContextItem';
 export type * from './ContextItemSpec';
 export type * from './ContextMatch';

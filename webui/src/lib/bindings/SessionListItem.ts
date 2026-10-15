@@ -2,6 +2,7 @@
 import type { AdapterId } from "./AdapterId";
 import type { Attention } from "./Attention";
 import type { Bucket } from "./Bucket";
+import type { ContextCounts } from "./ContextCounts";
 import type { KeepaliveState } from "./KeepaliveState";
 import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
@@ -38,7 +39,11 @@ todos: Array<TodoEntry>,
 /**
  * Absent when this session has no open user action and no child with one.
  */
-user_actions?: UserActionCounts | null, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, 
+user_actions?: UserActionCounts | null, 
+/**
+ * Absent when the session was delivered no rules and holds no memories.
+ */
+context_counts?: ContextCounts | null, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, 
 /**
  * Draft only: when the queued launch is due.
  */

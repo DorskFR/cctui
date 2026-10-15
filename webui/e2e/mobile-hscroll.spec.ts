@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { stubDrawer } from './drawer.fixture';
+import { stubDrawer, waitForDrawerOpen } from './drawer.fixture';
 
 test.use({ isMobile: true, hasTouch: true, deviceScaleFactor: 3.5 });
 
@@ -43,7 +43,7 @@ async function openSessions(page: Page, width: number) {
 async function openDrawer(page: Page, width: number, index = 0) {
 	await openSessions(page, width);
 	await page.locator('[data-journey="session"] [data-journey="title"]').nth(index).click();
-	await page.locator('[data-journey="composer"]').waitFor();
+	await waitForDrawerOpen(page);
 }
 
 for (const width of WIDTHS) {

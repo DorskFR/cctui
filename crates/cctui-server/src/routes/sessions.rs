@@ -465,6 +465,7 @@ fn skeleton_list_item(
         tool_use_count: 0,
         todos: Vec::new(),
         user_actions: None,
+        context_counts: None,
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
@@ -622,6 +623,7 @@ struct EnrichContext {
     unread: Option<HashMap<String, u32>>,
     todos: HashMap<String, serde_json::Value>,
     user_actions: HashMap<String, cctui_proto::api::UserActionCounts>,
+    context_counts: HashMap<String, cctui_proto::api::ContextCounts>,
     signals: HashMap<String, SignalRow>,
     pr_snapshot: HashMap<String, cctui_proto::classifier::OwnedPrStatus>,
     labels: HashMap<String, Vec<Label>>,
@@ -665,6 +667,7 @@ impl EnrichContext {
         }
         ctx.todos = fetch_todos(state, &session_ids).await?;
         ctx.user_actions = fetch_user_actions(state, &session_ids).await?;
+        ctx.context_counts = fetch_context_counts(&state.pool, &session_ids).await?;
         ctx.signals = fetch_signals(state, &session_ids).await?;
         ctx.pr_snapshot = state.pr_status_cache.snapshot();
         ctx.labels = fetch_labels(state, &session_ids).await?;
@@ -793,6 +796,33 @@ async fn fetch_todos(
             .fetch_all(&state.pool)
             .await?;
     Ok(rows.into_iter().collect())
+}
+
+/// Rules the latest launch delivered and memories held, per session; sessions
+/// with neither are left out.
+async fn fetch_context_counts(
+    pool: &sqlx::PgPool,
+    session_ids: &[String],
+) -> Result<HashMap<String, cctui_proto::api::ContextCounts>, AppError> {
+    let rows: Vec<(String, i32, i64)> = sqlx::query_as(
+        "SELECT sc.spawn_key, jsonb_array_length(sc.rules), \
+         (SELECT count(*) FROM context_items ci \
+          WHERE ci.id = ANY(sc.item_ids) AND ci.kind = 'memory') \
+         FROM session_context sc WHERE sc.spawn_key = ANY($1)",
+    )
+    .bind(session_ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(sid, rules, memories)| {
+            let counts = cctui_proto::api::ContextCounts {
+                rules: u32::try_from(rules).unwrap_or(0),
+                memories: u32::try_from(memories).unwrap_or(u32::MAX),
+            };
+            (counts.rules > 0 || counts.memories > 0).then_some((sid, counts))
+        })
+        .collect())
 }
 
 /// Open "needs you" counts, own and rolled up from the session's subagents: a
@@ -965,6 +995,7 @@ fn enrich(
             s.todos = serde_json::from_value(v).unwrap_or_default();
         }
         s.user_actions = ctx.user_actions.remove(&s.id);
+        s.context_counts = ctx.context_counts.remove(&s.id);
         if let Some(row) = ctx.signals.remove(&s.id) {
             apply_signals(s, row, &pr_cache, ctx.archive_after_secs);
         }
@@ -1666,6 +1697,7 @@ pub async fn get_session(
                 tool_use_count: 0,
                 todos: Vec::new(),
                 user_actions: None,
+                context_counts: None,
                 has_token_credentials: false,
                 account_traffic_observed: false,
                 pr_links: Vec::new(),
@@ -1739,6 +1771,7 @@ pub async fn get_session(
         tool_use_count: 0,
         todos: Vec::new(),
         user_actions: None,
+        context_counts: None,
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
@@ -3780,6 +3813,82 @@ mod tests {
 
         assert_eq!(sessions[1].match_seq, None);
         assert_eq!(sessions[1].match_snippet, None);
+    }
+
+    #[tokio::test]
+    async fn context_counts_cover_delivered_rules_and_held_memories_only() {
+        let Some(url) = crate::routes::gateway::test_db_url("context_counts_cover_delivered")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("u-{uid}"))
+            .bind(format!("k-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for kind in ["memory", "memory", "prompt"] {
+            let id: uuid::Uuid = sqlx::query_scalar(
+                "INSERT INTO context_items (user_id, kind, name, title) \
+                 VALUES ($1, $2, $3, 't') RETURNING id",
+            )
+            .bind(uid)
+            .bind(kind)
+            .bind(format!("n-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        let (full, rules_only, empty, absent) = (
+            format!("cc-full-{uid}"),
+            format!("cc-rules-{uid}"),
+            format!("cc-empty-{uid}"),
+            format!("cc-absent-{uid}"),
+        );
+        for (key, item_ids, rules) in [
+            (&full, ids.clone(), serde_json::json!([{}, {}])),
+            (&rules_only, Vec::new(), serde_json::json!([{}])),
+            (&empty, vec![ids[2]], serde_json::json!([])),
+        ] {
+            sqlx::query(
+                "INSERT INTO session_context (spawn_key, item_ids, rules) VALUES ($1, $2, $3)",
+            )
+            .bind(key)
+            .bind(&item_ids)
+            .bind(sqlx::types::Json(rules))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let counts = super::fetch_context_counts(
+            &pool,
+            &[full.clone(), rules_only.clone(), empty.clone(), absent.clone()],
+        )
+        .await
+        .unwrap();
+
+        let c = |rules, memories| cctui_proto::api::ContextCounts { rules, memories };
+        assert_eq!(counts.get(&full), Some(&c(2, 2)), "prompts are not counted");
+        assert_eq!(counts.get(&rules_only), Some(&c(1, 0)));
+        assert_eq!(counts.get(&empty), None, "nothing to show is left out");
+        assert_eq!(counts.get(&absent), None);
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
+            .bind(vec![full, rules_only, empty])
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
     }
 
     type TotalsRow = (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);

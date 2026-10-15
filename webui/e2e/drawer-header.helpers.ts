@@ -1,5 +1,5 @@
 import { type Locator, type Page } from '@playwright/test';
-import { stubDrawer } from './drawer.fixture';
+import { stubDrawer, waitForDrawerOpen } from './drawer.fixture';
 
 export const WIDE = { width: 1280, height: 900 };
 export const NARROW = { width: 360, height: 800 };
@@ -11,7 +11,7 @@ export async function openDrawer(page: Page, viewport: { width: number; height: 
 	await page.goto('/sessions');
 	await page.locator('[data-journey="search"]').waitFor();
 	await page.locator('[data-journey="session"] [data-journey="title"]').first().click();
-	await page.locator('[data-journey="composer"]').waitFor();
+	await waitForDrawerOpen(page);
 	await page.locator('[data-journey="header"]').waitFor();
 }
 

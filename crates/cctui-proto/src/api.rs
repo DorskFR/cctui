@@ -491,6 +491,9 @@ pub struct SessionListItem {
     /// Absent when this session has no open user action and no child with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_actions: Option<UserActionCounts>,
+    /// Absent when the session was delivered no rules and holds no memories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_counts: Option<ContextCounts>,
     #[serde(default)]
     pub has_token_credentials: bool,
     #[serde(default)]
@@ -733,6 +736,14 @@ impl UserActionCounts {
     pub const fn is_empty(&self) -> bool {
         self.open == 0 && self.child_open == 0
     }
+}
+
+/// Context the session carries, for the session card's chip.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ContextCounts {
+    pub rules: u32,
+    pub memories: u32,
 }
 
 /// Task-list entry. `status` is `pending`, `in_progress` or `completed`;

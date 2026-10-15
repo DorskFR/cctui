@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { needsYouOf, scheduledLaunchOf, titleOf } from './view';
+import { contextCountsOf, needsYouOf, scheduledLaunchOf, titleOf } from './view';
 
 const session = (over: Partial<SessionListItem>): SessionListItem =>
 	({ id: 'a1e5bd0f2c3d4e5f6', labels: [], working_dir: '/home/me/cctui', ...over }) as SessionListItem;
@@ -70,5 +70,24 @@ describe('needsYouOf', () => {
 			session({ user_actions: { open: 1, blocking: 0, child_open: 1, child_blocking: 0 } })
 		);
 		expect(got?.blocking).toBe(false);
+	});
+});
+
+describe('contextCountsOf', () => {
+	it('is null when the list item carries no context', () => {
+		expect(contextCountsOf(session({}))).toBeNull();
+		expect(contextCountsOf(session({ context_counts: null }))).toBeNull();
+		expect(contextCountsOf(session({ context_counts: { rules: 0, memories: 0 } }))).toBeNull();
+	});
+
+	it('passes rules and memories through', () => {
+		expect(contextCountsOf(session({ context_counts: { rules: 2, memories: 0 } }))).toEqual({
+			rules: 2,
+			memories: 0
+		});
+		expect(contextCountsOf(session({ context_counts: { rules: 0, memories: 3 } }))).toEqual({
+			rules: 0,
+			memories: 3
+		});
 	});
 });

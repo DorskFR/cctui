@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { stubDrawer, verticalOverflow } from './drawer.fixture';
+import { stubDrawer, verticalOverflow, waitForDrawerOpen } from './drawer.fixture';
 
 const DESKTOP = { width: 1536, height: 900 };
 const NARROW = { width: 800, height: 780 };
@@ -23,7 +23,7 @@ async function openDrawer(
 ) {
 	await openSessions(page, viewport, opts);
 	await page.locator('[data-journey="session"] [data-journey="title"]').first().click();
-	await page.locator('[data-journey="composer"]').waitFor();
+	await waitForDrawerOpen(page);
 }
 
 async function expectPanelFits(page: Page) {
@@ -52,7 +52,7 @@ test('desktop: closing the drawer restores the page scrollbar without shifting',
 	const closed = await app.boundingBox();
 
 	await page.locator('[data-journey="session"] [data-journey="title"]').first().click();
-	await page.locator('[data-journey="composer"]').waitFor();
+	await waitForDrawerOpen(page);
 	const open = await app.boundingBox();
 
 	await page.getByRole('button', { name: 'Back' }).first().click();
