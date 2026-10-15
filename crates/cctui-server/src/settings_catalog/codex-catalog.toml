@@ -2,7 +2,7 @@
 # `codex-config.schema.json` (codex-rs/core/config.schema.json at the tag below).
 #
 # Reference: https://learn.chatgpt.com/docs/config-file/config-reference
-# Verified against codex-cli 0.153.4.
+# Verified against codex-cli 0.162.1.
 # The version above must equal contract::CODEX_MIN_VERSION, and the vendored
 # schema must be that release's; scripts/check-codex-schema-drift.sh enforces both.
 #
@@ -72,7 +72,7 @@ label = "Personality"
 tag = "safe"
 source = "schema"
 type = "string"
-notes = "named response personality; unset = the codex default"
+notes = "deprecated upstream: friendly and pragmatic no longer select a style; unset = the codex default"
 
 # ---- privacy --------------------------------------------------------------
 
