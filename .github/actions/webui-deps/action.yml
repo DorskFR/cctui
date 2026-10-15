@@ -1,0 +1,36 @@
+name: webui deps
+description: Set up node and restore webui/node_modules, running npm ci only on a cache miss.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: "22"
+
+    # The lockfile's own version moves on every release; only its dependency
+    # tree decides whether node_modules is reusable.
+    - name: node_modules cache key
+      id: key
+      shell: bash
+      run: |
+        tree="$(jq -S 'del(.version, .packages[""].version)' webui/package-lock.json | sha256sum | cut -c1-32)"
+        echo "key=webui-node_modules-${RUNNER_OS}-${RUNNER_ARCH}-$(node --version)-$tree" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: cache
+      with:
+        path: webui/node_modules
+        key: ${{ steps.key.outputs.key }}
+
+    - name: npm ci
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: webui
+      run: npm ci
+
+    - name: Generate sources
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      working-directory: webui
+      run: npm run prepare
