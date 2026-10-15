@@ -1170,6 +1170,13 @@ impl AdapterFactory for CodexFactory {
     fn interrupts(&self, config: &serde_json::Value) -> bool {
         !uses_uds_mode(config)
     }
+
+    fn binary(&self, config: &serde_json::Value) -> Option<crate::adapter_runtime::BinarySpec> {
+        Some(crate::adapter_runtime::BinarySpec {
+            bin: AppServerConfig::from_value(config).bin,
+            config_key: "codex_bin",
+        })
+    }
 }
 
 #[cfg(test)]

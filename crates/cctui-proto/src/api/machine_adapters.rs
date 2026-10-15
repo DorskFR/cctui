@@ -21,6 +21,11 @@ pub struct MachineAdapterInfo {
     /// harness's `default_enabled`.
     pub pinned: bool,
     pub default_enabled: bool,
+    /// The daemon's last heartbeat probe; absent while the harness is off or
+    /// the daemon has not reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub binary: Option<crate::harness::AdapterBinary>,
 }
 
 /// Body of `PUT /machines/{machine_id}/adapters/{adapter}`. An absent field

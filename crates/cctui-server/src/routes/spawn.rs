@@ -142,6 +142,20 @@ fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
     Ok(id.to_owned())
 }
 
+async fn refuse_missing_binary(
+    state: &AppState,
+    machine_uuid: Uuid,
+    adapter_id: &str,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let binaries = crate::routes::machine_adapters::reported_binaries(&state.pool, machine_uuid)
+        .await
+        .map_err(AppError::into_parts)?;
+    match crate::routes::machine_adapters::missing_binary(&binaries, adapter_id) {
+        Some(error) => Err((StatusCode::CONFLICT, Json(ApiError { error }))),
+        None => Ok(()),
+    }
+}
+
 async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -160,6 +174,7 @@ async fn validate_spawn(
     let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
     let adapter_id = spawn_adapter(req.adapter_id.as_deref()).map_err(bad_request)?;
+    refuse_missing_binary(state, machine_uuid, &adapter_id).await?;
     let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();

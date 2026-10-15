@@ -605,6 +605,13 @@ impl AdapterFactory for ClaudeCodeFactory {
     fn interrupts(&self, config: &serde_json::Value) -> bool {
         matches!(Mode::from_config(config), Mode::Bg | Mode::Sdk)
     }
+
+    fn binary(&self, config: &serde_json::Value) -> Option<crate::adapter_runtime::BinarySpec> {
+        Some(crate::adapter_runtime::BinarySpec {
+            bin: control::DriverConfig::from_value(config).claude_bin,
+            config_key: "claude_bin",
+        })
+    }
 }
 
 #[cfg(test)]
