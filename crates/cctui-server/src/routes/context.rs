@@ -546,7 +546,7 @@ pub async fn propose(
 /// An agent's new item that was never approved: its live half is an empty,
 /// disabled placeholder.
 #[must_use]
-pub fn is_unborn_proposal(item: &ContextItem) -> bool {
+pub const fn is_unborn_proposal(item: &ContextItem) -> bool {
     item.pending.is_some()
         && item.created_by_session.is_some()
         && item.version == 1
@@ -672,12 +672,7 @@ pub async fn inherit_intent(pool: &PgPool, child_key: &str, parent_id: &str) {
 /// Like [`claim_intent`], but nothing else vouches for a fork's key, so only a
 /// set recorded for `user_id` is claimed, and only once: the fork re-announces
 /// itself, and a later claim would drop what was granted since.
-pub async fn claim_fork_intent(
-    pool: &PgPool,
-    session_id: &str,
-    context_key: &str,
-    user_id: Uuid,
-) {
+pub async fn claim_fork_intent(pool: &PgPool, session_id: &str, context_key: &str, user_id: Uuid) {
     if context_key == session_id {
         return;
     }
@@ -1869,7 +1864,7 @@ mod tests {
         let gone = Uuid::new_v4();
         let granted = [note.id, fresh.id, gone];
         let delivered = [memory_ref(note.id, "note", 3), memory_ref(gone, "gone", 2)];
-        let held = held_memories(&granted, &[note.clone(), fresh.clone()], &delivered);
+        let held = held_memories(&granted, &[note, fresh.clone()], &delivered);
         let got: Vec<(&str, i32)> = held.iter().map(|r| (r.title.as_str(), r.version)).collect();
         assert_eq!(
             got,
@@ -2013,11 +2008,8 @@ mod tests {
         grant(&pool, &granted, &[]).await.expect("grant-only row");
         assert!(for_launch(&pool, &granted).await.is_empty(), "no session row, no scope");
 
-        let elsewhere = StoredScope {
-            user_id: uid,
-            coords: at("claude-code", "/elsewhere"),
-            dispatched: true,
-        };
+        let elsewhere =
+            StoredScope { user_id: uid, coords: at("claude-code", "/elsewhere"), dispatched: true };
         sqlx::query("UPDATE session_context SET scope = $2 WHERE spawn_key = $1")
             .bind(&sid)
             .bind(Jsonb(&elsewhere))

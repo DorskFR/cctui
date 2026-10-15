@@ -156,7 +156,7 @@ pub fn session_rows(session: Option<&SessionContextResponse>, items: &[ContextIt
         .collect()
 }
 
-const fn kind_rank(kind: &str) -> u8 {
+fn kind_rank(kind: &str) -> u8 {
     match kind {
         "rule" => 0,
         "memory" => 1,

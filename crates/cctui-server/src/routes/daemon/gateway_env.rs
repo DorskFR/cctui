@@ -156,9 +156,8 @@ pub async fn session_launch_context(
     let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
     };
-    let allowed = context_allowed(&state.pool, ctx.user_id, machine_id, &session_id)
-        .await
-        .map_err(|e| {
+    let allowed =
+        context_allowed(&state.pool, ctx.user_id, machine_id, &session_id).await.map_err(|e| {
             tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
