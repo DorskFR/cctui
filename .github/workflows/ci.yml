@@ -261,13 +261,37 @@ jobs:
             exit 1
           fi
 
-  # Warms the Swatinem/rust-cache keys release.yml restores (tag refs can only
-  # read caches saved on the default branch). Main pushes only; a cold run is
-  # about the length of the test job, a warm one is incremental.
+  release-scope:
+    name: release scope
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.scope.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Would a release of this commit rebuild Rust
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CCTUI_RELEASED_TAGS="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --exclude-drafts --json tagName --jq '.[].tagName' | tr '\n' ' ')"
+          export CCTUI_RELEASED_TAGS
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          out="$(bash scripts/release-scope.sh "v$version" "$(git rev-parse HEAD)")"
+          echo "$out"
+          grep '^rust=' <<<"$out" >> "$GITHUB_OUTPUT"
+
   release-cache:
     name: warm release cache ${{ matrix.target }}
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    needs: release-scope
+    if: needs.release-scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -307,11 +331,27 @@ jobs:
           SQLX_OFFLINE: "true"
         run: bash scripts/release-build-bins.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${{ matrix.target }}"
 
+      # release.yml takes these instead of rebuilding when this commit is tagged.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-bins-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 1
+          path: |
+            dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
+            dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: matrix.arch == 'amd64'
+        with:
+          name: release-image-bins
+          retention-days: 1
+          path: image-bins/
+
 
   release-cache-server:
     name: warm release cache cctui-server
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    needs: release-scope
+    if: needs.release-scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -327,7 +367,14 @@ jobs:
       - name: Build cctui-server for the image
         env:
           SQLX_OFFLINE: "true"
+          CCTUI_GIT_HASH: ${{ github.sha }}
         run: bash scripts/release-build-server.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-bins-server
+          retention-days: 1
+          path: image-bins/
 
   webui:
     name: webui check
@@ -564,6 +611,9 @@ jobs:
       - name: Release scoping picks what to rebuild
         run: bash scripts/release-scope.test.sh
 
+      - name: The release takes push CI's binaries or builds its own
+        run: bash scripts/release-ci-bins.test.sh
+
       - name: Path scoping tests did not leak into this checkout
         run: bash scripts/check-git-untouched.sh
 
@@ -605,6 +655,7 @@ jobs:
       - clippy
       - test
       - bindings
+      - release-scope
       - release-cache
       - release-cache-server
       - webui
