@@ -79,6 +79,13 @@ pub fn run(event: &str, sock: &Path, deny: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if tool_name == "Agent" || tool_name == "Task" {
+        if let Some(decision) = worktree_isolation_decision(&payload) {
+            println!("{decision}");
+        }
+        return Ok(());
+    }
+
     let line = if event == "post" {
         // One PostToolUse hook fires for both AskUserQuestion and ExitPlanMode;
         // tell the daemon which kind resolved so it drops the right live card.
@@ -225,6 +232,24 @@ fn enter_plan_mode_decision(payload: &Value, whip: bool) -> Option<Value> {
             ),
         },
     }))
+}
+
+/// Refuse an `Agent` call asking for `isolation: "worktree"`; every other
+/// subagent call defers.
+fn worktree_isolation_decision(payload: &Value) -> Option<Value> {
+    let isolation =
+        payload.get("tool_input").and_then(|t| t.get("isolation")).and_then(Value::as_str)?;
+    (isolation == "worktree").then(|| {
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    "Worktrees are disabled in cctui sessions: drop `isolation` and run the \
+                     subagent in the shared checkout.",
+            },
+        })
+    })
 }
 
 /// Refuse a `Bash` call in `bypassPermissions` whose `rm`/`rmdir` would trip
@@ -724,5 +749,35 @@ mod tests {
             assert!(enter_plan_mode_decision(&payload, true).is_none(), "defer in {mode} (whip)");
         }
         assert!(enter_plan_mode_decision(&json!({"tool_name": "EnterPlanMode"}), true).is_none());
+    }
+
+    #[test]
+    fn agent_with_worktree_isolation_is_denied_in_every_mode() {
+        for mode in ["default", "acceptEdits", "plan", "bypassPermissions"] {
+            let payload = json!({
+                "tool_name": "Agent",
+                "permission_mode": mode,
+                "tool_input": {"prompt": "x", "isolation": "worktree"},
+            });
+            let decision = worktree_isolation_decision(&payload).expect("deny");
+            let out = &decision["hookSpecificOutput"];
+            assert_eq!(out["hookEventName"], "PreToolUse");
+            assert_eq!(out["permissionDecision"], "deny", "{mode}");
+            let reason = out["permissionDecisionReason"].as_str().unwrap();
+            assert!(!reason.contains('\n') && reason.contains("isolation"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn agent_without_worktree_isolation_defers() {
+        for input in [
+            json!({"prompt": "x"}),
+            json!({"prompt": "x", "isolation": "remote"}),
+            json!({"prompt": "x", "isolation": null}),
+        ] {
+            let payload = json!({"tool_name": "Agent", "tool_input": input});
+            assert!(worktree_isolation_decision(&payload).is_none(), "{payload}");
+        }
+        assert!(worktree_isolation_decision(&json!({"tool_name": "Agent"})).is_none());
     }
 }

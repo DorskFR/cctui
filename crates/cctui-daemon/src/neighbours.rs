@@ -285,8 +285,7 @@ pub fn notice(neighbours: &[Neighbour], now: SystemTime) -> Option<String> {
     let _ = writeln!(
         line,
         "  {whose} uncommitted changes are not yours: do not revert, stash, reset, or commit \
-         files you did not touch; do not switch branches. Use a git worktree if you need \
-         isolation."
+         files you did not touch; do not switch branches."
     );
     Some(line)
 }
@@ -409,7 +408,7 @@ mod tests {
         dirs.observe("claude-code", &started("main-checkout", repo.path()));
         assert!(
             dirs.neighbours(&wt.to_string_lossy(), None).is_empty(),
-            "a worktree is the isolation agents are told to use"
+            "a linked worktree is its own checkout, not a shared cwd"
         );
         assert!(dirs.neighbours(&repo.path().to_string_lossy(), Some("main-checkout")).is_empty());
     }
@@ -621,7 +620,7 @@ mod tests {
         assert!(text.contains("\"wave-3 integrator\" (claude-code, working, started 14m ago)."));
         assert!(text.contains("Its uncommitted changes are not yours"), "{text}");
         assert!(text.contains("do not switch branches"), "{text}");
-        assert!(text.contains("Use a git worktree"), "{text}");
+        assert!(!text.contains("worktree"), "{text}");
     }
 
     #[test]
