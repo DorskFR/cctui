@@ -51,5 +51,6 @@ pub mod sendguard;
 pub mod servercaps;
 pub mod service;
 pub mod supervisor;
+pub mod toolblock_followup;
 pub mod updatehook;
 pub mod whipstop;

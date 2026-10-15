@@ -310,44 +310,44 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 [[route]]
 id = "get_context"
 # GET /context — List the caller's context items, or create one.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "post_context"
 # POST /context — List the caller's context items, or create one.
 tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+reason = "creating an item means writing a body, scope and match filter: a form the webui editor owns, not a keystroke"
 
 [[route]]
 id = "get_context_resolve"
 # GET /context/resolve — The rules and memories a spawn into these coordinates would carry.
 tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+reason = "takes spawn coordinates (machine, path, labels, adapter) as a query; the TUI spawn dialog has no preview step to show the result in"
 
 [[route]]
 id = "patch_context_by_id"
 # PATCH /context/{id} — Edit or delete a context item.
 tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+reason = "editing an item replaces its whole spec (body, scope, match filter): a form the webui editor owns, not a keystroke"
 
 [[route]]
 id = "delete_context_by_id"
 # DELETE /context/{id} — Edit or delete a context item.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "post_context_by_id_pending_approve"
 # POST /context/{id}/pending/approve — Make an agent's proposed change to a context item live.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "post_context_by_id_pending_reject"
 # POST /context/{id}/pending/reject — Drop an agent's proposed change to a context item.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "get_manifest_daemon"
@@ -1431,14 +1431,14 @@ reason = "the skills editor is webui-only"
 [[route]]
 id = "get_sessions_by_id_context"
 # GET /sessions/{id}/context — The rules and memories a session was given.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "post_sessions_by_id_context"
 # POST /sessions/{id}/context — Attach memories to a live session (owner only).
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "get_sessions_by_id_user_actions"

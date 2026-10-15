@@ -312,6 +312,11 @@ impl Supervisor {
             });
         }
         crate::configsweep::spawn_loop(shutdown.clone());
+        crate::toolblock_followup::start(
+            self.client.clone(),
+            self.machine_key.clone(),
+            shutdown.clone(),
+        );
 
         // Adapters live for the life of the process, not of a connection: their
         // tokens own live session subprocesses (`opencode serve`, `codex
@@ -467,11 +472,7 @@ impl Supervisor {
                             local_id = event_local_id(&event),
                             "queued event",
                         );
-                        // A `CctuiAgent` caller is parked on its child's
-                        // completion; this is the one point every adapter's
-                        // events pass through.
-                        crate::childwatch::global().observe(&event);
-                        crate::neighbours::global().observe(adapter_id.as_str(), &event);
+                        observe_event(&adapter_id, &event);
                         // Must stay after `observe`: the turn-tail signal needs
                         // the event even though it has nothing to persist.
                         if is_textless_thinking(&event) {
@@ -991,6 +992,7 @@ impl Supervisor {
                 channels.commands_tx.clone(),
                 token.clone(),
             );
+            crate::toolblock_followup::register_adapter(&id, channels.commands_tx.clone());
             running.insert(
                 id.clone(),
                 AdapterRunning {
@@ -1362,6 +1364,14 @@ fn encode_event(
         event.remove("adapter_id");
     }
     serde_json::to_vec(&frame).map(Some)
+}
+
+/// The one point every adapter's events pass through, so a `CctuiAgent`
+/// caller parked on its child's completion is fed here.
+fn observe_event(adapter_id: &str, event: &AdapterEvent) {
+    crate::childwatch::global().observe(event);
+    crate::neighbours::global().observe(adapter_id, event);
+    crate::toolblock_followup::observe(adapter_id, event);
 }
 
 fn is_textless_thinking(event: &AdapterEvent) -> bool {

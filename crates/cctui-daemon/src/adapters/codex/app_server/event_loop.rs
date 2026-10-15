@@ -928,6 +928,7 @@ impl<'a> EventLoop<'a> {
                         "rollout_path": info.rollout_path,
                         "codex_version": self.thread.codex_version,
                         "spawn_key": session.spawn_key,
+                        "context_key": session.fork_context_key(),
                         "relation": relation,
                         "started_at_ms": started_at_ms,
                     }),

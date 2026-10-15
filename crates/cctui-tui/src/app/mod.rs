@@ -4,6 +4,7 @@ pub mod attach;
 pub mod attention;
 pub mod cmdline;
 pub mod command;
+pub mod context_items;
 pub mod controls;
 pub mod conversation;
 pub mod conversation_store;

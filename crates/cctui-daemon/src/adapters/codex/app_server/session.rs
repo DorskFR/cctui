@@ -332,6 +332,15 @@ impl CodexSession {
         self.staging_key.as_deref().or(self.spawn_key.as_deref()).or_else(|| self.roster_self())
     }
 
+    /// The key the server recorded a fork's context set under, echoed at
+    /// registration so the set follows the thread id codex mints.
+    pub(super) fn fork_context_key(&self) -> Option<&str> {
+        match &self.launch {
+            SessionLaunch::Fork { .. } => self.staging_key.as_deref(),
+            SessionLaunch::Fresh { .. } | SessionLaunch::Resume { .. } => None,
+        }
+    }
+
     /// The roster id this session already holds, so the preamble does not
     /// report the session to itself. A fresh thread has none yet.
     const fn roster_self(&self) -> Option<&str> {
@@ -1170,6 +1179,23 @@ mod tests {
         )
         .stdio_thread_request();
         assert!(req["params"].get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn only_a_fork_echoes_its_context_key() {
+        let fork = SessionLaunch::Fork {
+            parent_thread_id: "parent".to_owned(),
+            prompt: None,
+            name: None,
+            attachments: Vec::new(),
+        };
+        let mut session = session_with_tier(fork, None);
+        session.staging_key = Some("cmd-1".to_owned());
+        assert_eq!(session.fork_context_key(), Some("cmd-1"));
+
+        let mut fresh = session_with_tier(fresh_launch(), None);
+        fresh.staging_key = Some("cmd-2".to_owned());
+        assert_eq!(fresh.fork_context_key(), None, "a spawn is claimed through its spawn key");
     }
 
     #[test]

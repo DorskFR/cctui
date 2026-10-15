@@ -41,6 +41,7 @@ pub enum Context {
     Overview,
     HarnessMode,
     AccountSwitch,
+    Catalogue,
     Ask,
     AskText,
     Plan,
@@ -75,6 +76,7 @@ pub const CONTEXTS: &[Context] = &[
     Context::Overview,
     Context::HarnessMode,
     Context::AccountSwitch,
+    Context::Catalogue,
     Context::Ask,
     Context::AskText,
     Context::Plan,
@@ -111,6 +113,7 @@ impl Context {
             Self::Overview => "overview",
             Self::HarnessMode => "harness-mode",
             Self::AccountSwitch => "account-switch",
+            Self::Catalogue => "context",
             Self::Ask => "ask",
             Self::AskText => "ask-text",
             Self::Plan => "plan",
@@ -147,6 +150,7 @@ impl Context {
             Self::Overview => "Overview",
             Self::HarnessMode => "Harness mode",
             Self::AccountSwitch => "Switch account",
+            Self::Catalogue => "Context browser",
             Self::Ask => "Question card",
             Self::AskText => "Question card — free text",
             Self::Plan => "Plan card",
@@ -370,6 +374,16 @@ actions! {
     AccountSwitchPrev => "account-switch-prev", "Previous account";
     AccountSwitchBinding => "account-switch-binding", "Next provider family";
     AccountSwitchCommit => "account-switch-commit", "Switch to this account";
+    ContextOpen => "context-open", "Rules, memories and the session's context";
+    ContextClose => "context-close", "Close the context browser";
+    ContextNext => "context-next", "Next item";
+    ContextPrev => "context-prev", "Previous item";
+    ContextTab => "context-tab", "Catalogue or the session's context";
+    ContextRefresh => "context-refresh", "Reload the lists";
+    ContextApprove => "context-approve", "Approve the agent's pending proposal";
+    ContextReject => "context-reject", "Reject the agent's pending proposal";
+    ContextDelete => "context-delete", "Delete the item (press twice)";
+    ContextAttach => "context-attach", "Attach the memory to the session";
 
     OverviewScrollDown => "overview-scroll-down", "Scroll the overview down";
     OverviewScrollUp => "overview-scroll-up", "Scroll the overview up";
@@ -688,6 +702,21 @@ const ACCOUNT_SWITCH: &[BindingSpec] = &[
     spec(Context::AccountSwitch, "enter", ActionId::AccountSwitchCommit),
 ];
 
+/// Modal: approve, reject and delete write the catalogue, so nothing falls
+/// through from the view underneath.
+const CONTEXT_ITEMS: &[BindingSpec] = &[
+    spec(Context::Global, "C", ActionId::ContextOpen),
+    spec(Context::Catalogue, "esc, q", ActionId::ContextClose),
+    spec(Context::Catalogue, "down, ctrl+n, j", ActionId::ContextNext),
+    spec(Context::Catalogue, "up, ctrl+p, k", ActionId::ContextPrev),
+    spec(Context::Catalogue, "tab", ActionId::ContextTab),
+    spec(Context::Catalogue, "r", ActionId::ContextRefresh),
+    spec(Context::Catalogue, "a", ActionId::ContextApprove),
+    spec(Context::Catalogue, "x", ActionId::ContextReject),
+    spec(Context::Catalogue, "d", ActionId::ContextDelete),
+    spec(Context::Catalogue, "enter", ActionId::ContextAttach),
+];
+
 const HARNESS_MODE: &[BindingSpec] = &[
     spec(Context::HarnessMode, "esc, q", ActionId::HarnessModeClose),
     spec(Context::HarnessMode, "down, ctrl+n, j", ActionId::HarnessModeNext),
@@ -816,6 +845,7 @@ pub const DEFAULT_BINDINGS: &[&[BindingSpec]] = &[
     OVERVIEW,
     HARNESS_MODE,
     ACCOUNT_SWITCH,
+    CONTEXT_ITEMS,
     ASK,
     ASK_TEXT,
     PLAN,

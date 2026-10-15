@@ -6,6 +6,7 @@ use crate::app::action::{Action, CopyWhat};
 use crate::app::attach::AttachAction;
 use crate::app::attention::{AttentionAction, Decision};
 use crate::app::cmdline::{CmdAction, Mode as CmdMode};
+use crate::app::context_items::ContextAction;
 use crate::app::controls::{ControlsAction, PickerColumn};
 use crate::app::conversation::ConversationAction;
 use crate::app::diagnose::{DiagnoseAction, DiagnoseMode};
@@ -113,6 +114,7 @@ pub const fn context_for(
         View::Overview => Context::Overview,
         View::HarnessMode => Context::HarnessMode,
         View::AccountSwitch => Context::AccountSwitch,
+        View::ContextItems => Context::Catalogue,
     }
 }
 
@@ -197,6 +199,7 @@ pub fn map_input(
             | View::FileViewer
             | View::HarnessMode
             | View::AccountSwitch
+            | View::ContextItems
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -218,6 +221,7 @@ pub fn map_input(
             | View::FileViewer
             | View::HarnessMode
             | View::AccountSwitch
+            | View::ContextItems
             | View::Help
             | View::HistoryPicker
             | View::Pins
@@ -463,6 +467,16 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::AccountSwitchPrev => Action::AccountSwitch(AccountSwitchAction::SelectPrev),
         ActionId::AccountSwitchBinding => Action::AccountSwitch(AccountSwitchAction::NextBinding),
         ActionId::AccountSwitchCommit => Action::AccountSwitch(AccountSwitchAction::Commit),
+        ActionId::ContextOpen => Action::ContextItems(ContextAction::Open),
+        ActionId::ContextClose => Action::ContextItems(ContextAction::Close),
+        ActionId::ContextNext => Action::ContextItems(ContextAction::SelectNext),
+        ActionId::ContextPrev => Action::ContextItems(ContextAction::SelectPrev),
+        ActionId::ContextTab => Action::ContextItems(ContextAction::ToggleTab),
+        ActionId::ContextRefresh => Action::ContextItems(ContextAction::Refresh),
+        ActionId::ContextApprove => Action::ContextItems(ContextAction::Approve),
+        ActionId::ContextReject => Action::ContextItems(ContextAction::Reject),
+        ActionId::ContextDelete => Action::ContextItems(ContextAction::Delete),
+        ActionId::ContextAttach => Action::ContextItems(ContextAction::Attach),
 
         ActionId::OverviewScrollDown => Action::Slice(SliceAction::OverviewScroll(1)),
         ActionId::OverviewScrollUp => Action::Slice(SliceAction::OverviewScroll(-1)),

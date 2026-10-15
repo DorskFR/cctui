@@ -1,3 +1,4 @@
+import type { ContextCounts } from '@bindings/ContextCounts';
 import type { Label } from '@bindings/Label';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { escapeHtml } from '$lib/markdown';
@@ -98,6 +99,12 @@ export function needsYouOf(s: SessionListItem): NeedsYou | null {
 		child: c.child_open,
 		blocking: c.blocking > 0 || c.child_blocking > 0
 	};
+}
+
+/** The card's context chip counts, `null` when the session carries none. */
+export function contextCountsOf(s: SessionListItem): ContextCounts | null {
+	const c = s.context_counts;
+	return c && c.rules + c.memories > 0 ? c : null;
 }
 
 export function prLinksOf(s: SessionListItem): PrLink[] {

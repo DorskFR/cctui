@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Badge, Button, Text } from '@dorsk/tsumikit';
 	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
-	import { useAttachContext, useContextItems } from '$lib/queries';
+	import { newerVersion, useAttachContext, useContextItems } from '$lib/queries';
 	import type { SessionContextResponse } from '@bindings/SessionContextResponse';
 	import { errMessage } from '$lib/api';
 	import { toasts } from '$lib/toast.svelte';
@@ -48,9 +48,15 @@
 			{#if group.rows.length}
 				<ul>
 					{#each group.rows as r (r.id)}
+						{@const newer = newerVersion(r, items.data)}
 						<li>
 							<span class="title">{r.title}</span>
 							<Badge size="xs" tone="muted">v{r.version}</Badge>
+							{#if newer !== null}
+								<Badge size="xs" tone="warn" data-part="newer"
+									>{m.conversation_context_newer({ version: newer })}</Badge
+								>
+							{/if}
 						</li>
 					{/each}
 				</ul>

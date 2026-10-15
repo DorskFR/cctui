@@ -402,6 +402,7 @@
 	"conversation_context_rules": "Règles",
 	"conversation_context_memories": "Notes",
 	"conversation_context_none": "Aucune.",
+	"conversation_context_newer": "v{version} disponible",
 	"conversation_context_attach": "Joindre du contexte…",
 	"conversation_context_attach_btn": "Joindre {count}",
 	"conversation_context_attached": "Joint : {names}",

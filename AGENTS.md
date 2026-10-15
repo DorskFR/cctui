@@ -114,6 +114,29 @@ bumps for a separate follow-up — they belong in the same change as the code.
 - Keep PRs focused; reference the relevant ticket in the title where applicable.
 - Let the pre-commit hooks (lefthook) run fmt / check / clippy / lint.
 
+### Local loop: red, green, push
+
+CI runs the full suites; locally run only the tests the change touches.
+
+1. **Red.** Write the regression test and run just that test; watch it fail.
+   Give a test that could loop or hang a short timeout so red takes seconds.
+2. **Green.** Write the fix and rerun the same test.
+3. **Commit and push.** The pre-push hook (`scripts/ci-prepush.sh`) diffs the
+   pushed commits against what the remote branch already has (on a first push,
+   the merge-base with `origin/main`) and runs only what applies:
+   `cargo test --workspace` when Rust changed, `vitest related` on the changed
+   webui sources, the schema-drift check when the settings catalog changed. A
+   version-only bump of `Cargo.toml`/`Cargo.lock` is not a Rust change.
+
+Useful single-target commands:
+
+- webui: `npx vitest run <file>` or `npx vitest related --run <files>` in
+  `webui/`; add `npm run check` when types or `.svelte` props changed.
+- Rust: `cargo test -p <crate> <test name>`.
+
+Don't run the whole webui suite or `make test` before pushing; read the CI
+result instead.
+
 ## Self-update
 
 The webui's "Update" button (`POST /api/v1/version/self-update`) has two paths,

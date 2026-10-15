@@ -140,6 +140,58 @@ pub async fn session_gateway_env(
     }))
 }
 
+/// `GET /api/v1/daemon/sessions/{id}/context` — [`session_context`] without
+/// minting credentials, for a launch that already holds them.
+pub async fn session_launch_context(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<cctui_proto::api::LaunchContextResponse>, StatusCode> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
+    let Some(machine_id) = ctx.machine_id else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+    let allowed =
+        context_allowed(&state.pool, ctx.user_id, machine_id, &session_id).await.map_err(|e| {
+            tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let context = if allowed { session_context(&state, &session_id).await } else { Vec::new() };
+    Ok(Json(cctui_proto::api::LaunchContextResponse { context }))
+}
+
+/// A key with no session row is readable only when the set recorded under it
+/// is the caller's.
+async fn context_allowed(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    machine_id: Uuid,
+    session_id: &str,
+) -> Result<bool, sqlx::Error> {
+    if !gateway_env_allowed(pool, user_id, machine_id, session_id).await? {
+        return Ok(false);
+    }
+    let registered: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
+    if registered {
+        return Ok(true);
+    }
+    let owner: Option<Option<String>> =
+        sqlx::query_scalar("SELECT scope->>'user_id' FROM session_context WHERE spawn_key = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(owner.flatten().is_some_and(|o| o == user_id.to_string()))
+}
+
 /// The context this launch carries, as the daemon needs it: the rules,
 /// re-resolved now so an edited rule reaches the next launch, then the memory
 /// notes and prompt template the spawn froze. Read through the spawn key the
@@ -495,6 +547,44 @@ mod tests {
             super::gateway_env_allowed(&pool, ua, ma, "any").await.is_err(),
             "a lookup failure surfaces as an error (500), never as allowed",
         );
+    }
+
+    #[tokio::test]
+    async fn a_launch_key_context_is_readable_only_by_its_owner() {
+        let Some(url) = crate::routes::gateway::test_db_url("launch_context_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "ctx-owner").await;
+        let (ub, mb) = seed_machine(&pool, "ctx-intruder").await;
+        let owned = seed_owned_session(&pool, ua, ma).await;
+        let key = format!("cmd-{}", Uuid::new_v4());
+        let scope = crate::routes::context::StoredScope {
+            user_id: ua,
+            coords: crate::routes::context::SpawnScope::default(),
+            dispatched: false,
+        };
+        crate::routes::context::remember_intent(&pool, &key, &[], &scope).await;
+
+        let allowed = async |user, machine, sid: &str| {
+            super::context_allowed(&pool, user, machine, sid).await.expect("lookup")
+        };
+        assert!(allowed(ua, ma, &owned).await);
+        assert!(!allowed(ub, mb, &owned).await);
+        assert!(allowed(ua, ma, &key).await, "the fork's own launch key");
+        assert!(!allowed(ub, mb, &key).await, "another user's launch key");
+        assert!(!allowed(ua, ma, "never-recorded").await, "an unknown key reads nothing");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[owned], &[(ua, ma), (ub, mb)]).await;
     }
 
     #[test]
