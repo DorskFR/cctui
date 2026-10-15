@@ -1,6 +1,8 @@
-//! Whether each enabled adapter's binary is installed. Reconcile records which
-//! binaries to look for; each heartbeat and each spawn re-resolves them, so a
-//! binary installed after the reconcile is picked up without one.
+//! Whether each enabled adapter's binary is installed.
+//!
+//! Reconcile records which binaries to look for; each heartbeat and each spawn
+//! re-resolves them, so a binary installed after the reconcile is picked up
+//! without one.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
@@ -103,14 +105,19 @@ mod tests {
         assert_eq!(resolve(&shown, ""), Some(bin));
         let missing = dir.path().join("gone").display().to_string();
         assert_eq!(resolve(&missing, &dir.path().display().to_string()), None);
-        assert_eq!(resolve(&dir.path().display().to_string(), ""), None, "a directory is no binary");
+        assert_eq!(
+            resolve(&dir.path().display().to_string(), ""),
+            None,
+            "a directory is no binary"
+        );
     }
 
     #[test]
     fn a_missing_binary_is_reported_with_the_key_that_overrides_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().display().to_string();
-        let missing = probe(&BinarySpec { bin: "codex".to_owned(), config_key: "codex_bin" }, &path);
+        let missing =
+            probe(&BinarySpec { bin: "codex".to_owned(), config_key: "codex_bin" }, &path);
         assert!(!missing.installed());
         assert_eq!(missing.config_key, "codex_bin");
         assert!(missing.refusal("codex").is_some_and(|m| m.contains("`codex_bin`")));

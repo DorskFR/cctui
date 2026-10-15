@@ -142,18 +142,18 @@ fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
     Ok(id.to_owned())
 }
 
-async fn refuse_missing_binary(
+/// The requested adapter, refused when the machine reports its binary missing.
+async fn spawn_adapter_on(
     state: &AppState,
     machine_uuid: Uuid,
-    adapter_id: &str,
-) -> Result<(), (StatusCode, Json<ApiError>)> {
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    let adapter_id = spawn_adapter(requested).map_err(bad_request)?;
     let binaries = crate::routes::machine_adapters::reported_binaries(&state.pool, machine_uuid)
         .await
         .map_err(AppError::into_parts)?;
-    match crate::routes::machine_adapters::missing_binary(&binaries, adapter_id) {
-        Some(error) => Err((StatusCode::CONFLICT, Json(ApiError { error }))),
-        None => Ok(()),
-    }
+    crate::routes::machine_adapters::missing_binary(&binaries, &adapter_id)
+        .map_or(Ok(adapter_id), |error| Err((StatusCode::CONFLICT, Json(ApiError { error }))))
 }
 
 async fn validate_spawn(
@@ -173,8 +173,7 @@ async fn validate_spawn(
 
     let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
-    let adapter_id = spawn_adapter(req.adapter_id.as_deref()).map_err(bad_request)?;
-    refuse_missing_binary(state, machine_uuid, &adapter_id).await?;
+    let adapter_id = spawn_adapter_on(state, machine_uuid, req.adapter_id.as_deref()).await?;
     let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
@@ -190,8 +189,7 @@ async fn validate_spawn(
     crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
     let (context, scope) =
         resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid, &adapter_id).await;
-    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context, &scope)
-        .await;
+    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context, &scope).await;
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
     // the session runs on that user's machine with that user's account.

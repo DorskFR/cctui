@@ -697,20 +697,24 @@ impl Supervisor {
                 let refusal = matches!(command.as_ref(), AdapterCommand::Spawn { .. })
                     .then(|| crate::adapter_probe::spawn_refusal(&adapter_id))
                     .flatten();
-                let error = if let Some(refusal) = refusal {
-                    tracing::warn!(%adapter_id, %refusal, "refusing spawn");
-                    command.command_id().map(|id| (id, refusal))
-                } else {
-                    #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
-                    let outcome = match running.get(&adapter_id) {
-                        None => Err(("is not running on this machine", command.command_id())),
-                        Some(running) => running.route_command(*command),
-                    };
-                    outcome.err().and_then(|(reason, command_id)| {
-                        tracing::warn!(%adapter_id, reason, "rejecting command");
-                        command_id.map(|id| (id, format!("adapter {adapter_id} {reason}")))
-                    })
-                };
+                let command_id = command.command_id();
+                let error = refusal.map_or_else(
+                    || {
+                        #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
+                        let outcome = match running.get(&adapter_id) {
+                            None => Err(("is not running on this machine", command_id)),
+                            Some(running) => running.route_command(*command),
+                        };
+                        outcome.err().and_then(|(reason, command_id)| {
+                            tracing::warn!(%adapter_id, reason, "rejecting command");
+                            command_id.map(|id| (id, format!("adapter {adapter_id} {reason}")))
+                        })
+                    },
+                    |refusal| {
+                        tracing::warn!(%adapter_id, %refusal, "refusing spawn");
+                        command_id.map(|id| (id, refusal))
+                    },
+                );
                 // A silent drop leaves the server-side waiter hanging, so a full
                 // event channel falls through to the WS lane rather than giving
                 // up. Neither path may block: this runs in the transport loop.
