@@ -111,10 +111,12 @@ pub fn stage_context(session_id: &str, items: &[SessionContextItem]) -> Option<S
     }
 }
 
-/// The whole neutral preamble for one launch: the shared-checkout warning, the
-/// session's rules and attached context, and — when the session has the cctui
-/// MCP relay (`tools`) — the `CctuiContext` line, in one block a harness
-/// delivers verbatim.
+/// The whole neutral preamble for one launch, in one block a harness delivers
+/// verbatim.
+///
+/// It carries the shared-checkout warning, the session's rules and attached
+/// context, and — when the session has the cctui MCP relay (`tools`) — the
+/// `CctuiContext` line.
 ///
 /// `session_id` keys the staging dir (the launch key, so a relaunch restages
 /// in place); `None` means this launch has no stable key and its notes are
@@ -128,7 +130,8 @@ pub fn for_launch(
     items: &[SessionContextItem],
     tools: bool,
 ) -> Option<String> {
-    let context = merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()));
+    let context =
+        merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()));
     let body = merge(shared_checkout(cwd, local_id), context)?;
     Some(format!("<session-context>\n{}\n</session-context>", body.trim_end()))
 }
@@ -268,7 +271,8 @@ mod tests {
     fn a_session_with_the_relay_is_told_about_cctui_context() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().to_string_lossy();
-        let block = for_launch(None, &cwd, None, &[], true).expect("the tool line alone is a block");
+        let block =
+            for_launch(None, &cwd, None, &[], true).expect("the tool line alone is a block");
         assert!(block.contains(CONTEXT_TOOL_LINE.trim_end()), "{block}");
         assert!(block.contains("need the user's approval"), "{block}");
         assert!(for_launch(None, &cwd, None, &[], false).is_none());

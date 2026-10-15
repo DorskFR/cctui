@@ -80,14 +80,12 @@ pub fn edited_spec(
     let base = existing.pending.clone().unwrap_or_else(|| spec_of(existing));
     let text = req.body.clone().unwrap_or_default();
     let body = if mode == "append" { append_paragraph(&base.body, &text, date) } else { text };
-    let mut next = ContextItemSpec {
-        title: req.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or(base.title.clone()),
-        body,
-        ..base
-    };
+    let title = req.title.clone().filter(|t| !t.trim().is_empty());
+    let mut next =
+        ContextItemSpec { title: title.unwrap_or_else(|| base.title.clone()), body, ..base };
     if let Some(m) = req.match_.clone() {
         next.match_ = m;
-        next.scope = "user".to_owned();
+        "user".clone_into(&mut next.scope);
         next.scope_ref = None;
     }
     next
@@ -233,7 +231,11 @@ async fn save(
             let spec = clean_spec(ContextItemSpec {
                 kind: kind.to_owned(),
                 name: name.clone(),
-                title: req.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or(name.clone()),
+                title: req
+                    .title
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| name.clone()),
                 body: req.body.clone().unwrap_or_default(),
                 match_: req.match_.clone().unwrap_or_default(),
                 enabled: true,

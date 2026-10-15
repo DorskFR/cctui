@@ -1,6 +1,6 @@
 //! Reusable session context: rules, memory notes and prompt templates.
 
-use super::{GET, sess_read};
+use super::{GET, sess_read, sess_write};
 use crate::authz::Authz::Human;
 use crate::authz::{Authn, Routes};
 use crate::routes;
@@ -62,6 +62,6 @@ pub(super) fn register(r: Routes) -> Routes {
         "Attach memories to a live session (owner only).",
         post(routes::context::attach_to_session),
         Authn::Bearer,
-        Human,
+        sess_write(),
     )
 }

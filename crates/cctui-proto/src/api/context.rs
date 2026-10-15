@@ -67,7 +67,7 @@ pub struct ContextItem {
 }
 
 /// The editable half of an item.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ContextItemSpec {
     pub kind: String,
@@ -87,6 +87,23 @@ pub struct ContextItemSpec {
     pub tags: Vec<String>,
     #[serde(default = "yes")]
     pub enabled: bool,
+}
+
+/// The same defaults a body omitting the fields decodes to.
+impl Default for ContextItemSpec {
+    fn default() -> Self {
+        Self {
+            kind: String::new(),
+            name: String::new(),
+            title: String::new(),
+            body: String::new(),
+            scope: user_scope(),
+            scope_ref: None,
+            match_: ContextMatch::default(),
+            tags: Vec::new(),
+            enabled: yes(),
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -235,5 +252,8 @@ mod tests {
             serde_json::from_str(r#"{"kind":"memory","name":"n","title":"T"}"#).expect("decodes");
         assert!(legacy.match_.is_empty());
         assert_eq!(legacy.scope, "user");
+
+        let built = ContextItemSpec { kind: "memory".into(), ..ContextItemSpec::default() };
+        assert_eq!((built.scope.as_str(), built.enabled), (legacy.scope.as_str(), legacy.enabled));
     }
 }

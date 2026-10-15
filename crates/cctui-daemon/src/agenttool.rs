@@ -313,15 +313,19 @@ fn parse_context(args: &Value) -> Result<CallKind, String> {
             let kind = kind.filter(|k| k == "memory" || k == "rule");
             req.kind = Some(kind.ok_or("kind must be memory or rule")?);
             let name = name.ok_or("name is required to save an item")?;
-            let mode = string_arg(args, "mode").map_or_else(|| "create".to_owned(), |m| m.to_ascii_lowercase());
+            let mode = string_arg(args, "mode")
+                .map_or_else(|| "create".to_owned(), |m| m.to_ascii_lowercase());
             if !["create", "replace", "append"].contains(&mode.as_str()) {
-                return Err(format!("mode must be \"create\", \"replace\" or \"append\", got {mode}"));
+                return Err(format!(
+                    "mode must be \"create\", \"replace\" or \"append\", got {mode}"
+                ));
             }
             let body = args.get("body").and_then(Value::as_str).unwrap_or("");
             if body.trim().is_empty() {
                 return Err("body is required to save an item".to_owned());
             }
-            req.title = string_arg(args, "title").or_else(|| (mode == "create").then(|| name.clone()));
+            req.title =
+                string_arg(args, "title").or_else(|| (mode == "create").then(|| name.clone()));
             req.body = Some(body.to_owned());
             req.match_ = args
                 .get("match")
@@ -929,7 +933,8 @@ fn render_context_result(action: &str, r: &ContextToolResponse) -> String {
         "list" if r.items.is_empty() => "no context items".to_owned(),
         "list" => r.items.iter().map(render_context_entry).collect::<Vec<_>>().join("\n"),
         "show" => {
-            let head = r.item.as_ref().map_or_else(|| "(unknown item)".to_owned(), render_context_entry);
+            let head =
+                r.item.as_ref().map_or_else(|| "(unknown item)".to_owned(), render_context_entry);
             format!("{head}\n\n{}", r.body.as_deref().unwrap_or("").trim_end())
         }
         "save" => match &r.item {
@@ -1404,7 +1409,7 @@ mod tests {
         assert!(text.contains("the user action list is empty"), "{text}");
     }
 
-    fn context_call(args: Value) -> Result<ContextToolRequest, String> {
+    fn context_call(args: &Value) -> Result<ContextToolRequest, String> {
         let line = json!({ "kind": "context", "session_id": "s1", "args": args }).to_string();
         match parse_call(&line)?.kind {
             CallKind::Context(req) => Ok(req),
@@ -1414,18 +1419,18 @@ mod tests {
 
     #[test]
     fn a_context_call_needs_a_known_action() {
-        assert!(context_call(json!({})).unwrap_err().contains("action is required"));
-        let err = context_call(json!({ "action": "delete", "name": "x" })).unwrap_err();
+        assert!(context_call(&json!({})).unwrap_err().contains("action is required"));
+        let err = context_call(&json!({ "action": "delete", "name": "x" })).unwrap_err();
         assert!(err.contains("got delete"), "{err}");
-        let list = context_call(json!({ "action": "List", "kind": "rule" })).unwrap();
+        let list = context_call(&json!({ "action": "List", "kind": "rule" })).unwrap();
         assert_eq!(list.action, "list");
         assert_eq!(list.kind.as_deref(), Some("rule"));
     }
 
     #[test]
     fn a_context_show_needs_a_name_and_defaults_to_a_memory() {
-        assert!(context_call(json!({ "action": "show" })).is_err());
-        let req = context_call(json!({ "action": "show", "name": " wt " })).unwrap();
+        assert!(context_call(&json!({ "action": "show" })).is_err());
+        let req = context_call(&json!({ "action": "show", "name": " wt " })).unwrap();
         assert_eq!(req.name.as_deref(), Some("wt"));
         assert_eq!(req.kind.as_deref(), Some("memory"));
     }
@@ -1435,7 +1440,7 @@ mod tests {
         let base = |extra: Value| {
             let mut a = json!({ "action": "save", "kind": "memory", "name": "wt", "body": "b" });
             a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-            context_call(a)
+            context_call(&a)
         };
         let err = base(json!({ "kind": "prompt" })).unwrap_err();
         assert_eq!(err, "kind must be memory or rule");
@@ -1468,10 +1473,10 @@ mod tests {
 
     #[test]
     fn a_context_attach_needs_names_and_dedupes_them() {
-        assert!(context_call(json!({ "action": "attach" })).is_err());
-        assert!(context_call(json!({ "action": "attach", "names": ["  ", ""] })).is_err());
-        let req =
-            context_call(json!({ "action": "attach", "names": [" wt ", "wt", "ops", 3] })).unwrap();
+        assert!(context_call(&json!({ "action": "attach" })).is_err());
+        assert!(context_call(&json!({ "action": "attach", "names": ["  ", ""] })).is_err());
+        let args = json!({ "action": "attach", "names": [" wt ", "wt", "ops", 3] });
+        let req = context_call(&args).unwrap();
         assert_eq!(req.names, ["wt", "ops"]);
     }
 
@@ -1488,7 +1493,10 @@ mod tests {
 
     #[test]
     fn a_context_list_renders_one_line_per_item_with_provenance() {
-        assert_eq!(render_context_result("list", &ContextToolResponse::default()), "no context items");
+        assert_eq!(
+            render_context_result("list", &ContextToolResponse::default()),
+            "no context items"
+        );
         let mut proposed = entry("wt", "rule");
         proposed.enabled = false;
         proposed.pending = true;
@@ -1520,8 +1528,10 @@ mod tests {
 
     #[test]
     fn a_context_save_says_whether_it_is_live_or_awaiting_approval() {
-        let saved =
-            ContextToolResponse { item: Some(entry("ops", "memory")), ..ContextToolResponse::default() };
+        let saved = ContextToolResponse {
+            item: Some(entry("ops", "memory")),
+            ..ContextToolResponse::default()
+        };
         assert_eq!(render_context_result("save", &saved), "saved memory `ops` (v2)");
         let proposed = ContextToolResponse {
             item: Some(entry("wt", "rule")),

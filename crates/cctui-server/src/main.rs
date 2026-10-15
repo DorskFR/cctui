@@ -1233,7 +1233,7 @@ mod tests {
             r#"POST /sessions/{id}/cctuiverse/invites Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/cctuiverse/links Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/context Bearer Resource(Session, Read, Path("id"))"#,
-            "POST /sessions/{id}/context Bearer Human",
+            r#"POST /sessions/{id}/context Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/conversation Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/deregister Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,

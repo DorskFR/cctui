@@ -87,7 +87,7 @@ impl From<Row> for ContextItem {
     }
 }
 
-pub(crate) fn db_err(e: sqlx::Error) -> AppError {
+pub fn db_err(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(dbe) = &e
         && dbe.code().as_deref() == Some("23505")
     {
@@ -97,7 +97,7 @@ pub(crate) fn db_err(e: sqlx::Error) -> AppError {
 }
 
 /// A slug safe as both a wire reference and a staged filename.
-pub(crate) fn clean_name(raw: &str) -> Result<String, AppError> {
+pub fn clean_name(raw: &str) -> Result<String, AppError> {
     let name = raw.trim().to_ascii_lowercase();
     let ok = !name.is_empty()
         && name.len() <= 64
@@ -775,13 +775,12 @@ pub async fn attach_memories(
         if name.is_empty() || out.attached.contains(&name) || out.unknown.contains(&name) {
             continue;
         }
-        match items.iter().find(|i| i.kind == "memory" && i.name == name) {
-            Some(item) => {
-                out.attached.push(name);
-                picked.push(item.clone());
-            }
-            None => out.unknown.push(name),
-        }
+        let Some(item) = items.iter().find(|i| i.kind == "memory" && i.name == name) else {
+            out.unknown.push(name);
+            continue;
+        };
+        out.attached.push(name);
+        picked.push(item.clone());
     }
     if picked.is_empty() {
         return Ok((None, out));

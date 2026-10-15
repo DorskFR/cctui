@@ -1,5 +1,6 @@
-//! `cctui-daemon mcp-agent` — the stdio MCP server a claude session is launched
-//! with, exposing the `CctuiAgent`, `CctuiAgentArchive`, `CctuiUsage`, peer, room,
+//! `cctui-daemon mcp-agent` — the stdio MCP server a session is launched with.
+//!
+//! It exposes the `CctuiAgent`, `CctuiAgentArchive`, `CctuiUsage`, peer, room,
 //! user-action, `CctuiSpeak` and `CctuiContext` tools.
 //!
 //! The subcommand is a thin relay, mirroring `ask-hook`: it speaks MCP on
