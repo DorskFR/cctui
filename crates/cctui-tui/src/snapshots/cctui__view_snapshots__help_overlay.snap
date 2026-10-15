@@ -5,25 +5,25 @@ expression: render_screen(&mut app)
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
  1┌ Keys · j/k to scroll ────────────────────────────────────────────────────────────────────────┐
-  │Anywhere                                         Enter       Put this prompt in the composer  │
-▸ │  /           Search the current view          File viewer                                    │
-  │  D           Diagnose the selected session      j / ↓       Scroll down                      │
-  │  Ctrl+g      Jump to the next session needin…   k / ↑       Scroll up                        │
-  │Anywhere a view does not rebind it               PgDn        Page down                        │
-  │  ?           Toggle this cheat sheet            PgUp        Page up                          │
-  │  q           Quit cctui                         g           Jump to the top                  │
-  │  1-9         Switch view                        i           Draw images inline, or describe …│
-  │  n           Next search hit                    q / Esc     Close the file viewer            │
-  │  N           Previous search hit                o           Open in the desktop viewer       │
-  │  i           Session info                     Machines                                       │
-  │  M           Machines and daemons               j / ↓       Next machine                     │
-  │Session list                                     k / ↑       Previous machine                 │
-  │  j / ↓       Next session                       r           Refresh the machine list         │
-  │  k / ↑       Previous session                   Enter       Aim a spawn at this machine      │
-  │  g           First session                      Esc         Back to the sessions             │
-  │  G           Last session                     Labels                                         │
-  │  Enter       Open the conversation              Esc         Close the label list             │
-  │  z / Tab     Fold or open the subagent group    Ctrl+n / ↓  Next label                       │
-  │  S           Fold or open the section           Ctrl+p / ↑  Previous label                   │
+  │Anywhere                                         PgUp        Page up                          │
+▸ │  /           Search the current view            g           Jump to the top                  │
+  │  D           Diagnose the selected session      i           Draw images inline, or describe …│
+  │  C           Rules, memories and the session…   q / Esc     Close the file viewer            │
+  │  Ctrl+g      Jump to the next session needin…   o           Open in the desktop viewer       │
+  │Anywhere a view does not rebind it             Machines                                       │
+  │  ?           Toggle this cheat sheet            j / ↓       Next machine                     │
+  │  q           Quit cctui                         k / ↑       Previous machine                 │
+  │  1-9         Switch view                        r           Refresh the machine list         │
+  │  n           Next search hit                    Enter       Aim a spawn at this machine      │
+  │  N           Previous search hit                Esc         Back to the sessions             │
+  │  i           Session info                     Labels                                         │
+  │  M           Machines and daemons               Esc         Close the label list             │
+  │Session list                                     Ctrl+n / ↓  Next label                       │
+  │  j / ↓       Next session                       Ctrl+p / ↑  Previous label                   │
+  │  k / ↑       Previous session                   Space       Attach or detach this label      │
+  │  g           First session                      Ctrl+c      Create a label                   │
+  │  G           Last session                       Ctrl+e      Rename or recolor                │
+  │  Enter       Open the conversation              Ctrl+d      Delete this label                │
+  │  z / Tab     Fold or open the subagent group    Enter       Confirm                          │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
  j/k:nav  Enter:open  g/G:top/bottom  ?:help  q:quit

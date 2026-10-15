@@ -114,7 +114,7 @@ pub const fn context_for(
         View::Overview => Context::Overview,
         View::HarnessMode => Context::HarnessMode,
         View::AccountSwitch => Context::AccountSwitch,
-        View::ContextItems => Context::ContextItems,
+        View::ContextItems => Context::Catalogue,
     }
 }
 

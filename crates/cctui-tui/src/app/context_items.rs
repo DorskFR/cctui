@@ -34,10 +34,10 @@ pub struct Row {
 
 impl Row {
     pub fn version_cell(&self) -> String {
-        match self.newer {
-            Some(newer) => format!("v{} (v{newer} available)", self.version),
-            None => format!("v{}", self.version),
-        }
+        self.newer.map_or_else(
+            || format!("v{}", self.version),
+            |newer| format!("v{} (v{newer} available)", self.version),
+        )
     }
 
     /// The markers after the title, most urgent first.
@@ -228,7 +228,9 @@ pub fn attach_summary(out: &AttachContextResponse) -> String {
         format!("attached {}", out.attached.join(", "))
     };
     if !out.unknown.is_empty() {
-        text.push_str(&format!(" (unknown: {})", out.unknown.join(", ")));
+        text.push_str(" (unknown: ");
+        text.push_str(&out.unknown.join(", "));
+        text.push(')');
     }
     text
 }
