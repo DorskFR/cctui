@@ -456,10 +456,10 @@ jobs:
         if: env.MODE == 'prevbins'
         env:
           PREV_VERSION: ${{ needs.meta.outputs.prev_version }}
-          BINS: ${{ matrix.bins }}
+          BIN_NAMES: ${{ matrix.bins }}
         run: |
-          read -ra bins <<< "$BINS"
-          bash scripts/release-prev-bins.sh "$IMAGE:$PREV_VERSION" image-bins "${bins[@]}"
+          read -ra names <<< "$BIN_NAMES"
+          bash scripts/release-prev-bins.sh "$IMAGE:$PREV_VERSION" image-bins "${names[@]}"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         if: env.MODE != 'retag'
