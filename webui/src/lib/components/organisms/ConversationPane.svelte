@@ -431,6 +431,8 @@
 					{lines}
 					onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}
 					onunpin={pins.unpinSeq}
+					sessionId={session.id}
+					contextAttachable={!archived}
 				/>
 			{/if}
 

@@ -115,6 +115,7 @@ export class SpawnForm {
 	busy = $state(false);
 	selectedProfileId = $state<string | null>(null);
 	oneOff = $state<ProfileSpecForm | null>(null);
+	contextPins = $state<string[]>([]);
 	usageRaw = $state(drafts.get(PROFILE_USES));
 	spawnFailure = $state<string | null>(null);
 	joinLabel = $state('');
@@ -374,8 +375,9 @@ export class SpawnForm {
 	}
 
 	buildSpawnBody(): SpawnRequest {
+		const f = this.effectiveForm;
 		return buildSpawnBody(
-			this.effectiveForm,
+			{ ...f, context_items: [...new Set([...f.context_items, ...this.contextPins])] },
 			this.spawnProvider,
 			envMap(this.envRows),
 			this.followupParent,

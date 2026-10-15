@@ -25,6 +25,10 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
 import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { UpdateContextItemRequest } from "@bindings/UpdateContextItemRequest";
+import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
+import type { SessionContextResponse } from "@bindings/SessionContextResponse";
+import type { AttachContextRequest } from "@bindings/AttachContextRequest";
+import type { AttachContextResponse } from "@bindings/AttachContextResponse";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
 import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
@@ -288,16 +292,26 @@ export const endpoints = {
   updateContextItem: (id: string, body: UpdateContextItemRequest) =>
     api.patch<ContextItem>(`/context/${id}`, body),
   deleteContextItem: (id: string) => api.del<void>(`/context/${id}`),
-  /** What a spawn into these coordinates would attach on its own. */
-  resolveContext: (q: {
-    machine_id?: string;
-    working_dir?: string;
-    labels?: string;
-  }) =>
-    api.get<ContextItem[]>(
+  /** The rules a spawn into these coordinates gets, and the memories it
+   * pre-checks. Empty values are left out of the query. */
+  resolveContext: (q: Record<string, string>) =>
+    api.get<ResolvedContextResponse>(
       `/context/resolve?${new URLSearchParams(
-        Object.entries(q).filter(([, v]) => !!v) as [string, string][],
+        Object.entries(q).filter(([, v]) => !!v),
       ).toString()}`,
+    ),
+  approveContextPending: (id: string) =>
+    api.post<ContextItem>(`/context/${id}/pending/approve`, {}),
+  rejectContextPending: (id: string) =>
+    api.post<ContextItem>(`/context/${id}/pending/reject`, {}),
+  sessionContext: (sessionId: string) =>
+    api.get<SessionContextResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/context`,
+    ),
+  attachSessionContext: (sessionId: string, body: AttachContextRequest) =>
+    api.post<AttachContextResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/context`,
+      body,
     ),
 
   /** The caller's spawn profiles, oldest first. */

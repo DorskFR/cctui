@@ -24,6 +24,8 @@ export interface ProfileSpecForm {
 	effort: string | null;
 	permission_mode: string | null;
 	service_tier: string | null;
+	/** Pinned context item ids. */
+	context_items?: string[];
 }
 
 export const SPEC_FIELDS = [
@@ -74,7 +76,8 @@ export function specOf(p: SessionProfile): ProfileSpecForm {
 		model_alias: blank(p.model_alias),
 		effort: blank(p.effort),
 		permission_mode: blank(p.permission_mode),
-		service_tier: blank(p.service_tier)
+		service_tier: blank(p.service_tier),
+		context_items: [...(p.context_items ?? [])]
 	};
 }
 
@@ -162,7 +165,10 @@ export function applySpec<T extends SpecForm>(
 
 /** How many knobs differ between two specs (the adjust panel's "N changes"). */
 export function specChanges(a: ProfileSpecForm, b: ProfileSpecForm): number {
-	return SPEC_FIELDS.filter((f) => (a[f] ?? null) !== (b[f] ?? null)).length;
+	const pinsA = new Set(a.context_items ?? []);
+	const pinsB = new Set(b.context_items ?? []);
+	const pinsDiffer = pinsA.size !== pinsB.size || [...pinsA].some((id) => !pinsB.has(id));
+	return SPEC_FIELDS.filter((f) => (a[f] ?? null) !== (b[f] ?? null)).length + (pinsDiffer ? 1 : 0);
 }
 
 export function sameSpec(a: ProfileSpecForm, b: ProfileSpecForm): boolean {
