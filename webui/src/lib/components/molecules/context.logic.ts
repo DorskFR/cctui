@@ -93,6 +93,9 @@ export function reconcilePrecheck(state: Precheck, matched: readonly string[]): 
 	return { picks, auto, dismissed: state.dismissed.filter((n) => matched.includes(n)) };
 }
 
+export const sameList = (a: readonly string[], b: readonly string[]) =>
+	a.length === b.length && a.every((n, i) => n === b[i]);
+
 export function notePicks(state: Precheck, picks: readonly string[]): Precheck {
 	const removed = state.auto.filter((n) => !picks.includes(n));
 	return {

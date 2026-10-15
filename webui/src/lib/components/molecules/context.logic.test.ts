@@ -6,6 +6,7 @@ import {
 	fuzzyRank,
 	notePicks,
 	reconcilePrecheck,
+	sameList,
 	togglePick,
 	type Pickable
 } from './context.logic';
@@ -125,5 +126,12 @@ describe('scope pre-check', () => {
 
 	it('leaves auto on with no matches', () => {
 		expect(contextAuto([], [])).toBe(true);
+	});
+
+	it('compares lists by content and order', () => {
+		expect(sameList(['a', 'b'], ['a', 'b'])).toBe(true);
+		expect(sameList(['a', 'b'], ['b', 'a'])).toBe(false);
+		expect(sameList(['a'], ['a', 'b'])).toBe(false);
+		expect(sameList([], [])).toBe(true);
 	});
 });
