@@ -113,6 +113,68 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/check-ci-green.sh "${{ github.repository }}" "${{ needs.meta.outputs.sha }}"
 
+  ci-bins:
+    name: binaries from push ci
+    needs: [meta]
+    if: needs.meta.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      found: ${{ steps.fetch.outputs.found }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          sparse-checkout: scripts
+
+      - name: Take the Linux binaries push CI built for this commit
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.meta.outputs.sha }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          if ! bash scripts/release-ci-bins.sh "$GITHUB_REPOSITORY" "$SHA" ci-bins; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          chmod +x ci-bins/*/*
+          daemon=ci-bins/release-bins-linux-amd64/cctui-daemon-linux-amd64
+          if "$daemon" --version | grep -qF "$VERSION" && "$daemon" selfcheck \
+            && grep -qaF "$SHA" ci-bins/release-image-bins-server/cctui-server; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push CI binaries are not $VERSION at $SHA; building them here" >&2
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: steps.fetch.outputs.found == 'true'
+        with:
+          name: cctui-bins-linux-amd64
+          retention-days: 1
+          path: ci-bins/release-bins-linux-amd64/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: steps.fetch.outputs.found == 'true'
+        with:
+          name: cctui-bins-linux-arm64
+          retention-days: 1
+          path: ci-bins/release-bins-linux-arm64/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: steps.fetch.outputs.found == 'true'
+        with:
+          name: image-bins
+          retention-days: 1
+          path: ci-bins/release-image-bins/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: steps.fetch.outputs.found == 'true'
+        with:
+          name: image-bins-server
+          retention-days: 1
+          path: ci-bins/release-image-bins-server/
+
   plugin-catalog:
     name: plugin catalog resolves
     needs: [meta]
@@ -143,8 +205,8 @@ jobs:
 
   build:
     name: build ${{ matrix.os }}-${{ matrix.arch }}
-    needs: [meta]
-    if: needs.meta.outputs.rust == 'true'
+    needs: [meta, ci-bins]
+    if: needs.meta.outputs.rust == 'true' && needs.ci-bins.outputs.found != 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -158,10 +220,6 @@ jobs:
             arch: arm64
             runner: ubuntu-latest
             target: aarch64-unknown-linux-musl
-          - os: darwin
-            arch: arm64
-            runner: macos-14
-            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -216,14 +274,6 @@ jobs:
           retention-days: 1
           path: image-bins/
 
-      # Unsigned arm64 macOS binaries are SIGKILLed at exec; don't rely on the
-      # linker's implicit ad-hoc signature.
-      - name: Ad-hoc codesign (darwin)
-        if: matrix.os == 'darwin'
-        run: |
-          codesign --force --sign - dist/*
-          codesign --verify --verbose dist/*
-
       # These are throwaway hand-offs to the `release` job within the same run;
       # the real binaries live on the published GitHub Release (unmetered
       # Releases storage). 1-day retention stops them piling up against the
@@ -236,12 +286,53 @@ jobs:
             dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
 
+  build-darwin:
+    name: build darwin-arm64
+    needs: [meta]
+    if: needs.meta.outputs.rust == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: release-aarch64-apple-darwin
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build binaries (offline sqlx)
+        env:
+          SQLX_OFFLINE: "true"
+        run: bash scripts/release-build-bins.sh darwin arm64 aarch64-apple-darwin
+
+      # Unsigned arm64 macOS binaries are SIGKILLed at exec; don't rely on the
+      # linker's implicit ad-hoc signature.
+      - name: Ad-hoc codesign
+        run: |
+          codesign --force --sign - dist/*
+          codesign --verify --verbose dist/*
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cctui-bins-darwin-arm64
+          retention-days: 1
+          path: |
+            dist/cctui-darwin-arm64
+            dist/cctui-daemon-darwin-arm64
+
   # cctui-server links the distro OpenSSL (webauthn-rs), so it is not a musl
   # build. The runner's glibc must not be newer than the trixie-slim runtime
   # of deploy/Dockerfile (2.41); the build script enforces it.
   build-server:
-    needs: [meta]
-    if: needs.meta.outputs.rust == 'true'
+    needs: [meta, ci-bins]
+    if: needs.meta.outputs.rust == 'true' && needs.ci-bins.outputs.found != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -268,7 +359,7 @@ jobs:
 
 
   release:
-    needs: [meta, ci-green, plugin-catalog, build]
+    needs: [meta, ci-green, plugin-catalog, ci-bins, build, build-darwin]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.ci-green.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -405,7 +496,7 @@ jobs:
   # The `bins` build context replaces each Dockerfile's builder stage either way.
   images:
     name: image ${{ matrix.image }}
-    needs: [meta, build, build-server]
+    needs: [meta, ci-bins, build, build-server]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.meta.result == 'success' }}
     runs-on: ubuntu-latest
     env:
