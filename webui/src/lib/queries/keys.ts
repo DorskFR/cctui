@@ -8,6 +8,8 @@ export const qk = {
   version: ["version"] as const,
   capabilities: ["capabilities"] as const,
   sessions: (archived: boolean) => ["sessions", { archived }] as const,
+  sessionSearch: (q: string, archived: boolean) =>
+    ["sessions", "search", { q, archived }] as const,
   sessionStats: ["session-stats"] as const,
   tokenStats: ["token-stats"] as const,
   usageAnalytics: (days: number) => ["usage-analytics", { days }] as const,

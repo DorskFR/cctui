@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
+import { QueryClient } from '@tanstack/svelte-query';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { Label } from '@bindings/Label';
 import { ApiError } from '$lib/api';
+import { qk } from '$lib/queries';
 import {
 	LIST_HIDDEN,
 	LIST_LABELS,
@@ -52,6 +54,7 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 	let all = $state.raw<SessionListItem[]>([]);
 	let labels = $state.raw<Label[] | undefined>(undefined);
 	let slot: SpawnSlotPayload | null = null;
+	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	const sessionList = $state(defaultSettings());
 	const settings = {
 		state: { sessionList },
@@ -91,7 +94,8 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 		toasts,
 		api: api as unknown as SessionsPageDeps['api'],
 		actions: actions as unknown as SessionsPageDeps['actions'],
-		invalidateSessions: vi.fn(),
+		queryClient,
+		invalidateSessions: vi.fn(() => void queryClient.invalidateQueries({ queryKey: qk.sessionsAll })),
 		refetchLive: vi.fn(async () => {}),
 		dockLayout: () => ({ spawn: null, stats: null, stacked: false, left: null, right: null }),
 		clearUrlSession: vi.fn(),
@@ -116,7 +120,11 @@ function harness(over: Partial<SessionsPageDeps> = {}, stored: Record<string, st
 	flushSync();
 	return {
 		sp,
-		stop,
+		stop: () => {
+			stop();
+			queryClient.clear();
+		},
+		queryClient,
 		store,
 		deps,
 		api,
@@ -354,27 +362,82 @@ describe('SessionsPage — search and archive pager', () => {
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(sp.pageDone).toBe(false);
-		expect(sp.pageOffset).toBe(50);
 		api.searchSessions.mockResolvedValueOnce({ sessions: [session({ id: 'tail', status: 'archived' })] });
-		await sp.loadPage(false);
+		await sp.loadMore();
+		await vi.advanceTimersByTimeAsync(0);
 		expect(api.searchSessions).toHaveBeenLastCalledWith('', true, 50, 50);
 		expect(sp.pageRows).toHaveLength(51);
 		expect(sp.pageDone).toBe(true);
 	});
 
-	it('surfaces a failed page load and bumps refreshTick to retry after archive ops', async () => {
+	it('surfaces a failed page load and retries on the next sessions invalidation', async () => {
 		const { sp, api, actions } = make();
 		api.searchSessions.mockRejectedValueOnce(new Error('boom'));
 		sp.sections = new Set(['archived']);
 		flushSync();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(sp.pageError).toBe('boom');
-		await sp.togglePin(session({ id: 'p' }));
-		expect(actions.pin).toHaveBeenCalledWith('p');
-		flushSync();
+		await sp.runArchive(['p']);
+		expect(actions.archiveMany).toHaveBeenCalledWith(['p']);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(sp.pageError).toBe('');
 		expect(api.searchSessions).toHaveBeenCalledTimes(2);
+	});
+
+	it('shows a drawer archive in the open Archived section and drops it on undo, without a reload', async () => {
+		const { sp, api, queryClient } = make();
+		const old = session({ id: 'old', status: 'archived' });
+		const fresh = session({ id: 'fresh', status: 'archived' });
+		api.searchSessions.mockResolvedValue({ sessions: [old] });
+		sp.sections = new Set(['live', 'archived']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
+
+		api.searchSessions.mockResolvedValue({ sessions: [fresh, old] });
+		await queryClient.invalidateQueries({ queryKey: qk.sessionsAll });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.pageRows.map((s) => s.id)).toEqual(['fresh', 'old']);
+
+		api.searchSessions.mockResolvedValue({ sessions: [old] });
+		await queryClient.invalidateQueries({ queryKey: qk.sessionsAll });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.pageRows.map((s) => s.id)).toEqual(['old']);
+	});
+
+	it('refetches open search results when a WS change tick invalidates the session lists', async () => {
+		const { sp, api, queryClient } = make();
+		sp.sections = new Set(['live', 'archived']);
+		api.searchSessions.mockResolvedValue({ sessions: [session({ id: 'hit' })] });
+		sp.rawQuery = 'needle';
+		await vi.advanceTimersByTimeAsync(200);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.pageRows.map((s) => [s.id, s.status])).toEqual([['hit', 'active']]);
+
+		api.searchSessions.mockResolvedValue({ sessions: [session({ id: 'hit', status: 'archived' })] });
+		await queryClient.invalidateQueries({ queryKey: qk.sessionsAll });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.searchSessions).toHaveBeenLastCalledWith('needle', true, 50, 0);
+		expect(sp.pageRows.map((s) => [s.id, s.status])).toEqual([['hit', 'archived']]);
+	});
+
+	it('never repeats a row that shifted across a page boundary during a refetch', async () => {
+		const { sp, api } = make();
+		const full = Array.from({ length: 50 }, (_, i) => session({ id: `s${i}`, status: 'archived' }));
+		api.searchSessions.mockResolvedValueOnce({ sessions: full });
+		sp.sections = new Set(['archived']);
+		flushSync();
+		await vi.advanceTimersByTimeAsync(0);
+		api.searchSessions.mockResolvedValueOnce({ sessions: [full[49], session({ id: 'tail', status: 'archived' })] });
+		await sp.loadMore();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sp.pageRows).toHaveLength(51);
+		expect(new Set(sp.pageRows.map((s) => s.id)).size).toBe(51);
+	});
+
+	it('keys the pager under the sessions prefix so list invalidations cover it', () => {
+		expect(qk.sessionSearch('', true).slice(0, 1)).toEqual([...qk.sessionsAll]);
 	});
 });
 
