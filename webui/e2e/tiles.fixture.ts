@@ -112,6 +112,9 @@ export async function stubApi(page: Page, sessions: unknown[], opts: StubOptions
 		// DraftList, not the generic `[]`: serverDrafts iterates `.drafts`.
 		if (path === '/drafts') return json({ drafts: [] });
 		if (path.startsWith('/drafts/')) return json({});
+		if (/^\/sessions\/[^/]+\/context$/.test(path) || path === '/context/resolve')
+			return json({ rules: [], memories: [] });
+		if (path === '/context') return json([]);
 		if (path.endsWith('/user-actions')) return json({ session_id: path.split('/')[2], items: [] });
 		if (path === '/sessions' || path.startsWith('/sessions/search'))
 			return json({ sessions, total: sessions.length });

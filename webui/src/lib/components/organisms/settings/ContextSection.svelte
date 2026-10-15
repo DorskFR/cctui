@@ -248,7 +248,7 @@
 							<span class="d-add">{c.after || '—'}</span>
 						</div>
 					{/each}
-					<pre class="diff">{#each lineDiff(reviewing.body, pending.body) as l, i (i)}<span
+					<pre class="diff">{#each lineDiff(reviewing.body ?? '', pending.body ?? '') as l, i (i)}<span
 								class="d-{l.op}">{l.op === 'add' ? '+ ' : l.op === 'del' ? '- ' : '  '}{l.text}
 </span>{/each}</pre>
 					<div class="acts">

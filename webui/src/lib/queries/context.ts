@@ -2,13 +2,38 @@ import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { ContextItem } from "@bindings/ContextItem";
 import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { AttachContextResponse } from "@bindings/AttachContextResponse";
+import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
+import type { SessionContextResponse } from "@bindings/SessionContextResponse";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+
+const list = <T>(v: unknown): T[] => (Array.isArray(v) ? v : []);
+const field = (v: unknown, key: string): unknown =>
+  v && typeof v === "object" ? (v as Record<string, unknown>)[key] : undefined;
+
+/** A server that predates these endpoints answers 404 or another shape; the
+ * drawer and spawn modal must still render, so every body is coerced. */
+export const asItems = (v: unknown): ContextItem[] =>
+  list<ContextItem>(v)
+    .filter((i) => !!i && typeof i === "object")
+    .map((i) => ({ ...i, tags: list<string>(i.tags) }));
+export const asResolved = (v: unknown): ResolvedContextResponse => ({
+  rules: asItems(field(v, "rules")),
+  memories: asItems(field(v, "memories")),
+});
+export const asSessionContext = (v: unknown): SessionContextResponse => ({
+  rules: list(field(v, "rules")),
+  memories: list(field(v, "memories")),
+});
+export const asAttached = (v: unknown): AttachContextResponse => ({
+  attached: list(field(v, "attached")),
+  unknown: list(field(v, "unknown")),
+});
 
 export const useContextItems = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
     queryKey: qk.context,
-    queryFn: endpoints.contextItems,
+    queryFn: async () => asItems(await endpoints.contextItems()),
     enabled: enabled(),
   }));
 
@@ -37,7 +62,8 @@ export const useResolvedContext = (
     const params = resolveParams(coords());
     return {
       queryKey: qk.contextResolve(params),
-      queryFn: () => endpoints.resolveContext(params),
+      queryFn: async () => asResolved(await endpoints.resolveContext(params)),
+      retry: false,
       enabled: enabled() && !!params.machine_id,
     };
   });
@@ -48,7 +74,9 @@ export const useSessionContext = (
 ) =>
   createQuery(() => ({
     queryKey: qk.sessionContext(sessionId()),
-    queryFn: () => endpoints.sessionContext(sessionId()),
+    queryFn: async () =>
+      asSessionContext(await endpoints.sessionContext(sessionId())),
+    retry: false,
     enabled: enabled() && !!sessionId(),
   }));
 
@@ -89,7 +117,9 @@ export function useAttachContext() {
     sessionId: string,
     names: string[],
   ): Promise<AttachContextResponse> => {
-    const res = await endpoints.attachSessionContext(sessionId, { names });
+    const res = asAttached(
+      await endpoints.attachSessionContext(sessionId, { names }),
+    );
     await qc.invalidateQueries({ queryKey: qk.sessionContext(sessionId) });
     return res;
   };

@@ -15,21 +15,23 @@
 	const memories = $derived(ctx.data?.memories.length ?? 0);
 </script>
 
-<Popover
-	label={m.conversation_context_aria()}
-	placement="bottom-end"
-	variant="toggle"
-	{style}
-	data-journey="session-context"
->
-	{#snippet trigger()}
-		<Icon name="book" size={12} />
-		<span class="wide">{m.conversation_context_chip({ rules, memories })}</span><span class="narrow"
-			>{rules + memories}</span
-		>
-	{/snippet}
-	<SessionContextPanel {sessionId} attached={ctx.data} {canAttach} />
-</Popover>
+{#if !ctx.isError}
+	<Popover
+		label={m.conversation_context_aria()}
+		placement="bottom-end"
+		variant="toggle"
+		{style}
+		data-journey="session-context"
+	>
+		{#snippet trigger()}
+			<Icon name="book" size={12} />
+			<span class="wide">{m.conversation_context_chip({ rules, memories })}</span><span class="narrow"
+				>{rules + memories}</span
+			>
+		{/snippet}
+		<SessionContextPanel {sessionId} attached={ctx.data} {canAttach} />
+	</Popover>
+{/if}
 
 <style>
 	.narrow {

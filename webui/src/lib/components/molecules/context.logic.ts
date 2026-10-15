@@ -29,7 +29,7 @@ function itemScore<T extends Pickable>(q: string, item: T): number | null {
 	};
 	consider(fuzzyScore(q, item.name), FIELD_WEIGHT.name);
 	consider(fuzzyScore(q, item.title), FIELD_WEIGHT.title);
-	for (const tag of item.tags) consider(fuzzyScore(q, tag), FIELD_WEIGHT.tag);
+	for (const tag of item.tags ?? []) consider(fuzzyScore(q, tag), FIELD_WEIGHT.tag);
 	return best;
 }
 

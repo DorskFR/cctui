@@ -136,7 +136,7 @@ export function pendingChanges(
 		{ field: 'name', before: live.name, after: pending.name },
 		{ field: 'enabled', before: String(live.enabled), after: String(pending.enabled) },
 		{ field: 'match', before: summary(live.match), after: summary(pending.match ?? emptyMatch()) },
-		{ field: 'tags', before: live.tags.join(', '), after: pending.tags.join(', ') }
+		{ field: 'tags', before: (live.tags ?? []).join(', '), after: (pending.tags ?? []).join(', ') }
 	];
 	return rows.filter((r) => r.before !== r.after);
 }
