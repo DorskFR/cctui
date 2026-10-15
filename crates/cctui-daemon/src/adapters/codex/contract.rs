@@ -16,7 +16,7 @@
 /// JSON Schema was generated from. Sessions started against an older server
 /// keep running but are flagged loudly in diagnostics — the handshake /
 /// thread / approval shapes below this floor are not guaranteed.
-pub const CODEX_MIN_VERSION: &str = "0.153.4";
+pub const CODEX_MIN_VERSION: &str = "0.162.1";
 
 /// A parsed `major.minor.patch` triple. Pre-release / build metadata is
 /// ignored — the floor only reasons about the release line.
@@ -76,10 +76,10 @@ mod tests {
     #[test]
     fn support_floor_is_inclusive() {
         assert!(version_supported(CODEX_MIN_VERSION));
-        assert!(version_supported("0.153.9"));
-        assert!(version_supported("0.154.0"));
+        assert!(version_supported("0.162.9"));
+        assert!(version_supported("0.163.0"));
         assert!(version_supported("1.0.0"));
-        assert!(!version_supported("0.153.3"));
+        assert!(!version_supported("0.162.0"));
         assert!(!version_supported("0.144.1"));
         assert!(!version_supported("0.99.0"));
         assert!(!version_supported("garbage"));

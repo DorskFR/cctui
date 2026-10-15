@@ -11,6 +11,8 @@
 	import { harnessTable } from '$lib/harnesses.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
+	import AdapterConfigEditor from './AdapterConfigEditor.svelte';
+	import { binaryStatus } from './machineAdapters.logic';
 
 	const qc = useQueryClient();
 	const machines = useAllMachines(() => true);
@@ -30,14 +32,19 @@
 		for (const machine of machines.data ?? []) if (!(machine.id in rows)) void load(machine);
 	});
 
-	async function run(machine: MachineRow, call: () => Promise<MachineAdapterInfo[]>) {
+	async function run(
+		machine: MachineRow,
+		call: () => Promise<MachineAdapterInfo[]>
+	): Promise<boolean> {
 		busy = machine.id;
 		try {
 			rows[machine.id] = await call();
 			await qc.invalidateQueries({ queryKey: qk.machineAdapters(machine.id) });
 			toasts.ok(m.settings_machine_adapters_saved({ name: machine.display_name ?? machine.name }));
+			return true;
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : String(e));
+			return false;
 		} finally {
 			busy = null;
 		}
@@ -94,6 +101,37 @@
 									{:else}
 										<Badge size="sm">{m.settings_machine_adapters_default()}</Badge>
 									{/if}
+									{#if binaryStatus(a) === 'found'}
+										<Badge size="sm" tone="ok" title={a.binary?.path}>
+											{m.settings_machine_adapters_binary_found()}
+										</Badge>
+									{:else if binaryStatus(a) === 'missing'}
+										<Badge
+											size="sm"
+											tone="danger"
+											title={m.settings_machine_adapters_binary_missing_hint({
+												bin: a.binary?.bin ?? '',
+												key: a.binary?.config_key ?? ''
+											})}
+										>
+											{m.settings_machine_adapters_binary_missing({ bin: a.binary?.bin ?? '' })}
+										</Badge>
+									{/if}
+									<AdapterConfigEditor
+										config={a.config}
+										disabled={busy === machine.id}
+										label={m.settings_machine_adapters_config_aria({
+											harness: label(a),
+											name: machine.display_name ?? machine.name
+										})}
+										onsave={(config) =>
+											run(machine, () =>
+												endpoints.setMachineAdapter(machine.id, a.adapter_id, {
+													enabled: a.enabled,
+													config
+												})
+											)}
+									/>
 								</li>
 							{/each}
 						</ul>

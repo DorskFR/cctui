@@ -60,6 +60,7 @@ pub fn report() -> HarnessReport {
         outcomes: state.outcomes.values().cloned().collect(),
         managed_by_image: in_worker_pod(),
         codex_sandbox: sandbox_probe::last(),
+        binaries: crate::adapter_probe::report(),
     }
 }
 

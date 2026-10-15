@@ -49,7 +49,7 @@ lose the first click to hydration.
 
 **A `vite preview` you started yourself must be restarted after every rebuild.**
 It resolves its output directory once, at startup, so a server left over from an
-earlier build — or from another worktree holding the port — answers with markup
+earlier build — or from another checkout holding the port — answers with markup
 whose hashed assets it no longer has, and the page loads blank. The shoot
 defends against committing that twice over: it refuses to run when a
 pre-existing server cannot serve the assets its own HTML references, and it

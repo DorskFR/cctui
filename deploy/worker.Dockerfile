@@ -103,7 +103,7 @@ RUN apt-get update \
 # npx-based MCP servers (docs/context-packs.md) and so derived images inherit a
 # node on PATH; none of the bundled CLIs depend on it. Pinning the tarball rather
 # than tracking a `node:` base image tag keeps the major explicit.
-ARG NODE_VERSION=24.18.0
+ARG NODE_VERSION=24.22.0
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
          amd64) target=linux-x64 ;; \
@@ -140,7 +140,7 @@ RUN arch="$(dpkg --print-architecture)" \
 # via scripts/check-worker-image-harness.sh against this image before pushing,
 # which is the only place a real binary exists. `latest`/`stable` still resolve
 # if passed explicitly as a build arg.
-ARG CLAUDE_CODE_VERSION=2.1.258
+ARG CLAUDE_CODE_VERSION=2.1.300
 RUN base="https://downloads.claude.ai/claude-code-releases" \
     && case "$(dpkg --print-architecture)" in \
          amd64) platform=linux-x64 ;; \
@@ -180,12 +180,12 @@ RUN base="https://downloads.claude.ai/claude-code-releases" \
 # (crates/cctui-daemon/src/adapters/codex/contract.rs), the build the retained
 # JSON Schema was generated from; scripts/check-codex-version-drift.sh enforces
 # both that and the floor against any installed binary.
-ARG CODEX_VERSION=0.153.4
+ARG CODEX_VERSION=0.162.1
 ENV CODEX_PACKAGE_DIR=/usr/local/lib/codex
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) target=x86_64-unknown-linux-musl;  sha=a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821 ;; \
-         arm64) target=aarch64-unknown-linux-musl; sha=fc395cb043a1093ab0db34f44aba3199bfaa9ce640cd9be7fd588f44b0da64a4 ;; \
+         amd64) target=x86_64-unknown-linux-musl;  sha=a676f5722aae0d86cbe3764332f08eab1fdd89dc0a300b3ad4ffbf48611fa3e3 ;; \
+         arm64) target=aarch64-unknown-linux-musl; sha=53a9ce0b94beb27a63fdeb2f7704d95199e17b3898aa33b60461a1a93ac0d88b ;; \
          *) echo "codex: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
     && curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package-${target}.tar.gz" \
@@ -208,11 +208,11 @@ RUN arch="$(dpkg --print-architecture)" \
 # payload + gateway-minted FIREWORKS_* env.
 # Keep OPENCODE_VERSION in lockstep with client::OPENCODE_PINNED_VERSION
 # (crates/cctui-daemon/src/adapters/opencode/client.rs).
-ARG OPENCODE_VERSION=1.18.7
+ARG OPENCODE_VERSION=1.19.0
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) target=x64;   sha=cb5d9d6d2f8fbef0a9c975ed4494f73b2a62f4e4ffd508bcc3212da4fa76c3da ;; \
-         arm64) target=arm64; sha=6c791e453c2ca03ee3dea09ebd16bfdfac4837e45d344a1487cd196b80090fc7 ;; \
+         amd64) target=x64;   sha=7bb9e61ad6feacf2e89c10a6a2c1840e3de4220bb50ba1fc7110f31806076aec ;; \
+         arm64) target=arm64; sha=e9841d43d3e1a8f36ed2691592d3b8b4fb097e606c8b559a277a1b845840e26b ;; \
          *) echo "opencode: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
     && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${target}.tar.gz" \

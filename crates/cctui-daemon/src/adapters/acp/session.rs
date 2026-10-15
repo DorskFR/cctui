@@ -454,6 +454,7 @@ impl AcpSession {
             &self.params.cwd,
             Some(local_id),
             &self.params.context,
+            self.params.agent_mcp.is_some(),
         );
         crate::preamble::merge(preamble, (!body.is_empty()).then_some(body))
     }

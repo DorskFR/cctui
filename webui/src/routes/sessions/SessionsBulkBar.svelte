@@ -5,10 +5,12 @@
 	import { errMessage } from '$lib/api';
 	import { setSessionRoom, setSessionRoomByName } from '$lib/rooms';
 	import RoomMenu from '$lib/components/molecules/RoomMenu.svelte';
+	import { useInvalidateSessions } from '$lib/queries';
 	import type { SessionsPage } from './sessionsPage.svelte';
 
 	let { sp }: { sp: SessionsPage } = $props();
 	let making = $state(false);
+	const invalidateSessions = useInvalidateSessions();
 
 	// One call per session: the room is a field on each, and `setSessionRoomByName`
 	// creates-or-reuses so the whole selection lands in one room either way.
@@ -22,7 +24,7 @@
 				else await setSessionRoomByName(id, pick.name);
 			}
 			sp.list.exitSelect();
-			sp.refreshTick++;
+			invalidateSessions();
 		} catch (e) {
 			toasts.error(errMessage(e));
 		} finally {

@@ -142,6 +142,20 @@ fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
     Ok(id.to_owned())
 }
 
+/// The requested adapter, refused when the machine reports its binary missing.
+async fn spawn_adapter_on(
+    state: &AppState,
+    machine_uuid: Uuid,
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    let adapter_id = spawn_adapter(requested).map_err(bad_request)?;
+    let binaries = crate::routes::machine_adapters::reported_binaries(&state.pool, machine_uuid)
+        .await
+        .map_err(AppError::into_parts)?;
+    crate::routes::machine_adapters::missing_binary(&binaries, &adapter_id)
+        .map_or(Ok(adapter_id), |error| Err((StatusCode::CONFLICT, Json(ApiError { error }))))
+}
+
 async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -159,7 +173,7 @@ async fn validate_spawn(
 
     let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
-    let adapter_id = spawn_adapter(req.adapter_id.as_deref()).map_err(bad_request)?;
+    let adapter_id = spawn_adapter_on(state, machine_uuid, req.adapter_id.as_deref()).await?;
     let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
@@ -173,8 +187,9 @@ async fn validate_spawn(
             .await;
     crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &label_ids).await;
     crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
-    let context = resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid).await;
-    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context).await;
+    let (context, scope) =
+        resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid, &adapter_id).await;
+    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context, &scope).await;
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
     // the session runs on that user's machine with that user's account.
@@ -193,10 +208,11 @@ async fn validate_spawn(
     })
 }
 
-/// Resolve the reusable context for this spawn: the request's explicit picks,
-/// plus the profile's pinned items, plus — unless the caller opted out — every
-/// enabled memory whose scope matches the spawn's machine, working dir and
-/// labels.
+/// Resolve the reusable context for this spawn: the matching rules, the
+/// request's explicit picks, the profile's pinned items and — when the request
+/// asks for `auto` — every enabled memory whose filter matches the spawn's
+/// machine, working dir, labels and adapter. Returns the coordinates too, so
+/// every later launch re-resolves the rules against them.
 ///
 /// Best-effort: a lookup failure launches the session without context rather
 /// than refusing it. Context is a convenience, never a precondition.
@@ -207,28 +223,34 @@ async fn resolve_spawn_context(
     label_ids: &[String],
     owner: Uuid,
     machine_uuid: Uuid,
-) -> Vec<crate::routes::context::ContextItem> {
-    use crate::routes::context::{SpawnScope, resolve_for_spawn};
+    adapter_id: &str,
+) -> (Vec<crate::routes::context::ContextItem>, crate::routes::context::StoredScope) {
+    use crate::routes::context::{SpawnScope, StoredScope, resolve_for_spawn};
 
-    let asked = req.context.clone().unwrap_or_default();
     let uid = ctx.owner_filter().unwrap_or(owner);
+    // The resolved uuid, not `req.machine_id`, which may be a name: a
+    // machine filter must resolve the same here and on the child path.
+    let scope = StoredScope {
+        user_id: uid,
+        coords: SpawnScope {
+            machine_id: Some(machine_uuid.to_string()),
+            working_dir: Some(req.working_dir.clone()),
+            label_ids: label_ids.to_vec(),
+            adapter: Some(adapter_id.to_owned()),
+        },
+        dispatched: false,
+    };
+    let asked = req.context.clone().unwrap_or_default();
     let items = match crate::routes::context::list_for_user(&state.pool, uid).await {
         Ok(items) => items,
         Err(e) => {
             tracing::warn!(error = %e, "context lookup failed; spawning without it");
-            return Vec::new();
+            return (Vec::new(), scope);
         }
     };
     let mut picks = asked.items;
     picks.extend(profile_context_names(state, req, uid, &items).await);
-    // The resolved uuid, not `req.machine_id`, which may be a name: a
-    // machine-scoped item must resolve the same here and on the child path.
-    let scope = SpawnScope {
-        machine_id: Some(machine_uuid.to_string()),
-        working_dir: Some(req.working_dir.clone()),
-        label_ids: label_ids.to_vec(),
-    };
-    resolve_for_spawn(&items, &picks, asked.auto, &scope)
+    (resolve_for_spawn(&items, &picks, asked.auto, &scope.coords), scope)
 }
 
 /// The names of the items the request's profile pins. Empty when the request

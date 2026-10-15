@@ -278,6 +278,25 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		expect(seen).toEqual([fixtures.event.event]);
 	});
 
+	it.each(['session.archived', 'session.unarchived'])(
+		'a %s lifecycle event (another tab, auto-archive, CctuiAgentArchive) bumps the list refresh tick',
+		(kind) => {
+			const { c, sock } = setup();
+			const before = c.changeTick;
+			sock.deliver({ ...fixtures.event, event: { ...fixtures.event.event, kind } });
+			vi.advanceTimersByTime(2000);
+			expect(c.changeTick).toBe(before + 1);
+		}
+	);
+
+	it('other lifecycle events leave the list alone', () => {
+		const { c, sock } = setup();
+		const before = c.changeTick;
+		sock.deliver(fixtures.event);
+		vi.advanceTimersByTime(2000);
+		expect(c.changeTick).toBe(before);
+	});
+
 	it('permission_request adds a prompt and permission_resolved removes it', () => {
 		const { c, sock } = setup();
 		let list: unknown[] = [];

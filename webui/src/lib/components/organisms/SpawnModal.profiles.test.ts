@@ -68,6 +68,8 @@ vi.mock("$lib/queries", () => {
     useAccounts: () => q(accounts),
     useAccountPools: () => q([{ id: "pool1", name: "shared", members: [] }]),
     useLabels: () => q({ labels: [] }),
+    useContextItems: () => q([]),
+    useResolvedContext: () => q({ rules: [], memories: [] }),
     useProfiles: () => q(profileList),
     useProfileActions: () => ({ create, update, remove: async () => {}, reorder }),
     useAllAccountsUsage: () => q([]),

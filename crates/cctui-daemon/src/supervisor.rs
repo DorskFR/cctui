@@ -694,15 +694,27 @@ impl Supervisor {
                 // transport `select!`, alongside the keepalive ping and the
                 // socket read. Awaiting a full adapter channel here stalls
                 // both, and the server evicts the daemon as dead.
-                #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
-                let outcome = match running.get(&adapter_id) {
-                    None => Err(("is not running on this machine", command.command_id())),
-                    Some(running) => running.route_command(*command),
-                };
-                let error = outcome.err().and_then(|(reason, command_id)| {
-                    tracing::warn!(%adapter_id, reason, "rejecting command");
-                    command_id.map(|id| (id, format!("adapter {adapter_id} {reason}")))
-                });
+                let refusal = matches!(command.as_ref(), AdapterCommand::Spawn { .. })
+                    .then(|| crate::adapter_probe::spawn_refusal(&adapter_id))
+                    .flatten();
+                let command_id = command.command_id();
+                let error = refusal.map_or_else(
+                    || {
+                        #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
+                        let outcome = match running.get(&adapter_id) {
+                            None => Err(("is not running on this machine", command_id)),
+                            Some(running) => running.route_command(*command),
+                        };
+                        outcome.err().and_then(|(reason, command_id)| {
+                            tracing::warn!(%adapter_id, reason, "rejecting command");
+                            command_id.map(|id| (id, format!("adapter {adapter_id} {reason}")))
+                        })
+                    },
+                    |refusal| {
+                        tracing::warn!(%adapter_id, %refusal, "refusing spawn");
+                        command_id.map(|id| (id, refusal))
+                    },
+                );
                 // A silent drop leaves the server-side waiter hanging, so a full
                 // event channel falls through to the WS lane rather than giving
                 // up. Neither path may block: this runs in the transport loop.
@@ -855,6 +867,19 @@ impl Supervisor {
         });
     }
 
+    fn binary_specs(
+        &self,
+        want: &HashMap<String, DaemonAdapterConfig>,
+    ) -> std::collections::BTreeMap<String, crate::adapter_runtime::BinarySpec> {
+        want.iter()
+            .filter(|(_, cfg)| cfg.enabled)
+            .filter_map(|(id, cfg)| {
+                let factory = self.factories.iter().find(|f| f.id() == id)?;
+                Some((id.clone(), factory.binary(&cfg.config)?))
+            })
+            .collect()
+    }
+
     #[allow(clippy::cognitive_complexity)]
     fn reconcile(
         &self,
@@ -865,6 +890,7 @@ impl Supervisor {
     ) {
         let mut want: HashMap<String, DaemonAdapterConfig> =
             adapters.into_iter().map(|a| (a.adapter_id.to_string(), a)).collect();
+        crate::adapter_probe::watch(self.binary_specs(&want));
 
         // Allow-list roots for agent-posted image markers, resolved
         // once per reconcile and shared by every adapter's event pump below.

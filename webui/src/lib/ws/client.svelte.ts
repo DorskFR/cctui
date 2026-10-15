@@ -40,6 +40,8 @@ export interface CctuiverseChangedEvent {
 	room_id: string | null;
 }
 
+const LIST_EVENT_KINDS = new Set(['session.archived', 'session.unarchived']);
+
 type PtyCb = (data: Uint8Array) => void;
 type GithubCb = (ev: GithubEvent) => void;
 
@@ -215,6 +217,7 @@ export class WsClient {
 			}
 			case 'event': {
 				for (const cb of this.eventCbs) cb(msg.event);
+				if (LIST_EVENT_KINDS.has(msg.event.kind)) this.markListDirty();
 				break;
 			}
 			case 'limit_reset_redeemed':

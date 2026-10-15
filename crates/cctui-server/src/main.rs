@@ -430,6 +430,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/daemon/sessions/{id}/token-valid", get(routes::daemon::session_token_valid))
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
         .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
+        .route("/api/v1/daemon/sessions/{id}/context", post(routes::context_tool::context_tool))
         .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
             post(routes::user_actions::daemon_tick),
@@ -1130,6 +1131,8 @@ mod tests {
             "GET /context/resolve Bearer Human",
             "DELETE /context/{id} Bearer Human",
             "PATCH /context/{id} Bearer Human",
+            "POST /context/{id}/pending/approve Bearer Human",
+            "POST /context/{id}/pending/reject Bearer Human",
             "GET /daemon/binary/{target} Bearer Authenticated",
             "POST /deenroll Bearer Authenticated",
             "POST /dispatcher/enroll Bearer Scope(Enroll)",
@@ -1229,6 +1232,8 @@ mod tests {
             r#"POST /sessions/{id}/cancel-launch Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/cctuiverse/invites Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/cctuiverse/links Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/context Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/context Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/conversation Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/deregister Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,

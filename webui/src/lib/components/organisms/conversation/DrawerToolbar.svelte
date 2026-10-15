@@ -14,6 +14,7 @@
 	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
 	import { Icon, Popover, Toggle } from '@dorsk/tsumikit';
 	import PinsPanel from './PinsPanel.svelte';
+	import SessionContextChip from './SessionContextChip.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
 	import type { Line } from './types';
 	import type { PluginButton } from '$lib/plugins/types';
@@ -29,7 +30,9 @@
 		pins = [],
 		lines = [],
 		onjumpseq,
-		onunpin
+		onunpin,
+		sessionId,
+		contextAttachable = false
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -44,6 +47,9 @@
 		/** Omit both to hide the pins button (e.g. no session context). */
 		onjumpseq?: (seq: number) => void;
 		onunpin?: (seq: number) => void;
+		/** Omit to hide the session context chip. */
+		sessionId?: string;
+		contextAttachable?: boolean;
 	} = $props();
 
 	// One pinned height for every control, so glyph fonts can't size them.
@@ -151,6 +157,9 @@
 				><Icon name={p.icon} size={12} /><span class="wide">{p.label}</span></Toggle
 			>
 		{/each}
+		{#if sessionId}
+			<SessionContextChip {sessionId} canAttach={contextAttachable} style={CTL} />
+		{/if}
 		{#if onjumpseq && onunpin}
 			<Popover
 				label={m.conversation_pins_aria()}

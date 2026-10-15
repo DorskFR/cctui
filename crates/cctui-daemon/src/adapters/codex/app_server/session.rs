@@ -321,6 +321,7 @@ impl CodexSession {
                 &self.cwd,
                 self.roster_self(),
                 &self.context,
+                self.agent_mcp.is_some(),
             ),
         )
     }
@@ -619,6 +620,7 @@ pub fn spawn_resumed_session(
     thread_id: &str,
     commands: Vec<SessionCommand>,
     skills: crate::plugins::SessionSkills,
+    context: Vec<cctui_proto::api::SessionContextItem>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -650,7 +652,8 @@ pub fn spawn_resumed_session(
         shutdown,
     )
     .with_agent_mcp(relay)
-    .with_skills(skills);
+    .with_skills(skills)
+    .with_session_context(context, None);
     tokio::spawn(async move {
         if let Err(err) = session.run().await {
             tracing::error!(%err, "codex resumed app-server session ended in error");
@@ -1124,6 +1127,29 @@ mod tests {
         assert!(instructions.contains(&staged.to_string_lossy().into_owned()), "{instructions}");
         assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
         let _ = std::fs::remove_dir_all(staged.parent().unwrap());
+    }
+
+    /// A rule is inlined into `developerInstructions`, which codex re-sends on
+    /// every thread start and keeps through compaction.
+    #[test]
+    fn a_rule_reaches_a_codex_thread_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = session_with_tier(fresh_launch(), None);
+        session.cwd = dir.path().to_string_lossy().into_owned();
+        session.staging_key = Some(format!("launch-{}", uuid::Uuid::new_v4()));
+        session.context = vec![cctui_proto::api::SessionContextItem {
+            kind: "rule".to_owned(),
+            name: "worktrees".to_owned(),
+            title: "Worktrees".to_owned(),
+            body: "never switch branches in a shared checkout".to_owned(),
+            version: 1,
+        }];
+
+        let (req, _) = session.stdio_thread_request();
+        let instructions = req["params"]["developerInstructions"].as_str().expect("instructions");
+        assert!(instructions.contains("### Worktrees"), "{instructions}");
+        assert!(instructions.contains("never switch branches"), "{instructions}");
+        assert!(!instructions.contains("context:"), "a rule is no staged file: {instructions}");
     }
 
     /// A session alone in its tree gets no instructions it did not ask for.

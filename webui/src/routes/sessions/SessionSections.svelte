@@ -43,7 +43,7 @@
 		<div class="loadmore"><Spinner label={m.common_loading()} /></div>
 		{:else if !sp.pageDone && sp.pageRows.length > 0}
 			<div class="loadmore">
-				<Button onclick={() => sp.loadPage(false)}>{m.sessions_load_more()}</Button>
+				<Button onclick={() => sp.loadMore()}>{m.sessions_load_more()}</Button>
 			</div>
 		{/if}
 {/snippet}

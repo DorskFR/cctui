@@ -3,9 +3,8 @@
 /**
  * What a spawn asks for by way of reusable context.
  *
- * `auto` adds every scope-matching memory on top of the explicit picks. It
- * defaults to OFF: until the spawn panel can show what a scope would pull
- * in, a session gets context only when someone named it.
+ * `auto` adds every filter-matching memory on top of the explicit picks; an
+ * omitted `auto` is off. Matching rules attach whatever it says.
  */
 export type SpawnContext = { 
 /**

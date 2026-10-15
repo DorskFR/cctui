@@ -2928,6 +2928,8 @@ pub async fn fork_session(
             extract: req.extract,
         }),
     };
+    let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
+    crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
     state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
         |err| match err {
             crate::bus::BusError::NoDaemon(_) => {

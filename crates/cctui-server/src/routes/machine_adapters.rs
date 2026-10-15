@@ -14,6 +14,7 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 pub use cctui_proto::api::machine_adapters::{MachineAdapterInfo, SetMachineAdapterRequest};
+use cctui_proto::harness::{AdapterBinary, HarnessReport};
 
 type ApiResult<T> = Result<Json<T>, AppError>;
 
@@ -21,25 +22,32 @@ fn admin(ctx: &AuthContext) -> Result<(), AppError> {
     ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))
 }
 
+type Binaries = std::collections::BTreeMap<String, AdapterBinary>;
+
 /// The machine's view of the harness table: every table row, plus any row
 /// the machine pins for a harness the table does not know.
-fn merge(rows: Vec<(String, serde_json::Value, bool)>) -> Vec<MachineAdapterInfo> {
+fn merge(
+    rows: Vec<(String, serde_json::Value, bool)>,
+    binaries: &Binaries,
+) -> Vec<MachineAdapterInfo> {
     let mut out: Vec<MachineAdapterInfo> = cctui_proto::adapter::harnesses()
         .into_iter()
         .map(|h| {
             let row = rows.iter().find(|(id, _, _)| *id == h.id);
             MachineAdapterInfo {
-                adapter_id: h.id,
                 enabled: row.map_or(h.default_enabled, |(_, _, enabled)| *enabled),
                 config: row.map_or_else(|| serde_json::json!({}), |(_, config, _)| config.clone()),
                 pinned: row.is_some(),
                 default_enabled: h.default_enabled,
+                binary: binaries.get(&h.id).cloned(),
+                adapter_id: h.id,
             }
         })
         .collect();
     for (id, config, enabled) in rows {
         if !out.iter().any(|a| a.adapter_id == id) {
             out.push(MachineAdapterInfo {
+                binary: binaries.get(&id).cloned(),
                 adapter_id: id,
                 enabled,
                 config,
@@ -62,6 +70,30 @@ async fn rows(
         .map_err(AppError::from)
 }
 
+/// What the machine's daemon last reported for its enabled harnesses' binaries.
+pub async fn reported_binaries(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+) -> Result<Binaries, AppError> {
+    let report: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT harness_report FROM machines WHERE id = $1")
+            .bind(machine_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    Ok(report
+        .and_then(|v| serde_json::from_value::<HarnessReport>(v).ok())
+        .map(|r| r.binaries)
+        .unwrap_or_default())
+}
+
+/// The refusal for a spawn whose harness binary the daemon reports missing.
+/// A harness the daemon has not probed is let through.
+#[must_use]
+pub fn missing_binary(binaries: &Binaries, adapter_id: &str) -> Option<String> {
+    binaries.get(adapter_id).and_then(|b| b.refusal(adapter_id))
+}
+
 async fn machine_exists(pool: &sqlx::PgPool, machine_id: Uuid) -> Result<(), AppError> {
     let found: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM machines WHERE id = $1 AND revoked_at IS NULL)",
@@ -74,7 +106,8 @@ async fn machine_exists(pool: &sqlx::PgPool, machine_id: Uuid) -> Result<(), App
 
 async fn read_all(state: &AppState, machine_id: Uuid) -> ApiResult<Vec<MachineAdapterInfo>> {
     machine_exists(&state.pool, machine_id).await?;
-    Ok(Json(merge(rows(&state.pool, machine_id).await?)))
+    let binaries = reported_binaries(&state.pool, machine_id).await?;
+    Ok(Json(merge(rows(&state.pool, machine_id).await?, &binaries)))
 }
 
 fn clean_adapter(adapter: &str) -> Result<String, AppError> {
@@ -170,7 +203,7 @@ mod tests {
 
     #[test]
     fn without_rows_every_harness_reports_its_default() {
-        let got = merge(Vec::new());
+        let got = merge(Vec::new(), &Binaries::new());
         let ids: Vec<&str> = got.iter().map(|a| a.adapter_id.as_str()).collect();
         assert_eq!(ids, cctui_proto::adapter::KNOWN_ADAPTERS);
         assert!(got.iter().all(|a| a.enabled && !a.pinned && a.config == json!({})));
@@ -178,16 +211,53 @@ mod tests {
 
     #[test]
     fn a_row_pins_the_harness_and_an_unknown_row_is_listed_after_the_table() {
-        let got = merge(vec![
-            ("opencode".to_owned(), json!({"bin": "/opt/opencode"}), false),
-            ("gemini".to_owned(), json!({}), true),
-        ]);
+        let got = merge(
+            vec![
+                ("opencode".to_owned(), json!({"bin": "/opt/opencode"}), false),
+                ("gemini".to_owned(), json!({}), true),
+            ],
+            &Binaries::new(),
+        );
         let opencode = got.iter().find(|a| a.adapter_id == "opencode").unwrap();
         assert!(opencode.pinned && !opencode.enabled && opencode.default_enabled);
         assert_eq!(opencode.config, json!({"bin": "/opt/opencode"}));
         let last = got.last().unwrap();
         assert_eq!(last.adapter_id, "gemini");
         assert!(last.pinned && last.enabled && !last.default_enabled);
+    }
+
+    fn binary(bin: &str, path: Option<&str>) -> AdapterBinary {
+        AdapterBinary {
+            bin: bin.to_owned(),
+            config_key: "bin".to_owned(),
+            path: path.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn each_harness_carries_the_binary_its_daemon_reported() {
+        let binaries = Binaries::from([
+            ("codex".to_owned(), binary("codex", None)),
+            ("gemini".to_owned(), binary("gemini", Some("/usr/bin/gemini"))),
+        ]);
+        let got = merge(vec![("gemini".to_owned(), json!({}), true)], &binaries);
+        let find = |id: &str| got.iter().find(|a| a.adapter_id == id).unwrap();
+        assert_eq!(find("codex").binary, Some(binary("codex", None)));
+        assert_eq!(find("claude-code").binary, None, "an unprobed harness reports nothing");
+        assert!(find("gemini").binary.as_ref().is_some_and(AdapterBinary::installed));
+    }
+
+    #[test]
+    fn only_a_binary_reported_missing_refuses_a_spawn() {
+        let binaries = Binaries::from([
+            ("codex".to_owned(), binary("codex", None)),
+            ("opencode".to_owned(), binary("opencode", Some("/usr/bin/opencode"))),
+        ]);
+        let refusal = missing_binary(&binaries, "codex").unwrap();
+        assert!(refusal.contains("codex is not installed on this machine"), "{refusal}");
+        assert_eq!(missing_binary(&binaries, "opencode"), None);
+        assert_eq!(missing_binary(&binaries, "claude-code"), None);
+        assert_eq!(missing_binary(&Binaries::new(), "codex"), None);
     }
 
     #[test]

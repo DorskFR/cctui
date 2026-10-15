@@ -58,6 +58,7 @@
 		toasts,
 		api: endpoints,
 		actions,
+		queryClient: qc,
 		invalidateSessions,
 		refetchLive: () => qc.invalidateQueries({ queryKey: qk.sessions(false) }),
 		dockLayout,

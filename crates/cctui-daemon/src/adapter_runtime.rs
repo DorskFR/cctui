@@ -185,6 +185,18 @@ pub trait AdapterFactory: Send + Sync {
     fn interrupts(&self, _config: &serde_json::Value) -> bool {
         false
     }
+
+    /// The binary this adapter launches under `config`, and the config key
+    /// that overrides it. `None` opts out of the binary probe.
+    fn binary(&self, _config: &serde_json::Value) -> Option<BinarySpec> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinarySpec {
+    pub bin: String,
+    pub config_key: &'static str,
 }
 
 /// How a [`SessionDriver`] answered a command.

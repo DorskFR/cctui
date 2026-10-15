@@ -1082,17 +1082,67 @@ pub async fn dispatch(
 
     register_completion_webhook(&state, &ctx, &req, &v.session_id).await;
     persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload).await;
+    if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
+        let scope = dispatch_context_scope(uid, &req.payload);
+        crate::routes::context::remember_intent(&state.pool, &v.session_id, &[], &scope).await;
+    }
     forward_dispatch(&state, &req, &v).await
+}
+
+/// The coordinates a dispatched worker's rules resolve against. No human
+/// watches a worker, so everything it saves through `CctuiContext` waits for
+/// approval.
+fn dispatch_context_scope(
+    uid: uuid::Uuid,
+    payload: &serde_json::Value,
+) -> crate::routes::context::StoredScope {
+    let text = |key: &str| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    crate::routes::context::StoredScope {
+        user_id: uid,
+        coords: crate::routes::context::SpawnScope {
+            machine_id: None,
+            working_dir: text("working_dir").or_else(|| text("cwd")),
+            label_ids: Vec::new(),
+            adapter: Some(text("adapter_id").unwrap_or_else(|| "claude-code".to_owned())),
+        },
+        dispatched: true,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         DefaultBinding, binding_family, colliding_family, default_binding, dispatch_ceiling,
-        resolve_dispatch_account, resolve_dispatch_session_id, rewrite_model_if_aliased,
+        dispatch_context_scope, resolve_dispatch_account, resolve_dispatch_session_id,
+        rewrite_model_if_aliased,
     };
     use crate::routes::gateway::Family;
     use cctui_proto::adapter::PermissionMode;
+
+    #[test]
+    fn a_dispatched_worker_resolves_rules_by_adapter_and_cwd_and_saves_for_approval() {
+        let uid = uuid::Uuid::new_v4();
+        let scope = dispatch_context_scope(
+            uid,
+            &serde_json::json!({"adapter_id": "codex", "working_dir": " /w/repo "}),
+        );
+        assert!(scope.dispatched);
+        assert_eq!(scope.user_id, uid);
+        assert_eq!(scope.coords.adapter.as_deref(), Some("codex"));
+        assert_eq!(scope.coords.working_dir.as_deref(), Some("/w/repo"));
+        assert!(scope.coords.machine_id.is_none(), "a worker pod is no enrolled machine");
+
+        let bare = dispatch_context_scope(uid, &serde_json::json!({"cwd": "/srv"}));
+        assert_eq!(bare.coords.adapter.as_deref(), Some("claude-code"));
+        assert_eq!(bare.coords.working_dir.as_deref(), Some("/srv"));
+    }
 
     #[test]
     fn dispatch_ceiling_defaults_to_the_workers_own_yolo_mode() {

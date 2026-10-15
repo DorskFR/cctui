@@ -76,6 +76,13 @@ impl AdapterFactory for AcpFactory {
     fn pty_watch(&self, _config: &serde_json::Value) -> bool {
         true
     }
+
+    fn binary(&self, config: &serde_json::Value) -> Option<crate::adapter_runtime::BinarySpec> {
+        Some(crate::adapter_runtime::BinarySpec {
+            bin: AcpConfig::from_value(config).bin.unwrap_or_else(|| self.row.bin.to_owned()),
+            config_key: "bin",
+        })
+    }
 }
 
 /// One factory per agent row the harness table knows.

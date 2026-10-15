@@ -1212,6 +1212,7 @@ impl<'a> EventLoop<'a> {
                 local_id,
                 retry,
                 session.skills.clone(),
+                session.context.clone(),
                 session.events.clone(),
                 session.live.clone(),
                 session.registry.clone(),

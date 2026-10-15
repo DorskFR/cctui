@@ -1,11 +1,13 @@
 <script lang="ts">
-	// The profile editor: the shared kit organism plus the two things only a
-	// profile has — a name and the save actions.
+	// The profile editor: the shared kit organism plus what only a profile
+	// has — a name, pinned context and the save actions.
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import { Button, Field, Input, Text } from '@dorsk/tsumikit';
 	import KitFields from './KitFields.svelte';
+	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
+	import { useContextItems } from '$lib/queries';
 	import { specChanges, specOf, type ProfileSpecForm } from './profiles';
 	import { m } from '$lib/paraglide/messages';
 
@@ -39,6 +41,11 @@
 	// svelte-ignore state_referenced_locally
 	let name = $state(profile?.name ?? '');
 
+	const contextQ = useContextItems();
+	const pinnable = $derived(
+		(contextQ.data ?? []).filter((i) => i.kind === 'memory' || i.kind === 'prompt')
+	);
+
 	const saved = $derived(profile ? specOf(profile) : { ...initial });
 	const changes = $derived(
 		specChanges(saved, draft) + (profile && name.trim() !== profile.name ? 1 : 0)
@@ -62,6 +69,16 @@
 		{machineId}
 		idSuffix={profile?.id ?? 'new'}
 	/>
+
+	<Field label={m.spawn_profile_context_label()} for="sp-profile-context-{profile?.id ?? 'new'}">
+		<ContextPicker
+			id="sp-profile-context-{profile?.id ?? 'new'}"
+			items={pinnable}
+			by="id"
+			bind:value={() => draft.context_items ?? [], (v) => (draft.context_items = v)}
+			label={m.spawn_profile_context_label()}
+		/>
+	</Field>
 
 	<div class="foot">
 		<Text size="xs" tone="faint">{m.spawn_profile_changes({ count: changes })}</Text>

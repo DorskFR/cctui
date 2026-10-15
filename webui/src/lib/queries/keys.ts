@@ -8,6 +8,8 @@ export const qk = {
   version: ["version"] as const,
   capabilities: ["capabilities"] as const,
   sessions: (archived: boolean) => ["sessions", { archived }] as const,
+  sessionSearch: (q: string, archived: boolean) =>
+    ["sessions", "search", { q, archived }] as const,
   sessionStats: ["session-stats"] as const,
   tokenStats: ["token-stats"] as const,
   usageAnalytics: (days: number) => ["usage-analytics", { days }] as const,
@@ -78,4 +80,8 @@ export const qk = {
   events: (query: Record<string, string>) => ["events", "feed", query] as const,
   sessionEvents: (sessionId: string) => ["events", "session", sessionId] as const,
   machineEvents: (machineId: string) => ["events", "machine", machineId] as const,
+  context: ["context"] as const,
+  contextResolve: (coords: Record<string, string>) =>
+    ["context", "resolve", coords] as const,
+  sessionContext: (sessionId: string) => ["session-context", sessionId] as const,
 };

@@ -11,6 +11,7 @@ pub mod capabilities;
 pub mod cctuiverse;
 pub mod codex_models;
 pub mod context;
+pub mod context_tool;
 pub mod credentials;
 pub mod daemon;
 pub mod device_auth;

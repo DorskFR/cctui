@@ -722,6 +722,13 @@ impl AdapterFactory for OpenCodeFactory {
     fn interrupts(&self, _config: &serde_json::Value) -> bool {
         true
     }
+
+    fn binary(&self, config: &serde_json::Value) -> Option<crate::adapter_runtime::BinarySpec> {
+        Some(crate::adapter_runtime::BinarySpec {
+            bin: session::OpenCodeConfig::from_value(config).bin,
+            config_key: "bin",
+        })
+    }
 }
 
 #[cfg(test)]

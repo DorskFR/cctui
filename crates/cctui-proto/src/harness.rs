@@ -172,6 +172,37 @@ pub const CODEX_SANDBOX_FIX: &str = "codex's sandbox (bubblewrap) cannot start o
      namespaces for bwrap. Install an AppArmor profile for bwrap, or set \
      kernel.apparmor_restrict_unprivileged_userns=0. See docs/codex-sandbox.md";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct AdapterBinary {
+    pub bin: String,
+    pub config_key: String,
+    /// `None`: not found on the daemon's `PATH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub path: Option<String>,
+}
+
+impl AdapterBinary {
+    #[must_use]
+    pub const fn installed(&self) -> bool {
+        self.path.is_some()
+    }
+
+    #[must_use]
+    pub fn refusal(&self, adapter_id: &str) -> Option<String> {
+        if self.installed() {
+            return None;
+        }
+        Some(format!(
+            "{adapter_id} is not installed on this machine: `{}` was not found on the daemon's \
+             PATH. Install it, or point the `{}` key of the {adapter_id} adapter config \
+             (Settings → Machine adapters) at the binary",
+            self.bin, self.config_key
+        ))
+    }
+}
+
 /// Heartbeat block. `policy` echoes what the daemon currently holds so the
 /// server resends [`crate::ws::DaemonFrameDown::HarnessUpdatePolicy`] only on
 /// a difference, and only to a daemon that can parse it.
@@ -191,6 +222,9 @@ pub struct HarnessReport {
     /// not probe, or before the first probe has run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_sandbox: Option<CodexSandbox>,
+    /// Keyed by enabled adapter id; empty from a daemon too old to probe.
+    #[serde(default)]
+    pub binaries: BTreeMap<String, AdapterBinary>,
 }
 
 impl HarnessReport {
@@ -318,5 +352,24 @@ mod tests {
         assert!(report.needs_policy(&on(24)));
         let held = HarnessReport { policy: Some(on(24)), ..Default::default() };
         assert!(!held.needs_policy(&on(24)));
+    }
+
+    #[test]
+    fn a_missing_binary_names_the_key_that_overrides_it() {
+        let missing = AdapterBinary {
+            bin: "codex".to_owned(),
+            config_key: "codex_bin".to_owned(),
+            path: None,
+        };
+        let msg = missing.refusal("codex").unwrap();
+        assert!(msg.contains("`codex` was not found"), "{msg}");
+        assert!(msg.contains("`codex_bin`"), "{msg}");
+        let found = AdapterBinary { path: Some("/usr/bin/codex".to_owned()), ..missing };
+        assert!(found.refusal("codex").is_none());
+
+        let old: HarnessReport = serde_json::from_str(r#"{"outcomes":[]}"#).unwrap();
+        assert!(old.binaries.is_empty(), "a daemon that does not probe refuses nothing");
+        let json = serde_json::to_string(&found).unwrap();
+        assert_eq!(serde_json::from_str::<AdapterBinary>(&json).unwrap(), found);
     }
 }

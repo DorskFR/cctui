@@ -202,8 +202,8 @@ describe('diagnoseRows: opencode', () => {
 		return {
 			server_url: 'http://127.0.0.1:41234',
 			server_pid: 4242,
-			pinned_version: '1.18.7',
-			server_version: '1.18.7',
+			pinned_version: '1.19.0',
+			server_version: '1.19.0',
 			version_matches: true,
 			live: true,
 			owned_sessions: ['ses_1'],

@@ -421,6 +421,31 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
+    /// Relay one `CctuiContext` call; the server acts as the session's owner.
+    pub async fn context_call(
+        &self,
+        machine_key: &str,
+        session_id: &str,
+        req: &cctui_proto::api::context::ContextToolRequest,
+    ) -> anyhow::Result<cctui_proto::api::context::ContextToolResponse> {
+        let url = format!(
+            "{}/api/v1/daemon/sessions/{}/context",
+            self.base_url.trim_end_matches('/'),
+            session_id,
+        );
+        let resp = self.http.post(&url).bearer_auth(machine_key).json(req).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let reason = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .unwrap_or(text);
+            anyhow::bail!("context unavailable ({status}): {reason}");
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Ask whether the session token a trusted worker was launched with still
     /// resolves at the gateway. `token_hash` is the sha256 hex of the
     /// token — the token itself never travels on this call. `Err` covers both

@@ -1,5 +1,7 @@
-//! `cctui-daemon mcp-agent` — the stdio MCP server a claude session is launched
-//! with, exposing the `CctuiAgent`, `CctuiAgentArchive` and `CctuiUsage` tools.
+//! `cctui-daemon mcp-agent` — the stdio MCP server a session is launched with.
+//!
+//! It exposes the `CctuiAgent`, `CctuiAgentArchive`, `CctuiUsage`, peer, room,
+//! user-action, `CctuiSpeak` and `CctuiContext` tools.
 //!
 //! The subcommand is a thin relay, mirroring `ask-hook`: it speaks MCP on
 //! stdio and forwards each `tools/call` to the long-lived daemon over its local
@@ -32,6 +34,7 @@ pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
 pub const USER_ACTION_ADD_TOOL_NAME: &str = "CctuiUserActionAdd";
 pub const USER_ACTION_TICK_TOOL_NAME: &str = "CctuiUserActionTick";
 pub const SPEAK_TOOL_NAME: &str = "CctuiSpeak";
+pub const CONTEXT_TOOL_NAME: &str = "CctuiContext";
 
 /// A limits lookup is one cached server read; it must never hold a turn open
 /// the way a followed child does. The peer tools are the same shape: one
@@ -54,6 +57,7 @@ const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (USER_ACTION_ADD_TOOL_NAME, "user_action_add"),
     (USER_ACTION_TICK_TOOL_NAME, "user_action_tick"),
     (SPEAK_TOOL_NAME, "speak"),
+    (CONTEXT_TOOL_NAME, "context"),
 ];
 
 /// The socket `kind` a tool call becomes. `spawn_agent` is the only kind that
@@ -482,6 +486,79 @@ pub fn user_action_tick_schema() -> Value {
     })
 }
 
+/// The `CctuiContext` input schema.
+#[must_use]
+pub fn context_tool_schema() -> Value {
+    let strings = json!({ "type": "array", "items": { "type": "string" } });
+    json!({
+        "name": CONTEXT_TOOL_NAME,
+        "description": "Keep durable notes in cctui context for future sessions, and attach \
+    saved ones to this session. `list` names every item (no bodies), `show` reads one, `save` \
+    creates or edits one, `attach` stages existing memories into THIS session and returns the file \
+    path to read. A memory you save is enabled at once and only reaches a session that picks it. \
+    A rule rides into every matching future session, so a rule you save or edit — and anything a \
+    dispatched worker saves — becomes a pending proposal the user must approve before it applies. \
+    There is no delete: deleting is the user's call, in the UI. Never store secrets here.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "show", "save", "attach"],
+                    "description": "`list`, `show` one item, `save` one item, or `attach` \
+    memories to this session.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["memory", "rule", "prompt"],
+                    "description": "Filters `list`; picks the item for `show` (default memory); \
+    `save` accepts only memory or rule.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Slug: 1-64 chars of a-z, 0-9 and dashes. Required for `show` \
+    and `save`.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Human title, max 120 chars. Defaults to the name on create.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Markdown. Required for `save`. A rule is capped at 4 KiB, a \
+    memory at 64 KiB.",
+                },
+                "match": {
+                    "type": "object",
+                    "description": "When the item applies: keys are AND-ed, values within a key \
+    OR-ed, an empty or missing key matches anything.",
+                    "properties": {
+                        "machines": strings,
+                        "paths": strings,
+                        "labels": strings,
+                        "adapters": strings,
+                    },
+                    "additionalProperties": false,
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["create", "replace", "append"],
+                    "description": "For `save`: create a new item (default), replace an existing \
+    one's body, or append a dated paragraph to it.",
+                },
+                "names": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "For `attach`: exact memory names. Unknown ones are reported \
+    back, not fatal.",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": false,
+        },
+    })
+}
+
 /// Every tool this relay advertises, in a stable order.
 ///
 /// One list, one relay: registering it for codex or opencode
@@ -500,6 +577,7 @@ pub fn tool_schemas() -> Vec<Value> {
         user_action_add_schema(),
         user_action_tick_schema(),
         speak_tool_schema(),
+        context_tool_schema(),
     ]
 }
 
@@ -827,8 +905,31 @@ mod tests {
                 USER_ACTION_ADD_TOOL_NAME,
                 USER_ACTION_TICK_TOOL_NAME,
                 SPEAK_TOOL_NAME,
+                CONTEXT_TOOL_NAME,
             ]
         );
+    }
+
+    /// Without the approval line a model would assume a saved rule is live.
+    #[test]
+    fn the_context_tool_enumerates_its_actions_and_states_the_approval_gate() {
+        let schema = context_tool_schema();
+        assert_eq!(schema["inputSchema"]["required"], json!(["action"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["action"]["enum"], json!(["list", "show", "save", "attach"]));
+        assert_eq!(props["mode"]["enum"], json!(["create", "replace", "append"]));
+        assert_eq!(props["kind"]["enum"], json!(["memory", "rule", "prompt"]));
+        for key in ["machines", "paths", "labels", "adapters"] {
+            assert_eq!(props["match"]["properties"][key]["type"], json!("array"), "{key}");
+        }
+        for key in ["name", "title", "body", "names"] {
+            assert!(props.contains_key(key), "{key} missing from the schema");
+        }
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("pending proposal"), "{desc}");
+        assert!(desc.contains("no delete"), "{desc}");
+        assert!(desc.contains("THIS session"), "{desc}");
+        assert_eq!(tool_kind(CONTEXT_TOOL_NAME), Some("context"));
     }
 
     /// A room tool that let a model pick its own action strings would fail
