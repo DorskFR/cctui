@@ -35,8 +35,7 @@ pub const SERVICE_TIER_FAST: &str = "fast";
 /// The `settings_json` key carrying the account-level tier default.
 pub const SERVICE_TIER_KEY: &str = "service_tier";
 
-static CATALOG: LazyLock<Catalog> =
-    LazyLock::new(|| build_from("Codex", RAW_CATALOG, Some(RAW_SCHEMA)));
+static CATALOG: LazyLock<Catalog> = LazyLock::new(|| build_from(RAW_CATALOG, Some(RAW_SCHEMA)));
 
 /// The process-wide Codex settings catalog singleton.
 #[must_use]
@@ -170,13 +169,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_validation_rejects_managed_and_claude_keys() {
+    fn codex_validation_rejects_managed_flags_unknown_keys() {
         let c = catalog();
         assert!(c.validate_settings(&json!({"service_tier": "fast"})).ok());
         let r = c.validate_settings(&json!({"model_provider": "cctui"}));
         assert_eq!(r.violations.len(), 1);
         let r = c.validate_settings(&json!({"disableBundledSkills": true}));
-        assert!(r.violations[0].reason.contains("Codex"));
+        assert!(r.ok());
+        assert_eq!(r.out_of_schema, ["disableBundledSkills"]);
     }
 
     #[test]

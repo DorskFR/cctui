@@ -75,6 +75,7 @@
 	const groupsOn = (id: PageId) => (edit.hasCatalog ? groups.filter((g) => g.page === id) : []);
 	const claimed = $derived(new Set(groups.flatMap((g) => knobKeyNames(g.knobs)).concat(['env'])));
 	const settableKeys = $derived(new Set((catalog.data?.keys ?? []).map((k) => k.name)));
+	const blockedKeys = $derived(new Set(catalog.data?.blocked ?? []));
 	const catalogLoading = $derived(edit.hasCatalog && !catalog.data && !catalog.error);
 	const catalogFailed = $derived(edit.hasCatalog && !!catalog.error);
 	const changes = $derived(edit.changes(groupsOn(edit.page)));
@@ -258,6 +259,7 @@
 						endpoint={edit.isFireworks || edit.isCompatible}
 						rawJson={edit.isAnthropic}
 						{settableKeys}
+						{blockedKeys}
 						catalogReady={!!catalog.data}
 						{claimed}
 						bind:baseUrl={edit.baseUrl}

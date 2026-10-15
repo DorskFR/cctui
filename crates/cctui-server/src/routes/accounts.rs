@@ -509,6 +509,7 @@ pub async fn settings_catalog(
         keys: c.exposable_keys().cloned().collect(),
         env: c.env_allowlist().to_vec(),
         preset,
+        blocked: c.blocked_key_names().map(str::to_owned).collect(),
     })
 }
 
@@ -588,9 +589,9 @@ fn emoji_field(raw: Option<&str>) -> Result<Option<String>, AppError> {
 }
 
 /// Validate a pasted `settings_json` blob before persisting it via the
-/// settings catalog: only keys tagged `safe`/`care` may be set
-/// per-provider; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
-/// any violation aborts the whole write.
+/// settings catalog: MANAGED and SYSTEM keys are rejected, keys the catalog
+/// does not know pass through as out of schema. Fail-closed — any violation
+/// aborts the whole write.
 fn validate_settings_json(provider: &str, value: &serde_json::Value) -> Result<(), AppError> {
     let report = crate::settings_catalog::for_provider(provider).validate_settings(value);
     if report.ok() {
