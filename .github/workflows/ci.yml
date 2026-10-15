@@ -655,6 +655,7 @@ jobs:
       - clippy
       - test
       - bindings
+      - release-scope
       - release-cache
       - release-cache-server
       - webui
