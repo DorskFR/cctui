@@ -19,12 +19,14 @@ pub fn signal(local_id: &str, ts: i64, server_supports: bool) -> Option<AdapterE
     server_supports.then(|| AdapterEvent::TurnEnd { local_id: local_id.to_owned(), ts: Some(ts) })
 }
 
-/// Record the turn end for a `CctuiAgent` follow watching this session.
+/// Record the turn end for a `CctuiAgent` follow watching this session and for
+/// the tool-block follow-up.
 ///
-/// Ungated: the capability governs only the wire event, while the follow runs
-/// in this process. No-op when nothing watches the session.
+/// Ungated: the capability governs only the wire event, while both run in this
+/// process.
 pub fn note(local_id: &str) {
     crate::childwatch::global().note_turn_end(local_id);
+    crate::toolblock_followup::note_turn_end(local_id);
 }
 
 /// Whether the connected server accepts the signal at all.

@@ -312,6 +312,11 @@ impl Supervisor {
             });
         }
         crate::configsweep::spawn_loop(shutdown.clone());
+        crate::toolblock_followup::start(
+            self.client.clone(),
+            self.machine_key.clone(),
+            shutdown.clone(),
+        );
 
         // Adapters live for the life of the process, not of a connection: their
         // tokens own live session subprocesses (`opencode serve`, `codex
@@ -472,6 +477,7 @@ impl Supervisor {
                         // events pass through.
                         crate::childwatch::global().observe(&event);
                         crate::neighbours::global().observe(adapter_id.as_str(), &event);
+                        crate::toolblock_followup::observe(adapter_id.as_str(), &event);
                         // Must stay after `observe`: the turn-tail signal needs
                         // the event even though it has nothing to persist.
                         if is_textless_thinking(&event) {
@@ -991,6 +997,7 @@ impl Supervisor {
                 channels.commands_tx.clone(),
                 token.clone(),
             );
+            crate::toolblock_followup::register_adapter(&id, channels.commands_tx.clone());
             running.insert(
                 id.clone(),
                 AdapterRunning {
