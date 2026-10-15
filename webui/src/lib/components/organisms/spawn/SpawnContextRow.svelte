@@ -6,6 +6,7 @@
 		contextAuto,
 		notePicks,
 		reconcilePrecheck,
+		sameList,
 		type Precheck
 	} from '$lib/components/molecules/context.logic';
 	import { useContextItems, useResolvedContext } from '$lib/queries';
@@ -50,8 +51,13 @@
 	let showRules = $state(false);
 	let pre = $state.raw<Precheck>({ picks: [], auto: [], dismissed: [] });
 
+	// Writing an unchanged list still dirties the parent form, which re-runs the
+	// resolve query and this effect: only write real changes.
 	$effect(() => {
-		pins = locked;
+		const next = locked;
+		untrack(() => {
+			if (!sameList(pins, next)) pins = next;
+		});
 	});
 
 	$effect(() => {
@@ -59,7 +65,7 @@
 		const names = matched;
 		untrack(() => {
 			pre = reconcilePrecheck({ ...pre, picks: [...items] }, names);
-			items = pre.picks;
+			if (!sameList(items, pre.picks)) items = pre.picks;
 			auto = contextAuto(pre.picks, names);
 		});
 	});
