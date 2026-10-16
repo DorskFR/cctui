@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -7,6 +7,14 @@ use uuid::Uuid;
 use crate::state::AppState;
 
 // ---- /api/v1/daemon/sessions/{id}/gateway-env ----
+
+/// Query of both launch-context pulls. `rules` is absent from daemons that
+/// predate rules.
+#[derive(Debug, Default, Deserialize)]
+pub struct LaunchQuery {
+    #[serde(default)]
+    rules: bool,
+}
 
 /// Resolve a session's gateway-routing env for the daemon's launch chokepoint.
 /// The daemon calls this at every worker (re)launch — spawn, resume,
@@ -29,6 +37,7 @@ pub async fn session_gateway_env(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(session_id): Path<String>,
+    Query(query): Query<LaunchQuery>,
 ) -> Result<Json<cctui_proto::api::GatewayEnvResponse>, StatusCode> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -80,7 +89,7 @@ pub async fn session_gateway_env(
             whip_phrases,
             spawn_capability: spawn_capability_for(&state, &session_id).await,
             plugins,
-            context: session_context(&state, &session_id).await,
+            context: session_context(&state, &session_id, query.rules).await,
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -136,7 +145,7 @@ pub async fn session_gateway_env(
         whip_phrases,
         spawn_capability: spawn_capability_for(&state, &session_id).await,
         plugins,
-        context: session_context(&state, &session_id).await,
+        context: session_context(&state, &session_id, query.rules).await,
     }))
 }
 
@@ -146,6 +155,7 @@ pub async fn session_launch_context(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(session_id): Path<String>,
+    Query(query): Query<LaunchQuery>,
 ) -> Result<Json<cctui_proto::api::LaunchContextResponse>, StatusCode> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -161,7 +171,8 @@ pub async fn session_launch_context(
             tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let context = if allowed { session_context(&state, &session_id).await } else { Vec::new() };
+    let context =
+        if allowed { session_context(&state, &session_id, query.rules).await } else { Vec::new() };
     Ok(Json(cctui_proto::api::LaunchContextResponse { context }))
 }
 
@@ -199,8 +210,9 @@ async fn context_allowed(
 async fn session_context(
     state: &AppState,
     session_id: &str,
+    rules: bool,
 ) -> Vec<cctui_proto::api::SessionContextItem> {
-    crate::routes::context::for_launch(&state.pool, session_id)
+    crate::routes::context::for_launch(&state.pool, session_id, rules)
         .await
         .into_iter()
         .map(|i| cctui_proto::api::SessionContextItem {

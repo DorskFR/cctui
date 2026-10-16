@@ -339,7 +339,12 @@ export class SpawnForm {
 			this.slotKey = key;
 		}
 		const envKeys = this.envRows.map((r) => ({ key: r.key, value: '' }));
-		const { context_pack_token: _packToken, ...persisted } = this.form;
+		const {
+			context_pack_token: _packToken,
+			context_items: _items,
+			context_auto: _auto,
+			...persisted
+		} = this.form;
 		const payload: SpawnSlotPayload = {
 			...persisted,
 			prompt: withoutInvite(persisted.prompt),

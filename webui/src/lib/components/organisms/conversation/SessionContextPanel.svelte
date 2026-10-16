@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Badge, Button, Text } from '@dorsk/tsumikit';
+	import { Button, Text } from '@dorsk/tsumikit';
 	import ContextPicker from '$lib/components/molecules/ContextPicker.svelte';
 	import { newerVersion, useAttachContext, useContextItems } from '$lib/queries';
 	import type { SessionContextResponse } from '@bindings/SessionContextResponse';
@@ -51,10 +51,10 @@
 						{@const newer = newerVersion(r, items.data)}
 						<li>
 							<span class="title">{r.title}</span>
-							<Badge size="xs" tone="muted">v{r.version}</Badge>
+							<span class="version">v{r.version}</span>
 							{#if newer !== null}
-								<Badge size="xs" tone="warn" data-part="newer"
-									>{m.conversation_context_newer({ version: newer })}</Badge
+								<span class="newer" data-part="newer"
+									>{m.conversation_context_newer({ version: newer })}</span
 								>
 							{/if}
 						</li>
@@ -91,21 +91,19 @@
 	}
 	ul {
 		margin: 0;
-		padding: 0;
-		list-style: none;
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-	}
-	li {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
+		padding-left: var(--sp-4);
 		font-size: var(--fs-sm);
 	}
-	.title {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	li {
+		overflow-wrap: anywhere;
+	}
+	.version {
+		color: var(--text-faint);
+	}
+	.newer {
+		color: var(--warn);
+	}
+	.newer::before {
+		content: '· ';
 	}
 </style>
