@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Drawer header meta row: status badge, cwd, branch, token usage, langfuse
+	// Drawer header meta row: status badge, thread links, cwd, branch, token usage, langfuse
 	// chip, the in-place codex model editor or the claude "fork to change model"
 	// chip, and the adapter logo, which is the trigger of the popover holding
 	// what a narrow row dropped.
@@ -7,6 +7,8 @@
 	import { compact, modelShort, statusBadgeTone, usd } from '$lib/format';
 	import { tokenUsageLayout, bustReasonKey } from '$lib/components/molecules/TokenUsage.logic';
 	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
+	import { previousSessionId } from '$lib/followup';
+	import { sessionHref } from '$lib/sessionFailureToast';
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
@@ -55,6 +57,7 @@
 		}
 	});
 	const branch = $derived(branchOf(session));
+	const previousId = $derived(previousSessionId(session));
 
 	// The details panel is the only place the full readout lives, so its Langfuse
 	// figures are fetched on open rather than with the header.
@@ -167,6 +170,16 @@
 <div class="hmeta" class:editing={modelEditing} data-journey="head-meta">
 	{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 	{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
+	{#if previousId || session.next_session_id}
+		<span class="thread" data-journey="head-thread">
+			{#if previousId}
+				<IconButton as="a" href={sessionHref(previousId)} icon="chevron-left" label={m.drawer_thread_previous()} box="xs" variant="ghost" />
+			{/if}
+			{#if session.next_session_id}
+				<IconButton as="a" href={sessionHref(session.next_session_id)} icon="chevron-right" label={m.drawer_thread_next()} box="xs" variant="ghost" />
+			{/if}
+		</span>
+	{/if}
 	<span class="cwd">
 		<WorkingDir
 			path={session.working_dir}
@@ -268,6 +281,10 @@
 	}
 	.cwd {
 		display: contents;
+	}
+	.thread {
+		display: inline-flex;
+		flex: none;
 	}
 	.branch {
 		display: inline-flex;

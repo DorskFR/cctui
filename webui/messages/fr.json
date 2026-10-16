@@ -648,6 +648,8 @@
 	"drawer_interrupt_label": "Interrompre le tour",
 	"drawer_interrupt_title": "Interrompre le tour en cours",
 	"drawer_meta_details": "Détails de la session",
+	"drawer_thread_previous": "Session précédente du fil",
+	"drawer_thread_next": "Session suivante du fil",
 	"drawer_details_usage": "Jetons",
 	"drawer_details_model": "Modèle",
 	"drawer_details_in": "Entrée",

@@ -97,10 +97,17 @@ fn meta_str<'a>(s: &'a SessionListItem, key: &str) -> Option<&'a str> {
     s.metadata.get(key).and_then(serde_json::Value::as_str).filter(|v| !v.is_empty())
 }
 
-/// A fork keeps its own top-level row: it is a sibling of its parent, not a
-/// child of it.
-fn is_fork(s: &SessionListItem) -> bool {
-    meta_str(s, "relation") == Some("fork")
+/// A child of its `parent_id`. A fork or follow-up only links to its source
+/// and keeps its own top-level row.
+#[must_use]
+pub fn nests_under_parent(s: &SessionListItem) -> bool {
+    s.parent_id.is_some() && !matches!(meta_str(s, "relation"), Some("fork" | "followup"))
+}
+
+/// The session this follow-up continues.
+#[must_use]
+pub fn previous_session_id(s: &SessionListItem) -> Option<&str> {
+    s.parent_id.as_deref().filter(|_| meta_str(s, "relation") == Some("followup"))
 }
 
 /// Agents still worth counting as running.
@@ -272,7 +279,7 @@ pub fn rows_by<'a>(
     let shown = |s: &SessionListItem| !ui.unread_only || super::unread::keeps_row(all, s);
     let mut kids: HashMap<&str, Vec<&SessionListItem>> = HashMap::new();
     for s in ordered {
-        if is_fork(s) || !shown(s) {
+        if !nests_under_parent(s) || !shown(s) {
             continue;
         }
         if let Some(p) = s.parent_id.as_deref().filter(|p| ids.contains(p) && *p != s.id) {
@@ -285,7 +292,7 @@ pub fn rows_by<'a>(
         .copied()
         .filter(|s| {
             shown(s)
-                && (is_fork(s)
+                && (!nests_under_parent(s)
                     || s.parent_id.as_deref().is_none_or(|p| !ids.contains(p) || p == s.id))
         })
         .collect();
@@ -566,6 +573,16 @@ mod tests {
         let sessions = vec![session("s-working", "cctui", "active", "working"), fork];
         let list = rows(&sessions, &UiState::default());
         assert!(sub_headers(&list).is_empty(), "a fork opens no subagent group");
+        assert_eq!(ids(&sessions_of(&list)).len(), 2);
+    }
+
+    #[test]
+    fn a_followup_keeps_its_own_top_level_row() {
+        let mut next = subagent("s-next", "s-working", "next");
+        next.metadata = serde_json::json!({"project_name": "next", "relation": "followup"});
+        let sessions = vec![session("s-working", "cctui", "active", "working"), next];
+        let list = rows(&sessions, &UiState::default());
+        assert!(sub_headers(&list).is_empty(), "a follow-up opens no subagent group");
         assert_eq!(ids(&sessions_of(&list)).len(), 2);
     }
 

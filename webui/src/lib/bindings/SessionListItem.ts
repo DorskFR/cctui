@@ -51,4 +51,9 @@ launch_at?: string | null,
 /**
  * Draft only: the last launch attempt's failure, kept until it succeeds.
  */
-launch_error?: string | null, };
+launch_error?: string | null, 
+/**
+ * The latest follow-up that continues this session (its `parent_id` is
+ * this one and its relation is `followup`).
+ */
+next_session_id?: string | null, };

@@ -10,6 +10,7 @@
 	import { settings } from '$lib/settings.svelte';
 	import { isNavActive, navItems, navKey } from '$lib/navItems';
 	import { m } from '$lib/paraglide/messages';
+	import { nestsUnderParent } from '$lib/followup';
 
 	let { placement = 'bottom' }: { placement?: 'bottom' | 'top' } = $props();
 
@@ -17,7 +18,7 @@
 	// badge on. Children fold under their parent and are not counted twice.
 	const sessions = useSessions(() => false);
 	const unread = $derived(
-		(sessions.data?.sessions ?? []).filter((s) => s.parent_id === null && (s.unread_count ?? 0) > 0)
+		(sessions.data?.sessions ?? []).filter((s) => !nestsUnderParent(s) && (s.unread_count ?? 0) > 0)
 			.length
 	);
 	const plugins = usePlugins();

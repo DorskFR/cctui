@@ -648,6 +648,8 @@
 	"drawer_interrupt_label": "Interrupt turn",
 	"drawer_interrupt_title": "Interrupt the in-flight turn",
 	"drawer_meta_details": "Session details",
+	"drawer_thread_previous": "Previous session in this thread",
+	"drawer_thread_next": "Next session in this thread",
 	"drawer_details_usage": "Tokens",
 	"drawer_details_model": "Model",
 	"drawer_details_in": "Input",
