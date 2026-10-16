@@ -26,7 +26,8 @@ macro_rules! next_session_sql {
     };
 }
 
-pub(crate) use {nests_under_parent, next_session_sql};
+pub(crate) use nests_under_parent;
+pub(crate) use next_session_sql;
 
 /// The latest follow-up continuing `id`, if any.
 pub async fn next_of(pool: &PgPool, id: &str) -> Result<Option<String>, sqlx::Error> {
