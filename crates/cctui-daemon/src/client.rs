@@ -166,7 +166,7 @@ impl ServerClient {
         session_id: &str,
     ) -> anyhow::Result<GatewayEnvResponse> {
         let url = format!(
-            "{}/api/v1/daemon/sessions/{}/gateway-env",
+            "{}/api/v1/daemon/sessions/{}/gateway-env?rules=true",
             self.base_url.trim_end_matches('/'),
             session_id,
         );
@@ -185,7 +185,7 @@ impl ServerClient {
         session_id: &str,
     ) -> anyhow::Result<cctui_proto::api::LaunchContextResponse> {
         let url = format!(
-            "{}/api/v1/daemon/sessions/{}/context",
+            "{}/api/v1/daemon/sessions/{}/context?rules=true",
             self.base_url.trim_end_matches('/'),
             session_id,
         );

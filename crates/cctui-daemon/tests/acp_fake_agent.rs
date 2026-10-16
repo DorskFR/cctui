@@ -1943,7 +1943,8 @@ mod relay {
         }
         let mut body = vec![0; length];
         let _ = reader.read_exact(&mut body).await;
-        let path = request_line.split_whitespace().nth(1).unwrap_or_default().to_owned();
+        let target = request_line.split_whitespace().nth(1).unwrap_or_default();
+        let path = target.split('?').next().unwrap_or_default().to_owned();
         let (status, reply) = if path.ends_with("/gateway-env") {
             (
                 "200 OK",

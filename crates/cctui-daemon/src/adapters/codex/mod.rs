@@ -1561,7 +1561,7 @@ mod tests {
         assert_eq!((got[0].kind.as_str(), got[0].version), ("rule", 4));
         let head = request.await.unwrap();
         assert!(
-            head.starts_with("GET /api/v1/daemon/sessions/thread-9/context "),
+            head.starts_with("GET /api/v1/daemon/sessions/thread-9/context?rules=true "),
             "never the minting gateway-env route: {head}"
         );
         assert!(head.to_ascii_lowercase().contains("authorization: bearer mk-1"), "{head}");
