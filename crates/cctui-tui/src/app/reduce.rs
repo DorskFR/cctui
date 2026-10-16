@@ -511,6 +511,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         last_keepalive_at: None,
         launch_at: None,
         launch_error: None,
+        next_session_id: None,
     });
     app.update_aggregates();
 }

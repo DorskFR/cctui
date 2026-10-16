@@ -528,6 +528,10 @@ pub struct SessionListItem {
     /// Draft only: the last launch attempt's failure, kept until it succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_error: Option<String>,
+    /// The latest follow-up that continues this session (its `parent_id` is
+    /// this one and its relation is `followup`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_session_id: Option<String>,
 }
 
 /// Cache keep-alive: one tick every `interval_secs` while idle, stopping after

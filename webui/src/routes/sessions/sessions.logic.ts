@@ -11,6 +11,7 @@ import { relativeTime } from '@dorsk/tsumikit';
 import { hashHue } from '$lib/format';
 import { labelHue } from '$lib/labels';
 import { m } from '$lib/paraglide/messages';
+import { nestsUnderParent } from '$lib/followup';
 
 // ── View picker ───────────────────────────────────────────────────
 export type ViewMode = 'list' | 'card';
@@ -102,8 +103,6 @@ export function metaBool(s: SessionListItem, key: string): boolean {
 }
 export const branchOf = (s: SessionListItem) => metaStr(s, 'git_branch');
 export const remoteOf = (s: SessionListItem) => metaStr(s, 'git_remote');
-export const relationOf = (s: SessionListItem) =>
-	metaStr(s, 'relation') ?? (metaBool(s, 'subagent') ? 'subagent' : 'root');
 export const runningCount = (agents: SessionListItem[]) =>
 	agents.filter((a) => a.status !== 'archived' && a.liveness !== 'dead' && !a.hibernated).length;
 // Fold a parent's children into plain + per-workflow groups.
@@ -159,11 +158,11 @@ export function nest(rows: SessionListItem[]): Nest {
 	const ids = new Set(rows.map((s) => s.id));
 	const childrenOf = new Map<string, SessionListItem[]>();
 	for (const s of rows) {
-		if (s.parent_id && ids.has(s.parent_id) && relationOf(s) !== 'fork') {
+		if (s.parent_id && ids.has(s.parent_id) && nestsUnderParent(s)) {
 			childrenOf.set(s.parent_id, [...(childrenOf.get(s.parent_id) ?? []), s]);
 		}
 	}
-	const topLevel = rows.filter((s) => !s.parent_id || !ids.has(s.parent_id) || relationOf(s) === 'fork');
+	const topLevel = rows.filter((s) => !s.parent_id || !ids.has(s.parent_id) || !nestsUnderParent(s));
 	const childGroups = new Map<string, SubGroup[]>();
 	let hasCollapsible = false;
 	for (const [parentId, kids] of childrenOf) {
@@ -186,7 +185,7 @@ export function archivedDescendantsOf(
 	if (parentIds.size === 0 || archived.length === 0) return [];
 	const byParent = new Map<string, SessionListItem[]>();
 	for (const a of archived) {
-		if (a.parent_id)
+		if (a.parent_id && nestsUnderParent(a))
 			byParent.set(a.parent_id, [...(byParent.get(a.parent_id) ?? []), a]);
 	}
 	const out: SessionListItem[] = [];

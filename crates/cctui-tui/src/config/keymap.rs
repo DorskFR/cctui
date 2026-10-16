@@ -258,7 +258,8 @@ actions! {
     SidebarPrev => "sidebar-prev", "Previous subagent";
     SidebarOpen => "sidebar-open", "Open the subagent";
     SidebarClose => "sidebar-close", "Close the sidebar";
-    OpenParent => "open-parent", "Go to the parent session";
+    OpenParent => "open-parent", "Go to the parent or previous";
+    OpenNext => "open-next", "Go to the follow-up session";
     PickerClose => "picker-close", "Close the picker";
     PickerNext => "picker-next", "Next entry";
     PickerPrev => "picker-prev", "Previous entry";
@@ -519,6 +520,7 @@ const CONVERSATION: &[BindingSpec] = &[
     spec(Context::Conversation, "M", ActionId::ModelPicker),
     spec(Context::Conversation, ">", ActionId::ToggleSidebar),
     spec(Context::Conversation, "u", ActionId::OpenParent),
+    spec(Context::Conversation, "U", ActionId::OpenNext),
     spec(Context::Conversation, "ctrl+f", ActionId::Fork),
     spec(Context::Conversation, "r", ActionId::Resume),
     spec(Context::Conversation, "ctrl+a", ActionId::ToggleAutoApprove),
@@ -761,6 +763,7 @@ const SIDEBAR: &[BindingSpec] = &[
     spec(Context::Sidebar, "k, up", ActionId::SidebarPrev),
     spec(Context::Sidebar, "enter", ActionId::SidebarOpen),
     spec(Context::Sidebar, "u", ActionId::OpenParent),
+    spec(Context::Sidebar, "U", ActionId::OpenNext),
 ];
 
 /// Modal over the conversation: everything it does not claim stays claimed,

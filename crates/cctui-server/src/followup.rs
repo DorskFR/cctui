@@ -9,6 +9,36 @@ use cctui_proto::api::SpawnRequest;
 
 pub const RELATION: &str = "followup";
 
+/// SQL: the session nests under its `parent_id` as a child. A fork or a
+/// follow-up only links to the session it came from; it is never its child.
+macro_rules! nests_under_parent {
+    ($alias:literal) => {
+        concat!("COALESCE(", $alias, ".metadata->>'relation', '') NOT IN ('fork', 'followup')")
+    };
+}
+
+/// SQL: the latest follow-up continuing `sessions.id`.
+macro_rules! next_session_sql {
+    () => {
+        "(SELECT f.id FROM sessions f \
+          WHERE f.parent_id = sessions.id AND f.metadata->>'relation' = 'followup' \
+          ORDER BY f.registered_at DESC LIMIT 1)"
+    };
+}
+
+pub(crate) use nests_under_parent;
+pub(crate) use next_session_sql;
+
+/// The latest follow-up continuing `id`, if any.
+pub async fn next_of(pool: &PgPool, id: &str) -> Result<Option<String>, sqlx::Error> {
+    let next: Option<Option<String>> =
+        sqlx::query_scalar(concat!("SELECT ", next_session_sql!(), " FROM sessions WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(next.flatten())
+}
+
 /// Unclaimed intents older than this are dropped: the spawn never registered.
 const INTENT_TTL_SECS: i64 = 6 * 3600;
 

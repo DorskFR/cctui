@@ -65,13 +65,19 @@ fn lines(panel: &Panel, width: u16, focused: bool) -> Vec<Line<'static>> {
         ]));
     }
 
-    if let Some(parent) = &panel.parent {
+    let up = if panel.parent_is_previous { "previous " } else { "up to " };
+    let links = [(" u ", up, &panel.parent), (" U ", "next ", &panel.next)];
+    if links.iter().any(|(_, _, label)| label.is_some()) {
         out.push(Line::from(""));
-        out.push(Line::from(vec![
-            Span::styled(" u ", theme::hotkey()),
-            Span::styled("up to ", theme::hotkey_desc()),
-            Span::styled(clip(parent, width.saturating_sub(8)), theme::dim()),
-        ]));
+    }
+    for (key, desc, label) in links {
+        if let Some(label) = label {
+            out.push(Line::from(vec![
+                Span::styled(key, theme::hotkey()),
+                Span::styled(desc, theme::hotkey_desc()),
+                Span::styled(clip(label, width.saturating_sub(desc.len() + 3)), theme::dim()),
+            ]));
+        }
     }
     out
 }

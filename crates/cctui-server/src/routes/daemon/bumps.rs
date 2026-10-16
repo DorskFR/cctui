@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::followup::nests_under_parent;
+
 /// Session activity waiting for the next [`Bumps::flush`].
 #[derive(Default)]
 struct PendingBump {
@@ -56,7 +58,7 @@ impl Bumps {
 
     /// Write every pending bump in one statement. Each session and its whole
     /// `parent_id` chain get `last_heartbeat` (so a grinding subagent keeps its
-    /// parent fresh) and, after a tool call, `last_tool_at`/`last_tool_name`;
+    /// parent fresh; the chain stops at a fork or follow-up) and, after a tool call, `last_tool_at`/`last_tool_name`;
     /// `tool_use_count` is the leaf's own per-turn count. Returns rows updated.
     pub(super) async fn flush(&self, pool: &sqlx::PgPool) -> u64 {
         let pending = self.take();
@@ -73,14 +75,20 @@ impl Bumps {
             calls.push(bump.tool_calls);
             resets.push(bump.reset);
         }
-        let done = sqlx::query(
+        let done = sqlx::query(concat!(
             r"WITH RECURSIVE b AS (
                 SELECT * FROM unnest($1::text[], $2::text[], $3::int4[], $4::bool[])
                     AS b(id, tool, calls, reset)
             ), chain AS (
-                SELECT s.id, s.parent_id, b.tool FROM sessions s JOIN b ON s.id = b.id
+                SELECT s.id, CASE WHEN ",
+            nests_under_parent!("s"),
+            r" THEN s.parent_id END AS parent_id, b.tool
+                FROM sessions s JOIN b ON s.id = b.id
                 UNION ALL
-                SELECT s.id, s.parent_id, c.tool FROM sessions s JOIN chain c ON s.id = c.parent_id
+                SELECT s.id, CASE WHEN ",
+            nests_under_parent!("s"),
+            r" THEN s.parent_id END, c.tool
+                FROM sessions s JOIN chain c ON s.id = c.parent_id
             ), agg AS (
                 SELECT id, max(tool) AS tool FROM chain GROUP BY id
             )
@@ -94,7 +102,7 @@ impl Bumps {
                     sessions.tool_use_count)
             FROM agg
             WHERE sessions.id = agg.id",
-        )
+        ))
         .bind(&ids)
         .bind(&tools)
         .bind(&calls)
@@ -196,5 +204,79 @@ mod tests {
         assert_eq!(parent_tool.as_deref(), Some("Read"));
 
         drop_machines(&pool, &[child, parent], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_followup_is_linked_to_its_source_not_nested_under_it() {
+        let Some(url) = crate::routes::gateway::test_db_url("followup_linked") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "followup").await;
+        let source = seed_owned_session(&pool, uid, mid).await;
+        let subagent = seed_owned_session(&pool, uid, mid).await;
+        let fork = seed_owned_session(&pool, uid, mid).await;
+        let first = seed_owned_session(&pool, uid, mid).await;
+        let latest = seed_owned_session(&pool, uid, mid).await;
+        let latest_child = seed_owned_session(&pool, uid, mid).await;
+        for (id, parent, relation, age) in [
+            (&subagent, &source, "subagent", 5),
+            (&fork, &source, "fork", 4),
+            (&first, &source, "followup", 3),
+            (&latest, &source, "followup", 2),
+            (&latest_child, &latest, "subagent", 1),
+        ] {
+            sqlx::query(
+                "UPDATE sessions SET parent_id = $2, \
+                 metadata = jsonb_build_object('relation', $3::text), \
+                 registered_at = now() - make_interval(mins => $4), \
+                 last_heartbeat = now() - interval '1 hour' WHERE id = $1",
+            )
+            .bind(id)
+            .bind(parent)
+            .bind(relation)
+            .bind(age)
+            .execute(&pool)
+            .await
+            .expect("link");
+        }
+        sqlx::query("UPDATE sessions SET last_heartbeat = now() - interval '1 hour' WHERE id = $1")
+            .bind(&source)
+            .execute(&pool)
+            .await
+            .expect("age source");
+
+        let nested: Vec<String> = crate::store::sessions::descendants(&pool, &source)
+            .await
+            .expect("descendants")
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(nested, vec![subagent.clone()], "forks and follow-ups are not descendants");
+        assert_eq!(
+            crate::followup::next_of(&pool, &source).await.expect("next").as_deref(),
+            Some(latest.as_str()),
+            "next is the latest follow-up"
+        );
+        assert_eq!(crate::followup::next_of(&pool, &latest).await.expect("next"), None);
+
+        let bumps = Bumps::default();
+        bumps.heartbeat(&latest_child);
+        assert_eq!(bumps.flush(&pool).await, 2, "the chain stops at the follow-up");
+        let stale: bool = sqlx::query_scalar(
+            "SELECT last_heartbeat < now() - interval '30 minutes' FROM sessions WHERE id = $1",
+        )
+        .bind(&source)
+        .fetch_one(&pool)
+        .await
+        .expect("source row");
+        assert!(stale, "a live follow-up does not keep its source fresh");
+
+        drop_machines(&pool, &[latest_child, latest, first, fork, subagent, source], &[(uid, mid)])
+            .await;
     }
 }
