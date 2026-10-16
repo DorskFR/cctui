@@ -64,10 +64,11 @@ expression: "render_screen_sized(&mut app, 100, height)"
   │  g           Jump to the top                    k / ↑       Previous subagent                │
   │  G           Jump to the bottom                 Enter       Open the subagent                │
   │  t           Show timestamps                    > / Esc     Close the sidebar                │
-  │  Ctrl+c      Interrupt the turn                 u           Go to the parent session         │
-  │  M           Change model and effort          Permission card                                │
-  │  >           Todo and subagent sidebar          y           Allow                            │
-  │  u           Go to the parent session           n           Deny                             │
+  │  Ctrl+c      Interrupt the turn                 u           Go to the parent or previous     │
+  │  M           Change model and effort            U           Go to the follow-up session      │
+  │  >           Todo and subagent sidebar        Permission card                                │
+  │  u           Go to the parent or previous       y           Allow                            │
+  │  U           Go to the follow-up session        n           Deny                             │
   │  Ctrl+a      Toggle auto-approve                A           Allow and auto-approve           │
   │  v           Select transcript lines          Diagnose / info                                │
   │  Ctrl+o      Attach a file                      D           Diagnose the selected session    │
