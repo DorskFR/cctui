@@ -1,6 +1,7 @@
 use cctui_proto::models::SessionStatus;
 use sqlx::PgExecutor;
 
+use crate::followup::nests_under_parent;
 use crate::routes::sessions::{DB_SESSION_SELECT, DbSession};
 
 /// Every value `sessions.status` may hold; migration 139 enforces the same set.
@@ -187,25 +188,28 @@ pub struct Child {
 /// Cap on the recursion, so a `parent_id` cycle cannot spin the query.
 const MAX_DESCENDANT_DEPTH: i32 = 32;
 
-/// Every session nested under `root`, at any depth, deepest first.
+/// Every session nested under `root`, at any depth, deepest first. Forks and
+/// follow-ups are linked, not nested, so they and their own trees are left out.
 ///
 /// Depth order is what the caller needs: a live grandchild holds its parent's
 /// worktree, so it must be removed before that parent is.
 pub async fn descendants(exec: impl PgExecutor<'_>, root: &str) -> Result<Vec<Child>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "WITH RECURSIVE tree AS ( \
-             SELECT id, 1 AS depth FROM sessions WHERE parent_id = $1 \
-             UNION ALL \
+             SELECT c.id, 1 AS depth FROM sessions c WHERE c.parent_id = $1 AND ",
+        nests_under_parent!("c"),
+        " UNION ALL \
              SELECT s.id, t.depth + 1 FROM sessions s \
                JOIN tree t ON s.parent_id = t.id \
-              WHERE t.depth < $2 \
-         ) \
+              WHERE t.depth < $2 AND ",
+        nests_under_parent!("s"),
+        " ) \
          SELECT t.id, \
                 COALESCE((s.metadata->>'subagent')::boolean, false) AS observe_only, \
                 t.depth \
            FROM tree t JOIN sessions s ON s.id = t.id \
           ORDER BY t.depth DESC, t.id",
-    )
+    ))
     .bind(root)
     .bind(MAX_DESCENDANT_DEPTH)
     .fetch_all(exec)

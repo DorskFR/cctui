@@ -6,6 +6,8 @@ import {
 	clampFollowupWhenCold,
 	followupPrefill,
 	followupPrompt,
+	nestsUnderParent,
+	previousSessionId,
 	routeEnter,
 	showColdOffer
 } from './followup';
@@ -92,5 +94,26 @@ describe('settings routing', () => {
 		expect(showColdOffer('off', true, false)).toBe(false);
 		expect(showColdOffer('offer', true, true)).toBe(false);
 		expect(showColdOffer('offer', false, false)).toBe(false);
+	});
+});
+
+describe('thread links', () => {
+	const at = (parent_id: string | null, relation?: string) => ({
+		parent_id,
+		metadata: relation ? { relation } : null
+	});
+
+	it('nests only a parented session that is neither a fork nor a follow-up', () => {
+		expect(nestsUnderParent(at('p'))).toBe(true);
+		expect(nestsUnderParent(at('p', 'subagent'))).toBe(true);
+		expect(nestsUnderParent(at('p', 'fork'))).toBe(false);
+		expect(nestsUnderParent(at('p', 'followup'))).toBe(false);
+		expect(nestsUnderParent(at(null))).toBe(false);
+	});
+
+	it('links back only from a follow-up', () => {
+		expect(previousSessionId(at('p', 'followup'))).toBe('p');
+		expect(previousSessionId(at('p', 'fork'))).toBeNull();
+		expect(previousSessionId(at('p'))).toBeNull();
 	});
 });

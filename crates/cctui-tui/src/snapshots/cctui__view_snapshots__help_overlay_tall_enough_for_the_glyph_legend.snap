@@ -1,6 +1,5 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 125
 expression: "render_screen_sized(&mut app, 100, height)"
 ---
  cctui  v0.0.0-test  ● ~3 live  ▪ 0/0 machines  $0.00 today  ! 1 need input — Ctrl+g
@@ -66,10 +65,11 @@ expression: "render_screen_sized(&mut app, 100, height)"
   │  Ctrl+c      Interrupt the turn                 Enter       Apply model and effort           │
   │  M           Change model and effort          Sidebar                                        │
   │  >           Todo and subagent sidebar          j / ↓       Next subagent                    │
-  │  u           Go to the parent session           k / ↑       Previous subagent                │
-  │  Ctrl+a      Toggle auto-approve                Enter       Open the subagent                │
-  │  v           Select transcript lines            > / Esc     Close the sidebar                │
-  │  Ctrl+o      Attach a file                      u           Go to the parent session         │
+  │  u           Go to the parent or previous       k / ↑       Previous subagent                │
+  │  U           Go to the follow-up session        Enter       Open the subagent                │
+  │  Ctrl+a      Toggle auto-approve                > / Esc     Close the sidebar                │
+  │  v           Select transcript lines            u           Go to the parent or previous     │
+  │  Ctrl+o      Attach a file                      U           Go to the follow-up session      │
   │  Ctrl+v      Paste an image from the clipboa… Permission card                                │
   │  o           Expand the focused line            y           Allow                            │
   │  z           Expand every thinking and resul…   n           Deny                             │

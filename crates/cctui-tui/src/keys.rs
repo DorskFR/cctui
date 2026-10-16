@@ -351,6 +351,7 @@ fn to_action(id: ActionId, chord: Chord) -> Option<Action> {
         ActionId::SidebarPrev => Action::Sidebar(SidebarAction::Move(-1)),
         ActionId::SidebarOpen => Action::Sidebar(SidebarAction::OpenChild),
         ActionId::OpenParent => Action::Sidebar(SidebarAction::OpenParent),
+        ActionId::OpenNext => Action::Sidebar(SidebarAction::OpenNext),
 
         ActionId::TerminalOpen => Action::Terminal(TerminalAction::Toggle),
         ActionId::TerminalClose => Action::Terminal(TerminalAction::Close),

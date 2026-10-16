@@ -8,6 +8,22 @@ export const INLINE_BRIEF_MAX_BYTES = 48 * 1024;
 export const BRIEF_FETCH_MAX_BYTES = 512 * 1024;
 export const DEFAULT_INSTRUCTION = 'Continue from this.';
 
+const LINKED_RELATIONS = new Set(['fork', FOLLOWUP_RELATION]);
+
+function relation(s: Pick<SessionListItem, 'metadata'>): unknown {
+	return (s.metadata as Record<string, unknown> | null)?.relation;
+}
+
+/** A child of its `parent_id`. A fork or follow-up only links to its source. */
+export function nestsUnderParent(s: Pick<SessionListItem, 'parent_id' | 'metadata'>): boolean {
+	return s.parent_id !== null && !LINKED_RELATIONS.has(relation(s) as string);
+}
+
+/** The session this follow-up continues. */
+export function previousSessionId(s: Pick<SessionListItem, 'parent_id' | 'metadata'>): string | null {
+	return relation(s) === FOLLOWUP_RELATION ? s.parent_id : null;
+}
+
 export function clampFollowupWhenCold(v: unknown): FollowupWhenCold {
 	return v === 'off' || v === 'default' ? v : 'offer';
 }

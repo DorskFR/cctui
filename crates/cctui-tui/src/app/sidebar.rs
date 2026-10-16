@@ -5,6 +5,7 @@ use cctui_proto::models::{Liveness, SessionStatus};
 
 use super::action::Effect;
 use super::conversation;
+use super::session_list::{nests_under_parent, previous_session_id};
 use super::state::{App, View};
 use super::toast::Level;
 
@@ -26,6 +27,7 @@ pub enum SidebarAction {
     Move(isize),
     OpenChild,
     OpenParent,
+    OpenNext,
 }
 
 pub fn reduce_sidebar(app: &mut App, action: SidebarAction) -> Vec<Effect> {
@@ -38,6 +40,7 @@ pub fn reduce_sidebar(app: &mut App, action: SidebarAction) -> Vec<Effect> {
         }
         SidebarAction::OpenChild => open_child(app),
         SidebarAction::OpenParent => open_parent(app),
+        SidebarAction::OpenNext => open_next(app),
     }
 }
 
@@ -100,6 +103,18 @@ fn open_parent(app: &mut App) -> Vec<Effect> {
     conversation::switch_to(app, parent)
 }
 
+fn open_next(app: &mut App) -> Vec<Effect> {
+    let Some(next) = app.selected_session().and_then(|s| s.next_session_id.clone()) else {
+        app.toast(Level::Info, "no follow-up continues this session");
+        return Vec::new();
+    };
+    if !app.sessions.iter().any(|s| s.id == next) {
+        app.toast(Level::Warn, "the follow-up session is not in the list");
+        return Vec::new();
+    }
+    conversation::switch_to(app, next)
+}
+
 fn children_of(app: &App) -> Vec<ChildRow> {
     app.selected_session_id().map(|id| child_rows(&app.sessions, &id)).unwrap_or_default()
 }
@@ -119,7 +134,7 @@ pub struct ChildRow {
 pub fn child_rows(sessions: &[SessionListItem], parent_id: &str) -> Vec<ChildRow> {
     sessions
         .iter()
-        .filter(|s| s.parent_id.as_deref() == Some(parent_id))
+        .filter(|s| s.parent_id.as_deref() == Some(parent_id) && nests_under_parent(s))
         .map(|s| ChildRow {
             id: s.id.clone(),
             label: child_label(s),
@@ -172,6 +187,10 @@ pub struct Panel {
     pub running: usize,
     /// The parent's label, when there is a parent in the list to go up to.
     pub parent: Option<String>,
+    /// The parent is the session this follow-up continues.
+    pub parent_is_previous: bool,
+    /// The follow-up's label, when one continues this session in the list.
+    pub next: Option<String>,
     pub cursor: usize,
 }
 
@@ -184,12 +203,18 @@ pub fn panel(app: &App, session: &SessionListItem) -> Panel {
         .parent_id
         .as_ref()
         .and_then(|id| app.sessions.iter().find(|s| s.id == *id).map(child_label));
+    let next = session
+        .next_session_id
+        .as_ref()
+        .and_then(|id| app.sessions.iter().find(|s| s.id == *id).map(child_label));
     Panel {
         done: session.todos.iter().filter(|t| t.status == "completed").count(),
         todos: session.todos.clone(),
         children,
         running,
         parent,
+        parent_is_previous: previous_session_id(session).is_some(),
+        next,
         cursor,
     }
 }
@@ -335,6 +360,33 @@ mod tests {
 
         assert!(sidebar(&mut app, SidebarAction::OpenParent).is_empty());
         assert!(app.toasts.latest().expect("a toast").text.contains("no parent"));
+    }
+
+    #[test]
+    fn a_followup_thread_links_previous_and_next_instead_of_nesting() {
+        let mut app = app();
+        let mut next = subagent("s-next", "s-parent", "next");
+        next.metadata = serde_json::json!({"project_name": "next", "relation": "followup"});
+        app.sessions.push(next);
+        app.sessions[0].next_session_id = Some("s-next".into());
+        app.update_aggregates();
+        assert_eq!(child_rows(&app.sessions, "s-parent").len(), 2, "the follow-up is no child");
+
+        open_parent_conversation(&mut app);
+        let source = panel(&app, &app.sessions[0]);
+        assert_eq!(source.next.as_deref(), Some("next"));
+        let effects = sidebar(&mut app, SidebarAction::OpenNext);
+        assert_eq!(app.selected_session_id().as_deref(), Some("s-next"));
+        assert!(effects.iter().any(|e| matches!(e, Effect::Subscribe { .. })));
+
+        let followup = app.selected_session().expect("selected").clone();
+        let p = panel(&app, &followup);
+        assert!(p.parent_is_previous);
+        assert_eq!(p.next, None);
+        assert!(sidebar(&mut app, SidebarAction::OpenNext).is_empty());
+        assert!(app.toasts.latest().expect("a toast").text.contains("no follow-up"));
+        sidebar(&mut app, SidebarAction::OpenParent);
+        assert_eq!(app.selected_session_id().as_deref(), Some("s-parent"));
     }
 
     #[test]
