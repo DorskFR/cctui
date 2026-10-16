@@ -3,6 +3,7 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { JsonValue } from '@bindings/serde_json/JsonValue';
 import {
 	accountTrafficWarning,
+	archivedDescendantsOf,
 	branchOf,
 	bucketInSection,
 	colorHueOf,
@@ -39,6 +40,7 @@ import {
 	sessionHrefFor,
 	sessionIdFromLocation,
 	sortSessions,
+	nest,
 	nextSort,
 	idsForSection,
 	toolActivity,
@@ -965,5 +967,30 @@ describe('groupChildren', () => {
 
 	it('has no groups for a parent with no children', () => {
 		expect(groupChildren([])).toEqual([]);
+	});
+});
+
+describe('linked relations', () => {
+	const linked = (id: string, parent: string | null, relation: string | null, over: Partial<SessionListItem> = {}) =>
+		session({ id, parent_id: parent, metadata: relation ? { relation } : {}, ...over });
+
+	it('keeps follow-ups and forks top-level and nests only real children', () => {
+		const rows = [
+			linked('src', null, null),
+			linked('sub', 'src', 'subagent'),
+			linked('fork', 'src', 'fork'),
+			linked('next', 'src', 'followup')
+		];
+		const n = nest(rows);
+		expect(n.topLevel.map((s) => s.id)).toEqual(['src', 'fork', 'next']);
+		expect(n.childGroups.get('src')?.flatMap((g) => g.agents.map((s) => s.id))).toEqual(['sub']);
+	});
+
+	it('does not pull archived follow-ups into a pinned source', () => {
+		const archived = [
+			linked('sub', 'src', 'subagent', { status: 'archived' }),
+			linked('next', 'src', 'followup', { status: 'archived' })
+		];
+		expect(archivedDescendantsOf(new Set(['src']), archived).map((s) => s.id)).toEqual(['sub']);
 	});
 });

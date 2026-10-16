@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-client"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "async-trait",
  "cctui-proto",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-clientcore"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "cctui-proto",
  "serde",
@@ -1049,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "axum",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1255,7 +1255,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "serde",
  "ts-rs",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "caps",
@@ -1345,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.24.13"
+version = "0.24.14"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4601,9 +4601,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -5507,7 +5507,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",

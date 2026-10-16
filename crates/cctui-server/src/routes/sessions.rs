@@ -16,6 +16,7 @@ use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, Sessio
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
+use crate::followup::{nests_under_parent, next_session_sql};
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::resolve_owned_machine;
 use crate::state::AppState;
@@ -466,6 +467,7 @@ fn skeleton_list_item(
         last_keepalive_at: None,
         launch_at: None,
         launch_error: None,
+        next_session_id: None,
     }
 }
 
@@ -591,13 +593,18 @@ struct SignalRow {
     archived_by: Option<String>,
     keepalive_json: Option<serde_json::Value>,
     last_keepalive_at: Option<DateTime<Utc>>,
+    next_session_id: Option<String>,
 }
 
-const SIGNAL_SQL: &str = "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
+const SIGNAL_SQL: &str = concat!(
+    "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
             soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
             children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
-            keepalive_json, last_keepalive_at \
-     FROM sessions WHERE id = ANY($1)";
+            keepalive_json, last_keepalive_at, ",
+    next_session_sql!(),
+    " AS next_session_id \
+     FROM sessions WHERE id = ANY($1)"
+);
 
 /// Everything [`enrich`] merges into the listed items, keyed by session id
 /// (machines by `machines.id` or `machines.name`), fetched up front so the
@@ -791,13 +798,15 @@ async fn fetch_user_actions(
     session_ids: &[String],
 ) -> Result<HashMap<String, cctui_proto::api::UserActionCounts>, AppError> {
     type CountRow = (String, Option<String>, i64, i64);
-    let rows: Vec<CountRow> = sqlx::query_as(
-        "SELECT ua.session_id, s.parent_id, count(*), \
+    let rows: Vec<CountRow> = sqlx::query_as(concat!(
+        "SELECT ua.session_id, CASE WHEN ",
+        nests_under_parent!("s"),
+        " THEN s.parent_id END AS parent, count(*), \
          count(*) FILTER (WHERE ua.blocking) \
          FROM session_user_actions ua JOIN sessions s ON s.id = ua.session_id \
          WHERE ua.status = 'open' AND (ua.session_id = ANY($1) OR s.parent_id = ANY($1)) \
-         GROUP BY ua.session_id, s.parent_id",
-    )
+         GROUP BY 1, 2",
+    ))
     .bind(session_ids)
     .fetch_all(&state.pool)
     .await?;
@@ -1020,6 +1029,7 @@ fn apply_signals(
     );
     s.keepalive = row.keepalive_json.and_then(|v| serde_json::from_value(v).ok());
     s.last_keepalive_at = row.last_keepalive_at;
+    s.next_session_id = row.next_session_id;
     s.activity_detail = row.activity;
     s.last_tool_at = row.last_tool_at;
     s.last_tool_name = row.last_tool_name;
@@ -1667,9 +1677,11 @@ pub async fn get_session(
                 last_keepalive_at: None,
                 launch_at: None,
                 launch_error: None,
+                next_session_id: None,
             };
             item.user_actions =
                 fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
+            item.next_session_id = crate::followup::next_of(&state.pool, &item.id).await?;
             return Ok(Json(item));
         }
     }
@@ -1740,6 +1752,7 @@ pub async fn get_session(
         last_keepalive_at: None,
         launch_at: None,
         launch_error: None,
+        next_session_id: None,
     };
     let end: Option<EndRow> = sqlx::query_as(
         "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
@@ -1767,6 +1780,7 @@ pub async fn get_session(
     }
     item.user_actions =
         fetch_user_actions(&state, std::slice::from_ref(&item.id)).await?.remove(&item.id);
+    item.next_session_id = crate::followup::next_of(&state.pool, &item.id).await?;
     Ok(Json(item))
 }
 

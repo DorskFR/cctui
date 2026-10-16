@@ -180,6 +180,7 @@ pub fn authorize(
 }
 
 use crate::error::AppError;
+use crate::followup::nests_under_parent;
 use crate::state::AppState;
 
 fn deny(code: StatusCode, msg: impl Into<String>) -> AppError {
@@ -357,16 +358,17 @@ fn tree_grant_usd(cap: Option<&SpawnCapability>, authorized: &Authorized) -> f64
 /// A completed child that is not archived still counts: the parent can reattach
 /// to it by `session_id`.
 async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u32 {
-    let n: i64 = sqlx::query_scalar(
+    let n: i64 = sqlx::query_scalar(concat!(
         "SELECT count(*) FROM sessions s \
-         WHERE s.parent_id = $1 \
-         AND s.status <> 'archived' \
+         WHERE s.parent_id = $1 AND ",
+        nests_under_parent!("s"),
+        " AND s.status <> 'archived' \
          AND NOT EXISTS ( \
              SELECT 1 FROM stream_events e \
              WHERE e.session_id = s.id AND e.event_type = 'session_ended' \
              AND e.payload->>'reason' <> 'Completed' \
          )",
-    )
+    ))
     .bind(parent_id)
     .fetch_one(exec)
     .await

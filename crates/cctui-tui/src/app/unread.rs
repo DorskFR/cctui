@@ -126,7 +126,11 @@ pub fn keeps_row(sessions: &[SessionListItem], s: &SessionListItem) -> bool {
     if s.unread_count > 0 {
         return true;
     }
-    sessions.iter().any(|k| k.unread_count > 0 && k.parent_id.as_deref() == Some(s.id.as_str()))
+    sessions.iter().any(|k| {
+        k.unread_count > 0
+            && k.parent_id.as_deref() == Some(s.id.as_str())
+            && super::session_list::nests_under_parent(k)
+    })
 }
 
 #[cfg(test)]
