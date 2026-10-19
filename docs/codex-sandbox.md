@@ -27,13 +27,25 @@ the cctui daemon probes the sandbox itself, at codex-adapter start and whenever
 a `codex update` moves the binary:
 
 ```
+codex sandbox -P :workspace -C <tmpdir> -- /bin/true
+```
+
+Codex releases before 0.163 have no `-P` (`--permission-profile`); when codex
+rejects it as an unexpected argument, the probe reruns with the legacy form:
+
+```
 codex sandbox -c 'sandbox_mode="workspace-write"' -C <tmpdir> -- /bin/true
 ```
+
+A failure carrying a userns marker (like the one above) is **userns denied**.
+Any other failure is **probe failed**: the verdict keeps the first two stderr
+lines and is logged, but it does not gate spawns, since it says nothing about
+whether bubblewrap works.
 
 The verdict rides the daemon heartbeat (`harness_report.codex_sandbox`) and
 shows as a badge on the machine in **Settings → harness auto-update**.
 
-## What cctui does with a broken sandbox
+## What cctui does when user namespaces are denied
 
 | Permission mode | Behaviour |
 | --- | --- |

@@ -134,6 +134,9 @@ fn uses_uds_mode(config: &serde_json::Value) -> bool {
 /// human-approved and codex reruns a bwrap failure unsandboxed after approval,
 /// so the session works; `yolo` asks for no sandbox in the first place. `auto`
 /// is the one posture that silently relies on the sandbox for every command.
+///
+/// Only a userns denial refuses: an inconclusive probe says nothing about the
+/// sandbox, and refusing on it would block every `auto` spawn with the wrong fix.
 fn sandbox_refusal(
     mode: Option<cctui_proto::adapter::PermissionMode>,
     sandbox: Option<&cctui_proto::harness::CodexSandbox>,
@@ -145,9 +148,16 @@ fn sandbox_refusal(
     if fallback == app_server::SandboxFallback::FullAccess {
         return None;
     }
-    let sandbox = sandbox?;
-    let detail = sandbox.detail()?;
-    Some(format!("{}\n{detail}", cctui_proto::harness::CODEX_SANDBOX_FIX))
+    match sandbox? {
+        cctui_proto::harness::CodexSandbox::UsernsDenied { detail } => {
+            Some(format!("{}\n{detail}", cctui_proto::harness::CODEX_SANDBOX_FIX))
+        }
+        cctui_proto::harness::CodexSandbox::Unknown { detail } => {
+            tracing::warn!(%detail, "codex sandbox probe inconclusive; starting the auto spawn");
+            None
+        }
+        cctui_proto::harness::CodexSandbox::Ok => None,
+    }
 }
 
 pub struct CodexAdapter;
@@ -1298,15 +1308,16 @@ mod tests {
             );
         }
 
-        /// An unrecognized probe failure still gates: cctui cannot tell that
-        /// commands will work, and starting a session where every one fails is
-        /// the outcome this exists to prevent.
         #[test]
-        fn an_unknown_probe_failure_also_refuses() {
-            let unknown = CodexSandbox::Unknown { detail: "bwrap: something else".to_owned() };
+        fn an_unknown_probe_failure_does_not_refuse_an_auto_spawn() {
+            let unknown = CodexSandbox::Unknown {
+                detail: "error: the following required arguments were not provided: \
+                         --permission-profile <NAME>"
+                    .to_owned(),
+            };
             assert!(
                 sandbox_refusal(Some(PermissionMode::Auto), Some(&unknown), SandboxFallback::Error)
-                    .is_some()
+                    .is_none()
             );
         }
 
