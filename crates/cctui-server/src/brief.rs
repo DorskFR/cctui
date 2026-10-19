@@ -358,8 +358,7 @@ mod tests {
             );
             let turns = collect_turns("claude-code", vec![user(&first)]);
             assert_eq!(
-                turns[0].text,
-                "(continued from session \"wave \"3\"\" s-a)\n\nNow add tests.",
+                turns[0].text, "(continued from session \"wave \"3\"\" s-a)\n\nNow add tests.",
                 "{tag}"
             );
         }

@@ -1,8 +1,8 @@
-//! The wrappers cctui injects into agent prompts, and the splitter that tells
-//! them apart from the human's words. Keep the tag names in sync with the
-//! webui's list in `webui/src/lib/components/organisms/conversation/format.ts`.
+//! The wrappers cctui injects into agent prompts.
 //!
-//! Stored history is immutable, so readers accept the legacy names forever.
+//! Keep the tag names in sync with the webui's list in
+//! `webui/src/lib/components/organisms/conversation/format.ts`. Stored history
+//! is immutable, so readers accept the legacy names forever.
 
 pub const SESSION_CONTEXT: &str = "cctui-session-context";
 pub const PREVIOUS_CONVERSATION: &str = "cctui-previous-conversation";
@@ -157,6 +157,8 @@ fn balanced_close(s: &str, tag: &str, close: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    type Case<'a> = (&'a str, &'a str, &'a [(InjectedKind, &'a str)], &'a str);
+
     fn kinds(content: &str) -> (Vec<(InjectedKind, &str)>, &str) {
         let (blocks, prose) = split_injected(content);
         (blocks.iter().map(|b| (b.kind, b.tag)).collect(), prose)
@@ -165,7 +167,7 @@ mod tests {
     #[test]
     fn the_splitter_table() {
         use InjectedKind::{PreviousConversation as Prev, SessionContext as Ctx};
-        let cases: &[(&str, &str, &[(InjectedKind, &str)], &str)] = &[
+        let cases: &[Case<'_>] = &[
             (
                 "leading new name",
                 "<cctui-session-context>\nsession: a\n</cctui-session-context>\n\nfix the bug",
@@ -218,12 +220,7 @@ mod tests {
                 &[],
                 "<session-contextual>x</session-contextual> hi",
             ),
-            (
-                "a leading === alone is prose",
-                "===\nheading",
-                &[],
-                "===\nheading",
-            ),
+            ("a leading === alone is prose", "===\nheading", &[], "===\nheading"),
             (
                 "peer envelopes are not context",
                 "<cctui-peer-message from=\"s1\">\nhi\n</cctui-peer-message>",

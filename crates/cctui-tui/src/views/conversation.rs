@@ -577,7 +577,8 @@ fn context_rows(line: &ConversationLine, expanded: bool) -> Vec<Line<'static>> {
 fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> {
     let mut rows = render_kind(line, opts);
     if opts.show_context && !line.context.is_empty() {
-        let at = rows.iter().position(|row| !row.spans.is_empty()).unwrap_or(rows.len());
+        let len = rows.len();
+        let at = rows.iter().position(|row| !row.spans.is_empty()).unwrap_or(len);
         let tail = rows.split_off(at);
         rows.extend(context_rows(line, opts.expanded));
         rows.extend(tail);

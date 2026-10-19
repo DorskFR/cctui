@@ -15,7 +15,12 @@ const ctxOf = (filter: MsgFilter): LineBuildCtx => ({
 const ctx = (overrides: Partial<Record<MsgCategory, boolean>> = {}) =>
 	ctxOf({ ...allFilter(true), ...overrides });
 
-const user = (content: string, ts: number, seq: number | null = null): AgentEvent => ({
+const user = (
+	content: string,
+	ts: number,
+	seq: number | null = null,
+	turnId: string | null = null
+): AgentEvent => ({
 	type: 'text',
 	content: `▷ User: ${content}`,
 	meta: false,
@@ -23,7 +28,8 @@ const user = (content: string, ts: number, seq: number | null = null): AgentEven
 	ts,
 	message_id: null,
 	usage: null,
-	seq
+	seq,
+	turn_id: turnId
 });
 
 const SESSION = '<cctui-session-context>\nsession: lane e\ncwd: /w\n</cctui-session-context>';
@@ -101,10 +107,16 @@ describe('injected context segments', () => {
 		expect(new Set(keys).size).toBe(keys.length);
 	});
 
-	it('collapses a duplicate encoding of the same segmented turn', () => {
+	it('collapses the encodings of one segmented turn, which share its turn_id', () => {
 		const raw = `${SESSION}\n\nfix the bug`;
-		const lines = buildLines([user(raw, 1), user(raw, 1)], ctx());
+		const lines = buildLines([user(raw, 1, null, 't1'), user(raw, 1, null, 't1')], ctx());
 		expect(lines.map((l) => l.role)).toEqual(['context', 'user']);
+	});
+
+	it('tints the prose of a consecutive re-injection without a turn_id as poll', () => {
+		const raw = `${SESSION}\n\nfix the bug`;
+		const lines = buildLines([user(raw, 1), user(raw, 2)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['context', 'user', 'context', 'poll']);
 	});
 
 	it('hides only the context lines when the context filter is off', () => {

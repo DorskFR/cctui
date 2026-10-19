@@ -1,7 +1,9 @@
 use cctui_proto::injected::{InjectedBlock, InjectedKind, split_injected};
 use cctui_proto::ws::AgentEvent;
 
-use super::state::{ContextBlock, ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter};
+use super::state::{
+    ContextBlock, ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter,
+};
 use super::transcript;
 
 fn extract_tag_content(text: &str, tag: &str) -> Option<String> {

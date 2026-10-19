@@ -186,7 +186,8 @@ mod tests {
 
     #[test]
     fn the_namespaced_peer_envelope_parses_like_the_legacy_one() {
-        let text = "<cctui-peer-message from=\"a-1\" from-name=\"worker\">\nhi\n</cctui-peer-message>";
+        let text =
+            "<cctui-peer-message from=\"a-1\" from-name=\"worker\">\nhi\n</cctui-peer-message>";
         let peer = parse_peer_message(text).expect("a peer message");
         assert_eq!(peer.from.as_deref(), Some("worker"));
         assert_eq!(peer.body, "hi");
