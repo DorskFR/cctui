@@ -1,4 +1,5 @@
 import type { SessionListItem } from '@bindings/SessionListItem';
+import { CCTUI_TAGS } from '$lib/components/organisms/conversation/format';
 
 export type FollowupWhenCold = 'off' | 'offer' | 'default';
 
@@ -47,15 +48,17 @@ export function followupPrompt(
 	instruction: string = DEFAULT_INSTRUCTION
 ): FollowupPrompt {
 	const name = attr(session.name || session.working_dir);
-	const open = `<previous-conversation session="${name}" id="${attr(session.id)}">`;
+	const tag = CCTUI_TAGS.previousConversation;
+	const open = `<${tag} session="${name}" id="${attr(session.id)}">`;
+	const close = `</${tag}>`;
 	const ask = instruction.trim() || DEFAULT_INSTRUCTION;
 	if (byteLength(brief) > INLINE_BRIEF_MAX_BYTES) {
 		return {
-			prompt: `${open}\nThe transcript is in the attached file ${BRIEF_FILE_NAME}. Read it first.\n</previous-conversation>\n\n===\n\n${ask}`,
-			file: `${open}\n${brief}\n</previous-conversation>\n`
+			prompt: `${open}\nThe transcript is in the attached file ${BRIEF_FILE_NAME}. Read it first.\n${close}\n\n${ask}`,
+			file: `${open}\n${brief}\n${close}\n`
 		};
 	}
-	return { prompt: `${open}\n${brief}\n</previous-conversation>\n\n===\n\n${ask}`, file: null };
+	return { prompt: `${open}\n${brief}\n${close}\n\n${ask}`, file: null };
 }
 
 export function followupPrefill(

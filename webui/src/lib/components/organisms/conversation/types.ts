@@ -1,7 +1,7 @@
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 import { m } from '$lib/paraglide/messages';
 import type { UserUploadRefs } from './lines';
-import type { HarnessCommand, TaskNotification } from './format';
+import type { HarnessCommand, InjectedKind, TaskNotification } from './format';
 
 export type MsgCategory =
 	| 'assistant'
@@ -9,6 +9,7 @@ export type MsgCategory =
 	| 'redacted'
 	| 'attachment'
 	| 'user'
+	| 'context'
 	| 'poll'
 	| 'peer'
 	| 'system'
@@ -42,6 +43,8 @@ export function msgCategoryLabel(id: MsgCategory): string {
 			return m.conversation_filter_attachment();
 		case 'user':
 			return m.conversation_filter_user();
+		case 'context':
+			return m.conversation_filter_context();
 		case 'poll':
 			return m.conversation_filter_poll();
 		case 'peer':
@@ -137,11 +140,26 @@ export interface TurnSummary {
 	ts: number;
 }
 
+// A cctui-injected block split off the head of a user turn.
+export interface ContextSegment {
+	kind: InjectedKind;
+	/** Position among the turn's blocks. */
+	index: number;
+	/** The turn's prose line follows and lends its key. */
+	owned: boolean;
+	/** Key base of the turn when no prose line follows. */
+	eventBase: string;
+	/** Previous conversation: the source session's name and id. */
+	session?: string;
+	sessionId?: string;
+}
+
 export interface Line {
 	role:
 		| 'assistant'
 		| 'thinking'
 		| 'user'
+		| 'context'
 		| 'poll'
 		| 'peer'
 		| 'system'
@@ -212,6 +230,7 @@ export interface Line {
 	stopHook?: string;
 	// `file-history-snapshot|delta` provenance for this tool call.
 	fileHistory?: string[];
+	context?: ContextSegment;
 	peerFrom?: string;
 	/** Room a peer line arrived through; absent for a direct peer message. */
 	peerRoom?: string;

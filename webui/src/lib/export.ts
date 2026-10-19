@@ -30,7 +30,11 @@ import {
   resultCategory,
   type PollSeen,
 } from "$lib/components/organisms/conversation/lines";
-import { looksMeta } from "$lib/components/organisms/conversation/format";
+import {
+  looksMeta,
+  splitInjected,
+  type InjectedBlock,
+} from "$lib/components/organisms/conversation/format";
 import {
   renderMarkdown,
   highlightBlock,
@@ -68,6 +72,7 @@ interface Block {
     | "assistant"
     | "thinking"
     | "user"
+    | "context"
     | "poll"
     | "peer"
     | "system"
@@ -157,11 +162,18 @@ function formatAsk(input: unknown): string | null {
 const md = (s: string, opts: ExportOpts) =>
   renderMarkdown(s, { tables: opts.prettyTables });
 
+function contextLabel(b: InjectedBlock): string {
+  if (b.kind !== "previous-conversation") return "Session context";
+  return b.attrs.session
+    ? `Previous conversation · ${b.attrs.session}`
+    : "Previous conversation";
+}
+
 function toBlock(
   e: AgentEvent,
   opts: ExportOpts,
   seen: PollSeen,
-): Block | null {
+): Block | Block[] | null {
   if (breaksPollRun(e)) seen.last = null;
   switch (e.type) {
     case "text": {
@@ -185,20 +197,35 @@ function toBlock(
         return { role: "user", ts: Number(e.ts), html: md(e.content, opts) };
       }
       if (e.content.startsWith(USER_PREFIX)) {
-        const content = e.content.slice(USER_PREFIX.length).trimStart();
+        const raw = e.content.slice(USER_PREFIX.length).trimStart();
+        const { blocks, prose: content } = splitInjected(raw);
+        const head: Block[] = visible(opts, "context")
+          ? blocks.map((b) => ({
+              role: "context",
+              ts: Number(e.ts),
+              label: contextLabel(b),
+              html: md(b.body, opts),
+            }))
+          : [];
+        const withHead = (b: Block | null): Block[] | null => {
+          const all = b ? [...head, b] : head;
+          return all.length ? all : null;
+        };
+        if (!content.trim()) return withHead(null);
         const peer = parsePeerMessage(content);
         if (peer) {
-          if (!visible(opts, "peer")) return null;
-          return {
+          if (!visible(opts, "peer")) return withHead(null);
+          return withHead({
             role: "peer",
             ts: Number(e.ts),
             label: peer.from ?? undefined,
             html: md(peer.body, opts),
-          };
+          });
         }
-        const role = pollRole(content, e.meta || looksMeta(content), seen, e.turn_id);
-        if (!visible(opts, role)) return null;
-        return { role, ts: Number(e.ts), html: md(content, opts) };
+        const meta = looksMeta(content) || (!blocks.length && e.meta);
+        const role = pollRole(content, meta, seen, e.turn_id);
+        if (!visible(opts, role)) return withHead(null);
+        return withHead({ role, ts: Number(e.ts), html: md(content, opts) });
       }
       if (!visible(opts, e.kind === "attachment" ? "attachment" : "assistant"))
         return null;
@@ -272,6 +299,7 @@ const ROLE_LABEL: Record<Block["role"], string> = {
   assistant: "Assistant",
   thinking: "Thinking",
   user: "User",
+  context: "Context",
   poll: "Poll",
   peer: "Peer",
   system: "System",
@@ -313,6 +341,7 @@ const TOKEN_FALLBACKS: Record<string, string> = {
   "--role-system": "#b48ef0",
   "--role-peer": "#cc7fb0",
   "--role-poll": "#f09a5d",
+  "--role-context": "#8a9bb3",
   "--role-tool": "#f0b454",
   "--role-mcp": "#4fd6cf",
   "--role-thinking": "#d69d76",
@@ -364,6 +393,7 @@ header h1{font-size:18px;margin:0 0 8px;word-break:break-word}
 .user{border-color:color-mix(in srgb,var(--role-user) 45%,transparent);border-left-color:var(--role-user);background:color-mix(in srgb,var(--role-user) 14%,var(--c-bg-elev))}.user .who .r{color:var(--role-user)}
 .assistant{border-color:color-mix(in srgb,var(--role-assistant) 28%,var(--c-border));border-left-color:var(--role-assistant);background:color-mix(in srgb,var(--role-assistant) 7%,var(--c-bg-elev))}.assistant .who .r{color:var(--role-assistant)}
 .peer{border-color:color-mix(in srgb,var(--role-peer) 40%,transparent);border-left-color:var(--role-peer);background:color-mix(in srgb,var(--role-peer) 12%,var(--c-bg-elev))}.peer .who .r{color:var(--role-peer)}
+.context{border-color:color-mix(in srgb,var(--role-context) 35%,transparent);border-left-color:var(--role-context);background:color-mix(in srgb,var(--role-context) 8%,var(--c-bg-elev));font-size:12px}.context .who .r{color:var(--role-context)}
 .poll{border-color:color-mix(in srgb,var(--role-poll) 40%,transparent);border-left-color:var(--role-poll);background:color-mix(in srgb,var(--role-poll) 12%,var(--c-bg-elev))}.poll .who .r{color:var(--role-poll)}
 .system{border-color:color-mix(in srgb,var(--role-system) 24%,var(--c-border));border-left-color:var(--role-system);background:color-mix(in srgb,var(--role-system) 7%,var(--c-bg-elev));opacity:.9}.system .who .r{color:var(--role-system)}
 .tool{border-color:color-mix(in srgb,var(--role-tool) 26%,var(--c-border));border-left-color:var(--role-tool);background:color-mix(in srgb,var(--role-tool) 6%,var(--c-bg-elev))}.tool .who .r{color:var(--role-tool)}
@@ -407,8 +437,7 @@ export function buildConversationHtml(
 ): string {
   const seen = newPollSeen();
   const blocks = events
-    .map((e) => toBlock(e, opts, seen))
-    .filter((b): b is Block => b !== null);
+    .flatMap((e) => toBlock(e, opts, seen) ?? []);
   const title = session.name || session.working_dir || session.id;
   const first = blocks[0]?.ts;
   const last = blocks[blocks.length - 1]?.ts;
@@ -495,18 +524,28 @@ function toMarkdownBlock(
         return `**User:**\n\n${e.content}`;
       }
       if (e.content.startsWith(USER_PREFIX)) {
-        const content = e.content.slice(USER_PREFIX.length).trimStart();
+        const raw = e.content.slice(USER_PREFIX.length).trimStart();
+        const { blocks, prose: content } = splitInjected(raw);
+        const head = visible(opts, "context")
+          ? blocks.map((b) => `**${contextLabel(b)}:**\n\n${b.body}`)
+          : [];
+        const withHead = (part: string | null): string | null => {
+          const all = part ? [...head, part] : head;
+          return all.length ? all.join("\n\n") : null;
+        };
+        if (!content.trim()) return withHead(null);
         const peer = parsePeerMessage(content);
         if (peer) {
-          if (!visible(opts, "peer")) return null;
+          if (!visible(opts, "peer")) return withHead(null);
           const who = peer.from ? `Peer · ${peer.from}` : "Peer";
-          return `**${who}:**\n\n${peer.body}`;
+          return withHead(`**${who}:**\n\n${peer.body}`);
         }
-        const role = pollRole(content, e.meta || looksMeta(content), seen, e.turn_id);
-        if (!visible(opts, role)) return null;
+        const meta = looksMeta(content) || (!blocks.length && e.meta);
+        const role = pollRole(content, meta, seen, e.turn_id);
+        if (!visible(opts, role)) return withHead(null);
         const who =
           role === "poll" ? "Poll" : role === "system" ? "System" : "User";
-        return `**${who}:**\n\n${content}`;
+        return withHead(`**${who}:**\n\n${content}`);
       }
       if (!visible(opts, e.kind === "attachment" ? "attachment" : "assistant"))
         return null;
