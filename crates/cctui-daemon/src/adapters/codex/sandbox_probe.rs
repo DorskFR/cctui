@@ -4,12 +4,15 @@
 //! sandboxed command fails, and the only signal codex emits — a connection-level
 //! `configWarning` — arrives before any thread exists, so on a shared
 //! app-server it reaches no session. The probe runs a sandboxed `/bin/true`
-//! instead and classifies the failure.
+//! instead and classifies the failure. Codex 0.163 made a permission profile
+//! mandatory, so the probe passes `-P :workspace` and falls back to the legacy
+//! `sandbox_mode` override only when codex rejects `-P`.
 //!
 //! The result is cached against the `realpath` of the codex binary: it moves on
 //! every codex release, and a new binary is exactly when the answer can change.
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -27,33 +30,55 @@ const USERNS_MARKERS: &[&str] = &[
     "No permissions to create a new namespace",
 ];
 
+/// Clap's wording when codex predates an argument it was given.
+const UNKNOWN_ARG_MARKERS: &[&str] =
+    &["unexpected argument", "unrecognized option", "wasn't expected"];
+
 #[derive(Debug, Clone, Default)]
 pub struct ProbeOutput {
     pub ok: bool,
     pub stderr: String,
 }
 
+/// How the probe names the sandbox policy: codex 0.163 requires a permission
+/// profile, older releases only know the `sandbox_mode` config override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeForm {
+    Profile,
+    Legacy,
+}
+
+#[must_use]
+pub fn probe_args(form: ProbeForm, dir: &Path) -> Vec<OsString> {
+    let (flag, value) = match form {
+        ProbeForm::Profile => ("-P", ":workspace"),
+        ProbeForm::Legacy => ("-c", r#"sandbox_mode="workspace-write""#),
+    };
+    vec![
+        OsString::from("sandbox"),
+        OsString::from(flag),
+        OsString::from(value),
+        OsString::from("-C"),
+        dir.as_os_str().to_owned(),
+        OsString::from("--"),
+        OsString::from("/bin/true"),
+    ]
+}
+
 /// The one side-effecting step, behind a trait so tests never need a real codex.
 #[async_trait::async_trait]
 pub trait SandboxRunner: Send + Sync {
-    async fn run(&self, bin: &str) -> std::io::Result<ProbeOutput>;
+    async fn run(&self, bin: &str, args: &[OsString]) -> std::io::Result<ProbeOutput>;
 }
 
 pub struct RealRunner;
 
 #[async_trait::async_trait]
 impl SandboxRunner for RealRunner {
-    async fn run(&self, bin: &str) -> std::io::Result<ProbeOutput> {
-        let dir = std::env::temp_dir();
+    async fn run(&self, bin: &str, args: &[OsString]) -> std::io::Result<ProbeOutput> {
         let mut cmd = tokio::process::Command::new(bin);
-        cmd.arg("sandbox")
-            .arg("-c")
-            .arg(r#"sandbox_mode="workspace-write""#)
-            .arg("-C")
-            .arg(&dir)
-            .arg("--")
-            .arg("/bin/true")
-            .current_dir(&dir)
+        cmd.args(args)
+            .current_dir(std::env::temp_dir())
             .env("PATH", crate::childenv::child_path())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -89,13 +114,20 @@ pub fn bwrap_failure(output: &str) -> Option<&'static str> {
     userns_marker(output)
 }
 
-fn first_useful_line(stderr: &str) -> String {
-    stderr
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("codex sandbox probe failed with no output")
-        .to_owned()
+/// The first two non-empty stderr lines: a clap usage error puts the missing
+/// or rejected argument on the second.
+fn useful_lines(stderr: &str) -> String {
+    let lines: Vec<&str> =
+        stderr.lines().map(str::trim).filter(|l| !l.is_empty()).take(2).collect();
+    if lines.is_empty() {
+        "codex sandbox probe failed with no output".to_owned()
+    } else {
+        lines.join(" ")
+    }
+}
+
+fn rejects_an_argument(out: &ProbeOutput) -> bool {
+    !out.ok && UNKNOWN_ARG_MARKERS.iter().any(|m| out.stderr.contains(m))
 }
 
 #[must_use]
@@ -103,7 +135,7 @@ pub fn classify(out: &ProbeOutput) -> CodexSandbox {
     if out.ok {
         return CodexSandbox::Ok;
     }
-    let detail = first_useful_line(&out.stderr);
+    let detail = useful_lines(&out.stderr);
     if userns_marker(&out.stderr).is_some() {
         CodexSandbox::UsernsDenied { detail }
     } else {
@@ -112,7 +144,12 @@ pub fn classify(out: &ProbeOutput) -> CodexSandbox {
 }
 
 pub async fn probe_with(bin: &str, runner: &dyn SandboxRunner) -> CodexSandbox {
-    match runner.run(bin).await {
+    let dir = std::env::temp_dir();
+    let mut result = runner.run(bin, &probe_args(ProbeForm::Profile, &dir)).await;
+    if result.as_ref().is_ok_and(rejects_an_argument) {
+        result = runner.run(bin, &probe_args(ProbeForm::Legacy, &dir)).await;
+    }
+    match result {
         Ok(out) => classify(&out),
         Err(err) => CodexSandbox::Unknown { detail: format!("could not run the probe: {err}") },
     }
@@ -208,17 +245,71 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SandboxRunner for Fake {
-        async fn run(&self, _bin: &str) -> std::io::Result<ProbeOutput> {
+        async fn run(&self, _bin: &str, _args: &[OsString]) -> std::io::Result<ProbeOutput> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.out.clone())
         }
     }
 
+    /// Answers each argv with the first scripted output whose predicate
+    /// matches it, and records every argv it was given.
+    type Reply = (fn(&[OsString]) -> bool, ProbeOutput);
+
+    struct Scripted {
+        replies: Vec<Reply>,
+        seen: Mutex<Vec<Vec<OsString>>>,
+    }
+
+    impl Scripted {
+        fn new(replies: Vec<Reply>) -> Self {
+            Self { replies, seen: Mutex::new(Vec::new()) }
+        }
+
+        fn seen(&self) -> Vec<Vec<OsString>> {
+            self.seen.lock().expect("seen lock").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SandboxRunner for Scripted {
+        async fn run(&self, _bin: &str, args: &[OsString]) -> std::io::Result<ProbeOutput> {
+            self.seen.lock().expect("seen lock").push(args.to_vec());
+            Ok(self
+                .replies
+                .iter()
+                .find(|(matches, _)| matches(args))
+                .map(|(_, out)| out.clone())
+                .unwrap_or_default())
+        }
+    }
+
+    fn uses_profile(args: &[OsString]) -> bool {
+        args.iter().any(|a| a == "-P")
+    }
+
+    fn uses_legacy(args: &[OsString]) -> bool {
+        args.iter().any(|a| a == "-c")
+    }
+
+    fn passed() -> ProbeOutput {
+        ProbeOutput { ok: true, ..ProbeOutput::default() }
+    }
+
+    fn failed(stderr: &str) -> ProbeOutput {
+        ProbeOutput { ok: false, stderr: stderr.to_owned() }
+    }
+
+    const MISSING_PROFILE: &str = "error: the following required arguments were not provided:\n  \
+                                   --permission-profile <NAME>\n\nUsage: codex sandbox \
+                                   --permission-profile <NAME> [COMMAND]...\n";
+    const UNKNOWN_P: &str = "error: unexpected argument '-P' found\n\nUsage: codex sandbox \
+                             [OPTIONS] [COMMAND]...\n";
+
     struct Broken;
 
     #[async_trait::async_trait]
     impl SandboxRunner for Broken {
-        async fn run(&self, _bin: &str) -> std::io::Result<ProbeOutput> {
+        async fn run(&self, _bin: &str, _args: &[OsString]) -> std::io::Result<ProbeOutput> {
             Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
         }
     }
@@ -243,17 +334,87 @@ mod tests {
 
     /// An unfamiliar failure must not claim the `AppArmor` fix applies.
     #[test]
-    fn an_unrecognized_failure_is_unknown_and_keeps_its_first_line() {
-        let out = ProbeOutput {
-            ok: false,
-            stderr: "\n  bwrap: Can't find source path /nope\nsecond line\n".to_owned(),
-        };
+    fn an_unrecognized_failure_is_unknown_and_keeps_its_first_two_lines() {
+        let out = failed("\n  bwrap: Can't find source path /nope\n\nsecond line\nthird line\n");
         match classify(&out) {
             CodexSandbox::Unknown { detail } => {
-                assert_eq!(detail, "bwrap: Can't find source path /nope");
+                assert_eq!(detail, "bwrap: Can't find source path /nope second line");
             }
             other => panic!("expected Unknown, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_clap_usage_error_is_unknown_and_names_the_missing_argument() {
+        match classify(&failed(MISSING_PROFILE)) {
+            CodexSandbox::Unknown { detail } => {
+                assert!(detail.contains("--permission-profile <NAME>"), "{detail}");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_probe_argv_matches_the_current_codex_cli() {
+        let dir = Path::new("/tmp/probe");
+        let argv = |form| {
+            probe_args(form, dir)
+                .into_iter()
+                .map(|a| a.into_string().expect("utf-8 argv"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            argv(ProbeForm::Profile),
+            ["sandbox", "-P", ":workspace", "-C", "/tmp/probe", "--", "/bin/true"]
+        );
+        assert_eq!(
+            argv(ProbeForm::Legacy),
+            [
+                "sandbox",
+                "-c",
+                r#"sandbox_mode="workspace-write""#,
+                "-C",
+                "/tmp/probe",
+                "--",
+                "/bin/true"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_current_codex_is_probed_once_with_the_profile_form() {
+        let runner = Scripted::new(vec![(uses_profile, passed())]);
+        assert!(probe_with("codex", &runner).await.is_ok());
+        let seen = runner.seen();
+        assert_eq!(seen.len(), 1);
+        assert!(uses_profile(&seen[0]));
+    }
+
+    #[tokio::test]
+    async fn a_codex_that_rejects_the_profile_flag_is_probed_with_the_legacy_form() {
+        let runner =
+            Scripted::new(vec![(uses_profile, failed(UNKNOWN_P)), (uses_legacy, passed())]);
+        assert!(probe_with("codex", &runner).await.is_ok());
+        let seen = runner.seen();
+        assert_eq!(seen.len(), 2);
+        assert!(uses_profile(&seen[0]));
+        assert!(uses_legacy(&seen[1]));
+    }
+
+    /// A sandbox failure under the profile form is the verdict; only a rejected
+    /// argument earns a second run.
+    #[tokio::test]
+    async fn a_sandbox_failure_under_the_profile_form_does_not_fall_back() {
+        let runner = Scripted::new(vec![(uses_profile, failed(LOOPBACK))]);
+        assert!(matches!(probe_with("codex", &runner).await, CodexSandbox::UsernsDenied { .. }));
+        assert_eq!(runner.seen().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_legacy_failure_after_fallback_is_classified() {
+        let runner =
+            Scripted::new(vec![(uses_profile, failed(UNKNOWN_P)), (uses_legacy, failed(LOOPBACK))]);
+        assert!(matches!(probe_with("codex", &runner).await, CodexSandbox::UsernsDenied { .. }));
     }
 
     #[test]

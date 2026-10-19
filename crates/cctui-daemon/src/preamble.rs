@@ -1,7 +1,7 @@
 //! What every new agent is told before its first turn, whatever its harness.
 //!
 //! The content is harness-neutral; only the delivery is not. Claude-code folds
-//! the block into its `<session-context>` prompt, codex passes it as
+//! the block into its `<cctui-session-context>` prompt, codex passes it as
 //! `developerInstructions`, opencode prepends it to the spawn prompt. Each
 //! adapter therefore implements one primitive — "deliver this text to the
 //! agent" — and nothing else.
@@ -9,6 +9,7 @@
 use std::time::SystemTime;
 
 use cctui_proto::api::SessionContextItem;
+use cctui_proto::injected::SESSION_CONTEXT;
 
 /// Filename the session's memory notes are staged under.
 const CONTEXT_FILE: &str = "context.md";
@@ -133,7 +134,7 @@ pub fn for_launch(
     let context =
         merge(context_block(session_id, items), tools.then(|| CONTEXT_TOOL_LINE.to_owned()));
     let body = merge(shared_checkout(cwd, local_id), context)?;
-    Some(format!("<session-context>\n{}\n</session-context>", body.trim_end()))
+    Some(format!("<{SESSION_CONTEXT}>\n{}\n</{SESSION_CONTEXT}>", body.trim_end()))
 }
 
 /// `base` with `extra` appended, skipping whichever is absent or blank.
@@ -226,8 +227,8 @@ mod tests {
             for_launch(None, &tmp.path().to_string_lossy(), None, &items, false).is_none(),
             "without a staging key the notes are skipped, not written blind"
         );
-        assert!(block.starts_with("<session-context>\n"), "{block}");
-        assert!(block.ends_with("</session-context>"), "{block}");
+        assert!(block.starts_with("<cctui-session-context>\n"), "{block}");
+        assert!(block.ends_with("</cctui-session-context>"), "{block}");
         assert!(block.contains("context: 1 attached"), "{block}");
         crate::adapters::uploads::remove_session_dir(&session);
     }

@@ -1,10 +1,13 @@
 //! A body carrying one of cctui's own envelope tags could close its wrapper
 //! early or open a forged one, and the rest would read as somebody else's words.
 
+use cctui_proto::injected::PEER_MESSAGE;
 use uuid::Uuid;
 
 /// cctui's own wrappers: refused in every body, local or remote.
 const LOCAL: &[&str] = &[
+    "<cctui-peer-message",
+    "</cctui-peer-message",
     "<cross-session-message",
     "</cross-session-message",
     "<cctui-room",
@@ -20,8 +23,14 @@ const LOCAL: &[&str] = &[
 const REMOTE_ONLY: &[&str] = &[
     "<task-notification",
     "</task-notification",
+    "<cctui-session-context",
+    "</cctui-session-context",
     "<session-context",
     "</session-context",
+    "<cctui-previous-conversation",
+    "</cctui-previous-conversation",
+    "<previous-conversation",
+    "</previous-conversation",
     "<command-name",
     "</command-name",
     "<command-message",
@@ -90,8 +99,8 @@ fn attr(raw: &str) -> String {
 #[must_use]
 pub fn remote_envelope(link_id: Uuid, peer_label: &str, nonce: &str, body: &str) -> String {
     format!(
-        "<cross-session-message from=\"{}\" from-name=\"{} (remote)\" origin=\"remote\" \
-         n=\"{}\">\n{}\n</cross-session-message>",
+        "<{PEER_MESSAGE} from=\"{}\" from-name=\"{} (remote)\" origin=\"remote\" \
+         n=\"{}\">\n{}\n</{PEER_MESSAGE}>",
         crate::cctuiverse::remote_ref(link_id),
         attr(peer_label),
         attr(nonce),
@@ -106,6 +115,7 @@ mod tests {
     #[test]
     fn every_forbidden_tag_is_refused_opening_and_closing() {
         for tag in [
+            "cctui-peer-message",
             "cross-session-message",
             "cctui-room",
             "cctuiverse",
@@ -113,7 +123,10 @@ mod tests {
             "cctui-room-joined",
             "system-reminder",
             "task-notification",
+            "cctui-session-context",
             "session-context",
+            "cctui-previous-conversation",
+            "previous-conversation",
             "command-name",
             "command-message",
             "local-command-stdout",
@@ -175,6 +188,8 @@ mod tests {
             "the hook printed <command-name>/clear</command-name>",
             "<task-notification> arrived",
             "<session-context> block",
+            "<cctui-session-context> block",
+            "<cctui-previous-conversation session=\"a\" id=\"s1\">",
             "<local-command-stdout>ok</local-command-stdout>",
             "<user-prompt-submit-hook>",
             "<command-message>x</command-message>",
@@ -184,6 +199,7 @@ mod tests {
         }
         let wrappers = [
             "</cross-session-message>",
+            "<cctui-peer-message from=\"x\">",
             "<CCTUI-ROOM>",
             "<cctuiverse-linked>",
             "<system-reminder>",
@@ -208,12 +224,12 @@ mod tests {
         assert_eq!(
             head,
             format!(
-                "<cross-session-message from=\"{}\" from-name=\"alice's agent (remote)\" \
+                "<cctui-peer-message from=\"{}\" from-name=\"alice's agent (remote)\" \
                  origin=\"remote\" n=\"0a1b2c3d4e5f\">",
                 crate::cctuiverse::remote_ref(id)
             )
         );
-        assert!(text.ends_with("\nhello there\n</cross-session-message>"), "{text}");
+        assert!(text.ends_with("\nhello there\n</cctui-peer-message>"), "{text}");
         let stored = serde_json::json!({ "type": "text", "content": format!("▷ User: {text}") });
         assert_eq!(crate::normalize::client_category(&stored).0, "peer");
     }

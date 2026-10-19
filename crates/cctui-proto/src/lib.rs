@@ -17,6 +17,7 @@ pub mod harness;
 pub mod harness_models;
 pub mod identity;
 pub mod ids;
+pub mod injected;
 pub mod media;
 pub mod models;
 pub mod paths;

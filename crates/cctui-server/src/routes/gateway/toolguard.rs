@@ -7,7 +7,9 @@
 //!
 //! Only text the model generates in the tool input is seen. Content read from
 //! files at run time, or deliberately obfuscated (split strings, base64, shell
-//! concatenation), passes: this stops accidents, not an evasive model.
+//! concatenation), passes: this stops accidents, not an evasive model. cctui's
+//! own local tools are not scanned: their arguments stay in cctui. A send to a
+//! `remote:` peer, a room post and speech leave it, so they still are.
 
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -187,6 +189,47 @@ fn normalize_root(root: &str) -> String {
     path_components(root).map_or_else(|| root.to_owned(), |c| format!("/{}", c.join("/")))
 }
 
+/// cctui MCP tools whose arguments never leave cctui. `CctuiSend` is exempt
+/// only towards a local peer.
+const LOCAL_CCTUI_TOOLS: &[&str] = &[
+    "CctuiContext",
+    "CctuiHistory",
+    "CctuiPeers",
+    "CctuiUsage",
+    "CctuiUserActionAdd",
+    "CctuiUserActionTick",
+    "CctuiAgent",
+    "CctuiAgentArchive",
+];
+
+/// Matches `mcp__cctui__<Tool>` (Claude Code, and codex's namespaced call once
+/// joined by [`qualified_name`]) and `cctui_<Tool>` (opencode).
+fn exempt_tool(name: &str, input: &Value) -> bool {
+    let Some(tool) = name.strip_prefix("mcp__cctui__").or_else(|| name.strip_prefix("cctui_"))
+    else {
+        return false;
+    };
+    if tool == "CctuiSend" {
+        return input
+            .get("session_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.trim().starts_with("remote:"));
+    }
+    LOCAL_CCTUI_TOOLS.contains(&tool)
+}
+
+/// Codex sends an MCP tool as its bare name under a `mcp__<server>` namespace.
+fn qualified_name(name: &str, namespace: Option<&str>) -> String {
+    namespace
+        .filter(|ns| !ns.is_empty())
+        .map_or_else(|| name.to_owned(), |ns| format!("{ns}__{name}"))
+}
+
+/// Function-call `arguments` arrive as a JSON string.
+fn decode_input(v: &Value) -> Value {
+    v.as_str().map_or_else(|| v.clone(), |s| serde_json::from_str(s).unwrap_or_default())
+}
+
 pub fn mask(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     match chars.len() {
@@ -308,6 +351,31 @@ struct Call {
 }
 
 impl Call {
+    fn exempt(&self, wire: Option<Wire>) -> bool {
+        let decoded = || serde_json::from_str::<Value>(&self.input).unwrap_or_default();
+        match wire {
+            Some(Wire::Responses) => {
+                let item = self.done_item.as_ref().or(self.initial.as_ref());
+                let namespace = item.and_then(|i| i.get("namespace")).and_then(Value::as_str);
+                let args = |item: Option<&Value>| item?.get("arguments").map(decode_input);
+                let input = args(self.done_item.as_ref())
+                    .or_else(|| (!self.input.is_empty()).then(decoded))
+                    .or_else(|| args(self.initial.as_ref()))
+                    .unwrap_or_default();
+                exempt_tool(&qualified_name(&self.name, namespace), &input)
+            }
+            Some(Wire::Chat) => exempt_tool(&self.name, &decoded()),
+            Some(Wire::Anthropic) | None => {
+                let input = if self.input.is_empty() {
+                    self.initial.clone().unwrap_or_default()
+                } else {
+                    decoded()
+                };
+                exempt_tool(&self.name, &input)
+            }
+        }
+    }
+
     fn scan(&self, policy: &CompiledPolicy) -> Option<(Hit, String)> {
         let decoded = (!self.input.is_empty())
             .then(|| serde_json::from_str::<Value>(&self.input).ok())
@@ -556,7 +624,10 @@ impl SseGuard {
         calls.sort_by_key(|c| c.position);
         let held = std::mem::take(&mut self.held);
         let wire = self.wire.take();
-        let hit = calls.iter().find_map(|c| c.scan(&self.policy).map(|(h, input)| (c, h, input)));
+        let hit = calls
+            .iter()
+            .filter(|c| !c.exempt(wire))
+            .find_map(|c| c.scan(&self.policy).map(|(h, input)| (c, h, input)));
         let Some((call, hit, input)) = hit else {
             for ev in held.into_iter().chain(end) {
                 out.extend_from_slice(&ev.raw);
@@ -756,9 +827,13 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
             if !ANTHROPIC_TOOL_BLOCKS.contains(&t) {
                 return None;
             }
+            let name = b.get("name").and_then(Value::as_str).unwrap_or(t);
             let input = b.get("input").cloned().unwrap_or(Value::Null);
+            if exempt_tool(name, &input) {
+                return None;
+            }
             let hit = policy.scan_value(&input)?;
-            Some((i, b.get("name").and_then(Value::as_str).unwrap_or(t).to_owned(), hit, input))
+            Some((i, name.to_owned(), hit, input))
         })?;
         let first_tool = content
             .iter()
@@ -778,12 +853,14 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
             if !RESPONSES_TOOL_ITEMS.contains(&t) {
                 return None;
             }
+            let name = item.get("name").and_then(Value::as_str).unwrap_or(t);
+            let namespace = item.get("namespace").and_then(Value::as_str);
+            let args = item.get("arguments").map_or(Value::Null, decode_input);
+            if exempt_tool(&qualified_name(name, namespace), &args) {
+                return None;
+            }
             let hit = policy.scan_value(item)?;
-            Some((
-                item.get("name").and_then(Value::as_str).unwrap_or(t).to_owned(),
-                hit,
-                item.to_string(),
-            ))
+            Some((name.to_owned(), hit, item.to_string()))
         })?;
         let text = explanation(&name, &hit);
         let mut kept: Vec<Value> = output
@@ -800,8 +877,12 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
         let choices = v.get("choices").and_then(Value::as_array)?;
         let (name, hit, input) = choices.iter().find_map(|c| {
             c.pointer("/message/tool_calls").and_then(Value::as_array)?.iter().find_map(|tc| {
-                let hit = policy.scan_value(tc.get("function").unwrap_or(tc))?;
                 let name = tc.pointer("/function/name").and_then(Value::as_str).unwrap_or("tool");
+                let args = tc.pointer("/function/arguments").map_or(Value::Null, decode_input);
+                if exempt_tool(name, &args) {
+                    return None;
+                }
+                let hit = policy.scan_value(tc.get("function").unwrap_or(tc))?;
                 Some((name.to_owned(), hit, tc.to_string()))
             })
         })?;
@@ -1648,6 +1729,139 @@ mod tests {
         assert!(v["choices"][0]["message"].get("tool_calls").is_none());
         assert_eq!(v["choices"][0]["finish_reason"], "stop");
         assert!(v["choices"][0]["message"]["content"].as_str().unwrap().starts_with("⛔"));
+    }
+
+    // ---- cctui's local tools ----
+
+    const SAVE: &str = r#"{"action":"save","name":"acmecorp-facts","body":"AcmeCorp fact sheet"}"#;
+
+    /// `(tool, arguments, scanned)`.
+    const CCTUI_CASES: &[(&str, &str, bool)] = &[
+        ("CctuiContext", SAVE, false),
+        ("CctuiContext", r#"{"action":"show","name":"acmecorp-facts"}"#, false),
+        ("CctuiHistory", r#"{"session_id":"acmecorp-1"}"#, false),
+        ("CctuiUserActionAdd", r#"{"title":"Approve the AcmeCorp PR"}"#, false),
+        ("CctuiAgent", r#"{"prompt":"fix AcmeCorp","model":"m"}"#, false),
+        ("CctuiSend", r#"{"session_id":"sess-1","message":"AcmeCorp"}"#, false),
+        ("CctuiSend", r#"{"session_id":"remote:abc","message":"AcmeCorp"}"#, true),
+        ("CctuiSend", r#"{"session_id":" remote:abc","message":"AcmeCorp"}"#, true),
+        ("CctuiSend", r#"{"message":"AcmeCorp"}"#, true),
+        ("CctuiSpeak", r#"{"text":"AcmeCorp"}"#, true),
+        ("CctuiRoom", r#"{"action":"post","message":"AcmeCorp"}"#, true),
+        ("Evil", SAVE, true),
+        ("CctuiContextX", SAVE, true),
+    ];
+
+    const FOREIGN_TOOLS: &[&str] = &[
+        "Bash",
+        "CctuiContext",
+        "mcp__notcctui__CctuiContext",
+        "mcp__cctui_CctuiContext",
+        "notcctui_CctuiContext",
+        "cctui__CctuiContext",
+    ];
+
+    fn named_cases() -> Vec<(String, &'static str, bool)> {
+        let mut out = Vec::new();
+        for prefix in ["mcp__cctui__", "cctui_"] {
+            for (tool, args, scanned) in CCTUI_CASES {
+                out.push((format!("{prefix}{tool}"), *args, *scanned));
+            }
+        }
+        out.extend(FOREIGN_TOOLS.iter().map(|n| ((*n).to_owned(), SAVE, true)));
+        out
+    }
+
+    fn codex_cases() -> Vec<(&'static str, &'static str, &'static str, bool)> {
+        let mut out = Vec::new();
+        for (tool, args, scanned) in CCTUI_CASES {
+            out.push(("mcp__cctui", *tool, *args, *scanned));
+        }
+        out.extend([
+            ("mcp__notcctui", "CctuiContext", SAVE, true),
+            ("cctui", "CctuiContext", SAVE, true),
+            ("", "CctuiContext", SAVE, true),
+            ("mcp__cctui", "mcp__cctui__CctuiContext", SAVE, true),
+        ]);
+        out
+    }
+
+    fn stream_blocked(body: &[u8]) -> Option<String> {
+        let (out, blocks) = run_chunked(body, 9);
+        assert!(blocks.len() <= 1, "{blocks:?}");
+        if blocks.is_empty() {
+            assert_eq!(out, body, "an unblocked stream passes untouched");
+        }
+        blocks.into_iter().next().map(|b| b.tool_name)
+    }
+
+    fn json_blocked(p: &CompiledPolicy, v: &Value) -> Option<String> {
+        rewrite_json(p, v.to_string().as_bytes()).map(|(_, b)| b.tool_name)
+    }
+
+    fn namespaced_responses(namespace: &str, name: &str, args: &str) -> Vec<u8> {
+        let frags: &[&str] = &[args];
+        let body = String::from_utf8(responses("ok", &[(name, frags)])).unwrap();
+        body.replace(
+            &format!("\"name\":\"{name}\""),
+            &format!("\"name\":\"{name}\",\"namespace\":\"{namespace}\""),
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn local_cctui_tools_skip_the_scan_in_streams() {
+        for (name, args, scanned) in named_cases() {
+            let frags: &[&str] = &[args];
+            let want = scanned.then(|| name.clone());
+            let body = anthropic("ok", &[(name.as_str(), frags)]);
+            assert_eq!(stream_blocked(&body), want, "anthropic {name} {args}");
+            let body = chat("ok", &[(name.as_str(), frags)]);
+            assert_eq!(stream_blocked(&body), want, "chat {name} {args}");
+            let body = responses("ok", &[(name.as_str(), frags)]);
+            assert_eq!(stream_blocked(&body), want, "responses {name} {args}");
+        }
+    }
+
+    #[test]
+    fn codex_namespaced_cctui_tools_skip_the_scan_in_streams() {
+        for (namespace, name, args, scanned) in codex_cases() {
+            let body = namespaced_responses(namespace, name, args);
+            let want = scanned.then(|| name.to_owned());
+            assert_eq!(stream_blocked(&body), want, "{namespace} {name} {args}");
+        }
+    }
+
+    #[test]
+    fn an_exempt_call_does_not_shield_a_scanned_one() {
+        let body = anthropic(
+            "ok",
+            &[("mcp__cctui__CctuiContext", &[SAVE]), ("Bash", &[r#"{"command":"echo AcmeCorp"}"#])],
+        );
+        let (out, blocks) = run_chunked(&body, 9);
+        assert_blocked_anthropic(&out, "Bash");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].tool_name, "Bash");
+    }
+
+    #[test]
+    fn local_cctui_tools_skip_the_scan_in_json() {
+        let p = policy();
+        for (name, args, scanned) in named_cases() {
+            let input: Value = serde_json::from_str(args).unwrap();
+            let want = scanned.then(|| name.clone());
+            let anthropic_body = json!({"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"},{"type":"tool_use","id":"t","name":name,"input":input}],"stop_reason":"tool_use","usage":{"output_tokens":3}});
+            assert_eq!(json_blocked(&p, &anthropic_body), want, "anthropic {name} {args}");
+            let chat_body = json!({"id":"c","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"x","type":"function","function":{"name":name,"arguments":args}}]},"finish_reason":"tool_calls"}]});
+            assert_eq!(json_blocked(&p, &chat_body), want, "chat {name} {args}");
+            let responses_body = json!({"id":"r","status":"completed","output":[{"type":"function_call","call_id":"c1","name":name,"arguments":args}]});
+            assert_eq!(json_blocked(&p, &responses_body), want, "responses {name} {args}");
+        }
+        for (namespace, name, args, scanned) in codex_cases() {
+            let body = json!({"id":"r","status":"completed","output":[{"type":"function_call","call_id":"c1","name":name,"namespace":namespace,"arguments":args}]});
+            let want = scanned.then(|| name.to_owned());
+            assert_eq!(json_blocked(&p, &body), want, "{namespace} {name} {args}");
+        }
     }
 
     // ---- rules ----

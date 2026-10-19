@@ -11,22 +11,36 @@ import {
 	routeEnter,
 	showColdOffer
 } from './followup';
+import { splitInjected } from '$lib/components/organisms/conversation/format';
 
 const src = { id: 's1', name: 'my "run"', working_dir: '/w' };
 
 describe('followupPrompt', () => {
-	it('wraps the brief, then the separator and the instruction', () => {
+	it('wraps the brief in the namespaced tag, then the instruction with no separator', () => {
 		const { prompt, file } = followupPrompt(src, '**User:**\n\nq', 'Now add tests.');
 		expect(file).toBeNull();
 		expect(prompt).toBe(
-			'<previous-conversation session="my &quot;run&quot;" id="s1">\n**User:**\n\nq\n</previous-conversation>\n\n===\n\nNow add tests.'
+			'<cctui-previous-conversation session="my &quot;run&quot;" id="s1">\n**User:**\n\nq\n</cctui-previous-conversation>\n\nNow add tests.'
 		);
+		expect(prompt).not.toContain('===');
+	});
+
+	it('splits back into one previous-conversation block and the ask', () => {
+		const { prompt } = followupPrompt(src, '**User:**\n\nq', 'Now add tests.');
+		const { blocks, prose } = splitInjected(prompt);
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toMatchObject({
+			kind: 'previous-conversation',
+			attrs: { session: 'my "run"', id: 's1' },
+			body: '**User:**\n\nq'
+		});
+		expect(prose).toBe('Now add tests.');
 	});
 
 	it('defaults the instruction and falls back to the cwd for an unnamed session', () => {
 		const { prompt } = followupPrompt({ ...src, name: null }, 'b', '  ');
-		expect(prompt.startsWith('<previous-conversation session="/w" id="s1">')).toBe(true);
-		expect(prompt.endsWith('===\n\nContinue from this.')).toBe(true);
+		expect(prompt.startsWith('<cctui-previous-conversation session="/w" id="s1">')).toBe(true);
+		expect(prompt.endsWith('</cctui-previous-conversation>\n\nContinue from this.')).toBe(true);
 	});
 
 	it('moves an oversized brief into the bootstrap file', () => {
@@ -34,7 +48,10 @@ describe('followupPrompt', () => {
 		const { prompt, file } = followupPrompt(src, brief);
 		expect(prompt).toContain(BRIEF_FILE_NAME);
 		expect(prompt).not.toContain(brief);
+		expect(prompt).not.toContain('===');
 		expect(file).toContain(brief);
+		expect(file?.startsWith('<cctui-previous-conversation session="my &quot;run&quot;" id="s1">')).toBe(true);
+		expect(file?.endsWith('</cctui-previous-conversation>\n')).toBe(true);
 	});
 });
 

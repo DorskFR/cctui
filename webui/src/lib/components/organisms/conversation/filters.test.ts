@@ -36,6 +36,12 @@ describe('category catalogue', () => {
 		expect(Object.keys(f).sort()).toEqual([...MSG_CATEGORIES].sort());
 		expect(MSG_CATEGORIES.filter((c) => !f[c])).toEqual(['mcp', 'marker']);
 	});
+
+	it('files context in the user group and shows it by default', () => {
+		expect(MSG_GROUPS.find((g) => g.id === 'user')?.categories).toContain('context');
+		expect(defaultFilter().context).toBe(true);
+		expect(normalizeFilter({ user: false }).context).toBe(true);
+	});
 });
 
 describe('quick filters', () => {

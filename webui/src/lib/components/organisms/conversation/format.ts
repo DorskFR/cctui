@@ -59,10 +59,29 @@ export const PEER_PREAMBLES = [
 	'Another session sent a message:',
 	'Received a message from agent'
 ];
+// The wrappers cctui injects into agent prompts. Keep in sync with
+// `cctui-proto/src/injected.rs`. Stored history is immutable, so readers accept
+// the legacy names forever.
+export const CCTUI_TAGS = {
+	sessionContext: 'cctui-session-context',
+	previousConversation: 'cctui-previous-conversation',
+	peerMessage: 'cctui-peer-message',
+	room: 'cctui-room',
+	roomJoined: 'cctui-room-joined'
+} as const;
+export const LEGACY_TAGS = {
+	sessionContext: 'session-context',
+	previousConversation: 'previous-conversation',
+	peerMessage: 'cross-session-message'
+} as const;
+
 // Line-anchored so a human quoting or relaying a wrapper stays a human turn.
 // `cctui-room` is a room post: same peer role, but `name` carries the room so the
 // line can be labelled as coming from a room rather than from one peer.
-const PEER_TAG_RE = /^<(cross-session-message|agent-message|cctui-room(?!-))\b([^>]*)>([\s\S]*?)<\/\1>/m;
+const PEER_TAG_RE = new RegExp(
+	`^<(${CCTUI_TAGS.peerMessage}|${LEGACY_TAGS.peerMessage}|agent-message|${CCTUI_TAGS.room}(?!-))\\b([^>]*)>([\\s\\S]*?)<\\/\\1>`,
+	'm'
+);
 const PEER_ATTR_RE = /([a-z-]+)="([^"]*)"/g;
 // The standing block a session gets when the human adds it to a room. It is
 // addressed to the agent, not from a peer, so it reads as a system marker.
@@ -122,9 +141,117 @@ export function parsePeerMessage(text: string): PeerMessage | null {
 	for (const a of tag[2].matchAll(PEER_ATTR_RE)) attrs.set(a[1], a[2]);
 	const name = attrs.get('from-name')?.trim();
 	const addr = attrs.get('from')?.trim();
-	const room = tag[1] === 'cctui-room' ? attrs.get('name')?.trim() : undefined;
+	const room = tag[1] === CCTUI_TAGS.room ? attrs.get('name')?.trim() : undefined;
 	const remote = attrs.get('origin') === 'remote' || (addr?.startsWith('remote:') ?? false);
 	return { from: name || addr || null, room: room || undefined, remote, body: tag[3].trim() };
+}
+
+export type InjectedKind = 'session-context' | 'previous-conversation';
+
+export interface InjectedBlock {
+	kind: InjectedKind;
+	/** The tag as written, legacy or namespaced. */
+	tag: string;
+	/** Entity-decoded attributes. */
+	attrs: Record<string, string>;
+	body: string;
+}
+
+const INJECTED_KINDS = new Map<string, InjectedKind>([
+	[CCTUI_TAGS.sessionContext, 'session-context'],
+	[LEGACY_TAGS.sessionContext, 'session-context'],
+	[CCTUI_TAGS.previousConversation, 'previous-conversation'],
+	[LEGACY_TAGS.previousConversation, 'previous-conversation']
+]);
+const INJECTED_ATTR_RE = /(?:^|\s)([a-z-]+)="([^"]*)"/g;
+
+function decodeEntities(raw: string): string {
+	return raw
+		.replace(/&quot;/g, '"')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&#39;/g, "'")
+		.replace(/&amp;/g, '&');
+}
+
+function skipSeparators(s: string): string {
+	for (;;) {
+		const t = s.trimStart();
+		if (!t.startsWith('===')) return t;
+		const after = t.slice(3);
+		const nl = after.indexOf('\n');
+		const end = nl === -1 ? after.length : nl;
+		if (after.slice(0, end).trim()) return t;
+		s = after.slice(end);
+	}
+}
+
+function opensTag(s: string, at: number, tag: string): boolean {
+	if (!s.startsWith(`<${tag}`, at)) return false;
+	const c = s.charAt(at + tag.length + 1);
+	return c === '>' || /\s/.test(c);
+}
+
+// Counts nested blocks of the same tag: a legacy follow-up of a follow-up.
+function balancedClose(s: string, tag: string, close: string): number {
+	let depth = 0;
+	for (let i = s.indexOf('<'); i !== -1; i = s.indexOf('<', i + 1)) {
+		if (s.startsWith(close, i)) {
+			if (depth === 0) return i;
+			depth--;
+		} else if (opensTag(s, i, tag)) depth++;
+	}
+	return -1;
+}
+
+function parseInjectedBlock(s: string): { block: InjectedBlock; rest: string } | null {
+	if (!s.startsWith('<')) return null;
+	const tag = /^[a-z-]*/.exec(s.slice(1))?.[0] ?? '';
+	const kind = INJECTED_KINDS.get(tag);
+	if (!kind) return null;
+	const afterName = s.slice(1 + tag.length);
+	const gt = afterName.indexOf('>');
+	if (gt === -1) return null;
+	const rawAttrs = afterName.slice(0, gt);
+	if (rawAttrs && !/^\s/.test(rawAttrs)) return null;
+	const inner = afterName.slice(gt + 1);
+	const close = `</${tag}>`;
+	let end = balancedClose(inner, tag, close);
+	if (end === -1) end = inner.lastIndexOf(close);
+	if (end === -1) return null;
+	const attrs: Record<string, string> = {};
+	for (const a of rawAttrs.matchAll(INJECTED_ATTR_RE)) attrs[a[1]] = decodeEntities(a[2]);
+	return {
+		block: { kind, tag, attrs, body: inner.slice(0, end).trim() },
+		rest: inner.slice(end + close.length)
+	};
+}
+
+/** Split the wrappers leading a turn from the prose after them. Only
+ *  consecutive blocks at the head count, separated by whitespace or the legacy
+ *  `===` line; a tag quoted mid-message is prose. Mirrors `split_injected` in
+ *  `cctui-proto/src/injected.rs`. */
+export function splitInjected(content: string): { blocks: InjectedBlock[]; prose: string } {
+	const blocks: InjectedBlock[] = [];
+	let rest = content;
+	for (;;) {
+		const next = parseInjectedBlock(skipSeparators(rest));
+		if (!next) break;
+		blocks.push(next.block);
+		rest = next.rest;
+	}
+	return blocks.length ? { blocks, prose: skipSeparators(rest) } : { blocks, prose: content };
+}
+
+/** The collapsed one-liner of an injected block: its first meaningful line
+ *  and how many lines it spans. */
+export function injectedSummary(body: string): { first: string; lines: number } {
+	const lines = body.split('\n').filter((l) => l.trim());
+	const first =
+		lines
+			.map((l) => l.replace(/^[\s#>*_-]+|[*_\s]+$/g, ''))
+			.find((l) => l && !l.startsWith('<')) ?? '';
+	return { first, lines: lines.length };
 }
 
 const TASK_NOTIFICATION_RE = /<task-notification\b[^>]*>([\s\S]*?)(?:<\/task-notification>|$)/;
@@ -474,14 +601,34 @@ export function stampTurns(lines: Line[]): Line[] {
 	return lines;
 }
 
+// Context segments key off the line of the event they were split from, so the
+// prose line keeps the key the whole turn had and the blocks read `#ctxN`.
 export function assignLineKeys(lines: Line[]): Line[] {
 	const counts = new Map<string, number>();
-	for (const ln of lines) {
-		const base = `${ln.ts}|${ln.role}|${(ln.text ?? ln.html ?? '').slice(0, 24)}`;
+	const claim = (base: string) => {
 		const n = counts.get(base) ?? 0;
 		counts.set(base, n + 1);
-		ln.key = n === 0 ? base : `${base}#${n}`;
+		return n === 0 ? base : `${base}#${n}`;
+	};
+	let run: Line[] = [];
+	const flush = (eventKey: string) => {
+		for (const c of run) c.key = `${eventKey}#ctx${c.context?.index ?? 0}`;
+		run = [];
+	};
+	const settle = () => {
+		if (run.length) flush(claim(run[0].context?.eventBase ?? ''));
+	};
+	for (const ln of lines) {
+		if (ln.context) {
+			if (ln.context.index === 0) settle();
+			run.push(ln);
+			continue;
+		}
+		if (!run[0]?.context?.owned) settle();
+		ln.key = claim(`${ln.ts}|${ln.role}|${(ln.text ?? ln.html ?? '').slice(0, 24)}`);
+		if (run.length) flush(ln.key);
 	}
+	settle();
 	return lines;
 }
 

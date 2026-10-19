@@ -162,7 +162,7 @@ beside `plugins`). Then, per session:
   reads one path and the prompt stays short.
 - **The agent is told about it through the neutral preamble.**
   `preamble::block` gains a context section naming the staged path and listing
-  the item titles. Claude folds it into `<session-context>`, codex into
+  the item titles. Claude folds it into `<cctui-session-context>`, codex into
   `developerInstructions`, opencode into the spawn prompt — the primitives are
   already implemented and unchanged.
 
@@ -245,7 +245,7 @@ the selection half on.
 | | rule | memory | prompt |
 |---|---|---|---|
 | attached | always, when enabled and the filter matches — enabling it is the consent | explicit pick or profile pin; a filter match only pre-checks it | explicit pick |
-| delivery | inline in `<session-context>`, under `rules:` | staged `context.md` + pointer line | expanded into the first turn |
+| delivery | inline in `<cctui-session-context>`, under `rules:` | staged `context.md` + pointer line | expanded into the first turn |
 | size | ≤ 4 KiB each, ≤ 16 KiB per launch | 64 KiB | 64 KiB |
 
 Over the launch cap, rules keep their title order and the tail is dropped

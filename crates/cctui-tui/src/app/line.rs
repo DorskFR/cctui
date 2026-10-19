@@ -1,6 +1,9 @@
+use cctui_proto::injected::{InjectedBlock, InjectedKind, split_injected};
 use cctui_proto::ws::AgentEvent;
 
-use super::state::{ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter};
+use super::state::{
+    ContextBlock, ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter,
+};
 use super::transcript;
 
 fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
@@ -128,8 +131,38 @@ fn queue_op_line(content: &str, operation: Option<&str>, ts: i64) -> Option<Conv
     }
 }
 
-/// Classifies a stored user turn: peer relay, marker, injected, or human.
+fn context_block(block: &InjectedBlock<'_>) -> ContextBlock {
+    let label = match block.kind {
+        InjectedKind::SessionContext => "session context".to_owned(),
+        InjectedKind::PreviousConversation => block.attr("session").map_or_else(
+            || "previous conversation".to_owned(),
+            |name| format!("previous conversation · {name}"),
+        ),
+    };
+    ContextBlock { label, body: block.body.to_owned() }
+}
+
+/// Splits the cctui wrappers leading a turn off its prose: a turn with prose
+/// keeps its own kind and carries them, one with none is a context line.
 fn user_line(text: &str, ts: i64, meta: bool) -> Option<ConversationLine> {
+    let (blocks, prose) = split_injected(text);
+    if blocks.is_empty() {
+        return prose_line(text, ts, meta);
+    }
+    let context: Vec<ContextBlock> = blocks.iter().map(context_block).collect();
+    let mut line = Some(prose)
+        .filter(|p| !p.trim().is_empty())
+        .and_then(|p| prose_line(p, ts, meta))
+        .unwrap_or_else(|| {
+            let labels = context.iter().map(|c| c.label.as_str()).collect::<Vec<_>>().join(", ");
+            ConversationLine::new(LineKind::Context, labels, ts)
+        });
+    line.context = context;
+    Some(line)
+}
+
+/// Classifies a user turn's prose: peer relay, marker, injected, or human.
+fn prose_line(text: &str, ts: i64, meta: bool) -> Option<ConversationLine> {
     if let Some(peer) = transcript::parse_peer_message(text) {
         let mut line = ConversationLine::new(LineKind::Peer, peer.body, ts);
         line.peer_from = peer.from;
@@ -396,6 +429,69 @@ mod tests {
         assert_eq!(ln.kind, LineKind::Peer);
         assert_eq!(ln.peer_from.as_deref(), Some("lane-b"));
         assert_eq!(ln.text, "rebase please");
+    }
+
+    #[test]
+    fn a_peer_message_under_the_namespaced_tag_is_a_peer_line() {
+        let ln = line(&text(
+            "▷ User: <cctui-peer-message from=\"a-1\" from-name=\"lane-b\">\nrebase please\n</cctui-peer-message>",
+            None,
+        ));
+        assert_eq!(ln.kind, LineKind::Peer);
+        assert_eq!(ln.peer_from.as_deref(), Some("lane-b"));
+        assert_eq!(ln.text, "rebase please");
+    }
+
+    #[test]
+    fn a_spawn_turn_splits_into_a_collapsed_context_row_and_the_ask() {
+        for (open, close) in [
+            ("<cctui-session-context>", "</cctui-session-context>"),
+            ("<session-context>", "</session-context>"),
+        ] {
+            let ln = line(&text(
+                &format!("▷ User: {open}\nsession: lane d\ncwd: /w\n{close}\n\nfix the parser"),
+                None,
+            ));
+            assert_eq!(ln.kind, LineKind::User, "{open}");
+            assert_eq!(ln.text, "fix the parser");
+            assert_eq!(ln.context.len(), 1);
+            assert_eq!(ln.context[0].label, "session context");
+            assert_eq!(ln.context[0].body, "session: lane d\ncwd: /w");
+            assert!(ln.collapsible(), "the context rows expand on the line's toggle");
+        }
+    }
+
+    #[test]
+    fn a_follow_up_carries_both_blocks_labelled_with_the_previous_session() {
+        let ln = line(&text(
+            "▷ User: <cctui-session-context>\nx\n</cctui-session-context>\n\n\
+             <cctui-previous-conversation session=\"wave 3\" id=\"s-1\">\nbrief\n\
+             </cctui-previous-conversation>\n\nContinue from this.",
+            None,
+        ));
+        assert_eq!(ln.kind, LineKind::User);
+        assert_eq!(ln.text, "Continue from this.");
+        let labels: Vec<&str> = ln.context.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["session context", "previous conversation · wave 3"]);
+    }
+
+    #[test]
+    fn a_turn_of_only_injected_blocks_is_a_context_line() {
+        let ln = line(&text("▷ User: <cctui-session-context>\nx\n</cctui-session-context>", None));
+        assert_eq!(ln.kind, LineKind::Context);
+        assert_eq!(ln.text, "session context");
+        assert_eq!(ln.context.len(), 1);
+    }
+
+    #[test]
+    fn a_wrapper_quoted_mid_message_stays_the_humans_turn() {
+        let ln = line(&text(
+            "▷ User: why does this show up:\n<session-context>\ncwd: /w\n</session-context>",
+            None,
+        ));
+        assert_eq!(ln.kind, LineKind::User);
+        assert!(ln.context.is_empty());
+        assert!(!ln.collapsible());
     }
 
     #[test]

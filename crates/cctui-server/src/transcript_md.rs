@@ -267,6 +267,20 @@ mod tests {
         let out = render(&header(), &[(1, json!({ "type": "text", "content": raw }))], &[], 4096);
         assert_eq!(out.events, 1);
         assert!(out.text.contains("**peer**"), "{}", out.text);
+
+        let raw = "▷ User: <cctui-peer-message from=\"x\">\ncheck the tests\n</cctui-peer-message>";
+        let out = render(&header(), &[(1, json!({ "type": "text", "content": raw }))], &[], 4096);
+        assert!(out.text.contains("**peer**"), "{}", out.text);
+    }
+
+    #[test]
+    fn a_turn_of_only_injected_context_renders_under_the_context_role() {
+        let raw = "▷ User: <cctui-session-context>\ncwd: /w\n</cctui-session-context>";
+        let rows = [(1, json!({ "type": "text", "content": raw }))];
+        let out = render(&header(), &rows, &[], 4096);
+        assert!(out.text.contains("**context**"), "{}", out.text);
+        let out = render(&header(), &rows, &["user".to_owned()], 4096);
+        assert_eq!(out.events, 0, "a user-only read skips the injected context");
     }
 
     #[test]

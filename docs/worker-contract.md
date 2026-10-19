@@ -1232,7 +1232,7 @@ a call on another session's behalf. The config is written **only when the server
 returns a spawn capability** for that session, so an unprivileged session does
 not even see the tool.
 
-When the tool is written, the spawn's `<session-context>` block also names it:
+When the tool is written, the spawn's `<cctui-session-context>` block also names it:
 the permitted adapters, the budget ceiling and one example call. A tool listed
 only in the MCP inventory goes unused.
 

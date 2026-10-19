@@ -4,6 +4,10 @@
 //! stay as the name the transcript already references them by. Consecutive
 //! chunks of one speaker collapse into one turn. The oldest turns are elided
 //! behind one line once the turn or byte cap is hit.
+//!
+//! The cctui wrappers leading a user turn describe the old session, and a
+//! follow-up wraps this brief in its own: session context is dropped and a
+//! previous conversation shrinks to one line, so chains never nest.
 
 use std::fmt::Write as _;
 
@@ -14,6 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use cctui_proto::api::{ApiError, BriefResponse};
+use cctui_proto::injected::{InjectedKind, split_injected};
 
 use crate::state::AppState;
 
@@ -70,7 +75,7 @@ fn classify(adapter_id: &str, event_type: &str, payload: Value) -> Option<(Role,
     let content = v.get("content").and_then(Value::as_str).unwrap_or_default();
     let kind = v.get("kind").and_then(Value::as_str);
     if let Some(text) = content.strip_prefix(USER_PREFIX) {
-        return Some((Role::User, text.to_owned()));
+        return without_injected(text).map(|text| (Role::User, text));
     }
     if v.get("role").and_then(Value::as_str) == Some("Assistant")
         && matches!(kind, None | Some("attachment"))
@@ -78,6 +83,30 @@ fn classify(adapter_id: &str, event_type: &str, payload: Value) -> Option<(Role,
         return Some((Role::Assistant, content.to_owned()));
     }
     None
+}
+
+/// A user turn without its leading cctui wrappers, or `None` when nothing but
+/// wrappers was left.
+fn without_injected(text: &str) -> Option<String> {
+    let (blocks, prose) = split_injected(text);
+    if blocks.is_empty() {
+        return Some(text.to_owned());
+    }
+    let prose = prose.trim();
+    if prose.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for block in blocks.iter().filter(|b| b.kind == InjectedKind::PreviousConversation) {
+        let name = block.attr("session").unwrap_or_default();
+        let id = block.attr("id").unwrap_or_default();
+        let _ = writeln!(out, "(continued from session \"{name}\" {id})");
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(prose);
+    Some(out)
 }
 
 /// Fold stored rows (oldest first) into speaker turns.
@@ -301,6 +330,70 @@ mod tests {
         ];
         let turns = collect_turns("codex", rows);
         assert!(turns.iter().any(|t| t.role == Role::Assistant), "{turns:?}");
+    }
+
+    #[test]
+    fn a_spawn_turn_loses_its_session_context_under_either_name() {
+        for (open, close) in [
+            ("<cctui-session-context>", "</cctui-session-context>"),
+            ("<session-context>", "</session-context>"),
+        ] {
+            let first = format!("{open}\nsession: a\ncwd: /w\n{close}\n\nfix the parser");
+            let turns = collect_turns("claude-code", vec![user(&first), assistant("done")]);
+            assert_eq!(turns[0].text, "fix the parser", "{open}");
+            let md = render(&turns, Caps::default()).markdown;
+            assert!(!md.contains("session-context"), "{md}");
+            assert!(!md.contains("cwd: /w"), "{md}");
+        }
+    }
+
+    #[test]
+    fn a_previous_conversation_collapses_to_one_line_under_either_name() {
+        let cases = [("cctui-previous-conversation", ""), ("previous-conversation", "===\n\n")];
+        for (tag, sep) in cases {
+            let first = format!(
+                "<cctui-session-context>\nx\n</cctui-session-context>\n\n\
+                 <{tag} session=\"wave &quot;3&quot;\" id=\"s-a\">\n**User:**\n\nold ask\n\
+                 </{tag}>\n\n{sep}Now add tests."
+            );
+            let turns = collect_turns("claude-code", vec![user(&first)]);
+            assert_eq!(
+                turns[0].text, "(continued from session \"wave \"3\"\" s-a)\n\nNow add tests.",
+                "{tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_follow_up_of_a_follow_up_brief_carries_no_nested_wrapper() {
+        let first = "<session-context>\nb ctx\n</session-context>\n\n\
+                     <previous-conversation session=\"b\" id=\"s-b\">\n**User:**\n\n\
+                     <session-context>\na ctx\n</session-context>\n\n\
+                     <previous-conversation session=\"a\" id=\"s-a\">\nolder\n\
+                     </previous-conversation>\n\n===\n\nfirst ask\n</previous-conversation>\n\n\
+                     ===\n\nsecond ask";
+        let turns = collect_turns("claude-code", vec![user(first), assistant("ok")]);
+        let md = render(&turns, Caps::default()).markdown;
+        assert!(!md.contains("previous-conversation"), "{md}");
+        assert!(!md.contains("session-context"), "{md}");
+        assert_eq!(md.matches("(continued from session").count(), 1, "{md}");
+        assert!(md.contains("(continued from session \"b\" s-b)\n\nsecond ask"), "{md}");
+    }
+
+    #[test]
+    fn a_turn_of_nothing_but_wrappers_is_dropped() {
+        let turns = collect_turns(
+            "claude-code",
+            vec![user("<cctui-session-context>\nx\n</cctui-session-context>"), assistant("hi")],
+        );
+        assert_eq!(turns, vec![Turn { role: Role::Assistant, text: "hi".into() }]);
+    }
+
+    #[test]
+    fn a_wrapper_quoted_mid_message_is_kept() {
+        let quoted = "why is this here:\n<cctui-session-context>\nx\n</cctui-session-context>";
+        let turns = collect_turns("claude-code", vec![user(quoted)]);
+        assert_eq!(turns[0].text, quoted);
     }
 
     #[test]

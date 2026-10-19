@@ -2,7 +2,7 @@
 //!
 //! Two agents in one checkout overwrite each other: they edit the same files,
 //! switch branches under each other, and reset or commit work they did not do.
-//! The spawn-time `<session-context>` notice is advisory — it never blocks or
+//! The spawn-time `<cctui-session-context>` notice is advisory — it never blocks or
 //! delays a spawn.
 //!
 //! Harness-neutral: the roster is fed from the one point every adapter's events

@@ -11,6 +11,7 @@
 			case 'system':
 			case 'peer':
 			case 'poll':
+			case 'context':
 				return `var(--role-${role})`;
 			case 'tool':
 			case 'result':

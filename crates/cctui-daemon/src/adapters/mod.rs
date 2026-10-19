@@ -36,7 +36,9 @@ pub async fn emit(events: &mpsc::Sender<AdapterEvent>, event: AdapterEvent) {
 pub fn is_peer_envelope(text: &str) -> bool {
     let trimmed = text.trim_start();
     let head = trimmed.get(..32).unwrap_or(trimmed).to_ascii_lowercase();
-    ["<cross-session-message", "<cctui-room", "<cctuiverse-"].iter().any(|t| head.starts_with(t))
+    ["<cctui-peer-message", "<cross-session-message", "<cctui-room", "<cctuiverse-"]
+        .iter()
+        .any(|t| head.starts_with(t))
 }
 
 #[must_use]
@@ -57,6 +59,7 @@ mod peer_envelope_tests {
     #[test]
     fn peer_envelopes_are_recognised_and_human_text_is_not() {
         for t in [
+            "<cctui-peer-message from=\"s1\" from-name=\"a\">\nhi\n</cctui-peer-message>",
             "<cross-session-message from=\"s1\" from-name=\"a\">\nhi\n</cross-session-message>",
             "  <CCTUI-ROOM name=\"ops\" from=\"a\">\nhi\n</cctui-room>",
             "<cctuiverse-linked peer=\"bob\" id=\"remote:x\">\n…\n</cctuiverse-linked>",

@@ -1,6 +1,6 @@
 ---
 source: crates/cctui-tui/src/view_snapshots.rs
-assertion_line: 515
+assertion_line: 873
 expression: render_screen(&mut app)
 ---
  infra (main) on orion ── opus ── $1.25  ! 1 need input — Ctrl+g
@@ -10,20 +10,20 @@ expression: render_screen(&mut app)
 └ 984 lines                    │ ❯ [x] Thinking                     │                              ▕
  Bash  cargo test  write       │   [x] Redacted thinking            │                              ▐
 └ ✗ exit 101 · 3 failed  (2 mor│   [x] Your messages                │                              ▐
-                               │   [x] Loop wake-ups                │                              ▐
-● Assistant                    │   [x] Peer messages                │                              ▐
-Looking at the views first.    │   [x] Injected / system            │                              ▐
-                               │   [x] Tool calls                   │                              ▐
-- one                          │   [ ] MCP tool calls               │                              ▐
-- two                          │   [x] Provider tool calls          │                              ▐
-⏱ 12.4k in / 1.1k out          │   [x] Tool results                 │                              ▐
-⏱ 38s                          │   [x] Failed results               │                              ▐
-                               │   [ ] Markers                      │                              ▐
-◆ lane-b                       │   [x] Turn footers                 │                              ▐
-the parser lane is rebased     │   [x] Compaction                   │                              ▐
-⟳ context reset (/clear)       │   [x] Context resets               │                              ▐
-                               │   space · a all · r reset · F close│                              ▐
-◁ Reply done                   └────────────────────────────────────┘                              ▐
-────────────────────────────────────────────────────────────────────────────────────────────────────
+                               │   [x] Injected context             │                              ▐
+● Assistant                    │   [x] Loop wake-ups                │                              ▐
+Looking at the views first.    │   [x] Peer messages                │                              ▐
+                               │   [x] Injected / system            │                              ▐
+- one                          │   [x] Tool calls                   │                              ▐
+- two                          │   [ ] MCP tool calls               │                              ▐
+⏱ 12.4k in / 1.1k out          │   [x] Provider tool calls          │                              ▐
+⏱ 38s                          │   [x] Tool results                 │                              ▐
+                               │   [x] Failed results               │                              ▐
+◆ lane-b                       │   [ ] Markers                      │                              ▐
+the parser lane is rebased     │   [x] Turn footers                 │                              ▐
+⟳ context reset (/clear)       │   [x] Compaction                   │                              ▐
+                               │   [x] Context resets               │                              ▐
+◁ Reply done                   │   space · a all · r reset · F close│                              ▐
+───────────────────────────────└────────────────────────────────────┘───────────────────────────────
  ◆ waiting for input
 ❯  Type a message...
