@@ -19,6 +19,15 @@ concurrency:
 env:
   # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.
   RUST_VERSION: "1.97.1"
+  # rust-cache keys are prefix + toolchain/env hash + manifest/lockfile hash.
+  # The hash covers every installed toolchain, so jobs uninstall all but
+  # RUST_VERSION first or each runner image update would cold-start the cache.
+  # The workspace version is normalized out of that hash, so a release bump
+  # keeps the key; a dependency change misses it, and the prefix fallback still
+  # restores the previous deps (`full match: false`).
+  # Save only where later runs can read the cache: main and version branches,
+  # never PRs or tags. Must not start with RUST/CARGO/CC: those are hashed.
+  SAVE_RUST_CACHE: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/0.') || startsWith(github.ref, 'refs/heads/1.') || startsWith(github.ref, 'refs/heads/release/')) }}
   CARGO_INCREMENTAL: "0"
 
 jobs:
@@ -142,7 +151,11 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -181,7 +194,11 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: Install sqlx-cli
         uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2
@@ -243,7 +260,11 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       # cctui-query's ts exports are not part of the webui bindings.
       - name: Regenerate webui bindings
@@ -317,9 +338,12 @@ jobs:
       - name: Add cross target to the pinned toolchain
         run: rustup target add ${{ matrix.target }}
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: release-${{ matrix.target }}
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2
@@ -361,9 +385,12 @@ jobs:
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: release-server
+          save-if: ${{ env.SAVE_RUST_CACHE }}
       - name: Build cctui-server for the image
         env:
           SQLX_OFFLINE: "true"
@@ -503,7 +530,11 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2
