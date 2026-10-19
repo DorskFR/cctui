@@ -57,11 +57,11 @@ they go straight to every member.
 ## What the protocol guarantees
 
 - A remote message only ever becomes a wrapped `peer` turn
-  (`<cross-session-message … origin="remote">`). It cannot answer a permission
+  (`<cctui-peer-message … origin="remote">`). It cannot answer a permission
   prompt or a question, change settings or run a command.
-- Bodies containing any cctui envelope tag (`<cross-session-message`,
-  `<cctui-room`, `<cctuiverse`, `<system-reminder`, opening or closing) are
-  refused, so a peer cannot forge an envelope.
+- Bodies containing any cctui envelope tag (`<cctui-peer-message`, the legacy
+  `<cross-session-message`, `<cctui-room`, `<cctuiverse`, `<system-reminder`,
+  opening or closing) are refused, so a peer cannot forge an envelope.
 - A link reaches exactly its bound session (or room). Unknown, closed, expired
   and badly signed links all get the same `404`.
 - Either owner closes a link instantly. Closing deletes that side's private key,

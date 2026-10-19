@@ -64,6 +64,18 @@ Nothing the TUI receives may be dropped silently. Frames that fail to decode
 become `Incoming::Undecodable`, and unreadable agent events are counted; both
 log and bump a status-line counter.
 
+### Prompt wrappers cctui injects
+
+Every wrapper cctui puts into an agent's prompt is namespaced `cctui-*` so it
+cannot be mistaken for harness markup: `<cctui-session-context>`,
+`<cctui-previous-conversation session=".." id="..">`, `<cctui-peer-message>`,
+`<cctui-room>`, `<cctui-room-joined>`. The names live in
+`cctui_proto::injected` (Rust) and the webui's `conversation/format.ts`; change
+both together. Stored history is immutable, so readers keep accepting the
+legacy `session-context`, `previous-conversation` and `cross-session-message`
+forever. Only wrappers that lead a turn are context; a tag quoted mid-message
+is the human's prose (`split_injected`).
+
 ### The parity manifest
 
 `crates/cctui-tui/parity.toml` has one entry per route in

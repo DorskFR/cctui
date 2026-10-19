@@ -758,10 +758,24 @@ fn user_text_is_meta(text: &str) -> bool {
 
 /// A turn whose body opens on a peer envelope, matching `PEER_TAG_RE`.
 fn is_peer_text(body: &str) -> bool {
-    body.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .is_some_and(|l| l.starts_with("<cross-session-message") || l.starts_with("<agent-message"))
+    body.lines().map(str::trim).find(|l| !l.is_empty()).is_some_and(|l| {
+        cctui_proto::injected::starts_with_peer_tag(l) || l.starts_with("<agent-message")
+    })
+}
+
+/// A human turn's category: `context` when nothing but cctui wrappers lead it,
+/// otherwise whatever its prose reads as.
+fn user_category(body: &str) -> &'static str {
+    let (blocks, prose) = cctui_proto::injected::split_injected(body);
+    if !blocks.is_empty() && prose.trim().is_empty() {
+        "context"
+    } else if is_peer_text(prose) {
+        "peer"
+    } else if user_text_is_meta(prose) {
+        "system"
+    } else {
+        "user"
+    }
 }
 
 /// The `MsgCategory` the webui would file a canonical client payload under,
@@ -788,14 +802,7 @@ pub fn client_category(v: &Value) -> (&'static str, Option<String>) {
                 let Some(body) = content.strip_prefix(USER_PREFIX) else {
                     return ("assistant", None);
                 };
-                let body = body.trim_start();
-                if is_peer_text(body) {
-                    ("peer", None)
-                } else if user_text_is_meta(body) {
-                    ("system", None)
-                } else {
-                    ("user", None)
-                }
+                (user_category(body.trim_start()), None)
             }
         },
         "reply" => ("user", None),
@@ -850,6 +857,10 @@ mod tests {
             ("peer", None)
         );
         assert_eq!(
+            cat(text("▷ User: <cctui-peer-message from=\"peer\">\nhi\n</cctui-peer-message>")),
+            ("peer", None)
+        );
+        assert_eq!(
             cat(json!({ "type": "text", "content": "x", "kind": "thinking" })),
             ("thinking", None)
         );
@@ -898,6 +909,33 @@ mod tests {
         assert_eq!(cat(json!({ "type": "compact_summary" })).0, "compact");
         assert_eq!(cat(json!({ "type": "context_reset" })).0, "reset");
         assert_eq!(cat(json!({ "type": "heartbeat" })).0, "");
+    }
+
+    #[test]
+    fn a_turn_of_only_injected_blocks_is_context_and_prose_keeps_its_role() {
+        let cat = |content: &str| client_category(&json!({ "type": "text", "content": content })).0;
+        for (open, close) in [
+            ("<cctui-session-context>", "</cctui-session-context>"),
+            ("<session-context>", "</session-context>"),
+        ] {
+            assert_eq!(cat(&format!("▷ User: {open}\ncwd: /w\n{close}")), "context", "{open}");
+            assert_eq!(cat(&format!("▷ User: {open}\ncwd: /w\n{close}\n\nfix it")), "user");
+        }
+        assert_eq!(
+            cat("▷ User: <previous-conversation session=\"a\" id=\"s1\">\nb\n\
+                 </previous-conversation>\n\n===\n\n"),
+            "context"
+        );
+        assert_eq!(
+            cat("▷ User: look:\n<cctui-session-context>\nx\n</cctui-session-context>"),
+            "user",
+            "a wrapper quoted mid-message is the human's prose"
+        );
+        assert_eq!(
+            cat("▷ User: <cctui-session-context>\nx\n</cctui-session-context>\n\n\
+                 <system-reminder>y</system-reminder>"),
+            "system"
+        );
     }
 
     #[test]

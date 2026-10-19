@@ -31,6 +31,12 @@ pub fn line_markdown(line: &ConversationLine) -> String {
             format!("**{who}:**\n\n{body}")
         }
         LineKind::Compact => format!("**Compacted context:**\n\n{body}"),
+        LineKind::Context => line
+            .context
+            .iter()
+            .map(|c| format!("**Context · {}:**\n\n{}", c.label, c.body))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         LineKind::Image => format!("**Image:** {body}"),
         LineKind::Marker | LineKind::Reset | LineKind::Summary | LineKind::System => {
             format!("_{body}_")

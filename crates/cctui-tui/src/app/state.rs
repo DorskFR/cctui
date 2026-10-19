@@ -140,6 +140,14 @@ pub struct ConversationLine {
     pub status: Option<LineStatus>,
     /// Blob ids of the `cctui-img://` markers the body carried, in order.
     pub image_ids: Vec<String>,
+    /// The cctui wrappers that led the turn, shown as their own rows.
+    pub context: Vec<ContextBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextBlock {
+    pub label: String,
+    pub body: String,
 }
 
 /// What a line is still waiting for: delivery of the user's own send, or the
@@ -174,7 +182,13 @@ impl ConversationLine {
     /// Whether the line hides body text behind a collapse toggle.
     #[must_use]
     pub const fn collapsible(&self) -> bool {
-        matches!(self.kind, LineKind::Thinking { .. } | LineKind::Result { .. } | LineKind::Compact)
+        matches!(
+            self.kind,
+            LineKind::Thinking { .. }
+                | LineKind::Result { .. }
+                | LineKind::Compact
+                | LineKind::Context
+        ) || !self.context.is_empty()
     }
 }
 
@@ -195,6 +209,8 @@ pub enum LineKind {
     },
     /// A message relayed from another session or a room.
     Peer,
+    /// A turn that is nothing but cctui-injected wrappers.
+    Context,
     /// One line of harness bookkeeping.
     Marker,
     /// A `/clear` boundary.

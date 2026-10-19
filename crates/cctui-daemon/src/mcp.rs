@@ -274,8 +274,9 @@ pub fn send_tool_schema() -> Value {
     json!({
         "name": SEND_TOOL_NAME,
         "description": "Send a message to another cctui session, on any machine and under any \
-    harness. It arrives as a turn in that session, labelled as coming from this one, and appears \
-    in both transcripts as a peer message. This is not a request/response call: the peer is a \
+    harness. It arrives as a turn in that session, wrapped in <cctui-peer-message> naming this \
+    one as the sender, and appears in both transcripts as a peer message. This is not a \
+    request/response call: the peer is a \
     session with its own work, not a subagent — it answers when and if it chooses, by calling \
     CctuiSend back at you. Only sessions CctuiPeers lists may be addressed; an ended or archived \
     peer cannot receive anything (read it with CctuiHistory instead). Rate-limited to 10 messages \
@@ -340,8 +341,8 @@ pub fn history_tool_schema() -> Value {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Keep only these roles, e.g. [\"user\", \"assistant\"] for the \
-    conversation without tool noise. Known roles: user, assistant, peer, thinking, tool, result, \
-    mcp, error, summary, compact, system. Omit for everything.",
+    conversation without tool noise. Known roles: user, context, assistant, peer, thinking, tool, \
+    result, mcp, error, summary, compact, system. Omit for everything.",
                 },
                 "format": {
                     "type": "string",
@@ -1008,6 +1009,7 @@ mod tests {
         assert!(desc.contains("remote:<id>") && desc.contains("queued"), "{desc}");
         assert!(desc.contains("CctuiPeers"), "{desc}");
         assert!(desc.contains("archived"), "{desc}");
+        assert!(desc.contains("<cctui-peer-message>"), "{desc}");
     }
 
     #[test]

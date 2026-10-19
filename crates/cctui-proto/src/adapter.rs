@@ -847,7 +847,7 @@ impl PermissionMode {
         matches!(self, Self::Whip)
     }
 
-    /// `default` / `auto` / `yolo`, as shown in `<session-context>`.
+    /// `default` / `auto` / `yolo`, as shown in `<cctui-session-context>`.
     #[must_use]
     pub const fn normalized_label(self) -> &'static str {
         match self {

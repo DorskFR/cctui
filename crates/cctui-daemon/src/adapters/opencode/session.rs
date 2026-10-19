@@ -1819,7 +1819,7 @@ mod tests {
         session.params.cwd = dir.path().to_string_lossy().into_owned();
 
         let turn = session.first_turn("ses_me").expect("a first turn");
-        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.starts_with("<cctui-session-context>"), "{turn}");
         assert!(turn.contains("shared cwd: 1 other live session"), "{turn}");
         assert!(turn.contains("review the diff"), "the spawn prompt survives: {turn}");
 
@@ -1870,7 +1870,7 @@ mod tests {
         }];
 
         let turn = session.first_turn("ses_me").expect("a first turn");
-        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.starts_with("<cctui-session-context>"), "{turn}");
         assert!(turn.contains("context: 1 attached"), "{turn}");
         assert!(turn.contains("House style"), "{turn}");
         assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
@@ -1895,7 +1895,7 @@ mod tests {
         }];
 
         let turn = session.first_turn("ses_me").expect("a first turn");
-        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.starts_with("<cctui-session-context>"), "{turn}");
         assert!(turn.contains("### Worktrees\nnever switch branches"), "{turn}");
         assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
     }

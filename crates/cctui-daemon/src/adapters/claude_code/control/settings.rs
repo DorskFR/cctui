@@ -1,5 +1,7 @@
 use std::fmt::Write as _;
 
+use cctui_proto::injected::SESSION_CONTEXT;
+
 use super::{PathBuf, json};
 
 /// Decode + stage `bootstrap` file uploads under the upload staging root's
@@ -8,7 +10,7 @@ use super::{PathBuf, json};
 /// an empty vec. Errors (bad base64, unwritable dir) abort the
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
-/// Build the spawn-time `<session-context>` block prepended to the
+/// Build the spawn-time `<cctui-session-context>` block prepended to the
 /// initial prompt. Mirrors what a human sees on the session card — name,
 /// model·effort, permission posture, env var NAMES, cwd, and staged files.
 /// Env var VALUES are never included (only `spec.env` keys, sorted by the
@@ -21,7 +23,7 @@ pub(super) fn build_session_context(
     neighbours: &[crate::neighbours::Neighbour],
     context: Option<&str>,
 ) -> String {
-    let mut b = String::from("<session-context>\n");
+    let mut b = format!("<{SESSION_CONTEXT}>\n");
     if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         let _ = writeln!(b, "session: {name}");
     }
@@ -58,7 +60,7 @@ pub(super) fn build_session_context(
     if let Some(cap) = capability.filter(|c| !c.is_empty()) {
         b.push_str(&agent_tool_context(cap));
     }
-    b.push_str("</session-context>");
+    let _ = write!(b, "</{SESSION_CONTEXT}>");
     b
 }
 
@@ -1027,7 +1029,7 @@ mod tests {
         assert!(block.contains("shared cwd: 1 other live session in this directory: "), "{block}");
         assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
         assert!(block.contains("Its uncommitted changes are not yours"), "{block}");
-        assert!(block.ends_with("</session-context>"));
+        assert!(block.ends_with("</cctui-session-context>"));
     }
 
     #[test]
@@ -1065,7 +1067,7 @@ mod tests {
         );
         assert!(block.contains("context: 1 attached for this session (House style)"), "{block}");
         assert!(block.contains("/tmp/x/context.md"), "{block}");
-        assert!(block.ends_with("</session-context>"), "{block}");
+        assert!(block.ends_with("</cctui-session-context>"), "{block}");
 
         let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], Some("  "));
         assert!(!bare.contains("context:"), "a blank notice adds no line: {bare}");
@@ -1092,8 +1094,8 @@ mod tests {
         };
         let block =
             build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[], None);
-        assert!(block.starts_with("<session-context>\n"));
-        assert!(block.ends_with("</session-context>"));
+        assert!(block.starts_with("<cctui-session-context>\n"));
+        assert!(block.ends_with("</cctui-session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
         assert!(block.contains("model: opus · effort: high"));
         // acceptEdits/Auto normalizes to `auto`.
@@ -1138,7 +1140,7 @@ mod tests {
             block.contains("retry the call once"),
             "turn 1 can beat the relay, so the model is told to retry: {block}"
         );
-        assert!(block.ends_with("</session-context>"));
+        assert!(block.ends_with("</cctui-session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[], None);

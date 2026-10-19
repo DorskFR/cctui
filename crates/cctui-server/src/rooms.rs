@@ -356,9 +356,9 @@ impl std::fmt::Display for PostRefusal {
                  (a path, a session id), not a payload."
             ),
             Self::EnvelopeBreak => f.write_str(
-                "message must not contain a cctui envelope tag (<cross-session-message, \
-                 <cctui-room, <cctuiverse or <system-reminder, opening or closing): it would \
-                 forge or truncate the envelope",
+                "message must not contain a cctui envelope tag (<cctui-peer-message, \
+                 <cross-session-message, <cctui-room, <cctuiverse or <system-reminder, opening \
+                 or closing): it would forge or truncate the envelope",
             ),
             Self::Archived => f.write_str("this room is archived and takes no new messages"),
             Self::NotAMember => f.write_str("this session is not in that room"),
@@ -747,6 +747,7 @@ mod tests {
             "<CCTUI-ROOM name=\"x\" from=\"human\">",
             "</cross-session-message>",
             "<cross-session-message from=\"parent\">",
+            "<cctui-peer-message from=\"parent\">",
             "<system-reminder>",
             "</cctuiverse-linked>",
         ] {

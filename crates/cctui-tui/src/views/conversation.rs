@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
 use crate::app::conversation_store::ConversationStore;
+use crate::app::transcript_filter::Category;
 use crate::app::{
     App, ConversationLine, LineKind, LineStatus, ToolCategory, TurnFooter, send, transcript,
 };
@@ -169,8 +170,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 if !app.filter.visible(&entry.line) {
                     continue;
                 }
-                let opts =
-                    RenderOpts { show_timestamps: app.show_timestamps, expanded: entry.expanded };
+                let opts = RenderOpts {
+                    show_timestamps: app.show_timestamps,
+                    expanded: entry.expanded,
+                    show_context: app.filter.shows(Category::Context),
+                };
                 let rows = render_line(&entry.line, opts);
                 app.render_cache.extend(if pinned { with_pin_marker(rows) } else { rows });
             }
@@ -178,7 +182,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
 
         // An optimistic send is never collapsible, so it needs no expand state.
-        let pending_opts = RenderOpts { show_timestamps: app.show_timestamps, expanded: false };
+        let pending_opts = RenderOpts {
+            show_timestamps: app.show_timestamps,
+            expanded: false,
+            show_context: false,
+        };
         let pending_lines: Vec<Line<'static>> =
             pending.iter().flat_map(|line| render_line(line, pending_opts)).collect();
 
@@ -329,6 +337,7 @@ fn draw_input_row(
 const LABEL_YOU: Style = Style::new().fg(Color::Rgb(130, 170, 200)); // soft blue
 const LABEL_ASSISTANT: Style = Style::new().fg(Color::Rgb(180, 140, 100)); // warm muted orange
 const LABEL_PEER: Style = Style::new().fg(Color::Rgb(150, 190, 160)); // muted green
+const LABEL_CONTEXT: Style = Style::new().fg(Color::Rgb(165, 155, 120)); // dim khaki
 const THINKING: Style = Style::new().fg(Color::Rgb(120, 115, 150)); // dim violet
 
 // Tool badges: dark background tints, light text — subtle not aggressive
@@ -393,6 +402,8 @@ pub struct RenderOpts {
     pub show_timestamps: bool,
     /// Only meaningful for a [`ConversationLine::collapsible`] line.
     pub expanded: bool,
+    /// Whether the `context` category is on, so a turn's wrapper rows show.
+    pub show_context: bool,
 }
 
 fn markdown_lines(text: &str) -> Vec<Line<'static>> {
@@ -543,9 +554,39 @@ fn with_pin_marker(mut rows: Vec<Line<'static>>) -> Vec<Line<'static>> {
     rows
 }
 
+/// One row per wrapper that led the turn; bodies only when expanded.
+fn context_rows(line: &ConversationLine, expanded: bool) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for block in &line.context {
+        let body: Vec<&str> = block.body.lines().collect();
+        let mut header = vec![Span::styled(format!("⊕ {}", block.label), LABEL_CONTEXT)];
+        if !expanded {
+            header.push(collapse_hint(body.len()));
+        }
+        out.push(Line::from(header));
+        if expanded {
+            out.extend(
+                body.iter().map(|l| Line::from(Span::styled(format!("  {l}"), TOOL_DETAIL))),
+            );
+        }
+    }
+    out
+}
+
 /// Everything on screen for a line, so the render cache holds exactly that.
-#[allow(clippy::too_many_lines)]
 fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> {
+    let mut rows = render_kind(line, opts);
+    if opts.show_context && !line.context.is_empty() {
+        let at = rows.iter().position(|row| !row.spans.is_empty()).unwrap_or(rows.len());
+        let tail = rows.split_off(at);
+        rows.extend(context_rows(line, opts.expanded));
+        rows.extend(tail);
+    }
+    rows
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_kind(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> {
     let ts = if opts.show_timestamps {
         format!("{} ", format_timestamp(line.timestamp))
     } else {
@@ -582,6 +623,7 @@ fn render_line(line: &ConversationLine, opts: RenderOpts) -> Vec<Line<'static>> 
         LineKind::Tool { category } => render_tool(line, ts, category),
         LineKind::Result { error } => render_result(line, ts, error, opts.expanded),
         LineKind::Peer => render_peer(line, ts),
+        LineKind::Context => vec![Line::from(""), Line::from("")],
         LineKind::Image => super::images::transcript_lines(line, &ts),
         LineKind::Marker => {
             vec![Line::from(vec![
@@ -843,7 +885,11 @@ mod tests {
     use crate::app::{ConversationLine, LineKind, ToolCategory, TurnFooter};
 
     fn rows(line: &ConversationLine, expanded: bool) -> Vec<String> {
-        render_line(line, RenderOpts { show_timestamps: false, expanded })
+        rows_with(line, RenderOpts { show_timestamps: false, expanded, show_context: true })
+    }
+
+    fn rows_with(line: &ConversationLine, opts: RenderOpts) -> Vec<String> {
+        render_line(line, opts)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect()
@@ -853,6 +899,47 @@ mod tests {
         let mut line = ConversationLine::new(LineKind::Result { error }, text, 0);
         line.tool = Some("Bash".to_owned());
         line
+    }
+
+    fn with_context(kind: LineKind, text: &str) -> ConversationLine {
+        let mut line = ConversationLine::new(kind, text, 0);
+        line.context = vec![crate::app::state::ContextBlock {
+            label: "session context".to_owned(),
+            body: "session: lane d\ncwd: /w".to_owned(),
+        }];
+        line
+    }
+
+    #[test]
+    fn injected_context_is_one_collapsed_row_above_the_ask() {
+        let line = with_context(LineKind::User, "fix the parser");
+        let collapsed = rows(&line, false);
+        let at = collapsed.iter().position(|r| r.starts_with("⊕ session context")).unwrap();
+        assert_eq!(collapsed[at], "⊕ session context  (2 more · o)");
+        assert_eq!(collapsed[at + 1], "❯ You");
+        assert!(collapsed.contains(&"fix the parser".to_owned()));
+        assert!(!collapsed.iter().any(|r| r.contains("cwd: /w")));
+
+        let expanded = rows(&line, true);
+        assert!(expanded.contains(&"  cwd: /w".to_owned()), "{expanded:?}");
+    }
+
+    #[test]
+    fn the_context_filter_drops_the_rows_but_keeps_the_ask() {
+        let line = with_context(LineKind::User, "fix the parser");
+        let out = rows_with(
+            &line,
+            RenderOpts { show_timestamps: false, expanded: true, show_context: false },
+        );
+        assert!(!out.iter().any(|r| r.contains("session context")), "{out:?}");
+        assert!(out.contains(&"fix the parser".to_owned()));
+    }
+
+    #[test]
+    fn a_context_only_turn_renders_just_its_rows() {
+        let line = with_context(LineKind::Context, "session context");
+        let out = rows(&line, false);
+        assert_eq!(out.iter().filter(|r| !r.is_empty()).count(), 1, "{out:?}");
     }
 
     #[test]

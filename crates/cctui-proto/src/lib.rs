@@ -16,6 +16,7 @@ pub mod github;
 pub mod harness;
 pub mod harness_models;
 pub mod identity;
+pub mod injected;
 pub mod ids;
 pub mod media;
 pub mod models;
