@@ -73,4 +73,22 @@ WORKER_NET_ALLOW=" youtrack.example:443 , api.github.com:443 "
 seed_policy
 check "allowed_hosts" "api.github.com:443 cctui.cctui.svc:8700 cctui.dorsk.dev:443 github.com:443 youtrack.example:443" "$(allowed)"
 
+echo "== 7. url_hostport parses the authority only =="
+check "empty" "" "$(url_hostport "")"
+check "https default" "cctui.dorsk.dev:443" "$(url_hostport "https://cctui.dorsk.dev")"
+check "http default" "gw.internal:80" "$(url_hostport "http://gw.internal")"
+check "explicit port" "gw.internal:8080" "$(url_hostport "http://gw.internal:8080")"
+check "path" "cctui.dorsk.dev:443" "$(url_hostport "https://cctui.dorsk.dev/gateway/anthropic")"
+check "port + path" "pod.example:9443" "$(url_hostport "https://pod.example:9443/gateway/anthropic")"
+check "query" "cctui.dorsk.dev:443" "$(url_hostport "https://cctui.dorsk.dev/cb?x=1")"
+check "userinfo" "github.com:443" "$(url_hostport "https://x-access-token:tok@github.com/org/pack.git")"
+check "userinfo + port" "git.example:8443" "$(url_hostport "https://u:p@git.example:8443/r.git")"
+check "unknown scheme keeps bare host" "host.example" "$(url_hostport "ssh://git@host.example/r")"
+check "ipv6 literal with port" "[::1]:8443" "$(url_hostport "https://[::1]:8443/x")"
+check "query @ is not userinfo" "cctui.dorsk.dev:443" "$(url_hostport "https://cctui.dorsk.dev?x=@evil.com")"
+check "fragment @ is not userinfo" "cctui.dorsk.dev:443" "$(url_hostport "https://cctui.dorsk.dev#@evil.com")"
+check "path @ is not userinfo" "cctui.dorsk.dev:443" "$(url_hostport "https://cctui.dorsk.dev/path@evil.com")"
+check "last @ in authority wins" "host.example:443" "$(url_hostport "https://a@b@host.example/x")"
+check "url_host strips port" "cctui.dorsk.dev" "$(url_host "https://u@cctui.dorsk.dev:8443/p?q=@evil")"
+
 exit $fail

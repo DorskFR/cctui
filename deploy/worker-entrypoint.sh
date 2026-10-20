@@ -142,7 +142,7 @@ url_hostport() {
     _u="$1"
     [ -n "$_u" ] || return 0
     _scheme=$(printf '%s' "$_u" | sed -n 's,^\([a-zA-Z][a-zA-Z0-9+.-]*\)://.*,\1,p')
-    _hostport=$(printf '%s' "$_u" | sed -e 's,^[a-zA-Z][a-zA-Z0-9+.-]*://,,' -e 's,/.*$,,' -e 's,^[^@]*@,,')
+    _hostport=$(printf '%s' "$_u" | sed -e 's,^[a-zA-Z][a-zA-Z0-9+.-]*://,,' -e 's,[/?#].*$,,' -e 's,^.*@,,')
     case "$_hostport" in
         *:*) printf '%s' "$_hostport" ;;
         *)
