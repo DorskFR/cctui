@@ -324,6 +324,7 @@ impl Supervisor {
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
         let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
         crate::dispatch::register_event_sink(event_tx.clone());
+        crate::guardwatch::start(event_tx.clone(), shutdown.clone());
 
         let mut backoff = Backoff::reconnect();
         loop {
@@ -378,6 +379,7 @@ impl Supervisor {
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // Discard the immediate first tick — we just connected.
         ping.tick().await;
+        let mut report_changes = crate::harness_update::changes();
 
         // Last time we heard *anything* from the server (text frame or the
         // auto-Pong to our Ping). Drives half-open detection on ping ticks.
@@ -448,6 +450,9 @@ impl Supervisor {
                         }
                     }
                     _ = ping.tick() => {
+                        self.send_heartbeat(&mut sink, running, last_rx).await?;
+                    }
+                    Ok(()) = report_changes.changed() => {
                         self.send_heartbeat(&mut sink, running, last_rx).await?;
                     }
                     // Pause new events while a chunked transfer is in flight so a
@@ -697,6 +702,9 @@ impl Supervisor {
                     tracing::info!(%adapter_id, %local_id, watch, "text watch toggled");
                     return;
                 }
+                if crate::guardwatch::handle_command(&adapter_id, command.as_ref(), event_tx) {
+                    return;
+                }
                 if let cctui_proto::adapter::AdapterCommand::Interrupt { local_id, command_id } =
                     command.as_ref()
                     && let Some(interrupts) =
@@ -831,6 +839,13 @@ impl Supervisor {
             }
             DaemonFrameDown::HarnessUpdatePolicy { policy } => {
                 crate::harness_update::set_policy(policy);
+            }
+            DaemonFrameDown::DrainRestart { harness } => {
+                if harness == cctui_proto::harness::HARNESS_CLAUDE_CODE {
+                    crate::adapters::claude_code::version_gate::request_drain_restart();
+                } else {
+                    tracing::warn!(%harness, "drain restart is only implemented for claude-code");
+                }
             }
             frame if crate::preview::is_preview_frame(&frame) => {
                 crate::preview::handle_down(frame, frame_up_tx).await;
@@ -1407,6 +1422,7 @@ fn lane(adapter_id: &str, event: &AdapterEvent) -> serde_json::Result<Lane> {
 /// caller parked on its child's completion is fed here.
 fn observe_event(adapter_id: &str, event: &AdapterEvent) {
     crate::childwatch::global().observe(event);
+    crate::guardwatch::global().observe(adapter_id, event);
     crate::neighbours::global().observe(adapter_id, event);
     crate::toolblock_followup::observe(adapter_id, event);
 }
@@ -1432,6 +1448,7 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::PlanRequest { local_id, .. }
         | AdapterEvent::PlanResolved { local_id }
         | AdapterEvent::TextDelta { local_id, .. }
+        | AdapterEvent::GuardStepState { local_id, .. }
         | AdapterEvent::TurnEnd { local_id, .. } => local_id,
         _ => "",
     }
@@ -1449,6 +1466,7 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::PlanRequest { .. } => "plan_request",
         AdapterEvent::PlanResolved { .. } => "plan_resolved",
         AdapterEvent::TextDelta { .. } => "text_delta",
+        AdapterEvent::GuardStepState { .. } => "guard_step_state",
         AdapterEvent::TurnEnd { .. } => "turn_end",
         _ => "other",
     }

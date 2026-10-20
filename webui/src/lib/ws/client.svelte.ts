@@ -1,6 +1,7 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ServerEvent } from '@bindings/ServerEvent';
 import type { UserAction } from '@bindings/UserAction';
+import type { GuardStepState } from '@bindings/GuardStepState';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
 import { toasts } from '$lib/toast.svelte';
@@ -16,11 +17,14 @@ import {
 	type AccountUsageEvent,
 	type CommandOutcome,
 	type GithubEvent,
+	type GuardStepEvent,
 	type LifecycleEvent,
 	type MachineResourcesEvent,
 	type SessionEndedEvent,
 	type SessionListPatch
 } from './frames';
+
+export type CommandResultEvent = { commandId: string; ok: boolean; error: string | null };
 import { CommandWaiters } from './commands';
 import {
 	LivePrompts,
@@ -97,6 +101,10 @@ export class WsClient {
 	private textCbs = new KeyedListeners<TextDelta>();
 	/** Sessions whose streamed text this client asked for, re-sent on reconnect. */
 	private textWatched = new Set<string>();
+	/** Last workflow-guard step per session, so a header mounting after the
+	 * frame still shows it; listeners keyed by session id. */
+	private guardSteps = new Map<string, GuardStepState>();
+	private guardStepCbs = new KeyedListeners<GuardStepState>();
 	/** GitHub inbox listeners; not session-keyed — one
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
 	private githubCbs = new Set<GithubCb>();
@@ -176,6 +184,10 @@ export class WsClient {
 				this.textCbs.emit(msg.session_id, { item_id: msg.item_id, delta: msg.delta });
 				break;
 			}
+			case 'guard_step_state': {
+				this.setGuardStep(msg.session_id, msg.state);
+				break;
+			}
 			case 'message_ack': {
 				// Resolve the tracked send (delivered / failed → auto-retry).
 				this.delivery.resolveAck(msg);
@@ -183,6 +195,7 @@ export class WsClient {
 			}
 			case 'command_result': {
 				this.commands.resolveCommand(msg.command_id, { ok: msg.ok, error: msg.error ?? undefined });
+				for (const cb of this.commandResultCbs) cb({ commandId: msg.command_id, ok: msg.ok, error: msg.error ?? null });
 				break;
 			}
 			case 'github_event': {
@@ -292,6 +305,14 @@ export class WsClient {
 	onSessionEnded(cb: (ev: SessionEndedEvent) => void): () => void {
 		this.sessionEndedCbs.add(cb);
 		return () => this.sessionEndedCbs.delete(cb);
+	}
+
+	/** Every `command_result`, including one that arrives after its waiter gave
+	 *  up: a spawn's late verdict lands on the pending card. */
+	private commandResultCbs = new Set<(r: CommandResultEvent) => void>();
+	onCommandResult(cb: (r: CommandResultEvent) => void): () => void {
+		this.commandResultCbs.add(cb);
+		return () => this.commandResultCbs.delete(cb);
 	}
 
 	/** Debounced list-refresh trigger: bumps changeTick at most ~once/2s. */
@@ -433,6 +454,22 @@ export class WsClient {
 
 	onStream(id: string, cb: StreamCb): () => void {
 		return this.streams.onStream(id, cb);
+	}
+
+	/** The session's last reported workflow-guard step, if any frame carried one. */
+	guardStep(id: string): GuardStepState | null {
+		return this.guardSteps.get(id) ?? null;
+	}
+
+	/** Seed the step from an HTTP read (the WS only pushes changes). */
+	setGuardStep(id: string, state: GuardStepState) {
+		this.guardSteps.set(id, state);
+		this.guardStepCbs.emit(id, state);
+	}
+
+	/** Follow a session's workflow-guard step. Returns an unsubscribe fn. */
+	onGuardStep(id: string, cb: (ev: GuardStepEvent) => void): () => void {
+		return this.guardStepCbs.add(id, (state) => cb({ session_id: id, state }));
 	}
 
 	/** Register a live GitHub inbox listener. Fires on every

@@ -22,6 +22,7 @@ mod error;
 mod events;
 mod fireworks_billing;
 mod followup;
+mod guard_step;
 mod http_cache;
 mod keepalive;
 mod langfuse;
@@ -67,6 +68,7 @@ mod update_check;
 mod uploads;
 mod usage_history;
 mod usage_probe;
+mod voice_live;
 mod webauthn;
 mod webhook;
 mod ws;
@@ -399,6 +401,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/llms.txt", get(openapi::llms_txt))
         .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/api/v1/ws", get(ws::tui_ws))
+        .route("/api/v1/ws/voice", get(voice_live::voice_ws))
         // Browser auth-cookie endpoints. Self-authenticating: `login`
         // validates the presented token and sets the `HttpOnly` cookie, `logout`
         // clears it — both live outside the `auth_middleware` group.
@@ -1083,6 +1086,7 @@ mod tests {
             "GET /admin/harness-autoupdate Bearer Scope(Admin)",
             "PUT /admin/harness-autoupdate Bearer Scope(Admin)",
             "PUT /admin/harness-autoupdate/{machine_id} Bearer Scope(Admin)",
+            "POST /admin/harness-autoupdate/{machine_id}/restart Bearer Scope(Admin)",
             "PUT /admin/instance Bearer Scope(Admin)",
             "GET /admin/instance/self-update Bearer Scope(Admin)",
             "PUT /admin/instance/self-update Bearer Scope(Admin)",

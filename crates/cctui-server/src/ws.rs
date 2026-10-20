@@ -17,7 +17,7 @@ use crate::state::AppState;
 /// pass; everyone else must own the session (resolved via
 /// `machine_uuid -> machines.user_id`). A session whose owner can't be resolved
 /// is denied for non-admins rather than leaked. Returns `true` when permitted.
-async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) -> bool {
+pub(crate) async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) -> bool {
     if ctx.is_admin() {
         return true;
     }
@@ -76,7 +76,10 @@ pub async fn tui_ws(
 
 /// A present `Origin` must be in the allowlist; an absent one is a non-browser
 /// client (TUI/daemon) and is allowed. An unparseable `Origin` is rejected.
-fn origin_permitted(config: &crate::config::Config, headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn origin_permitted(
+    config: &crate::config::Config,
+    headers: &axum::http::HeaderMap,
+) -> bool {
     headers
         .get(axum::http::header::ORIGIN)
         .is_none_or(|value| value.to_str().is_ok_and(|o| config.origin_allowed(o)))
@@ -160,10 +163,6 @@ async fn handle_message(
 ) {
     // NoDaemon / NoAdapter are expected for sessions whose daemon is momentarily
     // offline — that is exactly the case the ack lets the client recover from.
-    // Carry re-minted gateway env on the reply so a reply-driven cold-resume of
-    // a hibernated worker revives it with a fresh valid token rather than empty
-    // env. Ignored when the worker is already alive.
-    let env = crate::routes::gateway::resume_env_for_session(state, &session_id).await;
     // A reply is not idempotent and a client that never saw its ack retries the
     // same turn. The claim is only a reservation here — it is confirmed below
     // if the dispatch succeeded and released if it did not, because a message
@@ -188,29 +187,8 @@ async fn handle_message(
             Err(e) => tracing::warn!(%e, %session_id, "claiming the turn failed"),
         }
     }
-    // A successful dispatch only means the frame was queued toward a daemon; the
-    // adapter's `CommandResult` under this id is the delivery proof.
-    let command_id = uuid::Uuid::new_v4();
-    crate::state::track_command(
-        &state.pending_commands,
-        command_id,
-        Some(session_id.clone()),
-        None,
-    );
-    let dispatch = crate::bus::dispatch(
-        state,
-        &session_id,
-        cctui_proto::adapter::AdapterCommand::Reply {
-            local_id: session_id.clone(),
-            recover_auth: false,
-            text: content,
-            ask_picks,
-            env,
-            command_id: Some(command_id),
-            turn_id,
-        },
-    )
-    .await;
+    let (command_id, dispatch) =
+        dispatch_reply(state, &session_id, content, ask_picks, turn_id).await;
     let err_reason = dispatch.as_ref().err().map(|err| {
         use crate::bus::BusError;
         match err {
@@ -230,6 +208,45 @@ async fn handle_message(
         }
     }
     ack_message(event_tx, session_id, client_msg_id, err_reason, Some(command_id)).await;
+}
+
+/// Queue `content` toward the session's daemon as a typed reply.
+///
+/// The id is tracked before dispatch: a successful dispatch only means the
+/// frame was queued, the adapter's `CommandResult` under it is the delivery
+/// proof.
+pub(crate) async fn dispatch_reply(
+    state: &AppState,
+    session_id: &str,
+    content: String,
+    ask_picks: Option<Vec<Vec<usize>>>,
+    turn_id: Option<uuid::Uuid>,
+) -> (uuid::Uuid, Result<(), crate::bus::BusError>) {
+    // Re-minted gateway env lets a reply-driven cold-resume of a hibernated
+    // worker revive it with a fresh token; ignored when the worker is alive.
+    let env = crate::routes::gateway::resume_env_for_session(state, session_id).await;
+    let command_id = uuid::Uuid::new_v4();
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        Some(session_id.to_owned()),
+        None,
+    );
+    let dispatch = crate::bus::dispatch(
+        state,
+        session_id,
+        cctui_proto::adapter::AdapterCommand::Reply {
+            local_id: session_id.to_owned(),
+            recover_auth: false,
+            text: content,
+            ask_picks,
+            env,
+            command_id: Some(command_id),
+            turn_id,
+        },
+    )
+    .await;
+    (command_id, dispatch)
 }
 
 /// Reports the outcome of one `Message` frame, when the client asked to be told.
@@ -516,7 +533,7 @@ async fn handle_watch_text(state: &AppState, session_id: &str, watch: bool, watc
     }
 }
 
-async fn set_daemon_text_watch(state: &AppState, session_id: &str, watch: bool) {
+pub(crate) async fn set_daemon_text_watch(state: &AppState, session_id: &str, watch: bool) {
     let dispatch = crate::bus::dispatch(
         state,
         session_id,
@@ -641,6 +658,7 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::PtyChunk { session_id, .. }
         | ServerEvent::TextDelta { session_id, .. }
         | ServerEvent::ToolCallBlocked { session_id, .. }
+        | ServerEvent::GuardStepState { session_id, .. }
         | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. }
         | ServerEvent::SoftLimitReached { session_id, .. }
@@ -1102,6 +1120,17 @@ mod tests {
 
     fn bob_stream() -> ServerEvent {
         ServerEvent::PtyChunk { session_id: "sess-bob".into(), data: String::new() }
+    }
+
+    #[tokio::test]
+    async fn a_guard_step_is_scoped_to_its_session_owner() {
+        let event = ServerEvent::GuardStepState {
+            session_id: "sess-bob".into(),
+            state: cctui_proto::guard_step::GuardStepState::default(),
+        };
+        assert_eq!(audience(&event), Audience::OwnerOf(Owned::Session("sess-bob".into())));
+        assert!(filter_for(BOB, FakeOwners::default()).allows(&event).await);
+        assert!(!filter_for(ALICE, FakeOwners::default()).allows(&event).await);
     }
 
     #[tokio::test]

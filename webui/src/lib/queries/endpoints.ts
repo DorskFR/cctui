@@ -61,6 +61,7 @@ import type { PasskeyRow } from "@bindings/PasskeyRow";
 import type { PasskeyTestResult } from "@bindings/PasskeyTestResult";
 import type { RelabelPasskeyRequest } from "@bindings/RelabelPasskeyRequest";
 import type { VersionInfo } from "@bindings/VersionInfo";
+import type { VoiceConfigInfo } from "@bindings/VoiceConfigInfo";
 import type { GitInfo } from "@bindings/GitInfo";
 import type { InstanceInfo } from "@bindings/InstanceInfo";
 import type { ChangelogResponse } from "@bindings/ChangelogResponse";
@@ -81,6 +82,7 @@ import type { SpeechSettingsInfo } from "@bindings/SpeechSettingsInfo";
 import type { SpeechSettingsRequest } from "@bindings/SpeechSettingsRequest";
 import type { HarnessAutoupdateInfo } from "@bindings/HarnessAutoupdateInfo";
 import type { HarnessPolicyRequest } from "@bindings/HarnessPolicyRequest";
+import type { HarnessRestartRequest } from "@bindings/HarnessRestartRequest";
 import type { HarnessUpdatePolicy } from "@bindings/HarnessUpdatePolicy";
 import type { InstanceUpdateRequest } from "@bindings/InstanceUpdateRequest";
 import type { MeResponse } from "@bindings/MeResponse";
@@ -194,9 +196,15 @@ export const endpoints = {
     api.put<HarnessAutoupdateInfo>(`/admin/harness-autoupdate/${encodeURIComponent(machineId)}`, {
       policy,
     } satisfies HarnessPolicyRequest),
+  /** Restart one harness's long-lived process on a machine once it has no live worker (admin). */
+  restartHarness: (machineId: string, harness: string) =>
+    api.post<void>(`/admin/harness-autoupdate/${encodeURIComponent(machineId)}/restart`, {
+      harness,
+    } satisfies HarnessRestartRequest),
   /** Which optional integrations this server has, and whether each is live.
    *  Drives capability-gated UI: the lazy `/github` route + nav. */
   capabilities: () => api.get<CapabilitiesResponse>(path("get_capabilities")),
+  voiceConfig: () => api.get<VoiceConfigInfo>("/voice/config"),
   /** Who the stored bearer token resolves to. */
   me: () => api.get<MeResponse>(path("get_me")),
   /** What a device login identified by its short code is asking for. */

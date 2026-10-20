@@ -99,6 +99,7 @@ pub async fn deregister(
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
     }
+    crate::guard_step::forget(&session_id);
     state.bus.deregister_session_stream(&session_id);
     tracing::info!(session_id = %session_id, "session deregistered");
     Ok(StatusCode::NO_CONTENT)
@@ -2565,36 +2566,32 @@ pub async fn kill_session(
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
     }
+    crate::guard_step::forget(&session_id);
     state.bus.deregister_session_stream(&session_id);
     tracing::info!(session_id = %session_id, "session killed");
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/v1/sessions/{id}/interrupt` — stop the in-flight turn without
-/// tearing the session down. Dispatches `Interrupt`, NOT a
-/// kill: the earlier `Kill { signal: 15 }` terminated the worker on both
-/// adapters (claude `kill`-op'd the PTY worker; codex sent `turn/interrupt`
-/// *and then* `terminate_child`). `Interrupt` keeps the session alive — the
-/// claude adapter injects an ESC keystroke into the worker PTY via `attach`,
-/// the codex adapter sends `turn/interrupt` without terminating. The DB row
-/// stays active and in the registry so the session keeps going.
+/// Stop the in-flight turn of `session_id` without tearing the session down,
+/// for the interrupt route and the live voice loop alike.
 ///
-/// Mints a `command_id` so the adapter can echo back an
-/// [`AdapterEvent::CommandResult`] → `ServerEvent::CommandResult`; the webui
-/// awaits it to surface whether the agent actually accepted the interrupt
-/// instead of firing-and-forgetting. Returns the id in the response body.
-pub async fn interrupt_session(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(session_id): Path<String>,
-) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
+/// Dispatches `Interrupt`, NOT a kill: the claude adapter injects an ESC
+/// keystroke into the worker PTY, the codex adapter sends `turn/interrupt`
+/// without terminating, so the DB row stays active and in the registry.
+/// Mints a `command_id` the adapter echoes back in its `CommandResult`, so
+/// the caller can learn whether the agent actually accepted the interrupt.
+pub async fn dispatch_interrupt(
+    state: &AppState,
+    session_id: &str,
+    user_id: uuid::Uuid,
+) -> Result<uuid::Uuid, AppError> {
     let command_id = uuid::Uuid::new_v4();
     // Recorded before dispatch so the recovery reaper cannot revive the same
     // failed turn while the native worker is stopping.
     if let Err(err) = events::record_now(
-        &state,
-        Event::new(kind::SESSION_INTERRUPTED, Actor::User(ctx.user_id))
-            .session(&session_id)
+        state,
+        Event::new(kind::SESSION_INTERRUPTED, Actor::User(user_id))
+            .session(session_id)
             .detail(serde_json::json!({ "command_id": command_id })),
     )
     .await
@@ -2604,14 +2601,14 @@ pub async fn interrupt_session(
     crate::state::track_command(
         &state.pending_commands,
         command_id,
-        Some(session_id.clone()),
+        Some(session_id.to_owned()),
         None,
     );
     let dispatch = crate::bus::dispatch(
-        &state,
-        &session_id,
+        state,
+        session_id,
         cctui_proto::adapter::AdapterCommand::Interrupt {
-            local_id: session_id.clone(),
+            local_id: session_id.to_owned(),
             command_id: Some(command_id),
         },
     )
@@ -2632,6 +2629,15 @@ pub async fn interrupt_session(
         return Err(AppError::new(status, message));
     }
     tracing::info!(session_id = %session_id, %command_id, "session interrupted");
+    Ok(command_id)
+}
+
+pub async fn interrupt_session(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
+    let command_id = dispatch_interrupt(&state, &session_id, ctx.user_id).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(cctui_proto::api::SpawnResponse {
