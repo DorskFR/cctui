@@ -5,8 +5,8 @@
 export interface AudioLike {
 	src: string;
 	playbackRate: number;
-	onended: (() => void) | null;
-	onerror: (() => void) | null;
+	onended: ((ev: Event) => void) | null;
+	onerror: ((ev: Event | string) => void) | null;
 	play(): Promise<void>;
 	pause(): void;
 }
@@ -89,8 +89,9 @@ export class SpeechPlayer {
 	}
 
 	private audio(): AudioLike {
-		if (!this.current) this.current = this.opts.createAudio?.() ?? new Audio();
-		return this.current;
+		const a = this.current ?? this.opts.createAudio?.() ?? new Audio();
+		this.current = a;
+		return a;
 	}
 
 	private next() {

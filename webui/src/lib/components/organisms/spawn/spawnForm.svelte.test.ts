@@ -57,6 +57,8 @@ vi.mock('$lib/ws.svelte', async () => {
 	const { CommandWaiters } = await import('$lib/ws/commands');
 	return { ws: {
 		sessions: [],
+		onCommandResult: () => () => {},
+		onSessionEnded: () => () => {},
 		awaitSpawn: (commandId: string, sessionId: string | null, opts: object) =>
 			new CommandWaiters().awaitSpawn(commandId, sessionId, {
 				...opts, probeIntervalMs: 1, timeoutMs: 100

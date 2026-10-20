@@ -37,10 +37,11 @@ export async function speakText(
 	audio.playbackRate = opts.speed ?? 1;
 	const mine: Current = { key, audio, url, onend: opts.onend ?? (() => {}) };
 	current = mine;
-	audio.onended = () => {
+	const done = () => {
 		if (current === mine) stopCurrent();
 	};
-	audio.onerror = audio.onended;
+	audio.onended = done;
+	audio.onerror = done;
 	try {
 		await audio.play();
 	} catch (e) {
