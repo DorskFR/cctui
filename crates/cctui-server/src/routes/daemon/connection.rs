@@ -605,6 +605,7 @@ pub(super) fn session_scope(frame: &DaemonFrameUp) -> Option<&str> {
                 | AdapterEvent::PlanResolved { local_id }
                 | AdapterEvent::Diagnose { local_id, .. }
                 | AdapterEvent::PtyChunk { local_id, .. }
+                | AdapterEvent::TextDelta { local_id, .. }
                 | AdapterEvent::TranscriptMark { local_id, .. }
                 | AdapterEvent::TurnEnd { local_id, .. }
                 | AdapterEvent::RateLimits { local_id, .. },
@@ -659,6 +660,7 @@ pub(super) const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::PermissionRequest { .. } => "permission_request",
         AdapterEvent::PermissionResolved { .. } => "permission_resolved",
         AdapterEvent::TranscriptMark { .. } => "transcript_mark",
+        AdapterEvent::TextDelta { .. } => "text_delta",
         AdapterEvent::TurnEnd { .. } => "turn_end",
         _ => "other",
     }

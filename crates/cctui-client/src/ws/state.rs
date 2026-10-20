@@ -12,6 +12,7 @@ use crate::error::ClientError;
 pub struct SubscriptionState {
     sessions: BTreeSet<String>,
     terminals: BTreeSet<String>,
+    texts: BTreeSet<String>,
 }
 
 impl SubscriptionState {
@@ -28,12 +29,20 @@ impl SubscriptionState {
             TuiCommand::Unsubscribe { session_id } => {
                 self.sessions.remove(session_id);
                 self.terminals.remove(session_id);
+                self.texts.remove(session_id);
             }
             TuiCommand::WatchTerminal { session_id, watch } => {
                 if *watch {
                     self.terminals.insert(session_id.clone());
                 } else {
                     self.terminals.remove(session_id);
+                }
+            }
+            TuiCommand::WatchText { session_id, watch } => {
+                if *watch {
+                    self.texts.insert(session_id.clone());
+                } else {
+                    self.texts.remove(session_id);
                 }
             }
             TuiCommand::Message { .. } | TuiCommand::PermissionResponse { .. } => {}
@@ -52,6 +61,10 @@ impl SubscriptionState {
             session_id: session_id.clone(),
             watch: true,
         }));
+        out.extend(self.texts.iter().map(|session_id| TuiCommand::WatchText {
+            session_id: session_id.clone(),
+            watch: true,
+        }));
         out
     }
 
@@ -67,7 +80,7 @@ impl SubscriptionState {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty() && self.terminals.is_empty()
+        self.sessions.is_empty() && self.terminals.is_empty() && self.texts.is_empty()
     }
 }
 
@@ -296,6 +309,20 @@ mod tests {
         state.record(&TuiCommand::Unsubscribe { session_id: "a".to_owned() });
         assert!(state.is_empty());
         assert!(state.replay().is_empty());
+    }
+
+    #[test]
+    fn a_text_watch_is_replayed_and_dropped_with_its_subscription() {
+        let mut state = SubscriptionState::new();
+        state.record(&sub("a"));
+        state.record(&TuiCommand::WatchText { session_id: "a".to_owned(), watch: true });
+        let replay = state.replay();
+        assert!(matches!(replay.last(), Some(TuiCommand::WatchText { watch: true, .. })));
+        state.record(&TuiCommand::WatchText { session_id: "a".to_owned(), watch: false });
+        assert!(!state.replay().iter().any(|c| matches!(c, TuiCommand::WatchText { .. })));
+        state.record(&TuiCommand::WatchText { session_id: "a".to_owned(), watch: true });
+        state.record(&TuiCommand::Unsubscribe { session_id: "a".to_owned() });
+        assert!(state.is_empty());
     }
 
     #[test]

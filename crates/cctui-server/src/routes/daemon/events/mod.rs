@@ -60,6 +60,7 @@ pub(super) async fn handle_event(
         }
         e @ (AdapterEvent::Diagnose { .. }
         | AdapterEvent::PtyChunk { .. }
+        | AdapterEvent::TextDelta { .. }
         | AdapterEvent::CommandResult { .. }) => {
             relay::on_relay_event(state, e).await;
             Inserted::UNSTORED

@@ -162,7 +162,10 @@ pub(super) fn map_notification(local_id: &str, method: &str, v: &Value) -> Incom
             ),
             _ => unreachable!("Disposition::Mapped without a mapper: {method}"),
         },
-        Disposition::Stream(reason) => Incoming::Traced { method: method.to_owned(), reason },
+        Disposition::Stream(reason) => agent_message_delta(local_id, method, v).map_or_else(
+            || Incoming::Traced { method: method.to_owned(), reason },
+            Incoming::Event,
+        ),
         Disposition::Notice(level) => {
             Incoming::Event(notice_event(local_id, method, level, v.get("params")))
         }
@@ -171,6 +174,17 @@ pub(super) fn map_notification(local_id: &str, method: &str, v: &Value) -> Incom
             event: notice_event(local_id, method, "unhandled", v.get("params")),
         },
     }
+}
+
+/// `item/agentMessage/delta` text for a session with a text watcher; the
+/// accumulator still folds it into `item/completed`.
+fn agent_message_delta(local_id: &str, method: &str, v: &Value) -> Option<AdapterEvent> {
+    if method != "item/agentMessage/delta" {
+        return None;
+    }
+    let item_id = v.pointer("/params/itemId").and_then(Value::as_str)?;
+    let delta = v.pointer("/params/delta").and_then(Value::as_str)?;
+    crate::text_deltas::forward(local_id, item_id, delta)
 }
 
 /// A notification with no dedicated rendering, carried into the timeline as a
@@ -637,6 +651,34 @@ mod tests {
             Incoming::Event(AdapterEvent::Message { local_id, .. }) => assert_eq!(local_id, "sess"),
             other => panic!("expected Message, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn agent_message_deltas_reach_a_text_watcher_only() {
+        let v = json!({
+            "method": "item/agentMessage/delta",
+            "params": {"itemId": "item_7", "delta": "Hel"},
+        });
+        assert!(matches!(classify("sess", &v), Incoming::Traced { .. }));
+        crate::text_deltas::set("sess-voice", true);
+        let got = classify("sess-voice", &v);
+        crate::text_deltas::set("sess-voice", false);
+        match got {
+            Incoming::Event(AdapterEvent::TextDelta { local_id, item_id, delta }) => {
+                assert_eq!(local_id, "sess-voice");
+                assert_eq!(item_id, "item_7");
+                assert_eq!(delta, "Hel");
+            }
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+        let reasoning = json!({
+            "method": "item/reasoning/textDelta",
+            "params": {"itemId": "r", "delta": "think"},
+        });
+        crate::text_deltas::set("sess-voice", true);
+        let got = classify("sess-voice", &reasoning);
+        crate::text_deltas::set("sess-voice", false);
+        assert!(matches!(got, Incoming::Traced { .. }), "thinking is not spoken");
     }
 
     #[test]

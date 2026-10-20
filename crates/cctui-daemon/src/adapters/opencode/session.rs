@@ -1130,6 +1130,16 @@ impl OpenCodeSession {
     async fn on_signal(&mut self, session_id: &str, signal: Signal) -> bool {
         match signal {
             Signal::Rows(rows) => self.emit_rows(session_id, rows).await,
+            Signal::TextDelta { item_id, delta } => {
+                let _ = self
+                    .events
+                    .send(AdapterEvent::TextDelta {
+                        local_id: session_id.to_owned(),
+                        item_id,
+                        delta,
+                    })
+                    .await;
+            }
             Signal::AssistantActive => self.saw_assistant = true,
             Signal::Usage(usage) => {
                 let _ = self.events.send(*usage).await;

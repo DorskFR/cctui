@@ -408,6 +408,11 @@ pub async fn dispatch_command<D: SessionDriver + ?Sized>(
             tracing::warn!(%local_id, watch, "watch_pty reached the command loop");
             Ok(Handled::Done)
         }
+        // Flipped on the daemon-wide gate by the supervisor.
+        AdapterCommand::WatchText { local_id, watch } => {
+            tracing::warn!(%local_id, watch, "watch_text reached the command loop");
+            Ok(Handled::Done)
+        }
     };
     report_outcome(driver.adapter_id(), events, command_id, outcome).await;
 }

@@ -481,7 +481,14 @@ impl Supervisor {
                         }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
-                        batch.push_event(adapter_id, event)?;
+                        match lane(&adapter_id, &event)? {
+                            Lane::Batch => batch.push_event(adapter_id, event)?,
+                            Lane::Immediate(payload) => {
+                                self.counters.add(Subsystem::Forward, payload.len() as u64);
+                                send_bounded(&mut sink, Message::Text(payload.into())).await?;
+                            }
+                            Lane::Drop => {}
+                        }
                     }
                 }
             }
@@ -681,6 +688,13 @@ impl Supervisor {
                             %adapter_id, %local_id, watch, %err, "pty watch dropped"
                         ),
                     }
+                    return;
+                }
+                if let cctui_proto::adapter::AdapterCommand::WatchText { local_id, watch } =
+                    command.as_ref()
+                {
+                    crate::text_deltas::set(local_id, *watch);
+                    tracing::info!(%adapter_id, %local_id, watch, "text watch toggled");
                     return;
                 }
                 if let cctui_proto::adapter::AdapterCommand::Interrupt { local_id, command_id } =
@@ -1367,6 +1381,28 @@ fn encode_event(
     serde_json::to_vec(&frame).map(Some)
 }
 
+/// Where an event goes out: the micro-batch, its own frame right now, or
+/// nowhere.
+enum Lane {
+    Batch,
+    Immediate(String),
+    Drop,
+}
+
+/// A text delta skips the batch window: it is worth nothing late. One whose
+/// watcher left while it was queued is dropped.
+fn lane(adapter_id: &str, event: &AdapterEvent) -> serde_json::Result<Lane> {
+    let watched = match event {
+        AdapterEvent::TextDelta { local_id, .. } => crate::text_deltas::wanted(local_id),
+        _ => return Ok(Lane::Batch),
+    };
+    if !watched {
+        return Ok(Lane::Drop);
+    }
+    let frame = DaemonFrameUp::Event { adapter_id: adapter_id.to_owned(), event: event.clone() };
+    serde_json::to_string(&frame).map(Lane::Immediate)
+}
+
 /// The one point every adapter's events pass through, so a `CctuiAgent`
 /// caller parked on its child's completion is fed here.
 fn observe_event(adapter_id: &str, event: &AdapterEvent) {
@@ -1395,6 +1431,7 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::AskResolved { local_id }
         | AdapterEvent::PlanRequest { local_id, .. }
         | AdapterEvent::PlanResolved { local_id }
+        | AdapterEvent::TextDelta { local_id, .. }
         | AdapterEvent::TurnEnd { local_id, .. } => local_id,
         _ => "",
     }
@@ -1411,6 +1448,7 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::AskResolved { .. } => "ask_resolved",
         AdapterEvent::PlanRequest { .. } => "plan_request",
         AdapterEvent::PlanResolved { .. } => "plan_resolved",
+        AdapterEvent::TextDelta { .. } => "text_delta",
         AdapterEvent::TurnEnd { .. } => "turn_end",
         _ => "other",
     }
@@ -1694,8 +1732,8 @@ mod tests {
     use cctui_proto::ws::DaemonFrameUp;
 
     use super::{
-        AdapterRunning, Duration, LIVENESS_TIMEOUT, PING_INTERVAL, PendingTransfer, Supervisor,
-        compile_scrub, is_textless_thinking, scrub_event,
+        AdapterRunning, Duration, LIVENESS_TIMEOUT, Lane, PING_INTERVAL, PendingTransfer,
+        Supervisor, compile_scrub, is_textless_thinking, lane, scrub_event,
     };
     use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
     use crate::client::ServerClient;
@@ -2703,6 +2741,29 @@ mod tests {
         let ids = t.session_ids();
         assert!(!ids.is_empty(), "the give-up log must name the affected sessions");
         assert!(ids.iter().all(|s| s.starts_with('s')), "ids are the batch's local ids");
+    }
+
+    #[test]
+    fn text_delta_skips_the_batch_while_watched_and_is_dropped_otherwise() {
+        let delta = || cctui_proto::adapter::AdapterEvent::TextDelta {
+            local_id: "lane-s1".to_owned(),
+            item_id: "m:0".to_owned(),
+            delta: "Hel".to_owned(),
+        };
+        assert!(matches!(lane("claude-code", &delta()).unwrap(), Lane::Drop));
+        crate::text_deltas::set("lane-s1", true);
+        let Lane::Immediate(payload) = lane("claude-code", &delta()).unwrap() else {
+            panic!("a watched delta must go out on its own frame");
+        };
+        assert!(payload.contains(r#""kind":"text_delta""#), "{payload}");
+        assert!(payload.contains(r#""delta":"Hel""#), "{payload}");
+        crate::text_deltas::set("lane-s1", false);
+        let message = cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "lane-s1".to_owned(),
+            payload: serde_json::json!({"role": "assistant", "text": "Hello"}),
+            turn_id: None,
+        };
+        assert!(matches!(lane("claude-code", &message).unwrap(), Lane::Batch));
     }
 
     #[test]

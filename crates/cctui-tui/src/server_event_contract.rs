@@ -167,6 +167,11 @@ fn fleet_samples() -> Vec<ServerEvent> {
             rule: "no-curl".to_owned(),
         },
         ServerEvent::PtyChunk { session_id: "s-1".to_owned(), data: "AAAA".to_owned() },
+        ServerEvent::TextDelta {
+            session_id: "s-1".to_owned(),
+            item_id: "m:0".to_owned(),
+            delta: "Hel".to_owned(),
+        },
         ServerEvent::ScheduledLaunch {
             draft_id: "d-1".to_owned(),
             user_id: Some(uuid()),
@@ -227,6 +232,7 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::LimitResetRedeemed { .. } => "limit_reset_redeemed",
         ServerEvent::ToolCallBlocked { .. } => "tool_call_blocked",
         ServerEvent::PtyChunk { .. } => "pty_chunk",
+        ServerEvent::TextDelta { .. } => "text_delta",
         ServerEvent::ScheduledLaunch { .. } => "scheduled_launch",
         ServerEvent::RoomMembers { .. } => "room_members",
         ServerEvent::CctuiverseChanged { .. } => "cctuiverse_changed",

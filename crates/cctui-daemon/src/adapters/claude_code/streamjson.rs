@@ -3,9 +3,10 @@
 //! ([`user_message_envelope`]) and a stderr ring for crash detail
 //! ([`spawn_stderr_ring`]).
 //!
-//! `stream_event` deltas are ignored: the coalesced `assistant` frame carries
-//! the final text, and forwarding deltas would double-emit. An error frame
-//! ends the run with [`EndReason::Crashed`].
+//! `stream_event` text deltas are forwarded as [`AdapterEvent::TextDelta`]
+//! only while the session has a text watcher; the coalesced `assistant` frame
+//! stays the source of truth. An error frame ends the run with
+//! [`EndReason::Crashed`].
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -27,12 +28,20 @@ pub(super) struct StreamOutcome {
     pub end: Option<EndReason>,
 }
 
+/// The assistant message whose blocks are streaming, so a text delta can name
+/// its block `<message id>:<block index>`.
+#[derive(Debug, Default)]
+pub(super) struct StreamCursor {
+    message_id: Option<String>,
+}
+
 /// Parse one stream-json stdout line into [`AdapterEvent`]s (appended to
 /// `out`) plus a [`StreamOutcome`]. Non-JSON / unknown frames are ignored
 /// (empty outcome, no events) so a stray log line can't abort the run.
 pub(super) fn parse_stream_line(
     local_id: &str,
     line: &str,
+    cursor: &mut StreamCursor,
     out: &mut Vec<AdapterEvent>,
 ) -> StreamOutcome {
     let trimmed = line.trim();
@@ -52,9 +61,10 @@ pub(super) fn parse_stream_line(
             transcript::parse_line(local_id, &v, out);
             StreamOutcome::default()
         }
-        // Incremental SSE deltas: the coalesced `assistant` frame is the
-        // source of truth, so drop partials to avoid double-emitting.
-        "stream_event" => StreamOutcome::default(),
+        "stream_event" => {
+            parse_stream_event(local_id, &v, cursor, out);
+            StreamOutcome::default()
+        }
         "result" => StreamOutcome { end: Some(result_end_reason(&v)) },
         // A top-level error frame (some CLI builds emit `type:"error"`).
         "error" => StreamOutcome { end: Some(error_end(&v)) },
@@ -62,6 +72,33 @@ pub(super) fn parse_stream_line(
             tracing::debug!(kind = other, "ignoring unknown stream-json frame");
             StreamOutcome::default()
         }
+    }
+}
+
+/// Incremental SSE frames (`--include-partial-messages`): `message_start`
+/// names the message, `content_block_delta` text goes out to a text watcher.
+fn parse_stream_event(
+    local_id: &str,
+    v: &Value,
+    cursor: &mut StreamCursor,
+    out: &mut Vec<AdapterEvent>,
+) {
+    let Some(event) = v.get("event") else { return };
+    match event.get("type").and_then(Value::as_str) {
+        Some("message_start") => {
+            cursor.message_id =
+                event.pointer("/message/id").and_then(Value::as_str).map(str::to_owned);
+        }
+        Some("content_block_delta") if crate::text_deltas::wanted(local_id) => {
+            if event.pointer("/delta/type").and_then(Value::as_str) != Some("text_delta") {
+                return;
+            }
+            let Some(text) = event.pointer("/delta/text").and_then(Value::as_str) else { return };
+            let index = event.get("index").and_then(Value::as_u64).unwrap_or_default();
+            let item_id = format!("{}:{index}", cursor.message_id.as_deref().unwrap_or("msg"));
+            out.extend(crate::text_deltas::forward(local_id, &item_id, text));
+        }
+        _ => {}
     }
 }
 
@@ -207,7 +244,7 @@ mod tests {
     fn unknown_system_subtypes_are_counted_by_namespaced_label() {
         let mut out = Vec::new();
         for line in [r#"{"type":"system","subtype":"tachyon_burst"}"#, r#"{"type":"system"}"#] {
-            let outcome = parse_stream_line("s", line, &mut out);
+            let outcome = parse_stream_line("s", line, &mut StreamCursor::default(), &mut out);
             assert_eq!(outcome, StreamOutcome::default());
         }
         assert!(out.is_empty(), "unknown system subtypes must not fabricate events");
@@ -236,14 +273,16 @@ mod tests {
     const INIT_LINE: &str = r#"{"type":"system","subtype":"init","session_id":"11111111-2222-3333-4444-555555555555","model":"claude-opus-4-8","cwd":"/tmp/x","tools":["Bash","Read"],"permissionMode":"default"}"#;
     const ASSISTANT_LINE: &str = r#"{"type":"assistant","message":{"id":"msg_01","model":"claude-opus-4-8","role":"assistant","content":[{"type":"text","text":"Hello there"},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":120,"output_tokens":45,"cache_read_input_tokens":900,"cache_creation_input_tokens":10}}}"#;
     const USER_TOOL_RESULT_LINE: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"file.txt","is_error":false}]}}"#;
-    const STREAM_EVENT_LINE: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}"#;
+    const STREAM_EVENT_LINE: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}}"#;
+    const MESSAGE_START_LINE: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_01","role":"assistant","content":[]}}}"#;
+    const INPUT_JSON_DELTA_LINE: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"co"}}}"#;
     const RESULT_SUCCESS_LINE: &str = r#"{"type":"result","subtype":"success","is_error":false,"session_id":"11111111-2222-3333-4444-555555555555","num_turns":2,"result":"done"}"#;
     const RESULT_ERROR_LINE: &str = r#"{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"11111111-2222-3333-4444-555555555555"}"#;
     const SYSTEM_ERROR_LINE: &str = r#"{"type":"system","subtype":"error","message":"boom"}"#;
 
     fn parse(line: &str) -> (Vec<AdapterEvent>, StreamOutcome) {
         let mut out = Vec::new();
-        let outcome = parse_stream_line("L1", line, &mut out);
+        let outcome = parse_stream_line("L1", line, &mut StreamCursor::default(), &mut out);
         (out, outcome)
     }
 
@@ -310,10 +349,31 @@ mod tests {
     }
 
     #[test]
-    fn stream_event_deltas_are_dropped() {
+    fn stream_event_deltas_are_dropped_without_a_text_watcher() {
         let (events, outcome) = parse(STREAM_EVENT_LINE);
         assert!(events.is_empty());
         assert_eq!(outcome, StreamOutcome::default());
+    }
+
+    #[test]
+    fn stream_event_text_deltas_reach_a_text_watcher_named_by_message_and_block() {
+        const LOCAL: &str = "L1-voice";
+        crate::text_deltas::set(LOCAL, true);
+        let mut cursor = StreamCursor::default();
+        let mut out = Vec::new();
+        for line in [MESSAGE_START_LINE, STREAM_EVENT_LINE, INPUT_JSON_DELTA_LINE] {
+            let outcome = parse_stream_line(LOCAL, line, &mut cursor, &mut out);
+            assert_eq!(outcome, StreamOutcome::default());
+        }
+        crate::text_deltas::set(LOCAL, false);
+        match out.as_slice() {
+            [AdapterEvent::TextDelta { local_id, item_id, delta }] => {
+                assert_eq!(local_id, LOCAL);
+                assert_eq!(item_id, "msg_01:0");
+                assert_eq!(delta, "Hel");
+            }
+            other => panic!("expected one TextDelta for the text block only, got {other:?}"),
+        }
     }
 
     #[test]

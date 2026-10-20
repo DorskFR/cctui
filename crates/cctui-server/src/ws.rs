@@ -331,6 +331,7 @@ async fn run_tui_socket(
     state: AppState,
     ctx: AuthContext,
     event_tx: FrameTx,
+    text_watches: TextWatches,
 ) {
     // Relay tasks keyed by session id, so a resubscribe replaces (not stacks)
     // the per-session relay and an unsubscribe can tear it down.
@@ -380,6 +381,13 @@ async fn run_tui_socket(
                     continue;
                 }
                 handle_watch_terminal(&state, &session_id, watch, &mut pty_watches).await;
+            }
+            TuiCommand::WatchText { session_id, watch } => {
+                if !ws_owns_session(&state, &ctx, &session_id).await {
+                    tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: watch-text denied (not owner)");
+                    continue;
+                }
+                handle_watch_text(&state, &session_id, watch, &text_watches).await;
             }
             TuiCommand::Message { session_id, content, client_msg_id, ask_picks, turn_id } => {
                 if !ws_owns_session(&state, &ctx, &session_id).await {
@@ -473,6 +481,50 @@ async fn run_tui_socket(
         if state.bus.pty_watch_dec(&session_id) {
             set_daemon_pty_watch(&state, &session_id, false).await;
         }
+    }
+    let watched = std::mem::take(
+        &mut *text_watches.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for session_id in watched {
+        if state.bus.text_watch_dec(&session_id) {
+            set_daemon_text_watch(&state, &session_id, false).await;
+        }
+    }
+}
+
+/// Sessions whose streamed assistant text THIS socket receives, shared with
+/// its relay task so only a watching socket is handed the deltas.
+type TextWatches = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+/// Toggle this socket's text watch of `session_id`: same refcount edges as
+/// the terminal watch, toward the daemon's text gate.
+async fn handle_watch_text(state: &AppState, session_id: &str, watch: bool, watches: &TextWatches) {
+    let changed = {
+        let mut set = watches.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if watch { set.insert(session_id.to_owned()) } else { set.remove(session_id) }
+    };
+    if !changed {
+        return;
+    }
+    let edge = if watch {
+        state.bus.text_watch_inc(session_id)
+    } else {
+        state.bus.text_watch_dec(session_id)
+    };
+    if edge {
+        set_daemon_text_watch(state, session_id, watch).await;
+    }
+}
+
+async fn set_daemon_text_watch(state: &AppState, session_id: &str, watch: bool) {
+    let dispatch = crate::bus::dispatch(
+        state,
+        session_id,
+        cctui_proto::adapter::AdapterCommand::WatchText { local_id: session_id.to_owned(), watch },
+    )
+    .await;
+    if let Err(err) = dispatch {
+        tracing::debug!(%session_id, watch, %err, "watch-text daemon dispatch skipped");
     }
 }
 
@@ -587,6 +639,7 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::PlanRequest { session_id, .. }
         | ServerEvent::PlanResolved { session_id }
         | ServerEvent::PtyChunk { session_id, .. }
+        | ServerEvent::TextDelta { session_id, .. }
         | ServerEvent::ToolCallBlocked { session_id, .. }
         | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. }
@@ -791,6 +844,28 @@ impl<L: OwnerLookup + Send> EventFilter for OwnerFilter<L> {
     }
 }
 
+/// Streamed text reaches only a socket that asked for that session's; every
+/// other event is the inner filter's call.
+struct TextScoped<F> {
+    inner: F,
+    watches: TextWatches,
+}
+
+impl<F: EventFilter> EventFilter for TextScoped<F> {
+    async fn allows(&mut self, event: &ServerEvent) -> bool {
+        if let ServerEvent::TextDelta { session_id, .. } = event
+            && !self
+                .watches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(session_id)
+        {
+            return false;
+        }
+        self.inner.allows(event).await
+    }
+}
+
 /// Forward every permitted frame to the socket as-is. Events lost to lag are
 /// unrecoverable, so the client is told to refetch instead.
 async fn relay_server_frames(
@@ -820,16 +895,20 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (sink, stream) = socket.split();
     let (tx, rx) = mpsc::channel::<Frame>(256);
 
-    let filter = OwnerFilter {
-        is_admin: ctx.is_admin(),
-        user_id: ctx.user_id,
-        lookup: state.pool.clone(),
-        cache: OwnerCache::default(),
+    let text_watches = TextWatches::default();
+    let filter = TextScoped {
+        inner: OwnerFilter {
+            is_admin: ctx.is_admin(),
+            user_id: ctx.user_id,
+            lookup: state.pool.clone(),
+            cache: OwnerCache::default(),
+        },
+        watches: text_watches.clone(),
     };
     tokio::spawn(relay_server_frames(state.bus.subscribe_server(), filter, tx.clone()));
 
     spawn_send_task(sink, rx);
-    run_tui_socket(stream, state, ctx, tx).await;
+    run_tui_socket(stream, state, ctx, tx, text_watches).await;
 
     tracing::debug!("TUI WebSocket disconnected");
 }
@@ -1132,6 +1211,25 @@ mod tests {
         async fn allows(&mut self, _event: &ServerEvent) -> bool {
             true
         }
+    }
+
+    #[tokio::test]
+    async fn text_deltas_reach_only_a_socket_watching_that_session() {
+        let delta = |session_id: &str| ServerEvent::TextDelta {
+            session_id: session_id.to_owned(),
+            item_id: "m:0".to_owned(),
+            delta: "Hel".to_owned(),
+        };
+        let watches = super::TextWatches::default();
+        let mut filter = super::TextScoped { inner: AllowAll, watches: watches.clone() };
+        assert!(!filter.allows(&delta("s1")).await, "unwatched: not even the owner hears deltas");
+        watches.lock().unwrap().insert("s1".to_owned());
+        assert!(filter.allows(&delta("s1")).await);
+        assert!(!filter.allows(&delta("s2")).await, "the watch is per session");
+        assert!(
+            filter.allows(&ServerEvent::SessionDeregistered { session_id: "s2".into() }).await,
+            "other events are the inner filter's call"
+        );
     }
 
     #[tokio::test]

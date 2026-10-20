@@ -259,6 +259,7 @@ impl OneshotDriver {
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
+            .arg("--include-partial-messages")
             .args(&shared_args)
             .arg("--")
             .arg(prompt)
@@ -279,6 +280,7 @@ impl OneshotDriver {
         self.running.insert(local_id.to_owned(), child);
 
         let mut reader = BufReader::new(stdout).lines();
+        let mut cursor = streamjson::StreamCursor::default();
         let mut crashed: Option<EndReason> = None;
         loop {
             tokio::select! {
@@ -290,7 +292,12 @@ impl OneshotDriver {
                     match line {
                         Ok(Some(line)) => {
                             let mut out = Vec::new();
-                            let outcome = streamjson::parse_stream_line(local_id, &line, &mut out);
+                            let outcome = streamjson::parse_stream_line(
+                                local_id,
+                                &line,
+                                &mut cursor,
+                                &mut out,
+                            );
                             for evt in out {
                                 self.emit(evt).await;
                             }

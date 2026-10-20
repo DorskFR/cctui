@@ -444,6 +444,7 @@ impl SdkDriver {
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
+            .arg("--include-partial-messages")
             .args(&shared_args)
             .envs(env)
             .stdin(Stdio::piped())
@@ -711,13 +712,15 @@ async fn pump_stdout(
     shutdown: CancellationToken,
 ) {
     let mut reader = BufReader::new(stdout).lines();
+    let mut cursor = streamjson::StreamCursor::default();
     loop {
         tokio::select! {
             () = shutdown.cancelled() => return,
             line = reader.next_line() => match line {
                 Ok(Some(line)) => {
                     let mut out = Vec::new();
-                    let outcome = streamjson::parse_stream_line(&local_id, &line, &mut out);
+                    let outcome =
+                        streamjson::parse_stream_line(&local_id, &line, &mut cursor, &mut out);
                     for evt in out {
                         if events.send(evt).await.is_err() {
                             return;

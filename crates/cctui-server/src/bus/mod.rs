@@ -326,6 +326,8 @@ struct Inner {
     /// session carries no extra stream. Process-local — a multi-pod deploy would
     /// need this on the transport, but the fan-out already assumes single-pod.
     pty_watchers: DashMap<String, usize>,
+    /// Sockets watching a session's streamed assistant text, by session id.
+    text_watchers: DashMap<String, usize>,
     transport: Box<dyn Transport>,
 }
 
@@ -354,6 +356,7 @@ impl Bus {
                 server_tx: broadcast::channel(CHANNEL_CAPACITY).0,
                 session_streams: DashMap::new(),
                 pty_watchers: DashMap::new(),
+                text_watchers: DashMap::new(),
                 transport,
             }),
         }
@@ -542,28 +545,22 @@ impl Bus {
     /// only on the 0→1 transition — the caller then tells the daemon to start
     /// streaming.
     pub fn pty_watch_inc(&self, session: &str) -> bool {
-        let mut entry = self.inner.pty_watchers.entry(session.to_owned()).or_insert(0);
-        *entry += 1;
-        *entry == 1
+        watch_inc(&self.inner.pty_watchers, session)
     }
 
     /// Drop a watcher. Returns `true` only on the →0 transition (last watcher
     /// left) — the caller then tells the daemon to stop streaming.
     pub fn pty_watch_dec(&self, session: &str) -> bool {
-        use dashmap::mapref::entry::Entry;
-        match self.inner.pty_watchers.entry(session.to_owned()) {
-            Entry::Occupied(mut e) => {
-                let v = e.get_mut();
-                *v = v.saturating_sub(1);
-                if *v == 0 {
-                    e.remove();
-                    true
-                } else {
-                    false
-                }
-            }
-            Entry::Vacant(_) => false,
-        }
+        watch_dec(&self.inner.pty_watchers, session)
+    }
+
+    /// Same edges as [`Self::pty_watch_inc`], for streamed assistant text.
+    pub fn text_watch_inc(&self, session: &str) -> bool {
+        watch_inc(&self.inner.text_watchers, session)
+    }
+
+    pub fn text_watch_dec(&self, session: &str) -> bool {
+        watch_dec(&self.inner.text_watchers, session)
     }
 
     // ---- point-to-point commands / round-trips ----
@@ -1048,6 +1045,29 @@ impl Bus {
     /// handle owned the channel.
     pub fn deregister_session_stream(&self, session_id: &str) {
         self.inner.session_streams.remove(session_id);
+    }
+}
+
+fn watch_inc(watchers: &DashMap<String, usize>, session: &str) -> bool {
+    let mut entry = watchers.entry(session.to_owned()).or_insert(0);
+    *entry += 1;
+    *entry == 1
+}
+
+fn watch_dec(watchers: &DashMap<String, usize>, session: &str) -> bool {
+    use dashmap::mapref::entry::Entry;
+    match watchers.entry(session.to_owned()) {
+        Entry::Occupied(mut e) => {
+            let v = e.get_mut();
+            *v = v.saturating_sub(1);
+            if *v == 0 {
+                e.remove();
+                true
+            } else {
+                false
+            }
+        }
+        Entry::Vacant(_) => false,
     }
 }
 
@@ -1654,6 +1674,18 @@ mod tests {
         assert!(bus.pty_watch_dec("s"), "1→0 must signal stop");
         assert!(!bus.pty_watch_dec("s"), "stray dec on unwatched must not signal");
         assert!(bus.pty_watch_inc("s"), "0→1 again must signal start");
+    }
+
+    #[test]
+    fn text_watch_refcount_is_independent_of_the_pty_one() {
+        let bus = bus();
+        assert!(bus.text_watch_inc("s"), "0→1 must signal start");
+        assert!(bus.pty_watch_inc("s"), "a pty watch on the same session is its own count");
+        assert!(!bus.text_watch_inc("s"), "1→2 must not re-signal");
+        assert!(!bus.text_watch_dec("s"), "2→1 must not signal stop");
+        assert!(bus.text_watch_dec("s"), "1→0 must signal stop");
+        assert!(!bus.text_watch_dec("s"), "stray dec must not signal");
+        assert!(bus.pty_watch_dec("s"), "the pty count was untouched");
     }
 
     #[tokio::test]

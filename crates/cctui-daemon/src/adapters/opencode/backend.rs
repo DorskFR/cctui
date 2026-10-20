@@ -77,6 +77,8 @@ impl Incoming {
 #[derive(Debug, Clone)]
 pub enum Signal {
     Rows(Vec<(Kind, Value)>),
+    /// Streamed assistant text for a watched session; the final row wins.
+    TextDelta { item_id: String, delta: String },
     AssistantActive,
     Usage(Box<AdapterEvent>),
     Tempo { tempo: String, detail: Option<String> },
