@@ -150,13 +150,97 @@ pub async fn record_use(
     user_id: Uuid,
     session_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO dispatch_policy_uses (session_id, user_id) VALUES ($1, $2) \
-         ON CONFLICT (session_id) DO NOTHING",
+    sqlx::query("INSERT INTO dispatch_policy_uses (session_id, user_id) VALUES ($1, $2)")
+        .bind(session_id)
+        .bind(user_id)
+        .execute(exec)
+        .await?;
+    Ok(())
+}
+
+/// Drops uses no cap reads any more: only the current UTC day counts.
+pub async fn prune_uses(exec: impl PgExecutor<'_>) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query(
+        "DELETE FROM dispatch_policy_uses WHERE dispatched_at < now() - interval '2 days'",
     )
-    .bind(session_id)
-    .bind(user_id)
     .execute(exec)
     .await?;
-    Ok(())
+    Ok(res.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    async fn seed_user(pool: &sqlx::PgPool) -> Uuid {
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("policy-uses-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        uid
+    }
+
+    #[tokio::test]
+    async fn two_runs_of_one_session_both_count_but_hold_one_slot() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_uses_two_runs") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let sid = Uuid::new_v4().to_string();
+        super::record_use(&pool, uid, &sid).await.unwrap();
+        super::record_use(&pool, uid, &sid).await.unwrap();
+        assert_eq!(super::dispatches_today(&pool, uid).await.unwrap(), 2);
+
+        sqlx::query(
+            "INSERT INTO auth_keys (user_id, key_hash, kind, session_id, expires_at) \
+             VALUES ($1, $2, 'ephemeral', $3, now() + interval '1 hour')",
+        )
+        .bind(uid)
+        .bind(format!("eph-{sid}"))
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(super::live_dispatches(&pool, uid).await.unwrap(), 1);
+
+        sqlx::query("DELETE FROM auth_keys WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn prune_drops_only_uses_older_than_two_days() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_uses_prune") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let (old, recent) = (format!("old-{uid}"), format!("recent-{uid}"));
+        for (sid, age) in [(&old, "3 days"), (&recent, "1 day")] {
+            sqlx::query(
+                "INSERT INTO dispatch_policy_uses (session_id, user_id, dispatched_at) \
+                 VALUES ($1, $2, now() - $3::interval)",
+            )
+            .bind(sid)
+            .bind(uid)
+            .bind(age)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert!(super::prune_uses(&pool).await.unwrap() >= 1);
+        let left: Vec<String> = sqlx::query_scalar(
+            "SELECT session_id FROM dispatch_policy_uses WHERE user_id = $1",
+        )
+        .bind(uid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(left, [recent]);
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
 }
