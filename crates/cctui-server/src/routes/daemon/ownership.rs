@@ -144,7 +144,8 @@ mod tests {
 
         bus.bind_session_conn(&sid, conn_b);
         assert!(!claim_announced(&mut intruder, &pool, &bus, conn_b, &sid).await);
-        let upserted = upsert_session(&pool, mb, ub, "claude-code", &sid, None, None, None, None)
+        let state = crate::state::AppState::for_test(pool.clone());
+        let upserted = upsert_session(&state, mb, ub, "claude-code", &sid, None, None, None, None)
             .await
             .expect("upsert");
         assert_eq!(upserted, None, "the upsert must refuse a row another machine owns");
@@ -193,6 +194,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool: "Bash".into(),
                 input: json!({ "command": "true" }),
+                options: Vec::new(),
             }),
             event(cctui_proto::adapter::AdapterEvent::PtyChunk {
                 local_id: sid.clone(),

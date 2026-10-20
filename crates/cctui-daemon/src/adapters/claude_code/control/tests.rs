@@ -280,3 +280,57 @@ async fn slow_discovery_keeps_the_roster_and_does_not_kickstart() {
         "a listening daemon needs no duplicate supervisor"
     );
 }
+
+#[test]
+fn a_peer_turn_waits_for_an_open_ask_form_and_a_human_reply_does_not() {
+    let peer = "<cross-session-message from=\"remote:x\" origin=\"remote\">\nyes\n\
+                </cross-session-message>";
+    assert!(super::defers_for_ask(true, peer));
+    assert!(super::defers_for_ask(true, "<cctui-room name=\"ops\" from=\"a\">\nhi\n</cctui-room>"));
+    assert!(!super::defers_for_ask(false, peer), "no form up: delivered at once");
+    assert!(!super::defers_for_ask(true, "go with option 2"), "the human still answers the form");
+}
+
+#[test]
+fn an_ask_that_opens_mid_flush_is_recognised_so_the_turn_is_requeued() {
+    let err: anyhow::Error = super::reply::AskOpened.into();
+    assert!(err.is::<super::reply::AskOpened>());
+    assert!(!anyhow::anyhow!("socket gone").is::<super::reply::AskOpened>());
+}
+
+#[tokio::test]
+async fn a_dead_worker_drops_its_stale_ask_and_an_ended_one_its_deferred_peer_turns() {
+    let peer = "<cctui-room name=\"ops\" from=\"a\">\nhi\n</cctui-room>";
+    let (mut d, mut rx) = driver();
+    for id in ["hib", "gone"] {
+        d.pending_asks.lock().unwrap().insert(id.to_owned(), None);
+        assert!(matches!(d.send_message(id.to_owned(), peer.to_owned()).await, Ok(Handled::Done)));
+    }
+    assert_eq!(d.deferred_peer.len(), 2);
+
+    d.mark_dead("f00dc1a1", "hib", true).await;
+    d.mark_dead("f00dc1a2", "gone", false).await;
+
+    assert!(d.pending_asks.lock().unwrap().is_empty(), "no ask outlives its worker");
+    assert!(d.deferred_peer.contains_key("hib"), "a hibernated worker still gets its turns");
+    assert!(!d.deferred_peer.contains_key("gone"), "an ended session's turns are dropped");
+    let mut resolved = Vec::new();
+    while let Ok(evt) = rx.try_recv() {
+        if let AdapterEvent::AskResolved { local_id } = evt {
+            resolved.push(local_id);
+        }
+    }
+    assert_eq!(resolved, ["hib", "gone"]);
+}
+
+#[tokio::test]
+async fn the_interrupter_drops_a_stale_ask_only_when_one_is_up() {
+    let (d, mut rx) = driver();
+    d.pending_asks.lock().unwrap().insert("s".to_owned(), None);
+    super::drop_stale_ask(&d.pending_asks, &d.events, "s").await;
+    super::drop_stale_ask(&d.pending_asks, &d.events, "s").await;
+    assert!(d.pending_asks.lock().unwrap().is_empty());
+    assert!(matches!(rx.try_recv(), Ok(AdapterEvent::AskResolved { .. })));
+    assert!(matches!(rx.try_recv(), Ok(AdapterEvent::PlanResolved { .. })));
+    assert!(rx.try_recv().is_err(), "a second drop emits nothing");
+}

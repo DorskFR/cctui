@@ -6,7 +6,9 @@ import KitFields from './KitFields.svelte';
 import { EMPTY_SPEC, type ProfileSpecForm } from './profiles';
 
 vi.mock('$lib/queries', () => ({
-	useHarnessModels: () => ({ data: null, isLoading: false, isError: false })
+	useHarnessModels: () => ({ data: null, isLoading: false, isError: false }),
+	useHarnesses: () => ({ data: null, isLoading: false, isError: false }),
+	useMachineAdapters: () => ({ data: null, isLoading: false, isError: false })
 }));
 
 const acct = (id: string, provider: string): OAuthAccount =>

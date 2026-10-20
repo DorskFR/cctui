@@ -101,7 +101,9 @@ describe('dollar windows', () => {
 		expect(windowLabelFromKey('session_usd')).toBe('Session');
 		expect(windowLabelFromKey('usd_5h')).toBe('5h');
 		expect(windowLabelFromKey('usd_7d')).toBe('7d');
+		expect(windowLabelFromKey('usd_monthly')).toBe('Monthly');
 		expect(isUsdKey('usd_7d')).toBe(true);
+		expect(isUsdKey('usd_monthly')).toBe(true);
 		expect(isUsdKey('weekly_all')).toBe(false);
 	});
 
@@ -124,9 +126,27 @@ describe('dollar windows', () => {
 		expect(unobserved[0].capUsd).toBe(5);
 	});
 
+	it('offers a probed credential the dollar windows, monthly included, before any probe', () => {
+		const keys = editorWindowKeys([], null, 'anthropic', true).map((k) => k.key);
+		expect(keys).toEqual([
+			'session',
+			'weekly_all',
+			'session_usd',
+			'usd_5h',
+			'usd_7d',
+			'usd_monthly'
+		]);
+		expect(editorWindowKeys([], null, 'fireworks', true).map((k) => k.key)).toEqual([
+			'session_usd',
+			'usd_5h',
+			'usd_7d',
+			'usd_monthly'
+		]);
+	});
+
 	it('offers the dollar windows to a fireworks editor instead of the percent ones', () => {
 		const keys = editorWindowKeys([], null, 'fireworks').map((k) => k.key);
-		expect(keys).toEqual(['session_usd', 'usd_5h', 'usd_7d']);
+		expect(keys).toEqual(['session_usd', 'usd_5h', 'usd_7d', 'usd_monthly']);
 		expect(editorWindowKeys([], null, 'anthropic').map((k) => k.key)).toEqual([
 			'session',
 			'weekly_all'

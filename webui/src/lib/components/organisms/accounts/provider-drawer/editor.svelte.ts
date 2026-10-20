@@ -11,6 +11,11 @@ import {
 } from '../account-editor.logic';
 import { diffCount, settingsSlice, softFlat, type PageId } from './pages.logic';
 import { knobEnvNames, knobKeyNames, type KnobGroup } from './knobs.logic';
+import {
+	readAutoLimitReset,
+	writeAutoLimitReset,
+	type AutoLimitReset
+} from './auto-limit-reset.logic';
 
 const seedSoft = (p: AccountProvider): Record<string, SoftEdit> => {
 	const out: Record<string, SoftEdit> = {};
@@ -46,6 +51,7 @@ export class ProviderEdit {
 	notices = $state<UsageNotices>({ enabled: false, step_pct: 10 });
 	settings = $state<Record<string, unknown>>({});
 	providerSettings = $state<Record<string, unknown>>({});
+	autoReset = $state<AutoLimitReset>(readAutoLimitReset(null));
 	models = $state<AccountModel[]>([]);
 	baseUrl = $state('');
 	credential = $state('');
@@ -74,6 +80,7 @@ export class ProviderEdit {
 		};
 		this.settings = { ...(p.settings_json ?? {}) };
 		this.providerSettings = { ...(p.provider_settings ?? {}) };
+		this.autoReset = readAutoLimitReset(p.provider_settings);
 		this.models = (p.models ?? []).map((mo) => ({ ...mo }));
 		this.usageProbe = p.usage_probe ?? '';
 		this.orig = {
@@ -83,6 +90,7 @@ export class ProviderEdit {
 			notices: { ...this.notices },
 			settings: { ...this.settings },
 			providerSettings: { ...this.providerSettings },
+			autoReset: { ...this.autoReset },
 			models: indexed(this.models),
 			usageProbe: this.usageProbe
 		};
@@ -113,7 +121,8 @@ export class ProviderEdit {
 			case 'limits':
 				return (
 					diffCount(softFlat(this.soft), this.orig.soft) +
-					diffCount({ ...this.rate }, { ...this.orig.rate })
+					diffCount({ ...this.rate }, { ...this.orig.rate }) +
+					diffCount({ ...this.autoReset }, { ...this.orig.autoReset })
 				);
 			case 'models':
 				return diffCount(indexed(this.models), this.orig.models);
@@ -141,15 +150,22 @@ export class ProviderEdit {
 		}
 	}
 
+	/** The gateway settings with the auto-redeem policy folded in: both first-
+	 *  party families carry it, so both send the blob. */
+	private providerSettingsOut(): Record<string, unknown> {
+		return this.isAnthropic || this.isOpenai
+			? writeAutoLimitReset(this.providerSettings, this.autoReset)
+			: this.providerSettings;
+	}
+
 	body(): UpdateProvider {
 		const out: UpdateProvider = {
 			model_aliases: aliasObject(this.aliasRows),
 			soft_limits: buildSoftLimits(this.soft),
 			rate_limits: buildRateLimits(this.rate),
 			usage_notices: buildUsageNotices(this.notices),
-			...(this.isAnthropic
-				? { settings_json: this.settings, provider_settings: this.providerSettings }
-				: {})
+			...(this.isAnthropic ? { settings_json: this.settings } : {}),
+			...(this.isAnthropic || this.isOpenai ? { provider_settings: this.providerSettingsOut() } : {})
 		};
 		if (this.isFireworks) {
 			out.models = fwModelList(this.models);

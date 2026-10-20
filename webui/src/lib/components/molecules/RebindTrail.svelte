@@ -14,8 +14,13 @@
 		() => enabled && !!sessionId,
 	);
 	const moves = $derived(rebinds.data ?? []);
-	const reasonLabel = (reason: string) =>
-		reason === 'pool' ? m.sessions_rebind_reason_pool() : m.sessions_rebind_reason_redirect();
+	const reasonLabel = (reason: string) => {
+		if (reason === 'pool') return m.sessions_rebind_reason_pool();
+		if (reason.startsWith('outage:')) {
+			return m.sessions_rebind_reason_outage({ family: reason.slice('outage:'.length) });
+		}
+		return m.sessions_rebind_reason_redirect();
+	};
 	// Oldest first in the tooltip: the trail reads as the path the session
 	// actually walked, not as a reverse-chronological log.
 	const trail = $derived(

@@ -13,9 +13,12 @@ import {
   parseHarnessCommand,
   parsePeerMessage,
   parseRoomJoined,
+  parseCctuiverseLinked,
   parsePlan,
   parseTaskNotification,
   parseToolBlock,
+  splitInjected,
+  type InjectedBlock,
   taskNotificationText,
   parseTodos,
   stampTurns,
@@ -23,6 +26,7 @@ import {
   stripAttachmentDecorations,
 } from "./format";
 import type { Line, MsgCategory } from "./types";
+import { VOICE_TOOL } from "./voiceNote";
 
 export interface LineBuildCtx {
   visible: (c: MsgCategory) => boolean;
@@ -100,6 +104,54 @@ export function breaksPollRun(e: AgentEvent): boolean {
   }
 }
 
+// The blocks cctui injects ahead of the human's words become `context` lines;
+// the prose after them is classified on its own.
+function userTurn(
+  content: string,
+  ts: number,
+  mayBeMeta: boolean,
+  ctx: LineBuildCtx,
+  poll?: PollSeen,
+  turnId?: string | null,
+  scheduledAt?: string | null,
+): Line[] {
+  const { blocks, prose } = splitInjected(content);
+  const meta = mayBeMeta && looksMeta(prose);
+  const body = prose.trim()
+    ? userOrSystem(prose, ts, meta, ctx, poll, turnId, scheduledAt)
+    : null;
+  if (!blocks.length || !ctx.visible("context")) return body ? [body] : [];
+  const eventBase = `${ts}|user|${stripAttachmentDecorations(prose).slice(0, 24)}`;
+  const segments = blocks.map((b, index) =>
+    contextLine(b, index, !!body, eventBase, ts, ctx),
+  );
+  return body ? [...segments, body] : segments;
+}
+
+function contextLine(
+  b: InjectedBlock,
+  index: number,
+  owned: boolean,
+  eventBase: string,
+  ts: number,
+  ctx: LineBuildCtx,
+): Line {
+  return {
+    role: "context",
+    ts,
+    html: ctx.renderMarkdown(b.body),
+    text: b.body,
+    context: {
+      kind: b.kind,
+      index,
+      owned,
+      eventBase,
+      session: b.attrs.session || undefined,
+      sessionId: b.attrs.id || undefined,
+    },
+  };
+}
+
 // History stores user turns as a `text` event prefixed with USER_PREFIX; some
 // "user" turns are really harness/system messages (detected structurally via
 // `looksMeta`) and render in a distinct hue.
@@ -122,7 +174,14 @@ function userOrSystem(
       text: peer.body,
       peerFrom: peer.from ?? undefined,
       peerRoom: peer.room,
+      peerRemote: peer.remote || undefined,
     };
+  }
+  const linked = parseCctuiverseLinked(content);
+  if (linked) {
+    if (!ctx.visible("marker")) return null;
+    const label = m.cctuiverse_linked_marker({ peer: linked.peer });
+    return { role: "marker", ts, text: label, markerTexts: [label] };
   }
   const joined = parseRoomJoined(content);
   if (joined) {
@@ -221,16 +280,28 @@ export function toLine(
   ctx: LineBuildCtx,
   poll?: PollSeen,
 ): Line | null {
-  const ln = buildLine(e, ctx, poll);
-  if (ln && typeof e.seq === "number") ln.seq = e.seq;
-  return ln;
+  return toLines(e, ctx, poll)[0] ?? null;
+}
+
+// One event, one or more lines. Only the last carries the event's `seq`, so
+// pins, jumps and search hits land on the prose rather than on a context block.
+export function toLines(
+  e: AgentEvent,
+  ctx: LineBuildCtx,
+  poll?: PollSeen,
+): Line[] {
+  const built = buildLine(e, ctx, poll);
+  const lines = Array.isArray(built) ? built : built ? [built] : [];
+  const last = lines[lines.length - 1];
+  if (last && typeof e.seq === "number") last.seq = e.seq;
+  return lines;
 }
 
 function buildLine(
   e: AgentEvent,
   ctx: LineBuildCtx,
   poll?: PollSeen,
-): Line | null {
+): Line | Line[] | null {
   switch (e.type) {
     case "text": {
       // Streaming emits an empty text event before the populated one — skip
@@ -267,15 +338,26 @@ function buildLine(
         // cctui-injected human replies carry a spurious `isMeta:true` and
         // must stay `user` on reload.
         const scheduledAt = scheduledAtOf(e, ctx);
-        return userOrSystem(
+        return userTurn(
           content,
           Number(e.ts),
-          !scheduledAt && looksMeta(content),
+          !scheduledAt,
           ctx,
           poll,
           e.turn_id,
           scheduledAt,
         );
+      }
+      if (e.kind === "voice") {
+        if (!ctx.visible("assistant")) return null;
+        return {
+          role: "assistant",
+          ts: Number(e.ts),
+          html: "",
+          text: e.content,
+          messageId: e.message_id ?? undefined,
+          voiceNoteId: e.message_id ?? undefined,
+        };
       }
       const toolBlock = e.kind ? null : parseToolBlock(e.content);
       if (toolBlock) {
@@ -296,7 +378,7 @@ function buildLine(
     case "reply":
       // `reply` is only ever our own optimistic echo of typed input.
       if (!e.content.trim()) return null;
-      return userOrSystem(e.content, Number(e.ts), false, ctx, poll, e.turn_id);
+      return userTurn(e.content, Number(e.ts), false, ctx, poll, e.turn_id);
     case "tool_call": {
       if (e.tool === "AskUserQuestion") {
         const ask = parseAsk(e.input);
@@ -573,6 +655,24 @@ function reconcileQueued(
   return out.filter((l) => !absorbed.has(l));
 }
 
+// Reset/compact markers are keyed by ts so two back-to-back ones aren't
+// collapsed by the consecutive-duplicate guard.
+function dedupKey(ln: Line, turnId: string): string {
+  if (ln.role === "reset" || ln.role === "compact") return `${ln.role}|${ln.ts}`;
+  return `${ln.role}|${ln.tool ?? ""}|${(ln.uploads?.names ?? []).join(",")}|${ln.text ?? ln.html ?? ""}|${
+    ln.todos ? todoSignature(ln.todos) : ""
+  }|${turnId}`;
+}
+
+function markDelivery(ln: Line, delivery: DeliveryState | undefined): void {
+  if ((ln.role !== "user" && ln.role !== "poll") || !delivery) return;
+  if (delivery.pending.has(ln.ts)) ln.pending = true;
+  const retry = delivery.retrying.get(ln.ts);
+  if (retry !== undefined) ln.retrying = retry;
+  const reason = delivery.failed.get(ln.ts);
+  if (reason !== undefined) ln.failed = reason;
+}
+
 export function buildLines(
   events: AgentEvent[],
   ctx: LineBuildCtx,
@@ -618,7 +718,8 @@ export function buildLines(
       if (
         looksMeta(body) ||
         parsePeerMessage(body) ||
-        parseRoomJoined(body) !== null
+        parseRoomJoined(body) !== null ||
+        parseCctuiverseLinked(body) !== null
       )
         continue;
       if (!body || !ctx.visible("user")) continue;
@@ -653,28 +754,39 @@ export function buildLines(
       }
       continue;
     }
-    const ln = toLine(e, ctx, poll);
-    if (!ln) continue;
-    if (e.type === "tool_result" && !ln.tool) {
-      const call = e.tool_use_id ? callTools.get(e.tool_use_id) : posCallTool;
-      if (call) ln.tool = call;
-    }
-    if (hiddenTick && (ln.role === "assistant" || ln.role === "thinking"))
-      continue;
-    hiddenTick = false;
+    const produced = toLines(e, ctx, poll);
+    if (!produced.length) continue;
     // The three encodings Claude stores ONE human turn in share its `turn_id`,
     // so keying on it still collapses them while two composer sends of the same
     // text — always distinct ids — stay two messages.
     const turnId =
       (e.type === "text" || e.type === "reply" ? e.turn_id : null) ?? "";
-    // Reset/compact markers are keyed by ts so two back-to-back ones aren't
-    // collapsed by the consecutive-duplicate guard.
-    const key =
-      ln.role === "reset" || ln.role === "compact"
-        ? `${ln.role}|${ln.ts}`
-        : `${ln.role}|${ln.tool ?? ""}|${(ln.uploads?.names ?? []).join(",")}|${ln.text ?? ln.html ?? ""}|${
-            ln.todos ? todoSignature(ln.todos) : ""
-          }|${turnId}`;
+    if (produced.some((l) => l.context)) {
+      const key = produced.map((l) => dedupKey(l, turnId)).join("\n");
+      if (key === prevKey) continue;
+      prevKey = key;
+      hiddenTick = false;
+      for (const l of produced) {
+        markDelivery(l, delivery);
+        out.push(l);
+      }
+      continue;
+    }
+    const ln = produced[0];
+    if (e.type === "tool_result" && !ln.tool) {
+      const call = e.tool_use_id ? callTools.get(e.tool_use_id) : posCallTool;
+      if (call) ln.tool = call;
+    }
+    if (
+      ln.tool &&
+      VOICE_TOOL.test(ln.tool) &&
+      (e.type === "tool_call" || (e.type === "tool_result" && !e.error))
+    )
+      continue;
+    if (hiddenTick && (ln.role === "assistant" || ln.role === "thinking"))
+      continue;
+    hiddenTick = false;
+    const key = dedupKey(ln, turnId);
     if (key === prevKey) continue;
     prevKey = key;
     // Consecutive markers collapse into one row: they arrive in bursts at the
@@ -707,13 +819,7 @@ export function buildLines(
       prevLine.text = prevLine.markerTexts.join(" · ");
       continue;
     }
-    if ((ln.role === "user" || ln.role === "poll") && delivery) {
-      if (delivery.pending.has(ln.ts)) ln.pending = true;
-      const retry = delivery.retrying.get(ln.ts);
-      if (retry !== undefined) ln.retrying = retry;
-      const reason = delivery.failed.get(ln.ts);
-      if (reason !== undefined) ln.failed = reason;
-    }
+    markDelivery(ln, delivery);
     out.push(ln);
   }
   const lines = reconcileQueued(out, placeholders, closes);

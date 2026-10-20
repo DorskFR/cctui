@@ -30,8 +30,31 @@ pub const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 180;
 /// Poll cadence while waiting for a bounded subprocess to exit.
 const CMD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// A `PreToolUse` hook decision payload.
-pub type HookResponse = Value;
+/// The engine's own answer to a `/check`. Harness-specific wire shapes are
+/// rendered from it by [`crate::dialect::Dialect`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    Allow,
+    Deny { reason: String },
+    Ask { reason: String },
+}
+
+impl Verdict {
+    #[must_use]
+    pub fn deny(reason: impl Into<String>) -> Self {
+        Self::Deny { reason: reason.into() }
+    }
+
+    #[must_use]
+    pub fn ask(reason: impl Into<String>) -> Self {
+        Self::Ask { reason: reason.into() }
+    }
+
+    #[must_use]
+    pub const fn is_allow(&self) -> bool {
+        matches!(self, Self::Allow)
+    }
+}
 
 /// Result of a `/transition` request.
 pub type TransitionResponse = Value;
@@ -442,9 +465,9 @@ impl WorkflowEngine {
         ))
     }
 
-    /// Evaluate a `PreToolUse` hook for `tool` / `tool_input`.
+    /// Evaluate a pre-tool check for `tool` / `tool_input`.
     #[must_use]
-    pub fn check(&self, tool: &str, tool_input: &Value) -> HookResponse {
+    pub fn check(&self, tool: &str, tool_input: &Value) -> Verdict {
         let _guard = self.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let step_num = self.read_state();
 
@@ -456,26 +479,26 @@ impl WorkflowEngine {
                 false,
                 "session complete",
             );
-            return deny("Session complete. No further actions allowed.");
+            return Verdict::deny("Session complete. No further actions allowed.");
         }
 
         let Ok(step_u) = u32::try_from(step_num) else {
-            return allow();
+            return Verdict::Allow;
         };
         // Step 0 or unknown = no guard.
         if step_u == 0 || !self.steps.contains_key(&step_u) {
-            return allow();
+            return Verdict::Allow;
         }
 
         if ALWAYS_ALLOWED.contains(&tool) {
-            return allow();
+            return Verdict::Allow;
         }
 
         if tool == "Bash"
             && let Some(cmd) = tool_input.get("command").and_then(Value::as_str)
             && is_guard_curl(cmd)
         {
-            return allow();
+            return Verdict::Allow;
         }
 
         let step = &self.steps[&step_u];
@@ -486,10 +509,10 @@ impl WorkflowEngine {
         self.decision_log.check(step_num, tool, &check_target(tool, tool_input), ok, &reason);
         if !ok {
             tracing::info!("DENY [Step {step_u}] tool={tool} reason={reason}");
-            return deny(&format!("[Step {step_u}] {reason}"));
+            return Verdict::deny(format!("[Step {step_u}] {reason}"));
         }
         tracing::info!("ALLOW [Step {step_u}] tool={tool}");
-        allow()
+        Verdict::Allow
     }
 
     /// Apply the always-allowed exit transition: mark the run exited and, if a
@@ -966,27 +989,6 @@ fn is_guard_curl(cmd: &str) -> bool {
         }
     }
     saw_guard
-}
-
-/// Build an `allow` `PreToolUse` decision.
-fn allow() -> HookResponse {
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-        }
-    })
-}
-
-/// Build a `deny` `PreToolUse` decision with a reason.
-fn deny(reason: &str) -> HookResponse {
-    json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    })
 }
 
 #[cfg(test)]

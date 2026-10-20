@@ -45,10 +45,26 @@ for (const viewport of [WIDE, NARROW]) {
 		await openDrawer(page, viewport);
 
 		const bar = page.locator('[data-journey="header"] .dbar');
-		expect(await bar.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+		await page.evaluate(() => document.fonts.ready);
+		const snapshot = async () =>
+			JSON.stringify({
+				bar: await bar.boundingBox(),
+				overflow: await bar.evaluate((el) => el.scrollWidth - el.clientWidth),
+				controls: await rects(trailing(page))
+			});
+		let previous = '';
+		await expect
+			.poll(async () => {
+				const current = await snapshot();
+				const settled = current === previous;
+				previous = current;
+				return settled;
+			})
+			.toBe(true);
 
-		const barBox = (await bar.boundingBox())!;
-		for (const c of await rects(trailing(page))) {
+		const { bar: barBox, overflow, controls } = JSON.parse(previous);
+		expect(overflow).toBeLessThanOrEqual(1);
+		for (const c of controls) {
 			expect(c.x, c.label).toBeGreaterThanOrEqual(barBox.x - 0.5);
 			expect(c.x + c.width, c.label).toBeLessThanOrEqual(barBox.x + barBox.width + 0.5);
 		}

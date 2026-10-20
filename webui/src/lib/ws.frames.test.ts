@@ -102,6 +102,14 @@ const fixtures = {
 		retry_after_secs: 600
 	},
 	soft_limit_cleared: { type: 'soft_limit_cleared', session_id: SID },
+	limit_reset_redeemed: {
+		type: 'limit_reset_redeemed',
+		account_id: ACCOUNT,
+		account_name: 'work',
+		provider: 'openai',
+		outcome: 'reset',
+		credit_id: 'credit-1'
+	},
 	tool_call_blocked: { type: 'tool_call_blocked', session_id: SID, tool_name: 'Bash', rule: 'rm -rf' },
 	pty_chunk: { type: 'pty_chunk', session_id: SID, data: 'aGk=' },
 	scheduled_launch: {
@@ -126,8 +134,24 @@ const fixtures = {
 			}
 		]
 	},
+	event: {
+		type: 'event',
+		event: {
+			id: 7,
+			occurred_at: '2026-10-02T07:30:00Z',
+			kind: 'session.ended',
+			severity: 'info',
+			session_id: SID,
+			machine_id: null,
+			user_id: USER,
+			actor: 'daemon',
+			summary: 'wip ended (completed)',
+			detail: { end_reason: 'completed', session_name: 'wip' }
+		}
+	},
 	heartbeat: { type: 'heartbeat' },
-	resync: { type: 'resync', session_id: SID }
+	resync: { type: 'resync', session_id: SID },
+	cctuiverse_changed: { type: 'cctuiverse_changed', user_id: USER, session_id: SID, room_id: null }
 } satisfies { [K in ServerEvent['type']]: Extract<ServerEvent, { type: K }> };
 
 class FakeSocket {
@@ -242,6 +266,35 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		expect(patches).toEqual([]);
 		vi.advanceTimersByTime(2000);
 		expect(c.changeTick).toBe(before + 1);
+	});
+
+	it('event hands the lifecycle row to onEvent listeners as-is', () => {
+		const { c, sock } = setup();
+		const seen: unknown[] = [];
+		const off = c.onEvent((ev) => seen.push(ev));
+		sock.deliver(fixtures.event);
+		off();
+		sock.deliver(fixtures.event);
+		expect(seen).toEqual([fixtures.event.event]);
+	});
+
+	it.each(['session.archived', 'session.unarchived'])(
+		'a %s lifecycle event (another tab, auto-archive, CctuiAgentArchive) bumps the list refresh tick',
+		(kind) => {
+			const { c, sock } = setup();
+			const before = c.changeTick;
+			sock.deliver({ ...fixtures.event, event: { ...fixtures.event.event, kind } });
+			vi.advanceTimersByTime(2000);
+			expect(c.changeTick).toBe(before + 1);
+		}
+	);
+
+	it('other lifecycle events leave the list alone', () => {
+		const { c, sock } = setup();
+		const before = c.changeTick;
+		sock.deliver(fixtures.event);
+		vi.advanceTimersByTime(2000);
+		expect(c.changeTick).toBe(before);
 	});
 
 	it('permission_request adds a prompt and permission_resolved removes it', () => {

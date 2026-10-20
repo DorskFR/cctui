@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { stubDrawer } from './drawer.fixture';
+import { stubDrawer, waitForDrawerOpen } from './drawer.fixture';
 
 const DESKTOP = { width: 1536, height: 900 };
 
@@ -9,7 +9,7 @@ async function openDrawer(page: Page) {
 	await page.goto('/sessions');
 	await page.locator('[data-journey="search"]').waitFor();
 	await page.locator('[data-journey="session"] [data-journey="title"]').first().click();
-	await page.locator('[data-journey="composer"]').waitFor();
+	await waitForDrawerOpen(page);
 }
 
 test('desktop: the composer field keeps an inset from the drawer edges', async ({ page }) => {

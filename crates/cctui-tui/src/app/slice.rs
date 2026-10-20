@@ -88,9 +88,9 @@ pub fn machines(app: &App) -> (usize, usize) {
 
 /// Cost booked against sessions registered since local midnight.
 ///
-/// No endpoint reports spend per day, so this is what the session list can
-/// answer: the lifetime cost of today's sessions, not spend incurred today on
-/// older ones.
+/// This is what the session list can answer without another fetch: the
+/// lifetime cost of today's sessions, not spend incurred today on older ones.
+/// The per-day dollars live in `/sessions/stats/usage` buckets.
 #[must_use]
 pub fn today_cost_usd(app: &App) -> f64 {
     let Some(cutoff) = local_midnight_ms(app.clock_ms) else { return 0.0 };

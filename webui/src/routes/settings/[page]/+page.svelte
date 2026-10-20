@@ -17,6 +17,7 @@
 		firstMatchingPage,
 		firstMatchingRow,
 		isSettingsPage,
+		MOVED_OUT,
 		settingsHref,
 		type SettingsPage
 	} from '$lib/components/organisms/settings/settings.logic';
@@ -31,8 +32,9 @@
 		isSettingsPage(route.params.page) ? route.params.page : DEFAULT_SETTINGS_PAGE
 	);
 	$effect(() => {
-		if (!isSettingsPage(route.params.page))
-			void goto(settingsHref(DEFAULT_SETTINGS_PAGE), { replaceState: true });
+		const slug = route.params.page ?? '';
+		if (!isSettingsPage(slug))
+			void goto(MOVED_OUT[slug] ?? settingsHref(DEFAULT_SETTINGS_PAGE), { replaceState: true });
 	});
 
 	const entries = $derived<TocEntry[]>([
@@ -45,10 +47,10 @@
 		{ page: 'privacy', icon: 'eye-off', label: m.settings_nav_privacy() },
 		{ page: 'notifications', icon: 'bell', label: m.settings_notifications_title() },
 		{ page: 'monitoring', icon: 'live', label: m.settings_nav_monitoring() },
+		{ page: 'events', icon: 'clock', label: m.settings_nav_events() },
 		{ page: 'security', icon: 'lock', label: m.settings_nav_security() },
 		{ page: 'guides', icon: 'life-buoy', label: m.settings_nav_guides() },
 		{ page: 'users', icon: 'users', label: m.settings_nav_users() },
-		{ page: 'accounts', icon: 'key-round', label: m.settings_nav_accounts() },
 		{ page: 'dispatchers', icon: 'send', label: m.settings_nav_dispatchers() },
 		{ page: 'instance', icon: 'settings', label: m.settings_nav_instance(), admin: true },
 		{ page: 'uploads', icon: 'upload', label: m.settings_nav_uploads(), admin: true }

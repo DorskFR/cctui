@@ -12,7 +12,7 @@ export default defineConfig({
 	fullyParallel: false,
 	workers: 1,
 	reporter: [['list']],
-	// Concurrent worktrees: a shared default port serves another branch's build.
+	// A server already on the default port may be serving another build.
 	webServer: process.env.HEADER_E2E_URL
 		? undefined
 		: {
@@ -55,7 +55,7 @@ export default defineConfig({
 		{
 			name: 'hermetic',
 			// Anchored to the filename: testMatch sees the absolute path, so a bare
-			// `tiles-` also matches every spec under a worktree named for the branch.
+			// `tiles-` also matches every spec under a directory whose name starts with it.
 			testMatch: /(^|[\\/])(tiles-|fontscale-)[^\\/]*\.spec\.ts$/,
 			use: { baseURL: headerUrl }
 		},

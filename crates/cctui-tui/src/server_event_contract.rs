@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 29;
+const VARIANT_COUNT: usize = 32;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -78,6 +78,7 @@ fn session_samples() -> Vec<ServerEvent> {
             tool_name: "Bash".to_owned(),
             description: "run tests".to_owned(),
             input_preview: "cargo test".to_owned(),
+            options: Vec::new(),
         },
         ServerEvent::PermissionResolved {
             session_id: "s-1".to_owned(),
@@ -153,6 +154,13 @@ fn fleet_samples() -> Vec<ServerEvent> {
             retry_after_secs: 60,
         },
         ServerEvent::SoftLimitCleared { session_id: "s-1".to_owned() },
+        ServerEvent::LimitResetRedeemed {
+            account_id: uuid(),
+            account_name: "primary".to_owned(),
+            provider: "openai".to_owned(),
+            outcome: "reset".to_owned(),
+            credit_id: Some("credit-1".to_owned()),
+        },
         ServerEvent::ToolCallBlocked {
             session_id: "s-1".to_owned(),
             tool_name: "Bash".to_owned(),
@@ -167,7 +175,26 @@ fn fleet_samples() -> Vec<ServerEvent> {
             last_error: None,
         },
         ServerEvent::RoomMembers { room_id: uuid(), user_id: uuid() },
+        ServerEvent::CctuiverseChanged {
+            session_id: Some("s-1".to_owned()),
+            room_id: None,
+            user_id: uuid(),
+        },
         ServerEvent::UserActions { session_id: "s-1".to_owned(), actions: vec![user_action()] },
+        ServerEvent::Event {
+            event: cctui_proto::api::events::EventRecord {
+                id: 1,
+                occurred_at: now(),
+                kind: "session.ended".to_owned(),
+                severity: "info".to_owned(),
+                session_id: Some("s-1".to_owned()),
+                machine_id: Some(uuid()),
+                user_id: Some(uuid()),
+                actor: "daemon".to_owned(),
+                summary: "s-1 ended (completed)".to_owned(),
+                detail: serde_json::json!({ "end_reason": "completed" }),
+            },
+        },
         ServerEvent::Heartbeat {},
         ServerEvent::Resync { session_id: Some("s-1".to_owned()) },
     ]
@@ -197,11 +224,14 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::GithubEvent { .. } => "github_event",
         ServerEvent::SoftLimitReached { .. } => "soft_limit_reached",
         ServerEvent::SoftLimitCleared { .. } => "soft_limit_cleared",
+        ServerEvent::LimitResetRedeemed { .. } => "limit_reset_redeemed",
         ServerEvent::ToolCallBlocked { .. } => "tool_call_blocked",
         ServerEvent::PtyChunk { .. } => "pty_chunk",
         ServerEvent::ScheduledLaunch { .. } => "scheduled_launch",
         ServerEvent::RoomMembers { .. } => "room_members",
+        ServerEvent::CctuiverseChanged { .. } => "cctuiverse_changed",
         ServerEvent::UserActions { .. } => "user_actions",
+        ServerEvent::Event { .. } => "event",
         ServerEvent::Heartbeat { .. } => "heartbeat",
         ServerEvent::Resync { .. } => "resync",
     }

@@ -8,6 +8,8 @@ export const qk = {
   version: ["version"] as const,
   capabilities: ["capabilities"] as const,
   sessions: (archived: boolean) => ["sessions", { archived }] as const,
+  sessionSearch: (q: string, archived: boolean) =>
+    ["sessions", "search", { q, archived }] as const,
   sessionStats: ["session-stats"] as const,
   tokenStats: ["token-stats"] as const,
   usageAnalytics: (days: number) => ["usage-analytics", { days }] as const,
@@ -41,6 +43,7 @@ export const qk = {
   providerStatus: ["provider-status"] as const,
   redirects: ["redirects"] as const,
   toolPolicy: (accountId: string) => ["tool-policy", accountId] as const,
+  serviceTokens: (accountId: string) => ["service-tokens", accountId] as const,
   accountPools: ["account-pools"] as const,
   accountPoolsUsage: ["account-pools-usage"] as const,
   sessionRebinds: (sessionId: string) => ["session-rebinds", sessionId] as const,
@@ -56,6 +59,8 @@ export const qk = {
   cacheLoss: (days: number) => ["cache-loss", { days }] as const,
   sessionDiagnose: (id: string) => ["session-diagnose", id] as const,
   sessionLangfuse: (id: string) => ["session-langfuse", id] as const,
+  sessionThread: (id: string, next: string | null) =>
+    ["session-thread", id, next] as const,
   recentDirs: (machineId: string) => ["recent-dirs", machineId] as const,
   machineDirs: (machineId: string, path: string) =>
     ["machine-dirs", machineId, path] as const,
@@ -65,11 +70,21 @@ export const qk = {
   harnessModelsAll: ["harness-models"] as const,
   harnessModels: (harness: string, machineId: string, model: string) =>
     ["harness-models", harness, machineId, model] as const,
-  domainMeta: ["domain-meta"] as const,
+  usageProbes: ["usage-probes"] as const,
+  harnesses: ["harnesses"] as const,
+  machineAdapters: (machineId: string) => ["machine-adapters", machineId] as const,
   sessionBindings: (sessionId: string) => ["session-bindings", sessionId] as const,
   dispatchers: ["dispatchers"] as const,
   userDispatchers: ["user-dispatchers"] as const,
   machinesAll: ["machines", "all"] as const,
   changelog: (version: string) => ["version", "changelog", version] as const,
   selfUpdateRun: ["version", "self-update-run"] as const,
+  eventsAll: ["events"] as const,
+  events: (query: Record<string, string>) => ["events", "feed", query] as const,
+  sessionEvents: (sessionId: string) => ["events", "session", sessionId] as const,
+  machineEvents: (machineId: string) => ["events", "machine", machineId] as const,
+  context: ["context"] as const,
+  contextResolve: (coords: Record<string, string>) =>
+    ["context", "resolve", coords] as const,
+  sessionContext: (sessionId: string) => ["session-context", sessionId] as const,
 };

@@ -4,17 +4,21 @@ mod api_routes;
 mod auth;
 mod authz;
 mod auto_archive;
+mod auto_redeem;
 mod auto_resume;
 mod bandwidth_watch;
 mod brief;
 mod bus;
 mod cache_bust;
+mod cctuiverse;
 mod config;
 mod cost;
 mod crypto;
 mod db;
 mod dispatchers;
+mod envelope_guard;
 mod error;
+mod events;
 mod fireworks_billing;
 mod followup;
 mod http_cache;
@@ -53,6 +57,7 @@ mod settings_catalog;
 mod skill_store;
 mod soft_limit;
 mod spawn_labels;
+mod speech;
 mod state;
 mod store;
 mod transcript_md;
@@ -89,8 +94,9 @@ async fn main() -> anyhow::Result<()> {
     }
     install_crypto_provider();
     init_tracing();
-    let (config, pool, auth_config) = bootstrap().await?;
+    let (config, pool, auth_config, migrations) = bootstrap().await?;
     let state = build_state(&config, pool, auth_config.clone()).await?;
+    record_boot_events(&state, &migrations);
     plugin_store::init(&state.pool, &state.plugins).await;
     plugin_host_token::reconcile_installed(&state.pool, &state.auth_config, &state.plugins).await;
     start_background_tasks(&state).await;
@@ -136,13 +142,13 @@ fn init_tracing() {
         .init();
 }
 
-async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)> {
+async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig, Vec<i64>)> {
     if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
         anyhow::bail!("refusing to start: {e}");
     }
 
     let config = Config::from_env()?;
-    let pool = db::connect(&config.database_url).await?;
+    let (pool, migrations) = db::connect_reporting(&config.database_url).await?;
     install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
@@ -154,7 +160,26 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)>
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
-    Ok((config, pool, auth_config))
+    Ok((config, pool, auth_config, migrations))
+}
+
+/// Boot rows: `system.server_started` always, `system.migrations_applied` when some ran.
+fn record_boot_events(state: &AppState, migrations: &[i64]) {
+    use events::{Actor, Event, kind};
+    if !migrations.is_empty() {
+        events::record(
+            state,
+            Event::new(kind::SYSTEM_MIGRATIONS_APPLIED, Actor::System)
+                .detail(serde_json::json!({ "versions": migrations })),
+        );
+    }
+    events::record(
+        state,
+        Event::new(kind::SYSTEM_SERVER_STARTED, Actor::System).detail(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_sha": env!("CCTUI_GIT_HASH"),
+        })),
+    );
 }
 
 async fn install_vault_key(pool: &sqlx::PgPool) -> anyhow::Result<()> {
@@ -406,6 +431,10 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/daemon/sessions/{id}/limits", get(routes::session_limits::session_limits))
         .route("/api/v1/daemon/sessions/{id}/user-actions", post(routes::user_actions::daemon_add))
         .route(
+            "/api/v1/daemon/sessions/{id}/context",
+            get(routes::daemon::session_launch_context).post(routes::context_tool::context_tool),
+        )
+        .route(
             "/api/v1/daemon/sessions/{id}/user-actions/tick",
             post(routes::user_actions::daemon_tick),
         )
@@ -430,6 +459,10 @@ fn outer_routes() -> Router<AppState> {
         // machine-key Bearer like the sibling daemon endpoints, so it sits here
         // outside the user-token `api_router`. Cap the body a little over the
         // 5 MiB per-image limit so an over-cap upload 413s in-handler.
+        .route(
+            "/api/v1/daemon/sessions/{id}/voice-notes",
+            post(routes::voice_notes::create_voice_note),
+        )
         .route(
             "/api/v1/daemon/sessions/{id}/images",
             post(routes::images::upload_session_image)
@@ -476,13 +509,35 @@ fn outer_routes() -> Router<AppState> {
             post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
+        // Server-to-server cctuiverse calls, authenticated by each link's
+        // Ed25519 signature rather than any cctui credential.
+        .merge(cctuiverse_routes())
         // Preview leg for a browser that landed on a pod without the daemon
         // link. Same secret; serves locally only, so it cannot loop.
         .route("/internal/preview/{id}/", any(routes::internal::preview_serve_root))
         .route("/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
 }
 
+fn cctuiverse_routes() -> Router<AppState> {
+    Router::new()
+        .route("/cctuiverse/v1/join", post(cctuiverse::wire::join))
+        .route("/cctuiverse/v1/links/{id}/messages", post(cctuiverse::wire::messages))
+        .route("/cctuiverse/v1/links/{id}/close", post(cctuiverse::wire::close))
+        .route("/cctuiverse/v1/links/{id}/history", post(cctuiverse::wire::history))
+        .route("/cctuiverse/v1/links/{id}/room", post(cctuiverse::wire::room))
+        .layer(DefaultBodyLimit::max(64 * 1024))
+}
+
+const CCTUIVERSE_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn spawn_sweeps(state: &AppState) {
+    spawn_periodic(CCTUIVERSE_SWEEP_PERIOD, {
+        let state = state.clone();
+        move || {
+            let state = state.clone();
+            async move { cctuiverse::outbox::sweep(&state).await }
+        }
+    });
     spawn_periodic(REAPER_PERIOD, {
         let state = state.clone();
         move || webhook_sweep(state.clone())
@@ -684,9 +739,9 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
 
 /// Auto-archive sessions silent past the TTL so the default list stays
 /// self-cleaning, asking the daemon to remove each underlying job. `0` disables.
-async fn auto_archive_stale(state: &AppState) {
+async fn auto_archive_stale(state: &AppState) -> usize {
     if state.config.archive_after_secs == 0 {
-        return;
+        return 0;
     }
     let cutoff = chrono::Utc::now()
         - chrono::Duration::seconds(
@@ -723,10 +778,36 @@ async fn auto_archive_stale(state: &AppState) {
                     cctui_proto::adapter::RemoveInitiator::Automatic,
                 )
                 .await;
+                events::record(
+                    state,
+                    events::Event::new(events::kind::SESSION_ARCHIVED, events::Actor::Reaper)
+                        .session(id)
+                        .detail(serde_json::json!({ "reason": "inactive_ttl" })),
+                );
             }
+            ids.len()
         }
-        Ok(_) => {}
-        Err(err) => tracing::warn!(%err, "auto-archive sweep failed"),
+        Ok(_) => 0,
+        Err(err) => {
+            tracing::warn!(%err, "auto-archive sweep failed");
+            0
+        }
+    }
+}
+
+/// One `system.reaper_ran` summary per sweep that changed something.
+async fn reaper_sweep(state: &AppState) {
+    demote_idle_registered(state).await;
+    let archived = auto_archive_stale(state).await;
+    auto_archive::sweep(state).await;
+    let events_pruned = events::prune(&state.pool).await;
+    if archived > 0 || events_pruned > 0 {
+        events::record(
+            state,
+            events::Event::new(events::kind::SYSTEM_REAPER_RAN, events::Actor::Reaper).detail(
+                serde_json::json!({ "archived": archived, "events_pruned": events_pruned }),
+            ),
+        );
     }
 }
 
@@ -759,11 +840,7 @@ async fn keepalive_sweep(state: AppState) {
 
 /// Each sweep runs on its own task so a slow pass delays only itself.
 fn spawn_reaper_sweeps(state: &AppState) {
-    spawn_sweep(state, |state| async move {
-        demote_idle_registered(&state).await;
-        auto_archive_stale(&state).await;
-        auto_archive::sweep(&state).await;
-    });
+    spawn_sweep(state, |state| async move { reaper_sweep(&state).await });
     spawn_sweep(state, |state| async move { spawn_labels::sweep(&state.pool).await });
     spawn_sweep(state, |state| async move { usage_history::sweep(&state) });
     spawn_sweep(state, |state| async move { followup::sweep(&state.pool).await });
@@ -776,6 +853,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
         machine_liveness::sweep_dispatchers(&state).await;
     });
     spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
+    spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });
     spawn_sweep(state, |state| async move {
@@ -818,16 +896,24 @@ async fn reap_ephemeral_machines(state: &AppState) {
         - chrono::Duration::seconds(
             i64::try_from(state.config.ephemeral_machine_ttl_secs).unwrap_or(i64::MAX),
         );
-    match sqlx::query(
+    match sqlx::query_scalar::<_, uuid::Uuid>(
         "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
-         WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1",
+         WHERE kind = 'ephemeral' AND deleted_at IS NULL AND last_seen_at < $1 RETURNING id",
     )
     .bind(cutoff)
-    .execute(&state.pool)
+    .fetch_all(&state.pool)
     .await
     {
-        Ok(res) if res.rows_affected() > 0 => {
-            tracing::info!(count = res.rows_affected(), "reaped stale ephemeral machines");
+        Ok(ids) if !ids.is_empty() => {
+            tracing::info!(count = ids.len(), "reaped stale ephemeral machines");
+            for id in ids {
+                events::record(
+                    state,
+                    events::Event::new(events::kind::MACHINE_DELETED, events::Actor::Reaper)
+                        .machine(id)
+                        .detail(serde_json::json!({ "reason": "ephemeral_ttl" })),
+                );
+            }
         }
         Ok(_) => {}
         Err(err) => tracing::warn!(%err, "ephemeral machine reap failed"),
@@ -980,6 +1066,9 @@ mod tests {
             "PATCH /accounts/{id}/providers/{provider_id} Bearer Human",
             "POST /accounts/{id}/providers/{provider_id}/move Bearer Human",
             "PUT /accounts/{id}/redirect Bearer Human",
+            "GET /accounts/{id}/service-tokens Bearer Human",
+            "POST /accounts/{id}/service-tokens Bearer Human",
+            "DELETE /accounts/{id}/service-tokens/{token_id} Bearer Human",
             "GET /accounts/{id}/shares Bearer Human",
             "POST /accounts/{id}/shares Bearer Human",
             "DELETE /accounts/{id}/shares/{user_id} Bearer Human",
@@ -996,6 +1085,10 @@ mod tests {
             "PUT /admin/instance/self-update Bearer Scope(Admin)",
             "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
             "PUT /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "GET /admin/instance/speech Bearer Scope(Admin)",
+            "PUT /admin/instance/speech Bearer Scope(Admin)",
+            "GET /admin/instance/speech/catalog Bearer Scope(Admin)",
+            "POST /admin/instance/speech/test Bearer Scope(Admin)",
             "GET /admin/instance/upload-caps Bearer Scope(Admin)",
             "PUT /admin/instance/upload-caps Bearer Scope(Admin)",
             "GET /admin/instance/upstream-hosts Bearer Scope(Admin)",
@@ -1031,11 +1124,21 @@ mod tests {
             "DELETE /bookmarks/{id} Bearer Authenticated",
             "PATCH /bookmarks/{id} Bearer Authenticated",
             "GET /capabilities Bearer Authenticated",
+            "GET /cctuiverse/config Bearer Authenticated",
+            "POST /cctuiverse/join Bearer Human",
+            "PATCH /cctuiverse/links/{id} Bearer Human",
+            "POST /cctuiverse/links/{id}/close Bearer Human",
+            "GET /cctuiverse/links/{id}/messages Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/approve Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/drop Bearer Human",
+            "POST /cctuiverse/links/{id}/messages/{msg}/release Bearer Human",
             "GET /context Bearer Human",
             "POST /context Bearer Human",
             "GET /context/resolve Bearer Human",
             "DELETE /context/{id} Bearer Human",
             "PATCH /context/{id} Bearer Human",
+            "POST /context/{id}/pending/approve Bearer Human",
+            "POST /context/{id}/pending/reject Bearer Human",
             "GET /daemon/binary/{target} Bearer Authenticated",
             "POST /deenroll Bearer Authenticated",
             "POST /dispatcher/enroll Bearer Scope(Enroll)",
@@ -1047,6 +1150,8 @@ mod tests {
             "GET /drafts/{*key} Bearer Authenticated",
             "PUT /drafts/{*key} Bearer Authenticated",
             "POST /enroll Bearer Scope(Enroll)",
+            "GET /events Bearer Authenticated",
+            "GET /harnesses Bearer Authenticated",
             "GET /keys Bearer Authenticated",
             "POST /keys Bearer Authenticated",
             "DELETE /keys/{id} Bearer Authenticated",
@@ -1056,9 +1161,13 @@ mod tests {
             "DELETE /labels/{id} Bearer Authenticated",
             "PATCH /labels/{id} Bearer Authenticated",
             "GET /machines/resources Bearer Authenticated",
+            r#"GET /machines/{machine_id}/adapters Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            "DELETE /machines/{machine_id}/adapters/{adapter} Bearer Scope(Admin)",
+            "PUT /machines/{machine_id}/adapters/{adapter} Bearer Scope(Admin)",
             r#"GET /machines/{machine_id}/codex-models Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"POST /machines/{machine_id}/codex-models/refresh Bearer Resource(Machine, Read, Path("machine_id"))"#,
             "GET /machines/{machine_id}/commands/pending Bearer Authenticated",
+            r#"GET /machines/{machine_id}/events Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"GET /machines/{machine_id}/fs/dirs Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"GET /machines/{machine_id}/fs/file Bearer Resource(Machine, Read, Path("machine_id"))"#,
             r#"GET /machines/{machine_id}/fs/gitinfo Bearer Resource(Machine, Read, Path("machine_id"))"#,
@@ -1066,7 +1175,7 @@ mod tests {
             "GET /manifest/daemon Bearer Authenticated",
             "GET /me Bearer Authenticated",
             "DELETE /me/key Bearer Authenticated",
-            "GET /meta/domain Bearer Authenticated",
+            "GET /meta/usage-probes Bearer Authenticated",
             "GET /models/codex/catalog Bearer Authenticated",
             "GET /models/{harness} Bearer Authenticated",
             "GET /passkeys Bearer Authenticated",
@@ -1100,6 +1209,8 @@ mod tests {
             "GET /rooms Bearer Authenticated",
             "DELETE /rooms/{id} Bearer Authenticated",
             "PATCH /rooms/{id} Bearer Authenticated",
+            "POST /rooms/{id}/cctuiverse/invites Bearer Human",
+            "GET /rooms/{id}/cctuiverse/links Bearer Human",
             "GET /sessions Bearer Authenticated",
             "POST /sessions/archive Bearer Authenticated",
             "POST /sessions/dispatch Bearer Scope(Dispatch)",
@@ -1125,12 +1236,17 @@ mod tests {
             r#"GET /sessions/{id}/blobs/{hash} Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/brief Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/cancel-launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/cctuiverse/invites Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/cctuiverse/links Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/context Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/context Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/conversation Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/deregister Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/discard Bearer Resource(Session, Write, Path("id"))"#,
             r#"PUT /sessions/{id}/draft Bearer Resource(Session, Write, Path("id"))"#,
             r#"PUT /sessions/{id}/draft-attachments Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/events Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/files Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/images/{image_id} Bearer Resource(Session, Read, Path("id"))"#,
@@ -1165,10 +1281,12 @@ mod tests {
             r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/thread Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/unarchive Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/user-actions Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/user-actions/{aid}/tick Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/voice-notes/{note_id} Bearer Resource(Session, Read, Path("id"))"#,
             "GET /settings Bearer Authenticated",
             "PUT /settings Bearer Authenticated",
             "GET /settings/rescrub Bearer Authenticated",
@@ -1191,6 +1309,9 @@ mod tests {
             "POST /version/refresh Bearer Authenticated",
             "GET /version/self-update Bearer Authenticated",
             "POST /version/self-update Bearer Scope(Admin)",
+            "GET /voice/config Bearer Human",
+            "POST /voice/speak Bearer Human",
+            "POST /voice/transcribe Bearer Human",
             "GET /{resource_type}/{id}/shares Bearer Human",
             "POST /{resource_type}/{id}/shares Bearer Human",
             "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",

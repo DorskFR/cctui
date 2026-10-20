@@ -134,6 +134,24 @@ tui = "waived"
 reason = "the tool-policy editor is a webui form; no TUI ticket in this epic"
 
 [[route]]
+id = "get_accounts_by_id_service_tokens"
+# GET /accounts/{id}/service-tokens — List or mint the account's service tokens.
+tui = "waived"
+reason = "service tokens are managed from the webui account page; no TUI ticket"
+
+[[route]]
+id = "post_accounts_by_id_service_tokens"
+# POST /accounts/{id}/service-tokens — List or mint the account's service tokens.
+tui = "waived"
+reason = "service tokens are managed from the webui account page; no TUI ticket"
+
+[[route]]
+id = "delete_accounts_by_id_service_tokens_by_token"
+# DELETE /accounts/{id}/service-tokens/{token_id} — Revoke a service token.
+tui = "waived"
+reason = "service tokens are managed from the webui account page; no TUI ticket"
+
+[[route]]
 id = "get_redirects"
 # GET /redirects — The caller's live account/model redirect rules.
 tui = "waived"
@@ -310,32 +328,44 @@ reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in
 [[route]]
 id = "get_context"
 # GET /context — List the caller's context items, or create one.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "post_context"
 # POST /context — List the caller's context items, or create one.
 tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+reason = "creating an item means writing a body, scope and match filter: a form the webui editor owns, not a keystroke"
 
 [[route]]
 id = "get_context_resolve"
-# GET /context/resolve — The context a spawn into these coordinates would attach on its own.
+# GET /context/resolve — The rules and memories a spawn into these coordinates would carry.
 tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+reason = "takes spawn coordinates (machine, path, labels, adapter) as a query; the TUI spawn dialog has no preview step to show the result in"
 
 [[route]]
 id = "patch_context_by_id"
 # PATCH /context/{id} — Edit or delete a context item.
 tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+reason = "editing an item replaces its whole spec (body, scope, match filter): a form the webui editor owns, not a keystroke"
 
 [[route]]
 id = "delete_context_by_id"
 # DELETE /context/{id} — Edit or delete a context item.
-tui = "waived"
-reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+tui = "handled"
+module = "app/context_items.rs"
+
+[[route]]
+id = "post_context_by_id_pending_approve"
+# POST /context/{id}/pending/approve — Make an agent's proposed change to a context item live.
+tui = "handled"
+module = "app/context_items.rs"
+
+[[route]]
+id = "post_context_by_id_pending_reject"
+# POST /context/{id}/pending/reject — Drop an agent's proposed change to a context item.
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "get_manifest_daemon"
@@ -446,6 +476,12 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
+id = "get_machines_by_machine_events"
+# GET /machines/{machine_id}/events — One machine's lifecycle events, newest first.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_machines_by_machine_commands_pending"
 # GET /machines/{machine_id}/commands/pending — Poll a machine's pending spawn/control commands.
 tui = "waived"
@@ -470,6 +506,24 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
+id = "get_machines_by_machine_adapters"
+# GET /machines/{machine_id}/adapters — Which harnesses a machine runs: table rows with the machine's enable/config pins.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_machines_by_machine_adapters_by_adapter"
+# PUT /machines/{machine_id}/adapters/{adapter} — Enable, disable or configure one harness on a machine (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_machines_by_machine_adapters_by_adapter"
+# DELETE /machines/{machine_id}/adapters/{adapter} — Drop a machine's pin for one harness, back to the table default (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_machines_by_machine_codex_models"
 # GET /machines/{machine_id}/codex-models — Machine/account-scoped codex model catalog.
 tui = "waived"
@@ -488,16 +542,28 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_events"
+# GET /events — Lifecycle event log (sessions, machines, system), keyset-paginated newest first.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_harnesses"
+# GET /harnesses — The harness table: ids, families, capabilities and permission modes.
+tui = "waived"
+reason = "the TUI spawns through profiles and derives the harness table from cctui-proto directly"
+
+[[route]]
 id = "get_models_by_harness"
 # GET /models/{harness} — Model and effort options for a harness picker (optional machine_id).
 tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
-id = "get_meta_domain"
-# GET /meta/domain — Provider metadata, quota probes, end-reason tones, permission modes.
+id = "get_meta_usage_probes"
+# GET /meta/usage-probes — The quota-probe registry, for the account usage-probe picker.
 tui = "waived"
-reason = "browser host metadata used to build webui links"
+reason = "the usage-probe picker lives in the webui account drawer"
 
 [[route]]
 id = "get_me"
@@ -896,6 +962,77 @@ tui = "waived"
 reason = "the TUI session list does not group by room"
 
 [[route]]
+id = "get_cctuiverse_config"
+# GET /cctuiverse/config — Whether cctuiverse links are enabled on this server.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_join"
+# POST /cctuiverse/join — Join a cctuiverse invite with one of your sessions.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "patch_cctuiverse_links_by_id"
+# PATCH /cctuiverse/links/{id} — Change a cctuiverse link's settings.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_close"
+# POST /cctuiverse/links/{id}/close — Close a cctuiverse link, or revoke a pending invite.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "get_cctuiverse_links_by_id_messages"
+# GET /cctuiverse/links/{id}/messages — Held inbound and review-pending outbound messages of a link.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_messages_by_msg_approve"
+# POST /cctuiverse/links/{id}/messages/{msg}/approve — Send a review-pending outbound message.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_messages_by_msg_drop"
+# POST /cctuiverse/links/{id}/messages/{msg}/drop — Discard a held or review-pending message.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_cctuiverse_links_by_id_messages_by_msg_release"
+# POST /cctuiverse/links/{id}/messages/{msg}/release — Deliver a held inbound message now.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_rooms_by_id_cctuiverse_invites"
+# POST /rooms/{id}/cctuiverse/invites — Invite a session on another cctui into this room.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "get_rooms_by_id_cctuiverse_links"
+# GET /rooms/{id}/cctuiverse/links — This room's cctuiverse links, pending invites included.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "post_sessions_by_id_cctuiverse_invites"
+# POST /sessions/{id}/cctuiverse/invites — Invite a session on another cctui to link with this one.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[route]]
+id = "get_sessions_by_id_cctuiverse_links"
+# GET /sessions/{id}/cctuiverse/links — This session's cctuiverse links, pending invites included.
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+[[route]]
 id = "post_sessions_archive"
 # POST /sessions/archive — Archive a batch of sessions by id.
 tui = "handled"
@@ -1124,6 +1261,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_sessions_by_id_thread"
+# GET /sessions/{id}/thread — List the follow-up thread a session belongs to, oldest first.
+tui = "waived"
+reason = "follow-up thread navigation lives in the webui drawer header"
+
+[[route]]
 id = "post_sessions_by_id_fork"
 # POST /sessions/{id}/fork — Fork a session into a new one.
 tui = "handled"
@@ -1238,6 +1381,12 @@ tui = "handled"
 module = "main.rs"
 
 [[route]]
+id = "get_sessions_by_id_events"
+# GET /sessions/{id}/events — One session's lifecycle events, newest first.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_sessions_by_id_langfuse"
 # GET /sessions/{id}/langfuse — Langfuse cost/usage rollup for a session.
 tui = "waived"
@@ -1302,6 +1451,18 @@ id = "get_skills_by_name"
 # GET /skills/{name} — Upload or fetch a skill bundle by name.
 tui = "waived"
 reason = "the skills editor is webui-only"
+
+[[route]]
+id = "get_sessions_by_id_context"
+# GET /sessions/{id}/context — The rules and memories a session was given.
+tui = "handled"
+module = "app/context_items.rs"
+
+[[route]]
+id = "post_sessions_by_id_context"
+# POST /sessions/{id}/context — Attach memories to a live session (owner only).
+tui = "handled"
+module = "app/context_items.rs"
 
 [[route]]
 id = "get_sessions_by_id_user_actions"
@@ -1553,9 +1714,19 @@ tui = "waived"
 reason = "the TUI session list does not group by room"
 
 [[ws_event]]
+name = "cctuiverse_changed"
+tui = "waived"
+reason = "cctuiverse links are managed from the webui"
+
+[[ws_event]]
 name = "user_actions"
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[ws_event]]
+name = "event"
+tui = "waived"
+reason = "the TUI has no event log view; the list refresh carries status"
 
 [[ws_event]]
 name = "heartbeat"
@@ -1566,3 +1737,56 @@ reason = "liveness tick with nothing to render"
 name = "resync"
 tui = "handled"
 module = "app/server_event.rs"
+
+[[ws_event]]
+name = "limit_reset_redeemed"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[route]]
+id = "get_admin_instance_speech"
+# GET /admin/instance/speech
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_instance_speech"
+# PUT /admin/instance/speech
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_admin_instance_speech_catalog"
+# GET /admin/instance/speech/catalog
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "post_admin_instance_speech_test"
+# POST /admin/instance/speech/test
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_voice_config"
+# GET /voice/config
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none"
+
+[[route]]
+id = "post_voice_transcribe"
+# POST /voice/transcribe
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none"
+
+[[route]]
+id = "post_voice_speak"
+# POST /voice/speak
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none"
+
+[[route]]
+id = "get_sessions_by_id_voice_notes_by_note"
+# GET /sessions/{id}/voice-notes/{note_id} — Fetch an agent voice note's audio.
+tui = "waived"
+reason = "voice input and playback need a browser audio stack; the TUI has none; the transcript still shows as text"

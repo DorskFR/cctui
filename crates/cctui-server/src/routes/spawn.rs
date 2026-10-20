@@ -142,6 +142,20 @@ fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
     Ok(id.to_owned())
 }
 
+/// The requested adapter, refused when the machine reports its binary missing.
+async fn spawn_adapter_on(
+    state: &AppState,
+    machine_uuid: Uuid,
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    let adapter_id = spawn_adapter(requested).map_err(bad_request)?;
+    let binaries = crate::routes::machine_adapters::reported_binaries(&state.pool, machine_uuid)
+        .await
+        .map_err(AppError::into_parts)?;
+    crate::routes::machine_adapters::missing_binary(&binaries, &adapter_id)
+        .map_or(Ok(adapter_id), |error| Err((StatusCode::CONFLICT, Json(ApiError { error }))))
+}
+
 async fn validate_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -159,7 +173,7 @@ async fn validate_spawn(
 
     let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
-    let adapter_id = spawn_adapter(req.adapter_id.as_deref()).map_err(bad_request)?;
+    let adapter_id = spawn_adapter_on(state, machine_uuid, req.adapter_id.as_deref()).await?;
     let command_id = Uuid::new_v4();
     let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
     let token_session_id = token_key.to_string();
@@ -173,8 +187,9 @@ async fn validate_spawn(
             .await;
     crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &label_ids).await;
     crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
-    let context = resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid).await;
-    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context).await;
+    let (context, scope) =
+        resolve_spawn_context(state, ctx, req, &label_ids, owner, machine_uuid, &adapter_id).await;
+    crate::routes::context::remember_intent(&state.pool, &token_session_id, &context, &scope).await;
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
     // the session runs on that user's machine with that user's account.
@@ -193,10 +208,11 @@ async fn validate_spawn(
     })
 }
 
-/// Resolve the reusable context for this spawn: the request's explicit picks,
-/// plus the profile's pinned items, plus — unless the caller opted out — every
-/// enabled memory whose scope matches the spawn's machine, working dir and
-/// labels.
+/// Resolve the reusable context for this spawn: the matching rules, the
+/// request's explicit picks, the profile's pinned items and — when the request
+/// asks for `auto` — every enabled memory whose filter matches the spawn's
+/// machine, working dir, labels and adapter. Returns the coordinates too, so
+/// every later launch re-resolves the rules against them.
 ///
 /// Best-effort: a lookup failure launches the session without context rather
 /// than refusing it. Context is a convenience, never a precondition.
@@ -207,28 +223,34 @@ async fn resolve_spawn_context(
     label_ids: &[String],
     owner: Uuid,
     machine_uuid: Uuid,
-) -> Vec<crate::routes::context::ContextItem> {
-    use crate::routes::context::{SpawnScope, resolve_for_spawn};
+    adapter_id: &str,
+) -> (Vec<crate::routes::context::ContextItem>, crate::routes::context::StoredScope) {
+    use crate::routes::context::{SpawnScope, StoredScope, resolve_for_spawn};
 
-    let asked = req.context.clone().unwrap_or_default();
     let uid = ctx.owner_filter().unwrap_or(owner);
+    // The resolved uuid, not `req.machine_id`, which may be a name: a
+    // machine filter must resolve the same here and on the child path.
+    let scope = StoredScope {
+        user_id: uid,
+        coords: SpawnScope {
+            machine_id: Some(machine_uuid.to_string()),
+            working_dir: Some(req.working_dir.clone()),
+            label_ids: label_ids.to_vec(),
+            adapter: Some(adapter_id.to_owned()),
+        },
+        dispatched: false,
+    };
+    let asked = req.context.clone().unwrap_or_default();
     let items = match crate::routes::context::list_for_user(&state.pool, uid).await {
         Ok(items) => items,
         Err(e) => {
             tracing::warn!(error = %e, "context lookup failed; spawning without it");
-            return Vec::new();
+            return (Vec::new(), scope);
         }
     };
     let mut picks = asked.items;
     picks.extend(profile_context_names(state, req, uid, &items).await);
-    // The resolved uuid, not `req.machine_id`, which may be a name: a
-    // machine-scoped item must resolve the same here and on the child path.
-    let scope = SpawnScope {
-        machine_id: Some(machine_uuid.to_string()),
-        working_dir: Some(req.working_dir.clone()),
-        label_ids: label_ids.to_vec(),
-    };
-    resolve_for_spawn(&items, &picks, asked.auto, &scope)
+    (resolve_for_spawn(&items, &picks, asked.auto, &scope.coords), scope)
 }
 
 /// The names of the items the request's profile pins. Empty when the request
@@ -301,7 +323,8 @@ async fn resolve_spawn_account(
     // once the account is minted. `None` for every other decision: a session
     // that named no pool is never moved.
     let mut bound_pool: Option<Uuid> = None;
-    let family_for_binding = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family_for_binding = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     let account_choice = match decision {
         // A name is an account name first; it only elects a pool when no
         // account of the user's answers to it.
@@ -397,7 +420,7 @@ async fn spawn_service_tier(
     // one: resolve to a concrete value here rather than letting the worker
     // inherit whatever the machine's config.toml happens to say.
     if crate::routes::gateway::Family::from_adapter(adapter_id)
-        == crate::routes::gateway::Family::Openai
+        == Ok(crate::routes::gateway::Family::Openai)
     {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(state, token_session_id).await;
@@ -425,7 +448,8 @@ async fn mint_account_env(
 ) -> Result<(), (StatusCode, Json<ApiError>)> {
     let SpawnTarget { uid, adapter_id, token_session_id, .. } = target;
     let uid = *uid;
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     // The fireworks family resolves even an ABSENT model: its catalog is the
     // only source of model ids, and its harness has no default to fall back on.
     if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
@@ -545,7 +569,7 @@ async fn execute_spawn(
         bootstrap,
         parent_local_id: None,
     };
-    persist_spawn_capability(state, req, permission_mode, &token_session_id).await;
+    persist_spawn_capability(state, machine_uuid, req, permission_mode, &token_session_id).await;
     // `command_id` travels with the command and comes back in an
     // `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`, letting the
     // client surface success/failure instead of silently polling.
@@ -627,17 +651,45 @@ fn dispatch_error(err: &crate::bus::BusError) -> (StatusCode, Json<ApiError>) {
     (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: error.into() }))
 }
 
+/// The instance default capability, granting only the harnesses `machine_uuid` runs.
+///
+/// Falls back to the default-enabled set when the machine's rows cannot be read.
+async fn default_capability_for(
+    state: &AppState,
+    machine_uuid: Uuid,
+) -> cctui_proto::api::SpawnCapability {
+    let cap = crate::routes::server_settings::spawn_default_capability(state).await;
+    match crate::routes::daemon::enabled_adapter_ids(state, machine_uuid).await {
+        Ok(ids) => cap.with_adapters(spawnable_adapters(ids)),
+        Err(e) => {
+            tracing::warn!(%machine_uuid, error = %e, "enabled adapters unknown; granting the defaults");
+            cap
+        }
+    }
+}
+
+/// Only the adapters the server can launch: an enabled ACP agent is not a
+/// family `spawn_child` knows, so advertising it promises a child that always
+/// fails with "unknown harness".
+fn spawnable_adapters(ids: Vec<String>) -> Vec<String> {
+    ids.into_iter()
+        .filter(|id| crate::routes::gateway::Family::try_from_adapter(id).is_some())
+        .collect()
+}
+
 /// Keyed by the id the worker will register as, and stored before dispatch so
 /// the capability resolves the moment the worker asks.
 async fn persist_spawn_capability(
     state: &AppState,
+    machine_uuid: Uuid,
     req: &SpawnRequest,
     permission_mode: Option<cctui_proto::adapter::PermissionMode>,
     token_session_id: &str,
 ) {
-    let mut cap = match req.spawn_capability.clone().filter(|c| !c.is_empty()) {
-        Some(cap) => cap,
-        None => crate::routes::server_settings::spawn_default_capability(state).await,
+    let mut cap = if let Some(cap) = req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+        cap
+    } else {
+        default_capability_for(state, machine_uuid).await
     };
     let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
     cap.max_permission_mode = Some(
@@ -665,7 +717,8 @@ async fn default_account_name(
     user_id: Uuid,
     adapter_id: &str,
 ) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id)
+        .map_err(|e| bad_request(e.to_string()))?;
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT a.name \
          FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
@@ -1095,6 +1148,19 @@ pub async fn launch_stored_draft(
         tracing::warn!(%session_id, "draft launched but row delete failed: {e}");
     }
     tracing::info!(draft = %session_id, "draft launched");
+    crate::events::record(
+        state,
+        crate::events::Event::new(
+            crate::events::kind::SESSION_LAUNCHED,
+            crate::events::Actor::User(ctx.user_id),
+        )
+        .user(ctx.user_id)
+        .detail(serde_json::json!({
+            "draft_id": session_id,
+            "session_id": outcome.1.session_id,
+            "command_id": outcome.1.command_id,
+        })),
+    );
     Ok(outcome)
 }
 
@@ -1365,6 +1431,17 @@ pub async fn get_machine_commands(
 mod tests {
     use axum::http::StatusCode;
     use base64::Engine;
+
+    /// An enabled ACP agent is not a family the server can launch, so the
+    /// default capability must not advertise it to `CctuiAgent`.
+    #[test]
+    fn the_default_capability_advertises_only_spawnable_adapters() {
+        let ids = ["claude-code", "gemini", "codex", "opencode", "custom-acp"]
+            .map(str::to_owned)
+            .to_vec();
+        assert_eq!(super::spawnable_adapters(ids), ["claude-code", "codex", "opencode"]);
+        assert!(super::spawnable_adapters(Vec::new()).is_empty());
+    }
 
     #[tokio::test]
     async fn only_the_owner_drains_a_machine_queue() {

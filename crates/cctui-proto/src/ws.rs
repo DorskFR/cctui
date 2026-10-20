@@ -253,7 +253,7 @@ pub enum DaemonFrameDown {
         session_ids: Vec<String>,
     },
     /// Re-run codex `model/list`; the result arrives as
-    /// [`AdapterEvent::CodexModels`](crate::adapter::AdapterEvent::CodexModels).
+    /// [`AdapterEvent::HarnessModels`](crate::adapter::AdapterEvent::HarnessModels).
     RefreshCodexModels {},
     /// Run the update hook for `version`. No reply: the hook restarts the server,
     /// so progress is posted to `/api/v1/daemon/update-hook/{run_id}`.
@@ -600,6 +600,8 @@ pub enum TuiCommand {
         session_id: String,
         request_id: String,
         behavior: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
     },
 }
 
@@ -643,6 +645,8 @@ pub enum ServerEvent {
         tool_name: String,
         description: String,
         input_preview: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<crate::adapter::PermissionChoice>,
     },
     PermissionResolved {
         session_id: String,
@@ -741,6 +745,16 @@ pub enum ServerEvent {
     SoftLimitCleared {
         session_id: String,
     },
+    /// The server spent a usage-limit reset on an account under its auto-redeem
+    /// policy. `outcome` is the upstream result (`reset`, `already_redeemed`, …).
+    LimitResetRedeemed {
+        account_id: uuid::Uuid,
+        account_name: String,
+        provider: String,
+        outcome: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credit_id: Option<String>,
+    },
     /// The account's tool-call policy blocked a tool call. `rule` holds the rule
     /// name and a masked match; raw input is never carried.
     ToolCallBlocked {
@@ -773,11 +787,25 @@ pub enum ServerEvent {
         /// Whose rooms these are; scopes delivery to the owner.
         user_id: uuid::Uuid,
     },
+    /// A cctuiverse link of this session or room changed state, or its held or
+    /// review queue changed.
+    CctuiverseChanged {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room_id: Option<uuid::Uuid>,
+        /// The link's owner; scopes delivery.
+        user_id: uuid::Uuid,
+    },
     /// The session's "needs you" list changed. Carries the whole list: a tab
     /// that missed an earlier frame must not have to reconstruct it.
     UserActions {
         session_id: String,
         actions: Vec<crate::api::UserAction>,
+    },
+    /// A lifecycle event was recorded; scoped like the `/events` list.
+    Event {
+        event: crate::api::events::EventRecord,
     },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},

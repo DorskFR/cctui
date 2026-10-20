@@ -636,6 +636,7 @@ impl<'a> EventLoop<'a> {
                         request_id,
                         tool,
                         input,
+                        options: Vec::new(),
                     })
                     .await
                     .ok();
@@ -794,7 +795,10 @@ impl<'a> EventLoop<'a> {
             tracing::warn!(%warning, "codex: spawning anyway");
         }
         self.thread.catalog_sent = true;
-        self.events().send(AdapterEvent::CodexModels { catalog }).await.ok();
+        self.events()
+            .send(AdapterEvent::HarnessModels { adapter_id: "codex".to_owned(), catalog })
+            .await
+            .ok();
         self.send_thread_request().await
     }
 
@@ -816,7 +820,10 @@ impl<'a> EventLoop<'a> {
                     models: std::mem::take(&mut self.thread.model_catalog),
                     client_version: None,
                 };
-                self.events().send(AdapterEvent::CodexModels { catalog }).await.ok();
+                self.events()
+                    .send(AdapterEvent::HarnessModels { adapter_id: "codex".to_owned(), catalog })
+                    .await
+                    .ok();
             }
         }
     }
@@ -921,6 +928,7 @@ impl<'a> EventLoop<'a> {
                         "rollout_path": info.rollout_path,
                         "codex_version": self.thread.codex_version,
                         "spawn_key": session.spawn_key,
+                        "context_key": session.fork_context_key(),
                         "relation": relation,
                         "started_at_ms": started_at_ms,
                     }),
@@ -1205,6 +1213,7 @@ impl<'a> EventLoop<'a> {
                 local_id,
                 retry,
                 session.skills.clone(),
+                session.context.clone(),
                 session.events.clone(),
                 session.live.clone(),
                 session.registry.clone(),

@@ -172,7 +172,33 @@ pub async fn mark_soft_limit_block(
             reason: reason.to_owned(),
             retry_after_secs,
         });
+        crate::events::record(
+            state,
+            crate::events::Event::new(
+                crate::events::kind::SYSTEM_ACCOUNT_LIMIT_REACHED,
+                crate::events::Actor::System,
+            )
+            .severity(crate::events::Severity::Warn)
+            .session(session_id)
+            .detail(serde_json::json!({
+                "account_id": account_id,
+                "account_name": account_name,
+                "reason": reason,
+                "retry_after_secs": retry_after_secs,
+            })),
+        );
     }
+}
+
+fn record_limit_cleared(state: &AppState, session_id: &str) {
+    crate::events::record(
+        state,
+        crate::events::Event::new(
+            crate::events::kind::SYSTEM_ACCOUNT_LIMIT_CLEARED,
+            crate::events::Actor::System,
+        )
+        .session(session_id),
+    );
 }
 
 /// Clear a session's soft-limit block and broadcast the dismissal.
@@ -189,6 +215,7 @@ pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
             state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitCleared {
                 session_id: session_id.into(),
             });
+            record_limit_cleared(state, session_id);
         }
         Ok(false) => {}
         Err(e) => tracing::warn!(%session_id, error = %e, "failed to clear soft-limit block"),
@@ -203,6 +230,7 @@ pub async fn clear_soft_limit_block_for_token(state: &AppState, session_token: &
     let hash = crate::auth::sha256_hex(session_token);
     match clear_block_row_for_token(&state.pool, &hash).await {
         Ok(Some(session_id)) => {
+            record_limit_cleared(state, &session_id);
             state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitCleared { session_id });
         }
         Ok(None) => {}

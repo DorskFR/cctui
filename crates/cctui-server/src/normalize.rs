@@ -37,6 +37,9 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
             turn_id: None,
         });
     }
+    if is_voice_note(event_type, payload) {
+        return message_event(payload, ts);
+    }
     if adapter_id == "codex" {
         // Reuse the read-side canonicalizer, then lift the canonical client
         // Value into the live `AgentEvent` shape — one source of truth for
@@ -104,7 +107,8 @@ fn message_event(payload: &Value, ts: i64) -> Option<AgentEvent> {
         "assistant"
         | "assistant_thinking"
         | "assistant_redacted_thinking"
-        | "assistant_attachment" => Some(AgentEvent::Text {
+        | "assistant_attachment"
+        | "assistant_voice" => Some(AgentEvent::Text {
             content: text.to_owned(),
             meta: false,
             kind: text_kind(role),
@@ -191,11 +195,19 @@ fn queue_op_text(payload: &Value, text: &str) -> String {
     text.split_once(": ").map_or_else(String::new, |(_, body)| body.trim().to_owned())
 }
 
+/// Voice notes are written by the server itself, in one shape whatever the
+/// session's adapter.
+fn is_voice_note(event_type: &str, payload: &Value) -> bool {
+    event_type == "message"
+        && payload.get("role").and_then(Value::as_str) == Some("assistant_voice")
+}
+
 fn text_kind(role: &str) -> Option<String> {
     let kind = match role {
         "assistant_thinking" => "thinking",
         "assistant_redacted_thinking" => "redacted_thinking",
         "assistant_attachment" => "attachment",
+        "assistant_voice" => "voice",
         "system_marker" => "system_marker",
         "turn_annotation" => "turn_annotation",
         _ => return None,
@@ -222,6 +234,9 @@ pub fn for_client(adapter_id: &str, event_type: &str, payload: Value) -> Option<
             "meta": true,
             "kind": "system_marker",
         }));
+    }
+    if is_voice_note(event_type, &payload) {
+        return map_daemon_message(&payload);
     }
     match adapter_id {
         "claude-code" => claude_code(event_type, payload),
@@ -631,7 +646,8 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
         "assistant"
         | "assistant_thinking"
         | "assistant_redacted_thinking"
-        | "assistant_attachment" => Some(json!({
+        | "assistant_attachment"
+        | "assistant_voice" => Some(json!({
             "type": "text",
             "content": text,
             "role": "Assistant",
@@ -742,10 +758,24 @@ fn user_text_is_meta(text: &str) -> bool {
 
 /// A turn whose body opens on a peer envelope, matching `PEER_TAG_RE`.
 fn is_peer_text(body: &str) -> bool {
-    body.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .is_some_and(|l| l.starts_with("<cross-session-message") || l.starts_with("<agent-message"))
+    body.lines().map(str::trim).find(|l| !l.is_empty()).is_some_and(|l| {
+        cctui_proto::injected::starts_with_peer_tag(l) || l.starts_with("<agent-message")
+    })
+}
+
+/// A human turn's category: `context` when nothing but cctui wrappers lead it,
+/// otherwise whatever its prose reads as.
+fn user_category(body: &str) -> &'static str {
+    let (blocks, prose) = cctui_proto::injected::split_injected(body);
+    if !blocks.is_empty() && prose.trim().is_empty() {
+        "context"
+    } else if is_peer_text(prose) {
+        "peer"
+    } else if user_text_is_meta(prose) {
+        "system"
+    } else {
+        "user"
+    }
 }
 
 /// The `MsgCategory` the webui would file a canonical client payload under,
@@ -772,14 +802,7 @@ pub fn client_category(v: &Value) -> (&'static str, Option<String>) {
                 let Some(body) = content.strip_prefix(USER_PREFIX) else {
                     return ("assistant", None);
                 };
-                let body = body.trim_start();
-                if is_peer_text(body) {
-                    ("peer", None)
-                } else if user_text_is_meta(body) {
-                    ("system", None)
-                } else {
-                    ("user", None)
-                }
+                (user_category(body.trim_start()), None)
             }
         },
         "reply" => ("user", None),
@@ -834,6 +857,10 @@ mod tests {
             ("peer", None)
         );
         assert_eq!(
+            cat(text("▷ User: <cctui-peer-message from=\"peer\">\nhi\n</cctui-peer-message>")),
+            ("peer", None)
+        );
+        assert_eq!(
             cat(json!({ "type": "text", "content": "x", "kind": "thinking" })),
             ("thinking", None)
         );
@@ -882,6 +909,33 @@ mod tests {
         assert_eq!(cat(json!({ "type": "compact_summary" })).0, "compact");
         assert_eq!(cat(json!({ "type": "context_reset" })).0, "reset");
         assert_eq!(cat(json!({ "type": "heartbeat" })).0, "");
+    }
+
+    #[test]
+    fn a_turn_of_only_injected_blocks_is_context_and_prose_keeps_its_role() {
+        let cat = |content: &str| client_category(&json!({ "type": "text", "content": content })).0;
+        for (open, close) in [
+            ("<cctui-session-context>", "</cctui-session-context>"),
+            ("<session-context>", "</session-context>"),
+        ] {
+            assert_eq!(cat(&format!("▷ User: {open}\ncwd: /w\n{close}")), "context", "{open}");
+            assert_eq!(cat(&format!("▷ User: {open}\ncwd: /w\n{close}\n\nfix it")), "user");
+        }
+        assert_eq!(
+            cat("▷ User: <previous-conversation session=\"a\" id=\"s1\">\nb\n\
+                 </previous-conversation>\n\n===\n\n"),
+            "context"
+        );
+        assert_eq!(
+            cat("▷ User: look:\n<cctui-session-context>\nx\n</cctui-session-context>"),
+            "user",
+            "a wrapper quoted mid-message is the human's prose"
+        );
+        assert_eq!(
+            cat("▷ User: <cctui-session-context>\nx\n</cctui-session-context>\n\n\
+                 <system-reminder>y</system-reminder>"),
+            "system"
+        );
     }
 
     #[test]
@@ -1206,6 +1260,25 @@ mod tests {
         assert_eq!(n["type"], "turn_summary");
         assert_eq!(n["detail"], "done");
         assert_eq!(n["needs_action"], false);
+    }
+
+    #[test]
+    fn a_voice_note_is_a_voice_text_for_every_adapter() {
+        let p = json!({ "role": "assistant_voice", "text": "hello there", "message_id": "n1" });
+        for adapter in ["claude-code", "codex", "opencode"] {
+            let n = for_client(adapter, "message", p.clone()).unwrap();
+            assert_eq!(n["kind"], "voice", "{adapter}");
+            assert_eq!(n["content"], "hello there");
+            assert_eq!(n["message_id"], "n1");
+            match to_agent_event(adapter, "message", &p).unwrap() {
+                AgentEvent::Text { kind, content, message_id, .. } => {
+                    assert_eq!(kind.as_deref(), Some("voice"));
+                    assert_eq!(content, "hello there");
+                    assert_eq!(message_id.as_deref(), Some("n1"));
+                }
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
     }
 
     #[test]

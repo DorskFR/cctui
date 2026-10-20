@@ -1,7 +1,7 @@
 //! Typed client for the `opencode serve` HTTP API.
 //!
 //! Hand-rolled against the server's `OpenAPI` document (`GET /doc`, opencode
-//! 1.18.7). Response types tolerate unknown fields so a schema-growing release
+//! 1.19.3). Response types tolerate unknown fields so a schema-growing release
 //! still deserializes.
 
 use anyhow::{Context, Result};
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TrafficRings};
 
 /// Version the worker image bakes and the adapter is written against.
-pub const OPENCODE_PINNED_VERSION: &str = "1.18.7";
+pub const OPENCODE_PINNED_VERSION: &str = "1.19.3";
 
 /// Basic-auth username `opencode serve` expects when `OPENCODE_SERVER_PASSWORD`
 /// is set (overridable upstream via `OPENCODE_SERVER_USERNAME`).
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn health_round_trips() {
-        let h: Health = serde_json::from_str(r#"{"healthy":true,"version":"1.18.7"}"#).unwrap();
+        let h: Health = serde_json::from_str(r#"{"healthy":true,"version":"1.19.3"}"#).unwrap();
         assert!(h.healthy);
         assert_eq!(h.version, OPENCODE_PINNED_VERSION);
     }

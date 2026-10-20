@@ -154,6 +154,23 @@ pub fn machine_memory_key(machine_id: &str, working_dir: &str) -> String {
     format!("m{KEY_SEP}{machine_id}{KEY_SEP}{}", normalize_dir(working_dir))
 }
 
+/// The account value as a JSONB string can hold it.
+///
+/// The account picker's sentinels (no-account, pool) open with NUL, which JSONB
+/// refuses: storing one failed the whole write, so the memory kept the last
+/// spawn on a named account. The leading NUL is stored as [`KEY_SEP`] and
+/// restored by [`recalled_account`]. The web UI's `spawnMemory.ts` does the same.
+#[must_use]
+pub fn stored_account(account: &str) -> String {
+    account.strip_prefix('\0').map_or_else(|| account.to_owned(), |rest| format!("{KEY_SEP}{rest}"))
+}
+
+/// The picker value a stored account stands for.
+#[must_use]
+pub fn recalled_account(stored: &str) -> String {
+    stored.strip_prefix(KEY_SEP).map_or_else(|| stored.to_owned(), |rest| format!("\0{rest}"))
+}
+
 /// The memory key of a dispatch spawn target.
 #[must_use]
 pub fn dispatch_memory_key(dispatcher_id: &str, repo: &str) -> String {
@@ -202,6 +219,20 @@ mod tests {
     fn memory_keys_are_unit_separated_and_tagged_by_target_kind() {
         assert_eq!(machine_memory_key("m1", "/w/"), "m\u{1f}m1\u{1f}/w");
         assert_eq!(dispatch_memory_key("d1", " org/repo "), "d\u{1f}d1\u{1f}org/repo");
+    }
+
+    #[test]
+    fn account_sentinels_are_stored_without_nul_and_recalled_intact() {
+        for picked in ["\0no-account", "\0pool:Pool A"] {
+            let stored = stored_account(picked);
+            assert!(!stored.contains('\0'), "{stored:?} would be refused by JSONB");
+            assert_eq!(recalled_account(&stored), picked);
+        }
+        assert_eq!(stored_account("\0pool:P"), "\u{1f}pool:P");
+        for plain in ["", "Astra"] {
+            assert_eq!(stored_account(plain), plain);
+            assert_eq!(recalled_account(plain), plain);
+        }
     }
 
     #[test]

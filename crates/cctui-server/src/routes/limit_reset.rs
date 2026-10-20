@@ -51,13 +51,16 @@ fn codex_restores(reset_type: Option<&str>) -> Vec<String> {
     }
 }
 
-fn is_expired(iso: Option<&str>) -> bool {
-    iso.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .is_some_and(|t| t <= chrono::Utc::now())
+fn is_expired(iso: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
+    iso.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).is_some_and(|t| t <= now)
 }
 
 /// Why a `cedar_ember` grant cannot be spent; `None` means it is offered.
-fn grant_unusable_reason(ce: &serde_json::Value, grant: &serde_json::Value) -> Option<String> {
+fn grant_unusable_reason(
+    ce: &serde_json::Value,
+    grant: &serde_json::Value,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
     let flag = |k: &str| grant.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
     if !ce.get("eligible").and_then(serde_json::Value::as_bool).unwrap_or(false) {
         return Some(str_at(ce, "ineligible_reason").unwrap_or_else(|| "not_eligible".to_owned()));
@@ -65,7 +68,7 @@ fn grant_unusable_reason(ce: &serde_json::Value, grant: &serde_json::Value) -> O
     if flag("paused") {
         return Some("paused".to_owned());
     }
-    if is_expired(grant.get("ends_at").and_then(|v| v.as_str())) {
+    if is_expired(grant.get("ends_at").and_then(|v| v.as_str()), now) {
         return Some("expired".to_owned());
     }
     if !flag("usable_now") {
@@ -74,16 +77,20 @@ fn grant_unusable_reason(ce: &serde_json::Value, grant: &serde_json::Value) -> O
     None
 }
 
-fn cedar_ember_entries(ce: &serde_json::Value, out: &mut Vec<LimitResetEntry>) {
+fn cedar_ember_entries(
+    ce: &serde_json::Value,
+    out: &mut Vec<LimitResetEntry>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
     let grants = ce.get("grants").and_then(|g| g.as_array()).map(Vec::as_slice).unwrap_or_default();
     for g in grants {
         let Some(id) = str_at(g, "id") else { continue };
         let resets_left = g.get("resets_left").and_then(serde_json::Value::as_i64);
         let ends_at = str_at(g, "ends_at");
-        if resets_left == Some(0) || is_expired(ends_at.as_deref()) {
+        if resets_left == Some(0) || is_expired(ends_at.as_deref(), now) {
             continue;
         }
-        let reason = grant_unusable_reason(ce, g);
+        let reason = grant_unusable_reason(ce, g, now);
         out.push(LimitResetEntry {
             kind: "claude",
             id,
@@ -129,6 +136,14 @@ fn juniper_tide_entry(jt: &serde_json::Value) -> LimitResetEntry {
 /// and expired offers are dropped; unusable-but-live ones stay so the UI can say
 /// why. Reads the same payload as [`limit_reset_status`] — no upstream calls.
 pub fn limit_resets(provider: &str, usage: &serde_json::Value) -> Vec<LimitResetEntry> {
+    limit_resets_at(provider, usage, chrono::Utc::now())
+}
+
+pub fn limit_resets_at(
+    provider: &str,
+    usage: &serde_json::Value,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<LimitResetEntry> {
     let mut out: Vec<LimitResetEntry> = Vec::new();
     let block = |k: &str| usage.get(k).filter(|v| !v.is_null());
     match provider {
@@ -144,7 +159,7 @@ pub fn limit_resets(provider: &str, usage: &serde_json::Value) -> Vec<LimitReset
                 }
                 let Some(id) = str_at(c, "id") else { continue };
                 let expires_at = str_at(c, "expires_at");
-                if is_expired(expires_at.as_deref()) {
+                if is_expired(expires_at.as_deref(), now) {
                     continue;
                 }
                 out.push(LimitResetEntry {
@@ -162,7 +177,7 @@ pub fn limit_resets(provider: &str, usage: &serde_json::Value) -> Vec<LimitReset
         }
         "anthropic" => {
             if let Some(ce) = block("cedar_ember") {
-                cedar_ember_entries(ce, &mut out);
+                cedar_ember_entries(ce, &mut out, now);
             }
             if let Some(jt) = block("juniper_tide") {
                 out.push(juniper_tide_entry(jt));
@@ -413,35 +428,51 @@ pub async fn limit_reset(
     let Some(provider) = provider else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
-    let Some(acct) = gateway::reload_account(&state, id).await else {
+    let out = redeem(&state, id, &provider, req.credit_id, Some(ctx.user_id)).await?;
+    Ok(Json(out))
+}
+
+/// Claim a reset on provider row `id`, audit it, and refresh the cached usage
+/// when the claim may have moved a window.
+///
+/// `requested_by` is `None` for a claim the server made on its own policy.
+/// Shared by the button and the auto-redeem sweep so both spend a credit the
+/// same way.
+pub async fn redeem(
+    state: &AppState,
+    id: Uuid,
+    provider: &str,
+    credit_id: Option<String>,
+    requested_by: Option<Uuid>,
+) -> Result<LimitResetResponse, AppError> {
+    let Some(acct) = gateway::reload_account(state, id).await else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
-    let access_token = gateway::current_access_token(&state, &acct)
+    let access_token = gateway::current_access_token(state, &acct)
         .await
         .map_err(|s| AppError::new(s, "could not obtain an access token for this account"))?;
 
-    let out = match provider.as_str() {
-        "openai" => claim_codex(&state, &acct, &access_token, req.credit_id).await,
-        "anthropic" => claim_claude(&state, &acct, &access_token, req.credit_id).await,
+    let out = match provider {
+        "openai" => claim_codex(state, &acct, &access_token, credit_id).await,
+        "anthropic" => claim_claude(state, &acct, &access_token, credit_id).await,
         _ => {
             return Err(AppError::new(StatusCode::BAD_REQUEST, "this provider has no limit reset"));
         }
     };
-    record(&state, id, &out, ctx.user_id).await;
+    record(state, id, &out, requested_by).await;
     if invalidates_usage(&out.outcome) {
         state.account_usage_cache.remove(&id);
         // Net-zero upstream: the eviction above already forced the next reader
         // to fetch; doing it here just leaves the cache warm and pushes once.
-        if let Ok((p, usage)) = crate::routes::gateway::fetch_usage_with_provider(&state, id).await
-        {
-            crate::routes::gateway::record_usage_samples(&state, id, usage.as_ref());
-            crate::routes::accounts::store_and_broadcast_usage(&state, id, p, usage).await;
+        if let Ok((p, usage)) = crate::routes::gateway::fetch_usage_with_provider(state, id).await {
+            crate::routes::gateway::record_usage_samples(state, id, usage.as_ref());
+            crate::routes::accounts::store_and_broadcast_usage(state, id, p, usage).await;
         }
     }
-    Ok(Json(LimitResetResponse { account_id: id, provider, ..out }))
+    Ok(LimitResetResponse { account_id: id, provider: provider.to_owned(), ..out })
 }
 
-async fn record(state: &AppState, id: Uuid, out: &LimitResetResponse, requested_by: Uuid) {
+async fn record(state: &AppState, id: Uuid, out: &LimitResetResponse, requested_by: Option<Uuid>) {
     if let Err(e) = sqlx::query(
         "INSERT INTO account_limit_resets \
              (provider_id, idempotency_key, credit_id, outcome, requested_by) \

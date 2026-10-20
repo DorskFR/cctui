@@ -185,6 +185,18 @@ pub trait AdapterFactory: Send + Sync {
     fn interrupts(&self, _config: &serde_json::Value) -> bool {
         false
     }
+
+    /// The binary this adapter launches under `config`, and the config key
+    /// that overrides it. `None` opts out of the binary probe.
+    fn binary(&self, _config: &serde_json::Value) -> Option<BinarySpec> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinarySpec {
+    pub bin: String,
+    pub config_key: &'static str,
 }
 
 /// How a [`SessionDriver`] answered a command.
@@ -293,6 +305,17 @@ pub trait SessionDriver: Send {
         unsupported("permission_response")
     }
 
+    /// Native harnesses only know allow/deny, so the agent's option id is dropped.
+    async fn permission_answer(
+        &mut self,
+        local_id: String,
+        request_id: String,
+        allow: bool,
+        _option_id: Option<String>,
+    ) -> CommandOutcome {
+        self.permission_response(local_id, request_id, allow).await
+    }
+
     async fn rename(&mut self, _local_id: String, _name: String) -> CommandOutcome {
         unsupported("rename")
     }
@@ -367,8 +390,8 @@ pub async fn dispatch_command<D: SessionDriver + ?Sized>(
         AdapterCommand::Resume { local_id, working_dir, env } => {
             driver.resume(local_id, working_dir, env).await
         }
-        AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-            driver.permission_response(local_id, request_id, allow).await
+        AdapterCommand::PermissionResponse { local_id, request_id, allow, option_id } => {
+            driver.permission_answer(local_id, request_id, allow, option_id).await
         }
         AdapterCommand::Rename { local_id, name } => driver.rename(local_id, name).await,
         AdapterCommand::Remove { local_id, command_id, initiator } => {

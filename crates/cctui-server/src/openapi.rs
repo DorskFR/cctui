@@ -67,6 +67,7 @@ fn group_of(path: &str) -> &'static str {
         "admin" | "users" => "admin",
         "machines" | "manifest" | "daemon" | "enroll" | "deenroll" => "machines",
         "permissions" => "permissions",
+        "cctuiverse" => "cctuiverse",
         _ => "other",
     }
 }

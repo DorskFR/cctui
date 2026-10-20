@@ -5,6 +5,7 @@
 	import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 	import { get as idbGet, set as idbSet, del as idbDel } from 'idb-keyval';
 	import { qk } from '$lib/queries';
+	import { shouldPersistQuery } from '$lib/queries/persist';
 	import { attachmentStore } from '$lib/attachmentStore';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { page, updated } from '$app/state';
@@ -94,7 +95,6 @@
 
 	// Persist the heavyweight caches to IndexedDB so a reload paints from disk
 	// and revalidates as a delta/304 instead of re-downloading everything.
-	const PERSISTED = new Set(['sessions', 'conversation', 'labels']);
 	const persister = createAsyncStoragePersister({
 		storage: {
 			getItem: (k: string) => idbGet<string>(k).then((v) => v ?? null),
@@ -106,10 +106,7 @@
 	const persistOptions = {
 		persister,
 		maxAge: 24 * 60 * 60 * 1000,
-		dehydrateOptions: {
-			shouldDehydrateQuery: (q: { queryKey: readonly unknown[]; state: { status: string } }) =>
-				q.state.status === 'success' && PERSISTED.has(q.queryKey[0] as string)
-		}
+		dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery }
 	};
 
 	// Restore-time reconciliation: drop persisted conversations, and IndexedDB
@@ -196,6 +193,8 @@
 					onspawned={() => void queryClient.invalidateQueries({ queryKey: qk.sessionsAll })}
 				/>
 			{/if}
+		{:else if page.route.id === '/cctuiverse/join'}
+			<main class="content">{@render children?.()}</main>
 		{:else if !auth.checking}
 			<Login />
 		{/if}

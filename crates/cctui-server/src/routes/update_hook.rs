@@ -216,6 +216,38 @@ pub async fn report(
         return Ok(StatusCode::NO_CONTENT);
     }
     tracing::info!(%run_id, %machine, phase = body.phase.as_str(), detail = %body.detail, "update hook progress");
+    if body.phase.is_terminal() {
+        let versions: Option<(String, String)> =
+            sqlx::query_as("SELECT from_version, version FROM self_update_runs WHERE id = $1")
+                .bind(run_id)
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten();
+        let (from_version, to_version) = versions.unzip();
+        let severity = if body.phase.is_success() {
+            crate::events::Severity::Info
+        } else {
+            crate::events::Severity::Error
+        };
+        crate::events::record(
+            &state,
+            crate::events::Event::new(
+                crate::events::kind::MACHINE_UPDATED,
+                crate::events::Actor::Daemon,
+            )
+            .severity(severity)
+            .machine(machine)
+            .detail(serde_json::json!({
+                "phase": body.phase.as_str(),
+                "run_id": run_id,
+                "from_version": from_version,
+                "to_version": to_version,
+                "exit_code": body.exit_code,
+                "detail": body.detail,
+            })),
+        );
+    }
     Ok(StatusCode::ACCEPTED)
 }
 

@@ -44,7 +44,7 @@ file or the proxy policy.
 
 | Method | Path          | Purpose                                                            |
 | ------ | ------------- | ------------------------------------------------------------------ |
-| POST   | `/check`      | `PreToolUse` hook payload → allow/deny decision.                   |
+| POST   | `/check`      | Pre-tool payload → allow/deny verdict in the caller's dialect.     |
 | POST   | `/transition` | Request a step transition. Body: `{"step": N}` or `{"step":"exit"}`. |
 | GET    | `/state`      | Current step number, title, and allowed/disallowed strings.        |
 | POST   | `/state`      | `SessionStart`/compact hook — returns context text for re-injection. |
@@ -56,7 +56,19 @@ file or the proxy policy.
 { "tool_name": "Bash", "tool_input": { "command": "git push origin main" } }
 ```
 
-`/check` response (Claude Code hook shape):
+`/check` response. The verdict is rendered in the dialect named by
+`?dialect=` or the `X-Guard-Dialect` header (query wins). Without either it is
+`claude`, so existing hook scripts keep receiving the shape they were written
+against. An unknown name falls back the same way. Both fail-closed paths (an
+unreadable body, a panicked check) answer with a deny in the same dialect.
+
+| Dialect    | allow                                                 | deny                                                                 |
+| ---------- | ----------------------------------------------------- | -------------------------------------------------------------------- |
+| `claude`   | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}` | same with `"deny"` and `permissionDecisionReason`          |
+| `native`   | `{"decision":"allow"}`                                | `{"decision":"deny","reason":"…"}`                                   |
+| `codex`    | `{"decision":"allow"}`                                | `{"decision":"block","reason":"…"}`                                  |
+| `opencode` | `{"allow":true}`                                      | `{"allow":false,"reason":"…"}`                                       |
+| `acp`      | `{"outcome":{"outcome":"selected","optionId":"allow_once"}}` | `optionId: "reject_once"` plus `_meta.reason`                 |
 
 ```json
 {

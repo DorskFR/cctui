@@ -34,6 +34,34 @@ export const SPAWN_MEMORY_CAP = 50;
 // \u0000 in strings.
 const SEP = '\u001f';
 
+// The account picker's sentinels (NO_ACCOUNT, POOL_PREFIX) open with NUL, which
+// JSONB rejects too: a single pool or no-account spawn made every settings PUT
+// fail, so the memory silently kept the last spawn on a named account. The
+// leading NUL is stored as SEP and restored on recall.
+const NUL = '\u0000';
+
+/** The account value as the settings blob can hold it. An entry written
+ *  before `account` existed carries none, and is passed through. */
+export function storedAccount(account: string): string {
+	return account?.startsWith(NUL) ? SEP + account.slice(1) : account;
+}
+
+/** The picker value a stored account stands for. */
+export function recalledAccount(stored: string): string {
+	return stored?.startsWith(SEP) ? NUL + stored.slice(1) : stored;
+}
+
+/** The map with every account in its storable form: heals a local mirror that
+ *  recorded a raw sentinel before it was encoded, which would otherwise keep
+ *  failing every settings PUT. */
+export function storableSpawnMemory(map: SpawnMemoryMap): SpawnMemoryMap {
+	const out: SpawnMemoryMap = {};
+	for (const [k, e] of Object.entries(map)) {
+		out[k] = { ...e, account: storedAccount(e.account) };
+	}
+	return out;
+}
+
 export function machineMemoryKey(machineId: string, workingDir: string): string {
 	return `m${SEP}${machineId}${SEP}${normalizeDir(workingDir.trim())}`;
 }
@@ -186,7 +214,7 @@ export function applyMemory(
 	for (const f of fields) {
 		const reference = lastApplied?.[f] ?? initial[f];
 		if (current[f] !== reference) continue;
-		let v = entry[f];
+		let v = f === 'account' ? recalledAccount(entry[f]) : entry[f];
 		if (f === 'name' && v && v === lastGlobalName) v = nextSessionName(v);
 		if (v !== current[f]) patch[f] = v;
 	}
@@ -212,7 +240,7 @@ export function entryFromForm(
 		model_account: form.model_account,
 		effort_claude: form.effort_claude,
 		effort_codex: form.effort_codex,
-		account: form.account,
+		account: storedAccount(form.account),
 		account_provider: form.account_provider,
 		permission_mode: form.permission_mode,
 		name: form.name.trim(),

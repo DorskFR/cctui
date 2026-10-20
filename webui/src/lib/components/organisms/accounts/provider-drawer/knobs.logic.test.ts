@@ -43,6 +43,7 @@ const catalog = (over: Partial<SettingsCatalogResponse>): SettingsCatalogRespons
 	keys: [],
 	env: [],
 	preset: { id: 'quiet', name: 'Quiet', description: '', settings: {}, env: {} },
+	blocked: [],
 	...over
 });
 

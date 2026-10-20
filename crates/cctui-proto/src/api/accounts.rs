@@ -422,8 +422,8 @@ pub struct UpdateProvider {
 /// The settings catalog as served to the webui account-settings editor.
 ///
 /// Everything here comes from the embedded catalog — the webui carries NO mirror of the key list,
-/// so it cannot drift from the server that validates the writes. `managed`/`system` keys are
-/// omitted entirely.
+/// so it cannot drift from the server that validates the writes. `managed`/`system` keys appear
+/// only by name, in `blocked`.
 #[derive(serde::Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SettingsCatalogResponse {
@@ -436,6 +436,9 @@ pub struct SettingsCatalogResponse {
     /// The "Quiet defaults" preset, with its `settings` filtered to exposable
     /// keys (the server-applied MANAGED keys are not offerable per-account).
     pub preset: crate::api::settings_catalog::Preset,
+    /// Catalogued `managed`/`system` key names: rejected per-account. Any other
+    /// key the catalog lacks is accepted as out of schema.
+    pub blocked: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]

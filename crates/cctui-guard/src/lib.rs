@@ -8,6 +8,7 @@
 //! See the crate README for the canonical prompt-step and guard-rules format.
 
 pub mod decision_log;
+pub mod dialect;
 pub mod engine;
 pub mod ir;
 pub mod lint;
@@ -17,7 +18,8 @@ pub mod rules;
 pub mod server;
 
 pub use decision_log::{Decision, DecisionLog, Kind, Source, build_report};
-pub use engine::WorkflowEngine;
+pub use dialect::{DIALECT_HEADER, Dialect};
+pub use engine::{Verdict, WorkflowEngine};
 pub use ir::{Rule, Transition, Version, Workflow, WorkflowStep, json_schema};
 pub use lint::{Diagnostic, LintReport, ResolvedStep, Severity, lint};
 pub use parser::{

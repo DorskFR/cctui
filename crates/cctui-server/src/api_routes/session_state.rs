@@ -1,4 +1,4 @@
-//! Per-session brief, fork, archive, pin, keepalive and policy routes.
+//! Per-session brief, thread, fork, archive, pin, keepalive and policy routes.
 
 use super::{sess_read, sess_write};
 use crate::authz::{Authn, Routes};
@@ -12,6 +12,14 @@ pub(super) fn register(r: Routes) -> Routes {
         "/sessions/{id}/brief",
         "Render a session's user/assistant transcript as a capped markdown brief.",
         get(crate::brief::session_brief),
+        Authn::Bearer,
+        sess_read(),
+    )
+    .add(
+        &[Method::GET],
+        "/sessions/{id}/thread",
+        "List the follow-up thread a session belongs to, oldest first.",
+        get(crate::followup::session_thread),
         Authn::Bearer,
         sess_read(),
     )

@@ -211,6 +211,40 @@ pub async fn machine_user(
     Ok(ctx.user_id)
 }
 
+/// Same resolution the webui spawn runs, keyed on the child's own launch key,
+/// so a profile's context set means the same thing from the tool as from the
+/// browser.
+async fn remember_child_context(
+    state: &AppState,
+    parent: &Parent,
+    child_key: &str,
+    adapter: &str,
+    cwd: Option<&str>,
+    profile: Option<&str>,
+) {
+    use crate::routes::context::{SpawnScope, StoredScope};
+    let scope = StoredScope {
+        user_id: parent.user_id,
+        coords: SpawnScope {
+            machine_id: Some(parent.machine_uuid.to_string()),
+            working_dir: cwd.map(str::to_owned),
+            label_ids: Vec::new(),
+            adapter: Some(adapter.to_owned()),
+        },
+        dispatched: crate::routes::context::stored_scope(&state.pool, &parent.session_id)
+            .await
+            .is_some_and(|s| s.dispatched),
+    };
+    let context = crate::routes::context::resolve_for_child(
+        &state.pool,
+        parent.user_id,
+        profile,
+        &scope.coords,
+    )
+    .await;
+    crate::routes::context::remember_intent(&state.pool, child_key, &context, &scope).await;
+}
+
 async fn load_parent(state: &AppState, session_id: &str, caller: Uuid) -> Result<Parent, AppError> {
     type ParentRow = (Option<Uuid>, Option<String>, Option<Uuid>, Option<String>);
     let row: Option<ParentRow> = sqlx::query_as(
@@ -608,7 +642,13 @@ pub async fn spawn_child(
     // launches, and a missing row there would hand it the unclamped default.
     let (authorized, child_cap) =
         reserve_child(&state.pool, &session_id, cap.as_ref(), &req, usage, &child_key).await?;
-    let family = crate::routes::gateway::Family::from_adapter(&authorized.adapter);
+    let family = match crate::routes::gateway::Family::from_adapter(&authorized.adapter) {
+        Ok(f) => f,
+        Err(e) => {
+            release_child(&state.pool, &child_key).await;
+            return Err(deny(StatusCode::BAD_REQUEST, e.to_string()));
+        }
+    };
     let (mut env, model) =
         match child_account_env(&state, &parent, family, req.model.as_deref(), &child_key).await {
             Ok(v) => v,
@@ -632,18 +672,15 @@ pub async fn spawn_child(
     };
     let child_cwd =
         req.cwd.clone().filter(|c| !c.trim().is_empty()).or_else(|| parent.working_dir.clone());
-    // Same resolution the webui spawn runs, keyed on the child's own launch
-    // key, so a profile's context set means the same thing from the tool as
-    // from the browser.
-    let context = crate::routes::context::resolve_for_child(
-        &state.pool,
-        parent.user_id,
-        req.agent_profile.as_deref(),
-        Some(&parent.machine_uuid.to_string()),
+    remember_child_context(
+        &state,
+        &parent,
+        &child_key,
+        &authorized.adapter,
         child_cwd.as_deref(),
+        req.agent_profile.as_deref(),
     )
     .await;
-    crate::routes::context::remember_intent(&state.pool, &child_key, &context).await;
     let spec = SessionSpec {
         adapter_id: AdapterId::new(&authorized.adapter),
         working_dir: child_cwd,
@@ -821,6 +858,7 @@ async fn archive_descendant(
         target,
         false,
         cctui_proto::adapter::RemoveInitiator::Automatic,
+        crate::events::Actor::Agent(session_id.to_owned()),
     )
     .await?;
     if outcome == crate::routes::sessions::ArchiveOutcome::SkippedPinned {
@@ -1007,7 +1045,7 @@ mod tests {
             assert_eq!(
                 ok,
                 Authorized {
-                    adapter: (*adapter).to_owned(),
+                    adapter: adapter.to_owned(),
                     budget_usd: None,
                     permission_mode: PermissionMode::Ask,
                 }

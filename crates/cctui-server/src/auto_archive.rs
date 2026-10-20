@@ -161,6 +161,7 @@ pub async fn sweep(state: &AppState) {
             &id,
             false,
             cctui_proto::adapter::RemoveInitiator::Automatic,
+            crate::events::Actor::Reaper,
         )
         .await
         {

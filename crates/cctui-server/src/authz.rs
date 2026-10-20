@@ -434,6 +434,15 @@ pub async fn authorize_session_read(
     authorize_resource(ResourceKind::Session, ctx, Action::Read, Some(id), pool).await
 }
 
+/// In-handler session-write gate for routes that name the session in the body.
+pub async fn authorize_session_write(
+    ctx: &AuthContext,
+    id: &str,
+    pool: &PgPool,
+) -> Result<(), StatusCode> {
+    authorize_resource(ResourceKind::Session, ctx, Action::Write, Some(id), pool).await
+}
+
 /// In-handler machine-read gate, the same decision the `Resource(Machine, Read)`
 /// guard makes, for routes that only learn the machine after a lookup.
 pub async fn authorize_machine_read(

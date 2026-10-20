@@ -2,6 +2,7 @@ import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
+import type { MintServiceTokenRequest } from "@bindings/MintServiceTokenRequest";
 import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
 import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
 import { api } from "../api";
@@ -98,6 +99,32 @@ export function useToolPolicyActions() {
       const r = await endpoints.putToolPolicy(accountId, body);
       qc.setQueryData(["tool-policy", accountId], r);
       return r;
+    },
+  };
+}
+
+/** Live service tokens of an account: owner-minted, non-expiring gateway
+ *  credentials for non-agent services. The secret is only ever returned by mint. */
+export const useServiceTokens = (accountId: () => string) =>
+  createQuery(() => ({
+    queryKey: qk.serviceTokens(accountId()),
+    queryFn: () => endpoints.serviceTokens(accountId()),
+    enabled: !!accountId(),
+  }));
+
+export function useServiceTokenActions() {
+  const qc = useQueryClient();
+  const invalidate = (accountId: string) =>
+    qc.invalidateQueries({ queryKey: qk.serviceTokens(accountId) });
+  return {
+    mint: async (accountId: string, body: MintServiceTokenRequest) => {
+      const r = await endpoints.mintServiceToken(accountId, body);
+      invalidate(accountId);
+      return r;
+    },
+    revoke: async (accountId: string, tokenId: string) => {
+      await endpoints.revokeServiceToken(accountId, tokenId);
+      invalidate(accountId);
     },
   };
 }

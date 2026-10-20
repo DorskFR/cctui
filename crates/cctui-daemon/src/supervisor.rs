@@ -104,6 +104,25 @@ async fn send_bounded(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
     }
 }
 
+/// Queue a correlated reply without awaiting the channel: the transport loop
+/// is its only reader, so blocking here on a full channel would deadlock it.
+fn send_reply(frame_up_tx: &mpsc::Sender<DaemonFrameUp>, up: DaemonFrameUp) {
+    match frame_up_tx.try_send(up) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(up)) => {
+            let tx = frame_up_tx.clone();
+            tokio::spawn(async move {
+                if tx.send(up).await.is_err() {
+                    tracing::warn!("frame_up channel closed; dropping a correlated reply");
+                }
+            });
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            tracing::warn!("frame_up channel closed; dropping a correlated reply");
+        }
+    }
+}
+
 /// Same, on the shorter shutdown budget.
 async fn send_shutdown(sink: &mut WsSink, msg: Message) -> anyhow::Result<()> {
     match tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, sink.send(msg)).await {
@@ -145,6 +164,13 @@ impl EventBatch {
         if self.bytes >= BATCH_MAX_BYTES {
             self.deadline = Some(tokio::time::Instant::now());
         }
+    }
+
+    fn push_event(&mut self, adapter_id: String, event: AdapterEvent) -> serde_json::Result<()> {
+        if let Some(frame) = encode_event(adapter_id, event, harness_models_supported())? {
+            self.push(frame);
+        }
+        Ok(())
     }
 
     fn take(&mut self) -> Vec<Vec<u8>> {
@@ -286,6 +312,11 @@ impl Supervisor {
             });
         }
         crate::configsweep::spawn_loop(shutdown.clone());
+        crate::toolblock_followup::start(
+            self.client.clone(),
+            self.machine_key.clone(),
+            shutdown.clone(),
+        );
 
         // Adapters live for the life of the process, not of a connection: their
         // tokens own live session subprocesses (`opencode serve`, `codex
@@ -401,6 +432,12 @@ impl Supervisor {
                             }
                         }
                     }
+                    // Ahead of the chunk branch, or a server round-trip times out
+                    // behind a whole transfer.
+                    Some(frame) = frame_up_rx.recv() => {
+                        let payload = serde_json::to_string(&frame)?;
+                        send_bounded(&mut sink, Message::Text(payload.into())).await?;
+                    }
                     () = std::future::ready(()), if active.as_ref().is_some_and(PendingTransfer::has_unsent) => {
                         if let Some(t) = active.as_mut() {
                             let (frame, retransmit) = t.next_frame();
@@ -410,10 +447,6 @@ impl Supervisor {
                             self.counters.add(subsystem, payload.len() as u64);
                             send_bounded(&mut sink, Message::Text(payload.into())).await?;
                         }
-                    }
-                    Some(frame) = frame_up_rx.recv() => {
-                        let payload = serde_json::to_string(&frame)?;
-                        send_bounded(&mut sink, Message::Text(payload.into())).await?;
                     }
                     // The flush and the keepalive come before new events: under
                     // `biased`, a steady event stream would otherwise starve
@@ -439,11 +472,7 @@ impl Supervisor {
                             local_id = event_local_id(&event),
                             "queued event",
                         );
-                        // A `CctuiAgent` caller is parked on its child's
-                        // completion; this is the one point every adapter's
-                        // events pass through.
-                        crate::childwatch::global().observe(&event);
-                        crate::neighbours::global().observe(adapter_id.as_str(), &event);
+                        observe_event(&adapter_id, &event);
                         // Must stay after `observe`: the turn-tail signal needs
                         // the event even though it has nothing to persist.
                         if is_textless_thinking(&event) {
@@ -451,7 +480,7 @@ impl Supervisor {
                         }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
-                        batch.push(serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event })?);
+                        batch.push_event(adapter_id, event)?;
                     }
                 }
             }
@@ -666,15 +695,27 @@ impl Supervisor {
                 // transport `select!`, alongside the keepalive ping and the
                 // socket read. Awaiting a full adapter channel here stalls
                 // both, and the server evicts the daemon as dead.
-                #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
-                let outcome = match running.get(&adapter_id) {
-                    None => Err(("is not running on this machine", command.command_id())),
-                    Some(running) => running.route_command(*command),
-                };
-                let error = outcome.err().and_then(|(reason, command_id)| {
-                    tracing::warn!(%adapter_id, reason, "rejecting command");
-                    command_id.map(|id| (id, format!("adapter {adapter_id} {reason}")))
-                });
+                let refusal = matches!(command.as_ref(), AdapterCommand::Spawn { .. })
+                    .then(|| crate::adapter_probe::spawn_refusal(&adapter_id))
+                    .flatten();
+                let command_id = command.command_id();
+                let error = refusal.map_or_else(
+                    || {
+                        #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
+                        let outcome = match running.get(&adapter_id) {
+                            None => Err(("is not running on this machine", command_id)),
+                            Some(running) => running.route_command(*command),
+                        };
+                        outcome.err().and_then(|(reason, command_id)| {
+                            tracing::warn!(%adapter_id, reason, "rejecting command");
+                            command_id.map(|id| (id, format!("adapter {adapter_id} {reason}")))
+                        })
+                    },
+                    |refusal| {
+                        tracing::warn!(%adapter_id, %refusal, "refusing spawn");
+                        command_id.map(|id| (id, refusal))
+                    },
+                );
                 // A silent drop leaves the server-side waiter hanging, so a full
                 // event channel falls through to the WS lane rather than giving
                 // up. Neither path may block: this runs in the transport loop.
@@ -733,9 +774,7 @@ impl Supervisor {
             }
             DaemonFrameDown::StageFiles { request_id, adapter_id, local_id, uploads } => {
                 let up = stage_files_result(request_id, &adapter_id, &local_id, &uploads);
-                if frame_up_tx.send(up).await.is_err() {
-                    tracing::warn!("frame_up channel closed; dropping StageFilesResult");
-                }
+                send_reply(frame_up_tx, up);
             }
             DaemonFrameDown::ListDirs { request_id, path } => {
                 let up = match crate::listdirs::list_dirs(&path) {
@@ -749,9 +788,7 @@ impl Supervisor {
                         error: Some(err.to_string()),
                     },
                 };
-                if frame_up_tx.send(up).await.is_err() {
-                    tracing::warn!("frame_up channel closed; dropping ListDirsResult");
-                }
+                send_reply(frame_up_tx, up);
             }
             DaemonFrameDown::GitInfo { request_id, path, include_dirty } => {
                 let roots = crate::git::default_roots();
@@ -769,9 +806,7 @@ impl Supervisor {
                         error: Some(err.to_string()),
                     },
                 };
-                if frame_up_tx.send(up).await.is_err() {
-                    tracing::warn!("frame_up channel closed; dropping GitInfoResult");
-                }
+                send_reply(frame_up_tx, up);
             }
             DaemonFrameDown::ReadFile { request_id, path, max_bytes, cwd } => {
                 self.spawn_read_file(request_id, path, max_bytes, cwd, frame_up_tx.clone());
@@ -833,6 +868,19 @@ impl Supervisor {
         });
     }
 
+    fn binary_specs(
+        &self,
+        want: &HashMap<String, DaemonAdapterConfig>,
+    ) -> std::collections::BTreeMap<String, crate::adapter_runtime::BinarySpec> {
+        want.iter()
+            .filter(|(_, cfg)| cfg.enabled)
+            .filter_map(|(id, cfg)| {
+                let factory = self.factories.iter().find(|f| f.id() == id)?;
+                Some((id.clone(), factory.binary(&cfg.config)?))
+            })
+            .collect()
+    }
+
     #[allow(clippy::cognitive_complexity)]
     fn reconcile(
         &self,
@@ -843,6 +891,7 @@ impl Supervisor {
     ) {
         let mut want: HashMap<String, DaemonAdapterConfig> =
             adapters.into_iter().map(|a| (a.adapter_id.to_string(), a)).collect();
+        crate::adapter_probe::watch(self.binary_specs(&want));
 
         // Allow-list roots for agent-posted image markers, resolved
         // once per reconcile and shared by every adapter's event pump below.
@@ -943,6 +992,7 @@ impl Supervisor {
                 channels.commands_tx.clone(),
                 token.clone(),
             );
+            crate::toolblock_followup::register_adapter(&id, channels.commands_tx.clone());
             running.insert(
                 id.clone(),
                 AdapterRunning {
@@ -1229,7 +1279,9 @@ fn stage_files_result(
     local_id: &str,
     uploads: &[cctui_proto::adapter::BootstrapFile],
 ) -> DaemonFrameUp {
-    let result = if matches!(adapter_id, "claude-code" | "codex" | "opencode") {
+    let supported = cctui_proto::adapter::harness_for_adapter(adapter_id)
+        .is_some_and(|h| h.capabilities.mid_chat_files);
+    let result = if supported {
         crate::adapters::claude_code::stage_mid_chat_files(local_id, uploads)
     } else {
         Err(anyhow::anyhow!("adapter {adapter_id} does not support mid-chat file staging"))
@@ -1279,6 +1331,49 @@ fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
 /// Claude Code requests `thinking.display: "omitted"`, so the API returns
 /// thinking blocks as a bare replay signature. They render as nothing and cost
 /// a `stream_events` row each.
+fn harness_models_supported() -> bool {
+    crate::servercaps::server_supports(cctui_proto::capability::HARNESS_MODELS)
+}
+
+/// One event as its wire frame, or `None` when this server must not see it.
+///
+/// A server that does not advertise `harness_models` would fail the whole
+/// batch on the kind, so codex's catalog goes out under the `codex_models`
+/// name it knew and any other harness's catalog is held back entirely.
+fn encode_event(
+    adapter_id: String,
+    event: AdapterEvent,
+    harness_models: bool,
+) -> serde_json::Result<Option<Vec<u8>>> {
+    let (harness, catalog) = match event {
+        AdapterEvent::HarnessModels { adapter_id: harness, catalog } if !harness_models => {
+            (harness, catalog)
+        }
+        event => return serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event }).map(Some),
+    };
+    if harness != "codex" {
+        tracing::debug!(%harness, "model catalog held back: the server predates harness_models");
+        return Ok(None);
+    }
+    let mut frame = serde_json::to_value(DaemonFrameUp::Event {
+        adapter_id,
+        event: AdapterEvent::HarnessModels { adapter_id: harness, catalog },
+    })?;
+    if let Some(event) = frame.get_mut("event").and_then(serde_json::Value::as_object_mut) {
+        event.insert("kind".to_owned(), serde_json::Value::String("codex_models".to_owned()));
+        event.remove("adapter_id");
+    }
+    serde_json::to_vec(&frame).map(Some)
+}
+
+/// The one point every adapter's events pass through, so a `CctuiAgent`
+/// caller parked on its child's completion is fed here.
+fn observe_event(adapter_id: &str, event: &AdapterEvent) {
+    crate::childwatch::global().observe(event);
+    crate::neighbours::global().observe(adapter_id, event);
+    crate::toolblock_followup::observe(adapter_id, event);
+}
+
 fn is_textless_thinking(event: &AdapterEvent) -> bool {
     let AdapterEvent::Message { payload, .. } = event else { return false };
     if payload.get("role").and_then(serde_json::Value::as_str) != Some("assistant_thinking") {
@@ -1362,7 +1457,8 @@ async fn drain_for_shutdown(
         match tokio::time::timeout(step, event_rx.recv()).await {
             Ok(Some((adapter_id, event))) => {
                 let event = scrub_event(event, scrub);
-                if let Ok(frame) = serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event }) {
+                if let Ok(Some(frame)) = encode_event(adapter_id, event, harness_models_supported())
+                {
                     frames.push(frame);
                 }
             }
@@ -1520,11 +1616,79 @@ fn parse_frame(msg: Message) -> Option<DaemonFrameDown> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    fn sol_catalog() -> cctui_proto::codex_catalog::CodexModelCatalog {
+        cctui_proto::codex_catalog::CodexModelCatalog {
+            models: vec![cctui_proto::codex_catalog::CodexModel {
+                id: "gpt-5.6-sol".into(),
+                model: "gpt-5.6-sol".into(),
+                display_name: "GPT-5.6 Sol".into(),
+                description: String::new(),
+                hidden: false,
+                is_default: true,
+                supported_efforts: vec![],
+                default_effort: String::new(),
+                input_modalities: vec![],
+                upgrade: None,
+                minimal_client_version: None,
+            }],
+            client_version: None,
+        }
+    }
+
+    #[test]
+    fn a_capable_server_gets_harness_models_as_is() {
+        let frame = super::encode_event(
+            "gemini".into(),
+            AdapterEvent::HarnessModels { adapter_id: "gemini".into(), catalog: sol_catalog() },
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(v["event"]["kind"], "harness_models");
+        assert_eq!(v["event"]["adapter_id"], "gemini");
+    }
+
+    #[test]
+    fn an_older_server_gets_codex_models_under_its_old_name_and_nothing_else() {
+        let frame = super::encode_event(
+            "codex".into(),
+            AdapterEvent::HarnessModels { adapter_id: "codex".into(), catalog: sol_catalog() },
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(v["event"]["kind"], "codex_models");
+        assert!(v["event"].get("adapter_id").is_none(), "{v}");
+        assert_eq!(v["event"]["catalog"]["models"][0]["id"], "gpt-5.6-sol");
+        let back: DaemonFrameUp = serde_json::from_slice(&frame).unwrap();
+        assert!(matches!(
+            back,
+            DaemonFrameUp::Event { event: AdapterEvent::HarnessModels { adapter_id, .. }, .. }
+                if adapter_id == "codex"
+        ));
+        let held = super::encode_event(
+            "gemini".into(),
+            AdapterEvent::HarnessModels { adapter_id: "gemini".into(), catalog: sol_catalog() },
+            false,
+        )
+        .unwrap();
+        assert!(held.is_none());
+        let other = super::encode_event(
+            "gemini".into(),
+            AdapterEvent::TurnEnd { local_id: "s".into(), ts: None },
+            false,
+        )
+        .unwrap();
+        assert!(other.is_some(), "only the catalog is gated here");
+    }
+
     use cctui_proto::api::DaemonAdapterConfig;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use cctui_proto::adapter::AdapterCommand;
+    use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
     use cctui_proto::chunk::{Accept, Reassembler};
     use cctui_proto::ws::DaemonFrameUp;
 
@@ -2955,7 +3119,7 @@ mod tests {
             name: "note.txt".into(),
             content_b64: base64::engine::general_purpose::STANDARD.encode(b"hi"),
         };
-        for adapter in ["claude-code", "codex", "opencode"] {
+        for adapter in cctui_proto::adapter::KNOWN_ADAPTERS {
             let local_id = format!("test-{}", uuid::Uuid::new_v4());
             let up = super::stage_files_result(
                 uuid::Uuid::new_v4(),
@@ -2971,5 +3135,27 @@ mod tests {
         let up = super::stage_files_result(uuid::Uuid::new_v4(), "gemini", "test-x", &[file]);
         let DaemonFrameUp::StageFilesResult { ok, .. } = up else { panic!() };
         assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn send_reply_on_a_full_channel_does_not_block_and_still_delivers() {
+        let (tx, mut rx) = mpsc::channel::<DaemonFrameUp>(1);
+        let reply = |request_id| DaemonFrameUp::StageFilesResult {
+            request_id,
+            ok: true,
+            paths: Vec::new(),
+            error: None,
+        };
+        let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        super::send_reply(&tx, reply(first));
+        super::send_reply(&tx, reply(second));
+        for expected in [first, second] {
+            let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let DaemonFrameUp::StageFilesResult { request_id, .. } = got else { panic!() };
+            assert_eq!(request_id, expected);
+        }
     }
 }

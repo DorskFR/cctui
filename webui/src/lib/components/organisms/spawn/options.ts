@@ -5,6 +5,14 @@ import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { AccountProvider, OAuthAccount } from '$lib/queries';
 import type { SelectOption } from '@dorsk/tsumikit';
 import type { ModelOption } from '$lib/harnessModels';
+import {
+	harnessForProvider,
+	harnessLabel,
+	harnessPermissionModes,
+	harnessesForProviders,
+	pickableHarnesses
+} from '$lib/harnesses';
+import { HARNESSES } from '$lib/domainTables';
 import { m } from '$lib/paraglide/messages';
 
 export const modes: { v: PermissionMode; label: string; hint: string }[] = [
@@ -46,6 +54,12 @@ export const modes: { v: PermissionMode; label: string; hint: string }[] = [
 	}
 ];
 
+/** The permission-mode cards a harness can express, in picker order. */
+export const modesFor = (harness: string | null | undefined): typeof modes => {
+	const allowed = harnessPermissionModes(harness);
+	return modes.filter((md) => allowed.includes(md.v));
+};
+
 export { declaredModelOptions, withDeclaredModels } from '$lib/harnessModels';
 
 // Annotate native-family options with the per-account alias target
@@ -62,28 +76,22 @@ export const withAliasTargets = (
 		return target ? { ...m, label: `${m.label} (${target})` } : m;
 	});
 
-// The harness/adapter a provider credential runs: `fireworks` is its own
-// family and only OpenCode runs it; anything else in the openai family runs
-// Codex; everything else (anthropic / anthropic-compatible) runs Claude Code.
-// Mirrors the server's `Family::from_provider` + `Family::from_adapter`: a
-// fireworks key offered under Claude Code is refused at spawn with "has no
-// anthropic provider".
+// The harness a provider credential runs: the first harness-table row of the
+// provider's family. Mirrors the server's `Family::from_provider` +
+// `Family::from_adapter`: a fireworks key offered under Claude Code is refused
+// at spawn with "has no anthropic provider".
 export const adapterForProvider = (provider: string): Adapter =>
-	provider === 'fireworks' ? 'opencode' : provider.includes('openai') ? 'codex' : 'claude-code';
+	harnessForProvider(provider) ?? HARNESSES[0].id;
 
-export type Adapter = 'claude-code' | 'codex' | 'opencode';
-// Stable field order: the harness cards never reorder. OpenCode has no card in
-// the spawn form, so a fireworks-only account backs none of these.
-export const allAdapters: Adapter[] = ['claude-code', 'codex'];
-const knownAdapters: Adapter[] = [...allAdapters, 'opencode'];
+export type Adapter = string;
+// The harness cards in table order: every harness that runs by default.
+export const allAdapters: Adapter[] = pickableHarnesses().map((h) => h.id);
 
 // Provider-family union of an account identity: the harnesses its
 // credentials can run, in stable order. An account holding anthropic+openai
 // providers offers both; a single-provider account offers one.
-export const accountAdapters = (a: OAuthAccount): Adapter[] => {
-	const families = new Set(a.providers.map((p) => adapterForProvider(p.provider)));
-	return knownAdapters.filter((ad) => families.has(ad));
-};
+export const accountAdapters = (a: OAuthAccount): Adapter[] =>
+	harnessesForProviders(a.providers.map((p) => p.provider));
 
 // The provider credential backing a harness on this account, if any.
 export const providerForAdapter = (
@@ -96,7 +104,7 @@ export const providerForAdapter = (
 export const effectiveAdapterFor = (a: OAuthAccount | undefined, adapterId: string): string => {
 	if (!a) return adapterId;
 	const allowed = accountAdapters(a);
-	return allowed.includes(adapterId as Adapter) ? adapterId : (allowed[0] ?? adapterId);
+	return allowed.includes(adapterId) ? adapterId : (allowed[0] ?? adapterId);
 };
 
 // Whether the account can back this harness (has a provider in its family): a
@@ -104,7 +112,7 @@ export const effectiveAdapterFor = (a: OAuthAccount | undefined, adapterId: stri
 // explicit error instead of quietly submitting the account's own family. No
 // account = always valid (Default/no-account runs any harness).
 export const accountBacksAdapter = (a: OAuthAccount | undefined, adapter: string): boolean =>
-	!a || accountAdapters(a).includes(adapter as Adapter);
+	!a || accountAdapters(a).includes(adapter);
 
 // Sentinel account value for an explicit unbound "no account" spawn:
 // distinct from '' (Auto — let the server bind the single matching account) and
@@ -191,13 +199,7 @@ export function accountPickOptions(args: {
 export const isCompatibleProvider = (provider: string): boolean =>
 	provider.endsWith('-compatible');
 
-const ADAPTER_LABELS: Record<string, string> = {
-	'claude-code': 'Claude Code',
-	codex: 'Codex',
-	opencode: 'OpenCode'
-};
-
-export const adapterLabel = (adapter: string): string => ADAPTER_LABELS[adapter] ?? adapter;
+export const adapterLabel = (adapter: string): string => harnessLabel(adapter);
 
 // Context-pack form fields → the env vars the worker entrypoint reads. Keys are
 // fixed and match ENV_KEY_RE by construction.

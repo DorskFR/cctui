@@ -31,6 +31,16 @@ mutating SQL's `WHERE` clause and return `404` (not `403`) for a cross-user
 id — moving them onto the guard would change that client-visible
 semantics, so they are intentionally left inline.
 
+## cctuiverse
+
+The owner API under `/cctuiverse/*`, `/rooms/{id}/cctuiverse/*` and
+`/sessions/{id}/cctuiverse/*` refuses machine keys: `Human` on the first two
+families, and an explicit check in the handler on the session routes, which
+keep the session guard. Every handler also scopes the link, room or session to
+the caller, so an admin gets the same `404` as anyone else. The server-to-server
+routes under `/cctuiverse/v1` sit outside `/api/v1`: each request proves itself
+with the link's Ed25519 signature (see `docs/cctuiverse.md`).
+
 ## The full authn × authz model
 
 Two orthogonal, declarative axes are demanded per route:

@@ -1,3 +1,4 @@
+use cctui_proto::api::service_tokens::ServiceTokenRow;
 use sqlx::PgExecutor;
 
 /// Revoke every live token bound to a session. The `revoked_at IS NULL` guard
@@ -16,22 +17,89 @@ pub async fn revoke_by_session(
     Ok(())
 }
 
-/// Revoke every live token of every session the user owns, directly or
-/// through one of its machines.
+/// Revoke every live token minted for the user or bound to a session the user
+/// owns, directly or through one of its machines. Service tokens have no
+/// session row, so the `user_id` match is what cuts them.
 pub async fn revoke_by_user(
     exec: impl PgExecutor<'_>,
     user_id: uuid::Uuid,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE session_tokens SET revoked_at = now() \
-         WHERE revoked_at IS NULL AND session_id IN ( \
+         WHERE revoked_at IS NULL AND (user_id = $1 OR session_id IN ( \
            SELECT s.id FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-           WHERE COALESCE(s.user_id, m.user_id) = $1)",
+           WHERE COALESCE(s.user_id, m.user_id) = $1))",
     )
     .bind(user_id)
     .execute(exec)
     .await?;
     Ok(())
+}
+
+/// Mint a non-expiring service token on `provider_id` for `user_id`. Only the
+/// hash is stored; the plaintext is returned once. The synthetic session id
+/// keeps the per-session live index unique without a `sessions` row.
+pub async fn mint_service(
+    exec: impl PgExecutor<'_>,
+    user_id: uuid::Uuid,
+    provider_id: uuid::Uuid,
+    label: &str,
+) -> Result<(String, ServiceTokenRow), sqlx::Error> {
+    let token = format!("cctui_s_{}", crate::auth::mint_secret());
+    let row: ServiceTokenRow = sqlx::query_as(
+        "WITH t AS ( \
+           INSERT INTO session_tokens \
+               (token_hash, session_id, account_id, user_id, kind, label, expires_at) \
+           VALUES ($1, 'svc:' || gen_random_uuid()::text, $2, $3, 'service', $4, NULL) \
+           RETURNING id, label, account_id, created_at, last_used_at) \
+         SELECT t.id, t.label, t.account_id AS provider_id, ap.provider, t.created_at, \
+                t.last_used_at \
+           FROM t JOIN account_providers ap ON ap.id = t.account_id",
+    )
+    .bind(crate::auth::sha256_hex(&token))
+    .bind(provider_id)
+    .bind(user_id)
+    .bind(label)
+    .fetch_one(exec)
+    .await?;
+    Ok((token, row))
+}
+
+/// Live service tokens of every provider of `account_id`, oldest first.
+pub async fn list_service(
+    exec: impl PgExecutor<'_>,
+    account_id: uuid::Uuid,
+) -> Result<Vec<ServiceTokenRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT t.id, t.label, t.account_id AS provider_id, ap.provider, t.created_at, \
+                t.last_used_at \
+           FROM session_tokens t JOIN account_providers ap ON ap.id = t.account_id \
+          WHERE ap.account_id = $1 AND t.kind = 'service' AND t.revoked_at IS NULL \
+          ORDER BY t.created_at, t.id",
+    )
+    .bind(account_id)
+    .fetch_all(exec)
+    .await
+}
+
+/// Revoke one live service token of `account_id`. `false` when no live token
+/// of that account has this id.
+pub async fn revoke_service(
+    exec: impl PgExecutor<'_>,
+    account_id: uuid::Uuid,
+    token_id: uuid::Uuid,
+) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query(
+        "UPDATE session_tokens t SET revoked_at = now() \
+           FROM account_providers ap \
+          WHERE ap.id = t.account_id AND ap.account_id = $1 \
+            AND t.id = $2 AND t.kind = 'service' AND t.revoked_at IS NULL",
+    )
+    .bind(account_id)
+    .bind(token_id)
+    .execute(exec)
+    .await?;
+    Ok(done.rows_affected() > 0)
 }
 
 /// Move a session's token, any usage already metered and the spawn's bootstrap
@@ -428,5 +496,68 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(left, 1, "the live session keeps its token");
+    }
+
+    /// A service token is a plain `cctui_s_` credential with no expiry: it
+    /// lists on its account, resolves only by hash, and dies on revoke.
+    #[tokio::test]
+    async fn service_tokens_mint_list_and_revoke() {
+        let Some(pool) = test_pool("service_tokens_mint_list_and_revoke").await else {
+            return;
+        };
+        let (uid, _, account, provider) = tenant(&pool).await;
+
+        let (token, row) = super::mint_service(&pool, uid, provider, "translator").await.unwrap();
+        assert!(token.starts_with("cctui_s_"));
+        assert_eq!(row.label, "translator");
+        assert_eq!(row.provider_id, provider);
+        assert_eq!(row.provider, "anthropic");
+        assert!(row.last_used_at.is_none());
+
+        let (kind, expires, stored): (String, Option<chrono::DateTime<chrono::Utc>>, String) =
+            sqlx::query_as("SELECT kind, expires_at, token_hash FROM session_tokens WHERE id = $1")
+                .bind(row.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(kind, "service");
+        assert!(expires.is_none(), "service tokens never expire");
+        assert_eq!(stored, crate::auth::sha256_hex(&token), "only the hash is stored");
+
+        let listed = super::list_service(&pool, account).await.unwrap();
+        assert_eq!(listed.iter().map(|t| t.id).collect::<Vec<_>>(), vec![row.id]);
+
+        assert!(super::revoke_service(&pool, account, row.id).await.unwrap());
+        assert!(!super::revoke_service(&pool, account, row.id).await.unwrap(), "already revoked");
+        assert!(super::list_service(&pool, account).await.unwrap().is_empty());
+    }
+
+    /// A revoke scoped to another account is a no-op even with the right id.
+    #[tokio::test]
+    async fn service_token_revoke_is_scoped_to_its_account() {
+        let Some(pool) = test_pool("service_token_revoke_is_scoped_to_its_account").await else {
+            return;
+        };
+        let (uid, _, account, provider) = tenant(&pool).await;
+        let (_, _, other_account, _) = tenant(&pool).await;
+        let (_, row) = super::mint_service(&pool, uid, provider, "svc").await.unwrap();
+
+        assert!(!super::revoke_service(&pool, other_account, row.id).await.unwrap());
+        assert_eq!(super::list_service(&pool, account).await.unwrap().len(), 1);
+    }
+
+    /// Disabling or removing a user revokes the service tokens minted for them,
+    /// which have no session row to be reached through.
+    #[tokio::test]
+    async fn revoke_by_user_cuts_service_tokens() {
+        let Some(pool) = test_pool("revoke_by_user_cuts_service_tokens").await else {
+            return;
+        };
+        let (uid, _, account, provider) = tenant(&pool).await;
+        super::mint_service(&pool, uid, provider, "svc").await.unwrap();
+
+        super::revoke_by_user(&pool, uid).await.unwrap();
+
+        assert!(super::list_service(&pool, account).await.unwrap().is_empty());
     }
 }

@@ -71,7 +71,22 @@ pub(super) fn schedule_daemon_lost(state: &AppState, machine_id: Uuid, sessions:
             tracing::info!(%machine_id, "daemon_lost mark skipped — machine heartbeating elsewhere");
             return;
         }
-        mark_daemon_lost(&state.pool, machine_id, &sessions).await;
+        for session_id in mark_daemon_lost(&state.pool, machine_id, &sessions).await {
+            crate::events::record(
+                &state,
+                crate::events::Event::new(
+                    crate::events::kind::SESSION_ENDED,
+                    crate::events::Actor::Daemon,
+                )
+                .severity(crate::events::Severity::Warn)
+                .session(session_id)
+                .machine(machine_id)
+                .detail(serde_json::json!({
+                    "end_reason": "daemon_lost",
+                    "end_detail": "daemon connection closed",
+                })),
+            );
+        }
     });
 }
 
@@ -104,23 +119,34 @@ fn seen_within(
     last_seen_at.is_some_and(|seen| now.signed_duration_since(seen) < window)
 }
 
-async fn mark_daemon_lost(pool: &sqlx::PgPool, machine_id: Uuid, sessions: &[String]) {
-    match sqlx::query(
+/// The ids actually ended.
+async fn mark_daemon_lost(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    sessions: &[String],
+) -> Vec<String> {
+    match sqlx::query_scalar::<_, String>(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'daemon_lost', \
              end_detail = 'daemon connection closed' \
          WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
-           AND end_reason IS NULL AND last_heartbeat > now() - interval '1 hour'",
+           AND end_reason IS NULL AND last_heartbeat > now() - interval '1 hour' \
+         RETURNING id",
     )
     .bind(machine_id)
     .bind(sessions)
-    .execute(pool)
+    .fetch_all(pool)
     .await
     {
-        Ok(res) if res.rows_affected() > 0 => {
-            tracing::info!(%machine_id, count = res.rows_affected(), "sessions marked daemon_lost");
+        Ok(ids) => {
+            if !ids.is_empty() {
+                tracing::info!(%machine_id, count = ids.len(), "sessions marked daemon_lost");
+            }
+            ids
         }
-        Ok(_) => {}
-        Err(err) => tracing::warn!(%err, %machine_id, "daemon_lost mark failed"),
+        Err(err) => {
+            tracing::warn!(%err, %machine_id, "daemon_lost mark failed");
+            Vec::new()
+        }
     }
 }
 

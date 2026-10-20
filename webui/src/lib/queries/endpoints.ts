@@ -11,6 +11,9 @@ import type { PluginInstanceSettingsRequest } from "@bindings/PluginInstanceSett
 import type { PluginProxySecret } from "@bindings/PluginProxySecret";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
+import type { MintServiceTokenRequest } from "@bindings/MintServiceTokenRequest";
+import type { MintServiceTokenResponse } from "@bindings/MintServiceTokenResponse";
+import type { ServiceTokenRow } from "@bindings/ServiceTokenRow";
 import type { PoolUsageView } from "@bindings/PoolUsageView";
 import type { SessionStats } from "@bindings/SessionStats";
 import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
@@ -25,6 +28,10 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { ContextItem } from "@bindings/ContextItem";
 import type { ContextItemSpec } from "@bindings/ContextItemSpec";
 import type { UpdateContextItemRequest } from "@bindings/UpdateContextItemRequest";
+import type { ResolvedContextResponse } from "@bindings/ResolvedContextResponse";
+import type { SessionContextResponse } from "@bindings/SessionContextResponse";
+import type { AttachContextRequest } from "@bindings/AttachContextRequest";
+import type { AttachContextResponse } from "@bindings/AttachContextResponse";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
 import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
@@ -33,6 +40,7 @@ import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
 import type { BriefResponse } from "@bindings/BriefResponse";
+import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
@@ -68,6 +76,9 @@ import type { UploadCapsInfo } from "@bindings/UploadCapsInfo";
 import type { UploadCapsRequest } from "@bindings/UploadCapsRequest";
 import type { UpstreamHostsInfo } from "@bindings/UpstreamHostsInfo";
 import type { UpstreamHostsRequest } from "@bindings/UpstreamHostsRequest";
+import type { SpeechCatalog } from "@bindings/SpeechCatalog";
+import type { SpeechSettingsInfo } from "@bindings/SpeechSettingsInfo";
+import type { SpeechSettingsRequest } from "@bindings/SpeechSettingsRequest";
 import type { HarnessAutoupdateInfo } from "@bindings/HarnessAutoupdateInfo";
 import type { HarnessPolicyRequest } from "@bindings/HarnessPolicyRequest";
 import type { HarnessUpdatePolicy } from "@bindings/HarnessUpdatePolicy";
@@ -76,13 +87,17 @@ import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { HarnessModels } from "@bindings/HarnessModels";
-import type { DomainMeta } from "@bindings/DomainMeta";
+import type { HarnessDescriptor } from "@bindings/HarnessDescriptor";
+import type { MachineAdapterInfo } from "@bindings/MachineAdapterInfo";
+import type { SetMachineAdapterRequest } from "@bindings/SetMachineAdapterRequest";
+import type { UsageProbeInfo } from "@bindings/UsageProbeInfo";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { RescrubRequest } from "@bindings/RescrubRequest";
 import type { PrivacyScanJob } from "@bindings/PrivacyScanJob";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
+import type { EventPage } from "@bindings/EventPage";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
 import type { AccountPoolView } from "@bindings/AccountPoolView";
 import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
@@ -160,6 +175,13 @@ export const endpoints = {
     api.put<UpstreamHostsInfo>("/admin/instance/upstream-hosts", {
       hosts,
     } satisfies UpstreamHostsRequest),
+  speechSettings: () => api.get<SpeechSettingsInfo>("/admin/instance/speech"),
+  /** `api_key` replaces the stored key, `clear_key` drops it; neither keeps it (admin). */
+  setSpeechSettings: (req: SpeechSettingsRequest) =>
+    api.put<SpeechSettingsInfo>("/admin/instance/speech", req),
+  speechCatalog: () => api.get<SpeechCatalog>("/admin/instance/speech/catalog"),
+  /** Health check plus a short synthesized sample (admin). */
+  testSpeech: () => api.postBlob("/admin/instance/speech/test"),
   /** Harness auto-update: instance default plus every machine's override and report (admin). */
   harnessAutoupdate: () => api.get<HarnessAutoupdateInfo>("/admin/harness-autoupdate"),
   /** Set (or clear with `null`) the instance-wide harness auto-update default (admin). */
@@ -274,16 +296,26 @@ export const endpoints = {
   updateContextItem: (id: string, body: UpdateContextItemRequest) =>
     api.patch<ContextItem>(`/context/${id}`, body),
   deleteContextItem: (id: string) => api.del<void>(`/context/${id}`),
-  /** What a spawn into these coordinates would attach on its own. */
-  resolveContext: (q: {
-    machine_id?: string;
-    working_dir?: string;
-    labels?: string;
-  }) =>
-    api.get<ContextItem[]>(
+  /** The rules a spawn into these coordinates gets, and the memories it
+   * pre-checks. Empty values are left out of the query. */
+  resolveContext: (q: Record<string, string>) =>
+    api.get<ResolvedContextResponse>(
       `/context/resolve?${new URLSearchParams(
-        Object.entries(q).filter(([, v]) => !!v) as [string, string][],
+        Object.entries(q).filter(([, v]) => !!v),
       ).toString()}`,
+    ),
+  approveContextPending: (id: string) =>
+    api.post<ContextItem>(`/context/${id}/pending/approve`, {}),
+  rejectContextPending: (id: string) =>
+    api.post<ContextItem>(`/context/${id}/pending/reject`, {}),
+  sessionContext: (sessionId: string) =>
+    api.get<SessionContextResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/context`,
+    ),
+  attachSessionContext: (sessionId: string, body: AttachContextRequest) =>
+    api.post<AttachContextResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/context`,
+      body,
     ),
 
   /** The caller's spawn profiles, oldest first. */
@@ -386,6 +418,11 @@ export const endpoints = {
    *  the project keys never reach the browser. */
   sessionLangfuse: (id: string) =>
     api.get<LangfuseSessionUsage>(`/sessions/${id}/langfuse`),
+  events: (query: Record<string, string>) => api.get<EventPage>("/events", query),
+  sessionEvents: (id: string, query: Record<string, string> = {}) =>
+    api.get<EventPage>(`/sessions/${encodeURIComponent(id)}/events`, query),
+  machineEvents: (machineId: string, query: Record<string, string> = {}) =>
+    api.get<EventPage>(`/machines/${encodeURIComponent(machineId)}/events`, query),
   recentDirs: (machineId: string) =>
     api.get<string[]>("/sessions/recent-dirs", {
       machine_id: machineId || undefined,
@@ -410,8 +447,24 @@ export const endpoints = {
       ...(machineId ? { machine_id: machineId } : {}),
       ...(model ? { model } : {}),
     }),
-  /** Provider metadata, quota probes, end-reason tones, permission modes. */
-  domainMeta: () => api.get<DomainMeta>("/meta/domain"),
+  /** The harness table: ids, families, capabilities and permission modes. */
+  harnesses: () => api.get<HarnessDescriptor[]>("/harnesses"),
+  /** Which harnesses one machine runs, with its enable/config pins. */
+  machineAdapters: (machineId: string) =>
+    api.get<MachineAdapterInfo[]>(`/machines/${encodeURIComponent(machineId)}/adapters`),
+  /** Enable, disable or configure one harness on a machine (admin). */
+  setMachineAdapter: (machineId: string, adapter: string, body: SetMachineAdapterRequest) =>
+    api.put<MachineAdapterInfo[]>(
+      `/machines/${encodeURIComponent(machineId)}/adapters/${encodeURIComponent(adapter)}`,
+      body,
+    ),
+  /** Drop a machine's pin for one harness, back to the table default (admin). */
+  resetMachineAdapter: (machineId: string, adapter: string) =>
+    api.del<MachineAdapterInfo[]>(
+      `/machines/${encodeURIComponent(machineId)}/adapters/${encodeURIComponent(adapter)}`,
+    ),
+  /** The quota-probe registry, for the account usage-probe picker. */
+  usageProbes: () => api.get<UsageProbeInfo[]>("/meta/usage-probes"),
   /** Ask the machine's daemon to re-run codex `model/list`; the fresh
    *  catalog lands asynchronously. */
   refreshCodexModels: (machineId: string) =>
@@ -452,6 +505,8 @@ export const endpoints = {
    *  Returns a `command_id` to await on the ws like spawn. */
   fork: (sessionId: string, body: ForkRequest) =>
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
+  sessionThread: (sessionId: string) =>
+    api.get<SessionThreadResponse>(path("get_sessions_by_id_thread", { id: sessionId })),
   brief: (sessionId: string, maxBytes?: number) =>
     api.get<BriefResponse>(
       `/sessions/${sessionId}/brief${maxBytes ? `?max_bytes=${maxBytes}` : ""}`,
@@ -518,6 +573,17 @@ export const endpoints = {
     api.get<ToolPolicy>(`/accounts/${accountId}/tool-policy`),
   putToolPolicy: (accountId: string, body: ToolPolicy) =>
     api.put<ToolPolicy>(`/accounts/${accountId}/tool-policy`, body),
+  serviceTokens: (accountId: string) =>
+    api.get<ServiceTokenRow[]>(path("get_accounts_by_id_service_tokens", { id: accountId })),
+  mintServiceToken: (accountId: string, body: MintServiceTokenRequest) =>
+    api.post<MintServiceTokenResponse>(
+      path("post_accounts_by_id_service_tokens", { id: accountId }),
+      body,
+    ),
+  revokeServiceToken: (accountId: string, tokenId: string) =>
+    api.del<void>(
+      path("delete_accounts_by_id_service_tokens_by_token", { id: accountId, token_id: tokenId }),
+    ),
   /** The caller's account pools with their membership. */
   accountPools: () => api.get<AccountPoolView[]>("/account-pools"),
   /** Every pool's usage, aggregated per provider family (level, pace, wall). */

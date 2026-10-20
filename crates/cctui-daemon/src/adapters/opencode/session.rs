@@ -697,6 +697,7 @@ impl OpenCodeSession {
             &self.params.cwd,
             Some(local_id),
             &self.params.context,
+            self.params.agent_mcp.is_some(),
         );
         crate::preamble::merge(preamble, (!body.is_empty()).then_some(body))
     }
@@ -1164,6 +1165,7 @@ impl OpenCodeSession {
                         request_id: properties.id.clone(),
                         tool: properties.permission.clone(),
                         input: properties.metadata.clone(),
+                        options: Vec::new(),
                     })
                     .await;
                 let _ = client;
@@ -1817,7 +1819,7 @@ mod tests {
         session.params.cwd = dir.path().to_string_lossy().into_owned();
 
         let turn = session.first_turn("ses_me").expect("a first turn");
-        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.starts_with("<cctui-session-context>"), "{turn}");
         assert!(turn.contains("shared cwd: 1 other live session"), "{turn}");
         assert!(turn.contains("review the diff"), "the spawn prompt survives: {turn}");
 
@@ -1868,7 +1870,7 @@ mod tests {
         }];
 
         let turn = session.first_turn("ses_me").expect("a first turn");
-        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.starts_with("<cctui-session-context>"), "{turn}");
         assert!(turn.contains("context: 1 attached"), "{turn}");
         assert!(turn.contains("House style"), "{turn}");
         assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
@@ -1876,6 +1878,26 @@ mod tests {
         let staged = crate::adapters::uploads::session_dir(&session.params.key).join("context.md");
         assert!(std::fs::read_to_string(&staged).unwrap().contains("be terse"));
         let _ = std::fs::remove_dir_all(staged.parent().unwrap());
+    }
+
+    #[test]
+    fn a_rule_reaches_an_opencode_session_inline_on_its_first_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        session.params.key = format!("launch-{}", Uuid::new_v4());
+        session.params.context = vec![cctui_proto::api::SessionContextItem {
+            kind: "rule".to_owned(),
+            name: "worktrees".to_owned(),
+            title: "Worktrees".to_owned(),
+            body: "never switch branches".to_owned(),
+            version: 1,
+        }];
+
+        let turn = session.first_turn("ses_me").expect("a first turn");
+        assert!(turn.starts_with("<cctui-session-context>"), "{turn}");
+        assert!(turn.contains("### Worktrees\nnever switch branches"), "{turn}");
+        assert!(turn.contains("review the diff"), "the prompt survives: {turn}");
     }
 
     /// A session alone in its tree is sent its prompt and nothing else.

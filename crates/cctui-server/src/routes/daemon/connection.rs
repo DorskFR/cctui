@@ -258,6 +258,16 @@ impl Conn {
         // peer replica can forward daemon-targeted requests here.
         crate::presence::register(state, crate::presence::Kind::Daemon, machine_id).await;
         report_connect_flap(state, machine_id).await;
+        crate::events::record(
+            state,
+            crate::events::Event::new(
+                crate::events::kind::MACHINE_DAEMON_CONNECTED,
+                crate::events::Actor::Daemon,
+            )
+            .machine(machine_id)
+            .user(self.user_id)
+            .detail(serde_json::json!({ "connection_id": self.id })),
+        );
     }
 
     async fn read_loop(
@@ -356,6 +366,20 @@ impl Conn {
             state.auth_recovery_daemons.remove(&machine_id);
             state.preview.detach_machine(&state.pool, machine_id).await;
             crate::presence::unregister(state, crate::presence::Kind::Daemon, machine_id).await;
+            crate::events::record(
+                state,
+                crate::events::Event::new(
+                    crate::events::kind::MACHINE_DAEMON_DISCONNECTED,
+                    crate::events::Actor::Daemon,
+                )
+                .severity(crate::events::Severity::Warn)
+                .machine(machine_id)
+                .user(self.user_id)
+                .detail(serde_json::json!({
+                    "connection_id": self.id,
+                    "announced_sessions": sessions.len(),
+                })),
+            );
             schedule_daemon_lost(state, machine_id, sessions);
         }
     }

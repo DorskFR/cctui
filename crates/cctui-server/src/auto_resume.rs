@@ -178,8 +178,8 @@ const STUCK_SELECT: &str = concat!(
     " AND s.machine_uuid IS NOT NULL AND s.status <> ALL($3) AND ($5::text IS NULL OR s.id = $5) \
        AND COALESCE((SELECT us.data->'autoResumeOnConnectionLoss' = 'true'::jsonb \
                      FROM user_settings us WHERE us.user_id = s.user_id), false) \
-       AND NOT EXISTS (SELECT 1 FROM commands ev WHERE ev.session_id = s.id \
-                       AND ev.issued_at >= le.created_at \
+       AND NOT EXISTS (SELECT 1 FROM events ev WHERE ev.session_id = s.id \
+                       AND ev.occurred_at >= le.created_at \
                        AND ev.kind IN ('session.killed', 'session.interrupted')) \
        AND NOT EXISTS ( \
            SELECT 1 FROM stream_events n \
@@ -355,6 +355,16 @@ async fn fire(
     match dispatch {
         Ok(()) => {
             tracing::info!(%session_id, attempt, "auto-resume nudge sent");
+            crate::events::record(
+                state,
+                crate::events::Event::new(
+                    crate::events::kind::SESSION_AUTO_RESUMED,
+                    crate::events::Actor::Reaper,
+                )
+                .severity(crate::events::Severity::Warn)
+                .session(session_id)
+                .detail(serde_json::json!({ "attempt": attempt, "max_attempts": MAX_ATTEMPTS, "recover_auth": recover_auth })),
+            );
         }
         Err(err) => {
             state.pending_commands.remove(&command_id);
@@ -427,6 +437,16 @@ async fn exhaust(state: &AppState, row: &StuckRow) {
     }
     let name = row.session_name.clone().unwrap_or_else(|| session_id.clone());
     tracing::error!(%session_id, "auto-resume gave up after {MAX_ATTEMPTS} nudges: {name}");
+    crate::events::record(
+        state,
+        crate::events::Event::new(
+            crate::events::kind::SESSION_AUTO_RESUMED,
+            crate::events::Actor::Reaper,
+        )
+        .severity(crate::events::Severity::Error)
+        .session(session_id)
+        .detail(serde_json::json!({ "exhausted": true, "attempts": MAX_ATTEMPTS })),
+    );
     crate::ntfy::notify(
         &state.config,
         crate::ntfy::Notification {
@@ -793,7 +813,7 @@ mod tests {
             message(&pool, &sid, "assistant", "API Error: Connection lost mid-response").await;
             assert!(selected(&pool, &sid).await.is_some());
             sqlx::query(
-                "INSERT INTO commands(session_id,kind,payload,status) VALUES($1,$2,'{}','completed')",
+                "INSERT INTO events(session_id,kind,actor,summary) VALUES($1,$2,'user','stop')",
             )
             .bind(&sid)
             .bind(kind)

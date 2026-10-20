@@ -1,15 +1,16 @@
 <script lang="ts">
-	import { Button, Field, IconButton, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
+	import { Badge, Button, Field, IconButton, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { looseSettings } from './pages.logic';
 	import { usageProbeOptions } from '$lib/providers';
-	import { useDomainMeta } from '$lib/queries';
+	import { useUsageProbes } from '$lib/queries';
 
 	let {
 		endpoint = false,
 		rawJson: showRaw = false,
 		settableKeys = new Set<string>(),
+		blockedKeys = new Set<string>(),
 		catalogReady = false,
 		claimed = new Set<string>(),
 		baseUrl = $bindable(''),
@@ -24,7 +25,10 @@
 		/** Static-credential providers can rewrite their endpoint here. */
 		endpoint?: boolean;
 		rawJson?: boolean;
+		/** Catalogued keys present in the schema and settable per-account. */
 		settableKeys?: Set<string>;
+		/** MANAGED/SYSTEM keys: rejected. Keys in neither set merge as out of schema. */
+		blockedKeys?: Set<string>;
 		catalogReady?: boolean;
 		/** Settings names some page already renders as a row. */
 		claimed?: Set<string>;
@@ -38,7 +42,7 @@
 		onmove?: (targetId: string) => void;
 	} = $props();
 
-	useDomainMeta();
+	useUsageProbes();
 
 	let raw = $state('');
 	let rawError = $state('');
@@ -66,7 +70,7 @@
 			return;
 		}
 		const obj = parsed as Record<string, unknown>;
-		const bad = Object.keys(obj).filter((k) => !settableKeys.has(k));
+		const bad = Object.keys(obj).filter((k) => blockedKeys.has(k));
 		if (bad.length) {
 			rawError = m.providers_raw_not_settable({ keys: bad.join(', ') });
 			return;
@@ -124,7 +128,14 @@
 			</Text>
 			{#each loose as [k, v] (k)}
 				<div class="loose">
-					<Text variant="code" size="xs">{k}: {JSON.stringify(v)}</Text>
+					<span class="loose-key">
+						<Text variant="code" size="xs">{k}: {JSON.stringify(v)}</Text>
+						{#if catalogReady && !settableKeys.has(k)}
+							<Badge tone="warn" size="xs" title={m.providers_out_of_schema_help()}>
+								{m.providers_out_of_schema()}
+							</Badge>
+						{/if}
+					</span>
 					<IconButton box="sm" icon="x" label={m.providers_remove_key_aria({ key: k })} onclick={() => clearLoose(k)} />
 				</div>
 			{/each}
@@ -181,6 +192,12 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--sp-2);
+	}
+	.loose-key {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		min-width: 0;
 	}
 	.merge {
 		display: flex;

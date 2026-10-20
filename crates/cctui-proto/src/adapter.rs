@@ -12,16 +12,213 @@ use uuid::Uuid;
 #[serde(transparent)]
 pub struct AdapterId(pub String);
 
-/// Every adapter compiled into the daemon. `adapters_enabled` rows only override
-/// config or disable; a missing binary surfaces as a failed spawn.
-pub const KNOWN_ADAPTERS: &[&str] = &["claude-code", "codex", "opencode"];
+/// What a harness can do, as the clients gate their controls on it.
+// Public wire shape mirrored to TS bindings; the bools are independent gates
+// the clients read by name, so an enum set would churn the API for nothing.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct HarnessCapabilities {
+    pub fork: bool,
+    pub rename: bool,
+    pub resume: bool,
+    pub set_model: bool,
+    pub live_view: bool,
+    pub attach: bool,
+    pub mid_chat_files: bool,
+    pub child_spawn: bool,
+}
+
+/// One answer an agent offers on a permission prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct PermissionChoice {
+    pub option_id: String,
+    pub name: String,
+    /// `allow_once` / `allow_always` / `reject_once` / `reject_always`.
+    pub kind: String,
+}
+
+/// Where a harness's model picker gets its entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ModelsSource {
+    /// A fixed list shipped with the clients.
+    Static,
+    /// A live catalog the daemon reports.
+    Catalog,
+    /// Only the harness default.
+    None,
+}
+
+/// One harness as served by `GET /api/v1/harnesses`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct HarnessDescriptor {
+    pub id: String,
+    pub label: String,
+    pub family: crate::provider::ProviderFamily,
+    pub capabilities: HarnessCapabilities,
+    /// Runs on every machine without an `adapters_enabled` row.
+    pub default_enabled: bool,
+    pub models_source: ModelsSource,
+    /// The postures the harness can express, in picker order.
+    pub permission_modes: Vec<PermissionMode>,
+}
+
+struct HarnessRow {
+    id: &'static str,
+    label: &'static str,
+    family: crate::provider::ProviderFamily,
+    capabilities: HarnessCapabilities,
+    default_enabled: bool,
+    models_source: ModelsSource,
+    permission_modes: &'static [PermissionMode],
+}
+
+impl HarnessRow {
+    fn descriptor(&self) -> HarnessDescriptor {
+        HarnessDescriptor {
+            id: self.id.to_owned(),
+            label: self.label.to_owned(),
+            family: self.family,
+            capabilities: self.capabilities,
+            default_enabled: self.default_enabled,
+            models_source: self.models_source,
+            permission_modes: self.permission_modes.to_vec(),
+        }
+    }
+}
+
+/// The harness table every hand-written adapter list derives from.
+const HARNESS_ROWS: &[HarnessRow] = &[
+    HarnessRow {
+        id: "claude-code",
+        label: "Claude Code",
+        family: crate::provider::ProviderFamily::Anthropic,
+        capabilities: HarnessCapabilities {
+            fork: true,
+            rename: true,
+            resume: true,
+            set_model: false,
+            live_view: true,
+            attach: true,
+            mid_chat_files: true,
+            child_spawn: true,
+        },
+        default_enabled: true,
+        models_source: ModelsSource::Static,
+        permission_modes: &PermissionMode::ALL,
+    },
+    HarnessRow {
+        id: "codex",
+        label: "Codex",
+        family: crate::provider::ProviderFamily::Openai,
+        capabilities: HarnessCapabilities {
+            fork: false,
+            rename: true,
+            resume: true,
+            set_model: true,
+            live_view: true,
+            attach: false,
+            mid_chat_files: true,
+            child_spawn: true,
+        },
+        default_enabled: true,
+        models_source: ModelsSource::Catalog,
+        permission_modes: &PermissionMode::ALL,
+    },
+    HarnessRow {
+        id: "opencode",
+        label: "OpenCode",
+        family: crate::provider::ProviderFamily::Fireworks,
+        capabilities: HarnessCapabilities {
+            fork: false,
+            rename: true,
+            resume: false,
+            set_model: false,
+            live_view: true,
+            attach: false,
+            mid_chat_files: true,
+            child_spawn: false,
+        },
+        default_enabled: true,
+        models_source: ModelsSource::None,
+        permission_modes: &PermissionMode::ALL,
+    },
+];
+
+const fn known_adapter_ids() -> [&'static str; HARNESS_ROWS.len()] {
+    let mut out = [""; HARNESS_ROWS.len()];
+    let mut i = 0;
+    while i < HARNESS_ROWS.len() {
+        out[i] = HARNESS_ROWS[i].id;
+        i += 1;
+    }
+    out
+}
+
+/// Every adapter compiled into the daemon, in table order.
+pub const KNOWN_ADAPTERS: [&str; HARNESS_ROWS.len()] = known_adapter_ids();
+
+/// The whole table, in picker order.
+#[must_use]
+pub fn harnesses() -> Vec<HarnessDescriptor> {
+    HARNESS_ROWS.iter().map(HarnessRow::descriptor).collect()
+}
+
+/// The adapters that run on a machine with no `adapters_enabled` row.
+#[must_use]
+pub fn default_enabled_adapters() -> Vec<&'static str> {
+    HARNESS_ROWS.iter().filter(|r| r.default_enabled).map(|r| r.id).collect()
+}
+
+/// Whether `id` runs by default on a machine without an `adapters_enabled` row.
+/// An unknown id never does.
+#[must_use]
+pub fn is_default_enabled(id: &str) -> bool {
+    HARNESS_ROWS.iter().any(|r| r.id == id && r.default_enabled)
+}
+
+/// The descriptor whose id is exactly `id`.
+#[must_use]
+pub fn harness(id: &str) -> Option<HarnessDescriptor> {
+    HARNESS_ROWS.iter().find(|r| r.id == id).map(HarnessRow::descriptor)
+}
+
+/// The descriptor an adapter id resolves to: the id itself, or a variant of it
+/// (`codex-app-server`, `opencode-cli`). Fail-closed: anything else is `None`.
+#[must_use]
+pub fn harness_for_adapter(adapter_id: &str) -> Option<HarnessDescriptor> {
+    let id = adapter_id.trim();
+    HARNESS_ROWS
+        .iter()
+        .find(|r| id == r.id || id.strip_prefix(r.id).is_some_and(|rest| rest.starts_with('-')))
+        .map(HarnessRow::descriptor)
+}
+
+/// The harness ids whose family is `family`, in table order.
+#[must_use]
+pub fn harness_ids_in_family(family: crate::provider::ProviderFamily) -> Vec<&'static str> {
+    HARNESS_ROWS.iter().filter(|r| r.family == family).map(|r| r.id).collect()
+}
+
+/// The harness a provider credential runs: the first table row of the
+/// provider's family.
+#[must_use]
+pub fn harness_for_provider(provider: &str) -> Option<&'static str> {
+    let family = crate::provider::provider_family(provider);
+    HARNESS_ROWS.iter().find(|r| r.family == family).map(|r| r.id)
+}
 
 /// The model id to record for a `SessionModel` observation, if `raw` is one.
 ///
-/// Claude Code writes its own local assistant messages (API errors such as
-/// "API Error: 502 ...") with the placeholder model `<synthetic>`; persisting
-/// that would make a later `--model <synthetic>` resume fail. Empty values and
-/// any `<...>` placeholder are rejected; the rest is returned trimmed.
+/// Claude Code writes its own local assistant
+/// messages (API errors such as "API Error: 502 ...") with the placeholder
+/// model `<synthetic>`; persisting that would make a later `--model
+/// <synthetic>` resume fail. Empty values and any `<...>` placeholder are
+/// rejected; the rest is returned trimmed.
 #[must_use]
 pub fn observed_model_id(raw: &str) -> Option<&str> {
     let model = raw.trim();
@@ -230,6 +427,9 @@ pub enum AdapterEvent {
         tool: String,
         #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
         input: serde_json::Value,
+        /// The agent's own answers; empty for a plain allow/deny prompt.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<PermissionChoice>,
     },
     /// The permission prompt was answered or dismissed elsewhere.
     PermissionResolved {
@@ -278,8 +478,14 @@ pub enum AdapterEvent {
         request_id: Uuid,
         report: Box<crate::diagnose::SessionDiagnose>,
     },
-    /// Machine-scoped codex `model/list` catalog.
-    CodexModels {
+    /// Machine-scoped model catalog of one harness (codex `model/list`, an
+    /// ACP agent's config options or legacy `models`). `codex_models` is the
+    /// wire name a daemon from before the generalisation sends; it decodes as
+    /// codex's catalog.
+    #[serde(alias = "codex_models")]
+    HarnessModels {
+        #[serde(default = "codex_adapter_id")]
+        adapter_id: String,
         catalog: crate::codex_catalog::CodexModelCatalog,
     },
     /// Base64 PTY bytes, sent only while [`AdapterCommand::WatchPty`] is on.
@@ -311,6 +517,10 @@ pub enum AdapterEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observed_at: Option<i64>,
     },
+}
+
+fn codex_adapter_id() -> String {
+    "codex".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,6 +631,10 @@ pub enum AdapterCommand {
         local_id: String,
         request_id: String,
         allow: bool,
+        /// A [`PermissionChoice::option_id`]; overrides `allow` when the
+        /// adapter knows it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
     },
     /// Persist the name to the adapter's own source of truth.
     Rename {
@@ -633,7 +847,7 @@ impl PermissionMode {
         matches!(self, Self::Whip)
     }
 
-    /// `default` / `auto` / `yolo`, as shown in `<session-context>`.
+    /// `default` / `auto` / `yolo`, as shown in `<cctui-session-context>`.
     #[must_use]
     pub const fn normalized_label(self) -> &'static str {
         match self {
@@ -725,6 +939,43 @@ mod tests {
         for bad in ["", "   ", "<synthetic>", " <synthetic> ", "<none>", "<>"] {
             assert_eq!(observed_model_id(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn known_adapters_are_the_table_ids_in_order() {
+        assert_eq!(KNOWN_ADAPTERS, ["claude-code", "codex", "opencode"]);
+        let ids: Vec<String> = harnesses().into_iter().map(|h| h.id).collect();
+        assert_eq!(ids, KNOWN_ADAPTERS);
+    }
+
+    #[test]
+    fn harness_lookup_is_exact_and_variants_resolve_by_dash_prefix() {
+        assert_eq!(harness("codex").map(|h| h.label), Some("Codex".to_owned()));
+        assert_eq!(harness("codex-app-server"), None);
+        assert_eq!(harness_for_adapter("codex-app-server").map(|h| h.id), Some("codex".to_owned()));
+        assert_eq!(
+            harness_for_adapter(" opencode-cli ").map(|h| h.id),
+            Some("opencode".to_owned())
+        );
+        for unknown in ["", "gemini", "codexx", "claude", "anthropic"] {
+            assert_eq!(harness_for_adapter(unknown), None, "{unknown}");
+        }
+    }
+
+    #[test]
+    fn provider_to_harness_follows_the_family() {
+        assert_eq!(harness_for_provider("anthropic"), Some("claude-code"));
+        assert_eq!(harness_for_provider("anthropic-compatible"), Some("claude-code"));
+        assert_eq!(harness_for_provider("openai-compatible"), Some("codex"));
+        assert_eq!(harness_for_provider("fireworks"), Some("opencode"));
+        assert_eq!(harness_ids_in_family(crate::provider::ProviderFamily::Fireworks), ["opencode"]);
+    }
+
+    #[test]
+    fn every_row_is_enabled_by_default_today() {
+        assert_eq!(default_enabled_adapters(), KNOWN_ADAPTERS);
+        assert!(is_default_enabled("opencode"));
+        assert!(!is_default_enabled("gemini"));
     }
 
     #[test]
@@ -843,9 +1094,60 @@ mod tests {
         assert_eq!(back.as_str(), "claude-code");
     }
 
+    fn sol_catalog() -> crate::codex_catalog::CodexModelCatalog {
+        crate::codex_catalog::CodexModelCatalog {
+            models: vec![crate::codex_catalog::CodexModel {
+                id: "gpt-5.6-sol".into(),
+                model: "gpt-5.6-sol".into(),
+                display_name: "GPT-5.6 Sol".into(),
+                description: String::new(),
+                hidden: false,
+                is_default: true,
+                supported_efforts: vec!["low".into(), "high".into()],
+                default_effort: "medium".into(),
+                input_modalities: vec!["text".into()],
+                upgrade: None,
+                minimal_client_version: None,
+            }],
+            client_version: None,
+        }
+    }
+
+    #[test]
+    fn adapter_event_harness_models_roundtrips_with_its_adapter_id() {
+        let evt =
+            AdapterEvent::HarnessModels { adapter_id: "gemini".into(), catalog: sol_catalog() };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"harness_models""#), "{json}");
+        assert!(json.contains(r#""adapter_id":"gemini""#), "{json}");
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        let AdapterEvent::HarnessModels { adapter_id, catalog } = back else {
+            panic!("wrong variant")
+        };
+        assert_eq!(adapter_id, "gemini");
+        assert_eq!(catalog.models[0].id, "gpt-5.6-sol");
+    }
+
+    /// A daemon from before the generalisation still sends `codex_models`
+    /// with no adapter id; it is codex's catalog.
+    #[test]
+    fn legacy_codex_models_event_decodes_as_the_codex_catalog() {
+        let legacy = serde_json::json!({
+            "kind": "codex_models",
+            "catalog": serde_json::to_value(sol_catalog()).unwrap(),
+        });
+        let back: AdapterEvent = serde_json::from_value(legacy).unwrap();
+        let AdapterEvent::HarnessModels { adapter_id, catalog } = back else {
+            panic!("wrong variant")
+        };
+        assert_eq!(adapter_id, "codex");
+        assert_eq!(catalog.models[0].supported_efforts, ["low", "high"]);
+    }
+
     #[test]
     fn adapter_event_codex_models_roundtrips() {
-        let evt = AdapterEvent::CodexModels {
+        let evt = AdapterEvent::HarnessModels {
+            adapter_id: "codex".into(),
             catalog: crate::codex_catalog::CodexModelCatalog {
                 models: vec![crate::codex_catalog::CodexModel {
                     id: "gpt-5.6-sol".into(),
@@ -864,9 +1166,12 @@ mod tests {
             },
         };
         let json = serde_json::to_string(&evt).unwrap();
-        assert!(json.contains(r#""kind":"codex_models""#));
+        assert!(json.contains(r#""kind":"harness_models""#));
         let back: AdapterEvent = serde_json::from_str(&json).unwrap();
-        let AdapterEvent::CodexModels { catalog } = back else { panic!("wrong variant") };
+        let AdapterEvent::HarnessModels { adapter_id, catalog } = back else {
+            panic!("wrong variant")
+        };
+        assert_eq!(adapter_id, "codex");
         assert_eq!(catalog.models[0].id, "gpt-5.6-sol");
         assert_eq!(catalog.models[0].supported_efforts, ["low", "high"]);
     }
@@ -1041,6 +1346,7 @@ mod tests {
             request_id: "req-123".into(),
             tool: "Bash".into(),
             input: serde_json::json!({"command": "ls"}),
+            options: Vec::new(),
         };
         let json = serde_json::to_string(&evt).unwrap();
         assert!(json.contains(r#""kind":"permission_request""#));
@@ -1065,12 +1371,45 @@ mod tests {
                 local_id: "s1".into(),
                 request_id: "req-123".into(),
                 allow: true,
+                option_id: None,
             },
         ];
         for cmd in cases {
             let json = serde_json::to_string(&cmd).unwrap();
             let _back: AdapterCommand = serde_json::from_str(&json).expect(&json);
         }
+    }
+
+    #[test]
+    fn permission_options_and_picks_are_optional_on_the_wire() {
+        let old_cmd: AdapterCommand = serde_json::from_str(
+            r#"{"kind":"permission_response","local_id":"s1","request_id":"r","allow":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(old_cmd, AdapterCommand::PermissionResponse { option_id: None, .. }));
+        let old_evt: AdapterEvent = serde_json::from_str(
+            r#"{"kind":"permission_request","local_id":"s1","request_id":"r","tool":"Bash"}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(old_evt, AdapterEvent::PermissionRequest { ref options, .. } if options.is_empty())
+        );
+        let evt = AdapterEvent::PermissionRequest {
+            local_id: "s1".into(),
+            request_id: "r".into(),
+            tool: "read".into(),
+            input: serde_json::Value::Null,
+            options: vec![PermissionChoice {
+                option_id: "always".into(),
+                name: "Always".into(),
+                kind: "allow_always".into(),
+            }],
+        };
+        let back: AdapterEvent =
+            serde_json::from_str(&serde_json::to_string(&evt).unwrap()).unwrap();
+        assert!(
+            matches!(back, AdapterEvent::PermissionRequest { options, .. } if options[0].option_id == "always")
+        );
     }
 
     #[test]
@@ -1116,6 +1455,7 @@ mod tests {
             gateway: crate::diagnose::DiagnoseFact::missing("daemon-config", "none"),
             codex: None,
             opencode: None,
+            acp: None,
         };
         let evt = AdapterEvent::Diagnose {
             local_id: "s1".into(),

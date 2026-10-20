@@ -19,6 +19,15 @@ concurrency:
 env:
   # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.
   RUST_VERSION: "1.97.1"
+  # rust-cache keys are prefix + toolchain/env hash + manifest/lockfile hash.
+  # The hash covers every installed toolchain, so jobs uninstall all but
+  # RUST_VERSION first or each runner image update would cold-start the cache.
+  # The workspace version is normalized out of that hash, so a release bump
+  # keeps the key; a dependency change misses it, and the prefix fallback still
+  # restores the previous deps (`full match: false`).
+  # Save only where later runs can read the cache: main and version branches,
+  # never PRs or tags. Must not start with RUST/CARGO/CC: those are hashed.
+  SAVE_RUST_CACHE: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/0.') || startsWith(github.ref, 'refs/heads/1.') || startsWith(github.ref, 'refs/heads/release/')) }}
   CARGO_INCREMENTAL: "0"
 
 jobs:
@@ -26,45 +35,77 @@ jobs:
     name: changes
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
-      pull-requests: read
     outputs:
-      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
-      webui: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.webui == 'true' }}
-      deps: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.deps == 'true' }}
+      rust: ${{ steps.scope.outputs.rust }}
+      webui: ${{ steps.scope.outputs.webui }}
+      deps: ${{ steps.scope.outputs.deps }}
+      # false when a green run already tested this exact tree, e.g. the push
+      # of a squash merge whose pull request run passed.
+      check: ${{ steps.tested.outputs.check != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: filter
-        if: github.event_name != 'workflow_dispatch'
         with:
-          filters: |
-            ci: &ci
-              - .github/workflows/ci.yml
-            rust:
-              - *ci
-              - crates/**
-              - docs/journeys/**
-              - migrations/**
-              - Cargo.toml
-              - Cargo.lock
-              - rust-toolchain.toml
-              - rustfmt.toml
-              - .cargo/**
-            webui:
-              - *ci
-              - webui/**
-            deps:
-              - *ci
-              - Cargo.lock
-              - .cargo/**
-              - webui/package-lock.json
+          fetch-depth: 2
+
+      - name: Scope the run to the diff
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          case "$EVENT" in
+            pull_request) base="HEAD^1" ;;
+            push)
+              if [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+                && git fetch -q --no-tags --depth=1 origin "$BEFORE"; then
+                base="$BEFORE"
+              fi
+              ;;
+          esac
+          if [ -n "$base" ]; then
+            out="$(bash scripts/ci-changes.sh "$base" HEAD)"
+          else
+            out="$(bash scripts/ci-changes.sh --all)"
+          fi
+          if grep -qx 'ci=true' <<<"$out"; then
+            out="$(bash scripts/ci-changes.sh --all)"
+          fi
+          echo "$out"
+          echo "$out" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      - name: Skip checks a green run already passed on this tree
+        id: tested
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TREE: ${{ steps.scope.outputs.tree }}
+        run: |
+          if url="$(bash scripts/ci-tested-tree.sh "$GITHUB_REPOSITORY" "$TREE" "$GITHUB_RUN_ID")"; then
+            echo "tree $TREE already passed: $url"
+            echo "check=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # check-ci-green.sh and later runs find this run by the tree it tested.
+      - name: Name the tested tree
+        if: steps.tested.outputs.check != 'false'
+        run: echo "${{ steps.scope.outputs.tree }}" > "$RUNNER_TEMP/ci-tree"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: steps.tested.outputs.check != 'false'
+        with:
+          name: ci-tree-${{ steps.scope.outputs.tree }}
+          path: ${{ runner.temp }}/ci-tree
+          retention-days: 7
+          overwrite: true
 
   fmt:
     name: cargo fmt
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,6 +122,8 @@ jobs:
 
   biome:
     name: biome
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,7 +140,7 @@ jobs:
   clippy:
     name: cargo clippy
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,7 +151,11 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -116,7 +163,7 @@ jobs:
   test:
     name: cargo test
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -138,6 +185,7 @@ jobs:
       CCTUI_VAULT_KEY: deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
       TEST_CCTUI_URL: http://localhost:8700
       TEST_ADMIN_TOKEN: test-admin
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -146,7 +194,11 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: Install sqlx-cli
         uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2
@@ -189,9 +241,32 @@ jobs:
       - name: cargo test --ignored (against the running server)
         run: cargo test --workspace --locked --test integration -- --ignored
 
-      # Same --workspace selection as the tests above, minus cctui-query, whose
-      # ts exports are not part of the webui bindings. The `ts` feature is only
-      # enabled here, so this step recompiles the exporting crates.
+      - name: Server log
+        if: always()
+        run: cat /tmp/cctui-server.log 2>/dev/null || true
+
+  bindings:
+    name: webui bindings
+    needs: changes
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
+
+      # cctui-query's ts exports are not part of the webui bindings.
       - name: Regenerate webui bindings
         env:
           CCTUI_BINDINGS_CARGO_ARGS: --workspace --locked --lib --bins --exclude cctui-query
@@ -207,17 +282,37 @@ jobs:
             exit 1
           fi
 
-      - name: Server log
-        if: always()
-        run: cat /tmp/cctui-server.log 2>/dev/null || true
+  release-scope:
+    name: release scope
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.scope.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
-  # Warms the Swatinem/rust-cache keys release.yml restores (tag refs can only
-  # read caches saved on the default branch). Main pushes only; a cold run is
-  # about the length of the test job, a warm one is incremental.
+      - name: Would a release of this commit rebuild Rust
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CCTUI_RELEASED_TAGS="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --exclude-drafts --json tagName --jq '.[].tagName' | tr '\n' ' ')"
+          export CCTUI_RELEASED_TAGS
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          out="$(bash scripts/release-scope.sh "v$version" "$(git rev-parse HEAD)")"
+          echo "$out"
+          grep '^rust=' <<<"$out" >> "$GITHUB_OUTPUT"
+
   release-cache:
     name: warm release cache ${{ matrix.target }}
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    needs: release-scope
+    if: needs.release-scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -243,9 +338,12 @@ jobs:
       - name: Add cross target to the pinned toolchain
         run: rustup target add ${{ matrix.target }}
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: release-${{ matrix.target }}
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2
@@ -257,11 +355,27 @@ jobs:
           SQLX_OFFLINE: "true"
         run: bash scripts/release-build-bins.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${{ matrix.target }}"
 
+      # release.yml takes these instead of rebuilding when this commit is tagged.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-bins-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 1
+          path: |
+            dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
+            dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: matrix.arch == 'amd64'
+        with:
+          name: release-image-bins
+          retention-days: 1
+          path: image-bins/
+
 
   release-cache-server:
     name: warm release cache cctui-server
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    needs: release-scope
+    if: needs.release-scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -271,31 +385,33 @@ jobs:
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: release-server
+          save-if: ${{ env.SAVE_RUST_CACHE }}
       - name: Build cctui-server for the image
         env:
           SQLX_OFFLINE: "true"
+          CCTUI_GIT_HASH: ${{ github.sha }}
         run: bash scripts/release-build-server.sh
 
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-image-bins-server
+          retention-days: 1
+          path: image-bins/
+
   webui:
-    name: webui
+    name: webui check
     needs: changes
-    if: needs.changes.outputs.webui == 'true'
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.webui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: webui/package-lock.json
-
-      - name: Install dependencies
-        working-directory: webui
-        run: npm ci
+      - uses: ./.github/actions/webui-deps
 
       - name: Lint
         working-directory: webui
@@ -305,9 +421,33 @@ jobs:
         working-directory: webui
         run: npm run check
 
+  webui-test:
+    name: webui test ${{ matrix.shard }}/3
+    needs: changes
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.webui == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/webui-deps
+
       - name: Test
         working-directory: webui
-        run: npm test
+        run: npm test -- --shard=${{ matrix.shard }}/3
+
+  webui-build:
+    name: webui build
+    needs: changes
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.webui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/webui-deps
 
       - name: Build
         working-directory: webui
@@ -324,30 +464,42 @@ jobs:
           }
 
   e2e:
-    name: webui e2e (hermetic)
+    name: webui e2e (hermetic) ${{ matrix.shard }}/2
     needs: changes
-    if: needs.changes.outputs.webui == 'true'
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.webui == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: webui/package-lock.json
-
-      - name: Install dependencies
-        working-directory: webui
-        run: npm ci
+      - uses: ./.github/actions/webui-deps
 
       - name: Build
         working-directory: webui
         run: npm run build
 
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(jq -r '.packages["node_modules/@playwright/test"].version' webui/package-lock.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: browsers
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}-chromium
+
       - name: Install chromium
+        if: steps.browsers.outputs.cache-hit != 'true'
         working-directory: webui
         run: npx playwright install --with-deps chromium
+
+      - name: Install chromium system dependencies
+        if: steps.browsers.outputs.cache-hit == 'true'
+        working-directory: webui
+        run: npx playwright install-deps chromium
 
       # These projects stub every request; no server, no seeded database, no
       # journeys/.auth/state.json. The other projects need the local stack.
@@ -355,12 +507,12 @@ jobs:
         working-directory: webui
         env:
           HEADER_E2E_PORT: "5291"
-        run: npx playwright test --project hermetic --project drawer --project drawer-header
+        run: npx playwright test --project hermetic --project drawer --project drawer-header --shard=${{ matrix.shard }}/2
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
         with:
-          name: e2e-results
+          name: e2e-results-${{ matrix.shard }}
           retention-days: 3
           if-no-files-found: ignore
           path: webui/test-results/
@@ -368,7 +520,7 @@ jobs:
   audit:
     name: audit
     needs: changes
-    if: needs.changes.outputs.deps == 'true'
+    if: needs.changes.outputs.check == 'true' && needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -378,7 +530,11 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      - name: Keep only the pinned toolchain
+        run: rustup toolchain list --quiet | awk -v pinned="$RUST_VERSION" '$1 != pinned && index($1, pinned "-") != 1 { print $1 }' | while read -r tc; do rustup toolchain uninstall "$tc"; done
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ env.SAVE_RUST_CACHE }}
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2
@@ -410,6 +566,8 @@ jobs:
 
   no-css-global:
     name: no-css-global
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -455,6 +613,8 @@ jobs:
 
   i18n-messages:
     name: i18n-messages
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -464,6 +624,8 @@ jobs:
 
   release-channel:
     name: release-channel
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -471,11 +633,28 @@ jobs:
       - name: Map release tags to channels
         run: bash scripts/release-channel.test.sh
 
+      - name: A release tag must equal the workspace version
+        run: bash scripts/release-version.test.sh
+
       - name: The release gate refuses a commit without a green run
         run: bash scripts/check-ci-green.test.sh
 
+      - name: Path scoping classifies changes
+        run: bash scripts/ci-changes.test.sh
+
+      - name: Release scoping picks what to rebuild
+        run: bash scripts/release-scope.test.sh
+
+      - name: The release takes push CI's binaries or builds its own
+        run: bash scripts/release-ci-bins.test.sh
+
+      - name: Path scoping tests did not leak into this checkout
+        run: bash scripts/check-git-untouched.sh
+
   local-seed:
     name: local-seed
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -485,6 +664,8 @@ jobs:
 
   actionlint:
     name: actionlint
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -507,9 +688,13 @@ jobs:
       - biome
       - clippy
       - test
+      - bindings
+      - release-scope
       - release-cache
       - release-cache-server
       - webui
+      - webui-test
+      - webui-build
       - e2e
       - audit
       - no-css-global

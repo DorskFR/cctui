@@ -430,7 +430,8 @@ fn make_engine(rules_text: &str, prompt_text: &str) -> TestEngine {
     TestEngine { engine, _dir: dir }
 }
 
-fn decision(resp: &serde_json::Value) -> String {
+fn decision(verdict: &cctui_guard::Verdict) -> String {
+    let resp = cctui_guard::Dialect::Claude.render(verdict);
     resp["hookSpecificOutput"]["permissionDecision"].as_str().unwrap().to_string()
 }
 

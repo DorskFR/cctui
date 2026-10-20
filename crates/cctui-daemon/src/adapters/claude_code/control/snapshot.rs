@@ -77,6 +77,7 @@ impl Driver {
 
         self.tick_dispatch_done(&plan.visible);
 
+        self.liveness.retain(&plan.now_shorts);
         self.roster = plan.now_shorts;
     }
 
@@ -189,7 +190,17 @@ impl Driver {
         self.last_status_at.insert(job.short.clone(), std::time::SystemTime::now());
 
         if job.is_dead() {
-            self.mark_dead(job, &local_id, on_disk.is_some()).await;
+            self.liveness.forget(&job.short);
+            self.mark_dead(&job.short, &local_id, on_disk.is_some()).await;
+            return;
+        }
+        if self.foreign_shorts.contains(&job.short) {
+            self.liveness.forget(&job.short);
+        } else {
+            self.liveness.observe(&job.short, &local_id, job.started_at);
+        }
+        if self.liveness.is_confirmed_dead(&job.short) {
+            self.mark_dead(&job.short, &local_id, true).await;
             return;
         }
         // Revived: claude reports this short alive again after we marked it
@@ -234,7 +245,7 @@ impl Driver {
     /// while its worker process is gone (e.g. it died while the supervisor was
     /// down). Surface the dead state within one poll rather than waiting for
     /// the short to drop off the roster.
-    async fn mark_dead(&mut self, job: &LiveSnapshot, local_id: &str, state_on_disk: bool) {
+    pub(super) async fn mark_dead(&mut self, short: &str, local_id: &str, state_on_disk: bool) {
         // Emit the terminal transition exactly once, then mark the
         // short sticky so the still-present roster entry can't re-emit
         // a non-terminal Status and re-green it (daemon-side mirror of
@@ -245,10 +256,11 @@ impl Driver {
         // Sticky: the caller skips transcript re-pin + Status for this poll.
         // The roster-disappearance branch still cleans up if it later drops
         // off; a revive clears `dead_shorts` so live status resumes.
-        if !self.dead_shorts.insert(job.short.clone()) {
+        if !self.dead_shorts.insert(short.to_owned()) {
             return;
         }
-        self.clear_permission(&job.short).await;
+        self.clear_permission(short).await;
+        self.drop_stale_ask(local_id).await;
         if state_on_disk {
             self.emit(AdapterEvent::Status {
                 local_id: local_id.to_owned(),
@@ -273,13 +285,14 @@ impl Driver {
             // Truly gone — no job state left to cold resume from, so
             // the spawn flags and per-session config files are dead.
             if let Ok(mut m) = self.spawn_model_effort.lock() {
-                m.remove(&job.short);
+                m.remove(short);
             }
-            crate::configsweep::remove_session_files(&job.short);
+            crate::configsweep::remove_session_files(short);
+            self.deferred_peer.remove(local_id);
         }
         // Drop the cached status so a later revive (worker reports
         // alive again) is detected as a change and re-emitted.
-        self.last_status.remove(&job.short);
+        self.last_status.remove(short);
     }
 
     /// Pin (or re-pin) the transcript location. A resume or an in-process
@@ -522,7 +535,12 @@ impl Driver {
             // Skip if we already emitted this short's dead transition while
             // it was still listed (`dead_shorts`) — the hibernated
             // Status already went out; re-emitting it here is redundant.
-            if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
+            let hibernated = StateJson::read(&self.cfg.jobs_root, short).is_some();
+            self.drop_stale_ask(&loc.local_id).await;
+            if !hibernated {
+                self.deferred_peer.remove(&loc.local_id);
+            }
+            if !was_dead && hibernated {
                 self.emit(AdapterEvent::Status {
                     local_id: loc.local_id.clone(),
                     tempo: Some("hibernated".to_owned()),
@@ -662,6 +680,7 @@ impl Driver {
                     request_id,
                     tool,
                     input: json!({ "description": description, "needs": n }),
+                    options: Vec::new(),
                 })
                 .await;
             }
@@ -975,7 +994,7 @@ mod tests {
 
         let mut request: Option<(String, String, String)> = None;
         while let Ok(evt) = rx.try_recv() {
-            if let AdapterEvent::PermissionRequest { local_id, request_id, tool, input } = evt {
+            if let AdapterEvent::PermissionRequest { local_id, request_id, tool, input, .. } = evt {
                 assert_eq!(tool, "Bash");
                 assert_eq!(input.get("description").and_then(|d| d.as_str()), Some("touch /tmp/x"));
                 request = Some((local_id, request_id, tool));

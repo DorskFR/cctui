@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { isRedirect } from '@sveltejs/kit';
 import { load as loadAccess } from './access/+page';
-import { load as loadAccounts } from './accounts/+page';
 import { load as loadDispatchers } from './dispatchers/+page';
+import { load as loadEvents } from './events/+page';
 import { MOVED_ROUTES } from './movedRoutes';
 import { isSettingsPage } from '$lib/components/organisms/settings/settings.logic';
 
@@ -19,8 +19,8 @@ function target(load: () => void): { status: number; location: string } {
 describe('the screens that moved under Settings', () => {
 	it.each([
 		['/access', loadAccess],
-		['/accounts', loadAccounts],
-		['/dispatchers', loadDispatchers]
+		['/dispatchers', loadDispatchers],
+		['/events', loadEvents]
 	] as const)('forwards %s permanently, on the server', (from, load) => {
 		expect(target(load)).toEqual({ status: 308, location: MOVED_ROUTES[from] });
 	});

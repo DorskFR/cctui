@@ -24,6 +24,8 @@ vi.mock("$lib/queries", () => {
     useAccounts: () => q([]),
     useAccountPools: () => q([]),
     useLabels: () => q({ labels: [] }),
+    useContextItems: () => q([]),
+    useResolvedContext: () => q({ rules: [], memories: [] }),
     useProfiles: () => q([]),
     useProfileActions: () => ({
       create: async () => ({ id: "p-1", name: "Default" }),
@@ -35,6 +37,8 @@ vi.mock("$lib/queries", () => {
     useCodexModels: () => q(null),
     useMergedCodexModels: () => q(null),
     useHarnessModels: () => q(null),
+    useHarnesses: () => q(null),
+    useMachineAdapters: () => q(null),
     useGitInfo: () => async () => ({ is_repo: false, is_worktree: false }),
     useMachineDirs: () => q([]),
     endpoints: { machineDirs: async () => [] },

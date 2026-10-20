@@ -11,6 +11,8 @@ pub enum Category {
     Thinking,
     Redacted,
     User,
+    /// The cctui wrappers leading a turn: session context, previous conversation.
+    Context,
     /// A monitor wake-up or a re-injected loop prompt. Only the export
     /// classifies one today; no rendered line maps here.
     Poll,
@@ -33,6 +35,7 @@ pub const CATEGORIES: &[Category] = &[
     Category::Thinking,
     Category::Redacted,
     Category::User,
+    Category::Context,
     Category::Poll,
     Category::Peer,
     Category::System,
@@ -58,6 +61,7 @@ impl Category {
             Self::Thinking => "thinking",
             Self::Redacted => "redacted",
             Self::User => "user",
+            Self::Context => "context",
             Self::Poll => "poll",
             Self::Peer => "peer",
             Self::System => "system",
@@ -79,6 +83,7 @@ impl Category {
             Self::Thinking => "Thinking",
             Self::Redacted => "Redacted thinking",
             Self::User => "Your messages",
+            Self::Context => "Injected context",
             Self::Poll => "Loop wake-ups",
             Self::Peer => "Peer messages",
             Self::System => "Injected / system",
@@ -108,6 +113,7 @@ pub const fn category_of(line: &ConversationLine) -> Category {
         LineKind::Thinking { redacted: true } => Category::Redacted,
         LineKind::User | LineKind::Reply => Category::User,
         LineKind::Peer => Category::Peer,
+        LineKind::Context => Category::Context,
         LineKind::System => Category::System,
         LineKind::Tool { category: ToolCategory::Mcp } => Category::Mcp,
         LineKind::Tool { category: ToolCategory::Server } => Category::ServerTool,
@@ -163,7 +169,7 @@ impl Quick {
         match self {
             Self::All => None,
             Self::Assistant => Some(&[Category::Assistant]),
-            Self::User => Some(&[Category::User]),
+            Self::User => Some(&[Category::User, Category::Context]),
             Self::Tools => Some(TOOL_CATEGORIES),
         }
     }
@@ -283,6 +289,7 @@ mod tests {
             LineKind::User,
             LineKind::Reply,
             LineKind::Peer,
+            LineKind::Context,
             LineKind::System,
             LineKind::Tool { category: ToolCategory::Read },
             LineKind::Tool { category: ToolCategory::Write },
@@ -301,6 +308,7 @@ mod tests {
             assert!(CATEGORIES.contains(&category), "{category:?} is missing from the menu");
         }
         assert_eq!(category_of(&line(LineKind::Reply)), Category::User);
+        assert_eq!(category_of(&line(LineKind::Context)), Category::Context);
         assert_eq!(
             category_of(&line(LineKind::Tool { category: ToolCategory::Mcp })),
             Category::Mcp
@@ -311,6 +319,7 @@ mod tests {
     #[test]
     fn the_default_filter_hides_only_mcp_and_markers() {
         let filter = Filter::default();
+        assert!(filter.shows(Category::Context));
         assert!(filter.shows(Category::Assistant));
         assert!(filter.shows(Category::Result));
         assert!(!filter.shows(Category::Mcp));
@@ -352,6 +361,7 @@ mod tests {
         assert_eq!(filter.quick, Quick::User);
         assert!(filter.visible(&line(LineKind::Reply)));
         assert!(filter.visible(&line(LineKind::User)));
+        assert!(filter.visible(&line(LineKind::Context)), "context sits in the user group");
     }
 
     #[test]

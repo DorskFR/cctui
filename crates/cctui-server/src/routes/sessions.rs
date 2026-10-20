@@ -16,6 +16,7 @@ use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, Sessio
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
+use crate::events::{self, Actor, Event, kind};
 use crate::followup::{nests_under_parent, next_session_sql};
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::resolve_owned_machine;
@@ -53,11 +54,21 @@ pub async fn register(
     // (e.g. Claude restart) is treated the same way: status=new, let the
     // first activity promote it. Only a row of this user on this machine is
     // updated; anything else, including a row with no owner, is left alone.
-    let written =
+    let Some(inserted) =
         crate::store::sessions::upsert_registered(&state.pool, &session, machine_uuid, ctx.user_id)
-            .await?;
-    if !written {
+            .await?
+    else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
+    };
+    if inserted {
+        events::record(
+            &state,
+            Event::new(kind::SESSION_CREATED, Actor::Daemon)
+                .session(&session_id)
+                .machine(machine_uuid)
+                .user(ctx.user_id)
+                .detail(serde_json::json!({ "origin": "daemon-registered" })),
+        );
     }
 
     let ws_url = format!(
@@ -455,6 +466,7 @@ fn skeleton_list_item(
         tool_use_count: 0,
         todos: Vec::new(),
         user_actions: None,
+        context_counts: None,
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
@@ -618,6 +630,7 @@ struct EnrichContext {
     unread: Option<HashMap<String, u32>>,
     todos: HashMap<String, serde_json::Value>,
     user_actions: HashMap<String, cctui_proto::api::UserActionCounts>,
+    context_counts: HashMap<String, cctui_proto::api::ContextCounts>,
     signals: HashMap<String, SignalRow>,
     pr_snapshot: HashMap<String, cctui_proto::classifier::OwnedPrStatus>,
     labels: HashMap<String, Vec<Label>>,
@@ -661,6 +674,7 @@ impl EnrichContext {
         }
         ctx.todos = fetch_todos(state, &session_ids).await?;
         ctx.user_actions = fetch_user_actions(state, &session_ids).await?;
+        ctx.context_counts = fetch_context_counts(&state.pool, &session_ids).await?;
         ctx.signals = fetch_signals(state, &session_ids).await?;
         ctx.pr_snapshot = state.pr_status_cache.snapshot();
         ctx.labels = fetch_labels(state, &session_ids).await?;
@@ -789,6 +803,33 @@ async fn fetch_todos(
             .fetch_all(&state.pool)
             .await?;
     Ok(rows.into_iter().collect())
+}
+
+/// Rules the latest launch delivered and memories held, per session; sessions
+/// with neither are left out.
+async fn fetch_context_counts(
+    pool: &sqlx::PgPool,
+    session_ids: &[String],
+) -> Result<HashMap<String, cctui_proto::api::ContextCounts>, AppError> {
+    let rows: Vec<(String, i32, i64)> = sqlx::query_as(
+        "SELECT sc.spawn_key, jsonb_array_length(sc.rules), \
+         (SELECT count(*) FROM context_items ci \
+          WHERE ci.id = ANY(sc.item_ids) AND ci.kind = 'memory') \
+         FROM session_context sc WHERE sc.spawn_key = ANY($1)",
+    )
+    .bind(session_ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(sid, rules, memories)| {
+            let counts = cctui_proto::api::ContextCounts {
+                rules: u32::try_from(rules).unwrap_or(0),
+                memories: u32::try_from(memories).unwrap_or(u32::MAX),
+            };
+            (counts.rules > 0 || counts.memories > 0).then_some((sid, counts))
+        })
+        .collect())
 }
 
 /// Open "needs you" counts, own and rolled up from the session's subagents: a
@@ -963,6 +1004,7 @@ fn enrich(
             s.todos = serde_json::from_value(v).unwrap_or_default();
         }
         s.user_actions = ctx.user_actions.remove(&s.id);
+        s.context_counts = ctx.context_counts.remove(&s.id);
         if let Some(row) = ctx.signals.remove(&s.id) {
             apply_signals(s, row, &pr_cache, ctx.archive_after_secs);
         }
@@ -1665,6 +1707,7 @@ pub async fn get_session(
                 tool_use_count: 0,
                 todos: Vec::new(),
                 user_actions: None,
+                context_counts: None,
                 has_token_credentials: false,
                 account_traffic_observed: false,
                 pr_links: Vec::new(),
@@ -1740,6 +1783,7 @@ pub async fn get_session(
         tool_use_count: 0,
         todos: Vec::new(),
         user_actions: None,
+        context_counts: None,
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
@@ -2348,6 +2392,7 @@ pub async fn send_message(
 
 pub async fn rename_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<RenameRequest>,
 ) -> Result<StatusCode, AppError> {
@@ -2358,11 +2403,25 @@ pub async fn rename_session(
     // Persist immediately so the UI reflects the rename without waiting for
     // the daemon round-trip. The daemon write-through (below) keeps the
     // on-disk state.json in sync so the next status poll doesn't revert it.
-    sqlx::query("UPDATE sessions SET session_name = $2 WHERE id = $1")
-        .bind(&session_id)
-        .bind(name)
-        .execute(&state.pool)
-        .await?;
+    let previous: Option<Option<String>> = sqlx::query_scalar(
+        "WITH prior AS (SELECT session_name FROM sessions WHERE id = $1) \
+         UPDATE sessions SET session_name = $2 WHERE id = $1 \
+         RETURNING (SELECT session_name FROM prior)",
+    )
+    .bind(&session_id)
+    .bind(name)
+    .fetch_optional(&state.pool)
+    .await?;
+    if let Some(previous) = previous
+        && previous.as_deref() != Some(name)
+    {
+        events::record(
+            &state,
+            Event::new(kind::SESSION_RENAMED, Actor::User(ctx.user_id))
+                .session(&session_id)
+                .detail(serde_json::json!({ "from": previous, "to": name, "session_name": name })),
+        );
+    }
     // Best-effort propagation to the owning daemon's adapter.
     let _ = crate::bus::dispatch(
         &state,
@@ -2400,17 +2459,19 @@ pub async fn mark_seen(
 
 pub async fn kill_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    // Persist the user's stop before dispatch so the recovery reaper cannot
-    // revive the same failed turn while the native worker is stopping.
-    sqlx::query(
-        "INSERT INTO commands(session_id,kind,payload,status) VALUES($1,$2,'{}','completed')",
+    // Recorded before dispatch so the recovery reaper cannot revive the same
+    // failed turn while the native worker is stopping.
+    if let Err(err) = events::record_now(
+        &state,
+        Event::new(kind::SESSION_KILLED, Actor::User(ctx.user_id)).session(&session_id),
     )
-    .bind(&session_id)
-    .bind("session.killed")
-    .execute(&state.pool)
-    .await?;
+    .await
+    {
+        tracing::warn!(%err, session_id = %session_id, "lifecycle event insert failed");
+    }
 
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
@@ -2448,19 +2509,22 @@ pub async fn kill_session(
 /// instead of firing-and-forgetting. Returns the id in the response body.
 pub async fn interrupt_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
-    // Persist the user's stop before dispatch so the recovery reaper cannot
-    // revive the same failed turn while the native worker is stopping.
-    sqlx::query(
-        "INSERT INTO commands(session_id,kind,payload,status) VALUES($1,$2,'{}','completed')",
-    )
-    .bind(&session_id)
-    .bind("session.interrupted")
-    .execute(&state.pool)
-    .await?;
-
     let command_id = uuid::Uuid::new_v4();
+    // Recorded before dispatch so the recovery reaper cannot revive the same
+    // failed turn while the native worker is stopping.
+    if let Err(err) = events::record_now(
+        &state,
+        Event::new(kind::SESSION_INTERRUPTED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(serde_json::json!({ "command_id": command_id })),
+    )
+    .await
+    {
+        tracing::warn!(%err, session_id = %session_id, "lifecycle event insert failed");
+    }
     crate::state::track_command(
         &state.pending_commands,
         command_id,
@@ -2528,6 +2592,7 @@ pub struct SwitchAccountRequest {
 #[allow(clippy::too_many_lines)]
 pub async fn switch_account(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<SwitchAccountRequest>,
 ) -> Result<StatusCode, AppError> {
@@ -2685,6 +2750,16 @@ pub async fn switch_account(
         family = %target_family,
         "switched session account (soft-limit rebind)"
     );
+    events::record(
+        &state,
+        Event::new(kind::SESSION_ACCOUNT_SWITCHED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(serde_json::json!({
+                "from_account_id": current_account_id,
+                "to_account_id": target_id,
+                "family": target_family,
+            })),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2722,6 +2797,7 @@ pub async fn session_bindings(
 /// this is not a fork.
 pub async fn resume_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     // Pass the working_dir so the daemon can resume even after archiving ran
@@ -2751,6 +2827,12 @@ pub async fn resume_session(
     })?;
     crate::store::sessions::set_inactive(&state.pool, &session_id, true).await?;
     tracing::info!(session_id = %session_id, "resume dispatched");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_RESUMED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(serde_json::json!({ "origin": "manual" })),
+    );
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -2769,6 +2851,7 @@ pub async fn resume_session(
 /// Returns the id in the response body, mirroring interrupt.
 pub async fn set_model(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SetModelRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
@@ -2797,6 +2880,14 @@ pub async fn set_model(
     )
     .await;
     tracing::info!(session_id = %session_id, %command_id, ?model, ?effort, "set-model dispatched");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_MODEL_CHANGED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(
+                serde_json::json!({ "model": model, "effort": effort, "command_id": command_id }),
+            ),
+    );
     Ok((
         StatusCode::ACCEPTED,
         Json(cctui_proto::api::SpawnResponse {
@@ -2821,6 +2912,7 @@ pub async fn set_model(
 /// re-flip it. Returns a `command_id` the webui can await like a spawn.
 pub async fn fork_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::ForkRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), AppError> {
@@ -2865,7 +2957,7 @@ pub async fn fork_session(
     let is_claude = adapter_id == "claude-code";
     let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
     let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
-        == crate::routes::gateway::Family::Openai
+        == Ok(crate::routes::gateway::Family::Openai)
     {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
@@ -2896,6 +2988,8 @@ pub async fn fork_session(
             extract: req.extract,
         }),
     };
+    let child_key = child_session_id.clone().unwrap_or_else(|| command_id.to_string());
+    crate::routes::context::inherit_intent(&state.pool, &child_key, &session_id).await;
     state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
         |err| match err {
             crate::bus::BusError::NoDaemon(_) => {
@@ -2905,6 +2999,18 @@ pub async fn fork_session(
         },
     )?;
     tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
+    events::record(
+        &state,
+        Event::new(kind::SESSION_FORKED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .machine(machine_uuid)
+            .detail(serde_json::json!({
+                "parent_session_id": session_id,
+                "child_session_id": child_session_id,
+                "command_id": command_id,
+                "adapter_id": adapter_id,
+            })),
+    );
     Ok((
         StatusCode::ACCEPTED,
         Json(cctui_proto::api::ForkResponse {
@@ -2942,10 +3048,13 @@ pub async fn set_auto_approve(
 /// never force, so a pin is never undone by an automation.
 pub async fn archive_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(q): Query<ArchiveQuery>,
 ) -> Result<StatusCode, AppError> {
-    let outcome = archive_one(&state, &session_id, q.force, RemoveInitiator::User).await?;
+    let outcome =
+        archive_one(&state, &session_id, q.force, RemoveInitiator::User, Actor::User(ctx.user_id))
+            .await?;
     match outcome {
         ArchiveOutcome::Archived => Ok(StatusCode::NO_CONTENT),
         ArchiveOutcome::SkippedPinned => Err(AppError::new(
@@ -3026,6 +3135,7 @@ pub async fn archive_one(
     session_id: &str,
     force: bool,
     initiator: RemoveInitiator,
+    actor: Actor,
 ) -> Result<ArchiveOutcome, sqlx::Error> {
     if !force {
         let pinned: Option<bool> = sqlx::query_scalar("SELECT pinned FROM sessions WHERE id = $1")
@@ -3092,6 +3202,14 @@ pub async fn archive_one(
         state.bus.deregister_session_stream(child);
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
+    if archived.iter().any(|id| id == session_id) {
+        events::record(
+            state,
+            Event::new(kind::SESSION_ARCHIVED, actor).session(session_id).detail(
+                serde_json::json!({ "children": children.len(), "initiator": initiator.as_str() }),
+            ),
+        );
+    }
     Ok(ArchiveOutcome::Archived)
 }
 
@@ -3100,15 +3218,25 @@ pub async fn archive_one(
 /// status from activity.
 pub async fn unarchive_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    unarchive_one(&state, &session_id).await?;
+    unarchive_one(&state, &session_id, ctx.user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
-    crate::store::sessions::set_inactive(&state.pool, session_id, true).await?;
-    tracing::info!(session_id = %session_id, "session unarchived");
+async fn unarchive_one(
+    state: &AppState,
+    session_id: &str,
+    by: uuid::Uuid,
+) -> Result<(), sqlx::Error> {
+    if crate::store::sessions::set_inactive(&state.pool, session_id, true).await? {
+        tracing::info!(session_id = %session_id, "session unarchived");
+        events::record(
+            state,
+            Event::new(kind::SESSION_UNARCHIVED, Actor::User(by)).session(session_id),
+        );
+    }
     Ok(())
 }
 
@@ -3255,7 +3383,8 @@ pub async fn archive_sessions(
     let mut ok = 0usize;
     let mut pinned = 0usize;
     for id in &ids {
-        match archive_one(&state, id, false, RemoveInitiator::User).await {
+        match archive_one(&state, id, false, RemoveInitiator::User, Actor::User(ctx.user_id)).await
+        {
             Ok(ArchiveOutcome::Archived) => ok += 1,
             Ok(ArchiveOutcome::SkippedPinned) => pinned += 1,
             Err(e) => tracing::error!(session_id = %id, "batch archive db error: {e}"),
@@ -3287,7 +3416,7 @@ pub async fn unarchive_sessions(
     };
     let mut ok = 0usize;
     for id in &ids {
-        match unarchive_one(&state, id).await {
+        match unarchive_one(&state, id, ctx.user_id).await {
             Ok(()) => ok += 1,
             Err(e) => tracing::error!(session_id = %id, "batch unarchive db error: {e}"),
         }
@@ -3711,6 +3840,82 @@ mod tests {
 
         assert_eq!(sessions[1].match_seq, None);
         assert_eq!(sessions[1].match_snippet, None);
+    }
+
+    #[tokio::test]
+    async fn context_counts_cover_delivered_rules_and_held_memories_only() {
+        let Some(url) = crate::routes::gateway::test_db_url("context_counts_cover_delivered")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("u-{uid}"))
+            .bind(format!("k-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for kind in ["memory", "memory", "prompt"] {
+            let id: uuid::Uuid = sqlx::query_scalar(
+                "INSERT INTO context_items (user_id, kind, name, title) \
+                 VALUES ($1, $2, $3, 't') RETURNING id",
+            )
+            .bind(uid)
+            .bind(kind)
+            .bind(format!("n-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        let (full, rules_only, empty, absent) = (
+            format!("cc-full-{uid}"),
+            format!("cc-rules-{uid}"),
+            format!("cc-empty-{uid}"),
+            format!("cc-absent-{uid}"),
+        );
+        for (key, item_ids, rules) in [
+            (&full, ids.clone(), serde_json::json!([{}, {}])),
+            (&rules_only, Vec::new(), serde_json::json!([{}])),
+            (&empty, vec![ids[2]], serde_json::json!([])),
+        ] {
+            sqlx::query(
+                "INSERT INTO session_context (spawn_key, item_ids, rules) VALUES ($1, $2, $3)",
+            )
+            .bind(key)
+            .bind(&item_ids)
+            .bind(sqlx::types::Json(rules))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let counts = super::fetch_context_counts(
+            &pool,
+            &[full.clone(), rules_only.clone(), empty.clone(), absent.clone()],
+        )
+        .await
+        .unwrap();
+
+        let c = |rules, memories| cctui_proto::api::ContextCounts { rules, memories };
+        assert_eq!(counts.get(&full), Some(&c(2, 2)), "prompts are not counted");
+        assert_eq!(counts.get(&rules_only), Some(&c(1, 0)));
+        assert_eq!(counts.get(&empty), None, "nothing to show is left out");
+        assert_eq!(counts.get(&absent), None);
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = ANY($1)")
+            .bind(vec![full, rules_only, empty])
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
     }
 
     type TotalsRow = (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);

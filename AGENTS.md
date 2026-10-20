@@ -64,6 +64,18 @@ Nothing the TUI receives may be dropped silently. Frames that fail to decode
 become `Incoming::Undecodable`, and unreadable agent events are counted; both
 log and bump a status-line counter.
 
+### Prompt wrappers cctui injects
+
+Every wrapper cctui puts into an agent's prompt is namespaced `cctui-*` so it
+cannot be mistaken for harness markup: `<cctui-session-context>`,
+`<cctui-previous-conversation session=".." id="..">`, `<cctui-peer-message>`,
+`<cctui-room>`, `<cctui-room-joined>`. The names live in
+`cctui_proto::injected` (Rust) and the webui's `conversation/format.ts`; change
+both together. Stored history is immutable, so readers keep accepting the
+legacy `session-context`, `previous-conversation` and `cross-session-message`
+forever. Only wrappers that lead a turn are context; a tag quoted mid-message
+is the human's prose (`split_injected`).
+
 ### The parity manifest
 
 `crates/cctui-tui/parity.toml` has one entry per route in
@@ -113,6 +125,29 @@ bumps for a separate follow-up — they belong in the same change as the code.
   same PR** as the change — not a separate one.
 - Keep PRs focused; reference the relevant ticket in the title where applicable.
 - Let the pre-commit hooks (lefthook) run fmt / check / clippy / lint.
+
+### Local loop: red, green, push
+
+CI runs the full suites; locally run only the tests the change touches.
+
+1. **Red.** Write the regression test and run just that test; watch it fail.
+   Give a test that could loop or hang a short timeout so red takes seconds.
+2. **Green.** Write the fix and rerun the same test.
+3. **Commit and push.** The pre-push hook (`scripts/ci-prepush.sh`) diffs the
+   pushed commits against what the remote branch already has (on a first push,
+   the merge-base with `origin/main`) and runs only what applies:
+   `cargo test --workspace` when Rust changed, `vitest related` on the changed
+   webui sources, the schema-drift check when the settings catalog changed. A
+   version-only bump of `Cargo.toml`/`Cargo.lock` is not a Rust change.
+
+Useful single-target commands:
+
+- webui: `npx vitest run <file>` or `npx vitest related --run <files>` in
+  `webui/`; add `npm run check` when types or `.svelte` props changed.
+- Rust: `cargo test -p <crate> <test name>`.
+
+Don't run the whole webui suite or `make test` before pushing; read the CI
+result instead.
 
 ## Self-update
 

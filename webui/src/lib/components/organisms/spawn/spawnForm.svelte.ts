@@ -39,6 +39,7 @@ import { applySpec, initialProfile, specFromForm, specOf, type ProfileSpecForm }
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
+import { withoutInvite } from '$lib/cctuiverse';
 import {
 	autosave,
 	dispatchToK8s,
@@ -114,8 +115,10 @@ export class SpawnForm {
 	busy = $state(false);
 	selectedProfileId = $state<string | null>(null);
 	oneOff = $state<ProfileSpecForm | null>(null);
+	contextPins = $state<string[]>([]);
 	usageRaw = $state(drafts.get(PROFILE_USES));
 	spawnFailure = $state<string | null>(null);
+	joinLabel = $state('');
 	pendingDispatchId = $state<string | null>(null);
 
 	// Local autosave slot, one per (machine, cwd): a prefill names its target's
@@ -336,9 +339,15 @@ export class SpawnForm {
 			this.slotKey = key;
 		}
 		const envKeys = this.envRows.map((r) => ({ key: r.key, value: '' }));
-		const { context_pack_token: _packToken, ...persisted } = this.form;
+		const {
+			context_pack_token: _packToken,
+			context_items: _items,
+			context_auto: _auto,
+			...persisted
+		} = this.form;
 		const payload: SpawnSlotPayload = {
 			...persisted,
+			prompt: withoutInvite(persisted.prompt),
 			envRows: envKeys,
 			draftId: this.draftId,
 			attachmentNames: this.files.map((f) => f.name)
@@ -371,8 +380,9 @@ export class SpawnForm {
 	}
 
 	buildSpawnBody(): SpawnRequest {
+		const f = this.effectiveForm;
 		return buildSpawnBody(
-			this.effectiveForm,
+			{ ...f, context_items: [...new Set([...f.context_items, ...this.contextPins])] },
 			this.spawnProvider,
 			envMap(this.envRows),
 			this.followupParent,
@@ -380,7 +390,8 @@ export class SpawnForm {
 		);
 	}
 	draftBody(): SpawnRequest {
-		return draftBody(this.buildSpawnBody(), this.envRows, this.files);
+		const body = draftBody(this.buildSpawnBody(), this.envRows, this.files);
+		return { ...body, prompt: body.prompt ? withoutInvite(body.prompt) || null : null };
 	}
 
 	/** Whether the form holds anything the user would miss. */

@@ -53,11 +53,11 @@ pub(super) async fn process_frame(
             register_announced_session(state, machine_id, user_id, &adapter_id, &local_id).await
         }
         DaemonFrameUp::Event { adapter_id, event } => {
-            // Machine-scoped codex model catalog: cache it by
-            // machine_id — it is not a session event and never reaches the
-            // per-session handler below.
-            if let AdapterEvent::CodexModels { catalog } = event {
-                crate::routes::codex_models::store_catalog(state, machine_id, catalog).await;
+            // Machine-scoped model catalog: cached by machine and harness; it
+            // is not a session event and never reaches the per-session
+            // handler below.
+            if let AdapterEvent::HarnessModels { adapter_id: harness, catalog } = event {
+                crate::routes::harness_catalogs::store(state, machine_id, &harness, catalog).await;
                 return Ok(());
             }
             tracing::debug!(

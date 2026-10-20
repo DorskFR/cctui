@@ -51,3 +51,29 @@ export const verticalOverflow = (page: Page, selector: string) =>
 		(sel) => [...document.querySelectorAll(sel)].map((el) => el.scrollHeight - el.clientHeight),
 		selector
 	);
+
+/** Resolves once `selector`'s box has stopped moving: finite animations done
+ *  and two consecutive frames reporting the same rect. */
+export const settled = (page: Page, selector: string) =>
+	page.locator(selector).first().evaluate(async (el) => {
+		const finite = document
+			.getAnimations()
+			.filter((a) => a.effect?.getComputedTiming().endTime !== Infinity);
+		await Promise.all(finite.map((a) => a.finished.catch(() => undefined)));
+		const frame = () => new Promise((r) => requestAnimationFrame(r));
+		let prev = '';
+		for (let i = 0; i < 120; i++) {
+			const r = el.getBoundingClientRect();
+			const cur = `${r.x},${r.y},${r.width},${r.height}`;
+			if (cur === prev) return;
+			prev = cur;
+			await frame();
+		}
+		throw new Error('panel never settled');
+	});
+
+/** Waits for the conversation drawer to be open and done sliding in. */
+export async function waitForDrawerOpen(page: Page) {
+	await page.locator('[data-journey="composer"]').waitFor();
+	await settled(page, '.panel');
+}

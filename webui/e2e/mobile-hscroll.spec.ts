@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { stubDrawer } from './drawer.fixture';
+import { stubDrawer, waitForDrawerOpen } from './drawer.fixture';
 
 test.use({ isMobile: true, hasTouch: true, deviceScaleFactor: 3.5 });
 
@@ -43,7 +43,7 @@ async function openSessions(page: Page, width: number) {
 async function openDrawer(page: Page, width: number, index = 0) {
 	await openSessions(page, width);
 	await page.locator('[data-journey="session"] [data-journey="title"]').nth(index).click();
-	await page.locator('[data-journey="composer"]').waitFor();
+	await waitForDrawerOpen(page);
 }
 
 for (const width of WIDTHS) {
@@ -56,6 +56,7 @@ for (const width of WIDTHS) {
 test('412px touch: every drawer in the list stays free of horizontal scroll', async ({ page }) => {
 	await openSessions(page, 412);
 	const titles = page.locator('[data-journey="session"] [data-journey="title"]');
+	await titles.first().waitFor();
 	const count = Math.min(await titles.count(), 3);
 	expect(count).toBeGreaterThan(0);
 
@@ -93,26 +94,52 @@ test('360px touch: the settings page does not scroll sideways', async ({ page })
 	expectNoHorizontalScroll(await probe(page, ['html', '.panel-content']));
 });
 
-test('412px touch: icon buttons keep a 44px hit target', async ({ page }) => {
+test('412px touch: icon buttons hit 44px tall, reach half the shortfall to the start, never past the end', async ({ page }) => {
 	await openDrawer(page, 412);
 	await page.locator('[data-journey="header"]').waitFor();
 	const button = page.locator('[data-journey="header"] button[aria-label]').last();
 	const box = (await button.boundingBox())!;
 	const label = await button.getAttribute('aria-label');
 
-	const hitWidth = await page.evaluate(
+	const hit = await page.evaluate(
 		({ box, label }) => {
-			const y = box.y + box.height / 2;
-			const hits = (x: number) =>
+			const cx = box.x + box.width / 2;
+			const cy = box.y + box.height / 2;
+			const hits = (x: number, y: number) =>
 				document.elementFromPoint(x, y)?.closest('button')?.getAttribute('aria-label') === label;
+			let top = box.y;
+			let bottom = box.y + box.height;
+			while (hits(cx, top - 1) && box.y - top < 32) top -= 1;
+			while (hits(cx, bottom + 1) && bottom - (box.y + box.height) < 32) bottom += 1;
 			let left = box.x;
-			let right = box.x + box.width;
-			while (hits(left - 1) && box.x - left < 32) left -= 1;
-			while (hits(right + 1) && right - (box.x + box.width) < 32) right += 1;
-			return right - left;
+			while (hits(left - 1, cy) && box.x - left < 32) left -= 1;
+			return {
+				height: bottom - top,
+				startReach: box.x - left,
+				pastEnd: hits(box.x + box.width + 1, cy)
+			};
 		},
 		{ box, label }
 	);
 
-	expect(hitWidth).toBeGreaterThanOrEqual(44);
+	expect(hit.height).toBeGreaterThanOrEqual(43);
+	expect(hit.startReach).toBeGreaterThanOrEqual(Math.floor(Math.max(0, 44 - box.width) / 2) - 1);
+	expect(hit.pastEnd, 'the hit area extends past the inline end').toBe(false);
+});
+
+test('412px touch: tapping the centre of each line-action icon hits that icon', async ({ page }) => {
+	await openDrawer(page, 412);
+	const cluster = page.locator('[data-journey="line-actions"]').first();
+	await cluster.scrollIntoViewIfNeeded();
+	const buttons = cluster.locator('button');
+	const count = await buttons.count();
+	expect(count).toBeGreaterThan(1);
+
+	for (let i = 0; i < count; i++) {
+		const own = await buttons.nth(i).evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('button') === el;
+		});
+		expect(own, `centre of line action ${i} hits a different element`).toBe(true);
+	}
 });

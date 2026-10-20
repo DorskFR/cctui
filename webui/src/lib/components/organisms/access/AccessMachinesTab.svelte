@@ -11,6 +11,7 @@
 		Timestamp
 	} from '@dorsk/tsumikit';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
+	import MachineHistoryModal from './MachineHistoryModal.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { useMachines, useUserActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
@@ -32,6 +33,7 @@
 	let showRevoked = $state(false);
 	let editMachine = $state<MachineRow | null>(null);
 	let dropTarget = $state<MachineRow | null>(null);
+	let historyTarget = $state<MachineRow | null>(null);
 
 	const shown = $derived((machines.data ?? []).filter((mc) => mc.kind !== 'ephemeral'));
 	const hiddenCount = $derived((machines.data ?? []).length - shown.length);
@@ -44,7 +46,7 @@
 		{ key: 'seen', label: m.users_col_last_seen(), width: '8rem', nowrap: true, role: 'meta' },
 		{ key: 'preview', label: m.access_col_preview(), width: '9rem', nowrap: true, role: 'detail', hideBelow: 'md' },
 		{ key: 'kind', label: m.access_col_kind(), width: '6rem', nowrap: true, role: 'meta', hideBelow: 'sm' },
-		{ key: 'actions', label: '', width: '5rem', nowrap: true, align: 'right', role: 'actions' }
+		{ key: 'actions', label: '', width: '7rem', nowrap: true, align: 'right', role: 'actions' }
 	];
 
 	const liveText = (mc: MachineRow) =>
@@ -92,8 +94,16 @@
 	<Text size="xs" tone="faint">{mc.kind}</Text>
 {/snippet}
 {#snippet colActions(mc: MachineRow)}
-	{#if canManage && mc.kind !== 'dispatch'}
-		<span class="row-actions">
+	<span class="row-actions">
+		<IconButton
+			inline
+			icon="clock"
+			size={14}
+			label={m.events_machine_history_title({ machine: mc.display_name || mc.name })}
+			title={m.events_machine_history_button()}
+			onclick={() => (historyTarget = mc)}
+		/>
+		{#if canManage && mc.kind !== 'dispatch'}
 			{#if !mc.revoked_at}
 				<IconButton
 					inline
@@ -113,8 +123,8 @@
 				title={mc.revoked_at ? m.users_purge() : m.users_revoke()}
 				onclick={() => (dropTarget = mc)}
 			/>
-		</span>
-	{/if}
+		{/if}
+	</span>
 {/snippet}
 
 <section class="tbl">
@@ -168,6 +178,10 @@
 		onsave={(name, hue) => save(mc, name, hue)}
 		onclose={() => (editMachine = null)}
 	/>
+{/if}
+
+{#if historyTarget}
+	<MachineHistoryModal machine={historyTarget} onclose={() => (historyTarget = null)} />
 {/if}
 
 {#if dropTarget}

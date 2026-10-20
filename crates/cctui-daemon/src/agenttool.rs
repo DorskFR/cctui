@@ -13,6 +13,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use cctui_proto::api::context::{
+    ContextMatch, ContextToolEntry, ContextToolRequest, ContextToolResponse,
+};
 use cctui_proto::api::{
     ArchiveChildRequest, ArchiveChildResponse, MessageChildRequest, PeerMessageRequest,
     RoomToolRequest, SpawnChildRequest,
@@ -74,6 +77,13 @@ enum CallKind {
     /// server, which owns the list and answers with all of it.
     UserActionAdd(Value),
     UserActionTick(Value),
+    Context(ContextToolRequest),
+    /// `CctuiSpeak`: synthesize `text` into a voice note posted in the caller's
+    /// own conversation.
+    Speak {
+        text: String,
+        voice: Option<String>,
+    },
     /// The relay announcing that it answered `initialize`.
     RelayReady,
     /// The session's `SessionStart` hook holding the first turn until the relay
@@ -130,11 +140,13 @@ fn parse_call(line: &str) -> Result<Call, String> {
             None => return Err("session_id is required: the child to archive".to_owned()),
         },
         Some("peers") => CallKind::Peers,
+        Some("speak") => parse_speak(&args)?,
         Some("send_peer") => parse_send_peer(&args)?,
         Some("room") => parse_room(&args)?,
         Some("peer_history") => parse_peer_history(&args)?,
         Some("user_action_add") => parse_user_action_add(&args),
         Some("user_action_tick") => parse_user_action_tick(&args)?,
+        Some("context") => parse_context(&args)?,
         Some("relay_ready") => CallKind::RelayReady,
         Some("relay_wait") => CallKind::RelayWait,
         Some(kind @ ("preview_open" | "preview_close")) => {
@@ -275,6 +287,79 @@ fn roles_arg(args: &Value) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
+fn parse_speak(args: &Value) -> Result<CallKind, String> {
+    let text = string_arg(args, "text").ok_or("text is required: what to say")?;
+    let max = crate::mcp::SPEAK_MAX_CHARS;
+    if text.chars().count() > max {
+        return Err(format!("text is too long: at most {max} characters"));
+    }
+    Ok(CallKind::Speak { text, voice: string_arg(args, "voice") })
+}
+
+fn parse_context(args: &Value) -> Result<CallKind, String> {
+    let action = string_arg(args, "action")
+        .map(|a| a.to_ascii_lowercase())
+        .ok_or("action is required: \"list\", \"show\", \"save\" or \"attach\"")?;
+    let kind = string_arg(args, "kind").map(|k| k.to_ascii_lowercase());
+    let name = string_arg(args, "name");
+    let mut req = ContextToolRequest { action: action.clone(), ..ContextToolRequest::default() };
+    match action.as_str() {
+        "list" => req.kind = kind,
+        "show" => {
+            req.name = Some(name.ok_or("name is required to show an item")?);
+            req.kind = Some(kind.unwrap_or_else(|| "memory".to_owned()));
+        }
+        "save" => {
+            let kind = kind.filter(|k| k == "memory" || k == "rule");
+            req.kind = Some(kind.ok_or("kind must be memory or rule")?);
+            let name = name.ok_or("name is required to save an item")?;
+            let mode = string_arg(args, "mode")
+                .map_or_else(|| "create".to_owned(), |m| m.to_ascii_lowercase());
+            if !["create", "replace", "append"].contains(&mode.as_str()) {
+                return Err(format!(
+                    "mode must be \"create\", \"replace\" or \"append\", got {mode}"
+                ));
+            }
+            let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+            if body.trim().is_empty() {
+                return Err("body is required to save an item".to_owned());
+            }
+            req.title =
+                string_arg(args, "title").or_else(|| (mode == "create").then(|| name.clone()));
+            req.body = Some(body.to_owned());
+            req.match_ = args
+                .get("match")
+                .filter(|m| !m.is_null())
+                .map(|m| serde_json::from_value::<ContextMatch>(m.clone()))
+                .transpose()
+                .map_err(|e| format!("match is malformed: {e}"))?;
+            req.name = Some(name);
+            req.mode = Some(mode);
+        }
+        "attach" => {
+            let mut names: Vec<String> = Vec::new();
+            for n in args.get("names").and_then(Value::as_array).into_iter().flatten() {
+                let Some(n) = n.as_str().map(str::trim).filter(|n| !n.is_empty()) else {
+                    continue;
+                };
+                if !names.iter().any(|seen| seen == n) {
+                    names.push(n.to_owned());
+                }
+            }
+            if names.is_empty() {
+                return Err("names is required: the memories to attach".to_owned());
+            }
+            req.names = names;
+        }
+        other => {
+            return Err(format!(
+                "action must be \"list\", \"show\", \"save\" or \"attach\", got {other}"
+            ));
+        }
+    }
+    Ok(CallKind::Context(req))
+}
+
 fn string_arg(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(Value::as_str)
@@ -290,6 +375,7 @@ pub fn normalize_adapter(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
         "claude" | "claude-code" => "claude-code".to_owned(),
         "codex" | "codex-cli" => "codex".to_owned(),
+        "gemini" | "gemini-cli" => "gemini".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -339,6 +425,8 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Context(_)
+        | CallKind::Speak { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
@@ -358,6 +446,17 @@ fn render_peers(v: &Value) -> String {
     for p in peers {
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("?");
         let name = p.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+        if s("relation").starts_with("remote") {
+            lines.push(format!(
+                "- {} [{}] {} · on another cctui ({}) · {}",
+                s("session_id"),
+                s("relation"),
+                name.unwrap_or("(unnamed)"),
+                s("machine"),
+                s("state"),
+            ));
+            continue;
+        }
         lines.push(format!(
             "- {} [{}] {} · {} on {} · {}",
             s("session_id"),
@@ -374,9 +473,43 @@ fn render_peers(v: &Value) -> String {
 /// A room reply, rendered per action. `post` confirms the reach so a model knows
 /// how many agents it just interrupted; `peek` and `members` render the timeline
 /// and the roster as lines.
+fn render_sent(to: &str, relation: &str, status: &str) -> String {
+    let head = match status {
+        "queued" => format!(
+            "queued for {to} ({relation}): the other cctui did not take it yet and it is retried \
+             in the background."
+        ),
+        "awaiting_review" => format!(
+            "held for {to} ({relation}): your owner reviews outbound messages on this link \
+             before they leave."
+        ),
+        _ => format!("delivered to {to} ({relation})."),
+    };
+    format!(
+        "{head} It arrives as a turn in that session; it will not reply through this tool — \
+         watch for its own CctuiSend back."
+    )
+}
+
 fn render_room(action: &str, me: &str, v: &Value) -> String {
+    let body = render_room_body(action, me, v);
+    match v.get("notice").and_then(Value::as_str) {
+        Some(notice) if action != "post" => format!("{notice}\n{body}"),
+        _ => body,
+    }
+}
+
+fn render_room_body(action: &str, me: &str, v: &Value) -> String {
     let room = v.get("room").and_then(Value::as_str).unwrap_or("the room");
     match action {
+        "post" if v.get("remote").and_then(Value::as_bool) == Some(true) => {
+            let status = v.get("status").and_then(Value::as_str).unwrap_or("?");
+            format!(
+                "posted to {room}, a room hosted on another cctui ({status}); its host delivers \
+                 it to the members. They answer when they choose — nothing comes back through \
+                 this call."
+            )
+        }
         "post" => {
             let seq = v.get("seq").and_then(Value::as_i64).unwrap_or(0);
             let delivered = v.get("delivered").and_then(Value::as_u64).unwrap_or(0);
@@ -410,7 +543,21 @@ fn render_room(action: &str, me: &str, v: &Value) -> String {
                 v.get("members").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
             let mut lines = vec![format!("{room} — {} member(s), plus the human:", members.len())];
             for mem in members {
+                if let Some(label) = mem.as_str() {
+                    lines.push(format!("- {label}"));
+                    continue;
+                }
                 let s = |k: &str| mem.get(k).and_then(Value::as_str).unwrap_or("?");
+                if mem.get("remote").and_then(Value::as_bool) == Some(true) {
+                    let name = mem.get("name").and_then(Value::as_str).unwrap_or("(unnamed)");
+                    lines.push(format!(
+                        "- {} [remote] {name} · on another cctui ({}) · {}",
+                        s("session_id"),
+                        s("machine"),
+                        s("state"),
+                    ));
+                    continue;
+                }
                 let name = mem.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
                 lines.push(format!(
                     "- {} [{}] {} · {} on {} · {}",
@@ -769,6 +916,51 @@ fn render_user_action_result(v: &Value) -> String {
     out.join("\n")
 }
 
+fn render_context_entry(e: &ContextToolEntry) -> String {
+    let state = if e.enabled { "enabled" } else { "disabled" };
+    let mut line = format!("{} ({}) — {} · v{} · {state}", e.name, e.kind, e.title, e.version);
+    if e.pending {
+        line.push_str(" · pending approval");
+    }
+    if let Some(by) = e.updated_by_session.as_deref().or(e.created_by_session.as_deref()) {
+        let _ = write!(line, " · saved by session {by}");
+    }
+    line
+}
+
+fn render_context_result(action: &str, r: &ContextToolResponse) -> String {
+    match action {
+        "list" if r.items.is_empty() => "no context items".to_owned(),
+        "list" => r.items.iter().map(render_context_entry).collect::<Vec<_>>().join("\n"),
+        "show" => {
+            let head =
+                r.item.as_ref().map_or_else(|| "(unknown item)".to_owned(), render_context_entry);
+            format!("{head}\n\n{}", r.body.as_deref().unwrap_or("").trim_end())
+        }
+        "save" => match &r.item {
+            Some(e) if r.pending => format!(
+                "proposed {} `{}` — pending the user's approval; it does not apply until they \
+                 approve it",
+                e.kind, e.name
+            ),
+            Some(e) => format!("saved {} `{}` (v{})", e.kind, e.name, e.version),
+            None => "saved".to_owned(),
+        },
+        _ => {
+            let mut out = if r.attached.is_empty() {
+                "nothing attached".to_owned()
+            } else {
+                let path = r.path.as_deref().unwrap_or("(no path)");
+                format!("attached {} — read `{path}`", r.attached.join(", "))
+            };
+            if !r.unknown.is_empty() {
+                let _ = write!(out, "\nunknown: {}", r.unknown.join(", "));
+            }
+            out
+        }
+    }
+}
+
 async fn run_user_action(
     server: &ServerClient,
     machine_key: &str,
@@ -812,13 +1004,8 @@ async fn run_unfollowed_call(
             Ok(v) => {
                 let to = v.get("delivered_to").and_then(Value::as_str).unwrap_or(&req.session_id);
                 let relation = v.get("relation").and_then(Value::as_str).unwrap_or("peer");
-                json!({
-                    "ok": true,
-                    "result": format!(
-                        "delivered to {to} ({relation}). It arrives as a turn in that session; \
-                         it will not reply through this tool — watch for its own CctuiSend back."
-                    ),
-                })
+                let status = v.get("status").and_then(Value::as_str).unwrap_or("delivered");
+                json!({ "ok": true, "result": render_sent(to, relation, status) })
             }
             Err(err) => json!({ "ok": false, "error": err.to_string() }),
         },
@@ -835,6 +1022,19 @@ async fn run_unfollowed_call(
         CallKind::UserActionAdd(body) => run_user_action(server, machine_key, me, "", body).await,
         CallKind::UserActionTick(body) => {
             run_user_action(server, machine_key, me, "/tick", body).await
+        }
+        CallKind::Context(req) => match server.context_call(machine_key, me, req).await {
+            Ok(r) => json!({ "ok": true, "result": render_context_result(&req.action, &r) }),
+            Err(err) => json!({ "ok": false, "error": err.to_string() }),
+        },
+        CallKind::Speak { text, voice } => {
+            match server.speak(machine_key, me, text, voice.as_deref()).await {
+                Ok(v) => {
+                    let duration = v.get("duration_s").cloned().unwrap_or(Value::Null);
+                    json!({ "ok": true, "result": json!({ "ok": true, "duration_s": duration }).to_string() })
+                }
+                Err(err) => json!({ "ok": false, "error": err.to_string() }),
+            }
         }
         CallKind::RelayReady => {
             crate::mcpready::announce(me);
@@ -907,6 +1107,8 @@ async fn run_call(
         | CallKind::PeerHistory { .. }
         | CallKind::UserActionAdd(_)
         | CallKind::UserActionTick(_)
+        | CallKind::Context(_)
+        | CallKind::Speak { .. }
         | CallKind::RelayReady
         | CallKind::RelayWait
         | CallKind::PreviewOpen { .. }
@@ -1207,6 +1409,159 @@ mod tests {
         assert!(text.contains("the user action list is empty"), "{text}");
     }
 
+    fn context_call(args: &Value) -> Result<ContextToolRequest, String> {
+        let line = json!({ "kind": "context", "session_id": "s1", "args": args }).to_string();
+        match parse_call(&line)?.kind {
+            CallKind::Context(req) => Ok(req),
+            other => panic!("expected a context call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_context_call_needs_a_known_action() {
+        assert!(context_call(&json!({})).unwrap_err().contains("action is required"));
+        let err = context_call(&json!({ "action": "delete", "name": "x" })).unwrap_err();
+        assert!(err.contains("got delete"), "{err}");
+        let list = context_call(&json!({ "action": "List", "kind": "rule" })).unwrap();
+        assert_eq!(list.action, "list");
+        assert_eq!(list.kind.as_deref(), Some("rule"));
+    }
+
+    #[test]
+    fn a_context_show_needs_a_name_and_defaults_to_a_memory() {
+        assert!(context_call(&json!({ "action": "show" })).is_err());
+        let req = context_call(&json!({ "action": "show", "name": " wt " })).unwrap();
+        assert_eq!(req.name.as_deref(), Some("wt"));
+        assert_eq!(req.kind.as_deref(), Some("memory"));
+    }
+
+    #[test]
+    fn a_context_save_validates_kind_mode_name_and_body() {
+        let base = |extra: Value| {
+            let mut a = json!({ "action": "save", "kind": "memory", "name": "wt", "body": "b" });
+            a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            context_call(&a)
+        };
+        let err = base(json!({ "kind": "prompt" })).unwrap_err();
+        assert_eq!(err, "kind must be memory or rule");
+        assert!(base(json!({ "kind": null })).is_err());
+        assert!(base(json!({ "name": "" })).is_err());
+        assert!(base(json!({ "body": "   " })).unwrap_err().contains("body is required"));
+        assert!(base(json!({ "mode": "upsert" })).unwrap_err().contains("mode must be"));
+
+        let created = base(json!({})).unwrap();
+        assert_eq!(created.mode.as_deref(), Some("create"));
+        assert_eq!(created.title.as_deref(), Some("wt"), "a create titles itself by its name");
+        assert!(created.match_.is_none());
+
+        let appended = base(json!({ "mode": "append" })).unwrap();
+        assert!(appended.title.is_none(), "an append keeps the item's own title");
+
+        let rule = base(json!({
+            "kind": "rule",
+            "title": "Worktrees",
+            "match": { "adapters": ["codex"], "paths": ["/w/repo"] },
+        }))
+        .unwrap();
+        assert_eq!(rule.kind.as_deref(), Some("rule"));
+        assert_eq!(rule.title.as_deref(), Some("Worktrees"));
+        let m = rule.match_.expect("match passes through");
+        assert_eq!(m.adapters, ["codex"]);
+        assert_eq!(m.paths, ["/w/repo"]);
+        assert!(base(json!({ "match": { "adapters": "codex" } })).is_err());
+    }
+
+    #[test]
+    fn a_context_attach_needs_names_and_dedupes_them() {
+        assert!(context_call(&json!({ "action": "attach" })).is_err());
+        assert!(context_call(&json!({ "action": "attach", "names": ["  ", ""] })).is_err());
+        let args = json!({ "action": "attach", "names": [" wt ", "wt", "ops", 3] });
+        let req = context_call(&args).unwrap();
+        assert_eq!(req.names, ["wt", "ops"]);
+    }
+
+    fn entry(name: &str, kind: &str) -> ContextToolEntry {
+        ContextToolEntry {
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            title: format!("{name} title"),
+            enabled: true,
+            version: 2,
+            ..ContextToolEntry::default()
+        }
+    }
+
+    #[test]
+    fn a_context_list_renders_one_line_per_item_with_provenance() {
+        assert_eq!(
+            render_context_result("list", &ContextToolResponse::default()),
+            "no context items"
+        );
+        let mut proposed = entry("wt", "rule");
+        proposed.enabled = false;
+        proposed.pending = true;
+        proposed.created_by_session = Some("s-9".to_owned());
+        let r = ContextToolResponse {
+            items: vec![entry("ops", "memory"), proposed],
+            ..ContextToolResponse::default()
+        };
+        let text = render_context_result("list", &r);
+        assert_eq!(
+            text,
+            "ops (memory) — ops title · v2 · enabled\n\
+             wt (rule) — wt title · v2 · disabled · pending approval · saved by session s-9"
+        );
+    }
+
+    #[test]
+    fn a_context_show_renders_the_header_then_the_body() {
+        let r = ContextToolResponse {
+            item: Some(entry("ops", "memory")),
+            body: Some("no prod\n".to_owned()),
+            ..ContextToolResponse::default()
+        };
+        assert_eq!(
+            render_context_result("show", &r),
+            "ops (memory) — ops title · v2 · enabled\n\nno prod"
+        );
+    }
+
+    #[test]
+    fn a_context_save_says_whether_it_is_live_or_awaiting_approval() {
+        let saved = ContextToolResponse {
+            item: Some(entry("ops", "memory")),
+            ..ContextToolResponse::default()
+        };
+        assert_eq!(render_context_result("save", &saved), "saved memory `ops` (v2)");
+        let proposed = ContextToolResponse {
+            item: Some(entry("wt", "rule")),
+            pending: true,
+            ..ContextToolResponse::default()
+        };
+        let text = render_context_result("save", &proposed);
+        assert!(text.starts_with("proposed rule `wt` — pending the user's approval"), "{text}");
+        assert!(text.contains("does not apply until they approve it"), "{text}");
+    }
+
+    #[test]
+    fn a_context_attach_names_the_file_and_the_unknown_names() {
+        let r = ContextToolResponse {
+            path: Some("/tmp/cctui-uploads/s1/context.md".to_owned()),
+            attached: vec!["wt".to_owned(), "ops".to_owned()],
+            unknown: vec!["ghost".to_owned()],
+            ..ContextToolResponse::default()
+        };
+        assert_eq!(
+            render_context_result("attach", &r),
+            "attached wt, ops — read `/tmp/cctui-uploads/s1/context.md`\nunknown: ghost"
+        );
+        let none = ContextToolResponse {
+            unknown: vec!["ghost".to_owned()],
+            ..ContextToolResponse::default()
+        };
+        assert_eq!(render_context_result("attach", &none), "nothing attached\nunknown: ghost");
+    }
+
     #[test]
     fn the_relay_readiness_ops_parse_without_any_args() {
         let ready = json!({ "kind": "relay_ready", "session_id": "s1" }).to_string();
@@ -1375,6 +1730,7 @@ mod tests {
         assert_eq!(normalize_adapter("Claude"), "claude-code");
         assert_eq!(normalize_adapter("codex-cli"), "codex");
         assert_eq!(normalize_adapter(" opencode "), "opencode");
+        assert_eq!(normalize_adapter("Gemini_CLI"), "gemini");
     }
 
     #[test]
@@ -1774,6 +2130,23 @@ mod tests {
             !should_nudge(&outcome),
             "a killed child must never be nudged even on truncated text"
         );
+    }
+
+    #[test]
+    fn a_speak_call_needs_text_within_the_cap_and_keeps_the_voice() {
+        let ok = json!({ "kind": "speak", "session_id": "p", "args": { "text": " hi ", "voice": "af_bella" } });
+        let CallKind::Speak { text, voice } = parse_call(&ok.to_string()).unwrap().kind else {
+            panic!("expected speak")
+        };
+        assert_eq!(text, "hi");
+        assert_eq!(voice.as_deref(), Some("af_bella"));
+
+        let empty = json!({ "kind": "speak", "session_id": "p", "args": { "text": "  " } });
+        assert!(parse_call(&empty.to_string()).unwrap_err().contains("text is required"));
+
+        let long = "a".repeat(crate::mcp::SPEAK_MAX_CHARS + 1);
+        let too_long = json!({ "kind": "speak", "session_id": "p", "args": { "text": long } });
+        assert!(parse_call(&too_long.to_string()).unwrap_err().contains("too long"));
     }
 
     #[test]
@@ -2181,6 +2554,74 @@ mod tests {
         assert!(
             out.contains("- b [observer] (unnamed) · claude-code on box-a · archived"),
             "{out}"
+        );
+    }
+
+    #[test]
+    fn remote_peers_render_as_another_cctui_not_an_unknown_adapter() {
+        let out = render_peers(&json!({ "peers": [
+            { "session_id": "remote:5f0c", "name": "bob's agent", "adapter": null,
+              "machine": "b.example", "state": "live", "relation": "remote" },
+        ] }));
+        assert!(
+            out.contains(
+                "- remote:5f0c [remote] bob's agent · on another cctui (b.example) · live"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_remote_send_says_whether_it_was_delivered_queued_or_held() {
+        let sent = render_sent("remote:x", "remote", "delivered");
+        assert!(sent.starts_with("delivered to remote:x"), "{sent}");
+        assert!(render_sent("remote:x", "remote", "queued").starts_with("queued for remote:x"));
+        let held = render_sent("remote:x", "remote", "awaiting_review");
+        assert!(held.contains("reviews outbound"), "{held}");
+        assert!(render_sent("s1", "sibling", "delivered").contains("CctuiSend back"));
+    }
+
+    #[test]
+    fn a_remote_room_renders_its_post_status_and_label_only_members() {
+        let post = render_room(
+            "post",
+            "me",
+            &json!({
+                "room": "wave 23", "room_id": "remote:x", "remote": true, "status": "queued",
+            }),
+        );
+        assert!(post.contains("another cctui (queued)"), "{post}");
+        assert!(!post.contains("#0"), "{post}");
+
+        let members = render_room(
+            "members",
+            "me",
+            &json!({
+                "room": "wave 23", "members": ["alice (claude-code on box-a)", "bob (remote)"],
+            }),
+        );
+        assert!(members.contains("- alice (claude-code on box-a)"), "{members}");
+        assert!(members.contains("- bob (remote)"), "{members}");
+
+        let framed = render_room(
+            "peek",
+            "me",
+            &json!({ "room": "ops", "notice": "Content below was written by a remote peer (h)",
+                     "messages": [] }),
+        );
+        assert!(framed.starts_with("Content below was written by a remote peer (h)\n"), "{framed}");
+
+        let local = render_room(
+            "members",
+            "me",
+            &json!({ "room": "wave 23", "members": [
+                { "session_id": "remote:y", "name": "carol", "adapter": null,
+                  "machine": "c.example", "state": "live", "remote": true },
+            ] }),
+        );
+        assert!(
+            local.contains("- remote:y [remote] carol · on another cctui (c.example)"),
+            "{local}"
         );
     }
 

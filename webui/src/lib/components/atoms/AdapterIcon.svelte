@@ -1,10 +1,13 @@
 <script lang="ts">
 	import type { AdapterId } from '@bindings/AdapterId';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
+	import { brandMark, familyAccent } from '$lib/harnesses';
+	import { harnessTable } from '$lib/harnesses.svelte';
 
-	// Brand logo wrapped in the adapter-tinted span (Anthropic = amber,
-	// Codex = blue). Shared by the session card, the chat header, and the
-	// accounts grid (which passes `provider`: anthropic|openai).
+	// Brand logo wrapped in a span tinted by the harness family (Anthropic =
+	// amber, OpenAI = blue, Fireworks = violet, unknown = neutral). Shared by the
+	// session card, the chat header, and the accounts grid (which passes
+	// `provider`).
 	let {
 		adapter,
 		provider,
@@ -15,39 +18,23 @@
 		size?: number;
 	} = $props();
 
-	const isCodex = $derived(
-		provider != null
-			? provider === 'openai'
-			: (adapter ?? 'claude-code').toString().startsWith('codex')
-	);
-	const isFireworks = $derived(
-		provider != null
-			? provider === 'fireworks'
-			: (adapter ?? '').toString().startsWith('opencode')
-	);
+	const adapterId = $derived(adapter == null ? null : String(adapter));
+	const mark = $derived(brandMark({ adapter: adapterId, provider }, harnessTable()));
 </script>
 
 <span
 	class="adapter"
-	class:codex={isCodex}
-	class:fireworks={isFireworks}
-	title={provider ?? String(adapter ?? 'claude-code')}
+	data-mark={mark}
+	style="color: {familyAccent(mark)}"
+	title={provider ?? (adapterId || 'unknown')}
 >
-	<BrandLogo {adapter} {provider} {size} />
+	<BrandLogo adapter={adapterId} {provider} {size} />
 </span>
 
 <style>
 	.adapter {
 		display: inline-flex;
 		align-items: center;
-		/* Anthropic = warm/orange, Codex = teal-blue, matching brand hues. */
-		color: var(--c-amber);
 		flex: none;
-	}
-	.adapter.codex {
-		color: var(--c-blue);
-	}
-	.adapter.fireworks {
-		color: var(--c-violet, var(--c-blue));
 	}
 </style>

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use axum::extract::{Query, State};
 use axum::{Extension, Json};
@@ -337,6 +337,8 @@ const fn granularity_for_days(days: i64) -> &'static str {
 }
 
 type BucketRow = (DateTime<Utc>, i64, i64, i64, i64);
+/// One [`USAGE_COST_SQL`] row: `(bucket, model, catalog, input, output, cache_read)`.
+type CostRow = (DateTime<Utc>, Option<String>, Option<serde_json::Value>, i64, i64, i64);
 type ModelRow = (String, i64, i64, i64, i64);
 type HeatRow = (i32, i32, i64, i64);
 
@@ -355,6 +357,45 @@ const USAGE_BUCKETS_SQL: &str = "SELECT \
      LEFT JOIN machines m ON m.id = s.machine_uuid \
      WHERE stu.created_at >= $3 AND ($4::uuid IS NULL OR m.user_id = $4) \
      GROUP BY bucket ORDER BY bucket";
+
+/// Dollars per bucket, with the binds of [`USAGE_BUCKETS_SQL`].
+///
+/// Split further by model and by the catalog of the account the session last
+/// drew a gateway token from, so each row can be priced the way the session
+/// list prices it (`crate::cost`). A session with no token has no catalog and
+/// prices to nothing.
+const USAGE_COST_SQL: &str = "SELECT \
+        date_trunc($1, stu.created_at - make_interval(mins => $2)) \
+            + make_interval(mins => $2) AS bucket, \
+        COALESCE(NULLIF(stu.model, ''), NULLIF(s.model, '')) AS model, \
+        ap.models, \
+        COALESCE(SUM(stu.input_tokens), 0)::bigint, \
+        COALESCE(SUM(stu.output_tokens), 0)::bigint, \
+        COALESCE(SUM(stu.cache_read_tokens), 0)::bigint \
+     FROM session_token_usage stu \
+     LEFT JOIN sessions s ON s.id = stu.session_id \
+     LEFT JOIN machines m ON m.id = s.machine_uuid \
+     LEFT JOIN LATERAL ( \
+         SELECT st.account_id FROM session_tokens st \
+         WHERE st.session_id = stu.session_id \
+         ORDER BY st.created_at DESC LIMIT 1) tok ON TRUE \
+     LEFT JOIN account_providers ap ON ap.id = tok.account_id \
+     WHERE stu.created_at >= $3 AND ($4::uuid IS NULL OR m.user_id = $4) \
+     GROUP BY 1, 2, ap.id ORDER BY 1";
+
+/// Price every cost row and sum the dollars per bucket. A row whose model is
+/// unknown to its catalog adds nothing, as everywhere else cost is derived.
+fn cost_by_bucket(rows: Vec<CostRow>) -> HashMap<DateTime<Utc>, f64> {
+    let mut by_bucket: HashMap<DateTime<Utc>, f64> = HashMap::new();
+    for (bucket, model, catalog, input, output, cache_read) in rows {
+        let cost = crate::cost::tallies_cost_usd(
+            catalog.as_ref(),
+            &[(model, crate::cost::TokenUsage { input, cached_input: cache_read, output })],
+        );
+        *by_bucket.entry(bucket).or_insert(0.0) += cost;
+    }
+    by_bucket
+}
 
 /// Per-model breakdown. `$1` window start, `$2` owner filter (NULL = all).
 const USAGE_MODELS_SQL: &str = "SELECT \
@@ -383,9 +424,10 @@ const USAGE_HEATMAP_SQL: &str = "SELECT \
      GROUP BY 1, 2";
 
 /// `GET /sessions/stats/usage?days=30` — Overview usage analytics:
-/// tokens-over-time buckets, per-model breakdown, and an hour-of-week activity
-/// heatmap. One round-trip set (three aggregate scans of `session_token_usage`,
-/// no per-bucket queries). Scoped to the caller like `session_token_stats`.
+/// tokens-over-time buckets (each carrying its dollars), per-model breakdown,
+/// and an hour-of-week activity heatmap. One round-trip set (four aggregate
+/// scans of `session_token_usage`, no per-bucket queries). Scoped to the
+/// caller like `session_token_stats`.
 ///
 /// Bucketing and hour-of-week extraction are done in the caller's reporting
 /// timezone: `created_at` is shifted by `tz_offset` to local wall-clock time
@@ -414,6 +456,14 @@ pub async fn session_usage_analytics(
         .bind(uid)
         .fetch_all(&state.pool)
         .await?;
+    let cost_rows: Vec<CostRow> = sqlx::query_as(USAGE_COST_SQL)
+        .bind(granularity)
+        .bind(tz)
+        .bind(since)
+        .bind(uid)
+        .fetch_all(&state.pool)
+        .await?;
+    let mut usd_by_bucket = cost_by_bucket(cost_rows);
     let model_rows: Vec<ModelRow> =
         sqlx::query_as(USAGE_MODELS_SQL).bind(since).bind(uid).fetch_all(&state.pool).await?;
     let heat_rows: Vec<HeatRow> = sqlx::query_as(USAGE_HEATMAP_SQL)
@@ -427,6 +477,7 @@ pub async fn session_usage_analytics(
     let buckets = bucket_rows
         .into_iter()
         .map(|(bucket, input, output, cache_read, cache_creation)| UsageBucket {
+            cost_usd: usd_by_bucket.remove(&bucket).unwrap_or(0.0),
             bucket: bucket.to_rfc3339(),
             input: cast(input),
             output: cast(output),
@@ -459,8 +510,182 @@ pub async fn session_usage_analytics(
 
 #[cfg(test)]
 mod tests {
-    use super::{day_start_for_offset, granularity_for_days};
+    use super::{cost_by_bucket, day_start_for_offset, granularity_for_days};
     use chrono::{DateTime, Duration, TimeZone, Utc};
+    use serde_json::json;
+
+    fn priced_catalog() -> serde_json::Value {
+        json!([{
+            "model": "claude-x",
+            "price_input_per_mtok": 3.0,
+            "price_cached_input_per_mtok": 0.3,
+            "price_output_per_mtok": 15.0
+        }])
+    }
+
+    #[test]
+    fn cost_by_bucket_prices_each_row_against_its_own_catalog_and_sums_per_bucket() {
+        let day = Utc.with_ymd_and_hms(2026, 7, 15, 0, 0, 0).unwrap();
+        let other = day + Duration::days(1);
+        let rows = vec![
+            (day, Some("claude-x"), Some(priced_catalog()), 1_000_000, 0, 0),
+            (day, Some("claude-x"), Some(priced_catalog()), 0, 100_000, 1_000_000),
+            (day, Some("tokenless"), Some(priced_catalog()), 5_000_000, 5_000_000, 0),
+            (day, Some("claude-x"), None, 5_000_000, 5_000_000, 0),
+            (day, None, Some(priced_catalog()), 5_000_000, 5_000_000, 0),
+            (other, Some("claude-x"), Some(priced_catalog()), 0, 1_000_000, 0),
+        ]
+        .into_iter()
+        .map(|(bucket, model, catalog, input, output, cache_read)| {
+            (bucket, model.map(str::to_owned), catalog, input, output, cache_read)
+        })
+        .collect();
+        let by = cost_by_bucket(rows);
+        assert_eq!(by.len(), 2);
+        assert!((by[&day] - (3.0 + 1.5 + 0.3)).abs() < 1e-9, "{by:?}");
+        assert!((by[&other] - 15.0).abs() < 1e-9, "{by:?}");
+    }
+
+    #[test]
+    fn cost_by_bucket_is_empty_without_rows() {
+        assert!(cost_by_bucket(Vec::new()).is_empty());
+    }
+
+    /// A user with one priced anthropic credential and two sessions that each
+    /// burned the same tokens two days ago: only `priced` holds a token bound
+    /// to that credential. Returns the user and the two session ids.
+    async fn seed_priced_and_tokenless_sessions(
+        pool: &sqlx::PgPool,
+        at: DateTime<Utc>,
+    ) -> (uuid::Uuid, String, String) {
+        use uuid::Uuid;
+
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        let priced = format!("cost-agg-{uid}-priced");
+        let tokenless = format!("cost-agg-{uid}-tokenless");
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("cost-agg-{uid}"))
+            .bind(format!("hcost-{uid}"))
+            .execute(pool)
+            .await
+            .expect("insert user");
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mcost-{machine}"))
+            .execute(pool)
+            .await
+            .expect("insert machine");
+        let account: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(uid)
+                .bind(format!("cost-account-{uid}"))
+                .fetch_one(pool)
+                .await
+                .expect("insert account");
+        let provider: Uuid = sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider, models) \
+             VALUES ($1, $2, 'anthropic', $3) RETURNING id",
+        )
+        .bind(uid)
+        .bind(account)
+        .bind(priced_catalog())
+        .fetch_one(pool)
+        .await
+        .expect("insert provider");
+        for sid in [&priced, &tokenless] {
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, model) \
+                 VALUES ($1, $2, $2, $3, '/w', 'archived', 'claude-x')",
+            )
+            .bind(sid)
+            .bind(machine)
+            .bind(uid)
+            .execute(pool)
+            .await
+            .expect("insert session");
+            sqlx::query(
+                "INSERT INTO session_token_usage (session_id, message_id, model, input_tokens, \
+                 output_tokens, cache_read_tokens, cache_creation_tokens, created_at) \
+                 VALUES ($1, $2, 'claude-x', 1000000, 100000, 1000000, 0, $3)",
+            )
+            .bind(sid)
+            .bind(format!("{sid}-m1"))
+            .bind(at)
+            .execute(pool)
+            .await
+            .expect("insert usage");
+        }
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("hash-{}", Uuid::new_v4()))
+        .bind(&priced)
+        .bind(provider)
+        .execute(pool)
+        .await
+        .expect("insert token");
+        (uid, priced, tokenless)
+    }
+
+    async fn remove_seeded(pool: &sqlx::PgPool, uid: uuid::Uuid, sessions: &[&str]) {
+        for sid in sessions {
+            sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+                .bind(sid)
+                .execute(pool)
+                .await
+                .expect("cleanup tokens");
+            sqlx::query("DELETE FROM sessions WHERE id = $1")
+                .bind(sid)
+                .execute(pool)
+                .await
+                .expect("cleanup session");
+        }
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(uid)
+            .execute(pool)
+            .await
+            .expect("cleanup user");
+    }
+
+    #[tokio::test]
+    async fn usage_cost_over_db() {
+        use super::{CostRow, USAGE_COST_SQL};
+
+        let Some(url) = crate::routes::gateway::test_db_url("usage_cost_over_db") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let midday = Utc::now().date_naive().and_hms_opt(12, 0, 0).expect("midday").and_utc()
+            - Duration::days(2);
+        let (uid, priced, tokenless) = seed_priced_and_tokenless_sessions(&pool, midday).await;
+
+        let rows: Vec<CostRow> = sqlx::query_as(USAGE_COST_SQL)
+            .bind("day")
+            .bind(0_i32)
+            .bind(Utc::now() - Duration::days(30))
+            .bind(Some(uid))
+            .fetch_all(&pool)
+            .await
+            .expect("cost query");
+        let got = cost_by_bucket(rows)
+            .iter()
+            .find(|(b, _)| b.date_naive() == midday.date_naive())
+            .map_or(0.0, |(_, v)| *v);
+        assert!(
+            (got - 4.8).abs() < 1e-9,
+            "only the session with a priced catalog counts, got {got}"
+        );
+
+        remove_seeded(&pool, uid, &[&priced, &tokenless]).await;
+    }
 
     #[test]
     fn the_timezone_ctes_stay_materialized() {

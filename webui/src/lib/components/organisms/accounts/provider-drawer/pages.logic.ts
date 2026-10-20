@@ -18,7 +18,7 @@ export const PAGE_IDS = [
 export type PageId = (typeof PAGE_IDS)[number];
 
 /** Catalog group titles (settings keys are Title Case, env vars lowercase)
- *  routed to a drawer page; anything unmapped lands on Advanced. */
+ *  routed to a settings page; anything unmapped lands on Advanced. */
 const GROUP_PAGE: Record<string, PageId> = {
 	'UI & transcript': 'ui',
 	Notifications: 'ui',

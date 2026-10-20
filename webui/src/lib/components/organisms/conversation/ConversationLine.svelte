@@ -2,12 +2,14 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Checkbox, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Checkbox, Link, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import ContextBlock from './ContextBlock.svelte';
 	import HarnessCommandCard from './HarnessCommandCard.svelte';
 	import LineActions from './LineActions.svelte';
 	import LineDelivery from './LineDelivery.svelte';
 	import LineFooter from './LineFooter.svelte';
 	import MessageBubble from './MessageBubble.svelte';
+	import VoiceNote from './VoiceNote.svelte';
 	import MarkerBody from './MarkerBody.svelte';
 	import TaskNotificationCard from './TaskNotificationCard.svelte';
 	import ThinkingBubble from './ThinkingBubble.svelte';
@@ -18,6 +20,7 @@
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
+	import { sessionHref } from '$lib/sessionFailureToast';
 
 	let {
 		ln,
@@ -73,7 +76,18 @@
 
 	// An archived session has no composer to quote into.
 	const quotable = $derived(
-		!!onquote && !archived && !selectMode && ln.role !== 'thinking' && ln.role !== 'marker'
+		!!onquote &&
+			!archived &&
+			!selectMode &&
+			ln.role !== 'thinking' &&
+			ln.role !== 'marker' &&
+			ln.role !== 'context'
+	);
+
+	const contextLabel = $derived(
+		ln.context?.kind === 'previous-conversation'
+			? m.conversation_injected_previous()
+			: m.conversation_injected_session()
 	);
 
 	// An optimistic user echo carries a synthetic `maxSeq + 1` seq that no server
@@ -124,16 +138,33 @@
 			<Tooltip text={`turn ${ln.turn}`}>
 				{#snippet trigger()}<Badge size="xs" uppercase color="var(--bc)">{ln.role}</Badge>{/snippet}
 			</Tooltip>
+		{:else if ln.context}
+			<Badge size="xs" uppercase color="var(--bc)">{contextLabel}</Badge>
 		{:else}
 			<Badge size="xs" uppercase color="var(--bc)"
 				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 			>
+		{/if}
+		{#if ln.context?.session}
+			<span class="who context-from" title={ln.context.session}>
+				·
+				{#if ln.context.sessionId}
+					<Link href={sessionHref(ln.context.sessionId)} title={m.conversation_injected_open_session()}
+						>{ln.context.session}</Link
+					>
+				{:else}
+					{ln.context.session}
+				{/if}
+			</span>
 		{/if}
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 		{/if}
 		{#if ln.role === 'peer' && ln.peerRoom}
 			<Badge size="xs" color="var(--bc)">{m.rooms_line_from_room({ room: ln.peerRoom })}</Badge>
+		{/if}
+		{#if ln.role === 'peer' && ln.peerRemote}
+			<Badge size="xs" color="var(--bc)" title={m.cctuiverse_external_title()}>{m.cctuiverse_external_badge()}</Badge>
 		{/if}
 		{#if ln.role === 'peer' && ln.peerFrom}
 			<span class="who peer-from" title={ln.peerFrom}>· {ln.peerFrom}</span>
@@ -162,12 +193,16 @@
 		<div class="bubble tool-block" role="note">
 			{m.conversation_tool_call_blocked({ tool: ln.toolBlock.tool, rule: ln.toolBlock.term })}
 		</div>
+	{:else if ln.context}
+		<ContextBlock html={ln.html} text={ln.text} />
 	{:else if ln.role === 'marker'}
 		<MarkerBody texts={ln.markerTexts ?? [ln.text ?? '']} />
 	{:else if ln.notification}
 		<TaskNotificationCard note={ln.notification} />
 	{:else if ln.command}
 		<HarnessCommandCard command={ln.command} />
+	{:else if ln.voiceNoteId && sessionId}
+		<VoiceNote {sessionId} noteId={ln.voiceNoteId} text={ln.text ?? ''} ts={ln.ts} />
 	{:else}
 		<MessageBubble
 			role={ln.role}
@@ -222,6 +257,9 @@
 	.line.poll {
 		--bc: var(--role-poll);
 	}
+	.line.context {
+		--bc: var(--role-context);
+	}
 	.line.marker {
 		--bc: var(--text-faint);
 	}
@@ -252,6 +290,16 @@
 	.peer-from {
 		font-family: var(--font-mono);
 		color: var(--role-peer);
+		text-transform: none;
+		letter-spacing: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 40%;
+	}
+	.context-from {
+		font-family: var(--font-mono);
+		color: var(--role-context);
 		text-transform: none;
 		letter-spacing: 0;
 		overflow: hidden;

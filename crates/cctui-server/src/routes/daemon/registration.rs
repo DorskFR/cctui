@@ -6,7 +6,7 @@ use crate::state::AppState;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn upsert_session(
-    pool: &sqlx::PgPool,
+    state: &AppState,
     machine_id: Uuid,
     user_id: Uuid,
     adapter_id: &str,
@@ -66,8 +66,9 @@ pub(super) async fn upsert_session(
     .bind(parent_local_id)
     .bind(observed_at)
     .bind(extra)
-    .fetch_optional(pool)
+    .fetch_optional(&state.pool)
     .await?;
+    let pool = &state.pool;
     let inserted = match inserted {
         Some(inserted) => inserted,
         None if session_owned(pool, machine_id, user_id, local_id).await? => false,
@@ -80,14 +81,32 @@ pub(super) async fn upsert_session(
     // `daemon_lost` / `machine_offline` end was spurious. So is a "released"
     // end: 0.17.0 ended every claude job cctui had not started, and those jobs
     // are alive and registered again.
-    sqlx::query(
-        "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
+    let revived: Option<Option<String>> = sqlx::query_scalar(
+        "WITH prior AS (SELECT end_reason FROM sessions WHERE id = $1) \
+         UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
          WHERE id = $1 AND status = 'ended' \
-           AND (end_reason IN ('daemon_lost', 'machine_offline') OR end_detail LIKE 'released:%')",
+           AND (end_reason IN ('daemon_lost', 'machine_offline') OR end_detail LIKE 'released:%') \
+         RETURNING (SELECT end_reason FROM prior)",
     )
     .bind(local_id)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
+    if let Some(prior_end_reason) = revived {
+        crate::events::record(
+            state,
+            crate::events::Event::new(
+                crate::events::kind::SESSION_RESUMED,
+                crate::events::Actor::Daemon,
+            )
+            .session(local_id)
+            .machine(machine_id)
+            .user(user_id)
+            .detail(serde_json::json!({
+                "origin": "daemon-reregistered",
+                "prior_end_reason": prior_end_reason,
+            })),
+        );
+    }
     // Repair the durable account binding: the dispatch path mints the
     // gateway token BEFORE the daemon registers the session, so mint-time's
     // best-effort `UPDATE sessions SET account_id` hit no row and the binding
@@ -136,21 +155,22 @@ pub(super) async fn register_announced_session(
     adapter_id: &str,
     local_id: &str,
 ) -> anyhow::Result<()> {
-    if upsert_session(
-        &state.pool,
-        machine_id,
-        user_id,
-        adapter_id,
-        local_id,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?
+    if upsert_session(state, machine_id, user_id, adapter_id, local_id, None, None, None, None)
+        .await?
         == Some(true)
     {
         publish_session_registered(state, local_id).await;
+        crate::events::record(
+            state,
+            crate::events::Event::new(
+                crate::events::kind::SESSION_CREATED,
+                crate::events::Actor::Daemon,
+            )
+            .session(local_id)
+            .machine(machine_id)
+            .user(user_id)
+            .detail(serde_json::json!({ "origin": "daemon-registered", "adapter_id": adapter_id })),
+        );
     }
     Ok(())
 }
@@ -275,9 +295,10 @@ mod tests {
         .await
         .expect("seed archived session");
 
+        let state = AppState::for_test(pool.clone());
         for id in [&released, &archived] {
             super::upsert_session(
-                &pool,
+                &state,
                 machine_id,
                 uid,
                 "claude-code",
@@ -332,9 +353,10 @@ mod tests {
             .expect("connect test db");
         let (uid, mid) = seed_machine(&pool, "inventory").await;
         let sid = Uuid::new_v4().to_string();
+        let state = AppState::for_test(pool.clone());
         let tick = || {
             upsert_session(
-                &pool,
+                &state,
                 mid,
                 uid,
                 "codex",

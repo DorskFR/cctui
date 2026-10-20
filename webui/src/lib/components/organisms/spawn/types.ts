@@ -63,9 +63,8 @@ export interface Form {
 	// last-used set. Resolved against the live label list for display.
 	labels: string[];
 	// Context item names to attach, and whether scope-matching memory notes are
-	// added on top. The server resolves both, so a `CctuiAgent` child of the
-	// same profile gets the identical set. Auto stays off until the panel can
-	// show what a scope would pull in.
+	// added on top. Auto is turned off once the user unchecks a matched memory,
+	// or the server would add it back.
 	context_items: string[];
 	context_auto: boolean;
 }

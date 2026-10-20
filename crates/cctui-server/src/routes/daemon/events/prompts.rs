@@ -109,7 +109,8 @@ pub(super) async fn on_prompt_event(state: &AppState, bumps: &Bumps, event: Adap
 }
 
 async fn on_permission_request(state: &AppState, bumps: &Bumps, event: AdapterEvent) {
-    let AdapterEvent::PermissionRequest { local_id, request_id, tool, input } = event else {
+    let AdapterEvent::PermissionRequest { local_id, request_id, tool, input, options } = event
+    else {
         return;
     };
     // `local_id` is the session id (claude session id / codex rollout
@@ -144,6 +145,7 @@ async fn on_permission_request(state: &AppState, bumps: &Bumps, event: AdapterEv
                 local_id: local_id.clone(),
                 request_id: request_id.clone(),
                 allow: true,
+                option_id: None,
             },
         )
         .await;
@@ -157,6 +159,7 @@ async fn on_permission_request(state: &AppState, bumps: &Bumps, event: AdapterEv
             tool_name: tool.clone(),
             description: tool.clone(),
             input_preview: input_preview.clone(),
+            options: options.clone(),
             received_at: chrono::Utc::now(),
         },
     );
@@ -166,6 +169,7 @@ async fn on_permission_request(state: &AppState, bumps: &Bumps, event: AdapterEv
         tool_name: tool.clone(),
         description: tool,
         input_preview,
+        options,
     });
     bumps.heartbeat(&local_id);
 }

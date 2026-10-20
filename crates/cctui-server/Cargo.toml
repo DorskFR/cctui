@@ -38,6 +38,7 @@ regex.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
+ring = "0.17"
 ts-rs = { workspace = true, optional = true }
 toml.workspace = true
 log = "0.4.33"

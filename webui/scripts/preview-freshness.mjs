@@ -1,5 +1,5 @@
 // A reused `vite preview` can answer with markup whose assets it will not
-// serve — from an older build, or from another worktree holding the port. The
+// serve — from an older build, or from another checkout holding the port. The
 // capture that follows is a blank page that looks like a real UI defect.
 const ASSET_RE = /\/_app\/immutable\/[^"'\s>]+?\.(?:js|css)/g;
 

@@ -147,7 +147,7 @@ async fn soft_limit_refusal(
     {
         return Ok(super::failover_retry_response(
             &target.account_name,
-            target.reason,
+            &target.reason,
             is_anthropic,
         ));
     }
@@ -501,9 +501,16 @@ fn forward_headers(
             headers.insert(hn, hv);
         }
     }
+    // Anthropic API keys authenticate through `x-api-key`; every other
+    // scheme is a bearer.
+    let (name, value) = if acct.auth_scheme == "api_key" {
+        (reqwest::header::HeaderName::from_static("x-api-key"), access_token.to_owned())
+    } else {
+        (reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
+    };
     headers.insert(
-        reqwest::header::AUTHORIZATION,
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
+        name,
+        reqwest::header::HeaderValue::from_str(&value)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     );
     // ChatGPT-backed Codex requests must carry the account id upstream. Other
@@ -700,7 +707,7 @@ async fn send_upstream(
     {
         return Err(Ok(super::failover_retry_response(
             &target.account_name,
-            target.reason,
+            &target.reason,
             is_anthropic,
         )));
     }
@@ -954,8 +961,8 @@ pub async fn passthrough(
 #[cfg(test)]
 mod tests {
     use super::{
-        FireworksSettings, MAX_BUFFERED_BODY, declared_body_len, skip_request_header,
-        upstream_payload,
+        FireworksSettings, MAX_BUFFERED_BODY, declared_body_len, forward_headers,
+        skip_request_header, upstream_payload,
     };
     use axum::http::HeaderMap;
 
@@ -979,12 +986,46 @@ mod tests {
         assert!(!skip_request_header("chatgpt-account-id"));
     }
 
+    fn static_account(auth_scheme: &str) -> super::super::Account {
+        super::super::Account {
+            id: uuid::Uuid::nil(),
+            provider: "anthropic-compatible".into(),
+            access_token: Some("sk-ant-api-test".into()),
+            refresh_token: None,
+            expires_at: None,
+            provider_account_id: None,
+            base_url: Some("https://api.anthropic.com".into()),
+            auth_scheme: auth_scheme.into(),
+            soft_limits: crate::soft_limit::SoftLimits::default(),
+            usage_notices: super::super::usage_notices::UsageNotices::default(),
+            provider_settings: None,
+            rate_limits: super::super::RateLimits::default(),
+        }
+    }
+
+    /// An `api_key` account authenticates upstream with `x-api-key` and no
+    /// bearer, replacing any client-sent key; bearer accounts are unchanged.
+    #[test]
+    fn api_key_accounts_forward_x_api_key_instead_of_a_bearer() {
+        let mut inbound = HeaderMap::new();
+        inbound.insert("x-api-key", "client-supplied".parse().unwrap());
+        inbound.insert("anthropic-version", "2023-06-01".parse().unwrap());
+
+        let out = forward_headers(&inbound, &static_account("api_key"), "sk-ant-api-test").unwrap();
+        assert_eq!(out.get("x-api-key").unwrap(), "sk-ant-api-test");
+        assert!(out.get(reqwest::header::AUTHORIZATION).is_none());
+        assert_eq!(out.get("anthropic-version").unwrap(), "2023-06-01");
+
+        let out = forward_headers(&inbound, &static_account("bearer"), "tok").unwrap();
+        assert_eq!(out.get(reqwest::header::AUTHORIZATION).unwrap(), "Bearer tok");
+    }
+
     /// A body whose `tool_use.input` keys are not alphabetical, carried through
     /// the buffered anthropic path with tracing on. Re-serializing would sort
     /// them and invalidate the cached prefix from the first tool call onward.
     const fn unsorted_body() -> axum::body::Bytes {
         axum::body::Bytes::from_static(
-            br#"{"model":"claude-opus-5","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a","old_string":"x","new_string":"y"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"thinking":{"type":"adaptive","display":"omitted"}}"#,
+            br#"{"model": "claude-opus-5", "messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a","old_string":"x","new_string":"y"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"thinking":{"type":"adaptive","display":"omitted"}}"#,
         )
     }
 
@@ -999,7 +1040,7 @@ mod tests {
         assert_ne!(
             axum::body::Bytes::from(parsed.to_string()),
             original,
-            "test body must actually be key-order-sensitive"
+            "test body must not survive a re-serialization"
         );
     }
 

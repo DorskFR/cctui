@@ -41,21 +41,6 @@ export default defineJourney({
 				}
 			},
 			expect: [{ visible: 'pagedemo-detail' }, { visible: 'pagedemo-back' }]
-		},
-		{
-			id: 'not-enabled',
-			route: '/apps/pagedemo',
-			qaOnly: true,
-			optional: true,
-			target: 'plugin-page-not-enabled',
-			say: {
-				title: { en: 'Off until you switch it on', fr: 'Désactivé jusqu’à ce que vous l’activiez' },
-				body: {
-					en: 'A page plugin follows the same two gates as a pane: an admin enables it for the instance, and you switch it on for yourself.',
-					fr: 'Un plugin de page suit les deux mêmes conditions qu’un volet : un administrateur l’active pour l’instance, et vous l’activez pour vous-même.'
-				}
-			},
-			expect: [{ visible: 'plugin-page-not-enabled' }]
 		}
 	]
 });

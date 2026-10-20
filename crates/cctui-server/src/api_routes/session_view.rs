@@ -102,4 +102,23 @@ pub(super) fn register(r: Routes) -> Routes {
             Authn::Bearer,
             sess_read(),
         )
+        .add(
+            &[GET],
+            "/sessions/{id}/events",
+            "One session's lifecycle events, newest first.",
+            get(routes::events::session_events),
+            Authn::Bearer,
+            sess_read(),
+        )
+}
+
+pub(super) fn register_voice_notes(r: Routes) -> Routes {
+    r.add(
+        &[GET],
+        "/sessions/{id}/voice-notes/{note_id}",
+        "Fetch an agent voice note's audio.",
+        get(routes::voice_notes::get_voice_note),
+        Authn::Bearer,
+        sess_read(),
+    )
 }

@@ -11,6 +11,7 @@ pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+pub mod adapter_probe;
 pub mod adapter_runtime;
 pub mod adapters;
 pub mod agenttool;
@@ -50,5 +51,6 @@ pub mod sendguard;
 pub mod servercaps;
 pub mod service;
 pub mod supervisor;
+pub mod toolblock_followup;
 pub mod updatehook;
 pub mod whipstop;

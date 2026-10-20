@@ -58,21 +58,11 @@ pub enum ModelField {
 }
 
 #[must_use]
-pub fn adapter_label(adapter: &str) -> &'static str {
-    if adapter == "codex" { "Codex" } else { "Claude Code" }
+pub fn adapter_label(adapter: &str) -> String {
+    cctui_proto::adapter::harness(adapter).map_or_else(|| adapter.to_owned(), |h| h.label)
 }
 
-/// Mirrors the server's provider → harness family mapping.
-#[must_use]
-pub fn adapter_for_provider(provider: &str) -> &'static str {
-    if provider == "fireworks" {
-        "opencode"
-    } else if provider.contains("openai") {
-        "codex"
-    } else {
-        "claude-code"
-    }
-}
+pub use crate::spawn_accounts::adapter_for_provider;
 
 /// The provider credential backing a harness on this account, if any.
 #[must_use]
@@ -236,7 +226,7 @@ pub fn spec_chain(
         .as_deref()
         .map_or_else(|| labels.default_model.to_owned(), |alias| model_label(&spec.harness, alias));
     let effort = spec.effort.clone().unwrap_or_else(|| labels.default_effort.to_owned());
-    [adapter_label(&spec.harness).to_owned(), account_text, model, effort, mode].join(" · ")
+    [adapter_label(&spec.harness), account_text, model, effort, mode].join(" · ")
 }
 
 fn capitalize(text: &str) -> String {

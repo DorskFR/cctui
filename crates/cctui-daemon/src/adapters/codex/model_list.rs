@@ -14,7 +14,7 @@
 //! parsing), reused by the session driver to issue `model/list` on the session's
 //! EXISTING authenticated app-server connection at session start. The parsed
 //! [`CodexModelCatalog`] is shipped to the server as an
-//! [`AdapterEvent::CodexModels`](cctui_proto::adapter::AdapterEvent::CodexModels).
+//! [`AdapterEvent::HarnessModels`](cctui_proto::adapter::AdapterEvent::HarnessModels).
 
 use cctui_proto::codex_catalog::CodexModel;
 use serde_json::{Value, json};

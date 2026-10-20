@@ -239,6 +239,7 @@ async fn apply_server_event(state: &AppState, event: &cctui_proto::ws::ServerEve
             tool_name,
             description,
             input_preview,
+            options,
         } => {
             state.permission_store.write().await.insert_request(PendingPermission {
                 session_id: session_id.clone(),
@@ -246,6 +247,7 @@ async fn apply_server_event(state: &AppState, event: &cctui_proto::ws::ServerEve
                 tool_name: tool_name.clone(),
                 description: description.clone(),
                 input_preview: input_preview.clone(),
+                options: options.clone(),
                 received_at: Utc::now(),
             });
         }

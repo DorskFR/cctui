@@ -1,8 +1,15 @@
 import { untrack } from "svelte";
+import {
+  createInfiniteQuery,
+  type CreateInfiniteQueryResult,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/svelte-query";
 import type { SessionListItem } from "@bindings/SessionListItem";
+import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { Label } from "@bindings/Label";
 import type { LabelOwner } from "$lib/labels";
-import type { endpoints, useSessionActions } from "$lib/queries";
+import { qk, type endpoints, type useSessionActions } from "$lib/queries";
 import type { toasts, ToastAction } from "$lib/toast.svelte";
 import type { DockLayout } from "$lib/dock";
 import type { SessionListSettings } from "$lib/settings.svelte";
@@ -91,6 +98,7 @@ export interface SessionsPageDeps {
     | "updateDraft"
     | "spawn"
   >;
+  queryClient: QueryClient;
   invalidateSessions: () => void;
   refetchLive: () => Promise<unknown>;
   dockLayout: () => DockLayout;
@@ -160,14 +168,10 @@ export class SessionsPage {
   rawQuery = $state("");
   query = $state("");
 
-  pageRows = $state<SessionListItem[]>([]);
-  pageOffset = $state(0);
-  pageDone = $state(false);
-  pageLoading = $state(false);
-  pageError = $state("");
-  #pageReqId = 0;
-  // Bump to reload the pager after archive ops.
-  refreshTick = $state(0);
+  #pager: CreateInfiniteQueryResult<
+    InfiniteData<SessionListResponse, number>,
+    Error
+  >;
 
   archivingOne = $state(false);
   launchingDraft = $state<string | null>(null);
@@ -178,6 +182,20 @@ export class SessionsPage {
 
   constructor(d: SessionsPageDeps) {
     this.#d = d;
+    this.#pager = createInfiniteQuery(
+      () => ({
+        queryKey: qk.sessionSearch(this.serverQuery, this.#pagerArchived),
+        queryFn: ({ queryKey: [, , { q, archived }], pageParam }) =>
+          d.api.searchSessions(q, archived, PAGE, pageParam),
+        initialPageParam: 0,
+        getNextPageParam: (last, pages) =>
+          last.sessions.length < PAGE
+            ? undefined
+            : pages.reduce((n, p) => n + p.sessions.length, 0),
+        enabled: this.pagerActive,
+      }),
+      () => d.queryClient,
+    );
     this.listSections = parseSections(d.store.get(LIST_SECTION));
     this.tileSections = parseSections(
       d.store.get(LIST_TILE_SECTION),
@@ -251,17 +269,6 @@ export class SessionsPage {
       const t = setTimeout(() => (this.query = v), 200);
       return () => clearTimeout(t);
     });
-    // Reset + reload page 0 whenever the mode (query / scope) changes, or an
-    // archive action bumps refreshTick.
-    $effect(() => {
-      void this.pagerKey;
-      void this.refreshTick;
-      this.pageRows = [];
-      this.pageOffset = 0;
-      this.pageDone = false;
-      this.pageError = "";
-      if (this.pagerActive) this.loadPage(true);
-    });
   }
 
   // The tiles boundary caught a render error: drop to the list rather than leave
@@ -320,7 +327,7 @@ export class SessionsPage {
   items = $derived.by(() => this.#d.sessions());
   sessionsLoading = $derived.by(() => this.#d.sessionsLoading());
   allLabels = $derived.by(() => this.#d.labels() ?? []);
-  #loaded = $derived([...this.items, ...this.pageRows]);
+  #loaded = $derived.by(() => [...this.items, ...this.pageRows]);
 
   // Server-evaluable clauses + free text ride the raw string to the search
   // endpoint; `id`/`created` clauses are peeled off and narrowed client-side.
@@ -335,8 +342,25 @@ export class SessionsPage {
   searchTerms = $derived.by(() =>
     tokenizeQuery(freeText(parse(this.query, this.searchSchema))),
   );
-  pagerKey = $derived(
-    `${this.searching ? `q:${this.serverQuery}` : "browse"}|${this.showArchived}`,
+  // Not searching ⇒ browse the archive (empty q, archived scope).
+  #pagerArchived = $derived(this.searching ? this.showArchived : true);
+  // Refetched pages can shift by a row when sessions move in or out of scope
+  // between page requests; keyed rows must not repeat.
+  pageRows = $derived.by(() => {
+    if (!this.pagerActive) return [];
+    const seen = new Set<string>();
+    return (this.#pager.data?.pages ?? [])
+      .flatMap((p) => p.sessions)
+      .filter((s) => !seen.has(s.id) && !!seen.add(s.id));
+  });
+  pageDone = $derived.by(() => !this.#pager.hasNextPage);
+  pageLoading = $derived.by(
+    () =>
+      this.pagerActive &&
+      (this.#pager.isLoading || this.#pager.isFetchingNextPage),
+  );
+  pageError = $derived.by(() =>
+    this.pagerActive && this.#pager.error ? errMessage(this.#pager.error) : "",
   );
 
   archiving = $derived.by(() => this.archivingOne || this.archiveConfirm.busy);
@@ -488,30 +512,9 @@ export class SessionsPage {
     else this.#d.toasts.error(m.sessions_toast_fork_slow());
   };
 
-  loadPage = async (reset: boolean) => {
-    if (!this.pagerActive) return;
-    const offset = reset ? 0 : this.pageOffset;
-    const req = ++this.#pageReqId;
-    this.pageLoading = true;
-    this.pageError = "";
-    try {
-      // not searching ⇒ browse archive (empty q, archived scope).
-      const res = await this.#d.api.searchSessions(
-        this.serverQuery,
-        this.searching ? this.showArchived : true,
-        PAGE,
-        offset,
-      );
-      if (req !== this.#pageReqId) return;
-      const rows = res.sessions;
-      this.pageRows = reset ? rows : [...this.pageRows, ...rows];
-      this.pageOffset = offset + rows.length;
-      this.pageDone = rows.length < PAGE;
-    } catch (e) {
-      if (req === this.#pageReqId) this.pageError = errMessage(e);
-    } finally {
-      if (req === this.#pageReqId) this.pageLoading = false;
-    }
+  loadMore = async () => {
+    if (this.pagerActive && !this.#pager.isFetchingNextPage)
+      await this.#pager.fetchNextPage();
   };
 
   // "Undo" action attached to every archive toast: un-archives the same ids
@@ -521,7 +524,6 @@ export class SessionsPage {
     run: async () => {
       await this.#d.actions.unarchiveMany(ids);
       this.#d.toasts.ok(m.sessions_toast_unarchived());
-      this.refreshTick++;
       this.#d.invalidateSessions();
     },
   });
@@ -533,7 +535,6 @@ export class SessionsPage {
       undefined,
       this.#undoArchive(ids),
     );
-    this.refreshTick++;
     this.#d.invalidateSessions();
   };
 
@@ -585,7 +586,6 @@ export class SessionsPage {
         undefined,
         isArchived ? undefined : this.#undoArchive([s.id]),
       );
-      this.refreshTick++;
     } catch (e) {
       this.#d.toasts.error(errMessage(e));
     }
@@ -600,7 +600,6 @@ export class SessionsPage {
       this.#d.toasts.ok(
         s.pinned ? m.sessions_toast_unpinned() : m.sessions_toast_pinned(),
       );
-      this.refreshTick++;
     } catch (e) {
       this.#d.toasts.error(errMessage(e));
     }

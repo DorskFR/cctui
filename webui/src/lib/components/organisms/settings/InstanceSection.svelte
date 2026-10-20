@@ -3,7 +3,7 @@
 	// what this browser spends on it (network), plus the admin-only server
 	// settings — the instance name shown in the header, server-wide sign-in,
 	// the machine the self-update agent runs on, the default CctuiAgent limits
-	// and the upstream host allowlist. Admin values live in
+	// the upstream host allowlist and the speech service. Admin values live in
 	// `instance_settings` on the server, not in the per-user blob; the name is
 	// read back through /version so the header and tab title pick it up on the
 	// next refetch.
@@ -16,8 +16,10 @@
 	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
+	import MachineAdaptersGroup from './MachineAdaptersGroup.svelte';
 	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
 	import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
+	import SpeechGroup from './SpeechGroup.svelte';
 	import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '$lib/queries';
 	import { releaseChannel } from '$lib/releaseChannel';
@@ -230,8 +232,10 @@
 		</SettingGroup>
 		<PasskeySignInGroup />
 		<HarnessUpdateGroup />
+		<MachineAdaptersGroup />
 		<SpawnLimitsGroup />
 		<UpstreamHostsGroup />
+		<SpeechGroup />
 	{/if}
 </SettingSection>
 

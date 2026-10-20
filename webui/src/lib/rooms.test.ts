@@ -4,6 +4,7 @@ import {
 	canCreate,
 	matchByName,
 	pickable,
+	remoteMembers,
 	type Room,
 	type RoomMember
 } from './rooms';
@@ -74,5 +75,18 @@ describe('archivableMembers', () => {
 	it('is empty for a room whose sessions are all archived already', () => {
 		expect(archivableMembers(room([member('a', 'archived')]))).toEqual([]);
 		expect(archivableMembers(room([]))).toEqual([]);
+	});
+});
+
+describe('remote members', () => {
+	const remote: RoomMember = { ...member('remote:1'), adapter: null, remote: true };
+	const r: Room = { id: 'r', name: 'x', archived: false, members: [member('a'), remote] };
+
+	it('are listed apart', () => {
+		expect(remoteMembers(r).map((x) => x.session_id)).toEqual(['remote:1']);
+	});
+
+	it('are never archived by the room cascade', () => {
+		expect(archivableMembers(r).map((x) => x.session_id)).toEqual(['a']);
 	});
 });

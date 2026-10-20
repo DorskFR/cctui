@@ -25,6 +25,9 @@ pub(super) async fn handle_event(
     stored: Stored,
 ) -> anyhow::Result<()> {
     let tail = Tail::of(adapter_id, &event);
+    if let AdapterEvent::TurnEnd { local_id, .. } = &event {
+        crate::cctuiverse::turn_ended(state, local_id);
+    }
     let inserted = match event {
         e @ (AdapterEvent::Message { .. } | AdapterEvent::ToolUse { .. }) => {
             stream::on_stream_event(state, machine_id, user_id, e, stored).await?

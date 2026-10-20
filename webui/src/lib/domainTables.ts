@@ -7,6 +7,8 @@
 // Only genuinely dynamic data stays on the wire: the codex model catalog
 // (`GET /models/{harness}`) and the server's quota-probe registry.
 import type { EndReasonInfo } from '@bindings/EndReasonInfo';
+import type { HarnessCapabilities } from '@bindings/HarnessCapabilities';
+import type { HarnessDescriptor } from '@bindings/HarnessDescriptor';
 import type { HarnessModels } from '@bindings/HarnessModels';
 import type { PermissionMode } from '@bindings/PermissionMode';
 import type { ProviderInfo } from '@bindings/ProviderInfo';
@@ -88,6 +90,57 @@ export const HARNESS_MODELS: HarnessModels[] = [
 
 export const PERMISSION_MODES: PermissionMode[] = ['ask', 'auto', 'yolo', 'whip'];
 
+const caps = (
+	fork: boolean,
+	rename: boolean,
+	resume: boolean,
+	set_model: boolean,
+	live_view: boolean,
+	attach: boolean,
+	mid_chat_files: boolean,
+	child_spawn: boolean
+): HarnessCapabilities => ({
+	fork,
+	rename,
+	resume,
+	set_model,
+	live_view,
+	attach,
+	mid_chat_files,
+	child_spawn
+});
+
+/** The harness table as shipped; `GET /harnesses` serves the same rows. */
+export const HARNESSES: HarnessDescriptor[] = [
+	{
+		id: 'claude-code',
+		label: 'Claude Code',
+		family: 'anthropic',
+		capabilities: caps(true, true, true, false, true, true, true, true),
+		default_enabled: true,
+		models_source: 'static',
+		permission_modes: PERMISSION_MODES
+	},
+	{
+		id: 'codex',
+		label: 'Codex',
+		family: 'openai',
+		capabilities: caps(false, true, true, true, true, false, true, true),
+		default_enabled: true,
+		models_source: 'catalog',
+		permission_modes: PERMISSION_MODES
+	},
+	{
+		id: 'opencode',
+		label: 'OpenCode',
+		family: 'fireworks',
+		capabilities: caps(false, true, false, false, true, false, true, false),
+		default_enabled: true,
+		models_source: 'none',
+		permission_modes: PERMISSION_MODES
+	}
+];
+
 export function endReasonInfo(reason: SessionEndReason): EndReasonInfo | undefined {
 	return END_REASONS.find((r) => r.reason === reason);
 }
@@ -96,8 +149,14 @@ export function providerInfo(id: string): ProviderInfo | undefined {
 	return PROVIDERS.find((p) => p.id === id);
 }
 
-/** The lists a picker starts from; an unknown harness gets the claude shape,
- *  which is also what a free-text picker needs. */
+/** The lists a picker starts from; an unknown harness gets only the default
+ *  entry, never another harness's models. */
 export function harnessModelsFallback(harness: string): HarnessModels {
-	return HARNESS_MODELS.find((h) => h.harness === harness) ?? HARNESS_MODELS[0];
+	return (
+		HARNESS_MODELS.find((h) => h.harness === harness) ?? {
+			harness,
+			models: [{ v: '', label: 'Default', disabled: false }],
+			efforts: []
+		}
+	);
 }

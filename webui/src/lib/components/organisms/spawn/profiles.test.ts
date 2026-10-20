@@ -154,6 +154,7 @@ describe('specFromForm / applySpec', () => {
 			)
 		).toMatchObject({ model_alias: null, effort: null, permission_mode: null });
 		expect(specOf(profile({ model_alias: '', effort: null })).model_alias).toBeNull();
+		expect(specOf(profile({ context_items: ['c1'] })).context_items).toEqual(['c1']);
 	});
 });
 
@@ -162,6 +163,9 @@ describe('specChanges / specChain', () => {
 		const a = specOf(profile());
 		expect(specChanges(a, a)).toBe(0);
 		expect(specChanges(a, { ...a, effort: 'high', permission_mode: null })).toBe(2);
+		expect(specChanges({ ...a, context_items: ['x', 'y'] }, { ...a, context_items: ['y', 'x'] })).toBe(0);
+		expect(specChanges({ ...a, context_items: ['x'] }, { ...a, context_items: [] })).toBe(1);
+		expect(specChanges({ ...a, context_items: undefined }, { ...a, context_items: [] })).toBe(0);
 	});
 
 	it('renders the summary line', () => {

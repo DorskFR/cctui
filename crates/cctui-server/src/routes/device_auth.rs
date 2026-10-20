@@ -159,7 +159,7 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
 /// entry at all without knowing the hop count) lets a caller mint a fresh
 /// rate-limit bucket per request simply by rotating the header, which is the
 /// one adversary this throttle exists for.
-fn caller_key(
+pub fn caller_key(
     headers: &axum::http::HeaderMap,
     peer: Option<std::net::SocketAddr>,
     trusted_hops: usize,

@@ -3,6 +3,8 @@ import type { ServerEvent } from '@bindings/ServerEvent';
 import type { UserAction } from '@bindings/UserAction';
 import type { AccountUsage } from '../queries/types';
 import { qk } from '../queries/keys';
+import { toasts } from '$lib/toast.svelte';
+import { m } from '$lib/paraglide/messages';
 import type { QueryClient } from '@tanstack/svelte-query';
 import {
 	KeyedListeners,
@@ -14,6 +16,7 @@ import {
 	type AccountUsageEvent,
 	type CommandOutcome,
 	type GithubEvent,
+	type LifecycleEvent,
 	type MachineResourcesEvent,
 	type SessionEndedEvent,
 	type SessionListPatch
@@ -31,6 +34,13 @@ import {
 import { SessionStreams, type StreamCb } from './stream';
 import { LiveSocket, type Status } from './socket.svelte';
 import { DeliveryTracker, type DeliverySnapshot } from './delivery';
+
+export interface CctuiverseChangedEvent {
+	session_id: string | null;
+	room_id: string | null;
+}
+
+const LIST_EVENT_KINDS = new Set(['session.archived', 'session.unarchived']);
 
 type PtyCb = (data: Uint8Array) => void;
 type GithubCb = (ev: GithubEvent) => void;
@@ -195,11 +205,24 @@ export class WsClient {
 			case 'room_members':
 				this.markListDirty();
 				break;
+			case 'cctuiverse_changed': {
+				const ev = { session_id: msg.session_id ?? null, room_id: msg.room_id ?? null };
+				for (const cb of this.cctuiverseCbs) cb(ev);
+				break;
+			}
 			case 'machine_resources': {
 				const { type: _, ...p } = msg;
 				for (const cb of this.machineResourcesCbs) cb(p);
 				break;
 			}
+			case 'event': {
+				for (const cb of this.eventCbs) cb(msg.event);
+				if (LIST_EVENT_KINDS.has(msg.event.kind)) this.markListDirty();
+				break;
+			}
+			case 'limit_reset_redeemed':
+				toasts.ok(m.auto_limit_reset_redeemed({ account: msg.account_name, outcome: msg.outcome }));
+				break;
 			case 'account_usage': {
 				const p: AccountUsageEvent = {
 					account_id: msg.account_id,
@@ -230,10 +253,24 @@ export class WsClient {
 		return () => this.machineResourcesCbs.delete(cb);
 	}
 
+	private cctuiverseCbs = new Set<(ev: CctuiverseChangedEvent) => void>();
+	onCctuiverseChanged(cb: (ev: CctuiverseChangedEvent) => void): () => void {
+		this.cctuiverseCbs.add(cb);
+		return () => this.cctuiverseCbs.delete(cb);
+	}
+
 	private accountUsageCbs = new Set<(ev: AccountUsageEvent) => void>();
 	onAccountUsage(cb: (ev: AccountUsageEvent) => void): () => void {
 		this.accountUsageCbs.add(cb);
 		return () => this.accountUsageCbs.delete(cb);
+	}
+
+	/** Lifecycle rows as they are recorded; the events page and the session
+	 *  Events tab prepend them instead of refetching. */
+	private eventCbs = new Set<(ev: LifecycleEvent) => void>();
+	onEvent(cb: (ev: LifecycleEvent) => void): () => void {
+		this.eventCbs.add(cb);
+		return () => this.eventCbs.delete(cb);
 	}
 
 	private sessionEndedCbs = new Set<(ev: SessionEndedEvent) => void>();
@@ -477,12 +514,13 @@ export class WsClient {
 		return this.delivery.onDelivery(sid, cb);
 	}
 
-	respondPermission(sessionId: string, requestId: string, allow: boolean) {
+	respondPermission(sessionId: string, requestId: string, allow: boolean, optionId?: string) {
 		this.send({
 			type: 'permission_response',
 			session_id: sessionId,
 			request_id: requestId,
-			behavior: allow ? 'allow' : 'deny'
+			behavior: allow ? 'allow' : 'deny',
+			...(optionId ? { option_id: optionId } : {})
 		});
 		this.prompts.removePerm(sessionId, requestId);
 	}

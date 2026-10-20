@@ -30,6 +30,7 @@ fn command_result(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn to_actions(event: ServerEvent) -> Vec<Action> {
     match event {
         ServerEvent::PermissionRequest {
@@ -38,6 +39,7 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             tool_name,
             description,
             input_preview,
+            ..
         } => vec![Action::Attention(AttentionAction::PermissionRequested(PendingPermission {
             session_id,
             request_id,
@@ -72,12 +74,8 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             let toast = format!("{} soft limit cleared", short_id(&session_id));
             soft_limit(session_id, false, Level::Info, toast)
         }
-        ServerEvent::ToolCallBlocked { session_id, tool_name, rule } => {
-            vec![Action::Toast(
-                Level::Warn,
-                format!("{} blocked {tool_name} ({rule})", short_id(&session_id)),
-            )]
-        }
+        ServerEvent::LimitResetRedeemed { .. } => limit_reset_redeemed(event),
+        ServerEvent::ToolCallBlocked { .. } => tool_call_blocked(event),
         ServerEvent::MachineLiveness { machine_id, liveness } => {
             vec![Action::SessionLive(SessionLiveAction::MachineLiveness {
                 machine_id: machine_id.to_string(),
@@ -130,7 +128,13 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
             waived("a draft is a session row the list refresh carries")
         }
         ServerEvent::RoomMembers { .. } => waived("the TUI list does not group by room"),
+        ServerEvent::CctuiverseChanged { .. } => {
+            waived("cctuiverse links are managed from the webui")
+        }
         ServerEvent::UserActions { .. } => waived("no needs-you list; the counts ride on the rows"),
+        ServerEvent::Event { .. } => {
+            waived("the TUI has no event log view; the list refresh carries status")
+        }
         ServerEvent::Heartbeat { .. } => waived("liveness tick with nothing to render"),
     }
 }
@@ -141,6 +145,25 @@ fn soft_limit(session_id: String, active: bool, level: Level, toast: String) -> 
         Action::Diagnose(DiagnoseAction::SoftLimit { session_id, active }),
         Action::Toast(level, toast),
     ]
+}
+
+/// A blocked tool call is only ever news for the status line.
+fn tool_call_blocked(event: ServerEvent) -> Vec<Action> {
+    let ServerEvent::ToolCallBlocked { session_id, tool_name, rule } = event else {
+        return Vec::new();
+    };
+    vec![Action::Toast(
+        Level::Warn,
+        format!("{} blocked {tool_name} ({rule})", short_id(&session_id)),
+    )]
+}
+
+/// An automatic limit-reset claim is only ever news for the status line.
+fn limit_reset_redeemed(event: ServerEvent) -> Vec<Action> {
+    let ServerEvent::LimitResetRedeemed { account_name, outcome, .. } = event else {
+        return Vec::new();
+    };
+    vec![Action::Toast(Level::Info, format!("{account_name}: limit reset {outcome}"))]
 }
 
 fn waived(reason: &'static str) -> Vec<Action> {

@@ -110,7 +110,13 @@ impl WsClient {
         request_id: String,
         behavior: String,
     ) -> Result<(), ClientError> {
-        self.send(TuiCommand::PermissionResponse { session_id, request_id, behavior }).await
+        self.send(TuiCommand::PermissionResponse {
+            session_id,
+            request_id,
+            behavior,
+            option_id: None,
+        })
+        .await
     }
 
     /// Sends a user message under a `client_msg_id` the caller owns.

@@ -209,6 +209,19 @@ export const useSessionLangfuse = (
     retry: false,
   }));
 
+/** The follow-up thread through a session, oldest first. Keyed by the known
+ *  next id too, so a follow-up registering while the drawer is open refetches. */
+export const useSessionThread = (
+  id: () => string,
+  next: () => string | null,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(() => ({
+    queryKey: qk.sessionThread(id(), next()),
+    queryFn: () => endpoints.sessionThread(id()),
+    enabled: enabled() && !!id(),
+  }));
+
 /** Files the user uploaded into a session. Immutable per session id (a
  *  send appends, never rewrites), so the sender invalidates after staging. */
 export const useSessionAttachments = (

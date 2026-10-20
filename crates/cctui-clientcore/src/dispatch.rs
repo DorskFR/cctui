@@ -63,7 +63,7 @@ pub fn context_pack_env(pack: &ContextPack) -> Vec<(String, String)> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DispatchForm {
     pub dispatcher: String,
-    /// `claude-code` when empty; only `codex` changes the payload.
+    /// `claude-code` when empty; any other harness names its adapter in the payload.
     pub dispatch_adapter: String,
     pub name: String,
     pub identity: String,
@@ -150,8 +150,8 @@ pub fn dispatch_payload(
     }
     put(&mut payload, "prompt", &form.prompt);
     put(&mut payload, "prompt_file", &form.prompt_file);
-    if form.is_codex() {
-        payload.insert("adapter".to_owned(), Value::String("codex".to_owned()));
+    if form.adapter() != "claude-code" {
+        payload.insert("adapter".to_owned(), Value::String(form.adapter().to_owned()));
     }
     put(&mut payload, "model", form.model(provider));
     put(&mut payload, "effort", form.effort());

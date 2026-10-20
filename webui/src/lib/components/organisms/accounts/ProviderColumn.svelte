@@ -16,6 +16,7 @@
 		usageEnabled = true,
 		canManage = false,
 		canRemove = false,
+		dense = false,
 		onedit,
 		onreauth,
 		onremove
@@ -24,6 +25,8 @@
 		usageEnabled?: boolean;
 		canManage?: boolean;
 		canRemove?: boolean;
+		/** Gauges only: the header popover has no room for models, counters or the reset button. */
+		dense?: boolean;
 		onedit?: () => void;
 		onreauth?: () => void;
 		onremove?: () => void;
@@ -52,7 +55,7 @@
 	});
 </script>
 
-<div class="column">
+<div class="column" class:dense>
 	<div class="head">
 		<span class="mark" title={providerLabel(p.provider)}>
 			<AdapterIcon provider={p.provider} size={18} />
@@ -60,11 +63,13 @@
 		<Text as="span" size="sm" weight="semibold">{providerLabel(p.provider)}</Text>
 		{#if p.managed}
 			<Text as="span" tone="faint" size="xs">{m.providers_managed()}</Text>
-		{:else if summary}
+		{:else if summary && !dense}
 			<span class="summary" title={summary}><Text as="span" tone="faint" size="xs">{summary}</Text></span>
 		{/if}
 		<span class="spacer"></span>
-		<LimitResetButton providerId={p.id} enabled={usageEnabled} />
+		{#if !dense}
+			<LimitResetButton providerId={p.id} enabled={usageEnabled} />
+		{/if}
 		{#if canManage}
 			<IconButton
 				icon={p.header_pin ? 'pin-off' : 'pin'}
@@ -107,12 +112,14 @@
 		softLimits={p.soft_limits}
 	/>
 
+	{#if !dense}
 	<div class="stats">
 		<Text as="span" size="xs" tone="faint">{m.providers_requests({ n: compact(p.request_count) })}</Text>
 		<Text as="span" size="xs" tone="faint">
 			{m.providers_used()} <Timestamp value={p.last_used_at} mode="relative" tone="inherit" />
 		</Text>
 	</div>
+	{/if}
 </div>
 
 <style>
@@ -124,6 +131,10 @@
 		border-right: 1px solid var(--border);
 		min-width: 0;
 		overflow: hidden;
+	}
+	.column.dense {
+		gap: var(--sp-1);
+		padding: var(--sp-2) var(--sp-3);
 	}
 	.column:last-child {
 		border-right: 0;

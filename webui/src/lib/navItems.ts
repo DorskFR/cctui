@@ -17,6 +17,7 @@ export function navItems(gates: NavGates = {}): NavItemSpec[] {
 		{ href: '/', label: m.nav_overview(), iconName: 'layout-grid' },
 		{ href: '/sessions', label: m.nav_sessions(), iconName: 'list' },
 		{ href: '/bookmarks', label: m.nav_bookmarks(), iconName: 'bookmark' },
+		{ href: '/accounts', label: m.nav_accounts(), iconName: 'key-round' },
 		...(gates.pages ?? []),
 		{ href: '/settings', label: m.nav_settings(), iconName: 'settings' }
 	];

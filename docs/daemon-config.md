@@ -14,12 +14,33 @@ Machine identity and update policy, written by `cctui-daemon enroll`.
 | `read_file_roots` | Extra roots the linked-file viewer may read from. |
 | `channel` | `stable` or `beta`; see [release-channels.md](./release-channels.md). |
 
-## `adapters_enabled.config` (server-side)
+## `adapters_enabled` (server-side)
 
-Per-machine, per-adapter JSON held on the server and pushed down in the
-`Reconcile` frame. It decides which adapters run and how. It is *server* state:
-an operator sitting at the machine cannot edit it, which is why the knobs whose
-failure mode is local get an environment override below.
+Per-machine, per-adapter rows held on the server and pushed down in the
+`Reconcile` frame. They decide which adapters run and how. They are *server*
+state: an operator sitting at the machine cannot edit them, which is why the
+knobs whose failure mode is local get an environment override below.
+
+Which adapters run follows the harness table (`cctui-proto`, served at
+`GET /api/v1/harnesses`): a harness with `default_enabled` runs on every machine
+unless a row disables it; a default-off harness runs only on machines with a
+row enabling it. Rows are written by an admin through
+
+```
+GET    /api/v1/machines/{machine_id}/adapters
+PUT    /api/v1/machines/{machine_id}/adapters/{adapter}   {"enabled": bool, "config": {...}}
+DELETE /api/v1/machines/{machine_id}/adapters/{adapter}
+```
+
+or from Settings › Instance › Machine adapters. A `PUT` with only one field
+keeps the other as stored; `DELETE` drops the row and the table default applies
+again. Every write pushes a fresh `Reconcile` to the machine's daemon; running
+sessions are left alone.
+
+`config` is a JSON object the adapter interprets. Today the keys in use are the
+claude-code `mode` and `supervise_daemon` below. Adapters that drive an external
+binary read `bin` (path or name), `args` (extra argv) and `env` (names of
+environment variables to pass through); an absent `bin` means the id itself.
 
 ## Environment overrides
 

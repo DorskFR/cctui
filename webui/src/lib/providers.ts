@@ -3,7 +3,7 @@
 // the server's alone, comes off the wire.
 import type { ProviderFamily } from '@bindings/ProviderFamily';
 import { PROVIDERS, providerInfo } from '$lib/domainTables';
-import { usageProbes } from '$lib/domainMeta.svelte';
+import { usageProbes } from '$lib/usageProbes.svelte';
 
 export type { ProviderFamily };
 export type ProviderKind = string;

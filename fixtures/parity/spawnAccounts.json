@@ -1,5 +1,5 @@
 {
-  "allAdapters": ["claude-code", "codex"],
+  "allAdapters": ["claude-code", "codex", "opencode"],
   "adapterForProvider": [
     {
       "provider": "openai",

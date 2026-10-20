@@ -1,5 +1,6 @@
 //! Compiled-in adapter registry.
 
+pub mod acp;
 pub mod agent_mcp;
 pub mod claude_code;
 pub mod codex;
@@ -29,11 +30,44 @@ pub async fn emit(events: &mpsc::Sender<AdapterEvent>, event: AdapterEvent) {
     }
 }
 
+/// A turn another agent sent through cctui (direct, room or cctuiverse). It must
+/// never answer, decline or dismiss a form the human has open.
+#[must_use]
+pub fn is_peer_envelope(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let head = trimmed.get(..32).unwrap_or(trimmed).to_ascii_lowercase();
+    ["<cctui-peer-message", "<cross-session-message", "<cctui-room", "<cctuiverse-"]
+        .iter()
+        .any(|t| head.starts_with(t))
+}
+
 #[must_use]
 pub fn registry() -> Vec<Box<dyn AdapterFactory>> {
-    vec![
+    let mut factories: Vec<Box<dyn AdapterFactory>> = vec![
         Box::new(claude_code::ClaudeCodeFactory),
         Box::new(codex::CodexFactory),
         Box::new(opencode::OpenCodeFactory),
-    ]
+    ];
+    factories.extend(acp::factories());
+    factories
+}
+
+#[cfg(test)]
+mod peer_envelope_tests {
+    use super::is_peer_envelope;
+
+    #[test]
+    fn peer_envelopes_are_recognised_and_human_text_is_not() {
+        for t in [
+            "<cctui-peer-message from=\"s1\" from-name=\"a\">\nhi\n</cctui-peer-message>",
+            "<cross-session-message from=\"s1\" from-name=\"a\">\nhi\n</cross-session-message>",
+            "  <CCTUI-ROOM name=\"ops\" from=\"a\">\nhi\n</cctui-room>",
+            "<cctuiverse-linked peer=\"bob\" id=\"remote:x\">\n…\n</cctuiverse-linked>",
+        ] {
+            assert!(is_peer_envelope(t), "{t}");
+        }
+        for t in ["yes", "option 2", "see <cross-session-message> below", "", "<cctuiverse"] {
+            assert!(!is_peer_envelope(t), "{t}");
+        }
+    }
 }

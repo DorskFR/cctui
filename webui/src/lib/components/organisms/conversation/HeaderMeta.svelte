@@ -7,14 +7,15 @@
 	import { compact, modelShort, statusBadgeTone, usd } from '$lib/format';
 	import { tokenUsageLayout, bustReasonKey } from '$lib/components/molecules/TokenUsage.logic';
 	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
-	import { previousSessionId } from '$lib/followup';
-	import { sessionHref } from '$lib/sessionFailureToast';
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
+	import ThreadMenu from './ThreadMenu.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
 	import { Badge, Icon, IconButton, Popover, Select, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { harnessModelsFallback } from '$lib/domainTables';
+	import { harnessCapabilities } from '$lib/harnesses';
+	import { harnessTable } from '$lib/harnesses.svelte';
 	import {
 		useCapabilities,
 		useHarnessModels,
@@ -29,6 +30,7 @@
 		archived,
 		isCodexSession,
 		showStatusBadge,
+		box = 'md',
 		onsetmodel,
 		onfork
 	}: {
@@ -36,6 +38,7 @@
 		archived: boolean;
 		isCodexSession: boolean;
 		showStatusBadge: boolean;
+		box?: 'sm' | 'md';
 		onsetmodel: (model: string, effort: string) => void;
 		onfork: () => void;
 	} = $props();
@@ -55,7 +58,6 @@
 		}
 	});
 	const branch = $derived(branchOf(session));
-	const previousId = $derived(previousSessionId(session));
 
 	// The details panel is the only place the full readout lives, so its Langfuse
 	// figures are fetched on open rather than with the header.
@@ -68,7 +70,8 @@
 	);
 	const calls = $derived(Number(lf.data?.trace_count ?? 0));
 
-	// In-place model/effort editor, codex only.
+	// In-place model/effort editor, where the harness can switch model.
+	const canSetModel = $derived(harnessCapabilities(session.adapter_id, harnessTable()).set_model);
 	let modelEditing = $state(false);
 	let pendingModel = $state('');
 	let pendingEffort = $state('');
@@ -110,7 +113,7 @@
 {/snippet}
 
 {#snippet modelMeta(idPrefix: string)}
-	{#if isCodexSession && !archived}
+	{#if canSetModel && !archived}
 		{#if modelEditing}
 			<span class="model-edit">
 				<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
@@ -167,16 +170,7 @@
 <div class="hmeta" class:editing={modelEditing} data-journey="head-meta">
 	{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 	{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
-	{#if previousId || session.next_session_id}
-		<span class="thread" data-journey="head-thread">
-			{#if previousId}
-				<IconButton as="a" href={sessionHref(previousId)} icon="chevron-left" label={m.drawer_thread_previous()} box="xs" variant="ghost" />
-			{/if}
-			{#if session.next_session_id}
-				<IconButton as="a" href={sessionHref(session.next_session_id)} icon="chevron-right" label={m.drawer_thread_next()} box="xs" variant="ghost" />
-			{/if}
-		</span>
-	{/if}
+	<ThreadMenu {session} {box} />
 	<span class="cwd">
 		<WorkingDir
 			path={session.working_dir}
@@ -278,10 +272,6 @@
 	}
 	.cwd {
 		display: contents;
-	}
-	.thread {
-		display: inline-flex;
-		flex: none;
 	}
 	.branch {
 		display: inline-flex;

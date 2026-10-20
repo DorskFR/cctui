@@ -55,7 +55,7 @@ pub fn sniff_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-async fn machine_user(state: &AppState, headers: &header::HeaderMap) -> Result<Uuid, ApiErr> {
+pub async fn machine_user(state: &AppState, headers: &header::HeaderMap) -> Result<Uuid, ApiErr> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

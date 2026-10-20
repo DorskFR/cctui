@@ -69,6 +69,23 @@ pub(super) fn register(r: Routes) -> Routes {
             Human,
         )
         .add(
+            &[GET, Method::POST],
+            "/accounts/{id}/service-tokens",
+            "List or mint the account's service tokens.",
+            get(routes::service_tokens::list_service_tokens)
+                .post(routes::service_tokens::mint_service_token),
+            Authn::Bearer,
+            Human,
+        )
+        .add(
+            &[Method::DELETE],
+            "/accounts/{id}/service-tokens/{token_id}",
+            "Revoke a service token.",
+            axum::routing::delete(routes::service_tokens::revoke_service_token),
+            Authn::Bearer,
+            Human,
+        )
+        .add(
             &[GET],
             "/redirects",
             "The caller's live account/model redirect rules.",

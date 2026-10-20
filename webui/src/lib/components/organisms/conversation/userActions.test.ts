@@ -42,10 +42,22 @@ describe('groupUserActions', () => {
 		expect(got?.blocking).toBe(0);
 	});
 
-	it('still groups a list whose items are all resolved, so the card keeps its "n done" line', () => {
-		const got = groupUserActions([action({ id: 'done', status: 'done' })]);
-		expect(got?.open).toEqual([]);
-		expect(got?.resolved).toHaveLength(1);
+	it('renders nothing once every item is resolved', () => {
+		expect(
+			groupUserActions([
+				action({ id: 'done', status: 'done', resolved_at: '2026-09-30T11:00:00Z' }),
+				action({ id: 'dropped', status: 'dropped', resolved_at: '2026-09-30T10:30:00Z' })
+			])
+		).toBeNull();
+	});
+
+	it('keeps the resolved items alongside an open one for the "n done" line', () => {
+		const got = groupUserActions([
+			action({ id: 'open' }),
+			action({ id: 'done', status: 'done', resolved_at: '2026-09-30T11:00:00Z' })
+		]);
+		expect(got?.open.map((a) => a.id)).toEqual(['open']);
+		expect(got?.resolved.map((a) => a.id)).toEqual(['done']);
 	});
 
 	it('tolerates an unparseable timestamp instead of scrambling the order', () => {

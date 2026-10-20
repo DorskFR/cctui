@@ -15,6 +15,6 @@ source: SettingSource,
  */
 env: Array<string>, 
 /**
- * Always allowed on top of `hosts` (the `LiteLLM` endpoint).
+ * Always allowed on top of `hosts` (the `LiteLLM` endpoint and the speech service).
  */
 managed: Array<string>, };

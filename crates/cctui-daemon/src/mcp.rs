@@ -1,5 +1,7 @@
-//! `cctui-daemon mcp-agent` — the stdio MCP server a claude session is launched
-//! with, exposing the `CctuiAgent`, `CctuiAgentArchive` and `CctuiUsage` tools.
+//! `cctui-daemon mcp-agent` — the stdio MCP server a session is launched with.
+//!
+//! It exposes the `CctuiAgent`, `CctuiAgentArchive`, `CctuiUsage`, peer, room,
+//! user-action, `CctuiSpeak` and `CctuiContext` tools.
 //!
 //! The subcommand is a thin relay, mirroring `ask-hook`: it speaks MCP on
 //! stdio and forwards each `tools/call` to the long-lived daemon over its local
@@ -31,11 +33,18 @@ pub const HISTORY_TOOL_NAME: &str = "CctuiHistory";
 pub const ROOM_TOOL_NAME: &str = "CctuiRoom";
 pub const USER_ACTION_ADD_TOOL_NAME: &str = "CctuiUserActionAdd";
 pub const USER_ACTION_TICK_TOOL_NAME: &str = "CctuiUserActionTick";
+pub const SPEAK_TOOL_NAME: &str = "CctuiSpeak";
+pub const CONTEXT_TOOL_NAME: &str = "CctuiContext";
 
 /// A limits lookup is one cached server read; it must never hold a turn open
 /// the way a followed child does. The peer tools are the same shape: one
 /// server round-trip, no child to wait for.
 const USAGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Synthesizing up to 4096 characters can take far longer than a lookup.
+const SPEAK_TIMEOUT: Duration = Duration::from_mins(2);
+
+pub const SPEAK_MAX_CHARS: usize = 4096;
 
 /// Socket `kind` of every tool that is a single server round-trip.
 const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
@@ -47,6 +56,8 @@ const ROUND_TRIP_KINDS: &[(&str, &str)] = &[
     (ROOM_TOOL_NAME, "room"),
     (USER_ACTION_ADD_TOOL_NAME, "user_action_add"),
     (USER_ACTION_TICK_TOOL_NAME, "user_action_tick"),
+    (SPEAK_TOOL_NAME, "speak"),
+    (CONTEXT_TOOL_NAME, "context"),
 ];
 
 /// The socket `kind` a tool call becomes. `spawn_agent` is the only kind that
@@ -93,7 +104,7 @@ pub fn tool_schema() -> Value {
                 "adapter": {
                     "type": "string",
                     "description": "Harness to run the child under, e.g. \"opencode\", \
-    \"codex\", \"claude_code\". Only the adapters this session is permitted to spawn are \
+    \"codex\", \"claude_code\", or an ACP agent such as \"gemini\". Only the adapters this session is permitted to spawn are \
     accepted. Ignored when session_id is set.",
                 },
                 "prompt": {
@@ -147,6 +158,35 @@ pub fn tool_schema() -> Value {
                 },
             },
             "required": ["prompt", "model"],
+            "additionalProperties": false,
+        },
+    })
+}
+
+/// The `CctuiSpeak` input schema.
+#[must_use]
+pub fn speak_tool_schema() -> Value {
+    json!({
+        "name": SPEAK_TOOL_NAME,
+        "description": "Post a voice note into this session's conversation: the text is \
+    synthesized to speech and shown to the user as a playable audio message with its \
+    transcript. Use it sparingly, for something the user should hear. Keep it short and \
+    speakable: plain sentences, no markdown, no code, no URLs, no lists. Returns the \
+    note's duration, or an error when speech is disabled or unreachable.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "maxLength": SPEAK_MAX_CHARS,
+                    "description": "What to say, as plain spoken prose.",
+                },
+                "voice": {
+                    "type": "string",
+                    "description": "Voice id; omit to use the instance default.",
+                },
+            },
+            "required": ["text"],
             "additionalProperties": false,
         },
     })
@@ -214,8 +254,10 @@ pub fn peers_tool_schema() -> Value {
         "name": PEERS_TOOL_NAME,
         "description": "List the cctui sessions this session is allowed to talk to: its parent, \
     its children, its siblings, and any session explicitly shared with it — across machines and \
-    across harnesses (claude_code, codex, opencode). Each entry gives session_id, name, adapter, \
-    machine, state (live / ended / archived) and the relation. Use it before CctuiSend or \
+    across harnesses (claude_code, codex, opencode, ACP agents such as gemini). Each entry gives session_id, name, adapter, \
+    machine, state (live / ended / archived) and the relation. A session on ANOTHER cctui that \
+    its owner linked to yours appears as `remote:<id>` with relation `remote` (`remote-room` for \
+    a room hosted elsewhere): someone else's agent, not yours. Use it before CctuiSend or \
     CctuiHistory: an id not on this list is refused.",
         "inputSchema": {
             "type": "object",
@@ -232,12 +274,15 @@ pub fn send_tool_schema() -> Value {
     json!({
         "name": SEND_TOOL_NAME,
         "description": "Send a message to another cctui session, on any machine and under any \
-    harness. It arrives as a turn in that session, labelled as coming from this one, and appears \
-    in both transcripts as a peer message. This is not a request/response call: the peer is a \
+    harness. It arrives as a turn in that session, wrapped in <cctui-peer-message> naming this \
+    one as the sender, and appears in both transcripts as a peer message. This is not a \
+    request/response call: the peer is a \
     session with its own work, not a subagent — it answers when and if it chooses, by calling \
     CctuiSend back at you. Only sessions CctuiPeers lists may be addressed; an ended or archived \
     peer cannot receive anything (read it with CctuiHistory instead). Rate-limited to 10 messages \
-    a minute, and capped in size — send a pointer (a path, a session id), not a payload.",
+    a minute, and capped in size — send a pointer (a path, a session id), not a payload. A \
+    `remote:<id>` peer lives on another cctui: the message may come back `queued` (retried until \
+    the other side takes it) or held for your owner's review instead of delivered.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -268,7 +313,8 @@ pub fn history_tool_schema() -> Value {
     longer exists: cctui keeps the transcript. Same addressing rules as CctuiSend (see \
     CctuiPeers). Returns compact markdown by default, newest events first-priority within a size \
     budget; page backwards with `before` using the oldest seq the previous call reported. The \
-    human running the target session sees that you consulted it.",
+    human running the target session sees that you consulted it. A `remote:<id>` peer can be \
+    read only if its owner shares its transcript; otherwise the call is refused.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -295,8 +341,8 @@ pub fn history_tool_schema() -> Value {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Keep only these roles, e.g. [\"user\", \"assistant\"] for the \
-    conversation without tool noise. Known roles: user, assistant, peer, thinking, tool, result, \
-    mcp, error, summary, compact, system. Omit for everything.",
+    conversation without tool noise. Known roles: user, context, assistant, peer, thinking, tool, \
+    result, mcp, error, summary, compact, system. Omit for everything.",
                 },
                 "format": {
                     "type": "string",
@@ -325,8 +371,10 @@ pub fn room_tool_schema() -> Value {
     Messages you receive wrapped in <cctui-room> came from another session in the room, not from \
     the human who runs you. `peek` reads the room's past messages, `members` lists who is in it. \
     Being in a room also lets you use CctuiPeers, CctuiSend and CctuiHistory on its sessions. Omit \
-    room_id: you are in at most one room. A post counts against the same rate limit as CctuiSend \
-    and is size-capped — post a pointer, not a payload.",
+    room_id: you are in at most one room. A room may include remote members (sessions on another \
+    cctui), and your room may itself be hosted on another cctui: then post, peek and members go \
+    through its host. A post counts against the same rate limit as CctuiSend and is size-capped \
+    — post a pointer, not a payload.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -439,6 +487,79 @@ pub fn user_action_tick_schema() -> Value {
     })
 }
 
+/// The `CctuiContext` input schema.
+#[must_use]
+pub fn context_tool_schema() -> Value {
+    let strings = json!({ "type": "array", "items": { "type": "string" } });
+    json!({
+        "name": CONTEXT_TOOL_NAME,
+        "description": "Keep durable notes in cctui context for future sessions, and attach \
+    saved ones to this session. `list` names every item (no bodies), `show` reads one, `save` \
+    creates or edits one, `attach` stages existing memories into THIS session and returns the file \
+    path to read. A memory you save is enabled at once and only reaches a session that picks it. \
+    A rule rides into every matching future session, so a rule you save or edit — and anything a \
+    dispatched worker saves — becomes a pending proposal the user must approve before it applies. \
+    There is no delete: deleting is the user's call, in the UI. Never store secrets here.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "show", "save", "attach"],
+                    "description": "`list`, `show` one item, `save` one item, or `attach` \
+    memories to this session.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["memory", "rule", "prompt"],
+                    "description": "Filters `list`; picks the item for `show` (default memory); \
+    `save` accepts only memory or rule.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Slug: 1-64 chars of a-z, 0-9 and dashes. Required for `show` \
+    and `save`.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Human title, max 120 chars. Defaults to the name on create.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Markdown. Required for `save`. A rule is capped at 4 KiB, a \
+    memory at 64 KiB.",
+                },
+                "match": {
+                    "type": "object",
+                    "description": "When the item applies: keys are AND-ed, values within a key \
+    OR-ed, an empty or missing key matches anything.",
+                    "properties": {
+                        "machines": strings,
+                        "paths": strings,
+                        "labels": strings,
+                        "adapters": strings,
+                    },
+                    "additionalProperties": false,
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["create", "replace", "append"],
+                    "description": "For `save`: create a new item (default), replace an existing \
+    one's body, or append a dated paragraph to it.",
+                },
+                "names": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "For `attach`: exact memory names. Unknown ones are reported \
+    back, not fatal.",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": false,
+        },
+    })
+}
+
 /// Every tool this relay advertises, in a stable order.
 ///
 /// One list, one relay: registering it for codex or opencode
@@ -456,6 +577,8 @@ pub fn tool_schemas() -> Vec<Value> {
         room_tool_schema(),
         user_action_add_schema(),
         user_action_tick_schema(),
+        speak_tool_schema(),
+        context_tool_schema(),
     ]
 }
 
@@ -583,10 +706,10 @@ fn call_daemon(
     outbox: &Outbox,
 ) -> (String, bool) {
     let tool = tool_of_kind(kind);
-    let timeout = if kind == "spawn_agent" {
-        resolve_timeout(args.get("timeout_secs").and_then(Value::as_u64))
-    } else {
-        USAGE_TIMEOUT
+    let timeout = match kind {
+        "spawn_agent" => resolve_timeout(args.get("timeout_secs").and_then(Value::as_u64)),
+        "speak" => SPEAK_TIMEOUT,
+        _ => USAGE_TIMEOUT,
     };
     let request = json!({
         "kind": kind,
@@ -704,6 +827,19 @@ mod tests {
     }
 
     #[test]
+    fn the_tool_text_names_every_acp_agent_as_a_harness() {
+        let adapter = tool_schema()["inputSchema"]["properties"]["adapter"]["description"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let peers = peers_tool_schema()["description"].as_str().unwrap().to_owned();
+        for row in crate::adapters::acp::rows::ROWS {
+            assert!(adapter.contains(&format!("\"{}\"", row.id)), "{adapter}");
+            assert!(peers.contains(row.id), "{peers}");
+        }
+    }
+
+    #[test]
     fn tool_schema_names_the_tool_and_its_required_args() {
         let schema = tool_schema();
         assert_eq!(schema["name"], TOOL_NAME);
@@ -769,8 +905,32 @@ mod tests {
                 ROOM_TOOL_NAME,
                 USER_ACTION_ADD_TOOL_NAME,
                 USER_ACTION_TICK_TOOL_NAME,
+                SPEAK_TOOL_NAME,
+                CONTEXT_TOOL_NAME,
             ]
         );
+    }
+
+    /// Without the approval line a model would assume a saved rule is live.
+    #[test]
+    fn the_context_tool_enumerates_its_actions_and_states_the_approval_gate() {
+        let schema = context_tool_schema();
+        assert_eq!(schema["inputSchema"]["required"], json!(["action"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["action"]["enum"], json!(["list", "show", "save", "attach"]));
+        assert_eq!(props["mode"]["enum"], json!(["create", "replace", "append"]));
+        assert_eq!(props["kind"]["enum"], json!(["memory", "rule", "prompt"]));
+        for key in ["machines", "paths", "labels", "adapters"] {
+            assert_eq!(props["match"]["properties"][key]["type"], json!("array"), "{key}");
+        }
+        for key in ["name", "title", "body", "names"] {
+            assert!(props.contains_key(key), "{key} missing from the schema");
+        }
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("pending proposal"), "{desc}");
+        assert!(desc.contains("no delete"), "{desc}");
+        assert!(desc.contains("THIS session"), "{desc}");
+        assert_eq!(tool_kind(CONTEXT_TOOL_NAME), Some("context"));
     }
 
     /// A room tool that let a model pick its own action strings would fail
@@ -790,6 +950,7 @@ mod tests {
             "the loop guard must be in the tool description too: {desc}"
         );
         assert!(desc.contains("<cctui-room>"), "{desc}");
+        assert!(desc.contains("remote members"), "{desc}");
         assert!(desc.contains("at most one room"), "{desc}");
         assert!(
             desc.contains("skipped and named, not queued"),
@@ -832,7 +993,7 @@ mod tests {
         assert_eq!(schema["inputSchema"]["required"], json!([]));
         assert!(schema["inputSchema"]["properties"].as_object().unwrap().is_empty());
         let desc = schema["description"].as_str().unwrap();
-        for word in ["parent", "children", "siblings", "shared", "archived"] {
+        for word in ["parent", "children", "siblings", "shared", "archived", "remote:<id>"] {
             assert!(desc.contains(word), "{word} missing: {desc}");
         }
     }
@@ -845,8 +1006,10 @@ mod tests {
         assert_eq!(schema["inputSchema"]["required"], json!(["session_id", "message"]));
         let desc = schema["description"].as_str().unwrap();
         assert!(desc.contains("not a request/response"), "{desc}");
+        assert!(desc.contains("remote:<id>") && desc.contains("queued"), "{desc}");
         assert!(desc.contains("CctuiPeers"), "{desc}");
         assert!(desc.contains("archived"), "{desc}");
+        assert!(desc.contains("<cctui-peer-message>"), "{desc}");
     }
 
     #[test]
@@ -862,6 +1025,7 @@ mod tests {
         let desc = schema["description"].as_str().unwrap();
         assert!(desc.contains("archived"), "{desc}");
         assert!(desc.contains("no longer exists"), "{desc}");
+        assert!(desc.contains("shares its transcript"), "{desc}");
     }
 
     #[test]
@@ -931,6 +1095,45 @@ mod tests {
         for word in ["KILLED", "pinned", "slot", "spawn tree"] {
             assert!(desc.contains(word), "{word} missing: {desc}");
         }
+    }
+
+    #[test]
+    fn the_speak_tool_requires_text_and_asks_for_speakable_prose() {
+        let schema = speak_tool_schema();
+        assert_eq!(tool_kind(SPEAK_TOOL_NAME), Some("speak"));
+        assert_eq!(schema["inputSchema"]["required"], json!(["text"]));
+        let props = schema["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props["text"]["maxLength"], json!(SPEAK_MAX_CHARS));
+        assert!(props.contains_key("voice"));
+        let desc = schema["description"].as_str().unwrap();
+        assert!(desc.contains("no markdown"), "{desc}");
+    }
+
+    #[test]
+    fn a_speak_call_reaches_the_daemon_with_the_longer_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(req["kind"], json!("speak"));
+            assert_eq!(req["args"]["text"], json!("hello"));
+            assert_eq!(req["timeout_secs"], json!(SPEAK_TIMEOUT.as_secs()));
+            writeln!(stream, "{}", json!({ "ok": true, "result": "{\"ok\":true}" })).unwrap();
+        });
+        let (_, is_error) = call_daemon(
+            "s1",
+            &sock_path,
+            "speak",
+            &json!({ "text": "hello" }),
+            None,
+            &Outbox::new(),
+        );
+        server.join().unwrap();
+        assert!(!is_error);
     }
 
     #[test]

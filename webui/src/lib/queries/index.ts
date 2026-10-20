@@ -14,3 +14,4 @@ export * from "./settings";
 export * from "./bookmarks";
 export * from "./plugins";
 export * from "./scheduled";
+export * from "./events";

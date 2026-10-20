@@ -5,6 +5,7 @@ mod accounts;
 mod admin_instance;
 mod admin_users;
 mod catalog;
+mod cctuiverse;
 mod context;
 mod daemon;
 mod device_auth;
@@ -33,6 +34,7 @@ mod skills;
 mod user_actions;
 mod users;
 mod version;
+mod voice;
 
 use axum::http::Method;
 
@@ -62,6 +64,7 @@ pub fn register(r: Routes) -> Routes {
     let r = session_bulk::register(r);
     let r = session_list::register(r);
     let r = session_view::register(r);
+    let r = session_view::register_voice_notes(r);
     let r = previews::register(r);
     let r = session_messages::register(r);
     let r = session_control::register(r);
@@ -75,6 +78,7 @@ pub fn register(r: Routes) -> Routes {
     let r = profiles::register(r);
     let r = account_usage::register(r);
     let r = rooms::register(r);
+    let r = cctuiverse::register(r);
     let r = shares::register(r);
     let r = machines::register(r);
     let r = me::register(r);
@@ -84,6 +88,7 @@ pub fn register(r: Routes) -> Routes {
     let r = skills::register(r);
     let r = user_actions::register(r);
     let r = drafts::register(r);
+    let r = voice::register(r);
     users::register(r)
 }
 

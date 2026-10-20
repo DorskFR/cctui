@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { waitForDrawerOpen } from './drawer.fixture';
 
 const MOBILE = { width: 390, height: 844 };
 
@@ -11,7 +12,7 @@ async function openSessions(page: Page) {
 async function openDrawer(page: Page) {
 	await openSessions(page);
 	await page.locator('[data-journey="session"] [data-journey="title"]').first().click();
-	await page.locator('[data-journey="composer"]').waitFor();
+	await waitForDrawerOpen(page);
 }
 
 test('390px: the search box keeps its tools on the same row', async ({ page }) => {

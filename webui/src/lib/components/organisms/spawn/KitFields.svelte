@@ -4,7 +4,9 @@
 	// same fields — the editor only adds a name row and its save actions.
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { useHarnessModels } from '$lib/queries';
+	import { useHarnessModels, useHarnesses, useMachineAdapters } from '$lib/queries';
+	import { harnessTable } from '$lib/harnesses.svelte';
+	import { familyAccent, pickableHarnesses } from '$lib/harnesses';
 	import { AutoGrid, Field, OptionButton, Select, Switch, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
@@ -17,8 +19,6 @@
 		accountBacksAdapter,
 		accountPickOptions,
 		compatiblePools,
-		adapterLabel,
-		allAdapters,
 		isCompatibleProvider,
 		NO_ACCOUNT,
 		POOL_PREFIX,
@@ -45,6 +45,12 @@
 		idSuffix?: string;
 	} = $props();
 
+	useHarnesses();
+	const machineAdapters = useMachineAdapters(() => machineId);
+	const enabledIds = $derived(
+		machineAdapters.data?.filter((a) => a.enabled).map((a) => a.adapter_id) ?? null
+	);
+	const harnesses = $derived(pickableHarnesses(harnessTable(), enabledIds));
 	const account = $derived(accountById(accounts, draft.account_id));
 	const provider = $derived(providerForAdapter(account, draft.harness));
 	const usesAccountModels = $derived(!!provider && isCompatibleProvider(provider.provider));
@@ -126,17 +132,17 @@
 <div class="kit">
 	<Field label={m.spawn_field_harness()}>
 		<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_profile_harness_aria()}>
-			{#each allAdapters as ad (ad)}
+			{#each harnesses as h (h.id)}
 				<OptionButton
 					row
-					selected={draft.harness === ad}
+					selected={draft.harness === h.id}
 					role="radio"
-					aria-checked={draft.harness === ad}
-					style="--opt-accent: {ad === 'codex' ? 'var(--c-blue)' : 'var(--c-amber)'}"
-					onclick={() => pickHarness(ad)}
+					aria-checked={draft.harness === h.id}
+					style="--opt-accent: {familyAccent(h.family)}"
+					onclick={() => pickHarness(h.id)}
 				>
-					<BrandLogo adapter={ad} size={18} />
-					<Text>{adapterLabel(ad)}</Text>
+					<BrandLogo adapter={h.id} size={18} />
+					<Text>{h.label}</Text>
 				</OptionButton>
 			{/each}
 		</AutoGrid>
@@ -190,6 +196,7 @@
 	{/if}
 
 	<PermissionModes
+		harness={draft.harness}
 		value={draft.permission_mode ?? null}
 		onpick={(v) => (draft.permission_mode = v)}
 	/>

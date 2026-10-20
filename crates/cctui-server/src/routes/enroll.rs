@@ -53,6 +53,16 @@ pub async fn enroll(
         _ => "persistent",
     };
     let (machine_id, token) = enroll_machine(&state.pool, user_id, &req.hostname, kind).await?;
+    crate::events::record(
+        &state,
+        crate::events::Event::new(
+            crate::events::kind::MACHINE_ENROLLED,
+            crate::events::Actor::User(user_id),
+        )
+        .machine(machine_id)
+        .user(user_id)
+        .detail(serde_json::json!({ "hostname": req.hostname, "machine_kind": kind })),
+    );
 
     tracing::info!(
         user_id = %user_id,
@@ -137,13 +147,26 @@ pub async fn deenroll(
         .fetch_optional(&state.pool)
         .await?;
 
-    sqlx::query(
+    let dropped = sqlx::query(
         "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(machine_id)
     .execute(&state.pool)
-    .await?;
+    .await?
+    .rows_affected();
+    if dropped > 0 {
+        crate::events::record(
+            &state,
+            crate::events::Event::new(
+                crate::events::kind::MACHINE_DELETED,
+                crate::events::Actor::Daemon,
+            )
+            .machine(machine_id)
+            .user(ctx.user_id)
+            .detail(serde_json::json!({ "reason": "deenrolled" })),
+        );
+    }
 
     // Auth resolves against auth_keys first; revoke the mirror row too or the
     // key keeps authenticating.

@@ -162,7 +162,7 @@ beside `plugins`). Then, per session:
   reads one path and the prompt stays short.
 - **The agent is told about it through the neutral preamble.**
   `preamble::block` gains a context section naming the staged path and listing
-  the item titles. Claude folds it into `<session-context>`, codex into
+  the item titles. Claude folds it into `<cctui-session-context>`, codex into
   `developerInstructions`, opencode into the spawn prompt — the primitives are
   already implemented and unchanged.
 
@@ -233,3 +233,62 @@ are attached to — and, once `auto` is switched on, every session whose scope
 matches; they ride the gateway-env pull, which is already the channel for
 credentials, so the existing user/machine ownership check governs them. Items
 are never logged.
+
+## Amendment: Rules — always-on, inline (2026-10-15)
+
+Nothing was ever attached: `auto` shipped off, nothing produced a pick, and
+`session_context` stayed empty. This amendment adds a third kind and turns
+the selection half on.
+
+### A third kind: `rule`
+
+| | rule | memory | prompt |
+|---|---|---|---|
+| attached | always, when enabled and the filter matches — enabling it is the consent | explicit pick or profile pin; a filter match only pre-checks it | explicit pick |
+| delivery | inline in `<cctui-session-context>`, under `rules:` | staged `context.md` + pointer line | expanded into the first turn |
+| size | ≤ 4 KiB each, ≤ 16 KiB per launch | 64 KiB | 64 KiB |
+
+Over the launch cap, rules keep their title order and the tail is dropped
+and logged by name, so the cut is the same on every launch. One renderer,
+`preamble::render_rules`, runs ahead of the staged-memory notice in the one
+context block all three harnesses deliver.
+
+Codex carries the block in `developerInstructions`, which survives
+compaction. Claude and opencode carry it in the first turn, so a compaction
+can summarise a rule away. That gap is accepted; a claude-only system-prompt
+path stays out of scope for the reason §4 gives.
+
+### Filters replace scopes
+
+`scope` + `scope_ref` named one condition. An item now carries a `match`
+filter — `machines`, `paths`, `labels`, `adapters` — AND across keys, OR
+within one, an empty key matching anything. Paths still compare whole
+components. The migration backfills `match` from the scope, and both stay
+readable and in step for one release before the scope columns are dropped.
+
+### Rules are re-resolved at every launch
+
+A spawn records its coordinates (owner, machine, working dir, labels,
+adapter) beside the frozen memory set, keyed and re-keyed exactly like §3's
+set. Every gateway-env pull re-resolves the rules against those coordinates,
+so an edited rule reaches a session's next launch; the set it delivered is
+recorded for the session card. Memories stay frozen at spawn. Fork inherits
+its parent's record, and dispatch records the worker's adapter and working
+dir. A session cctui did not spawn has no record and gets no rules.
+
+`auto` keeps governing memories only, and the webui now sends it on: the
+spawn panel shows the matching rules and pre-checks the matching memories
+through `GET /context/resolve`, which was §3's condition for turning it on.
+
+### Agents write through `CctuiContext`
+
+Sessions save, list, show and attach items through one MCP tool relayed by
+the daemon to `POST /daemon/sessions/{id}/context`, acting as the session's
+owner. A memory saves live. A rule — or anything a dispatched worker saves,
+since nobody watches it — lands as a `pending` spec beside the untouched
+live one, and files a "needs you" card; the owner approves (pending becomes
+live, `version` bumps) or rejects it. A rule rides into every future matching
+launch, so an agent that read a hostile page must not be able to plant one
+unseen. There is no delete through the tool. Saves are capped at 20 per
+session per hour and 200 items per user, and `created_by_session` /
+`updated_by_session` record which session wrote what.

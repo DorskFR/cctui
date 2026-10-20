@@ -50,6 +50,7 @@ describe('variables.css is a kit import, not a fork', () => {
 				'--attention-bg-solid',
 				'--c-brown',
 				'--content-wide',
+				'--role-context',
 				'--role-peer',
 				'--role-poll',
 				'--role-queued',

@@ -6,14 +6,17 @@ pub mod attachments;
 pub mod bookmarks;
 pub mod cache_loss;
 pub mod capabilities;
+pub mod cctuiverse;
 pub mod context;
 pub mod device_auth;
 pub mod dispatchers;
+pub mod events;
 pub mod gateway;
 pub mod harness_update;
 pub mod instance;
 pub mod langfuse;
 pub mod limit_reset;
+pub mod machine_adapters;
 pub mod machine_resources;
 pub mod me;
 pub mod pace;
@@ -27,6 +30,7 @@ pub mod prompts;
 pub mod provider_status;
 pub mod routes;
 pub mod self_update;
+pub mod service_tokens;
 pub mod session_bindings;
 pub mod settings;
 pub mod settings_catalog;
@@ -112,10 +116,17 @@ impl SpawnCapability {
     /// Default for an interactive machine spawn that names no capability: no
     /// dollar ceiling and no child-count cap, only the depth limit. A ceiling
     /// exists only when an admin setting or the launcher sets one explicitly.
+    ///
+    /// Grants every harness that runs by default;
+    /// [`with_adapters`](Self::with_adapters) narrows it to what one machine
+    /// actually runs.
     #[must_use]
     pub fn machine_default() -> Self {
         Self {
-            adapters: crate::adapter::KNOWN_ADAPTERS.iter().map(|a| (*a).to_owned()).collect(),
+            adapters: crate::adapter::default_enabled_adapters()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
             max_budget_usd: None,
             max_children: None,
             max_permission_mode: None,
@@ -123,6 +134,13 @@ impl SpawnCapability {
             max_tree_budget_usd: None,
             tree_root: None,
         }
+    }
+
+    /// The same capability granting exactly `adapters`.
+    #[must_use]
+    pub fn with_adapters(mut self, adapters: Vec<String>) -> Self {
+        self.adapters = adapters;
+        self
     }
 
     /// Capability handed to a child: per-child ceiling, posture and depth only
@@ -252,8 +270,8 @@ pub struct GatewayEnvResponse {
     /// whatever channel that harness has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<SessionPlugin>,
-    /// Memory notes and the prompt template this session was launched with,
-    /// already scope-resolved by the server.
+    /// Rules, memory notes and the prompt template this launch carries,
+    /// already resolved by the server.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<SessionContextItem>,
 }
@@ -262,7 +280,8 @@ pub struct GatewayEnvResponse {
 /// and name it to the agent. Server-side scoping is already applied.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionContextItem {
-    /// `memory` or `prompt`.
+    /// `rule`, `memory` or `prompt`. A daemon that predates rules stages only
+    /// memories, so a rule degrades to absent rather than misdelivered.
     pub kind: String,
     pub name: String,
     pub title: String,
@@ -270,11 +289,18 @@ pub struct SessionContextItem {
     pub version: i32,
 }
 
+/// `GET /daemon/sessions/{id}/context`: the context of
+/// [`GatewayEnvResponse`] alone, with no credential minted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LaunchContextResponse {
+    #[serde(default)]
+    pub context: Vec<SessionContextItem>,
+}
+
 /// What a spawn asks for by way of reusable context.
 ///
-/// `auto` adds every scope-matching memory on top of the explicit picks. It
-/// defaults to OFF: until the spawn panel can show what a scope would pull
-/// in, a session gets context only when someone named it.
+/// `auto` adds every filter-matching memory on top of the explicit picks; an
+/// omitted `auto` is off. Matching rules attach whatever it says.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnContext {
@@ -474,6 +500,9 @@ pub struct SessionListItem {
     /// Absent when this session has no open user action and no child with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_actions: Option<UserActionCounts>,
+    /// Absent when the session was delivered no rules and holds no memories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_counts: Option<ContextCounts>,
     #[serde(default)]
     pub has_token_credentials: bool,
     #[serde(default)]
@@ -722,6 +751,14 @@ impl UserActionCounts {
     }
 }
 
+/// Context the session carries, for the session card's chip.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ContextCounts {
+    pub rules: u32,
+    pub memories: u32,
+}
+
 /// Task-list entry. `status` is `pending`, `in_progress` or `completed`;
 /// `active_form` is claude-only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -858,6 +895,11 @@ pub struct UsageBucket {
     pub output: u64,
     pub cache_read: u64,
     pub cache_creation: u64,
+    /// Dollars, priced from each session's account catalog like the session
+    /// list's cost; tokens of an unpriced model add nothing. Absent from a
+    /// server that predates pricing.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// Attributed by session model, not per turn.
@@ -1107,6 +1149,23 @@ pub struct ForkResponse {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ThreadSession {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub working_dir: String,
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The follow-up thread through a session, oldest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionThreadResponse {
+    pub sessions: Vec<ThreadSession>,
+}
+
 /// User/assistant transcript as markdown, oldest turns elided past the caps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -1201,7 +1260,18 @@ pub struct SkillIndexEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::DaemonAuthResponse;
+    use super::{DaemonAuthResponse, UsageBucket};
+
+    /// A server that predates pricing sends buckets without `cost_usd`; a newer
+    /// client reads them as unpriced rather than failing the whole response.
+    #[test]
+    fn an_older_servers_usage_bucket_decodes_with_no_cost() {
+        let legacy = r#"{"bucket":"2026-01-01T00:00:00Z","input":1,"output":2,
+                         "cache_read":3,"cache_creation":4}"#;
+        let bucket: UsageBucket = serde_json::from_str(legacy).expect("legacy bucket");
+        assert!(bucket.cost_usd.abs() < f64::EPSILON, "{}", bucket.cost_usd);
+        assert_eq!((bucket.input, bucket.output), (1, 2));
+    }
 
     /// A server that predates capability advertising answers without the field;
     /// a newer daemon must read that as "no new event kinds".

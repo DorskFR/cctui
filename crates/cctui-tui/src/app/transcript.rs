@@ -68,7 +68,7 @@ fn peer_tag_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?m)^<(cross-session-message|agent-message|cctui-room)([^>]*)>([\s\S]*?)</(?:cross-session-message|agent-message|cctui-room)>",
+            r"(?m)^<(cctui-peer-message|cross-session-message|agent-message|cctui-room)([^>]*)>([\s\S]*?)</(?:cctui-peer-message|cross-session-message|agent-message|cctui-room)>",
         )
         .expect("the peer tag pattern compiles")
     })
@@ -182,6 +182,17 @@ mod tests {
         assert_eq!(peer.from.as_deref(), Some("worker"));
         assert_eq!(peer.body, "check the tests");
         assert!(peer.room.is_none());
+    }
+
+    #[test]
+    fn the_namespaced_peer_envelope_parses_like_the_legacy_one() {
+        let text =
+            "<cctui-peer-message from=\"a-1\" from-name=\"worker\">\nhi\n</cctui-peer-message>";
+        let peer = parse_peer_message(text).expect("a peer message");
+        assert_eq!(peer.from.as_deref(), Some("worker"));
+        assert_eq!(peer.body, "hi");
+        let mixed = "<cctui-peer-message from=\"a-1\">hi</cross-session-message>";
+        assert!(parse_peer_message(mixed).is_none(), "the close tag must match the open one");
     }
 
     #[test]

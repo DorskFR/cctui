@@ -41,6 +41,13 @@ pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
                     Ok(true) => {
                         session_id = Some(row.session_id.clone());
                         publish_session_ended(state, &row.session_id, &reason);
+                        super::session::record_session_ended(
+                            state,
+                            &row.session_id,
+                            row.machine_id,
+                            row.user_id,
+                            &reason,
+                        );
                     }
                     Ok(false) => {}
                     Err(e) => tracing::error!(%command_id, "db error (failed spawn): {e}"),

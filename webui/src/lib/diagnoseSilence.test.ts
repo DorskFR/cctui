@@ -18,7 +18,7 @@ describe('silenceReasonMessage', () => {
 			{ kind: 'opencode_http_errors', count: 1, age_ms: 2_000, message: 'POST /prompt: 500' },
 			{ kind: 'opencode_awaiting_permission', count: 2 },
 			{ kind: 'opencode_idle' },
-			{ kind: 'opencode_version', version: '1.20.0', pinned: '1.18.7' },
+			{ kind: 'opencode_version', version: '1.20.0', pinned: '1.19.0' },
 			{ kind: 'opencode_not_live' }
 		];
 		for (const reason of reasons) expect(silenceReasonMessage(reason)).toBeTruthy();
@@ -60,7 +60,7 @@ describe('silenceReasonMessage', () => {
 			})
 		).toContain('500');
 		expect(
-			silenceReasonMessage({ kind: 'opencode_version', version: '1.20.0', pinned: '1.18.7' })
+			silenceReasonMessage({ kind: 'opencode_version', version: '1.20.0', pinned: '1.19.0' })
 		).toContain('1.20.0');
 	});
 });

@@ -205,10 +205,16 @@ async fn mint_ephemeral_dispatch_key(
 /// adapter of its own: the entry's provider hint names the family when there is
 /// one, otherwise the forwarded payload's adapter does, defaulting to
 /// `claude-code` as the rest of the dispatch path does.
-fn binding_family(hint: Option<&str>, payload_adapter: &str) -> crate::routes::gateway::Family {
+fn binding_family(
+    hint: Option<&str>,
+    payload_adapter: &str,
+) -> Result<crate::routes::gateway::Family, (StatusCode, Json<ApiError>)> {
     hint.map(str::trim).filter(|p| !p.is_empty()).map_or_else(
-        || crate::routes::gateway::Family::from_adapter(payload_adapter),
-        crate::routes::gateway::Family::from_provider,
+        || {
+            crate::routes::gateway::Family::from_adapter(payload_adapter)
+                .map_err(|e| crate::routes::spawn::bad_request(e.to_string()))
+        },
+        |p| Ok(crate::routes::gateway::Family::from_provider(p)),
     )
 }
 
@@ -636,7 +642,7 @@ async fn resolve_routed_accounts(
                 let (account, pool_id) = crate::account_resolve::resolve_pool_by_id(
                     state,
                     uid,
-                    binding_family(None, payload_adapter),
+                    binding_family(None, payload_adapter)?,
                     requested_model,
                     pool_id,
                 )
@@ -655,7 +661,7 @@ async fn resolve_routed_accounts(
     // name always wins.
     let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(accounts.len());
     for (name, hint) in accounts {
-        let family = binding_family(hint.as_deref(), payload_adapter);
+        let family = binding_family(hint.as_deref(), payload_adapter)?;
         let bound = crate::account_resolve::resolve_account_or_pool(
             state,
             uid,
@@ -1076,17 +1082,163 @@ pub async fn dispatch(
 
     register_completion_webhook(&state, &ctx, &req, &v.session_id).await;
     persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload).await;
+    if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
+        if context_record_is_callers(&state.pool, &v.session_id, uid).await {
+            let scope = dispatch_context_scope(uid, &req.payload);
+            crate::routes::context::remember_intent(&state.pool, &v.session_id, &[], &scope).await;
+        } else {
+            tracing::warn!(
+                session = %v.session_id,
+                "dispatch names another user's session; its context set is left alone"
+            );
+        }
+    }
     forward_dispatch(&state, &req, &v).await
+}
+
+/// A dispatch may name an existing session id as its retry target, so the
+/// context set it records must not overwrite one that belongs to someone else:
+/// neither a set already keyed by that id, nor a registered session, may be
+/// another user's. A lookup failure keeps the set untouched.
+async fn context_record_is_callers(pool: &sqlx::PgPool, session_id: &str, uid: uuid::Uuid) -> bool {
+    let foreign: Result<bool, sqlx::Error> = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM session_context \
+                        WHERE spawn_key = $1 AND scope->>'user_id' <> $2) \
+            OR EXISTS (SELECT 1 FROM sessions \
+                        WHERE id = $1 AND user_id IS NOT NULL AND user_id <> $3)",
+    )
+    .bind(session_id)
+    .bind(uid.to_string())
+    .bind(uid)
+    .fetch_one(pool)
+    .await;
+    match foreign {
+        Ok(foreign) => !foreign,
+        Err(e) => {
+            tracing::warn!(%session_id, error = %e, "context ownership lookup failed");
+            false
+        }
+    }
+}
+
+/// The coordinates a dispatched worker's rules resolve against. No human
+/// watches a worker, so everything it saves through `CctuiContext` waits for
+/// approval.
+fn dispatch_context_scope(
+    uid: uuid::Uuid,
+    payload: &serde_json::Value,
+) -> crate::routes::context::StoredScope {
+    let text = |key: &str| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    crate::routes::context::StoredScope {
+        user_id: uid,
+        coords: crate::routes::context::SpawnScope {
+            machine_id: None,
+            working_dir: text("working_dir").or_else(|| text("cwd")),
+            label_ids: Vec::new(),
+            adapter: Some(text("adapter_id").unwrap_or_else(|| "claude-code".to_owned())),
+        },
+        dispatched: true,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DefaultBinding, binding_family, colliding_family, default_binding, dispatch_ceiling,
-        resolve_dispatch_account, resolve_dispatch_session_id, rewrite_model_if_aliased,
+        DefaultBinding, binding_family, colliding_family, context_record_is_callers,
+        default_binding, dispatch_ceiling, dispatch_context_scope, resolve_dispatch_account,
+        resolve_dispatch_session_id, rewrite_model_if_aliased,
     };
     use crate::routes::gateway::Family;
     use cctui_proto::adapter::PermissionMode;
+
+    /// A dispatch naming an existing session id must not re-scope that
+    /// session's context set to the dispatcher: only the user who recorded the
+    /// set, or who owns the registered session, may overwrite it.
+    #[tokio::test]
+    async fn a_dispatch_only_overwrites_its_own_users_context_set() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_context_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (owner, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for uid in [owner, other] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("dctx-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .expect("seed user");
+        }
+        let key = uuid::Uuid::new_v4().to_string();
+        let scope = dispatch_context_scope(owner, &serde_json::json!({}));
+        crate::routes::context::remember_intent(&pool, &key, &[], &scope).await;
+        let registered = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'claude-code')",
+        )
+        .bind(&registered)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+
+        assert!(context_record_is_callers(&pool, &key, owner).await, "the recording user");
+        assert!(!context_record_is_callers(&pool, &key, other).await, "another user's set");
+        assert!(context_record_is_callers(&pool, &registered, owner).await, "the session owner");
+        assert!(
+            !context_record_is_callers(&pool, &registered, other).await,
+            "another user's registered session"
+        );
+        assert!(
+            context_record_is_callers(&pool, &uuid::Uuid::new_v4().to_string(), other).await,
+            "a fresh id records freely"
+        );
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&registered)
+            .execute(&pool)
+            .await
+            .ok();
+        for uid in [owner, other] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        }
+    }
+
+    #[test]
+    fn a_dispatched_worker_resolves_rules_by_adapter_and_cwd_and_saves_for_approval() {
+        let uid = uuid::Uuid::new_v4();
+        let scope = dispatch_context_scope(
+            uid,
+            &serde_json::json!({"adapter_id": "codex", "working_dir": " /w/repo "}),
+        );
+        assert!(scope.dispatched);
+        assert_eq!(scope.user_id, uid);
+        assert_eq!(scope.coords.adapter.as_deref(), Some("codex"));
+        assert_eq!(scope.coords.working_dir.as_deref(), Some("/w/repo"));
+        assert!(scope.coords.machine_id.is_none(), "a worker pod is no enrolled machine");
+
+        let bare = dispatch_context_scope(uid, &serde_json::json!({"cwd": "/srv"}));
+        assert_eq!(bare.coords.adapter.as_deref(), Some("claude-code"));
+        assert_eq!(bare.coords.working_dir.as_deref(), Some("/srv"));
+    }
 
     #[test]
     fn dispatch_ceiling_defaults_to_the_workers_own_yolo_mode() {
@@ -1231,15 +1383,16 @@ mod tests {
 
     #[test]
     fn a_provider_hint_scopes_the_binding_family() {
-        assert_eq!(binding_family(Some("openai"), "claude-code"), Family::Openai);
-        assert_eq!(binding_family(Some("fireworks"), "claude-code"), Family::Fireworks);
+        assert_eq!(binding_family(Some("openai"), "claude-code").unwrap(), Family::Openai);
+        assert_eq!(binding_family(Some("fireworks"), "claude-code").unwrap(), Family::Fireworks);
     }
 
     #[test]
     fn without_a_hint_the_payload_adapter_scopes_the_binding_family() {
-        assert_eq!(binding_family(None, "codex"), Family::Openai);
-        assert_eq!(binding_family(Some("  "), "codex"), Family::Openai);
-        assert_eq!(binding_family(None, "claude-code"), Family::Anthropic);
+        assert_eq!(binding_family(None, "codex").unwrap(), Family::Openai);
+        assert_eq!(binding_family(Some("  "), "codex").unwrap(), Family::Openai);
+        assert_eq!(binding_family(None, "claude-code").unwrap(), Family::Anthropic);
+        assert!(binding_family(None, "gemini").is_err());
     }
 
     #[test]

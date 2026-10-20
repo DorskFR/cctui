@@ -1,5 +1,7 @@
 use std::fmt::Write as _;
 
+use cctui_proto::injected::SESSION_CONTEXT;
+
 use super::{PathBuf, json};
 
 /// Decode + stage `bootstrap` file uploads under the upload staging root's
@@ -8,7 +10,7 @@ use super::{PathBuf, json};
 /// an empty vec. Errors (bad base64, unwritable dir) abort the
 /// spawn so the user learns the attachment didn't land rather than the worker
 /// silently starting without it.
-/// Build the spawn-time `<session-context>` block prepended to the
+/// Build the spawn-time `<cctui-session-context>` block prepended to the
 /// initial prompt. Mirrors what a human sees on the session card — name,
 /// model·effort, permission posture, env var NAMES, cwd, and staged files.
 /// Env var VALUES are never included (only `spec.env` keys, sorted by the
@@ -21,7 +23,7 @@ pub(super) fn build_session_context(
     neighbours: &[crate::neighbours::Neighbour],
     context: Option<&str>,
 ) -> String {
-    let mut b = String::from("<session-context>\n");
+    let mut b = format!("<{SESSION_CONTEXT}>\n");
     if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         let _ = writeln!(b, "session: {name}");
     }
@@ -58,7 +60,7 @@ pub(super) fn build_session_context(
     if let Some(cap) = capability.filter(|c| !c.is_empty()) {
         b.push_str(&agent_tool_context(cap));
     }
-    b.push_str("</session-context>");
+    let _ = write!(b, "</{SESSION_CONTEXT}>");
     b
 }
 
@@ -349,7 +351,15 @@ fn ensure_hook_settings_in(
             "timeout": 5,
         }],
     });
-    let pre_hooks = json!([hook("pre"), perm_hook, plan_guard]);
+    let worktree_guard = json!({
+        "matcher": "Agent|Task",
+        "hooks": [{
+            "type": "command",
+            "command": ask_hook_command(&exe, "pre", &sock, false),
+            "timeout": 5,
+        }],
+    });
+    let pre_hooks = json!([hook("pre"), perm_hook, plan_guard, worktree_guard]);
     // The whip Stop hook gets the user's phrase override via a per-session file
     // it reads with `--phrases`; absent/cleared → the hook falls back to its
     // compiled defaults, so a stale file from a prior spawn is removed.
@@ -398,7 +408,8 @@ fn ensure_hook_settings_in(
     // settings: account keys are merged in, but the managed keys
     // (hooks, gateway env, model/effort) always win so they can never be
     // clobbered.
-    let settings = merge_account_under_managed(managed, account_settings);
+    let mut settings = merge_account_under_managed(managed, account_settings);
+    deny_worktrees(&mut settings);
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
         tracing::warn!(%err, "ask-hook: cannot create settings dir");
         return None;
@@ -412,6 +423,33 @@ fn ensure_hook_settings_in(
         return None;
     }
     Some(path)
+}
+
+/// Rules every managed session denies. Deny rules hold even in
+/// `bypassPermissions`.
+const MANAGED_DENY: [&str; 2] = ["EnterWorktree", "Bash(git worktree add:*)"];
+
+/// Add [`MANAGED_DENY`] to `settings.permissions.deny`, keeping any rules the
+/// account settings already deny: the array merge in [`deep_merge`] would
+/// otherwise replace them wholesale.
+fn deny_worktrees(settings: &mut serde_json::Value) {
+    if !settings.is_object() {
+        return;
+    }
+    let permissions = &mut settings["permissions"];
+    if !permissions.is_object() {
+        *permissions = json!({});
+    }
+    let deny = &mut permissions["deny"];
+    if !deny.is_array() {
+        *deny = json!([]);
+    }
+    let Some(rules) = deny.as_array_mut() else { return };
+    for rule in MANAGED_DENY {
+        if !rules.iter().any(|r| r.as_str() == Some(rule)) {
+            rules.push(json!(rule));
+        }
+    }
 }
 
 /// Claude Code runs hook commands through a shell; an unquoted macOS
@@ -655,6 +693,70 @@ mod tests {
         chmod(&path, 0o644);
         assert_eq!(write(), path);
         assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
+    }
+
+    #[test]
+    fn every_session_denies_worktrees_and_keeps_the_account_denies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cctui");
+        let account = json!({ "permissions": { "deny": ["Bash(rm:*)", "EnterWorktree"] } });
+        let write = |short: &str, account: Option<&serde_json::Value>| {
+            let path = ensure_hook_settings_in(
+                &root,
+                std::path::Path::new("/run/hook.sock"),
+                false,
+                short,
+                account,
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("written");
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()
+        };
+
+        let plain = write("fffffff6", None);
+        assert_eq!(
+            plain["permissions"]["deny"],
+            json!(["EnterWorktree", "Bash(git worktree add:*)"])
+        );
+
+        let merged = write("ggggggg7", Some(&account));
+        assert_eq!(
+            merged["permissions"]["deny"],
+            json!(["Bash(rm:*)", "EnterWorktree", "Bash(git worktree add:*)"])
+        );
+    }
+
+    #[test]
+    fn the_agent_tool_rides_the_pre_hook_for_the_worktree_guard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = ensure_hook_settings_in(
+            &tmp.path().join("cctui"),
+            std::path::Path::new("/run/hook.sock"),
+            false,
+            "hhhhhhh8",
+            None,
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("written");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let guard = written["hooks"]["PreToolUse"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["matcher"] == json!("Agent|Task"))
+            .expect("an Agent|Task PreToolUse hook");
+        let command = guard["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.contains("ask-hook --event pre"), "{command}");
+        assert!(!command.contains("--deny"), "{command}");
     }
 
     #[test]
@@ -927,7 +1029,7 @@ mod tests {
         assert!(block.contains("shared cwd: 1 other live session in this directory: "), "{block}");
         assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
         assert!(block.contains("Its uncommitted changes are not yours"), "{block}");
-        assert!(block.ends_with("</session-context>"));
+        assert!(block.ends_with("</cctui-session-context>"));
     }
 
     #[test]
@@ -965,7 +1067,7 @@ mod tests {
         );
         assert!(block.contains("context: 1 attached for this session (House style)"), "{block}");
         assert!(block.contains("/tmp/x/context.md"), "{block}");
-        assert!(block.ends_with("</session-context>"), "{block}");
+        assert!(block.ends_with("</cctui-session-context>"), "{block}");
 
         let bare = build_session_context(&bare_spec(), "/work/cctui", &[], None, &[], Some("  "));
         assert!(!bare.contains("context:"), "a blank notice adds no line: {bare}");
@@ -992,8 +1094,8 @@ mod tests {
         };
         let block =
             build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None, &[], None);
-        assert!(block.starts_with("<session-context>\n"));
-        assert!(block.ends_with("</session-context>"));
+        assert!(block.starts_with("<cctui-session-context>\n"));
+        assert!(block.ends_with("</cctui-session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
         assert!(block.contains("model: opus · effort: high"));
         // acceptEdits/Auto normalizes to `auto`.
@@ -1038,7 +1140,7 @@ mod tests {
             block.contains("retry the call once"),
             "turn 1 can beat the relay, so the model is told to retry: {block}"
         );
-        assert!(block.ends_with("</session-context>"));
+        assert!(block.ends_with("</cctui-session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty), &[], None);

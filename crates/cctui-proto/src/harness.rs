@@ -1,5 +1,7 @@
 //! Harness auto-update: the policy pushed to daemons and the heartbeat report.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
@@ -78,13 +80,45 @@ pub struct HarnessVersion {
     pub daemon: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Versions per harness, keyed by adapter id (`claude-code`, `codex`,
+/// `gemini`, …). A daemon from before the map sent two fixed fields; its
+/// `claude_code` key is read as `claude-code`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct HarnessVersions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_code: Option<HarnessVersion>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub codex: Option<HarnessVersion>,
+#[serde(transparent)]
+pub struct HarnessVersions(pub BTreeMap<String, HarnessVersion>);
+
+impl HarnessVersions {
+    #[must_use]
+    pub fn get(&self, harness: &str) -> Option<&HarnessVersion> {
+        self.0.get(harness)
+    }
+
+    pub fn insert(&mut self, harness: &str, version: HarnessVersion) {
+        self.0.insert(harness.to_owned(), version);
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &HarnessVersion)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v))
+    }
+}
+
+impl<'de> Deserialize<'de> for HarnessVersions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut map: BTreeMap<String, Option<HarnessVersion>> =
+            BTreeMap::deserialize(deserializer)?;
+        if let Some(legacy) = map.remove("claude_code")
+            && !map.contains_key(HARNESS_CLAUDE_CODE)
+        {
+            map.insert(HARNESS_CLAUDE_CODE.to_owned(), legacy);
+        }
+        Ok(Self(map.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +172,37 @@ pub const CODEX_SANDBOX_FIX: &str = "codex's sandbox (bubblewrap) cannot start o
      namespaces for bwrap. Install an AppArmor profile for bwrap, or set \
      kernel.apparmor_restrict_unprivileged_userns=0. See docs/codex-sandbox.md";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct AdapterBinary {
+    pub bin: String,
+    pub config_key: String,
+    /// `None`: not found on the daemon's `PATH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub path: Option<String>,
+}
+
+impl AdapterBinary {
+    #[must_use]
+    pub const fn installed(&self) -> bool {
+        self.path.is_some()
+    }
+
+    #[must_use]
+    pub fn refusal(&self, adapter_id: &str) -> Option<String> {
+        if self.installed() {
+            return None;
+        }
+        Some(format!(
+            "{adapter_id} is not installed on this machine: `{}` was not found on the daemon's \
+             PATH. Install it, or point the `{}` key of the {adapter_id} adapter config \
+             (Settings → Machine adapters) at the binary",
+            self.bin, self.config_key
+        ))
+    }
+}
+
 /// Heartbeat block. `policy` echoes what the daemon currently holds so the
 /// server resends [`crate::ws::DaemonFrameDown::HarnessUpdatePolicy`] only on
 /// a difference, and only to a daemon that can parse it.
@@ -157,6 +222,9 @@ pub struct HarnessReport {
     /// not probe, or before the first probe has run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_sandbox: Option<CodexSandbox>,
+    /// Keyed by enabled adapter id; empty from a daemon too old to probe.
+    #[serde(default)]
+    pub binaries: BTreeMap<String, AdapterBinary>,
 }
 
 impl HarnessReport {
@@ -237,11 +305,71 @@ mod tests {
     }
 
     #[test]
+    fn versions_are_a_map_keyed_by_adapter_id() {
+        let mut versions = HarnessVersions::default();
+        versions.insert("gemini", HarnessVersion { cli: Some("0.62.0".into()), daemon: None });
+        versions.insert(
+            HARNESS_CODEX,
+            HarnessVersion { cli: Some("0.155.0".into()), daemon: Some("0.155.0".into()) },
+        );
+        let json = serde_json::to_string(&versions).unwrap();
+        assert_eq!(
+            json,
+            r#"{"codex":{"cli":"0.155.0","daemon":"0.155.0"},"gemini":{"cli":"0.62.0"}}"#
+        );
+        let back: HarnessVersions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, versions);
+        assert_eq!(back.get("gemini").and_then(|v| v.cli.as_deref()), Some("0.62.0"));
+        assert_eq!(back.iter().map(|(k, _)| k).collect::<Vec<_>>(), ["codex", "gemini"]);
+        assert!(HarnessVersions::default().is_empty());
+    }
+
+    /// A daemon from before the map sends `claude_code` and `codex` as fixed
+    /// fields, `null` when unknown.
+    #[test]
+    fn legacy_fixed_fields_decode_under_their_adapter_ids() {
+        let legacy = r#"{"claude_code":{"cli":"2.1.280","daemon":"2.1.279"},"codex":null}"#;
+        let versions: HarnessVersions = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            versions.get(HARNESS_CLAUDE_CODE).and_then(|v| v.daemon.as_deref()),
+            Some("2.1.279")
+        );
+        assert!(versions.get("claude_code").is_none());
+        assert!(versions.get(HARNESS_CODEX).is_none());
+        let report: HarnessReport =
+            serde_json::from_str(r#"{"versions":{"claude_code":{"cli":"2.1.280"}},"outcomes":[]}"#)
+                .unwrap();
+        assert_eq!(
+            report.versions.get(HARNESS_CLAUDE_CODE).and_then(|v| v.cli.as_deref()),
+            Some("2.1.280")
+        );
+    }
+
+    #[test]
     fn absent_setting_never_needs_a_push() {
         let report = HarnessReport::default();
         assert!(!report.needs_policy(&HarnessUpdatePolicy::resolve(None, None)));
         assert!(report.needs_policy(&on(24)));
         let held = HarnessReport { policy: Some(on(24)), ..Default::default() };
         assert!(!held.needs_policy(&on(24)));
+    }
+
+    #[test]
+    fn a_missing_binary_names_the_key_that_overrides_it() {
+        let missing = AdapterBinary {
+            bin: "codex".to_owned(),
+            config_key: "codex_bin".to_owned(),
+            path: None,
+        };
+        let msg = missing.refusal("codex").unwrap();
+        assert!(msg.contains("`codex` was not found"), "{msg}");
+        assert!(msg.contains("`codex_bin`"), "{msg}");
+        let found = AdapterBinary { path: Some("/usr/bin/codex".to_owned()), ..missing };
+        assert!(found.refusal("codex").is_none());
+
+        let old: HarnessReport = serde_json::from_str(r#"{"outcomes":[]}"#).unwrap();
+        assert!(old.binaries.is_empty(), "a daemon that does not probe refuses nothing");
+        let json = serde_json::to_string(&found).unwrap();
+        assert_eq!(serde_json::from_str::<AdapterBinary>(&json).unwrap(), found);
     }
 }

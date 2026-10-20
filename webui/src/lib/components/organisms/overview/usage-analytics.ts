@@ -17,6 +17,7 @@ export interface FilledBucket {
 	output: number;
 	cache_read: number;
 	cache_creation: number;
+	cost_usd: number;
 }
 
 const HOUR_MS = 3_600_000;
@@ -60,9 +61,21 @@ export function fillBuckets(
 			output: r?.output ?? 0,
 			cache_read: r?.cache_read ?? 0,
 			cache_creation: r?.cache_creation ?? 0,
+			cost_usd: finiteUsd(r?.cost_usd),
 		});
 	}
 	return out;
+}
+
+function finiteUsd(v: number | undefined): number {
+	return v !== undefined && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/** Dollars over the whole filled range, for the caption under the bars. */
+export function rangeCost(buckets: readonly FilledBucket[]): number {
+	let total = 0;
+	for (const b of buckets) total += b.cost_usd;
+	return total;
 }
 
 /** Peak stacked height across filled buckets (input+output+cache_read), for

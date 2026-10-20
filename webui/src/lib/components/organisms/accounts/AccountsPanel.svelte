@@ -17,6 +17,7 @@
 	import AccountsBoard from './AccountsBoard.svelte';
 	import AccountEditorModal from './AccountEditorModal.svelte';
 	import { availableKinds } from './account-editor.logic';
+	import { accountHref } from './account-page/account-nav.logic';
 	import { Button } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -117,10 +118,10 @@
 					setRedirect(a, targetId, untilHours, families)}
 				onclearredirect={clearRedirect}
 				{onmovepool}
-				onedit={() => goto(`/accounts/${a.id}`)}
+				onedit={() => goto(accountHref(a.id))}
 				onremove={() => removeAccount(a)}
 				onaddprovider={() => editor?.openAddProvider(a)}
-				oneditprovider={(p) => goto(`/accounts/${a.id}?provider=${p.id}`)}
+				oneditprovider={(p) => goto(accountHref(a.id, p.id))}
 				onreauthprovider={(p) => editor?.reauth(a, p)}
 				onremoveprovider={(p) => removeProvider(a, p)}
 			/>

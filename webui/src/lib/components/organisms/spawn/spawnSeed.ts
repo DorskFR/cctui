@@ -36,7 +36,7 @@ export const blank: Form = {
 	context_pack_token: '',
 	labels: [],
 	context_items: [],
-	context_auto: false
+	context_auto: true
 };
 
 export interface Seed {
@@ -72,7 +72,15 @@ export function seedForm(prefill: SpawnPrefill | null, slotKey: string): Seed {
 		const keys = new Set<string>();
 		for (const r of saved.envRows ?? []) if (r?.key) keys.add(String(r.key));
 		for (const k of env_keys?.split(',') ?? []) if (k) keys.add(k);
-		const { envRows: _envRows, draftId: _draftId, attachmentNames: _names, ...savedForm } = saved;
+		// Context picks follow the filters of this open, never an old draft's.
+		const {
+			envRows: _envRows,
+			draftId: _draftId,
+			attachmentNames: _names,
+			context_items: _items,
+			context_auto: _auto,
+			...savedForm
+		} = saved;
 		const given = Object.fromEntries(
 			Object.entries(prefillForm).filter(([, v]) => v !== '' && v != null)
 		);
