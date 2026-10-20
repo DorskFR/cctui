@@ -93,12 +93,10 @@ async fn resolve(server_url: &str) -> Option<SocketAddr> {
 }
 
 async fn connect(addr: SocketAddr) -> io::Result<()> {
-    tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
-        .await
-        .map_or_else(
-            |_| Err(io::Error::new(io::ErrorKind::TimedOut, "connect timed out")),
-            |res| res.map(|_| ()),
-        )
+    tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await.map_or_else(
+        |_| Err(io::Error::new(io::ErrorKind::TimedOut, "connect timed out")),
+        |res| res.map(|_| ()),
+    )
 }
 
 async fn probe_network(server_url: Option<&str>) -> Option<Observation<SocketAddr>> {
