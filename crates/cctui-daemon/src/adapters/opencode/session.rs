@@ -345,6 +345,14 @@ impl OpenCodeSession {
         self
     }
 
+    /// The session ends once its first turn has produced output, as a
+    /// `CctuiAgent` child does.
+    #[must_use]
+    pub const fn with_oneshot(mut self) -> Self {
+        self.oneshot = true;
+        self
+    }
+
     pub async fn run(mut self) {
         let command_id = self.params.command_id.take();
         let failure = match self.run_inner(command_id).await {

@@ -324,6 +324,7 @@ impl Supervisor {
         // kill running work. The WS is only the transport.
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
         let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
+        crate::dispatch::register_event_sink(event_tx.clone());
 
         let mut backoff = Backoff::reconnect();
         loop {

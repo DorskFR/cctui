@@ -234,24 +234,26 @@ impl Driver {
             return;
         }
         note_dispatched(&self.cfg.jobs_root, &session_id);
-        // Codex-native dispatch: a `adapter = "codex"` payload runs
-        // headlessly via `codex exec`, NOT the claude control socket. This path
-        // is separate from the interactive codex app-server adapter.
-        let adapter = crate::dispatch_codex::payload_adapter(&payload);
-        if crate::dispatch_codex::is_codex_adapter(&adapter) {
-            match crate::dispatch_codex::CodexDispatch::from_payload(&payload) {
-                Ok(dispatch) => {
-                    tracing::info!(session_id = %session_id, "dispatch-on-start: launching codex dispatch");
-                    tokio::spawn(async move {
-                        if let Err(err) = dispatch.run().await {
-                            tracing::error!(%err, "dispatch-on-start: codex dispatch failed");
-                        }
-                    });
-                }
-                Err(err) => {
-                    tracing::error!(%err, "dispatch-on-start: could not build codex dispatch");
-                }
+        let adapter = match crate::dispatch::DispatchAdapter::from_payload(&payload) {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                tracing::error!(%err, "dispatch-on-start: refusing the payload");
+                crate::dispatch::write_failure(&payload, "dispatch", &err.to_string());
+                return;
             }
+        };
+        if adapter.is_one_shot() {
+            tracing::info!(session_id = %session_id, adapter = adapter.id(), "dispatch-on-start: launching one-shot dispatch");
+            tokio::spawn(async move {
+                if let Err(err) = crate::dispatch::run_one_shot(adapter, &payload).await {
+                    tracing::error!(%err, adapter = adapter.id(), "dispatch-on-start: one-shot dispatch failed");
+                    crate::dispatch::write_failure(
+                        &payload,
+                        &format!("{}-dispatch", adapter.id()),
+                        &err.to_string(),
+                    );
+                }
+            });
             return;
         }
         let spec = match Self::build_dispatch_spec(&payload) {

@@ -205,6 +205,8 @@ pub struct AcpSession {
     last_cost_usd: Option<f64>,
     turn_end_supported: bool,
     ending: bool,
+    /// Ends after its first turn: a dispatched worker's one prompt.
+    oneshot: bool,
 }
 
 impl AcpSession {
@@ -249,7 +251,16 @@ impl AcpSession {
             last_cost_usd: None,
             turn_end_supported: crate::adapters::turn_end::supported(),
             ending: false,
+            oneshot: false,
         }
+    }
+
+    /// The session ends once its first turn answers, never recorded for
+    /// re-attach.
+    #[must_use]
+    pub const fn with_oneshot(mut self) -> Self {
+        self.oneshot = true;
+        self
     }
 
     #[must_use]
@@ -518,20 +529,22 @@ impl AcpSession {
         }
         let started_at_ms =
             self.params.resume.as_ref().map_or_else(crate::neighbours::now_ms, |r| r.started_at_ms);
-        self.store.upsert(
-            &local_id,
-            persist::Record {
-                adapter: self.params.row.id.to_owned(),
-                key: self.params.key.clone(),
-                cwd: self.params.cwd.clone(),
-                model: self.params.model.clone(),
-                effort: self.params.effort.clone(),
-                permission_mode: self.params.permission_mode,
-                parent_local_id: self.params.parent_local_id.clone(),
-                started_at_ms,
-                spawn_relay: self.params.agent_mcp.is_some(),
-            },
-        );
+        if !self.oneshot {
+            self.store.upsert(
+                &local_id,
+                persist::Record {
+                    adapter: self.params.row.id.to_owned(),
+                    key: self.params.key.clone(),
+                    cwd: self.params.cwd.clone(),
+                    model: self.params.model.clone(),
+                    effort: self.params.effort.clone(),
+                    permission_mode: self.params.permission_mode,
+                    parent_local_id: self.params.parent_local_id.clone(),
+                    started_at_ms,
+                    spawn_relay: self.params.agent_mcp.is_some(),
+                },
+            );
+        }
         let meta = SessionMeta {
             working_dir: Some(self.params.cwd.clone()),
             parent_local_id: self.params.parent_local_id.clone(),
@@ -609,7 +622,9 @@ impl AcpSession {
                 }
                 done = turn_done(&mut self.turn_task) => {
                     self.turn_task = None;
-                    self.on_turn_done(done).await;
+                    if !self.on_turn_done(done).await {
+                        return;
+                    }
                 }
             }
         }
@@ -894,9 +909,14 @@ impl AcpSession {
         }
     }
 
-    async fn on_turn_done(&mut self, done: Result<anyhow::Result<Value>, tokio::task::JoinError>) {
+    /// `false` when the session ended: a one-shot session is done with its
+    /// first turn, on whatever stop reason the agent answered.
+    async fn on_turn_done(
+        &mut self,
+        done: Result<anyhow::Result<Value>, tokio::task::JoinError>,
+    ) -> bool {
         let local_id = self.local_id();
-        let Some(turn) = self.turn.take() else { return };
+        let Some(turn) = self.turn.take() else { return true };
         let outcome = match done {
             Ok(Ok(resp)) => Ok(protocol::parse_prompt(&resp)),
             Ok(Err(err)) => Err(err.to_string()),
@@ -905,6 +925,7 @@ impl AcpSession {
         for out in self.coalescer.flush() {
             self.emit_out(&local_id, out).await;
         }
+        let failure = outcome.as_ref().err().cloned();
         match outcome {
             Ok(PromptOutcome { stop_reason, usage }) => {
                 self.emit_usage(&local_id, usage).await;
@@ -936,9 +957,16 @@ impl AcpSession {
         }
         crate::adapters::turn_end::emit_gated(&self.events, &local_id, self.turn_end_supported)
             .await;
+        if self.oneshot {
+            let reason =
+                failure.map_or(EndReason::Completed, |detail| EndReason::Crashed { detail });
+            self.kill(reason).await;
+            return false;
+        }
         if let Some((text, command_id, turn_id)) = self.queued.pop_front() {
             self.begin_turn(&local_id, &text, command_id, turn_id);
         }
+        true
     }
 
     async fn emit_usage(&mut self, local_id: &str, usage: Option<TurnUsage>) {

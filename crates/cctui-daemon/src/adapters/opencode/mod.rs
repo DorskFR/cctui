@@ -11,6 +11,7 @@ pub mod events;
 #[cfg(test)]
 mod fake_serve;
 pub mod normalize;
+pub mod oneshot;
 pub mod persist;
 mod pty_view;
 pub mod session;

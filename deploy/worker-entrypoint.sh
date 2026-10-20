@@ -67,11 +67,74 @@ POLICY_FILE=/var/run/guard-proxy/policy.json
 GUARD_STATE=/var/run/workflow-guard/state
 CONTEXT_DIR=/opt/context
 
-adapter_is_codex() {
+# The ACP agents the image bakes (crates/cctui-daemon/src/adapters/acp/rows.rs).
+ACP_AGENTS="gemini qwen goose"
+
+# The harness kind TASK_ADAPTER selects: claude | codex | opencode | acp |
+# unknown. Unset is claude; anything outside the table is unknown, never claude.
+adapter_kind() {
     case "${TASK_ADAPTER:-}" in
-        codex | codex-cli) return 0 ;;
-        *) return 1 ;;
+        "" | claude | claude-code | claude_code) echo claude ;;
+        codex | codex-cli) echo codex ;;
+        opencode) echo opencode ;;
+        *)
+            for _a in $ACP_AGENTS; do
+                [ "$_a" = "$TASK_ADAPTER" ] && { echo acp; return 0; }
+            done
+            echo unknown
+            ;;
     esac
+}
+
+adapter_is_codex() { [ "$(adapter_kind)" = codex ]; }
+
+# An unknown adapter fails the dispatch before any harness runs; the callback
+# trap posts the verdict.
+require_known_adapter() {
+    [ "$(adapter_kind)" = unknown ] || return 0
+    log "dispatch: unknown adapter '${TASK_ADAPTER}' (known: claude-code codex opencode ${ACP_AGENTS})"
+    jq -nc --arg id "${TASK_ID:-}" --arg a "$TASK_ADAPTER" \
+        '{task_id:$id, status:"failed", error:("dispatch payload names unknown adapter `"+$a+"`")}' \
+        > "$RESULT_FILE"
+    exit 1
+}
+
+# Per-agent state under the worker home for the ACP agent a dispatch selects,
+# with the agent's own sandbox and telemetry off: the pod is already sandboxed
+# and its egress is deny-by-default. gemini and qwen read settings.json from
+# their dot-dir; goose reads ~/.config/goose/config.yaml.
+phase_acp_config() {
+    [ "$(adapter_kind)" = acp ] || return 0
+    _home="${WORKER_HOME:-/home/${WORKER_USER}}"
+    case "$TASK_ADAPTER" in
+        gemini | qwen)
+            _dir="${_home}/.${TASK_ADAPTER}"
+            _auth=gemini-api-key
+            [ "$TASK_ADAPTER" = qwen ] && _auth=openai
+            mkdir -p "$_dir"
+            [ -s "$_dir/settings.json" ] || printf '{}\n' > "$_dir/settings.json"
+            _t=$(mktemp)
+            if jq --arg auth "$_auth" '
+                .general.usageStatisticsEnabled = false
+                | .telemetry.enabled = false
+                | .tools.sandbox = false
+                | .security.auth.selectedType = (.security.auth.selectedType // $auth)
+            ' "$_dir/settings.json" > "$_t" 2>/dev/null; then
+                mv "$_t" "$_dir/settings.json"
+            else
+                rm -f "$_t"
+                log "WARNING: acp: ${TASK_ADAPTER} settings.json unreadable; left as is"
+            fi
+            ;;
+        goose)
+            _dir="${_home}/.config/goose"
+            mkdir -p "$_dir" "${_home}/.local/share/goose"
+            [ -e "$_dir/config.yaml" ] || : > "$_dir/config.yaml"
+            ;;
+        *) return 0 ;;
+    esac
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_dir" 2>/dev/null || true
+    log "acp: ${TASK_ADAPTER} state ready under ${_dir} (sandbox + telemetry off)"
 }
 
 # host:port from a URL (defaulting the port by scheme). Empty on no input.
@@ -712,7 +775,9 @@ projects projects"
         log "context pack: wired ${_srcd}/ -> ~/${_tgt}"
     done
     # Merge (not overwrite): a credential helper may already own ~/.mcp.json.
-    if [ -f "$CONTEXT_DIR/mcp.json" ] && ! adapter_is_codex; then
+    # Only claude reads it; codex gets its servers through config.toml and the
+    # one-shot harnesses declare none.
+    if [ -f "$CONTEXT_DIR/mcp.json" ] && [ "$(adapter_kind)" = claude ]; then
         _mcpf="${_home}/.mcp.json"
         _t=$(mktemp)
         if [ -f "$_mcpf" ]; then
@@ -1145,7 +1210,9 @@ phase_extensions
 phase_codex_package
 phase_codex_config
 phase_codex_pack
+phase_acp_config
 phase_callback
+require_known_adapter
 phase_guard
 phase_permissions
 phase_hardening
@@ -1241,15 +1308,15 @@ WORKER_LIVENESS_STALE_SECS="${WORKER_LIVENESS_STALE_SECS:-1800}"
 # Mirrors the server's STATUS_WINDOW_SECS; only used to attribute an `inactive`
 # to deregistration rather than to heartbeat staleness.
 WORKER_SERVER_STATUS_WINDOW_SECS="${WORKER_SERVER_STATUS_WINDOW_SECS:-300}"
-# Codex dispatch runs headless `codex exec` inside the daemon and never
-# registers a server session, so the registration-sourced liveness probe and its
-# boot deadline can never fire for it. Its done-signal is RESULT_FILE and its
-# backstop is daemon death (`kill -0 $DAEMON_PID`); pre-seed seen-alive so the
-# boot bound is a no-op and a codex run over WORKER_BOOT_DEADLINE_SECS isn't
-# guillotined mid-work.
-case "${TASK_ADAPTER:-}" in
-    codex|codex-cli) _SEEN_ALIVE=1 ;;
-    *)               _SEEN_ALIVE=0 ;;
+# A one-shot dispatch (codex, opencode, an ACP agent) runs inside the daemon
+# and does not go through the claude control socket, so the registration-
+# sourced liveness probe and its boot deadline can never fire for it. Its
+# done-signal is RESULT_FILE and its backstop is daemon death
+# (`kill -0 $DAEMON_PID`); pre-seed seen-alive so the boot bound is a no-op and
+# a run over WORKER_BOOT_DEADLINE_SECS isn't guillotined mid-work.
+case "$(adapter_kind)" in
+    claude) _SEEN_ALIVE=0 ;;
+    *)      _SEEN_ALIVE=1 ;;
 esac
 _PROBE_LOGGED_CODE=""
 _PROBE_LOGGED_NOHB=""

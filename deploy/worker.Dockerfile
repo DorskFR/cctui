@@ -3,6 +3,8 @@
 # (the docker / kubernetes dispatchers) spawn per session. Bundles:
 #   - the claude code CLI
 #   - the codex CLI
+#   - opencode
+#   - the ACP agents: gemini-cli, qwen-code, goose
 #   - the cctui-daemon binary (session observability)
 #   - the cctui sandbox toolchain: cctui-guard-proxy (egress allow-list),
 #     cctui-supervisor (landlock + seccomp + cap-drop exec wrapper), and
@@ -75,6 +77,7 @@ FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee
 #   gh                      — GitHub CLI for token auth + PR work.
 #   xz-utils                — unpacks the node tarball below.
 #   procps                  — `ps`, which `codex app-server daemon start` needs.
+#   libstdc++6              — the goose binary links it dynamically.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -84,6 +87,7 @@ RUN apt-get update \
         gnupg \
         iptables \
         jq \
+        libstdc++6 \
         openssh-client \
         procps \
         ripgrep \
@@ -223,10 +227,75 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm /tmp/opencode.tar.gz \
     && opencode --version
 
+# ACP agents (crates/cctui-daemon/src/adapters/acp/rows.rs), driven over stdio
+# by the daemon's ACP adapter. Exact pins, not floors:
+# scripts/check-worker-image-harness.sh compares each baked `--version` to its
+# ARG, so bump the ARG with the agent.
+#
+# gemini-cli and qwen-code are node packages. They live in their own npm
+# prefix, and the `gemini` / `qwen` commands on PATH are wrappers that exec the
+# baked /usr/local/node/bin/node by absolute path: an npm bin stub resolves
+# `node` through PATH, and in a derived image that puts a node shim there (mise)
+# the agent dies before it starts, the same failure the codex comment above
+# describes.
+ARG GEMINI_CLI_VERSION=0.64.0
+ARG QWEN_CODE_VERSION=0.25.3
+ENV ACP_AGENTS_PREFIX=/usr/local/lib/acp-agents
+RUN npm install -g --prefix "$ACP_AGENTS_PREFIX" --no-fund --no-audit --loglevel=error \
+        "@google/gemini-cli@${GEMINI_CLI_VERSION}" \
+        "@qwen-code/qwen-code@${QWEN_CODE_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && for agent in gemini qwen; do \
+         entry="$(readlink -f "$ACP_AGENTS_PREFIX/bin/$agent")"; \
+         [ -f "$entry" ] || { echo "$agent: no bin entry under $ACP_AGENTS_PREFIX" >&2; exit 1; }; \
+         printf '#!/bin/sh\nexec /usr/local/node/bin/node "%s" "$@"\n' "$entry" > "/usr/local/bin/$agent"; \
+         chmod 0755 "/usr/local/bin/$agent"; \
+       done \
+    && gemini --version \
+    && qwen --version
+
+# goose — a single binary from the GitHub release, checksum-verified per arch.
+# The release carries no SHA256SUMS asset, so the digests are recorded here
+# and must be refreshed together with the version.
+ARG GOOSE_VERSION=1.55.0
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) target=x86_64-unknown-linux-gnu;  sha=fd3932908328fac850ca7ad2a8289c744e0c2ddaf4c5a2338709fb17a00b3a4c ;; \
+         arm64) target=aarch64-unknown-linux-gnu; sha=ea83f59bb165a3d999dd00edf69a58028747f31e404b96f0153452c6b1651188 ;; \
+         *) echo "goose: unsupported arch '$arch'" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/aaif-goose/goose/releases/download/v${GOOSE_VERSION}/goose-${target}.tar.gz" \
+        -o /tmp/goose.tar.gz \
+    && echo "${sha}  /tmp/goose.tar.gz" | sha256sum -c - \
+    && mkdir -p /tmp/goose \
+    && tar -xzf /tmp/goose.tar.gz -C /tmp/goose \
+    && install -m 0755 /tmp/goose/goose /usr/local/bin/goose \
+    && rm -rf /tmp/goose /tmp/goose.tar.gz \
+    && goose --version
+
+# Each agent's own sandbox and telemetry stay off: the pod is sandboxed by
+# landlock + seccomp + the guard-proxy, and its egress is deny-by-default, so
+# an agent sandbox fails every command and a telemetry exporter only hangs.
+# gemini and qwen also must not re-exec themselves through a different node.
+# goose keeps secrets in its config file: a pod has no secret service.
+# The entrypoint's phase_acp_config mirrors the gemini/qwen settings into the
+# per-agent settings.json and creates the state dirs.
+ENV GEMINI_SANDBOX=false \
+    GEMINI_TELEMETRY_ENABLED=false \
+    GEMINI_CLI_NO_RELAUNCH=1 \
+    QWEN_SANDBOX=false \
+    QWEN_TELEMETRY_ENABLED=false \
+    QWEN_USAGE_STATISTICS_ENABLED=false \
+    QWEN_CODE_NO_RELAUNCH=1 \
+    GOOSE_DISABLE_KEYRING=1 \
+    GOOSE_TELEMETRY_ENABLED=false
+
 # Worker user (uid 1000). The container starts as root only to bootstrap the
 # sandbox (iptables, overlayfs, context pack), then cctui-supervisor setuids to
 # this user before exec'ing the daemon. A real home keeps per-session agent
-# state (~/.claude, ~/.codex, ~/.mcp.json, ~/.npmrc, ~/.gnupg) writable.
+# state (~/.claude, ~/.codex, ~/.gemini, ~/.qwen, ~/.config/goose, ~/.mcp.json,
+# ~/.npmrc, ~/.gnupg) writable.
 RUN groupadd --gid 1000 worker \
     && useradd --uid 1000 --gid 1000 --home-dir /home/worker --create-home --shell /bin/bash worker \
     && chmod 0755 /home/worker

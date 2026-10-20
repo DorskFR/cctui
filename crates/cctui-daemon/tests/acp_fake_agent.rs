@@ -994,7 +994,65 @@ mod scenarios {
         scenario!(a_hung_server_does_not_hold_commands_behind_restores),
         scenario!(an_account_bound_launch_with_no_gateway_env_fails_closed),
         scenario!(an_account_bound_goose_launch_gets_its_provider_env_aliased),
+        scenario!(a_one_shot_dispatch_ends_on_the_stop_reason),
     ];
+
+    /// The dispatch path: the core session in one-shot mode runs the one
+    /// prompt, ends itself on the agent's `stopReason`, and the verdict
+    /// carries the answer, the reason and the usage; every event is also
+    /// forwarded under the agent's id for the transcript.
+    pub async fn a_one_shot_dispatch_ends_on_the_stop_reason() -> anyhow::Result<()> {
+        use cctui_daemon::adapters::acp::oneshot::OneShot;
+        let tmp = tempfile::tempdir()?;
+        let mut env = std::collections::BTreeMap::new();
+        env.insert(super::AGENT_ENV.to_owned(), "1".to_owned());
+        env.insert(super::SCRIPT_ENV.to_owned(), full_script().to_string());
+        let one = OneShot {
+            row: &FAKE_ROW,
+            bin: exe(),
+            key: "dispatch-session-1".to_owned(),
+            cwd: tmp.path().display().to_string(),
+            env,
+            prompt: "ship it".to_owned(),
+            model: None,
+            effort: None,
+            timeout: Duration::from_secs(60),
+        };
+        let (sink, mut forwarded) = tokio::sync::mpsc::channel(512);
+        let outcome = one.run(Some(sink)).await;
+        anyhow::ensure!(outcome.status == "success", "{outcome:?}");
+        anyhow::ensure!(outcome.error.is_none(), "{outcome:?}");
+        anyhow::ensure!(outcome.stop_reason.as_deref() == Some("end_turn"), "{outcome:?}");
+        anyhow::ensure!(
+            outcome.message.starts_with("Hello world: ") && outcome.message.contains("ship it"),
+            "the final answer is the agent's text: {outcome:?}"
+        );
+        anyhow::ensure!(
+            outcome.usage.as_ref().and_then(|u| u["input_tokens"].as_u64()) == Some(100),
+            "{outcome:?}"
+        );
+        let mut events = Vec::new();
+        while let Ok((adapter_id, evt)) = forwarded.try_recv() {
+            anyhow::ensure!(
+                adapter_id == FAKE_ROW.id,
+                "forwarded under the agent id: {adapter_id}"
+            );
+            events.push(evt);
+        }
+        anyhow::ensure!(started(&events).is_some(), "SessionStarted forwarded: {events:#?}");
+        anyhow::ensure!(
+            matches!(
+                events.last(),
+                Some(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
+            ),
+            "the session ends itself after the turn: {events:#?}"
+        );
+        anyhow::ensure!(
+            events.iter().any(|e| matches!(e, AdapterEvent::ToolUse { .. })),
+            "the turn's tool calls are in the transcript: {events:#?}"
+        );
+        Ok(())
+    }
 
     pub async fn an_account_bound_launch_with_no_gateway_env_fails_closed() -> anyhow::Result<()> {
         super::gateway::fails_closed().await

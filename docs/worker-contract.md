@@ -563,10 +563,11 @@ that dispatched). It answers `404` until the worker registers the session, then:
 Poll until `done`; `final_assistant_text` is already populated while the
 session runs (the latest completed message), so a service can show progress.
 
-## Codex-native dispatch
+## Dispatch by adapter
 
 A dispatch payload carries an optional **`adapter`** key selecting which harness
-the worker runs:
+the worker runs (`crates/cctui-daemon/src/dispatch.rs`, mirrored by the
+entrypoint's `adapter_kind`):
 
 - `adapter` absent, `"claude"`, or `"claude-code"` (the default — backward
   compatible) → the claude worker path: `cctui-daemon` self-issues a `dispatch`
@@ -580,6 +581,29 @@ the worker runs:
   `payload.effort` become `codex exec -m` / `-c model_reasoning_effort`;
   approvals, sandbox mode, and the cctui gateway provider still come from the
   per-pod `~/.codex/config.toml` the entrypoint hardens (`phase_codex_config`).
+- `adapter: "opencode"` → the opencode session in **one-shot mode**: one
+  `opencode serve`, one prompt, the session ends once its first turn has
+  produced output and gone idle. `payload.model` is required (opencode has no
+  model of its own); the agent profile comes from `env.CCTUI_OPENCODE_AGENT`.
+- `adapter: "gemini" | "qwen" | "goose"` (any row of
+  `crates/cctui-daemon/src/adapters/acp/rows.rs`) → the core ACP adapter in
+  **one-shot mode**: one agent process, `initialize` → `session/new` →
+  `session/prompt`, and the session ends itself on the `stopReason` the agent
+  answers. The verdict carries that `stop_reason` and the turn's usage. The
+  entrypoint's `phase_acp_config` lays out the agent's state dir with its own
+  sandbox and telemetry off (the pod is already sandboxed, egress is
+  deny-by-default).
+- **Any other value is an error.** The daemon writes a `failed` verdict naming
+  the adapter and the entrypoint fails the pod the same way before any harness
+  runs; nothing ever falls back to claude.
+
+Every one-shot runs inside the daemon and never goes through the claude control
+socket, so the entrypoint pre-seeds its liveness as seen-alive: the done-signal
+is `RESULT_FILE` and the backstop is daemon death. The one-shot sessions forward
+their events through the daemon's WS under their own adapter id, so the
+transcript is posted like any session's. `CCTUI_DISPATCH_TIMEOUT` (seconds,
+default 3h; `CODEX_TIMEOUT` for codex) bounds one turn inside the job's
+`activeDeadlineSeconds`.
 
 This runner is **separate from, and does not replace,** the interactive Rust
 app-server adapter in `crates/cctui-daemon/src/adapters/codex/`. That adapter
@@ -661,10 +685,14 @@ input), then drops to uid 1000:
 5. **Codex package** — link `~/.codex/packages/standalone/current` to the baked
    `CODEX_PACKAGE_DIR`, the standalone install `codex app-server daemon` needs.
    **Codex config** — write the `cctui` model-provider region into
-   `~/.codex/config.toml` (see Codex-native dispatch, below).
+   `~/.codex/config.toml` (see Dispatch by adapter, above).
 6. **Codex pack** — under the Codex adapter, stage `AGENTS.md` + `prompts/` from
    the context pack (see `docs/context-packs.md`).
-7. **Callback** — install the `REPLY_URL` exit trap.
+   **ACP config** — under an ACP agent, create its state dir
+   (`~/.gemini`, `~/.qwen`, `~/.config/goose`) with sandbox, telemetry and
+   usage statistics off and the API-key / `openai` auth type selected.
+7. **Callback** — install the `REPLY_URL` exit trap, then refuse an unknown
+   `adapter` with a `failed` verdict (see Dispatch by adapter).
 8. **Guard** — start `cctui-guard` if the resolved prompt has step blocks
    (`# Step N` + `[allowed]`); always-allow the structural hosts.
 9. **Permissions** — seed Claude's bypass-permissions + trust-dialog gates for
