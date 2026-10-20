@@ -16,7 +16,7 @@ pub const FIREWORKS_GATEWAY_KEYS: &[&str] = &["FIREWORKS_BASE_URL", "FIREWORKS_A
 /// How one ACP agent reads the routing keys its family's gateway env mints.
 ///
 /// The server mints one key pair per family (`OPENAI_BASE_URL` +
-/// `OPENAI_API_KEY` for the OpenAI family). An agent that spells them
+/// `OPENAI_API_KEY` for the `OpenAI` family). An agent that spells them
 /// differently gets a copy under its own names, plus the fixed env that
 /// selects the provider on its side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub struct GatewayAliases {
     pub fixed: &'static [(&'static str, &'static str)],
 }
 
-/// qwen-code reads the OpenAI SDK names as they are; `OPENAI_API_KEY` in the
+/// qwen-code reads the `OpenAI` SDK names as they are; `OPENAI_API_KEY` in the
 /// env is what selects its `openai` auth type.
 pub const QWEN_GATEWAY: GatewayAliases =
     GatewayAliases { agent: "qwen", required: OPENAI_GATEWAY_KEYS, aliases: &[], fixed: &[] };
@@ -275,7 +275,7 @@ mod tests {
         assert!(err.to_string().contains("ANTHROPIC_AUTH_TOKEN"), "got: {err}");
     }
 
-    /// An account-bound qwen launch carries the OpenAI SDK names as minted;
+    /// An account-bound qwen launch carries the `OpenAI` SDK names as minted;
     /// a goose launch gets its provider selector, host and base path derived
     /// from the same pair. Either refuses an empty or half-minted env.
     #[test]

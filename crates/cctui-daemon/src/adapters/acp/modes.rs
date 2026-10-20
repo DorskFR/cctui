@@ -110,9 +110,11 @@ pub const GEMINI_STYLE: ModeTable = ModeTable {
     whip: None,
 };
 
-/// qwen-code's vocabulary over legacy `modes`: `default` / `auto-edit` /
-/// `yolo` (its `plan` mode has no cctui posture). It also exposes the same
-/// table as a config option; `session/set_mode` is the one every build has.
+/// qwen-code's vocabulary over legacy `modes`.
+///
+/// `default` / `auto-edit` / `yolo`; its `plan` mode has no cctui posture. It
+/// also exposes the same table as a config option, but `session/set_mode` is
+/// the one every build has.
 pub const QWEN_STYLE: ModeTable = ModeTable {
     ask: Some(ModeApply::SessionMode("default")),
     auto: Some(ModeApply::SessionMode("auto-edit")),

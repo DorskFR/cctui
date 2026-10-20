@@ -1239,6 +1239,63 @@ mod tests {
         out
     }
 
+    /// A parent session bound to `uid`'s own claude account, with a colleague's
+    /// codex account shared to `uid`. Returns the parent's session id.
+    async fn seed_parent_with_shared_colleague_account(
+        pool: &sqlx::PgPool,
+        uid: Uuid,
+        colleague: Uuid,
+    ) -> String {
+        let mine = seed_accounts(pool, uid, "owner", &[("parent-claude", "anthropic")]).await;
+        let theirs =
+            seed_accounts(pool, colleague, "colleague", &[("their-codex", "openai")]).await;
+        sqlx::query(
+            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+             VALUES ('account', $1, $2)",
+        )
+        .bind(theirs[0].0)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .expect("share the colleague's account with the parent's owner");
+        let parent_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("th-{parent_id}"))
+        .bind(&parent_id)
+        .bind(mine[0].1)
+        .execute(pool)
+        .await
+        .expect("bind parent");
+        parent_id
+    }
+
+    /// An openai provider row on an account `uid` owns; returns the provider id.
+    async fn seed_own_openai_provider(pool: &sqlx::PgPool, uid: Uuid) -> Uuid {
+        let account = Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(account)
+            .bind(uid)
+            .bind(format!("my-codex-{account}"))
+            .execute(pool)
+            .await
+            .expect("seed own openai account");
+        let own_openai = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO account_providers \
+               (id, user_id, account_id, provider, auth_scheme, encrypted_access_token) \
+             VALUES ($1, $2, $3, 'openai', 'api_key', 'x')",
+        )
+        .bind(own_openai)
+        .bind(uid)
+        .bind(account)
+        .execute(pool)
+        .await
+        .expect("seed own provider");
+        own_openai
+    }
+
     /// DB-gated R3: an election the operator never asked for must not reach a
     /// colleague's account and spend their allocation, even though the parent's
     /// owner may legitimately launch on it when they name it.
@@ -1257,30 +1314,7 @@ mod tests {
 
         let uid = Uuid::new_v4();
         let colleague = Uuid::new_v4();
-        let mine = seed_accounts(&pool, uid, "owner", &[("parent-claude", "anthropic")]).await;
-        let theirs =
-            seed_accounts(&pool, colleague, "colleague", &[("their-codex", "openai")]).await;
-
-        sqlx::query(
-            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
-             VALUES ('account', $1, $2)",
-        )
-        .bind(theirs[0].0)
-        .bind(uid)
-        .execute(&pool)
-        .await
-        .expect("share the colleague's account with the parent's owner");
-
-        let parent_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
-        )
-        .bind(format!("th-{parent_id}"))
-        .bind(&parent_id)
-        .bind(mine[0].1)
-        .execute(&pool)
-        .await
-        .expect("bind parent");
+        let parent_id = seed_parent_with_shared_colleague_account(&pool, uid, colleague).await;
 
         let state = crate::state::AppState::for_test(pool.clone());
         let parent = Parent {
@@ -1312,28 +1346,7 @@ mod tests {
 
         // The same shape with an openai account the owner OWNS does provision,
         // so the refusal above is about ownership and not about the wiring.
-        let own = seed_accounts(&pool, Uuid::new_v4(), "ignored", &[]).await;
-        drop(own);
-        let account = Uuid::new_v4();
-        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
-            .bind(account)
-            .bind(uid)
-            .bind(format!("my-codex-{account}"))
-            .execute(&pool)
-            .await
-            .expect("seed own openai account");
-        let own_openai = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO account_providers \
-               (id, user_id, account_id, provider, auth_scheme, encrypted_access_token) \
-             VALUES ($1, $2, $3, 'openai', 'api_key', 'x')",
-        )
-        .bind(own_openai)
-        .bind(uid)
-        .bind(account)
-        .execute(&pool)
-        .await
-        .expect("seed own provider");
+        let own_openai = seed_own_openai_provider(&pool, uid).await;
 
         let ok_key = Uuid::new_v4().to_string();
         child_account_env(

@@ -44,8 +44,8 @@ pub const GEMINI: AgentRow = AgentRow {
     model_env: None,
 };
 
-/// qwen-code: a gemini-cli fork on the OpenAI wire. Qwen OAuth was
-/// discontinued, so its only auth is `openai`: the OpenAI SDK triple, which
+/// qwen-code: a gemini-cli fork on the `OpenAI` wire. Qwen OAuth was
+/// discontinued, so its only auth is `openai`: the `OpenAI` SDK triple, which
 /// the gateway binding mints.
 pub const QWEN: AgentRow = AgentRow {
     id: "qwen",
