@@ -83,6 +83,7 @@ jobs:
             --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' | tr '\n' ' ')"
           export CCTUI_STABLE_TAGS
           echo "published stable tags: $CCTUI_STABLE_TAGS"
+          bash scripts/release-version.sh "$TAG"
           args=("$TAG"); [ -n "$MODE" ] && args+=("$MODE")
           out="$(bash scripts/release-channel.sh "${args[@]}")"
           echo "$out"
@@ -151,7 +152,7 @@ jobs:
           fi
           chmod +x ci-bins/*/*
           daemon=ci-bins/release-bins-linux-amd64/cctui-daemon-linux-amd64
-          if "$daemon" --version | grep -qF "$VERSION" && "$daemon" selfcheck \
+          if bash scripts/release-version.sh "v$VERSION" --binary "$daemon" && "$daemon" selfcheck \
             && grep -qaF "$SHA" ci-bins/release-image-bins-server/cctui-server; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else

@@ -633,6 +633,9 @@ jobs:
       - name: Map release tags to channels
         run: bash scripts/release-channel.test.sh
 
+      - name: A release tag must equal the workspace version
+        run: bash scripts/release-version.test.sh
+
       - name: The release gate refuses a commit without a green run
         run: bash scripts/check-ci-green.test.sh
 

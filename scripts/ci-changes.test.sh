@@ -105,6 +105,12 @@ workflow() { write .github/workflows/ci.yml 'name: ci'; }
 lockfile() { npm_lock 0.1.0-beta.1 1.0.1; }
 broken_lockfile() { write webui/package-lock.json '{'; }
 docs() { write docs/notes.md 'notes'; }
+release_key() { write keys/release.minisign.pub 'RWQ'; }
+unit_template() { write packaging/systemd/cctui-daemon.service '[Unit]'; }
+plugin_catalog() { write plugins/catalog.json '{}'; }
+fixture() { write fixtures/a.json '{}'; }
+deploy_example() { write deploy/examples/profile.yaml 'a: 1'; }
+deploy_file() { write deploy/Dockerfile 'FROM scratch'; }
 
 change "a version-only bump with a webui change is webui-only" \
   rust=false webui=true deps=false -- bump_and_ui
@@ -124,6 +130,12 @@ change "a ci.yml change flags ci" ci=true -- workflow
 change "a webui lockfile change is a deps change" webui=true deps=true rust=false -- lockfile
 change "an unreadable webui lockfile is a deps change" deps=true -- broken_lockfile
 change "a docs change touches nothing" rust=false webui=false deps=false -- docs
+change "a release key change is a Rust change" rust=true webui=false -- release_key
+change "a packaging template change is a Rust change" rust=true webui=false -- unit_template
+change "a plugin catalog change is a Rust change" rust=true webui=false -- plugin_catalog
+change "a fixture change is a Rust change" rust=true webui=false -- fixture
+change "a deploy example change is a Rust change" rust=true webui=false -- deploy_example
+change "a Dockerfile change is not a Rust change" rust=false webui=false -- deploy_file
 
 out="$(bash "$script" --all)"
 if [ "$(grep -c '=true$' <<<"$out")" -eq 5 ]; then
