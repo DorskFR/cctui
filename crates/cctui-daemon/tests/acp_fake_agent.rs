@@ -535,6 +535,22 @@ mod fake_agent {
                 }),
             )
             .await;
+            if let Some(keys) = self.script.get("echoEnv").and_then(Value::as_array) {
+                let seen: Vec<String> = keys
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|k| format!("{k}={}", std::env::var(k).unwrap_or_default()))
+                    .collect();
+                self.update(
+                    session_id,
+                    json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": { "type": "text", "text": format!(" env: {}", seen.join(";")) },
+                        "messageId": message_id,
+                    }),
+                )
+                .await;
+            }
             if turn == "stall" {
                 self.pending_prompt = Some((id, session_id.to_owned()));
                 return;
@@ -700,6 +716,9 @@ static FAKE_ROW: AgentRow = AgentRow {
     update: None,
     modes: GEMINI_STYLE,
     legacy_models: false,
+    context_file: "",
+    auth_env: &[],
+    model_env: None,
 };
 
 fn start(row: &'static AgentRow, bin: &str) -> Harness {
@@ -973,7 +992,18 @@ mod scenarios {
         scenario!(a_kill_mid_turn_flushes_the_buffered_assistant_text),
         scenario!(concurrent_resumes_of_one_session_start_one_agent),
         scenario!(a_hung_server_does_not_hold_commands_behind_restores),
+        scenario!(an_account_bound_launch_with_no_gateway_env_fails_closed),
+        scenario!(an_account_bound_goose_launch_gets_its_provider_env_aliased),
     ];
+
+    pub async fn an_account_bound_launch_with_no_gateway_env_fails_closed() -> anyhow::Result<()> {
+        super::gateway::fails_closed().await
+    }
+
+    pub async fn an_account_bound_goose_launch_gets_its_provider_env_aliased() -> anyhow::Result<()>
+    {
+        super::gateway::goose_aliases().await
+    }
 
     pub async fn concurrent_resumes_of_one_session_start_one_agent() -> anyhow::Result<()> {
         super::restores::concurrent_resumes().await
@@ -1826,6 +1856,9 @@ mod real_agent {
         update: None,
         modes: ModeTable { ask: None, auto: None, yolo: None, whip: None },
         legacy_models: false,
+        context_file: "",
+        auth_env: &[],
+        model_env: None,
     };
 
     pub async fn run() -> anyhow::Result<()> {
@@ -2136,6 +2169,136 @@ mod relay {
 // ---------------------------------------------------------------------------
 // Restores racing each other and a server that never answers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Gateway binding: the launch env an account-bound ACP agent gets
+// ---------------------------------------------------------------------------
+
+mod gateway {
+    use super::{
+        AdapterCommand, AdapterEvent, AgentRow, Duration, SPAWN, ServerClient, SessionStore, Value,
+        argv_row, command_result, is_idle, json, messages, start_in, started,
+    };
+    use std::sync::Arc;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    /// A daemon API whose `gateway-env` answer is fixed.
+    async fn gateway_env_server(reply: Value) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let reply = reply.to_string();
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    let mut request_line = String::new();
+                    let _ = reader.read_line(&mut request_line).await;
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).await.unwrap_or(0) > 0
+                        && !line.trim().is_empty()
+                    {
+                        line.clear();
+                    }
+                    let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+                    let (status, body) =
+                        if path.split('?').next().unwrap_or_default().ends_with("/gateway-env") {
+                            ("200 OK", reply)
+                        } else {
+                            ("404 Not Found", "{}".to_owned())
+                        };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = reader.into_inner().write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        url
+    }
+
+    /// The fake agent under a registered row's id, so the gateway alias map
+    /// and the model env apply to it.
+    fn as_agent(id: &'static str, script: &Value) -> &'static AgentRow {
+        let row = argv_row(script);
+        let model_env = cctui_daemon::adapters::acp::rows::row(id).and_then(|r| r.model_env);
+        Box::leak(Box::new(AgentRow { id, model_env, ..*row }))
+    }
+
+    pub async fn fails_closed() -> anyhow::Result<()> {
+        let url = gateway_env_server(json!({ "account_bound": true, "env": {} })).await;
+        let script = super::full_script();
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let tmp = tempfile::tempdir()?;
+        let store = Arc::new(SessionStore::at(tmp.path().join("acp-sessions.json")));
+        let mut h =
+            start_in(as_agent("qwen", &script), &exe, tmp, store, Some(ServerClient::new(url)));
+        let spec = h.spec(&script, None, "hello");
+        h.commands
+            .send(AdapterCommand::Spawn { spec, command_id: Some(SPAWN), session_id: None })
+            .await
+            .unwrap();
+        let events = h
+            .until(|e| matches!(e, AdapterEvent::CommandResult { .. }), Duration::from_secs(30))
+            .await?;
+        let (ok, error) =
+            command_result(&events, SPAWN).ok_or_else(|| anyhow::anyhow!("no spawn result"))?;
+        anyhow::ensure!(!ok, "an account-bound launch with no gateway env must not start");
+        let error = error.unwrap_or_default();
+        anyhow::ensure!(
+            error.contains("account-bound") && error.contains("qwen"),
+            "the refusal names the binding and the agent: {error}"
+        );
+        anyhow::ensure!(started(&events).is_none(), "no agent was launched: {events:#?}");
+        h.finish().await;
+        Ok(())
+    }
+
+    pub async fn goose_aliases() -> anyhow::Result<()> {
+        let url = gateway_env_server(json!({
+            "account_bound": true,
+            "env": { "OPENAI_BASE_URL": "https://gw.test/gateway/openai", "OPENAI_API_KEY": "cctui_s_tok" },
+        }))
+        .await;
+        let mut script = super::full_script();
+        script["echoEnv"] = json!([
+            "GOOSE_PROVIDER",
+            "OPENAI_HOST",
+            "OPENAI_BASE_PATH",
+            "OPENAI_API_KEY",
+            "GOOSE_MODEL"
+        ]);
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let tmp = tempfile::tempdir()?;
+        let store = Arc::new(SessionStore::at(tmp.path().join("acp-sessions.json")));
+        let mut h =
+            start_in(as_agent("goose", &script), &exe, tmp, store, Some(ServerClient::new(url)));
+        let mut spec = h.spec(&script, None, "hello");
+        spec.model = Some("gpt-5.4-mini".to_owned());
+        h.commands
+            .send(AdapterCommand::Spawn { spec, command_id: Some(SPAWN), session_id: None })
+            .await
+            .unwrap();
+        let events = h.until(is_idle, Duration::from_secs(45)).await?;
+        anyhow::ensure!(command_result(&events, SPAWN) == Some((true, None)), "{events:#?}");
+        let assistant = messages(&events, "assistant");
+        let text = assistant.iter().filter_map(|m| m["text"].as_str()).collect::<String>();
+        for expected in [
+            "GOOSE_PROVIDER=openai",
+            "OPENAI_HOST=https://gw.test/gateway/openai",
+            "OPENAI_BASE_PATH=chat/completions",
+            "OPENAI_API_KEY=cctui_s_tok",
+            "GOOSE_MODEL=gpt-5.4-mini",
+        ] {
+            anyhow::ensure!(
+                text.contains(expected),
+                "{expected} missing from the agent env: {text}"
+            );
+        }
+        h.finish().await;
+        Ok(())
+    }
+}
 
 mod restores {
     use super::{

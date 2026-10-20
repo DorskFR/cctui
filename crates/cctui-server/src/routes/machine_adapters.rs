@@ -206,7 +206,16 @@ mod tests {
         let got = merge(Vec::new(), &Binaries::new());
         let ids: Vec<&str> = got.iter().map(|a| a.adapter_id.as_str()).collect();
         assert_eq!(ids, cctui_proto::adapter::KNOWN_ADAPTERS);
-        assert!(got.iter().all(|a| a.enabled && !a.pinned && a.config == json!({})));
+        assert!(got.iter().all(|a| !a.pinned && a.config == json!({})));
+        for a in &got {
+            assert_eq!(a.enabled, a.default_enabled, "{}", a.adapter_id);
+            assert_eq!(
+                a.enabled,
+                cctui_proto::adapter::is_default_enabled(&a.adapter_id),
+                "{}",
+                a.adapter_id
+            );
+        }
     }
 
     #[test]

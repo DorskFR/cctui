@@ -4,15 +4,35 @@ cctui drives three agent harnesses from one daemon, plus a fourth adapter
 that covers a whole family: **claude-code** (a supervised `claude` daemon
 reached over a control socket), **codex** (the `codex app-server` JSON-RPC
 protocol), **opencode** (`opencode serve` over HTTP + SSE) and **ACP** (any
-Agent Client Protocol agent over stdio JSON-RPC: gemini-cli first, qwen-code
-and goose to follow; one `AcpAdapter`, one row per agent, see
-`docs/adr/0003-acp-adapter.md`). They are meant to sit behind adapters of the
+Agent Client Protocol agent over stdio JSON-RPC: qwen-code and goose are
+registered rows, gemini-cli is a data row until its harness-table entry lands;
+one `AcpAdapter`, one row per agent, see `docs/adr/0003-acp-adapter.md` and
+the agent table below). They are meant to sit behind adapters of the
 same shape, so a session-level capability is written once in adapter-neutral
 code and each harness contributes only a small primitive.
 
 This document records where that holds today and where it does not. It is a
 map of the code, not a wish list; the ranked gaps at the end are what the shape
 is still missing.
+
+## ACP agent rows
+
+Opt-in on every machine (`default_enabled = false`). Versions are the
+upstream releases the rows were written against.
+
+| Row | Upstream | Launch | Modes (ask / auto / yolo) | Auth and env | Context file | Models | Usage | Re-attach |
+|---|---|---|---|---|---|---|---|---|
+| `qwen` | `@qwen-code/qwen-code` 0.25.3 | `qwen --acp` | legacy `session/set_mode`: `default` / `auto-edit` / `yolo`; `plan` has no posture, whip refused | `openai` only (Qwen OAuth ended 2026-04-15). Account-bound: the OpenAI family's `OPENAI_BASE_URL` + `OPENAI_API_KEY` as minted, `OPENAI_MODEL` from the spawn model. Own login: `OPENAI_API_KEY` in the daemon env | `QWEN.md` | catalog from config options, legacy `models` fallback | `usage_update` tokens, no cost | `session/load` |
+| `goose` | `aaif-goose/goose` v1.55.0 | `goose acp` | config option `mode`: `approve` / `smart_approve` / `auto`; `chat` has no posture, whip refused | Account-bound: `GOOSE_PROVIDER=openai`, `OPENAI_HOST` = the family base url, `OPENAI_BASE_PATH=chat/completions`, `OPENAI_API_KEY`, `GOOSE_MODEL` from the spawn model. Own login: `GOOSE_PROVIDER` + the provider's key | `.goosehints` | catalog from config options (`provider`, `model`, `thinking_effort`) | `usage_update` tokens, cost when goose prices it | `session/load` only (no `session/resume`) |
+
+Both rows carry the OpenAI family: a spawn resolves a model even when none
+was asked for (neither agent has a default for a gateway-bound provider), an
+account-bound launch with an empty or half-minted env is refused before the
+process starts, and the codex `service_tier` is gated on the codex adapter
+rather than on the family. Their usage rows come from the agent: the gateway
+tees only Fireworks responses, so the server-side double-count suppression
+(`gateway_metered` on the harness row) does not apply to them. goose's MCP
+transport is stdio or http (no sse), which the `CctuiAgent` relay satisfies.
 
 ## How to read the matrix
 

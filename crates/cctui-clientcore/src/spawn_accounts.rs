@@ -12,8 +12,17 @@ use crate::spawn::{NO_ACCOUNT, pool_name};
 
 use cctui_proto::adapter::KNOWN_ADAPTERS;
 
-/// The harness cards, in table order.
-pub const ALL_ADAPTERS: [&str; KNOWN_ADAPTERS.len()] = KNOWN_ADAPTERS;
+/// The harness cards, in table order: every harness that runs by default.
+#[must_use]
+pub fn all_adapters() -> Vec<&'static str> {
+    cctui_proto::adapter::default_enabled_adapters()
+}
+
+/// Whether `provider` is a credential of `adapter`'s harness family.
+fn backs(provider: &str, adapter: &str) -> bool {
+    cctui_proto::adapter::harness_for_adapter(adapter)
+        .is_some_and(|h| h.family == cctui_proto::provider::provider_family(provider))
+}
 
 /// The harness a provider credential runs: the first harness-table row of the
 /// provider's family. The table covers every family, so this never misses.
@@ -22,12 +31,13 @@ pub fn adapter_for_provider(provider: &str) -> &'static str {
     cctui_proto::adapter::harness_for_provider(provider).unwrap_or(KNOWN_ADAPTERS[0])
 }
 
-/// The harnesses an account's credentials can run, in stable order.
+/// The harnesses an account's credentials can run, in stable order: every
+/// row of each credential's family, opt-in ACP agents included.
 #[must_use]
 pub fn account_adapters<S: AsRef<str>>(providers: &[S]) -> Vec<&'static str> {
     KNOWN_ADAPTERS
         .into_iter()
-        .filter(|adapter| providers.iter().any(|p| adapter_for_provider(p.as_ref()) == *adapter))
+        .filter(|adapter| providers.iter().any(|p| backs(p.as_ref(), adapter)))
         .collect()
 }
 
@@ -103,7 +113,7 @@ pub fn provider_for_adapter<'a, S: AsRef<str>>(
     providers: &'a [S],
     adapter: &str,
 ) -> Option<&'a str> {
-    providers.iter().map(AsRef::as_ref).find(|provider| adapter_for_provider(provider) == adapter)
+    providers.iter().map(AsRef::as_ref).find(|provider| backs(provider, adapter))
 }
 
 /// One usage window as the headline percentage reads it.
@@ -144,6 +154,21 @@ mod tests {
 
     fn providers(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// An openai credential backs codex and the OpenAI-wire ACP agents alike;
+    /// the cards stay the default-on harnesses.
+    #[test]
+    fn an_openai_credential_backs_every_openai_family_harness() {
+        assert_eq!(account_adapters(&providers(&["openai"])), ["codex", "qwen", "goose"]);
+        assert!(account_backs_adapter(Some(&providers(&["openai-compatible"])), "qwen"));
+        assert!(!account_backs_adapter(Some(&providers(&["fireworks"])), "goose"));
+        assert_eq!(
+            provider_for_adapter(&providers(&["anthropic", "openai"]), "goose"),
+            Some("openai")
+        );
+        assert_eq!(effective_adapter_for(Some(&providers(&["openai"])), "goose"), "goose");
+        assert_eq!(all_adapters(), ["claude-code", "codex", "opencode"]);
     }
 
     #[test]

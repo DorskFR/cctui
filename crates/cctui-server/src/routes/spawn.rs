@@ -419,9 +419,7 @@ async fn spawn_service_tier(
     // Codex's own default tier is `priority`, so an unset tier is the expensive
     // one: resolve to a concrete value here rather than letting the worker
     // inherit whatever the machine's config.toml happens to say.
-    if crate::routes::gateway::Family::from_adapter(adapter_id)
-        == Ok(crate::routes::gateway::Family::Openai)
-    {
+    if crate::settings_catalog::codex::adapter_takes_service_tier(adapter_id) {
         let account_settings =
             crate::routes::gateway::resolve_session_settings(state, token_session_id).await;
         Some(crate::settings_catalog::codex::resolve_service_tier(
@@ -450,9 +448,10 @@ async fn mint_account_env(
     let uid = *uid;
     let family = crate::routes::gateway::Family::from_adapter(adapter_id)
         .map_err(|e| bad_request(e.to_string()))?;
-    // The fireworks family resolves even an ABSENT model: its catalog is the
-    // only source of model ids, and its harness has no default to fall back on.
-    if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
+    // A harness with no default model for its provider (opencode, the
+    // OpenAI-wire ACP agents) resolves even an ABSENT model: the account's
+    // catalog is the only source of model ids it can launch on.
+    if model.is_some() || cctui_proto::adapter::needs_model(adapter_id) {
         let requested = model.as_deref().unwrap_or_default();
         let resolved = crate::routes::gateway::resolve_account_model(
             state,
@@ -1436,10 +1435,13 @@ mod tests {
     /// default capability must not advertise it to `CctuiAgent`.
     #[test]
     fn the_default_capability_advertises_only_spawnable_adapters() {
-        let ids = ["claude-code", "gemini", "codex", "opencode", "custom-acp"]
+        let ids = ["claude-code", "gemini", "codex", "opencode", "qwen", "goose", "custom-acp"]
             .map(str::to_owned)
             .to_vec();
-        assert_eq!(super::spawnable_adapters(ids), ["claude-code", "codex", "opencode"]);
+        assert_eq!(
+            super::spawnable_adapters(ids),
+            ["claude-code", "codex", "opencode", "qwen", "goose"]
+        );
         assert!(super::spawnable_adapters(Vec::new()).is_empty());
     }
 
@@ -1615,7 +1617,7 @@ mod tests {
     fn spawn_refuses_an_adapter_with_no_family() {
         assert_eq!(super::spawn_adapter(None).unwrap(), "claude-code");
         assert_eq!(super::spawn_adapter(Some(" ")).unwrap(), "claude-code");
-        for adapter in ["claude-code", "codex", "opencode"] {
+        for adapter in ["claude-code", "codex", "opencode", "qwen", "goose"] {
             assert_eq!(super::spawn_adapter(Some(adapter)).unwrap(), adapter);
         }
         assert!(super::spawn_adapter(Some("gemini")).is_err());

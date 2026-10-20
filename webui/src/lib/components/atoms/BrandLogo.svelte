@@ -57,6 +57,43 @@
 			d="M0 314.408L18.5727 270.595L212.643 271.677L76.525 133.988L95.0977 90.1748L243.819 240.816C256.247 253.384 259.843 272.026 252.93 288.26C246.088 304.424 230.203 314.827 212.643 314.827L0.0698221 314.339L0 314.408Z"
 		/>
 	</svg>
+{:else if mark === 'qwen'}
+	<!-- Qwen Code: a Q with its coder's caret -->
+	<svg
+		width={size}
+		height={size}
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="2.2"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		aria-label="Qwen Code"
+		role="img"
+	>
+		<circle cx="11" cy="11" r="7.5" />
+		<path d="M14.5 14.5 20 20" />
+		<path d="M8.5 9.5 6.5 11l2 1.5" />
+		<path d="M13.5 9.5l2 1.5-2 1.5" />
+	</svg>
+{:else if mark === 'goose'}
+	<!-- goose: the bird in profile -->
+	<svg
+		width={size}
+		height={size}
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="2.2"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		aria-label="Goose"
+		role="img"
+	>
+		<path d="M4 20h14" />
+		<path d="M7 20c-1.5-4 0-8 4-9.5V8a3 3 0 1 1 6 0v3l3 1-3 1.5" />
+		<path d="M11 10.5c4 0 7 2.5 7 6.5" />
+	</svg>
 {:else if mark === 'openai'}
 	<!-- OpenAI blossom -->
 	<svg

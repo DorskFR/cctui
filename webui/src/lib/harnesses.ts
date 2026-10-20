@@ -62,17 +62,27 @@ export const harnessPermissionModes = (
 	table: HarnessTable = HARNESSES
 ): PermissionMode[] => harnessById(harnessId, table)?.permission_modes ?? PERMISSION_MODES;
 
-export type BrandMark = ProviderFamily | 'neutral';
+/** The harnesses with a mark of their own rather than their family's. */
+const BRANDED_HARNESSES = ['qwen', 'goose'] as const;
+type BrandedHarness = (typeof BRANDED_HARNESSES)[number];
+
+export type BrandMark = ProviderFamily | BrandedHarness | 'neutral';
+
+const isBranded = (id: string): id is BrandedHarness =>
+	(BRANDED_HARNESSES as readonly string[]).includes(id);
 
 /** Which mark an adapter or provider wears. A provider resolves through the
- *  provider table, an adapter through the harness table; anything unknown, or
- *  nothing at all, wears the neutral glyph rather than another vendor's logo. */
+ *  provider table, an adapter through the harness table: its own mark when it
+ *  has one, else its family's; anything unknown, or nothing at all, wears the
+ *  neutral glyph rather than another vendor's logo. */
 export const brandMark = (
 	{ adapter, provider }: { adapter?: string | null; provider?: string | null },
 	table: HarnessTable = HARNESSES
 ): BrandMark => {
 	if (provider != null) return providerInfo(provider)?.family ?? 'neutral';
-	return harnessForAdapter(adapter, table)?.family ?? 'neutral';
+	const harness = harnessForAdapter(adapter, table);
+	if (!harness) return 'neutral';
+	return isBranded(harness.id) ? harness.id : harness.family;
 };
 
 /** The harness a provider credential runs: the first row of the provider's
@@ -101,6 +111,8 @@ export const familyAccent = (mark: BrandMark): string =>
 		? 'var(--c-amber)'
 		: mark === 'openai'
 			? 'var(--c-blue)'
-			: mark === 'fireworks'
+			: mark === 'fireworks' || mark === 'qwen'
 				? 'var(--c-violet, var(--c-blue))'
-				: 'var(--c-fg-muted, currentColor)';
+				: mark === 'goose'
+					? 'var(--c-green, var(--c-blue))'
+					: 'var(--c-fg-muted, currentColor)';

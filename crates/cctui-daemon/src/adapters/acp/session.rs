@@ -308,11 +308,16 @@ impl AcpSession {
         {
             args.push(flag.to_owned());
         }
+        let mut env = self.params.env.clone();
+        if let (Some(key), Some(model)) = (self.params.row.model_env, self.params.model.as_deref())
+        {
+            env.entry(key.to_owned()).or_insert_with(|| model.to_owned());
+        }
         Ok(Launch {
             bin: self.params.bin.clone(),
             args,
             cwd: std::path::PathBuf::from(&self.params.cwd),
-            env: self.params.env.clone(),
+            env,
         })
     }
 

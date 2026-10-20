@@ -50,14 +50,26 @@ describe('adapterLabel', () => {
 
 describe('accountAdapters', () => {
 	it('is the provider-family union, in stable order', () => {
-		expect(accountAdapters(account('anthropic', 'openai'))).toEqual(['claude-code', 'codex']);
+		expect(accountAdapters(account('anthropic', 'openai'))).toEqual([
+			'claude-code',
+			'codex',
+			'qwen',
+			'goose'
+		]);
 		expect(accountAdapters(account('openai', 'anthropic-compatible'))).toEqual([
 			'claude-code',
-			'codex'
+			'codex',
+			'qwen',
+			'goose'
 		]);
 		expect(accountAdapters(account('anthropic'))).toEqual(['claude-code']);
-		expect(accountAdapters(account('openai-compatible'))).toEqual(['codex']);
+		expect(accountAdapters(account('openai-compatible'))).toEqual(['codex', 'qwen', 'goose']);
 		expect(accountAdapters(account())).toEqual([]);
+	});
+
+	it('an openai credential backs the OpenAI-wire ACP agents too', () => {
+		expect(accountBacksAdapter(account('openai'), 'qwen')).toBe(true);
+		expect(accountBacksAdapter(account('anthropic'), 'goose')).toBe(false);
 	});
 
 	it('gives a fireworks account the opencode harness only', () => {

@@ -110,9 +110,53 @@ pub const GEMINI_STYLE: ModeTable = ModeTable {
     whip: None,
 };
 
+/// qwen-code's vocabulary over legacy `modes`: `default` / `auto-edit` /
+/// `yolo` (its `plan` mode has no cctui posture). It also exposes the same
+/// table as a config option; `session/set_mode` is the one every build has.
+pub const QWEN_STYLE: ModeTable = ModeTable {
+    ask: Some(ModeApply::SessionMode("default")),
+    auto: Some(ModeApply::SessionMode("auto-edit")),
+    yolo: Some(ModeApply::SessionMode("yolo")),
+    whip: None,
+};
+
+/// goose's `mode` config option: `approve` asks on every tool, `smart_approve`
+/// only on risky ones, `auto` never; `chat` runs no tools and has no posture.
+pub const GOOSE_STYLE: ModeTable = ModeTable {
+    ask: Some(ModeApply::ConfigOption { id: "mode", value: "approve" }),
+    auto: Some(ModeApply::ConfigOption { id: "mode", value: "smart_approve" }),
+    yolo: Some(ModeApply::ConfigOption { id: "mode", value: "auto" }),
+    whip: None,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qwen_and_goose_map_the_three_postures_and_refuse_whip() {
+        assert_eq!(
+            QWEN_STYLE.resolve("qwen", PermissionMode::Auto),
+            Ok(ModeApply::SessionMode("auto-edit"))
+        );
+        assert_eq!(QWEN_STYLE.posture_of("yolo"), Some(PermissionMode::Yolo));
+        assert_eq!(QWEN_STYLE.posture_of("plan"), None);
+        assert_eq!(
+            GOOSE_STYLE.resolve("goose", PermissionMode::Ask),
+            Ok(ModeApply::ConfigOption { id: "mode", value: "approve" })
+        );
+        assert_eq!(GOOSE_STYLE.posture_of("smart_approve"), Some(PermissionMode::Auto));
+        assert_eq!(GOOSE_STYLE.posture_of("chat"), None);
+        for (agent, table) in [("qwen", QWEN_STYLE), ("goose", GOOSE_STYLE)] {
+            assert_eq!(
+                table.expressible(),
+                [PermissionMode::Ask, PermissionMode::Auto, PermissionMode::Yolo],
+                "{agent}"
+            );
+            let err = table.resolve(agent, PermissionMode::Whip).unwrap_err();
+            assert_eq!(err, Inexpressible { mode: PermissionMode::Whip, agent });
+        }
+    }
 
     #[test]
     fn gemini_style_refuses_whip_and_maps_the_rest() {

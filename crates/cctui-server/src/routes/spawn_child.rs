@@ -427,6 +427,7 @@ async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u
 async fn child_account_env(
     state: &AppState,
     parent: &Parent,
+    adapter: &str,
     family: crate::routes::gateway::Family,
     requested_model: Option<&str>,
     child_key: &str,
@@ -465,7 +466,7 @@ async fn child_account_env(
         };
 
         let mut model = wanted.clone();
-        if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
+        if model.is_some() || cctui_proto::adapter::needs_model(adapter) {
             let resolved = crate::routes::gateway::resolve_account_model(
                 state,
                 parent.user_id,
@@ -649,14 +650,22 @@ pub async fn spawn_child(
             return Err(deny(StatusCode::BAD_REQUEST, e.to_string()));
         }
     };
-    let (mut env, model) =
-        match child_account_env(&state, &parent, family, req.model.as_deref(), &child_key).await {
-            Ok(v) => v,
-            Err(e) => {
-                release_child(&state.pool, &child_key).await;
-                return Err(e);
-            }
-        };
+    let (mut env, model) = match child_account_env(
+        &state,
+        &parent,
+        &authorized.adapter,
+        family,
+        req.model.as_deref(),
+        &child_key,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            release_child(&state.pool, &child_key).await;
+            return Err(e);
+        }
+    };
     if let Some(profile) = req.agent_profile.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         env.insert(AGENT_PROFILE_ENV.to_owned(), profile.to_owned());
     }
@@ -1038,9 +1047,9 @@ mod tests {
     }
 
     #[test]
-    fn machine_default_authorizes_every_known_adapter() {
+    fn machine_default_authorizes_every_default_on_adapter() {
         let cap = SpawnCapability::machine_default();
-        for adapter in cctui_proto::adapter::KNOWN_ADAPTERS {
+        for adapter in cctui_proto::adapter::default_enabled_adapters() {
             let ok = authorize(Some(&cap), &req(adapter, None), &usage(0)).unwrap();
             assert_eq!(
                 ok,
@@ -1141,6 +1150,7 @@ mod tests {
         let minted = child_account_env(
             &state,
             &parent,
+            "codex",
             crate::routes::gateway::Family::Openai,
             None,
             &child_key,
@@ -1166,6 +1176,7 @@ mod tests {
         let (env, _) = child_account_env(
             &state,
             &parent,
+            "claude-code",
             crate::routes::gateway::Family::Anthropic,
             None,
             &same_family_key,
@@ -1284,6 +1295,7 @@ mod tests {
         let refused = child_account_env(
             &state,
             &parent,
+            "codex",
             crate::routes::gateway::Family::Openai,
             None,
             &child_key,
@@ -1324,9 +1336,16 @@ mod tests {
         .expect("seed own provider");
 
         let ok_key = Uuid::new_v4().to_string();
-        child_account_env(&state, &parent, crate::routes::gateway::Family::Openai, None, &ok_key)
-            .await
-            .expect("a child on the owner's own openai account");
+        child_account_env(
+            &state,
+            &parent,
+            "codex",
+            crate::routes::gateway::Family::Openai,
+            None,
+            &ok_key,
+        )
+        .await
+        .expect("a child on the owner's own openai account");
         let bound: Uuid =
             sqlx::query_scalar("SELECT account_id FROM session_tokens WHERE session_id = $1")
                 .bind(&ok_key)
@@ -1414,6 +1433,7 @@ mod tests {
         child_account_env(
             &state,
             &parent,
+            "codex",
             crate::routes::gateway::Family::Openai,
             None,
             &child_key,

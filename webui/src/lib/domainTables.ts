@@ -90,6 +90,9 @@ export const HARNESS_MODELS: HarnessModels[] = [
 
 export const PERMISSION_MODES: PermissionMode[] = ['ask', 'auto', 'yolo', 'whip'];
 
+/** Whip is yolo plus hooks an ACP agent cannot run. */
+const ACP_PERMISSION_MODES: PermissionMode[] = ['ask', 'auto', 'yolo'];
+
 const caps = (
 	fork: boolean,
 	rename: boolean,
@@ -138,6 +141,24 @@ export const HARNESSES: HarnessDescriptor[] = [
 		default_enabled: true,
 		models_source: 'none',
 		permission_modes: PERMISSION_MODES
+	},
+	{
+		id: 'qwen',
+		label: 'Qwen Code',
+		family: 'openai',
+		capabilities: caps(false, false, true, true, true, false, true, true),
+		default_enabled: false,
+		models_source: 'catalog',
+		permission_modes: ACP_PERMISSION_MODES
+	},
+	{
+		id: 'goose',
+		label: 'Goose',
+		family: 'openai',
+		capabilities: caps(false, false, true, true, true, false, true, true),
+		default_enabled: false,
+		models_source: 'catalog',
+		permission_modes: ACP_PERMISSION_MODES
 	}
 ];
 

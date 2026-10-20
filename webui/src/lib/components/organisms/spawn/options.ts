@@ -6,13 +6,14 @@ import type { AccountProvider, OAuthAccount } from '$lib/queries';
 import type { SelectOption } from '@dorsk/tsumikit';
 import type { ModelOption } from '$lib/harnessModels';
 import {
+	harnessForAdapter,
 	harnessForProvider,
 	harnessLabel,
 	harnessPermissionModes,
 	harnessesForProviders,
 	pickableHarnesses
 } from '$lib/harnesses';
-import { HARNESSES } from '$lib/domainTables';
+import { HARNESSES, providerInfo } from '$lib/domainTables';
 import { m } from '$lib/paraglide/messages';
 
 export const modes: { v: PermissionMode; label: string; hint: string }[] = [
@@ -93,11 +94,15 @@ export const allAdapters: Adapter[] = pickableHarnesses().map((h) => h.id);
 export const accountAdapters = (a: OAuthAccount): Adapter[] =>
 	harnessesForProviders(a.providers.map((p) => p.provider));
 
-// The provider credential backing a harness on this account, if any.
+// The provider credential backing a harness on this account, if any: the one
+// in the harness's family.
 export const providerForAdapter = (
 	a: OAuthAccount | undefined,
 	adapter: string
-): AccountProvider | undefined => a?.providers.find((p) => adapterForProvider(p.provider) === adapter);
+): AccountProvider | undefined => {
+	const family = harnessForAdapter(adapter)?.family;
+	return family ? a?.providers.find((p) => providerInfo(p.provider)?.family === family) : undefined;
+};
 
 // The harness in effect: the user's pick when no account is chosen or the
 // account offers it, else the first harness the account can run.

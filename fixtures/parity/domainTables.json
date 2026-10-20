@@ -170,6 +170,42 @@
       "default_enabled": true,
       "models_source": "none",
       "permission_modes": ["ask", "auto", "yolo", "whip"]
+    },
+    {
+      "id": "qwen",
+      "label": "Qwen Code",
+      "family": "openai",
+      "capabilities": {
+        "fork": false,
+        "rename": false,
+        "resume": true,
+        "set_model": true,
+        "live_view": true,
+        "attach": false,
+        "mid_chat_files": true,
+        "child_spawn": true
+      },
+      "default_enabled": false,
+      "models_source": "catalog",
+      "permission_modes": ["ask", "auto", "yolo"]
+    },
+    {
+      "id": "goose",
+      "label": "Goose",
+      "family": "openai",
+      "capabilities": {
+        "fork": false,
+        "rename": false,
+        "resume": true,
+        "set_model": true,
+        "live_view": true,
+        "attach": false,
+        "mid_chat_files": true,
+        "child_spawn": true
+      },
+      "default_enabled": false,
+      "models_source": "catalog",
+      "permission_modes": ["ask", "auto", "yolo"]
     }
   ]
 }

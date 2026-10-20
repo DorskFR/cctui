@@ -70,6 +70,14 @@ pub fn resolve_service_tier(
         .unwrap_or_else(|| SERVICE_TIER_DEFAULT.to_owned())
 }
 
+/// Only codex reads a `service_tier`. The other OpenAI-family harnesses are
+/// ACP agents on the chat wire, which would carry a key they cannot use.
+#[must_use]
+pub fn adapter_takes_service_tier(adapter_id: &str) -> bool {
+    cctui_proto::adapter::harness_for_adapter(adapter_id)
+        .is_some_and(|h| h.id == cctui_proto::harness::HARNESS_CODEX)
+}
+
 /// Pin a concrete `service_tier` into the settings blob served to the daemon on
 /// every worker (re)launch, so a codex session never falls back to codex's own
 /// `priority` default. An account default already in the blob is preserved.
@@ -88,6 +96,17 @@ mod tests {
     use crate::settings_catalog::{Policy, SettingKey};
     use serde_json::json;
     use std::collections::BTreeSet;
+
+    /// The tier is gated on the adapter, not the provider family: qwen and
+    /// goose are OpenAI-family too and get none.
+    #[test]
+    fn only_codex_and_its_variants_take_a_service_tier() {
+        assert!(adapter_takes_service_tier("codex"));
+        assert!(adapter_takes_service_tier("codex-app-server"));
+        for other in ["qwen", "goose", "claude-code", "opencode", "gemini", ""] {
+            assert!(!adapter_takes_service_tier(other), "{other:?}");
+        }
+    }
 
     #[test]
     fn codex_catalog_loads_and_exposes_service_tier() {

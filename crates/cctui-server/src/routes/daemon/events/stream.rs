@@ -6,10 +6,10 @@ use crate::routes::daemon::ingest::{Stored, insert_event, note_insert};
 use crate::state::AppState;
 
 #[allow(clippy::too_many_arguments)]
-/// `LIKE` patterns matching every adapter id (and its variants) whose harness
-/// family the gateway meters itself.
+/// `LIKE` patterns matching every adapter id (and its variants) whose usage
+/// the gateway meters itself.
 fn gateway_metered_adapter_patterns() -> Vec<String> {
-    cctui_proto::adapter::harness_ids_in_family(cctui_proto::provider::ProviderFamily::Fireworks)
+    cctui_proto::adapter::gateway_metered_harness_ids()
         .into_iter()
         .map(|id| format!("{id}%"))
         .collect()
@@ -30,9 +30,11 @@ async fn insert_token_usage(
     let o = i64::try_from(output_tokens).unwrap_or(i64::MAX);
     let cr = i64::try_from(cache_read_tokens).unwrap_or(i64::MAX);
     let cc = i64::try_from(cache_creation_tokens).unwrap_or(i64::MAX);
-    // Fireworks-family harnesses are metered by the gateway capture (model
-    // stamped); the daemon's model-NULL row for the same message would
-    // double-count, so exactly one path meters them. A session with no row
+    // A gateway-metered harness (the row flag; opencode today) has its usage
+    // captured from the proxied response, model stamped; the daemon's
+    // model-NULL row for the same message would double-count, so exactly one
+    // path meters it. The OpenAI-wire ACP agents are not teed, so their own
+    // `usage_update` rows stay. A session with no row
     // (its registration was lost with a dropped WS, and the daemon re-announces
     // it on the next connect) is skipped like `Message` is, rather than failing
     // the FK once per usage frame.
