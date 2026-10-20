@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
+import { readFileSync } from 'node:fs';
 import type { UserAction } from '@bindings/UserAction';
 import UserActionsCard from './UserActionsCard.svelte';
 
@@ -34,7 +35,7 @@ async function render(actions: UserAction[], interactive = true) {
 }
 
 const rowTitles = () =>
-	[...document.querySelectorAll<HTMLElement>('ul:not(.resolved) li.row')].map((li) =>
+	[...document.querySelectorAll<HTMLElement>('ul:not(.ua-resolved) li.ua-item')].map((li) =>
 		(li.querySelector('input[type=checkbox]') ? li.querySelector('label') : li)?.textContent?.trim()
 	);
 const text = () => document.body.textContent ?? '';
@@ -56,7 +57,7 @@ describe('UserActionsCard', () => {
 			action({ id: 'c', title: 'Urgent C', blocking: true, created_at: '2026-09-30T12:00:00Z' })
 		]);
 		expect(rowTitles()).toEqual(['Urgent C', 'Plain A', 'Plain B']);
-		const group = document.querySelector('ul.blocking-group');
+		const group = document.querySelector('ul.ua-blocking-group');
 		expect(group?.textContent).toContain('Urgent C');
 		expect(group?.textContent).not.toContain('Plain A');
 		expect(text()).toContain('Blocking');
@@ -92,7 +93,7 @@ describe('UserActionsCard', () => {
 		const toggles = document.querySelectorAll<HTMLButtonElement>('button[aria-expanded]');
 		expect(toggles.length).toBe(1);
 		expect(toggles[0].getAttribute('aria-expanded')).toBe('false');
-		expect(document.querySelector('.detail')).toBeNull();
+		expect(document.querySelector('.ua-detail')).toBeNull();
 		expect(text()).not.toContain('step 4');
 		toggles[0].click();
 		await flush();
@@ -101,7 +102,7 @@ describe('UserActionsCard', () => {
 		expect(detail?.querySelector('strong')?.textContent).toBe('step 4');
 		toggles[0].click();
 		await flush();
-		expect(document.querySelector('.detail')).toBeNull();
+		expect(document.querySelector('.ua-detail')).toBeNull();
 	});
 
 	it('folds done and dropped items into one summary row, expandable, each distinguishable', async () => {
@@ -125,13 +126,13 @@ describe('UserActionsCard', () => {
 		]);
 		const toggle = mustFind(/2 done · 1 dropped/);
 		expect(toggle.getAttribute('aria-expanded')).toBe('false');
-		expect(document.querySelector('ul.resolved')?.closest('[hidden]')).not.toBeNull();
+		expect(document.querySelector('ul.ua-resolved')?.closest('[hidden]')).not.toBeNull();
 		toggle.click();
 		await flush();
 		expect(toggle.getAttribute('aria-expanded')).toBe('true');
-		expect(document.querySelector('ul.resolved')?.closest('[hidden]')).toBeNull();
-		const rows = [...document.querySelectorAll<HTMLElement>('ul.resolved li')];
-		expect(rows.map((r) => r.classList.contains('dropped'))).toEqual([false, false, true]);
+		expect(document.querySelector('ul.ua-resolved')?.closest('[hidden]')).toBeNull();
+		const rows = [...document.querySelectorAll<HTMLElement>('ul.ua-resolved li')];
+		expect(rows.map((r) => r.classList.contains('ua-dropped'))).toEqual([false, false, true]);
 		expect(rows[0].textContent).toContain('bumped to 0.25.2');
 		expect(rows[2].textContent).toContain('fixture rewrite');
 		expect(rows[0].querySelector('[aria-label="done"]')).not.toBeNull();
@@ -159,6 +160,36 @@ describe('UserActionsCard', () => {
 		await flush();
 		expect(rowTitles().length).toBe(30);
 		expect(buttonByName(/Show less/)).toBeTruthy();
+	});
+
+	it('reserves the chevron slot on rows without detail so titles share one edge', async () => {
+		await render([
+			action({ id: 'a', title: 'With detail', detail: 'x' }),
+			action({ id: 'b', title: 'Without detail' })
+		]);
+		const slots = document.querySelectorAll('.ua-line .ua-toggle');
+		expect(slots.length).toBe(2);
+		expect(slots[0].querySelector('button')).not.toBeNull();
+		expect(slots[1].querySelector('button')).toBeNull();
+	});
+
+	it('uses no class name that a tsumikit global utility also styles', async () => {
+		const utilities = readFileSync('node_modules/@dorsk/tsumikit/dist/styles/utilities.css', 'utf8');
+		const reserved = new Set([...utilities.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+		expect(reserved.has('row')).toBe(true);
+		await render([
+			action({ id: 'a', title: 'A', detail: 'd', blocking: true }),
+			action({ id: 'b', title: 'B' }),
+			action({ id: 'd', title: 'D', status: 'done', resolved_at: '2026-09-30T11:00:00Z' })
+		]);
+		mustFind(/1 done/).click();
+		await flush();
+		const own = [...document.querySelectorAll<HTMLElement>('[class*="svelte-"]')]
+			.filter((el) => !el.hasAttribute('data-tsu'))
+			.flatMap((el) => [...el.classList]);
+		expect(own.length).toBeGreaterThan(5);
+		const clashes = own.filter((c) => reserved.has(c));
+		expect(clashes).toEqual([]);
 	});
 
 	it('renders nothing when no item is open', async () => {

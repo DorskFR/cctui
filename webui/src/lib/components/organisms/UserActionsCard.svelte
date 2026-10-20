@@ -52,15 +52,15 @@
 {#snippet row(a: UserAction)}
 	{@const expanded = openDetails.has(a.id)}
 	{@const panelId = `${uid}-detail-${a.id}`}
-	<li class="row" class:blocking={a.blocking}>
-		<div class="line">
+	<li class="ua-item" class:ua-blocking={a.blocking}>
+		<div class="ua-line">
 			{#if interactive}
 				<Checkbox label={a.title} checked={false} onchange={() => ontick(a.id, 'done')} />
 			{:else}
 				<Text size="sm">{a.title}</Text>
 			{/if}
-			{#if a.detail}
-				<span class="toggle">
+			<span class="ua-toggle">
+				{#if a.detail}
 					<IconButton
 						icon="chevron-down"
 						label={m.user_actions_detail()}
@@ -72,11 +72,11 @@
 						style={expanded ? 'transform: rotate(180deg)' : ''}
 						onclick={() => toggleDetail(a.id)}
 					/>
-				</span>
-			{/if}
+				{/if}
+			</span>
 		</div>
 		{#if a.detail && expanded}
-			<div class="detail" class:indent={interactive} id={panelId}>
+			<div class="ua-detail" class:ua-indent={interactive} id={panelId}>
 				{@html renderMarkdown(a.detail)}
 			</div>
 		{/if}
@@ -85,29 +85,29 @@
 
 {#if groups}
 	<Card tone="attention" padding="sm" gap="var(--sp-2)" style="margin:var(--sp-2) 0">
-		<div class="head">
+		<div class="ua-head">
 			<Heading level={3} size="sm">{m.user_actions_heading()}</Heading>
 			{#if groups.blocking > 0}
 				<Badge tone="warn" size="xs">{m.user_actions_blocking_badge()}</Badge>
 			{/if}
-			<span class="count"><Text tone="faint" size="xs">{groups.open.length}</Text></span>
+			<span class="ua-count"><Text tone="faint" size="xs">{groups.open.length}</Text></span>
 		</div>
 		{#if groups.blocking > 0}
-			<ul class="rows blocking-group" aria-label={m.user_actions_blocking_badge()}>
+			<ul class="ua-list ua-blocking-group" aria-label={m.user_actions_blocking_badge()}>
 				{#each visible.filter((a) => a.blocking) as a (a.id)}
 					{@render row(a)}
 				{/each}
 			</ul>
 		{/if}
 		{#if visible.some((a) => !a.blocking)}
-			<ul class="rows">
+			<ul class="ua-list">
 				{#each visible.filter((a) => !a.blocking) as a (a.id)}
 					{@render row(a)}
 				{/each}
 			</ul>
 		{/if}
 		{#if groups.open.length > Math.max(VISIBLE_OPEN, groups.blocking)}
-			<div class="more">
+			<div class="ua-more">
 				<Button variant="ghost" size="sm" onclick={() => (showAll = !showAll)}>
 					{showAll ? m.user_actions_show_less() : m.user_actions_show_more({ count: hidden })}
 				</Button>
@@ -118,18 +118,18 @@
 				{#snippet header()}
 					<Text tone="faint" size="xs">{resolvedSummary}</Text>
 				{/snippet}
-				<ul class="rows resolved">
+				<ul class="ua-list ua-resolved">
 					{#each groups.resolved as a (a.id)}
-						<li class="row resolved-row" class:dropped={a.status === 'dropped'}>
-							<span class="mark">
+						<li class="ua-item ua-resolved-row" class:ua-dropped={a.status === 'dropped'}>
+							<span class="ua-mark">
 								{#if a.status === 'done'}
 									<Icon name="check-circle" tone="ok" label={m.user_actions_status_done()} />
 								{:else}
 									<Icon name="x-circle" label={m.user_actions_status_dropped()} />
 								{/if}
 							</span>
-							<span class="resolved-text">
-								<span class="resolved-title"><Text size="xs" tone="faint">{a.title}</Text></span>
+							<span class="ua-resolved-text">
+								<span class="ua-resolved-title"><Text size="xs" tone="faint">{a.title}</Text></span>
 								{#if a.note}<Text size="xs" tone="faint" italic>{a.note}</Text>{/if}
 							</span>
 						</li>
@@ -141,17 +141,17 @@
 {/if}
 
 <style>
-	.head {
+	.ua-head {
 		display: flex;
 		align-items: baseline;
 		gap: var(--sp-2);
 		min-width: 0;
 	}
-	.count {
+	.ua-count {
 		margin-inline-start: auto;
 		font-variant-numeric: tabular-nums;
 	}
-	.rows {
+	.ua-list {
 		display: flex;
 		flex-direction: column;
 		align-items: stretch;
@@ -162,74 +162,77 @@
 		min-width: 0;
 		text-align: start;
 	}
-	.row {
+	.ua-item {
 		display: flex;
 		flex-direction: column;
+		align-items: stretch;
 		gap: var(--sp-1);
 		min-width: 0;
 	}
-	.line {
+	.ua-line {
 		display: flex;
 		align-items: flex-start;
 		justify-content: flex-start;
 		gap: var(--sp-1);
 		min-width: 0;
 	}
-	.line > :first-child {
+	.ua-line > :first-child {
 		flex: 1 1 auto;
 		min-width: 0;
 	}
-	.toggle {
+	.ua-toggle {
 		flex: none;
 		display: inline-flex;
+		width: var(--box-xs);
+		min-height: var(--box-xs);
 	}
-	.blocking-group {
+	.ua-blocking-group {
 		padding: var(--sp-2);
 		border-inline-start: 3px solid var(--warn);
 		border-radius: var(--r-md);
 		background: color-mix(in srgb, var(--warn) 10%, transparent);
 	}
-	.row.blocking {
+	.ua-item.ua-blocking {
 		font-weight: var(--fw-semibold);
 	}
-	.detail {
+	.ua-detail {
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
 		text-align: start;
 		overflow-wrap: anywhere;
 		min-width: 0;
 	}
-	.detail.indent {
+	.ua-detail.ua-indent {
 		padding-inline-start: calc(var(--cb-box, 1.15rem) + var(--sp-2));
 	}
-	.more {
+	.ua-more {
 		display: flex;
 		justify-content: flex-start;
 	}
-	.resolved {
+	.ua-resolved {
 		padding-top: var(--sp-1);
 	}
-	.resolved-row {
+	.ua-resolved-row {
 		flex-direction: row;
 		align-items: baseline;
 		gap: var(--sp-2);
 	}
-	.mark {
+	.ua-mark {
 		flex: none;
 		display: inline-flex;
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
 	}
-	.resolved-text {
+	.ua-resolved-text {
 		display: flex;
 		flex-wrap: wrap;
 		column-gap: var(--sp-2);
 		min-width: 0;
 	}
-	.resolved-title {
+	.ua-resolved-title {
 		text-decoration: line-through;
 	}
-	.resolved-row.dropped .resolved-title {
+	.ua-resolved-row.ua-dropped .ua-resolved-title {
 		text-decoration: none;
 		opacity: 0.7;
 	}
