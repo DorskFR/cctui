@@ -197,6 +197,7 @@
 	}
 	.ua-detail {
 		font-size: var(--fs-xs);
+		font-weight: var(--fw-normal);
 		color: var(--text-muted);
 		text-align: start;
 		overflow-wrap: anywhere;
