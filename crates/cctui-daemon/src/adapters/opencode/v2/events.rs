@@ -243,7 +243,7 @@ mod tests {
                 || kind == "session.forked"
                 || kind == "session.usage.updated"
                 || kind == "session.step.streamed"
-                || kind.ends_with(".delta");
+                || kind.strip_suffix("delta").is_some_and(|head| head.ends_with('.'));
             if ignored {
                 let evt = Event::decode(&raw).unwrap();
                 assert!(matches!(evt, Event::Other), "{kind} must be ignored");

@@ -325,14 +325,14 @@ mod tests {
         match (method, path) {
             ("POST", "/session/ses_1/abort") => Reply::json("true"),
             ("POST", "/api/session/ses_1/interrupt") => Reply::json(r#"{"interrupted":true}"#),
-            ("POST", "/api/session/ses_1/fork" | "/api/session") => Reply::json(V2_SESSION),
+            ("POST", "/api/session/ses_1/fork" | "/api/session")
+            | ("GET", "/api/session/ses_1") => Reply::json(V2_SESSION),
             ("POST", p)
                 if p.ends_with("/model") || p.ends_with("/agent") || p.ends_with("/reply") =>
             {
                 Reply::status(204)
             }
             ("POST", "/api/session/ses_1/prompt") => Reply::json(r#"{"data":{"id":"msg_1"}}"#),
-            ("GET", "/api/session/ses_1") => Reply::json(V2_SESSION),
             _ => Reply::status(404),
         }
     }

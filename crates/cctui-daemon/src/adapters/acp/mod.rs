@@ -763,8 +763,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
-        let own = [("GOOSE_PROVIDER", "anthropic")]
-            .into_iter()
+        let own = std::iter::once(("GOOSE_PROVIDER", "anthropic"))
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
         assert!(own_login_missing(&rows::GOOSE, &bound).is_none());
