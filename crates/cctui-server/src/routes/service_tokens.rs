@@ -204,8 +204,7 @@ mod tests {
             Json(MintServiceTokenRequest { label: "svc".into(), provider_id: provider }),
         )
         .await
-        .err()
-        .expect("stranger cannot mint");
+        .expect_err("stranger cannot mint");
         assert_eq!(status(err), StatusCode::NOT_FOUND);
 
         let err = super::list_service_tokens(
@@ -214,8 +213,7 @@ mod tests {
             Path(account),
         )
         .await
-        .err()
-        .expect("stranger cannot list");
+        .expect_err("stranger cannot list");
         assert_eq!(status(err), StatusCode::NOT_FOUND);
 
         let err = super::revoke_service_token(
@@ -224,8 +222,7 @@ mod tests {
             Path((account, minted.row.id)),
         )
         .await
-        .err()
-        .expect("stranger cannot revoke");
+        .expect_err("stranger cannot revoke");
         assert_eq!(status(err), StatusCode::NOT_FOUND);
         assert_eq!(
             crate::store::tokens::list_service(&state.pool, account).await.unwrap().len(),
@@ -249,8 +246,7 @@ mod tests {
             Json(MintServiceTokenRequest { label: "svc".into(), provider_id: other_provider }),
         )
         .await
-        .err()
-        .expect("a provider of another account is refused");
+        .expect_err("a provider of another account is refused");
         assert_eq!(status(err), StatusCode::NOT_FOUND);
 
         let err = super::mint_service_token(
@@ -260,8 +256,7 @@ mod tests {
             Json(MintServiceTokenRequest { label: "   ".into(), provider_id: provider }),
         )
         .await
-        .err()
-        .expect("a blank label is refused");
+        .expect_err("a blank label is refused");
         assert_eq!(status(err), StatusCode::BAD_REQUEST);
     }
 }
