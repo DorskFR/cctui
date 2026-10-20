@@ -26,6 +26,8 @@ export const qk = {
   tokens: (userId: string) => ["users", userId, "tokens"] as const,
   userAcls: (userId: string) => ["users", userId, "acls"] as const,
   userKeys: (userId: string) => ["users", userId, "keys"] as const,
+  userDispatchPolicy: (userId: string) =>
+    ["users", userId, "dispatch-policy"] as const,
   labels: ["labels"] as const,
   bookmarks: (q: string) => ["bookmarks", { q }] as const,
   accountShares: (accountId: string) => ["accounts", accountId, "shares"] as const,

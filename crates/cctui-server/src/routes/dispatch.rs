@@ -376,18 +376,31 @@ async fn dispatcher_default_binding(
 /// deterministic `ORDER BY created_at LIMIT 1` — acceptable until dispatchers
 /// are addressable by id; if two users enroll the same name, admin hits the
 /// oldest.
+///
+/// A user whose dispatch policy names `name` resolves it across owners too:
+/// that is how a service identity reaches a dispatcher another user enrolled.
 pub async fn resolve_dispatcher(
     state: &AppState,
     user_id: Option<uuid::Uuid>,
     name: &str,
 ) -> Result<Option<std::sync::Arc<dyn Dispatcher>>, DispatchError> {
+    let owner_filter = match user_id {
+        Some(uid) => {
+            let granted =
+                crate::store::dispatch_policies::grants_dispatcher(&state.pool, uid, name)
+                    .await
+                    .map_err(|e| DispatchError::Backend(format!("dispatch policy lookup: {e}")))?;
+            if granted { None } else { Some(uid) }
+        }
+        None => None,
+    };
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT id FROM dispatchers \
          WHERE ($1::uuid IS NULL OR user_id = $1) AND name = $2 \
          AND deleted_at IS NULL AND revoked_at IS NULL \
          ORDER BY created_at LIMIT 1",
     )
-    .bind(user_id)
+    .bind(owner_filter)
     .bind(name)
     .fetch_optional(&state.pool)
     .await
@@ -1062,11 +1075,16 @@ async fn forward_dispatch(
 pub async fn dispatch(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<DispatchRequest>,
+    Json(mut req): Json<DispatchRequest>,
 ) -> Result<(StatusCode, Json<DispatchResponse>), (StatusCode, Json<ApiError>)> {
+    let real_user = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id);
+    let policy = match real_user {
+        Some(uid) => crate::routes::dispatch_policy::enforce(&state, uid, &mut req).await?,
+        None => None,
+    };
     let mut v = validate_dispatch(&state, &ctx, &req).await?;
 
-    if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
+    if let Some(uid) = real_user {
         inject_worker_credential(&state, uid, &v.session_id, req.timeout, &mut v.forwarded_payload)
             .await?;
         let routing = resolve_account_routing(&state, &req, uid, &mut v.forwarded_payload).await?;
@@ -1078,7 +1096,7 @@ pub async fn dispatch(
 
     register_completion_webhook(&state, &ctx, &req, &v.session_id).await;
     persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload).await;
-    if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
+    if let Some(uid) = real_user {
         if context_record_is_callers(&state.pool, &v.session_id, uid).await {
             let scope = dispatch_context_scope(uid, &req.payload);
             crate::routes::context::remember_intent(&state.pool, &v.session_id, &[], &scope).await;
@@ -1089,7 +1107,15 @@ pub async fn dispatch(
             );
         }
     }
-    forward_dispatch(&state, &req, &v).await
+    let out = forward_dispatch(&state, &req, &v).await?;
+    if policy.is_some()
+        && let Some(uid) = real_user
+        && let Err(e) =
+            crate::store::dispatch_policies::record_use(&state.pool, uid, &v.session_id).await
+    {
+        tracing::warn!(%uid, session = %v.session_id, error = %e, "dispatch policy use not recorded");
+    }
+    Ok(out)
 }
 
 /// A dispatch may name an existing session id as its retry target, so the
@@ -1123,7 +1149,7 @@ async fn context_record_is_callers(pool: &sqlx::PgPool, session_id: &str, uid: u
 /// The harness a dispatch payload names. The daemon reads `adapter`;
 /// `adapter_id` is the older spelling and still honoured when `adapter` is
 /// absent or blank.
-fn payload_adapter(payload: &serde_json::Value) -> Option<&str> {
+pub fn payload_adapter(payload: &serde_json::Value) -> Option<&str> {
     ["adapter", "adapter_id"]
         .into_iter()
         .filter_map(|key| payload.get(key).and_then(serde_json::Value::as_str))

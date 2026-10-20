@@ -21,6 +21,7 @@
 	import AccessAccountsTab from './AccessAccountsTab.svelte';
 	import AccessKeysTab from './AccessKeysTab.svelte';
 	import AccessMachinesTab from './AccessMachinesTab.svelte';
+	import AccessPolicyTab from './AccessPolicyTab.svelte';
 	import AccessTokensTab from './AccessTokensTab.svelte';
 	import KeyScopesModal from './KeyScopesModal.svelte';
 	import { ALL_SCOPES } from './access.logic';
@@ -79,7 +80,8 @@
 		...(isAdmin
 			? [
 					{ id: 'machines', label: m.access_tab_machines({ count: machineCount }) },
-					{ id: 'tokens', label: m.access_tab_tokens({ count: tokenCount }) }
+					{ id: 'tokens', label: m.access_tab_tokens({ count: tokenCount }) },
+					{ id: 'policy', label: m.access_tab_policy() }
 				]
 			: []),
 		{ id: 'accounts', label: m.access_tab_accounts({ count: accounts.length }) }
@@ -208,6 +210,8 @@
 					canManage={isAdmin && !user.revoked_at}
 					{onsecret}
 				/>
+			{:else if id === 'policy'}
+				<AccessPolicyTab userId={user.id} userName={user.name} canManage={isAdmin && !user.revoked_at} />
 			{:else}
 				<AccessAccountsTab {accounts} loading={accountsLoading} />
 			{/if}

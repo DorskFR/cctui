@@ -5,6 +5,8 @@ import { qk } from "./keys";
 import type { CreateUserResponse } from "@bindings/CreateUserResponse";
 import type { MintTokenResponse } from "@bindings/MintTokenResponse";
 import type { MintKeyResponse } from "@bindings/MintKeyResponse";
+import type { DispatchPolicy } from "@bindings/DispatchPolicy";
+import type { DispatchPolicyRules } from "@bindings/DispatchPolicyRules";
 
 export const useUsers = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
@@ -27,6 +29,14 @@ export const useUserKeys = (userId: () => string) =>
     queryKey: qk.userKeys(userId()),
     queryFn: () => endpoints.userKeys(userId()),
     enabled: !!userId(),
+  }));
+
+/** A user's dispatch policy (admin only); `null` means unrestricted. */
+export const useUserDispatchPolicy = (userId: () => string, enabled: () => boolean) =>
+  createQuery(() => ({
+    queryKey: qk.userDispatchPolicy(userId()),
+    queryFn: () => endpoints.userDispatchPolicy(userId()),
+    enabled: enabled() && !!userId(),
   }));
 
 export const useAllMachines = (enabled: () => boolean) =>
@@ -165,6 +175,21 @@ export function useUserActions() {
     },
     revokeKey: async (userId: string, keyId: string) => {
       await api.del<void>(`/users/${userId}/keys/${keyId}`);
+      invalUser(userId);
+    },
+    setDispatchPolicy: async (
+      userId: string,
+      rules: DispatchPolicyRules,
+    ): Promise<DispatchPolicy> => {
+      const r = await api.put<DispatchPolicy>(
+        `/admin/users/${userId}/dispatch-policy`,
+        rules,
+      );
+      invalUser(userId);
+      return r;
+    },
+    clearDispatchPolicy: async (userId: string) => {
+      await api.del<void>(`/admin/users/${userId}/dispatch-policy`);
       invalUser(userId);
     },
   };

@@ -181,3 +181,61 @@ pub struct MintTokenResponse {
     pub label: Option<String>,
     pub expires_at: Option<chrono::DateTime<Utc>>,
 }
+
+/// A context pack a policy lets the user attach through `payload.env`
+/// (`CONTEXT_PACK_URL` / `CONTEXT_PACK_REF` / `CONTEXT_PACK_SUBDIR`). A pinned
+/// `git_ref` or `subdir` must match exactly; an unpinned one accepts any value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ContextPackGrant {
+    pub name: String,
+    pub url: String,
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub git_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub subdir: Option<String>,
+}
+
+/// What a policy-bound user may dispatch. Every list restricts its dimension
+/// when non-empty and leaves it open when empty; every limit applies only when
+/// set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct DispatchPolicyRules {
+    /// Dispatcher names, resolved across owners.
+    #[serde(default)]
+    pub dispatchers: Vec<String>,
+    /// Allowed `payload.profile` values; the payload must name one.
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    /// Allowed `payload.adapter` values (`claude-code` when absent).
+    #[serde(default)]
+    pub adapters: Vec<String>,
+    /// Allowed `payload.model` values; the payload must name one.
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub context_packs: Vec<ContextPackGrant>,
+    /// Ceiling on the request `timeout`; a request without one gets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub max_timeout_minutes: Option<u32>,
+    /// Live dispatched sessions allowed at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub max_concurrent: Option<u32>,
+    /// Dispatches allowed per UTC day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub daily_cap: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct DispatchPolicy {
+    pub user_id: Uuid,
+    pub updated_at: DateTime<Utc>,
+    pub rules: DispatchPolicyRules,
+}

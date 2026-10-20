@@ -11,6 +11,7 @@ import type { PluginInstanceSettingsRequest } from "@bindings/PluginInstanceSett
 import type { PluginProxySecret } from "@bindings/PluginProxySecret";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
+import type { DispatchPolicy } from "@bindings/DispatchPolicy";
 import type { MintServiceTokenRequest } from "@bindings/MintServiceTokenRequest";
 import type { MintServiceTokenResponse } from "@bindings/MintServiceTokenResponse";
 import type { ServiceTokenRow } from "@bindings/ServiceTokenRow";
@@ -487,6 +488,9 @@ export const endpoints = {
     api.get<UserAclsResponse>(`/users/${userId}/acls`),
   /** A user's api_keys with their granted scopes. Self or admin. */
   userKeys: (userId: string) => api.get<ApiKeyRow[]>(`/users/${userId}/keys`),
+  /** A user's dispatch policy, `null` when it dispatches unrestricted. Admin. */
+  userDispatchPolicy: (userId: string) =>
+    api.get<DispatchPolicy | null>(`/admin/users/${userId}/dispatch-policy`),
   /** Spawn on a machine. Always `multipart/form-data`: the JSON
    *  `SpawnRequest` rides in the `request` part and any attached files ride as
    *  file parts the daemon stages under /tmp/cctui-uploads. */

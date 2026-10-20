@@ -308,6 +308,24 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_admin_users_by_id_dispatch_policy"
+# GET /admin/users/{id}/dispatch-policy — Get, replace or remove a user's dispatch policy (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "put_admin_users_by_id_dispatch_policy"
+# PUT /admin/users/{id}/dispatch-policy — Get, replace or remove a user's dispatch policy (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "delete_admin_users_by_id_dispatch_policy"
+# DELETE /admin/users/{id}/dispatch-policy — Get, replace or remove a user's dispatch policy (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "delete_admin_machines_by_id"
 # DELETE /admin/machines/{id} — Revoke or rename a machine (admin).
 tui = "waived"

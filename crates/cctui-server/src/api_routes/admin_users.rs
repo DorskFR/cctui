@@ -65,6 +65,16 @@ pub(super) fn register(r: Routes) -> Routes {
         ScopeAz(auth::Scope::Admin),
     )
     .add(
+        &[GET, Method::PUT, Method::DELETE],
+        "/admin/users/{id}/dispatch-policy",
+        "Get, replace or remove a user's dispatch policy (admin).",
+        get(routes::dispatch_policy::get_policy)
+            .put(routes::dispatch_policy::set_policy)
+            .delete(routes::dispatch_policy::delete_policy),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
         &[Method::DELETE, Method::PATCH],
         "/admin/machines/{id}",
         "Revoke or rename a machine (admin).",
