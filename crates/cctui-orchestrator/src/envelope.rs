@@ -13,9 +13,11 @@ use crate::{
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE,
 };
 use k8s_openapi::api::core::v1::{
-    AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapVolumeSource, Container,
-    EmptyDirVolumeSource, EnvFromSource, EnvVar, HTTPGetAction, Pod, PodSecurityContext, Probe,
-    ResourceRequirements, SecurityContext, Volume, VolumeMount,
+    AppArmorProfile, Capabilities, ConfigMapEnvSource, ConfigMapProjection, ConfigMapVolumeSource,
+    Container, DownwardAPIProjection, DownwardAPIVolumeFile, EmptyDirVolumeSource, EnvFromSource,
+    EnvVar, HTTPGetAction, KeyToPath, ObjectFieldSelector, Pod, PodSecurityContext, Probe,
+    ProjectedVolumeSource, ResourceRequirements, SecurityContext, ServiceAccountTokenProjection,
+    Volume, VolumeMount, VolumeProjection,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
@@ -32,7 +34,15 @@ pub const VOL_GUARD_STATE: &str = "guard-state";
 pub const VOL_PROXY_POLICY: &str = "proxy-policy";
 pub const VOL_GUARD_PROXY_INJECT: &str = "guard-proxy-inject";
 pub const VOL_GUARD_PROXY_CA: &str = "guard-proxy-ca";
+pub const VOL_GUARD_PROXY_SA_TOKEN: &str = "guard-proxy-sa-token";
 pub const VOL_GPG_AGENT: &str = "gpg-agent";
+
+/// Where the kubelet would mount the pod's service-account token. Pods set
+/// `automountServiceAccountToken: false`; only the guard-proxy (Vault
+/// Kubernetes login, `k8s:` secret refs) gets an equivalent projection.
+const SA_TOKEN_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
+const SA_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
+const CONFIGMAP_KUBE_ROOT_CA: &str = "kube-root-ca.crt";
 
 /// Volume names the envelope mounts into the worker container, always. Mirrors
 /// [`sandbox_worker`]; [`VOL_GPG_AGENT`] is added on top only under `gpgSigning`.
@@ -241,6 +251,7 @@ fn guard_proxy_container(cfg: &EnvelopeConfig) -> Container {
         mount(VOL_PROXY_POLICY, "/var/run/guard-proxy", false),
         mount(VOL_GUARD_PROXY_INJECT, "/etc/guard-proxy", true),
         mount(VOL_GUARD_PROXY_CA, "/var/run/guard-proxy-ca", false),
+        mount(VOL_GUARD_PROXY_SA_TOKEN, SA_TOKEN_DIR, true),
     ];
     if cfg.gpg {
         mounts.push(mount(VOL_GPG_AGENT, "/var/run/gpg-agent", false));
@@ -308,11 +319,57 @@ fn envelope_volumes(cfg: &EnvelopeConfig) -> Vec<Volume> {
             ..Volume::default()
         },
         empty_dir(VOL_GUARD_PROXY_CA),
+        sa_token_volume(),
     ];
     if cfg.gpg {
         volumes.push(empty_dir(VOL_GPG_AGENT));
     }
     volumes
+}
+
+/// The same projection the kubelet automounts: token, cluster CA, namespace.
+fn sa_token_volume() -> Volume {
+    let sources = vec![
+        VolumeProjection {
+            service_account_token: Some(ServiceAccountTokenProjection {
+                path: "token".to_owned(),
+                expiration_seconds: Some(SA_TOKEN_EXPIRATION_SECONDS),
+                audience: None,
+            }),
+            ..VolumeProjection::default()
+        },
+        VolumeProjection {
+            config_map: Some(ConfigMapProjection {
+                name: CONFIGMAP_KUBE_ROOT_CA.to_owned(),
+                items: Some(vec![KeyToPath {
+                    key: "ca.crt".to_owned(),
+                    path: "ca.crt".to_owned(),
+                    mode: None,
+                }]),
+                optional: None,
+            }),
+            ..VolumeProjection::default()
+        },
+        VolumeProjection {
+            downward_api: Some(DownwardAPIProjection {
+                items: Some(vec![DownwardAPIVolumeFile {
+                    path: "namespace".to_owned(),
+                    field_ref: Some(ObjectFieldSelector {
+                        field_path: "metadata.namespace".to_owned(),
+                        api_version: None,
+                    }),
+                    mode: None,
+                    resource_field_ref: None,
+                }]),
+            }),
+            ..VolumeProjection::default()
+        },
+    ];
+    Volume {
+        name: VOL_GUARD_PROXY_SA_TOKEN.to_owned(),
+        projected: Some(ProjectedVolumeSource { sources: Some(sources), default_mode: None }),
+        ..Volume::default()
+    }
 }
 
 fn empty_dir(name: &str) -> Volume {
@@ -440,6 +497,7 @@ mod tests {
             "proxy-policy",
             "guard-proxy-inject",
             "guard-proxy-ca",
+            "guard-proxy-sa-token",
         ] {
             assert!(vols.contains(&want), "missing volume {want}");
         }
@@ -467,6 +525,45 @@ mod tests {
             "guard-proxy-env"
         );
         assert!(gp.env.is_none(), "no identity annotation -> ConfigMap default only");
+    }
+
+    #[test]
+    fn only_the_guard_proxy_mounts_the_service_account_token() {
+        let out = apply(&lean_pod());
+        let spec = out.spec.as_ref().unwrap();
+
+        let vol = spec.volumes.as_ref().unwrap().iter().find(|v| v.name == "guard-proxy-sa-token");
+        let sources = vol.unwrap().projected.as_ref().unwrap().sources.as_ref().unwrap();
+        let token = sources.iter().find_map(|s| s.service_account_token.as_ref()).unwrap();
+        assert_eq!(token.path, "token");
+        assert_eq!(token.expiration_seconds, Some(3600));
+        assert!(token.audience.is_none(), "default audience: same token the kubelet mounts");
+        let ca = sources.iter().find_map(|s| s.config_map.as_ref()).unwrap();
+        assert_eq!(ca.name, "kube-root-ca.crt");
+        let ns = sources.iter().find_map(|s| s.downward_api.as_ref()).unwrap();
+        assert_eq!(
+            ns.items.as_ref().unwrap()[0].field_ref.as_ref().unwrap().field_path,
+            "metadata.namespace"
+        );
+
+        let gp = &spec.init_containers.as_ref().unwrap()[1];
+        let m = gp
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|m| m.name == "guard-proxy-sa-token")
+            .expect("guard-proxy mounts the token");
+        assert_eq!(m.mount_path, "/var/run/secrets/kubernetes.io/serviceaccount");
+        assert_eq!(m.read_only, Some(true));
+
+        let w = worker(&out, "worker");
+        assert!(
+            !w.volume_mounts.as_ref().unwrap().iter().any(|m| m.name == "guard-proxy-sa-token"),
+            "the agent container must not see the service-account token"
+        );
+        let ni = &spec.init_containers.as_ref().unwrap()[0];
+        assert!(ni.volume_mounts.is_none());
     }
 
     #[test]
