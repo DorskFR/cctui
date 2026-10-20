@@ -22,8 +22,9 @@
 	$effect(() =>
 		ws.onEvent((ev) => {
 			if (sessionIdOf(ev) !== sessionId) return;
-			qc.setQueryData<EventPage>(qk.sessionEvents(sessionId), (old) =>
-				old ? { ...old, events: mergeLive(old.events, ev) } : { events: [ev], has_more: false }
+			qc.setQueryData<EventPage>(
+				qk.sessionEvents(sessionId),
+				(old) => old && { ...old, events: mergeLive(old.events, ev) }
 			);
 		})
 	);

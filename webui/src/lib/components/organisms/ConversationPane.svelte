@@ -3,7 +3,15 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws } from '$lib/ws.svelte';
-	import { endpoints, useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
+	import {
+		endpoints,
+		useConversation,
+		useSessionActions,
+		useLabels,
+		useMachines,
+		useMe,
+		qk
+	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import { clearSessionRoom, setSessionRoom, setSessionRoomByName } from '$lib/rooms';
@@ -48,6 +56,7 @@
 	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
 	import { livenessClass } from './conversation/liveness';
+	import { ownsSession } from './conversation/ownership';
 	import { notify } from '$lib/notify.svelte';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
@@ -90,6 +99,12 @@
 
 	const id = $derived(session.id);
 	const archived = $derived(session.status === 'archived');
+	const me = useMe();
+	const myMachines = useMachines(
+		() => me.data?.user_id ?? '',
+		() => me.data?.role === 'admin' && !!me.data?.user_id
+	);
+	const owned = $derived(ownsSession(me.data, myMachines.data, session.machine_id));
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
@@ -432,7 +447,7 @@
 					onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}
 					onunpin={pins.unpinSeq}
 					sessionId={session.id}
-					contextAttachable={!archived}
+					contextAttachable={!archived && owned}
 				/>
 			{/if}
 

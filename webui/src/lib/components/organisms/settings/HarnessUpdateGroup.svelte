@@ -161,9 +161,11 @@
 										: m.settings_codex_sandbox_unknown()}
 								</Badge>
 								<Text size="xs" tone="faint" variant="code">{sandbox.detail}</Text>
-								<a href={CODEX_SANDBOX_DOCS} target="_blank" rel="noreferrer noopener">
-									<Text size="xs">{m.settings_codex_sandbox_help()}</Text>
-								</a>
+								{#if sandbox.state === 'userns_denied'}
+									<a href={CODEX_SANDBOX_DOCS} target="_blank" rel="noreferrer noopener">
+										<Text size="xs">{m.settings_codex_sandbox_help()}</Text>
+									</a>
+								{/if}
 							{/if}
 							{#each row.report.outcomes as o (o.harness)}
 								<Text size="xs" tone={o.outcome.startsWith('failed') ? 'danger' : 'faint'}>
