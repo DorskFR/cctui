@@ -15,6 +15,7 @@ mod config;
 mod cost;
 mod crypto;
 mod db;
+mod dispatch_liveness;
 mod dispatchers;
 mod envelope_guard;
 mod error;
@@ -853,6 +854,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
         machine_liveness::sweep_dispatchers(&state).await;
     });
     spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
+    spawn_sweep(state, |state| async move { dispatch_liveness::sweep(&state).await });
     spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_spawns::sweep(&state).await });

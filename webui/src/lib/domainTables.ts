@@ -18,6 +18,7 @@ export const END_REASONS: EndReasonInfo[] = [
 	{ reason: 'completed', tone: 'ok', muted: false, failed_start: false },
 	{ reason: 'killed', tone: 'neutral', muted: false, failed_start: false },
 	{ reason: 'crashed', tone: 'danger', muted: false, failed_start: false },
+	{ reason: 'oom_killed', tone: 'danger', muted: false, failed_start: false },
 	{ reason: 'daemon_lost', tone: 'warn', muted: false, failed_start: false },
 	{ reason: 'machine_offline', tone: 'warn', muted: false, failed_start: false },
 	{ reason: 'reaped_inactive', tone: 'neutral', muted: true, failed_start: false },

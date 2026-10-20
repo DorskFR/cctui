@@ -19,6 +19,12 @@
       "failed_start": false
     },
     {
+      "reason": "oom_killed",
+      "tone": "danger",
+      "muted": false,
+      "failed_start": false
+    },
+    {
       "reason": "daemon_lost",
       "tone": "warn",
       "muted": false,

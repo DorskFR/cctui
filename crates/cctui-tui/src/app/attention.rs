@@ -414,6 +414,7 @@ pub const fn end_reason_label(reason: SessionEndReason) -> &'static str {
         SessionEndReason::Completed => "completed",
         SessionEndReason::Killed => "killed",
         SessionEndReason::Crashed => "crashed",
+        SessionEndReason::OomKilled => "out of memory",
         SessionEndReason::DaemonLost => "daemon lost",
         SessionEndReason::MachineOffline => "machine offline",
         SessionEndReason::ReapedInactive => "reaped",

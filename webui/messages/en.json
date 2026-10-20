@@ -1235,6 +1235,7 @@
 	"sessions_end_killed": "killed",
 	"sessions_end_machine_offline": "machine offline",
 	"sessions_end_open": "Open session",
+	"sessions_end_oom_killed": "out of memory",
 	"sessions_end_other": "ended",
 	"sessions_end_reaped_inactive": "reaped",
 	"sessions_end_resume_failed": "resume failed",

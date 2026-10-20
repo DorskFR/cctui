@@ -1084,7 +1084,7 @@ impl Spawner {
                     if let Some(t) = &st.terminated
                         && t.reason.as_deref() == Some("OOMKilled")
                     {
-                        return Some("OOMKilled".to_owned());
+                        return Some(oom_reason(memory_limit(&pod, &cs.name)));
                     }
                     None
                 });
@@ -1113,6 +1113,27 @@ impl Spawner {
         let name = handle.strip_prefix("jobs/").unwrap_or(handle);
         self.delete_and_wait(name).await
     }
+}
+
+/// The `limits.memory` of the named container (init or main), if declared.
+fn memory_limit(pod: &Pod, container: &str) -> Option<String> {
+    let spec = pod.spec.as_ref()?;
+    spec.init_containers
+        .iter()
+        .flatten()
+        .chain(spec.containers.iter())
+        .find(|c| c.name == container)?
+        .resources
+        .as_ref()?
+        .limits
+        .as_ref()?
+        .get("memory")
+        .map(|q| q.0.clone())
+}
+
+/// `OOMKilled`, naming the limit the container ran into when it is known.
+fn oom_reason(limit: Option<String>) -> String {
+    limit.map_or_else(|| "OOMKilled".to_owned(), |l| format!("OOMKilled (memory limit {l})"))
 }
 
 impl Dispatcher for Spawner {
@@ -2025,5 +2046,24 @@ mod tests {
         let rebuilt =
             serde_json::to_value(Spawner::rebuild_job(&job, &lean_profile()).unwrap()).unwrap();
         assert!(worker_env(&rebuilt).iter().all(|e| e["name"] != "STOLEN"));
+    }
+
+    #[test]
+    fn oom_reason_names_the_containers_memory_limit() {
+        let pod: Pod = serde_json::from_value(json!({
+            "spec": {
+                "initContainers": [{ "name": "prep" }],
+                "containers": [{
+                    "name": "worker",
+                    "resources": { "limits": { "memory": "8Gi", "cpu": "2" } }
+                }]
+            }
+        }))
+        .unwrap();
+        assert_eq!(memory_limit(&pod, "worker").as_deref(), Some("8Gi"));
+        assert_eq!(memory_limit(&pod, "prep"), None);
+        assert_eq!(memory_limit(&pod, "nope"), None);
+        assert_eq!(oom_reason(Some("8Gi".into())), "OOMKilled (memory limit 8Gi)");
+        assert_eq!(oom_reason(None), "OOMKilled");
     }
 }
