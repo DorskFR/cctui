@@ -486,12 +486,13 @@ impl Pump {
         &self,
         local_id: &str,
     ) -> anyhow::Result<crate::adapters::gateway_env::LaunchEnv> {
+        let hint = std::collections::BTreeMap::new();
         let pull = crate::adapters::gateway_env::resolve_launch(
             self.row.id,
             self.server.as_ref(),
             self.machine_key.as_ref(),
             local_id,
-            &std::collections::BTreeMap::new(),
+            &hint,
             &[],
         );
         tokio::time::timeout(RESTORE_LAUNCH_TIMEOUT, pull).await.unwrap_or_else(|_| {

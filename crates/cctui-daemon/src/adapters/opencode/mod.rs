@@ -484,7 +484,8 @@ async fn resolve_restore(
         .find(|(_, r)| r.parent_local_id.is_none())
         .or_else(|| sessions.first())
         .map_or(key, |(id, _)| id.as_str());
-    let pull = resolve_launch(server, machine_key, lookup, &std::collections::BTreeMap::new());
+    let hint = std::collections::BTreeMap::new();
+    let pull = resolve_launch(server, machine_key, lookup, &hint);
     let launch = tokio::time::timeout(RESTORE_LAUNCH_TIMEOUT, pull).await.unwrap_or_else(|_| {
         tracing::warn!(%key, session_id = lookup, "opencode: launch env pull timed out");
         Ok(crate::adapters::gateway_env::LaunchEnv::default())
