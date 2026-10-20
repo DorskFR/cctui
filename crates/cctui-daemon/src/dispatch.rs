@@ -296,7 +296,7 @@ impl Reducer {
             AdapterEvent::Status { tempo: Some(tempo), detail, .. } => match tempo.as_str() {
                 "idle" => self.stop_reason = Some(stop_reason_of(detail.as_deref())),
                 "error" => {
-                    self.error = Some(detail.clone().unwrap_or_else(|| "turn failed".to_owned()))
+                    self.error = Some(detail.clone().unwrap_or_else(|| "turn failed".to_owned()));
                 }
                 _ => {}
             },

@@ -1,5 +1,5 @@
 //! Ends a dispatched session whose dispatcher reports its workload dead
-//! (OOMKilled, crash loop, un-pullable image, stuck `Pending`): a worker killed
+//! (`OOMKilled`, crash loop, un-pullable image, stuck `Pending`): a worker killed
 //! by the kernel never reaches its exit trap, so nothing else reports it.
 
 use cctui_proto::models::SessionEndReason;
@@ -186,11 +186,12 @@ mod tests {
 
     async fn seed_dispatcher(pool: &sqlx::PgPool, uid: Uuid, name: &str) -> Uuid {
         sqlx::query_scalar(
-            "INSERT INTO dispatchers (user_id, name, kind, config) \
-             VALUES ($1, $2, 'kubernetes', '{}'::jsonb) RETURNING id",
+            "INSERT INTO dispatchers (user_id, name, kind, key_hash, key_preview) \
+             VALUES ($1, $2, 'kubernetes', $3, 'dl-test') RETURNING id",
         )
         .bind(uid)
         .bind(name)
+        .bind(format!("dk-{uid}-{name}"))
         .fetch_one(pool)
         .await
         .unwrap()

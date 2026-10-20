@@ -473,8 +473,9 @@ mod tests {
         .execute(&pool)
         .await;
         assert!(
-            second_google
-                .is_err_and(|e| e.as_database_error().is_some_and(|d| d.is_unique_violation())),
+            second_google.is_err_and(|e| e
+                .as_database_error()
+                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)),
             "two google keys on one account must violate the family index"
         );
 

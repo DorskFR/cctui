@@ -48,10 +48,11 @@ pub const GOOSE_GATEWAY: GatewayAliases = GatewayAliases {
     fixed: &[("GOOSE_PROVIDER", "openai"), ("OPENAI_BASE_PATH", "chat/completions")],
 };
 
-/// gemini-cli reads the family's keys as minted: `GOOGLE_GEMINI_BASE_URL` in
-/// the env is what selects its `gateway` auth type, and `GEMINI_API_KEY` is the
-/// key that type sends as `x-goog-api-key` (gemini-cli 0.64,
-/// `packages/core/src/core/contentGenerator.ts`).
+/// gemini-cli reads the family's keys as minted.
+///
+/// `GOOGLE_GEMINI_BASE_URL` in the env is what selects its `gateway` auth
+/// type, and `GEMINI_API_KEY` is the key that type sends as `x-goog-api-key`
+/// (gemini-cli 0.64, `packages/core/src/core/contentGenerator.ts`).
 pub const GEMINI_GATEWAY: GatewayAliases =
     GatewayAliases { agent: "gemini", required: GOOGLE_GATEWAY_KEYS, aliases: &[], fixed: &[] };
 

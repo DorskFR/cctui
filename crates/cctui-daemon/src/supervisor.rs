@@ -139,10 +139,9 @@ async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-type WsSink = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Message,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsSink = futures_util::stream::SplitSink<WsStream, Message>;
 
 /// Micro-batch buffer: adapter events accumulate here for up to
 /// `BATCH_WINDOW`, then flush as one compress+chunk frame.
@@ -363,20 +362,7 @@ impl Supervisor {
         event_tx: &mpsc::Sender<(String, AdapterEvent)>,
         event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     ) -> anyhow::Result<()> {
-        let url = self.client.daemon_ws_url();
-        tracing::info!(%url, "connecting to daemon WS");
-        let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
-        let (ws, _) =
-            match tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request))
-                .await
-            {
-                Ok(res) => res?,
-                Err(_) => anyhow::bail!(
-                    "daemon WS connect did not complete within {}s",
-                    CONNECT_TIMEOUT.as_secs()
-                ),
-            };
-        let (mut sink, mut stream) = ws.split();
+        let (mut sink, mut stream) = self.connect().await?.split();
 
         // Out-of-band frames the supervisor itself produces (currently the
         // `StageFilesResult` reply to a mid-chat attachment request),
@@ -498,6 +484,20 @@ impl Supervisor {
         crate::preview::set_uplink(None);
         self.park_transfer(active);
         outcome
+    }
+
+    async fn connect(&self) -> anyhow::Result<WsStream> {
+        let url = self.client.daemon_ws_url();
+        tracing::info!(%url, "connecting to daemon WS");
+        let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
+        let connect = tokio_tungstenite::connect_async(request);
+        match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+            Ok(res) => Ok(res?.0),
+            Err(_) => anyhow::bail!(
+                "daemon WS connect did not complete within {}s",
+                CONNECT_TIMEOUT.as_secs()
+            ),
+        }
     }
 
     /// The connection is healthy: remember it for the reconnect schedule and
@@ -3194,9 +3194,9 @@ mod tests {
             assert_eq!(paths.len(), 1, "{adapter}");
             let _ = std::fs::remove_dir_all(crate::adapters::uploads::session_dir(&local_id));
         }
-        let up = super::stage_files_result(uuid::Uuid::new_v4(), "gemini", "test-x", &[file]);
+        let up = super::stage_files_result(uuid::Uuid::new_v4(), "kilo", "test-x", &[file]);
         let DaemonFrameUp::StageFilesResult { ok, .. } = up else { panic!() };
-        assert!(!ok);
+        assert!(!ok, "an adapter outside the harness table stages nothing");
     }
 
     #[tokio::test]

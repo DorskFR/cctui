@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 32;
+const VARIANT_COUNT: usize = 33;
 
 fn uuid() -> Uuid {
     Uuid::nil()

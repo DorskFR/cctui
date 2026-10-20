@@ -257,14 +257,24 @@ mod tests {
                 || kind == "session.created"
                 || kind == "session.forked"
                 || kind == "session.usage.updated"
-                || kind == "session.step.streamed"
-                || kind.strip_suffix("delta").is_some_and(|head| head.ends_with('.'));
+                || kind == "session.step.streamed";
             if ignored {
                 let evt = Event::decode(&raw).unwrap();
                 assert!(matches!(evt, Event::Other), "{kind} must be ignored");
                 assert_eq!(evt.session_id(), None);
             }
         }
+    }
+
+    #[test]
+    fn a_text_delta_carries_its_session_message_and_text() {
+        let raw = frames().into_iter().find(|f| f.contains("\"session.text.delta\"")).unwrap();
+        let evt = Event::decode(&raw).unwrap();
+        assert_eq!(evt.session_id(), Some("ses_ecd86c6adffeSeDX15STTLCF8s"));
+        let Event::TextDelta(delta) = evt else { panic!("{raw}") };
+        assert_eq!(delta.message_id, "msg_132796bc1001lR434V766SMvS9");
+        assert_eq!(delta.ordinal, 0);
+        assert_eq!(delta.delta, "All done.");
     }
 
     #[test]
