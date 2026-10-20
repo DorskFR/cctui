@@ -4,6 +4,7 @@ use super::GET;
 use crate::authz::Authz::Human;
 use crate::authz::{Authn, Routes};
 use crate::routes;
+use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
 use axum::routing::{get, post};
 
@@ -20,7 +21,8 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::POST],
         "/voice/transcribe",
         "Transcribe a multipart `file` audio part (size-capped) to text.",
-        post(routes::voice::transcribe),
+        post(routes::voice::transcribe)
+            .layer(DefaultBodyLimit::max(routes::voice::TRANSCRIBE_BODY_LIMIT)),
         Authn::Bearer,
         Human,
     )

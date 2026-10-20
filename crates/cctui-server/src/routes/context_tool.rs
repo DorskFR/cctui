@@ -68,16 +68,19 @@ pub fn append_paragraph(existing: &str, text: &str, date: &str) -> String {
     if existing.trim().is_empty() { para } else { format!("{}\n\n{para}", existing.trim_end()) }
 }
 
-/// The spec an edit produces: the pending proposal if there is one, else the
-/// live spec, with the call's title, body and filter applied.
+/// The spec an edit produces, with the call's title, body and filter applied.
+/// A save headed for approval stacks on the pending proposal if there is one;
+/// a direct save builds on the live spec, so nothing unapproved rides along
+/// into the live body.
 #[must_use]
 pub fn edited_spec(
     existing: &ContextItem,
     mode: &str,
     req: &ContextToolRequest,
     date: &str,
+    on_pending: bool,
 ) -> ContextItemSpec {
-    let base = existing.pending.clone().unwrap_or_else(|| spec_of(existing));
+    let base = existing.pending.clone().filter(|_| on_pending).unwrap_or_else(|| spec_of(existing));
     let text = req.body.clone().unwrap_or_default();
     let body = if mode == "append" { append_paragraph(&base.body, &text, date) } else { text };
     let title = req.title.clone().filter(|t| !t.trim().is_empty());
@@ -256,7 +259,7 @@ async fn save(
             ));
         }
         (mode, Some(existing)) => {
-            let next = clean_spec(edited_spec(existing, mode, req, &date))?;
+            let next = clean_spec(edited_spec(existing, mode, req, &date, needs_approval))?;
             let saved = if needs_approval {
                 propose(&state.pool, owner, existing.id, &next, session_id).await
             } else {
@@ -342,7 +345,8 @@ mod tests {
 
     #[test]
     fn append_adds_a_dated_paragraph_and_never_overwrites() {
-        let next = edited_spec(&memory("first fact\n"), "append", &call("append", "second"), "D");
+        let next =
+            edited_spec(&memory("first fact\n"), "append", &call("append", "second"), "D", false);
         assert_eq!(next.body, "first fact\n\nD: second");
         assert_eq!(next.title, "Notes", "no title in the call keeps the item's");
         assert_eq!(next.match_.paths, ["/w"], "no match in the call keeps the item's");
@@ -354,7 +358,7 @@ mod tests {
         let mut req = call("replace", "new body");
         req.match_ = Some(ContextMatch::default());
         req.title = Some("Renamed".into());
-        let next = edited_spec(&memory("old"), "replace", &req, "D");
+        let next = edited_spec(&memory("old"), "replace", &req, "D", false);
         assert_eq!(next.body, "new body");
         assert_eq!(next.title, "Renamed");
         assert!(next.match_.is_empty());
@@ -364,11 +368,33 @@ mod tests {
     /// Successive edits to an unapproved rule stack on the proposal, not on
     /// the live body the owner has not seen change.
     #[test]
-    fn an_edit_builds_on_the_pending_proposal_when_there_is_one() {
+    fn an_approval_bound_edit_builds_on_the_pending_proposal_when_there_is_one() {
         let mut item = memory("live");
         item.pending = Some(ContextItemSpec { body: "proposed".into(), ..spec_of(&item) });
-        let next = edited_spec(&item, "append", &call("append", "more"), "D");
+        let next = edited_spec(&item, "append", &call("append", "more"), "D", true);
         assert_eq!(next.body, "proposed\n\nD: more");
+    }
+
+    /// A trusted save goes live through `update`, so it must not carry a
+    /// worker's unapproved proposal with it: it builds on the live spec and
+    /// leaves the proposal waiting for its approval.
+    #[test]
+    fn a_direct_edit_builds_on_the_live_spec_not_the_pending_proposal() {
+        let mut item = memory("live");
+        item.enabled = false;
+        item.pending = Some(ContextItemSpec {
+            body: "injected".into(),
+            enabled: true,
+            title: "Hostile".into(),
+            ..spec_of(&item)
+        });
+        let next = edited_spec(&item, "append", &call("append", "note"), "D", false);
+        assert_eq!(next.body, "live\n\nD: note");
+        assert_eq!(next.title, "Notes");
+        assert!(!next.enabled, "the proposal's enabled flag does not leak either");
+        let next = edited_spec(&item, "replace", &call("replace", "fresh"), "D", false);
+        assert_eq!(next.body, "fresh");
+        assert_eq!(next.title, "Notes");
     }
 
     #[test]
@@ -389,7 +415,7 @@ mod tests {
     fn an_oversize_rule_fails_with_the_human_apis_message() {
         let mut item = memory("");
         item.kind = "rule".into();
-        let next = edited_spec(&item, "replace", &call("replace", &"x".repeat(5000)), "D");
+        let next = edited_spec(&item, "replace", &call("replace", &"x".repeat(5000)), "D", true);
         let err = clean_spec(next).expect_err("over the rule cap");
         assert!(format!("{err:?}").contains("4KiB"), "{err:?}");
     }

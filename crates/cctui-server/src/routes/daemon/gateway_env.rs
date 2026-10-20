@@ -89,7 +89,8 @@ pub async fn session_gateway_env(
             whip_phrases,
             spawn_capability: spawn_capability_for(&state, &session_id).await,
             plugins,
-            context: session_context(&state, &session_id, query.rules).await,
+            context: launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules)
+                .await?,
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -145,7 +146,8 @@ pub async fn session_gateway_env(
         whip_phrases,
         spawn_capability: spawn_capability_for(&state, &session_id).await,
         plugins,
-        context: session_context(&state, &session_id, query.rules).await,
+        context: launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules)
+            .await?,
     }))
 }
 
@@ -166,14 +168,25 @@ pub async fn session_launch_context(
     let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
     };
-    let allowed =
-        context_allowed(&state.pool, ctx.user_id, machine_id, &session_id).await.map_err(|e| {
-            tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
     let context =
-        if allowed { session_context(&state, &session_id, query.rules).await } else { Vec::new() };
+        launch_context(&state.pool, ctx.user_id, machine_id, &session_id, query.rules).await?;
     Ok(Json(cctui_proto::api::LaunchContextResponse { context }))
+}
+
+/// [`session_context`] gated by [`context_allowed`]: both launch pulls serve
+/// the context only when the key is the caller's.
+async fn launch_context(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    machine_id: Uuid,
+    session_id: &str,
+    rules: bool,
+) -> Result<Vec<cctui_proto::api::SessionContextItem>, StatusCode> {
+    let allowed = context_allowed(pool, user_id, machine_id, session_id).await.map_err(|e| {
+        tracing::error!(%session_id, "daemon context ownership lookup failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(if allowed { session_context(pool, session_id, rules).await } else { Vec::new() })
 }
 
 /// A key with no session row is readable only when the set recorded under it
@@ -208,11 +221,11 @@ async fn context_allowed(
 /// notes and prompt template the spawn froze. Read through the spawn key the
 /// adapters echo.
 async fn session_context(
-    state: &AppState,
+    pool: &sqlx::PgPool,
     session_id: &str,
     rules: bool,
 ) -> Vec<cctui_proto::api::SessionContextItem> {
-    crate::routes::context::for_launch(&state.pool, session_id, rules)
+    crate::routes::context::for_launch(pool, session_id, rules)
         .await
         .into_iter()
         .map(|i| cctui_proto::api::SessionContextItem {
@@ -597,6 +610,61 @@ mod tests {
             .await
             .ok();
         drop_machines(&pool, &[owned], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    /// The gateway-env pull serves the same context as the context pull, so it
+    /// is gated the same way: a launch key recorded for another user yields no
+    /// rule or memory bodies, even though the key itself has no session row.
+    #[tokio::test]
+    async fn gateway_env_context_is_withheld_from_another_users_launch_key() {
+        use crate::routes::context::{ContextItemSpec, clean_spec, insert};
+
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_context_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "genv-ctx-owner").await;
+        let (ub, mb) = seed_machine(&pool, "genv-ctx-intruder").await;
+        let memory = clean_spec(ContextItemSpec {
+            kind: "memory".into(),
+            name: "deploy".into(),
+            title: "Deploy".into(),
+            body: "private runbook".into(),
+            enabled: true,
+            ..ContextItemSpec::default()
+        })
+        .expect("valid memory");
+        let item = insert(&pool, ua, &memory, None, None).await.expect("memory");
+        let key = format!("cmd-{}", Uuid::new_v4());
+        let scope = crate::routes::context::StoredScope {
+            user_id: ua,
+            coords: crate::routes::context::SpawnScope::default(),
+            dispatched: false,
+        };
+        crate::routes::context::remember_intent(&pool, &key, std::slice::from_ref(&item), &scope)
+            .await;
+
+        let mine = super::launch_context(&pool, ua, ma, &key, true).await.expect("lookup");
+        assert_eq!(mine.len(), 1);
+        assert_eq!((mine[0].name.as_str(), mine[0].body.as_str()), ("deploy", "private runbook"));
+        let theirs = super::launch_context(&pool, ub, mb, &key, true).await.expect("lookup");
+        assert!(theirs.is_empty(), "another user's machine key reads no context: {theirs:?}");
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM context_items WHERE id = $1")
+            .bind(item.id)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[], &[(ua, ma), (ub, mb)]).await;
     }
 
     #[test]

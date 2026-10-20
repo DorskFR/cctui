@@ -660,12 +660,21 @@ async fn default_capability_for(
 ) -> cctui_proto::api::SpawnCapability {
     let cap = crate::routes::server_settings::spawn_default_capability(state).await;
     match crate::routes::daemon::enabled_adapter_ids(state, machine_uuid).await {
-        Ok(ids) => cap.with_adapters(ids),
+        Ok(ids) => cap.with_adapters(spawnable_adapters(ids)),
         Err(e) => {
             tracing::warn!(%machine_uuid, error = %e, "enabled adapters unknown; granting the defaults");
             cap
         }
     }
+}
+
+/// Only the adapters the server can launch: an enabled ACP agent is not a
+/// family `spawn_child` knows, so advertising it promises a child that always
+/// fails with "unknown harness".
+fn spawnable_adapters(ids: Vec<String>) -> Vec<String> {
+    ids.into_iter()
+        .filter(|id| crate::routes::gateway::Family::try_from_adapter(id).is_some())
+        .collect()
 }
 
 /// Keyed by the id the worker will register as, and stored before dispatch so
@@ -1422,6 +1431,17 @@ pub async fn get_machine_commands(
 mod tests {
     use axum::http::StatusCode;
     use base64::Engine;
+
+    /// An enabled ACP agent is not a family the server can launch, so the
+    /// default capability must not advertise it to `CctuiAgent`.
+    #[test]
+    fn the_default_capability_advertises_only_spawnable_adapters() {
+        let ids = ["claude-code", "gemini", "codex", "opencode", "custom-acp"]
+            .map(str::to_owned)
+            .to_vec();
+        assert_eq!(super::spawnable_adapters(ids), ["claude-code", "codex", "opencode"]);
+        assert!(super::spawnable_adapters(Vec::new()).is_empty());
+    }
 
     #[tokio::test]
     async fn only_the_owner_drains_a_machine_queue() {

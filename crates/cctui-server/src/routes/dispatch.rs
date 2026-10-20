@@ -1083,10 +1083,42 @@ pub async fn dispatch(
     register_completion_webhook(&state, &ctx, &req, &v.session_id).await;
     persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload).await;
     if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
-        let scope = dispatch_context_scope(uid, &req.payload);
-        crate::routes::context::remember_intent(&state.pool, &v.session_id, &[], &scope).await;
+        if context_record_is_callers(&state.pool, &v.session_id, uid).await {
+            let scope = dispatch_context_scope(uid, &req.payload);
+            crate::routes::context::remember_intent(&state.pool, &v.session_id, &[], &scope).await;
+        } else {
+            tracing::warn!(
+                session = %v.session_id,
+                "dispatch names another user's session; its context set is left alone"
+            );
+        }
     }
     forward_dispatch(&state, &req, &v).await
+}
+
+/// A dispatch may name an existing session id as its retry target, so the
+/// context set it records must not overwrite one that belongs to someone else:
+/// neither a set already keyed by that id, nor a registered session, may be
+/// another user's. A lookup failure keeps the set untouched.
+async fn context_record_is_callers(pool: &sqlx::PgPool, session_id: &str, uid: uuid::Uuid) -> bool {
+    let foreign: Result<bool, sqlx::Error> = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM session_context \
+                        WHERE spawn_key = $1 AND scope->>'user_id' <> $2) \
+            OR EXISTS (SELECT 1 FROM sessions \
+                        WHERE id = $1 AND user_id IS NOT NULL AND user_id <> $3)",
+    )
+    .bind(session_id)
+    .bind(uid.to_string())
+    .bind(uid)
+    .fetch_one(pool)
+    .await;
+    match foreign {
+        Ok(foreign) => !foreign,
+        Err(e) => {
+            tracing::warn!(%session_id, error = %e, "context ownership lookup failed");
+            false
+        }
+    }
 }
 
 /// The coordinates a dispatched worker's rules resolve against. No human
@@ -1119,12 +1151,76 @@ fn dispatch_context_scope(
 #[cfg(test)]
 mod tests {
     use super::{
-        DefaultBinding, binding_family, colliding_family, default_binding, dispatch_ceiling,
-        dispatch_context_scope, resolve_dispatch_account, resolve_dispatch_session_id,
-        rewrite_model_if_aliased,
+        DefaultBinding, binding_family, colliding_family, context_record_is_callers,
+        default_binding, dispatch_ceiling, dispatch_context_scope, resolve_dispatch_account,
+        resolve_dispatch_session_id, rewrite_model_if_aliased,
     };
     use crate::routes::gateway::Family;
     use cctui_proto::adapter::PermissionMode;
+
+    /// A dispatch naming an existing session id must not re-scope that
+    /// session's context set to the dispatcher: only the user who recorded the
+    /// set, or who owns the registered session, may overwrite it.
+    #[tokio::test]
+    async fn a_dispatch_only_overwrites_its_own_users_context_set() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_context_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (owner, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for uid in [owner, other] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("dctx-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .expect("seed user");
+        }
+        let key = uuid::Uuid::new_v4().to_string();
+        let scope = dispatch_context_scope(owner, &serde_json::json!({}));
+        crate::routes::context::remember_intent(&pool, &key, &[], &scope).await;
+        let registered = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'claude-code')",
+        )
+        .bind(&registered)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+
+        assert!(context_record_is_callers(&pool, &key, owner).await, "the recording user");
+        assert!(!context_record_is_callers(&pool, &key, other).await, "another user's set");
+        assert!(context_record_is_callers(&pool, &registered, owner).await, "the session owner");
+        assert!(
+            !context_record_is_callers(&pool, &registered, other).await,
+            "another user's registered session"
+        );
+        assert!(
+            context_record_is_callers(&pool, &uuid::Uuid::new_v4().to_string(), other).await,
+            "a fresh id records freely"
+        );
+
+        sqlx::query("DELETE FROM session_context WHERE spawn_key = $1")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&registered)
+            .execute(&pool)
+            .await
+            .ok();
+        for uid in [owner, other] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        }
+    }
 
     #[test]
     fn a_dispatched_worker_resolves_rules_by_adapter_and_cwd_and_saves_for_approval() {

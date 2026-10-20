@@ -895,7 +895,9 @@ pub struct UsageBucket {
     pub cache_read: u64,
     pub cache_creation: u64,
     /// Dollars, priced from each session's account catalog like the session
-    /// list's cost; tokens of an unpriced model add nothing.
+    /// list's cost; tokens of an unpriced model add nothing. Absent from a
+    /// server that predates pricing.
+    #[serde(default)]
     pub cost_usd: f64,
 }
 
@@ -1240,7 +1242,18 @@ pub struct SkillIndexEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::DaemonAuthResponse;
+    use super::{DaemonAuthResponse, UsageBucket};
+
+    /// A server that predates pricing sends buckets without `cost_usd`; a newer
+    /// client reads them as unpriced rather than failing the whole response.
+    #[test]
+    fn an_older_servers_usage_bucket_decodes_with_no_cost() {
+        let legacy = r#"{"bucket":"2026-01-01T00:00:00Z","input":1,"output":2,
+                         "cache_read":3,"cache_creation":4}"#;
+        let bucket: UsageBucket = serde_json::from_str(legacy).expect("legacy bucket");
+        assert!(bucket.cost_usd.abs() < f64::EPSILON, "{}", bucket.cost_usd);
+        assert_eq!((bucket.input, bucket.output), (1, 2));
+    }
 
     /// A server that predates capability advertising answers without the field;
     /// a newer daemon must read that as "no new event kinds".
