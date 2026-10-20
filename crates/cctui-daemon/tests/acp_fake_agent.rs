@@ -1016,7 +1016,7 @@ mod scenarios {
             prompt: "ship it".to_owned(),
             model: None,
             effort: None,
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_mins(1),
         };
         let (sink, mut forwarded) = tokio::sync::mpsc::channel(512);
         let outcome = one.run(Some(sink)).await;

@@ -153,8 +153,7 @@ pub fn parse_gemini_usage(body: &[u8]) -> Option<CapturedUsage> {
                 .filter_map(|payload| {
                     serde_json::from_str::<serde_json::Value>(payload.trim()).ok()
                 })
-                .filter(|v| v.get("usageMetadata").is_some())
-                .next_back()
+                .rfind(|v| v.get("usageMetadata").is_some())
         })?;
     let meta = chunk.get("usageMetadata")?;
     let num = |k: &str| meta.get(k).and_then(serde_json::Value::as_i64).unwrap_or(0).max(0);
