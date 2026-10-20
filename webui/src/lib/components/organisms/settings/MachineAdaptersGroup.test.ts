@@ -40,8 +40,13 @@ afterEach(() => {
 });
 
 const machine = (id: string) => ({ id, name: id, display_name: null }) as MachineRow;
-const adapter = (enabled: boolean): MachineAdapterInfo =>
-	({ adapter_id: 'codex', enabled, pinned: true, config: null, binary: null }) as MachineAdapterInfo;
+const adapter = (enabled: boolean): MachineAdapterInfo => ({
+	adapter_id: 'codex',
+	enabled,
+	pinned: true,
+	default_enabled: false,
+	config: {}
+});
 const settle = async () => {
 	for (let i = 0; i < 4; i++) await tick();
 	flushSync();
