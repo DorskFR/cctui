@@ -3930,7 +3930,10 @@ mod tests {
             sid,
             &[
                 ("message", serde_json::json!({"role": "user", "text": "go"})),
-                ("message", serde_json::json!({"role": "assistant", "text": "answer", "message_id": "m1"})),
+                (
+                    "message",
+                    serde_json::json!({"role": "assistant", "text": "answer", "message_id": "m1"}),
+                ),
             ],
         )
         .await;

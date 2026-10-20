@@ -1558,8 +1558,7 @@ mod tests {
                     .await
                     .expect("persisted");
                 assert!(payload.get("spawn_capability").is_none(), "never forwarded");
-                let cached =
-                    state.spawn_capabilities.get(&sid).map(|c| c.value().clone()).unwrap();
+                let cached = state.spawn_capabilities.get(&sid).map(|c| c.value().clone()).unwrap();
                 let stored =
                     crate::store::spawn_capabilities::get(&state.pool, &sid).await.unwrap();
                 assert_eq!(stored.as_ref(), Some(&cached));
@@ -1613,10 +1612,9 @@ mod tests {
         let payload = serde_json::json!({"spawn_capability": {"adapters": ["claude-code"]}});
 
         let sid = format!("dispatch-cap-{}", uuid::Uuid::new_v4());
-        let (code, _) =
-            super::persist_spawn_capability(&state, &sid, &mut payload.clone(), true)
-                .await
-                .unwrap_err();
+        let (code, _) = super::persist_spawn_capability(&state, &sid, &mut payload.clone(), true)
+            .await
+            .unwrap_err();
         assert_eq!(code, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         assert!(state.spawn_capabilities.get(&sid).is_none());
 

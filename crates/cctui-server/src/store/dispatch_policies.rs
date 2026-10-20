@@ -250,13 +250,12 @@ mod tests {
             .unwrap();
         }
         assert!(super::prune_uses(&pool).await.unwrap() >= 1);
-        let left: Vec<String> = sqlx::query_scalar(
-            "SELECT session_id FROM dispatch_policy_uses WHERE user_id = $1",
-        )
-        .bind(uid)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let left: Vec<String> =
+            sqlx::query_scalar("SELECT session_id FROM dispatch_policy_uses WHERE user_id = $1")
+                .bind(uid)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(left, [recent]);
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
