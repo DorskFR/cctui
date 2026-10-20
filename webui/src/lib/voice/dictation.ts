@@ -21,14 +21,28 @@ export class Dictation {
 	private recorder: MediaRecorder | null = null;
 	private chunks: Blob[] = [];
 	private stream: MediaStream | null = null;
+	private wanted = false;
 
 	get recording(): boolean {
 		return this.recorder?.state === 'recording';
 	}
 
+	/** A `stop` or `cancel` before the microphone opens wins: it never records. */
 	async start() {
-		if (this.recorder) return;
-		this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+		if (this.recorder || this.wanted) return;
+		this.wanted = true;
+		let stream: MediaStream;
+		try {
+			stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+		} catch (e) {
+			this.wanted = false;
+			throw e;
+		}
+		if (!this.wanted) {
+			for (const t of stream.getTracks()) t.stop();
+			return;
+		}
+		this.stream = stream;
 		const mimeType = pickMime((t) => MediaRecorder.isTypeSupported(t));
 		this.recorder = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined);
 		this.chunks = [];
@@ -41,6 +55,7 @@ export class Dictation {
 	/** The transcript of what was recorded, empty when nothing was heard. */
 	async stop(): Promise<string> {
 		const rec = this.recorder;
+		this.wanted = false;
 		if (!rec) return '';
 		this.recorder = null;
 		const clip = await new Promise<Blob>((resolve) => {
@@ -52,6 +67,7 @@ export class Dictation {
 	}
 
 	cancel() {
+		this.wanted = false;
 		const rec = this.recorder;
 		this.recorder = null;
 		if (rec && rec.state !== 'inactive') rec.stop();

@@ -23,19 +23,23 @@
 	const dictation = new Dictation();
 	let recording = $state(false);
 	let busy = $state(false);
+	$effect(() => () => dictation.cancel());
 
 	async function begin() {
 		if (disabled || busy || recording || live) return;
 		try {
 			await dictation.start();
-			recording = true;
+			recording = dictation.recording;
 		} catch (e) {
 			toasts.error(errMessage(e));
 		}
 	}
 
 	async function finish() {
-		if (!recording) return;
+		if (!recording) {
+			dictation.cancel();
+			return;
+		}
 		recording = false;
 		busy = true;
 		try {

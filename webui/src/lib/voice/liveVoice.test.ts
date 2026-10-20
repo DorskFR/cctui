@@ -203,4 +203,51 @@ describe('LiveVoice', () => {
 		expect(h.voice.error).toBe('speech service unreachable');
 		expect(h.voice.status).toBe('listening');
 	});
+
+	it('releases a wake lock granted after the loop already stopped', async () => {
+		let grant: (r: () => void) => void = () => {};
+		const release = vi.fn();
+		const voice = new LiveVoice({
+			connect: (url) => new FakeSocket(url),
+			vad: async () => ({ start: vi.fn(), pause: vi.fn(), destroy: vi.fn() }),
+			player: { unlock: async () => {}, stop: vi.fn() } as unknown as SpeechPlayer,
+			wakeLock: () => new Promise((r) => (grant = r)),
+			prefs: () => DEFAULT_VOICE
+		});
+		const started = voice.start('sess');
+		voice.stop();
+		grant(release);
+		await started;
+		expect(release).toHaveBeenCalled();
+	});
+
+	it('destroys a microphone that opens after a stop and restart', async () => {
+		const sockets: FakeSocket[] = [];
+		const grants: ((v: VadHandle) => void)[] = [];
+		const vads = [0, 1].map(() => ({ start: vi.fn(), pause: vi.fn(), destroy: vi.fn() }));
+		const voice = new LiveVoice({
+			connect: (url) => {
+				const s = new FakeSocket(url);
+				sockets.push(s);
+				return s;
+			},
+			vad: () => new Promise((r) => grants.push(r)),
+			player: { unlock: async () => {}, stop: vi.fn() } as unknown as SpeechPlayer,
+			wakeLock: async () => () => {},
+			prefs: () => DEFAULT_VOICE
+		});
+		await voice.start('sess');
+		sockets[0].open();
+		voice.stop();
+		await voice.start('sess');
+		sockets[1].open();
+		grants[0](vads[0]);
+		grants[1](vads[1]);
+		for (let i = 0; i < 4; i++) await Promise.resolve();
+		expect(vads[0].destroy).toHaveBeenCalled();
+		expect(vads[0].start).not.toHaveBeenCalled();
+		expect(vads[1].start).toHaveBeenCalled();
+		voice.stop();
+		expect(vads[1].destroy).toHaveBeenCalled();
+	});
 });

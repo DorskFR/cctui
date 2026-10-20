@@ -67,7 +67,7 @@ export class LiveVoice {
 		sock.onopen = () => {
 			if (this.socket !== sock) return;
 			this.sendMode();
-			void this.startMic();
+			void this.startMic(sock);
 		};
 		sock.onmessage = (ev) => {
 			if (this.socket === sock) this.onMessage(ev.data);
@@ -81,7 +81,9 @@ export class LiveVoice {
 			this.teardown();
 			if (wasActive) this.status = 'off';
 		};
-		this.releaseWakeLock = await this.deps.wakeLock();
+		const release = await this.deps.wakeLock();
+		if (this.socket === sock) this.releaseWakeLock = release;
+		else release();
 	}
 
 	stop() {
@@ -114,24 +116,24 @@ export class LiveVoice {
 		});
 	}
 
-	private async startMic() {
+	private async startMic(sock: SocketLike) {
 		try {
-			this.vad = await this.deps.vad({
+			const vad = await this.deps.vad({
 				onSpeechStart: () => this.onSpeechStart(),
 				onSpeechEnd: (audio) => this.onSpeechEnd(audio),
 				onLevel: (level) => {
 					if (!this.muted) this.level = level;
 				}
 			});
-			if (!this.socket) {
-				this.vad.destroy();
-				this.vad = null;
+			if (this.socket !== sock) {
+				vad.destroy();
 				return;
 			}
-			if (!this.muted) await this.vad.start();
+			this.vad = vad;
+			if (!this.muted) await vad.start();
 			if (this.status === 'connecting') this.status = 'listening';
 		} catch (e) {
-			this.fail(e instanceof Error ? e.message : 'microphone unavailable');
+			if (this.socket === sock) this.fail(e instanceof Error ? e.message : 'microphone unavailable');
 		}
 	}
 

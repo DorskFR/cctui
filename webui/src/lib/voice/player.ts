@@ -48,7 +48,7 @@ export class SpeechPlayer {
 		if (this.unlocked) return;
 		this.unlocked = true;
 		try {
-			const a = this.audio();
+			const a = this.opts.createAudio?.() ?? new Audio();
 			a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
 			await a.play();
 			a.pause();
@@ -86,12 +86,6 @@ export class SpeechPlayer {
 		}
 		this.releaseUrl();
 		this.opts.onIdle?.(true);
-	}
-
-	private audio(): AudioLike {
-		const a = this.current ?? this.opts.createAudio?.() ?? new Audio();
-		this.current = a;
-		return a;
 	}
 
 	private next() {

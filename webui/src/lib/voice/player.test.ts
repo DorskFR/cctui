@@ -76,4 +76,16 @@ describe('SpeechPlayer', () => {
 		made[0].onended?.();
 		expect(made).toHaveLength(1);
 	});
+
+	it('plays the first line after an unlock', async () => {
+		const { p, made } = player();
+		await p.unlock();
+		expect(p.playing).toBe(false);
+		p.begin('a');
+		p.chunk(new Uint8Array([1]));
+		p.end('a');
+		expect(p.playing).toBe(true);
+		expect(made.at(-1)?.src).toBe('blob:1');
+		expect(made.at(-1)?.play).toHaveBeenCalled();
+	});
 });

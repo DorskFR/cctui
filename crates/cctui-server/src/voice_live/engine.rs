@@ -81,7 +81,7 @@ fn spawn_synth<B: VoiceBackend>(
     backend: Arc<B>,
     prefs: SharedPrefs,
     out: mpsc::Sender<Outbound>,
-    notices: mpsc::Sender<Notice>,
+    notices: mpsc::UnboundedSender<Notice>,
     generation: u64,
 ) -> Synth {
     let (tx, mut rx) = mpsc::channel::<String>(64);
@@ -89,11 +89,11 @@ fn spawn_synth<B: VoiceBackend>(
         let mut n = 0u64;
         while let Some(text) = rx.recv().await {
             n += 1;
-            let _ = notices.send(Notice { generation, busy: true }).await;
+            let _ = notices.send(Notice { generation, busy: true });
             let line_id = format!("{generation}-{n}");
             speak_one(&*backend, &prefs, &out, &line_id, &text).await;
             if rx.is_empty() {
-                let _ = notices.send(Notice { generation, busy: false }).await;
+                let _ = notices.send(Notice { generation, busy: false });
             }
         }
     });
@@ -140,7 +140,9 @@ struct Engine<B: VoiceBackend> {
     backend: Arc<B>,
     prefs: SharedPrefs,
     out: mpsc::Sender<Outbound>,
-    notice_tx: mpsc::Sender<Notice>,
+    /// Unbounded: the worker must never wait on the loop while the loop
+    /// waits on the worker's sentence queue.
+    notice_tx: mpsc::UnboundedSender<Notice>,
     synth: Synth,
     generation: u64,
     sentences: SentenceBuffer,
@@ -158,7 +160,7 @@ impl<B: VoiceBackend> Engine<B> {
         backend: Arc<B>,
         prefs: Prefs,
         out: mpsc::Sender<Outbound>,
-        notice_tx: mpsc::Sender<Notice>,
+        notice_tx: mpsc::UnboundedSender<Notice>,
     ) -> Self {
         let prefs = Arc::new(Mutex::new(prefs));
         let synth = spawn_synth(backend.clone(), prefs.clone(), out.clone(), notice_tx.clone(), 1);
@@ -341,7 +343,7 @@ pub async fn run_voice_loop<B: VoiceBackend>(
     mut signals: mpsc::Receiver<Signal>,
     out: mpsc::Sender<Outbound>,
 ) {
-    let (notice_tx, mut notices) = mpsc::channel(64);
+    let (notice_tx, mut notices) = mpsc::unbounded_channel();
     let mut engine = Engine::new(backend, prefs, out, notice_tx);
     engine.emit_state().await;
     loop {
@@ -552,6 +554,17 @@ mod tests {
         })
         .await;
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["First sentence.", "Second half."]);
+    }
+
+    #[tokio::test]
+    async fn a_block_longer_than_both_queues_is_spoken_to_the_end() {
+        let mut h = start(Mock::default(), Prefs::default());
+        let block = (1..=200).map(|i| format!("Line {i}.")).collect::<Vec<_>>().join(" ");
+        h.signals.send(Signal::Text(block)).await.unwrap();
+        h.collect_until(|f| {
+            matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { line_id }) if line_id == "1-200")
+        })
+        .await;
     }
 
     #[tokio::test]
