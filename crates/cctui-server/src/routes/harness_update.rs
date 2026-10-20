@@ -17,7 +17,7 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 pub use cctui_proto::api::harness_update::{
-    HarnessAutoupdateInfo, HarnessPolicyRequest, MachineHarnessInfo,
+    HarnessAutoupdateInfo, HarnessPolicyRequest, HarnessRestartRequest, MachineHarnessInfo,
 };
 
 const KEY: &str = "harness_autoupdate";
@@ -180,4 +180,58 @@ pub async fn set_machine(
         return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
     }
     Ok(Json(read_info(&state.pool).await?))
+}
+
+/// The harnesses whose daemon can restart its long-lived process once idle.
+const DRAIN_RESTARTABLE: &[&str] = &[cctui_proto::harness::HARNESS_CLAUDE_CODE];
+
+fn drain_restartable(harness: &str) -> bool {
+    DRAIN_RESTARTABLE.contains(&harness)
+}
+
+/// Ask a machine's daemon to restart `harness` onto the installed CLI as soon
+/// as it has no live worker. Accepted, not done: the daemon decides when.
+pub async fn restart_harness(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(machine_id): Path<Uuid>,
+    Json(req): Json<HarnessRestartRequest>,
+) -> Result<StatusCode, AppError> {
+    admin(&ctx)?;
+    if !drain_restartable(&req.harness) {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("{} has no drain restart", req.harness),
+        ));
+    }
+    let online: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM machines WHERE id = $1 AND revoked_at IS NULL)",
+    )
+    .bind(machine_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !online {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
+    }
+    state
+        .bus
+        .command_daemon(machine_id, DaemonFrameDown::DrainRestart { harness: req.harness.clone() })
+        .await
+        .map_err(|err| {
+            AppError::new(StatusCode::SERVICE_UNAVAILABLE, format!("daemon unreachable: {err}"))
+        })?;
+    tracing::info!(%machine_id, harness = %req.harness, "drain restart requested");
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drain_restartable;
+
+    #[test]
+    fn only_claude_code_has_a_drain_restart() {
+        assert!(drain_restartable("claude-code"));
+        assert!(!drain_restartable("codex"), "codex cycles itself from the updater");
+        assert!(!drain_restartable("gemini"));
+    }
 }

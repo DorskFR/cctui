@@ -52,6 +52,10 @@ pub fn decide(running: Option<&str>, local: Option<&str>, busy: Busy) -> Decisio
 #[derive(Debug, Default)]
 pub struct VersionGate {
     last_check: Option<Instant>,
+    /// A manual restart request: the next check runs regardless of the
+    /// interval and a cycle happens at the first idle check. Cleared once the
+    /// versions agree or the cycle runs.
+    requested: bool,
     /// Deferred pair and when work was last noted busy (or the deferral
     /// began), whichever is later.
     deferred: Option<(String, String, Instant)>,
@@ -60,9 +64,11 @@ pub struct VersionGate {
 }
 
 impl VersionGate {
-    /// Whether [`CHECK_MIN_INTERVAL`] has elapsed; records `now` when it has.
+    /// Whether [`CHECK_MIN_INTERVAL`] has elapsed, or a restart was
+    /// requested; records `now` when it has.
     pub fn due(&mut self, now: Instant) -> bool {
-        let permit = self.last_check.is_none_or(|t| now.duration_since(t) >= CHECK_MIN_INTERVAL);
+        let permit = self.requested
+            || self.last_check.is_none_or(|t| now.duration_since(t) >= CHECK_MIN_INTERVAL);
         if permit {
             self.last_check = Some(now);
         }
@@ -77,6 +83,17 @@ impl VersionGate {
         }
     }
 
+    /// Ask for a cycle at the first idle check instead of the next interval.
+    /// Never turns a busy deferral into a cycle: the request only waits.
+    pub const fn request(&mut self) {
+        self.requested = true;
+    }
+
+    #[must_use]
+    pub const fn requested(&self) -> bool {
+        self.requested
+    }
+
     #[must_use]
     pub fn check(
         &mut self,
@@ -86,7 +103,11 @@ impl VersionGate {
         veto: bool,
         now: Instant,
     ) -> Decision {
-        self.escalate(decide(running, local, busy), now, veto)
+        let decision = self.escalate(decide(running, local, busy), now, veto);
+        if !matches!(decision, Decision::Deferred { .. }) {
+            self.requested = false;
+        }
+        decision
     }
 
     /// Upgrade a deferral of the same pair that sat [`ESCALATE_AFTER`] to a
@@ -228,6 +249,28 @@ mod tests {
             g.escalate(deferred("1", "2"), t0 + ESCALATE_AFTER, false),
             cycle("1", "2", true)
         );
+    }
+
+    /// The manual "restart when idle" action: it skips the interval but still
+    /// never cycles over live work, and it stays armed until the cycle runs.
+    #[test]
+    fn a_requested_restart_waits_for_idle_and_then_clears() {
+        let mut g = VersionGate::default();
+        let t0 = Instant::now();
+        assert!(g.due(t0));
+        assert!(!g.due(t0 + Duration::from_secs(1)));
+        g.request();
+        assert!(g.due(t0 + Duration::from_secs(2)));
+        assert_eq!(g.check(Some("1"), Some("2"), Some(true), false, t0), deferred("1", "2"));
+        assert!(g.requested(), "busy keeps the request armed");
+        assert!(g.due(t0 + Duration::from_secs(3)));
+        assert_eq!(g.check(Some("1"), Some("2"), Some(false), false, t0), cycle("1", "2", false));
+        assert!(!g.requested(), "the cycle consumed the request");
+        assert!(!g.due(t0 + Duration::from_secs(4)));
+
+        g.request();
+        assert_eq!(g.check(Some("2"), Some("2"), Some(false), false, t0), Decision::Nothing);
+        assert!(!g.requested(), "nothing to restart clears the request");
     }
 
     #[test]

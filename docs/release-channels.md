@@ -118,3 +118,15 @@ Builds start as soon as their own inputs exist: `cctui-ui` right after the scope
 is resolved, the Rust images once the binaries are built. Every image is pushed
 by digest only, untagged. The `ci-green` gate holds back only the GitHub Release
 and the tagging, which is a manifest copy that takes seconds.
+
+## macOS code signing and privacy grants
+
+Darwin release binaries are ad-hoc signed (`codesign --sign -` in `release.yml`).
+macOS ties Local Network and folder (TCC) grants to the code signature, so every
+cctui-daemon self-update, like every `claude` auto-update, invalidates the
+grants the user approved for the previous binary. The daemon detects the
+resulting denials with its machine-health probe and `cctui-daemon doctor
+--grant` re-requests them, but the grants are lost again at the next release.
+Signing darwin builds with a stable Developer ID identity would make grants
+survive updates; that evaluation (Apple Developer Program membership, notarization
+in CI, secret handling for the signing identity) has not been done yet.

@@ -67,7 +67,7 @@ pub(super) fn service_active() -> bool {
 
 /// Restart the managed claude-daemon service. Callers must have established
 /// that no worker is running: this tears the supervisor down.
-pub(super) fn restart(claude_bin: &str) -> Result<()> {
+pub(crate) fn restart(claude_bin: &str) -> Result<()> {
     if !manager_usable() {
         anyhow::bail!("{BLOCKED}");
     }

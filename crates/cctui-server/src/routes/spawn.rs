@@ -142,17 +142,19 @@ fn spawn_adapter(requested: Option<&str>) -> Result<String, String> {
     Ok(id.to_owned())
 }
 
-/// The requested adapter, refused when the machine reports its binary missing.
+/// The requested adapter, refused when the machine reports its binary
+/// missing or a dropped privacy grant.
 async fn spawn_adapter_on(
     state: &AppState,
     machine_uuid: Uuid,
     requested: Option<&str>,
 ) -> Result<String, (StatusCode, Json<ApiError>)> {
     let adapter_id = spawn_adapter(requested).map_err(bad_request)?;
-    let binaries = crate::routes::machine_adapters::reported_binaries(&state.pool, machine_uuid)
-        .await
-        .map_err(AppError::into_parts)?;
-    crate::routes::machine_adapters::missing_binary(&binaries, &adapter_id)
+    let (machine, report) =
+        crate::routes::machine_adapters::machine_report(&state.pool, machine_uuid)
+            .await
+            .map_err(AppError::into_parts)?;
+    crate::routes::machine_adapters::spawn_refusal(report.as_ref(), &machine, &adapter_id)
         .map_or(Ok(adapter_id), |error| Err((StatusCode::CONFLICT, Json(ApiError { error }))))
 }
 

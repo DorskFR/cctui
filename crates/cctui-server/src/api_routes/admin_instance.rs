@@ -98,4 +98,12 @@ pub(super) fn register(r: Routes) -> Routes {
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
+        .add(
+            &[Method::POST],
+            "/admin/harness-autoupdate/{machine_id}/restart",
+            "Restart one harness's long-lived process on a machine once it is idle (admin).",
+            post(routes::harness_update::restart_harness),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
 }

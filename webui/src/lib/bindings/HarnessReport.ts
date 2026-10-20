@@ -4,6 +4,7 @@ import type { CodexSandbox } from "./CodexSandbox";
 import type { HarnessOutcome } from "./HarnessOutcome";
 import type { HarnessUpdatePolicy } from "./HarnessUpdatePolicy";
 import type { HarnessVersions } from "./HarnessVersions";
+import type { MachineHealth } from "./MachineHealth";
 
 /**
  * Heartbeat block. `policy` echoes what the daemon currently holds so the
@@ -23,4 +24,9 @@ codex_sandbox?: CodexSandbox | null,
 /**
  * Keyed by enabled adapter id; empty from a daemon too old to probe.
  */
-binaries: { [key in string]: AdapterBinary }, };
+binaries: { [key in string]: AdapterBinary }, 
+/**
+ * Last machine-health probe. `None` from a daemon that does not probe,
+ * or before the first probe has run.
+ */
+health?: MachineHealth | null, };

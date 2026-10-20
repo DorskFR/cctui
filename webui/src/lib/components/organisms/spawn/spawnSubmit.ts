@@ -22,6 +22,7 @@ import type { SpawnForm } from './spawnForm.svelte';
 import { findInvite, JOIN_PROMPT, stripInvite } from '$lib/cctuiverse';
 import { joinAfterSpawn } from '$lib/cctuiverseJoin';
 import { cctuiverseConfig } from '$lib/cctuiverseConfig.svelte';
+import { pendingSpawns } from '$lib/pendingSpawns.svelte';
 
 /** Identity of the form's file set: what decides whether a save has to ship
  *  the bytes again. */
@@ -168,8 +169,15 @@ export async function spawnOnMachine(sf: SpawnForm) {
 	} else if (result.timedOut) {
 		// No confirmation ≠ failed: cold spawns routinely land after the wait.
 		// Keep the draft so a real miss is one re-open away; re-submitting
-		// blindly would dispatch a second agent.
-		toasts.info(m.spawn_toast_unconfirmed());
+		// blindly would dispatch a second agent. The list shows a pending card
+		// that the late verdict settles.
+		pendingSpawns.add({
+			commandId: res.command_id,
+			sessionId,
+			machineId: memoryMachine,
+			name: sf.form.name.trim(),
+			workingDir: memoryCwd
+		});
 		sf.onspawned(sessionId);
 		sf.onclose();
 	} else {

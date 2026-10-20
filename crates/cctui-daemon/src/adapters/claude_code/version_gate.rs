@@ -11,6 +11,7 @@
 //! Versions cannot come from the control socket: `cliVersion` rides each job,
 //! so an idle daemon reports none.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,27 @@ pub(super) use crate::adapters::version_gate::Decision;
 use crate::adapters::version_gate::{self as gate, parse_cli_version};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Set by the server's `DrainRestart` frame, consumed by the next check.
+static DRAIN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Restart `claude daemon` onto the installed CLI at the first idle check,
+/// without waiting for the check interval. Live workers are never killed.
+pub fn request_drain_restart() {
+    DRAIN_REQUESTED.store(true, Ordering::SeqCst);
+    tracing::info!("drain restart of the claude daemon requested");
+}
+
+/// Whether a drain restart is waiting for the daemon to go idle.
+#[must_use]
+pub fn drain_pending() -> bool {
+    DRAIN_REQUESTED.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_drain_for_test() {
+    DRAIN_REQUESTED.store(false, Ordering::SeqCst);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CycleMethod {
@@ -108,6 +130,9 @@ impl VersionGate {
     /// Run one check if the interval has elapsed. `None` when the check was
     /// skipped or nothing needs doing.
     pub(super) async fn check(&self, roster_len: usize, native_live: bool) -> Option<Decision> {
+        if DRAIN_REQUESTED.swap(false, Ordering::SeqCst) {
+            self.gate().request();
+        }
         if !self.gate().due(Instant::now()) {
             return None;
         }
@@ -123,6 +148,9 @@ impl VersionGate {
                 native_live,
                 Instant::now(),
             );
+            if gate.requested() {
+                DRAIN_REQUESTED.store(true, Ordering::SeqCst);
+            }
             let first_warning = match &decision {
                 Decision::Deferred { running, local } => gate.first_warning_for(running, local),
                 _ => false,

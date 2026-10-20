@@ -39,6 +39,12 @@ static POLICY: LazyLock<watch::Sender<Option<HarnessUpdatePolicy>>> =
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::load()));
 
+/// Bumped whenever [`report`] would change, so the supervisor sends a
+/// heartbeat at once instead of at the next ping.
+static REVISION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::Sender::new(0));
+
+const VERSION_REFRESH: Duration = Duration::from_mins(5);
+
 pub fn set_policy(policy: HarnessUpdatePolicy) {
     let policy = policy.normalized();
     POLICY.send_if_modified(|held| {
@@ -61,7 +67,23 @@ pub fn report() -> HarnessReport {
         managed_by_image: in_worker_pod(),
         codex_sandbox: sandbox_probe::last(),
         binaries: crate::adapter_probe::report(),
+        health: crate::machine_health::last(),
     }
+}
+
+pub fn bump_revision() {
+    REVISION.send_modify(|r| *r += 1);
+}
+
+/// Changes whenever [`report`] does.
+#[must_use]
+pub fn changes() -> watch::Receiver<u64> {
+    REVISION.subscribe()
+}
+
+#[cfg(test)]
+fn revision() -> u64 {
+    *REVISION.borrow()
 }
 
 /// `CCTUI_HARNESS_AUTOUPDATE=0` forces the feature off on this machine,
@@ -106,6 +128,17 @@ struct State {
     versions: HarnessVersions,
 }
 
+impl State {
+    /// Whether the recorded version changed.
+    fn record_version(&mut self, harness: &str, version: HarnessVersion) -> bool {
+        if self.versions.get(harness) == Some(&version) {
+            return false;
+        }
+        self.versions.insert(harness, version);
+        true
+    }
+}
+
 /// Unit tests never touch the state file the machine's live daemon reads.
 fn state_paths() -> Vec<std::path::PathBuf> {
     if cfg!(test) {
@@ -146,12 +179,16 @@ fn record(harness: &str, outcome: String) {
             HarnessOutcome { harness: harness.to_owned(), outcome, at: Utc::now() },
         );
     });
+    bump_revision();
 }
 
 /// Record what a harness reports about itself: the updater after a run, an
-/// ACP session after `initialize`.
+/// ACP session after `initialize`, the periodic version refresh. Only a
+/// change bumps the report revision.
 pub fn record_version(harness: &str, version: HarnessVersion) {
-    with_state(|s| s.versions.insert(harness, version));
+    if with_state(|s| s.record_version(harness, version)) {
+        bump_revision();
+    }
 }
 
 #[must_use]
@@ -278,8 +315,19 @@ impl Runner {
             // change the verdict; the probe is cached against its realpath.
             sandbox_probe::refresh(&self.codex_bin).await;
         }
+        crate::machine_health::refresh().await;
     }
 
+    /// Re-probe every known harness so the report tracks a CLI auto-update
+    /// or a `claude daemon` relaunch that happened outside cctui.
+    pub async fn refresh_all_versions(&self) {
+        for harness in [HARNESS_CLAUDE_CODE, HARNESS_CODEX] {
+            self.refresh_versions(harness).await;
+        }
+    }
+
+    /// A harness with no CLI on disk records nothing: an absent entry, not a
+    /// blank one, is how the report says "not installed".
     async fn refresh_versions(&self, harness: &str) {
         let version = match harness {
             HARNESS_CODEX => {
@@ -298,7 +346,9 @@ impl Runner {
             }
             _ => HarnessVersion { cli: self.cli_version(harness).await, daemon: None },
         };
-        record_version(harness, version);
+        if version.cli.is_some() {
+            record_version(harness, version);
+        }
     }
 
     async fn cycle_codex(&mut self) {
@@ -346,8 +396,9 @@ async fn run(bin: &str, args: &[&str], timeout: Duration) -> anyhow::Result<std:
         .map_err(Into::into)
 }
 
-/// Background ticker. Idle until an enabled policy arrives; a daemon that
-/// never receives one never runs anything.
+/// Background ticker. Versions are refreshed at start and every
+/// [`VERSION_REFRESH`] whatever the policy; updates run only once an enabled
+/// policy arrives. Worker pods refresh nothing: their image fixes the versions.
 pub fn spawn_loop(shutdown: CancellationToken) {
     let busy: BusyProbe = Arc::new(|| Box::pin(crate::adapters::codex::turns_in_flight()));
     let mut runner = Runner::new("claude".to_owned(), "codex".to_owned(), busy);
@@ -355,11 +406,19 @@ pub fn spawn_loop(shutdown: CancellationToken) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut versions_at: Option<std::time::Instant> = None;
         loop {
             tokio::select! {
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
                 _ = policy_rx.changed() => {}
+            }
+            let now = std::time::Instant::now();
+            if !in_worker_pod()
+                && versions_at.is_none_or(|t| now.duration_since(t) >= VERSION_REFRESH)
+            {
+                versions_at = Some(now);
+                runner.refresh_all_versions().await;
             }
             let server = policy_rx.borrow_and_update().clone();
             let Some(policy) = local_policy(server.as_ref(), kill_switch(), in_worker_pod()) else {
@@ -549,6 +608,30 @@ esac
             std::fs::read_to_string(&log).unwrap().lines().count(),
             1,
             "not due, in sync: nothing"
+        );
+    }
+
+    /// The heartbeat carries `report()` on every ping; the revision is what
+    /// makes the supervisor send one at once, so only a real change bumps it.
+    #[test]
+    fn the_report_revision_moves_only_when_a_version_changes() {
+        let mut state = State::default();
+        let v1 = HarnessVersion { cli: Some("1.0.0".into()), daemon: Some("0.9.0".into()) };
+        assert!(state.record_version("probe", v1.clone()), "a new version is a change");
+        assert!(!state.record_version("probe", v1), "the same version is not");
+        let relaunched = HarnessVersion { cli: Some("1.0.0".into()), daemon: Some("1.0.0".into()) };
+        assert!(state.record_version("probe", relaunched), "a relaunched daemon is");
+
+        let mut rx = changes();
+        assert!(!rx.has_changed().unwrap(), "a fresh subscriber starts caught up");
+        record_version(
+            "revision-probe",
+            HarnessVersion { cli: Some("2.0.0".into()), daemon: Some("2.0.0".into()) },
+        );
+        assert!(rx.has_changed().unwrap(), "a recorded change wakes the heartbeat");
+        assert_eq!(
+            report().versions.get("revision-probe").and_then(|v| v.daemon.as_deref()),
+            Some("2.0.0")
         );
     }
 

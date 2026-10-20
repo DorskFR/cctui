@@ -31,3 +31,10 @@ pub struct HarnessPolicyRequest {
     /// override falls back to the instance default.
     pub policy: Option<crate::harness::HarnessUpdatePolicy>,
 }
+
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct HarnessRestartRequest {
+    /// Adapter id of the harness whose long-lived process restarts once idle.
+    pub harness: String,
+}
