@@ -29,9 +29,15 @@ use crate::adapters::agent_mcp::AgentMcp;
 use crate::client::ServerClient;
 use persist::SessionStore;
 use rows::AgentRow;
-use session::{AcpSession, LiveRegistry, Resume, SessionCommand, SpawnParams};
+use session::{
+    AcpSession, LiveRegistry, RestoreClaim, Restoring, Resume, SessionCommand, SpawnParams,
+};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+/// A launch-env pull that outlasts this falls back like a failed one.
+const RESTORE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Declarative config: `{ "bin": "/path/to/agent" }` overrides the row's binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,8 +162,19 @@ async fn pump(
         let pump = pty_view::PtyWatchPump::new(live.clone(), events.clone(), shutdown.clone());
         tokio::spawn(pump.run(watches))
     });
-    let mut pump = Pump { row, bin, events, shutdown, server, machine_key, live, store, reexec };
-    pump.restore_sessions().await;
+    let mut pump = Pump {
+        row,
+        bin,
+        events,
+        shutdown,
+        server,
+        machine_key,
+        live,
+        restoring: Restoring::default(),
+        store,
+        reexec,
+    };
+    pump.restore_sessions();
     let mut connect_closed = false;
     loop {
         tokio::select! {
@@ -178,6 +195,7 @@ async fn pump(
     }
 }
 
+#[derive(Clone)]
 struct Pump {
     row: &'static AgentRow,
     bin: String,
@@ -186,6 +204,7 @@ struct Pump {
     server: Option<ServerClient>,
     machine_key: Option<String>,
     live: LiveRegistry,
+    restoring: Restoring,
     store: Arc<SessionStore>,
     reexec: CancellationToken,
 }
@@ -245,6 +264,9 @@ impl SessionDriver for Pump {
         working_dir: Option<String>,
         _env: std::collections::BTreeMap<String, String>,
     ) -> CommandOutcome {
+        let Some(claim) = RestoreClaim::take(&self.restoring, &local_id) else {
+            return Ok(Handled::Done);
+        };
         if self.live.lock().await.contains_key(&local_id) {
             return Ok(Handled::Done);
         }
@@ -265,7 +287,7 @@ impl SessionDriver for Pump {
                 return Err(anyhow::anyhow!("no recorded {} session {local_id}", self.row.id));
             }
         };
-        self.restore(local_id, record).await;
+        self.restore(local_id, record, claim);
         Ok(Handled::Done)
     }
 
@@ -428,6 +450,7 @@ impl Pump {
             preflight: Some(preflight),
             context: launch.context,
             resume: None,
+            claim: None,
         };
         self.run_session(params);
     }
@@ -440,25 +463,47 @@ impl Pump {
         tokio::spawn(session.run());
     }
 
-    async fn restore_sessions(&self) {
+    fn restore_sessions(&self) {
         for (local_id, record) in self.store.for_adapter(self.row.id) {
-            self.restore(local_id, record).await;
+            if let Some(claim) = RestoreClaim::take(&self.restoring, &local_id) {
+                self.restore(local_id, record, claim);
+            }
         }
+    }
+
+    /// Off the command loop: the launch-env pull is an HTTP round-trip.
+    fn restore(&self, local_id: String, record: persist::Record, claim: RestoreClaim) {
+        let pump = self.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = pump.shutdown.cancelled() => {}
+                () = pump.restore_now(local_id, record, claim) => {}
+            }
+        });
+    }
+
+    async fn restore_launch(
+        &self,
+        local_id: &str,
+    ) -> anyhow::Result<crate::adapters::gateway_env::LaunchEnv> {
+        let pull = crate::adapters::gateway_env::resolve_launch(
+            self.row.id,
+            self.server.as_ref(),
+            self.machine_key.as_ref(),
+            local_id,
+            &std::collections::BTreeMap::new(),
+            &[],
+        );
+        tokio::time::timeout(RESTORE_LAUNCH_TIMEOUT, pull).await.unwrap_or_else(|_| {
+            tracing::warn!(%local_id, agent = self.row.id, "acp: launch env pull timed out");
+            Ok(crate::adapters::gateway_env::LaunchEnv::default())
+        })
     }
 
     /// The account is bound to the agent's session id once it starts, so the
     /// launch env is pulled by that id rather than the spawn key.
-    async fn restore(&self, local_id: String, record: persist::Record) {
-        let launch = match crate::adapters::gateway_env::resolve_launch(
-            self.row.id,
-            self.server.as_ref(),
-            self.machine_key.as_ref(),
-            &local_id,
-            &std::collections::BTreeMap::new(),
-            &[],
-        )
-        .await
-        {
+    async fn restore_now(&self, local_id: String, record: persist::Record, claim: RestoreClaim) {
+        let launch = match self.restore_launch(&local_id).await {
             Ok(launch) => launch,
             Err(err) => {
                 self.store.remove(&local_id);
@@ -497,6 +542,7 @@ impl Pump {
             preflight: None,
             context: Vec::new(),
             resume: Some(Resume { session_id: local_id, started_at_ms: record.started_at_ms }),
+            claim: Some(claim),
         });
     }
 }

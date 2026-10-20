@@ -323,6 +323,8 @@ pub struct DeferredDispatch {
 pub(super) struct ControlInterrupter {
     discovery: Discovery,
     roster: super::roster::SessionRoster,
+    pending_asks: super::PendingAsks,
+    events: mpsc::Sender<AdapterEvent>,
 }
 
 #[async_trait::async_trait]
@@ -339,8 +341,23 @@ impl Interrupter for ControlInterrupter {
             .ok_or_else(|| anyhow::anyhow!("no claude daemon running, nothing to interrupt"))?;
         socket::attach_interrupt(&sock, &short).await?;
         tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
+        drop_stale_ask(&self.pending_asks, &self.events, local_id).await;
         Ok(Handled::Done)
     }
+}
+
+/// The ESC or the worker's death took the form down, and no `resolved` hook
+/// fires for it: forget it so deferred peer turns flow again.
+async fn drop_stale_ask(
+    pending_asks: &super::PendingAsks,
+    events: &mpsc::Sender<AdapterEvent>,
+    local_id: &str,
+) {
+    if !pending_asks.lock().is_ok_and(|mut m| m.remove(local_id).is_some()) {
+        return;
+    }
+    let _ = events.send(AdapterEvent::AskResolved { local_id: local_id.to_owned() }).await;
+    let _ = events.send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() }).await;
 }
 
 pub struct Driver {
@@ -849,6 +866,8 @@ impl Driver {
         ControlInterrupter {
             discovery: self.cfg.discovery.clone(),
             roster: self.short_by_session.clone(),
+            pending_asks: self.pending_asks.clone(),
+            events: self.events.clone(),
         }
     }
 
@@ -1212,6 +1231,10 @@ impl Driver {
         tracing::info!(%local_id, "peer turn deferred until the ask form resolves");
     }
 
+    async fn drop_stale_ask(&self, local_id: &str) {
+        drop_stale_ask(&self.pending_asks, &self.events, local_id).await;
+    }
+
     async fn flush_deferred_peer(&mut self, sock: &std::path::Path) {
         let ready: Vec<String> = self
             .deferred_peer
@@ -1410,6 +1433,7 @@ impl SessionDriver for Driver {
         let short = self.resolve_short(&local_id)?;
         socket::attach_interrupt(&sock, &short).await?;
         tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
+        self.drop_stale_ask(&local_id).await;
         Ok(Handled::Done)
     }
 
