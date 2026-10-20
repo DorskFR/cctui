@@ -248,6 +248,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "post_admin_harness_autoupdate_by_machine_restart"
+# POST /admin/harness-autoupdate/{machine_id}/restart — Restart one harness's long-lived process on a machine once it is idle (admin).
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "delete_admin_users_by_id"
 # DELETE /admin/users/{id} — Revoke or update a user (admin).
 tui = "waived"
@@ -1099,6 +1105,18 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
+id = "get_sessions_by_id_guard"
+# GET /sessions/{id}/guard — The session's mirrored workflow-guard step, if the pod reported one.
+tui = "waived"
+reason = "the TUI shows the guard step from the live guard_step_state frame only"
+
+[[route]]
+id = "post_sessions_by_id_guard_transition"
+# POST /sessions/{id}/guard/transition — Ask the session's workflow guard to move to a step.
+tui = "waived"
+reason = "the TUI view of the guard step is read-only; transitions are requested from the webui"
+
+[[route]]
 id = "post_sessions_by_id_resume"
 # POST /sessions/{id}/resume — Resume an exited session.
 tui = "handled"
@@ -1706,6 +1724,11 @@ module = "app/server_event.rs"
 
 [[ws_event]]
 name = "pty_chunk"
+tui = "handled"
+module = "app/server_event.rs"
+
+[[ws_event]]
+name = "guard_step_state"
 tui = "handled"
 module = "app/server_event.rs"
 

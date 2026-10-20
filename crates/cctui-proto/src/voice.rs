@@ -47,7 +47,7 @@ pub enum VoiceClientMsg {
 }
 
 /// Server → browser.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VoiceServerMsg {

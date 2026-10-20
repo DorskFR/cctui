@@ -4,4 +4,4 @@ import type { SpokenStyle } from "./SpokenStyle";
 /**
  * Browser → server.
  */
-export type VoiceClientMsg = { "type": "interrupt" } | { "type": "mode", barge_in?: boolean | null, spoken_style?: SpokenStyle | null, voice?: string | null, speed?: number | null, };
+export type VoiceClientMsg = { "type": "interrupt", } | { "type": "mode", barge_in?: boolean | null, spoken_style?: SpokenStyle | null, voice?: string | null, speed?: number | null, };

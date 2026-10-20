@@ -504,6 +504,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "post_admin_harness_autoupdate_by_machine_restart",
+        method: Method::Post,
+        path: "/admin/harness-autoupdate/{machine_id}/restart",
+        summary: "Restart one harness's long-lived process on a machine once it is idle (admin).",
+        request: None,
+        response: None,
+    },
+    Route {
         id: "delete_admin_users_by_id",
         method: Method::Delete,
         path: "/admin/users/{id}",

@@ -505,7 +505,12 @@ mod tests {
         let mut h = start(Mock::default(), Prefs::default());
         h.signals.send(Signal::Text("**Sure.** Here is `one`.\n\n- two".into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
-        let frames = h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        let mut frames = h
+            .collect_until(|f| {
+                matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { line_id }) if line_id == "1-3")
+            })
+            .await;
+        frames.extend(h.quiet().await);
         assert_eq!(
             frames[1..].to_vec(),
             vec![
@@ -541,7 +546,10 @@ mod tests {
         h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { .. }))).await;
         h.signals.send(Signal::Text("First sentence. Second half.".into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
-        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        h.collect_until(|f| {
+            matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { line_id }) if line_id == "1-2")
+        })
+        .await;
         assert_eq!(Mock::log(&h.mock.synthesized), vec!["First sentence.", "Second half."]);
     }
 
