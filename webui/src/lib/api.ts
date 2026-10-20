@@ -131,6 +131,16 @@ async function postBlob(path: string): Promise<Blob> {
 	if (!res.ok) await handle(res);
 	return res.blob();
 }
+/** POST a JSON body, reading the answer as a `Blob` (synthesized speech). */
+async function postBlobJson(path: string, body: unknown): Promise<Blob> {
+	const res = await apiFetch(buildUrl(apiBase(), path), {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (!res.ok) await handle(res);
+	return res.blob();
+}
 const postForm = <T>(path: string, form: FormData) => sendForm<T>('POST', path, form);
 const putForm = <T>(path: string, form: FormData) => sendForm<T>('PUT', path, form);
 
@@ -138,6 +148,7 @@ export const api = {
 	get: <T>(path: string, query?: RequestOpts['query']) => request<T>(apiBase(), path, { query }),
 	post: <T>(path: string, body?: unknown) => request<T>(apiBase(), path, { method: 'POST', body }),
 	postBlob,
+	postBlobJson,
 	postForm,
 	putForm,
 	patch: <T>(path: string, body?: unknown) =>

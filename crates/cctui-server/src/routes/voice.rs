@@ -119,8 +119,10 @@ pub async fn speak(
         return Err(AppError::new(StatusCode::BAD_REQUEST, "speed must be between 0.25 and 4"));
     }
     let client = speech_client(&state).await?;
+    let plain = crate::voice_live::text::strip_markdown(&req.text);
+    let text = if plain.is_empty() { req.text.as_str() } else { plain.as_str() };
     let stream = client
-        .synthesize_stream(&req.text, req.voice.as_deref(), None, req.speed)
+        .synthesize_stream(text, req.voice.as_deref(), None, req.speed)
         .await
         .map_err(|e| speech_error(&e))?;
     let mime = audio_mime(&client.config().tts_format);

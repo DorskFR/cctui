@@ -11,6 +11,14 @@ export const useMe = () =>
     staleTime: 5 * 60_000,
   }));
 
+/** Whether the instance has a speech service, and its effective models. */
+export const useVoiceConfig = () =>
+  createQuery(() => ({
+    queryKey: qk.voiceConfig,
+    queryFn: endpoints.voiceConfig,
+    staleTime: 5 * 60_000,
+  }));
+
 /** Server capability flags. Long stale time — capabilities only
  * change on install/uninstall, which is rare and owner-driven. */
 export const useCapabilities = () =>

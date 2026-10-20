@@ -15,7 +15,9 @@
 		oncopymarkdown,
 		onbookmark,
 		bookmarked = false,
-		onquote
+		onquote,
+		onspeak,
+		speaking = false
 	}: {
 		ln: Line;
 		pinnable: boolean;
@@ -29,6 +31,9 @@
 		/** Quote this line (or the selection inside it) into the composer;
 		 * omit to hide the action. */
 		onquote?: (ln: Line, selection: string | null) => void;
+		/** Read this line aloud; omit to hide the action. */
+		onspeak?: (ln: Line) => void;
+		speaking?: boolean;
 	} = $props();
 
 	// Clicking collapses the selection, so it is read on pointerdown.
@@ -86,6 +91,18 @@
 				onquote?.(ln, picked);
 				picked = null;
 			}}
+		/>
+	{/if}
+	{#if onspeak}
+		<IconButton
+			inline
+			glyphSize={16}
+			icon={speaking ? 'stop' : 'play'}
+			pressed={speaking}
+			style="--btn-on: var(--role-assistant)"
+			label={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
+			title={speaking ? m.voice_line_speaking() : m.voice_line_speak()}
+			onclick={() => onspeak?.(ln)}
 		/>
 	{/if}
 	{#if onbookmark}

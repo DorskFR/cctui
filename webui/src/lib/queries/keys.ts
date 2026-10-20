@@ -39,6 +39,7 @@ export const qk = {
   sessionsAll: ["sessions"] as const,
   conversationAll: ["conversation"] as const,
   me: ["me"] as const,
+  voiceConfig: ["voice-config"] as const,
   accounts: ["accounts"] as const,
   providerStatus: ["provider-status"] as const,
   redirects: ["redirects"] as const,

@@ -10,6 +10,7 @@
 		useLabels,
 		useMachines,
 		useMe,
+		useVoiceConfig,
 		qk
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
@@ -60,6 +61,12 @@
 	import { notify } from '$lib/notify.svelte';
 	import type { ConversationChrome } from './conversation/chrome';
 	import { m } from '$lib/paraglide/messages';
+	import LiveVoiceBar from './conversation/LiveVoiceBar.svelte';
+	import { LiveVoice } from '$lib/voice/liveVoice.svelte';
+	import { SpeechPlayer } from '$lib/voice/player';
+	import { speakText } from '$lib/voice/speakLine';
+	import { acquireWakeLock } from '$lib/voice/wakeLock';
+	import { ttsMime } from '$lib/voice/mime';
 
 	let {
 		session,
@@ -360,6 +367,50 @@
 
 	const bookmarks = new BookmarkSaver({ id: () => id, sessionName: () => session.name ?? null });
 
+	// ── Voice ─────────────────────────────────────────────────
+	const voiceConfig = useVoiceConfig();
+	const voiceEnabled = $derived(!!voiceConfig.data?.enabled && !archived);
+	const liveVoice = new LiveVoice({
+		connect: (url) => new WebSocket(url),
+		vad: (cb) => import('$lib/voice/vad').then((mod) => mod.createVad(cb)),
+		player: new SpeechPlayer({
+			mime: () => ttsMime(voiceConfig.data?.tts_format ?? 'opus'),
+			speed: () => settings.voice.speed
+		}),
+		wakeLock: acquireWakeLock,
+		prefs: () => settings.voice
+	});
+	function toggleLiveVoice() {
+		if (liveVoice.active) liveVoice.stop();
+		else void liveVoice.start(id);
+	}
+	// A pane that moves to another session, or unmounts, drops its loop.
+	$effect(() => {
+		void id;
+		return () => liveVoice.stop();
+	});
+	$effect(() => {
+		if (liveVoice.error) toasts.error(liveVoice.error);
+	});
+	let speakingKey = $state<string | null>(null);
+	async function speakLine(ln: Line) {
+		if (!ln.key || !ln.text) return;
+		const key = ln.key;
+		try {
+			const outcome = await speakText(key, ln.text, {
+				voice: settings.voice.voice,
+				speed: settings.voice.speed,
+				onend: () => {
+					if (speakingKey === key) speakingKey = null;
+				}
+			});
+			speakingKey = outcome === 'started' ? key : null;
+		} catch (e) {
+			speakingKey = null;
+			toasts.error(errMessage(e));
+		}
+	}
+
 	function followup(instruction?: string) {
 		onFollowup?.(session, instruction);
 	}
@@ -493,16 +544,24 @@
 				pluginActionsFor={(ln) => plugins.actionsFor(ln)}
 				onpluginaction={(a) => plugins.openWith(a.pluginId, a.params)}
 				onquote={quoteLine}
+				onspeak={voiceConfig.data?.enabled ? speakLine : undefined}
+				{speakingKey}
 			/>
 
 			<ActivityBanner {stream} {archived} />
 			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
 
+			{#if liveVoice.active}
+				<LiveVoiceBar voice={liveVoice} onstop={toggleLiveVoice} />
+			{/if}
 			<ConversationComposer
 				bind:this={composer}
 				{session}
 				{archived}
 				working={stream.working}
+				{voiceEnabled}
+				voiceLive={liveVoice.active}
+				onvoicelive={toggleLiveVoice}
 				{supportsAttachments}
 				{scroll}
 				onsend={(body) => stream.sendBody(body)}

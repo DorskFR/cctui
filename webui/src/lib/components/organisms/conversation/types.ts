@@ -242,5 +242,7 @@ export interface Line {
 	messageId?: string;
 	/** Set on an agent voice note: the audio to play beside `text`. */
 	voiceNoteId?: string;
+	/** A user turn that came in through the microphone. */
+	voice?: boolean;
 	usage?: TokenUsageT;
 }

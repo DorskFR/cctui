@@ -115,11 +115,14 @@ function userTurn(
   turnId?: string | null,
   scheduledAt?: string | null,
 ): Line[] {
-  const { blocks, prose } = splitInjected(content);
+  const { blocks: all, prose } = splitInjected(content);
+  // The spoken-style wrapper is the mic's doing, not context worth a line.
+  const blocks = all.filter((b) => b.attrs.voice !== "spoken");
   const meta = mayBeMeta && looksMeta(prose);
   const body = prose.trim()
     ? userOrSystem(prose, ts, meta, ctx, poll, turnId, scheduledAt)
     : null;
+  if (body && blocks.length !== all.length && body.role === "user") body.voice = true;
   if (!blocks.length || !ctx.visible("context")) return body ? [body] : [];
   const eventBase = `${ts}|user|${stripAttachmentDecorations(prose).slice(0, 24)}`;
   const segments = blocks.map((b, index) =>

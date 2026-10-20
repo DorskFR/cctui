@@ -40,7 +40,9 @@
 		bookmarked = false,
 		pluginActions = [],
 		onpluginaction,
-		onquote
+		onquote,
+		onspeak,
+		speaking = false
 	}: {
 		ln: Line;
 		archived: boolean;
@@ -72,6 +74,9 @@
 		onpluginaction?: (a: PluginActionButton) => void;
 		/** Quote this line into the composer; omit to hide the action. */
 		onquote?: (ln: Line, selection: string | null) => void;
+		/** Read an assistant line aloud; omit to hide the action. */
+		onspeak?: (ln: Line) => void;
+		speaking?: boolean;
 	} = $props();
 
 	// An archived session has no composer to quote into.
@@ -145,6 +150,9 @@
 				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 			>
 		{/if}
+		{#if ln.voice}
+			<span class="who voice-mark" title={m.voice_user_spoken()}>🎙</span>
+		{/if}
 		{#if ln.context?.session}
 			<span class="who context-from" title={ln.context.session}>
 				·
@@ -185,6 +193,8 @@
 			{onbookmark}
 			{bookmarked}
 			onquote={quotable ? onquote : undefined}
+			onspeak={ln.role === 'assistant' && ln.text ? onspeak : undefined}
+			{speaking}
 		/>
 	</div>
 	{#if ln.role === 'thinking'}
