@@ -361,6 +361,7 @@ async fn on_session_started(
     crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     crate::routes::context::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
+    crate::routes::spawn::claim_spawner(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     if let Some(context_key) = meta.extra.get("context_key").and_then(serde_json::Value::as_str) {
         crate::routes::context::claim_fork_intent(&state.pool, &local_id, context_key, user_id)
             .await;

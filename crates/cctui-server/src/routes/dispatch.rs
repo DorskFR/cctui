@@ -922,12 +922,15 @@ async fn register_completion_webhook(
 
 /// `payload.spawn_capability` declares what the dispatched worker may spawn
 /// through `CctuiAgent`. It is read here, server-side, and never forwarded —
-/// the worker must not be able to read or restate its own capability.
+/// the worker must not be able to read or restate its own capability. A
+/// policy-bound worker may spawn no children: they would escape the policy,
+/// so its dispatch is refused when that ceiling cannot be persisted.
 async fn persist_spawn_capability(
     state: &AppState,
     session_id: &str,
     forwarded_payload: &mut serde_json::Value,
-) {
+    policy_bound: bool,
+) -> DispatchResult<()> {
     let declared = forwarded_payload
         .as_object_mut()
         .and_then(|obj| obj.remove("spawn_capability"))
@@ -940,14 +943,24 @@ async fn persist_spawn_capability(
     if cap.max_permission_mode.is_none() {
         cap.max_permission_mode = Some(dispatch_ceiling(forwarded_payload));
     }
+    if policy_bound {
+        cap.max_children = Some(0);
+    }
     if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
         tracing::error!(
             session = %session_id,
             error = %e,
             "spawn-capability persist failed — CctuiAgent will be lost on server restart"
         );
+        if policy_bound {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not record the worker's spawn capability".into() }),
+            ));
+        }
     }
     state.spawn_capabilities.insert(session_id.to_owned(), cap);
+    Ok(())
 }
 
 /// Child posture ceiling when the dispatcher names none: the worker's own
@@ -1095,7 +1108,8 @@ pub async fn dispatch(
     }
 
     register_completion_webhook(&state, &ctx, &req, &v.session_id).await;
-    persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload).await;
+    persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload, policy.is_some())
+        .await?;
     if let Some(uid) = real_user {
         if context_record_is_callers(&state.pool, &v.session_id, uid).await {
             let scope = dispatch_context_scope(uid, &req.payload);
@@ -1110,12 +1124,25 @@ pub async fn dispatch(
     let out = forward_dispatch(&state, &req, &v).await?;
     if policy.is_some()
         && let Some(uid) = real_user
-        && let Err(e) =
-            crate::store::dispatch_policies::record_use(&state.pool, uid, &v.session_id).await
     {
-        tracing::warn!(%uid, session = %v.session_id, error = %e, "dispatch policy use not recorded");
+        record_policy_use(&state.pool, uid, &v.session_id, &out.1.status).await;
     }
     Ok(out)
+}
+
+/// A `deduplicated` dispatch joined a run that is still going and already
+/// counted; every other outcome, `redispatched` included, starts a fresh run.
+fn counts_as_use(status: &str) -> bool {
+    status != "deduplicated"
+}
+
+async fn record_policy_use(pool: &sqlx::PgPool, uid: uuid::Uuid, session_id: &str, status: &str) {
+    if !counts_as_use(status) {
+        return;
+    }
+    if let Err(e) = crate::store::dispatch_policies::record_use(pool, uid, session_id).await {
+        tracing::warn!(%uid, session = %session_id, error = %e, "dispatch policy use not recorded");
+    }
 }
 
 /// A dispatch may name an existing session id as its retry target, so the
@@ -1471,6 +1498,132 @@ mod tests {
     #[test]
     fn an_unbound_dispatcher_injects_nothing() {
         assert_eq!(default_binding(None, None), None);
+    }
+
+    async fn seed_user(pool: &sqlx::PgPool) -> uuid::Uuid {
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("dispatch-svc-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        uid
+    }
+
+    /// Re-dispatching a session id onto a fresh run counts again; joining the
+    /// run still in flight does not.
+    #[tokio::test]
+    async fn every_fresh_run_of_a_session_counts_and_a_deduplicated_replay_does_not() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_use_per_run") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let sid = uuid::Uuid::new_v4().to_string();
+        for status in ["dispatched", "deduplicated", "redispatched", "queued", "deduplicated"] {
+            super::record_policy_use(&pool, uid, &sid, status).await;
+        }
+        let uses: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM dispatch_policy_uses WHERE user_id = $1")
+                .bind(uid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(uses, 3);
+        assert_eq!(crate::store::dispatch_policies::dispatches_today(&pool, uid).await.unwrap(), 3);
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// A policy-bound worker gets a capability that refuses every child,
+    /// whatever it declared; without a policy the declared or default
+    /// capability is kept as is.
+    #[tokio::test]
+    async fn a_policy_bound_dispatch_grants_no_children() {
+        use crate::routes::spawn_child::{Denied, Usage, authorize};
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_policy_no_children") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let state = crate::state::AppState::for_test(pool.clone());
+        let declared = serde_json::json!({
+            "spawn_capability": {"adapters": ["claude-code", "codex"], "max_children": 5}
+        });
+        let persisted = |sid: String, payload: serde_json::Value, bound: bool| {
+            let state = state.clone();
+            async move {
+                let mut payload = payload;
+                super::persist_spawn_capability(&state, &sid, &mut payload, bound)
+                    .await
+                    .expect("persisted");
+                assert!(payload.get("spawn_capability").is_none(), "never forwarded");
+                let cached = state.spawn_capabilities.get(&sid).map(|c| c.value().clone()).unwrap();
+                let stored =
+                    crate::store::spawn_capabilities::get(&state.pool, &sid).await.unwrap();
+                assert_eq!(stored.as_ref(), Some(&cached));
+                sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+                    .bind(&sid)
+                    .execute(&state.pool)
+                    .await
+                    .ok();
+                cached
+            }
+        };
+        let sid = || format!("dispatch-cap-{}", uuid::Uuid::new_v4());
+
+        for payload in [declared.clone(), serde_json::json!({})] {
+            let cap = persisted(sid(), payload, true).await;
+            assert_eq!(cap.max_children, Some(0));
+            let child = cctui_proto::api::SpawnChildRequest {
+                adapter: "claude-code".into(),
+                prompt: "go".into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                authorize(Some(&cap), &child, &Usage::default()),
+                Err(Denied::TooManyChildren { max: 0 })
+            );
+        }
+
+        let cap = persisted(sid(), declared, false).await;
+        assert_eq!(cap.adapters, ["claude-code", "codex"]);
+        assert_eq!(cap.max_children, Some(5));
+        assert_eq!(cap.max_permission_mode, Some(PermissionMode::Yolo));
+
+        let default = crate::routes::server_settings::spawn_default_capability(&state).await;
+        let cap = persisted(sid(), serde_json::json!({}), false).await;
+        assert_eq!(
+            cap,
+            cctui_proto::api::SpawnCapability {
+                max_permission_mode: Some(PermissionMode::Yolo),
+                ..default
+            }
+        );
+    }
+
+    /// A policy-bound dispatch whose capability cannot be stored is refused
+    /// before it is forwarded; without a policy it still goes out.
+    #[tokio::test]
+    async fn a_policy_bound_dispatch_is_refused_when_its_capability_is_not_stored() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let state = crate::state::AppState::for_test(pool);
+        let payload = serde_json::json!({"spawn_capability": {"adapters": ["claude-code"]}});
+
+        let sid = format!("dispatch-cap-{}", uuid::Uuid::new_v4());
+        let (code, _) = super::persist_spawn_capability(&state, &sid, &mut payload.clone(), true)
+            .await
+            .unwrap_err();
+        assert_eq!(code, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.spawn_capabilities.get(&sid).is_none());
+
+        let sid = format!("dispatch-cap-{}", uuid::Uuid::new_v4());
+        let mut unbound = payload;
+        super::persist_spawn_capability(&state, &sid, &mut unbound, false)
+            .await
+            .expect("no policy: a persist failure does not block the dispatch");
+        assert!(state.spawn_capabilities.get(&sid).is_some());
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //! family, the polymorphic generalization of the bespoke account
 //! sharing (510). One `resource_shares` table backs every shareable
 //! kind (account | machine | dispatcher | `context_pack`). A live grant row lets a
-//! NON-owner `use` the resource without transferring ownership; a grant confers
-//! `use` only, NEVER re-sharing — share management stays owner-or-admin.
+//! NON-owner `use` the resource without transferring ownership; a machine
+//! grant may instead carry `spawn`, which also lets the grantee start sessions
+//! on it. A grant NEVER confers re-sharing — share management stays owner-or-admin.
 //!
 //! The single grant-lookup primitive [`granted`] is what `Resource::authorize`
 //! (authz.rs) composes onto ownership for every shareable kind, so there is one
@@ -21,10 +22,10 @@ use crate::state::AppState;
 
 pub use cctui_proto::api::shares::{GrantShare, ShareInfo};
 
-/// The single grant-lookup primitive: does `grantee` hold a LIVE `use` grant on
-/// `(resource_type, resource_id)`? Called from `Resource::authorize` (the
-/// sharing seam) and the gateway resolution SQL alike, so ownership and grants
-/// compose on one path. Only `action = 'use'` exists today.
+/// The single grant-lookup primitive: does `grantee` hold a LIVE grant of any
+/// action on `(resource_type, resource_id)`? Called from `Resource::authorize`
+/// (the sharing seam) and the gateway resolution SQL alike, so ownership and
+/// grants compose on one path. Every action implies `use`.
 pub async fn granted(
     pool: &sqlx::PgPool,
     resource_type: &str,
@@ -42,6 +43,34 @@ pub async fn granted(
     .fetch_optional(pool)
     .await?;
     Ok(row.is_some())
+}
+
+/// Whether `grantee` holds a LIVE grant of exactly `action` on the resource.
+pub async fn granted_action(
+    pool: &sqlx::PgPool,
+    resource_type: &str,
+    resource_id: Uuid,
+    grantee: Uuid,
+    action: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM resource_shares \
+         WHERE resource_type = $1 AND resource_id = $2 AND grantee_id = $3 \
+           AND action = $4 AND revoked_at IS NULL LIMIT 1",
+    )
+    .bind(resource_type)
+    .bind(resource_id)
+    .bind(grantee)
+    .bind(action)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// The actions a grant on `resource_type` may carry: `use` everywhere, plus
+/// `spawn` on a machine (start sessions on it as yourself).
+fn grantable_action(resource_type: &str, action: &str) -> bool {
+    action == "use" || (action == "spawn" && resource_type == Shareable::Machine.as_share_type())
 }
 
 /// Confirm the caller owns the resource (admin sees any); returns the owner's id.
@@ -86,8 +115,9 @@ pub async fn list_shares(
     Ok(Json(rows))
 }
 
-/// `POST /api/v1/{resource_type}/{id}/shares` — grant `use` to another user
-/// (owner-scoped). Idempotent: re-granting a revoked share un-revokes it.
+/// `POST /api/v1/{resource_type}/{id}/shares` — grant `use` (or `spawn` on a
+/// machine) to another user (owner-scoped). Idempotent: re-granting a revoked
+/// share un-revokes it.
 pub async fn grant_share(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -96,11 +126,13 @@ pub async fn grant_share(
 ) -> Result<(StatusCode, Json<ShareInfo>), AppError> {
     require_owner(&state, &ctx, &resource_type, id).await?;
 
-    // Only `use` today; reject anything else so a typo doesn't store a dead
-    // action no code path honours.
+    // Reject anything else so a typo doesn't store a dead action no code path honours.
     let action = req.action.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("use");
-    if action != "use" {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "action must be 'use'"));
+    if !grantable_action(&resource_type, action) {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "action must be 'use' (or 'spawn' on a machine)",
+        ));
     }
 
     let ident = req.user.trim();
@@ -176,4 +208,22 @@ pub async fn revoke_share(
         crate::routes::accounts::revoke_grantee_session_tokens(&state.pool, id, user_id).await;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grantable_action;
+
+    #[test]
+    fn spawn_is_grantable_on_machines_only() {
+        for kind in ["account", "machine", "dispatcher", "context_pack"] {
+            assert!(grantable_action(kind, "use"), "{kind} must accept use");
+        }
+        assert!(grantable_action("machine", "spawn"));
+        for kind in ["account", "dispatcher", "context_pack"] {
+            assert!(!grantable_action(kind, "spawn"), "{kind} must refuse spawn");
+        }
+        assert!(!grantable_action("machine", "admin"));
+        assert!(!grantable_action("machine", "Spawn"));
+    }
 }

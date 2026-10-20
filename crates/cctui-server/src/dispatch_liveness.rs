@@ -69,6 +69,9 @@ async fn live_handles(pool: &sqlx::PgPool) -> sqlx::Result<Vec<LiveHandle>> {
 
 pub async fn sweep(state: &AppState) {
     use futures_util::StreamExt;
+    if let Err(err) = crate::store::dispatch_policies::prune_uses(&state.pool).await {
+        tracing::warn!(%err, "dispatch policy use prune failed");
+    }
     let rows = match live_handles(&state.pool).await {
         Ok(rows) => rows,
         Err(err) => {

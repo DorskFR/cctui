@@ -291,7 +291,7 @@ async fn spawn_capability_for(
             state.spawn_capabilities.insert(session_id.to_owned(), cap.clone());
             Some(cap)
         }
-        Ok(None) => Some(grant_default(state, session_id).await),
+        Ok(None) => grant_default(state, session_id).await,
         Err(e) => {
             tracing::error!(
                 %session_id,
@@ -306,13 +306,30 @@ async fn spawn_capability_for(
 /// The default grant for a session launched without one. It carries no mode
 /// ceiling: spawn-child then caps children at the session's live
 /// `permission_mode`. A persist failure still serves the grant for this launch.
-async fn grant_default(state: &AppState, session_id: &str) -> cctui_proto::api::SpawnCapability {
-    let cap = crate::routes::server_settings::spawn_default_capability(state).await;
+/// A policy-bound owner's session may spawn no children; a failed policy
+/// lookup withholds the tool.
+async fn grant_default(
+    state: &AppState,
+    session_id: &str,
+) -> Option<cctui_proto::api::SpawnCapability> {
+    let mut cap = crate::routes::server_settings::spawn_default_capability(state).await;
+    match crate::store::dispatch_policies::session_is_policy_bound(&state.pool, session_id).await {
+        Ok(false) => {}
+        Ok(true) => cap.max_children = Some(0),
+        Err(e) => {
+            tracing::error!(
+                %session_id,
+                error = %e,
+                "dispatch policy lookup failed — CctuiAgent will be withheld from this session"
+            );
+            return None;
+        }
+    }
     if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
         tracing::error!(%session_id, error = %e, "default spawn-capability persist failed");
     }
     state.spawn_capabilities.insert(session_id.to_owned(), cap.clone());
-    cap
+    Some(cap)
 }
 
 /// The machine user's clamped `whipStopPhrases` block from
@@ -460,6 +477,63 @@ mod tests {
         let a = authorize(Some(&cap), &req(PermissionMode::Ask), &usage(PermissionMode::Ask))
             .expect("ask parent spawns ask");
         assert_eq!(a.permission_mode, PermissionMode::Ask);
+    }
+
+    /// A session launched without a capability gets the default grant, except
+    /// one whose owner has a dispatch policy: it may spawn no children.
+    #[tokio::test]
+    async fn the_default_grant_spawns_no_children_for_a_policy_bound_owner() {
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_policy_default") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let state = AppState::for_test(pool.clone());
+        let default = crate::routes::server_settings::spawn_default_capability(&state).await;
+        for bound in [false, true] {
+            let uid = Uuid::new_v4();
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("policy-default-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            if bound {
+                let rules = cctui_proto::api::admin::DispatchPolicyRules::default();
+                crate::store::dispatch_policies::upsert(&pool, uid, &rules).await.unwrap();
+            }
+            let sid = format!("policy-default-{}", Uuid::new_v4());
+            sqlx::query(
+                "INSERT INTO auth_keys (user_id, key_hash, kind, session_id, expires_at) \
+                 VALUES ($1, $2, 'ephemeral', $3, now() + interval '1 hour')",
+            )
+            .bind(uid)
+            .bind(format!("eph-{sid}"))
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let cap = spawn_capability_for(&state, &sid).await.expect("granted");
+            let max_children = if bound { Some(0) } else { default.max_children };
+            assert_eq!(
+                cap,
+                cctui_proto::api::SpawnCapability { max_children, ..default.clone() },
+                "policy-bound: {bound}"
+            );
+
+            sqlx::query("DELETE FROM session_spawn_capabilities WHERE session_id = $1")
+                .bind(&sid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM auth_keys WHERE user_id = $1")
+                .bind(uid)
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        }
     }
 
     #[tokio::test]

@@ -1,9 +1,17 @@
 <script lang="ts">
 	import { CopyButton } from '@dorsk/tsumikit';
-	import { statusDotClass, trimDetail, type DiagnoseBlockSummary } from '$lib/diagnoseRows';
+	import {
+		statusDotClass,
+		trimDetail,
+		type DiagnoseBlockSummary,
+		type DiagnoseOwnership
+	} from '$lib/diagnoseRows';
 	import { m } from '$lib/paraglide/messages';
 
-	let { blocks }: { blocks: DiagnoseBlockSummary[] } = $props();
+	let {
+		blocks,
+		ownership = null
+	}: { blocks: DiagnoseBlockSummary[]; ownership?: DiagnoseOwnership | null } = $props();
 </script>
 
 <ul class="blocks">
@@ -30,6 +38,14 @@
 		</li>
 	{/each}
 </ul>
+{#if ownership}
+	<dl class="ownership">
+		<dt>{m.diagnose_row_owner()}</dt>
+		<dd>{ownership.owner}</dd>
+		<dt>{m.diagnose_row_spawned_by()}</dt>
+		<dd>{ownership.spawnedBy}</dd>
+	</dl>
+{/if}
 
 <style>
 	.blocks {
@@ -69,6 +85,22 @@
 		word-break: break-word;
 		font-family: var(--font-mono, monospace);
 		font-size: var(--fs-xs);
+		color: var(--text-muted);
+	}
+	.ownership {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 0 var(--sp-2);
+		margin: var(--sp-1) 0 0;
+	}
+	.ownership dt {
+		font-weight: 600;
+		color: var(--text);
+	}
+	.ownership dd {
+		margin: 0;
+		min-width: 0;
+		overflow-wrap: anywhere;
 		color: var(--text-muted);
 	}
 </style>

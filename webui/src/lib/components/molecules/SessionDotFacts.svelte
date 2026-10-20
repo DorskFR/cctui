@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { diagnoseBlocks, diagnoseRows } from '$lib/diagnoseRows';
+	import { diagnoseBlocks, diagnoseOwnership, diagnoseRows } from '$lib/diagnoseRows';
 	import DiagnoseBlocks from './DiagnoseBlocks.svelte';
 	import { useSessionDiagnose } from '$lib/queries';
 
@@ -10,6 +10,7 @@
 
 	const report = useSessionDiagnose(() => session.id);
 	const blocks = $derived(diagnoseBlocks(diagnoseRows(session, report.data ?? null, now)));
+	const ownership = $derived(diagnoseOwnership(report.data ?? null));
 </script>
 
-<DiagnoseBlocks {blocks} />
+<DiagnoseBlocks {blocks} {ownership} />
