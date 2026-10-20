@@ -384,7 +384,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.meta.outputs.sha }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: needs.meta.outputs.rust == 'true'
         with:
           path: dist
@@ -542,7 +542,7 @@ jobs:
         with:
           ref: ${{ needs.meta.outputs.sha }}
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: env.MODE == 'build'
         with:
           pattern: image-bins*
@@ -619,7 +619,7 @@ jobs:
       matrix:
         image: [cctui, cctui-worker, cctui-dispatcher-kube, cctui-orchestrator, cctui-ui]
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: env.MODE != 'retag'
         with:
           name: digest-${{ matrix.image }}
