@@ -487,7 +487,7 @@ mod tests {
             },
             SilenceReason::OpencodeAwaitingPermission { count: 2 },
             SilenceReason::OpencodeIdle,
-            SilenceReason::OpencodeVersion { version: "1.20.0".into(), pinned: "1.19.0".into() },
+            SilenceReason::OpencodeVersion { version: "1.20.0".into(), pinned: "1.19.3".into() },
             SilenceReason::OpencodeNotLive,
         ]
     }
@@ -515,7 +515,7 @@ mod tests {
         assert!(
             silence_text(&SilenceReason::OpencodeVersion {
                 version: "1.20.0".into(),
-                pinned: "1.19.0".into(),
+                pinned: "1.19.3".into(),
             })
             .contains("1.20.0")
         );

@@ -214,8 +214,8 @@ mod tests {
         OpenCodeDiagnose {
             server_url: None,
             server_pid: None,
-            pinned_version: "1.19.0".into(),
-            server_version: Some("1.19.0".into()),
+            pinned_version: "1.19.3".into(),
+            server_version: Some("1.19.3".into()),
             version_matches: Some(true),
             live: true,
             owned_sessions: vec!["ses_1".into()],
@@ -390,7 +390,7 @@ mod tests {
                 SilenceReason::OpencodeIdle,
                 SilenceReason::OpencodeVersion {
                     version: "1.20.0".into(),
-                    pinned: "1.19.0".into()
+                    pinned: "1.19.3".into()
                 },
                 SilenceReason::OpencodeNotLive,
             ]
