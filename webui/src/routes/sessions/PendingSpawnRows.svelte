@@ -7,7 +7,10 @@
 
 	const knownIds = $derived(sp.items.map((s) => s.id));
 	const rows = $derived(pendingSpawns.visible(knownIds));
-	$effect(() => pendingSpawns.settle(knownIds));
+	$effect(() => {
+		pendingSpawns.adopt(sp.items);
+		pendingSpawns.settle(knownIds);
+	});
 </script>
 
 {#if rows.length > 0}

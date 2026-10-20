@@ -99,7 +99,11 @@ async fn connect(addr: SocketAddr) -> io::Result<()> {
     )
 }
 
+/// macOS only: elsewhere an unreachable host is a network fault, not a grant.
 async fn probe_network(server_url: Option<&str>) -> Option<Observation<SocketAddr>> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
     let addr = resolve(server_url?).await?;
     Some((addr, connect(addr).await))
 }
@@ -222,6 +226,12 @@ mod tests {
         assert!(refusal.contains("cctui-daemon doctor --grant"), "{refusal}");
         assert!(refusal.contains("EHOSTUNREACH"), "{refusal}");
         *LAST.lock().unwrap() = None;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn off_macos_the_network_is_not_probed() {
+        assert!(probe_network(Some("http://192.0.2.1:9")).await.is_none());
     }
 
     #[test]

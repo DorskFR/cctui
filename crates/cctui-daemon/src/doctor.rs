@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use cctui_proto::harness::{HarnessVersion, MachineHealth, version_skew};
 
-use crate::adapters::claude_code::version_gate::parse_daemon_status;
+use crate::adapters::claude_code::version_gate::{DaemonStatus, parse_daemon_status};
 use crate::adapters::version_gate::parse_cli_version;
 use crate::config::Config;
 use crate::machine_health;
@@ -25,7 +25,8 @@ pub struct Opts {
 
 struct ClaudeVersions {
     version: HarnessVersion,
-    running_workers: Option<usize>,
+    /// `None` when `claude daemon status` did not answer.
+    status: Option<DaemonStatus>,
 }
 
 async fn run(bin: &str, args: &[&str]) -> Option<String> {
@@ -43,7 +44,7 @@ async fn claude_versions() -> ClaudeVersions {
     let status = run("claude", &["daemon", "status"]).await.map(|o| parse_daemon_status(&o));
     ClaudeVersions {
         version: HarnessVersion { cli, daemon: status.as_ref().and_then(|s| s.version.clone()) },
-        running_workers: status.and_then(|s| s.running_workers),
+        status,
     }
 }
 
@@ -59,15 +60,22 @@ fn print_health(verdict: &MachineHealth) {
     }
 }
 
-fn relaunch_blocker(running_workers: Option<usize>) -> Option<usize> {
-    running_workers.filter(|n| *n > 0)
+/// Unknown counts as busy: only a daemon that is not running, or one that
+/// reports zero workers, may be relaunched.
+fn relaunch_blocked(status: Option<&DaemonStatus>) -> bool {
+    status.is_none_or(|s| s.version.is_some() && s.running_workers != Some(0))
 }
 
 async fn relaunch_claude_daemon(claude: &ClaudeVersions) {
-    if let Some(n) = relaunch_blocker(claude.running_workers) {
+    if relaunch_blocked(claude.status.as_ref()) {
+        let workers = claude
+            .status
+            .as_ref()
+            .and_then(|s| s.running_workers)
+            .map_or_else(|| "an unknown number of".to_owned(), |n| n.to_string());
         println!(
-            "claude daemon: {n} live worker(s); not relaunched. Re-run `doctor --grant` once \
-             they finish, or ask for a drain restart from the machine card"
+            "claude daemon: {workers} live worker(s); not relaunched. Re-run `doctor --grant` \
+             once they finish, or ask for a drain restart from the machine card"
         );
         return;
     }
@@ -147,10 +155,19 @@ pub async fn run_doctor(config_path: &Path, opts: Opts) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    fn status(version: Option<&str>, running_workers: Option<usize>) -> DaemonStatus {
+        DaemonStatus { version: version.map(str::to_owned), running_workers }
+    }
+
     #[test]
-    fn live_workers_block_the_relaunch_and_an_unknown_count_does_not() {
-        assert_eq!(relaunch_blocker(Some(3)), Some(3));
-        assert_eq!(relaunch_blocker(Some(0)), None);
-        assert_eq!(relaunch_blocker(None), None, "no daemon running: nothing to protect");
+    fn live_or_unknown_workers_block_the_relaunch() {
+        assert!(relaunch_blocked(Some(&status(Some("2.1.0"), Some(3)))));
+        assert!(!relaunch_blocked(Some(&status(Some("2.1.0"), Some(0)))));
+        assert!(
+            relaunch_blocked(Some(&status(Some("2.1.0"), None))),
+            "control unreachable: the count says nothing about what is alive"
+        );
+        assert!(relaunch_blocked(None), "a status that never answered is not idle");
+        assert!(!relaunch_blocked(Some(&status(None, None))), "not running: nothing to protect");
     }
 }

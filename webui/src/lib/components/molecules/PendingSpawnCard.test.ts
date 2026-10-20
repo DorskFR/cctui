@@ -64,6 +64,19 @@ describe('PendingSpawnCard', () => {
 		expect(pendingSpawns.items).toEqual([]);
 	});
 
+	it('a spawn with no id yet adopts the session carrying its spawn key, on its machine only', () => {
+		pendingSpawns.add({ commandId: 'cmd-x', sessionId: null, machineId: 'm', name: 'X', workingDir: '/x' });
+		const listed = [
+			{ id: 'other-machine', machine_id: 'n', metadata: { spawn_key: 'cmd-x' } },
+			{ id: 'codex-1', machine_id: 'm', metadata: { spawn_key: 'cmd-x' } }
+		];
+		pendingSpawns.adopt([listed[0]!]);
+		expect(pendingSpawns.items[0]?.sessionId).toBeNull();
+		pendingSpawns.adopt(listed);
+		pendingSpawns.settle(listed.map((s) => s.id));
+		expect(pendingSpawns.items).toEqual([]);
+	});
+
 	it('dismiss hands the command id back', async () => {
 		const ondismiss = await render();
 		const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => /dismiss/i.test(b.textContent ?? ''));
