@@ -223,8 +223,10 @@ mod tests {
 
     #[test]
     fn every_recorded_frame_decodes_and_heartbeats_are_dropped() {
+        assert_eq!(FIXTURE.matches("\n: heartbeat\n").count(), 2);
         let frames = frames();
-        assert_eq!(frames.len(), 44, "the two heartbeat comments carry no data");
+        assert_eq!(frames.len(), 42, "42 data frames; the two heartbeat comments carry no data");
+        assert!(frames.iter().all(|f| !f.contains("heartbeat")));
         for raw in &frames {
             assert!(Event::decode(raw).is_ok(), "undecodable frame: {raw}");
         }
