@@ -602,22 +602,34 @@ mod tests {
         assert_eq!(applied.rules.daily_cap, Some(1));
         assert_eq!(r.timeout, Some(15), "the ceiling fills in a missing timeout");
 
-        crate::store::dispatch_policies::record_use(&pool, uid, "s-1").await.unwrap();
+        crate::store::dispatch_policies::record_use(&pool, uid, &format!("s-1-{uid}"))
+            .await
+            .unwrap();
         let (code, body) = super::enforce(&state, uid, &mut r).await.unwrap_err();
         assert_eq!(code, axum::http::StatusCode::FORBIDDEN);
         assert!(body.error.contains("(daily_cap)"), "{}", body.error);
 
         let relaxed = DispatchPolicyRules { daily_cap: None, ..rules };
         crate::store::dispatch_policies::upsert(&pool, uid, &relaxed).await.unwrap();
-        sqlx::query(
-            "INSERT INTO auth_keys (user_id, key_hash, kind, session_id, expires_at) \
-             VALUES ($1, $2, 'ephemeral', 's-live', now() + interval '1 hour')",
-        )
-        .bind(uid)
-        .bind(format!("eph-{uid}"))
-        .execute(&pool)
-        .await
-        .unwrap();
+        let live_sid = format!("s-live-{uid}");
+        for sid in [live_sid.clone(), format!("s-refused-{uid}")] {
+            sqlx::query(
+                "INSERT INTO auth_keys (user_id, key_hash, kind, session_id, expires_at) \
+                 VALUES ($1, $2, 'ephemeral', $3, now() + interval '1 hour')",
+            )
+            .bind(uid)
+            .bind(format!("eph-{sid}"))
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            crate::store::dispatch_policies::live_dispatches(&pool, uid).await.unwrap(),
+            0,
+            "a key whose forward was refused holds no slot"
+        );
+        crate::store::dispatch_policies::record_use(&pool, uid, &live_sid).await.unwrap();
         assert_eq!(crate::store::dispatch_policies::live_dispatches(&pool, uid).await.unwrap(), 1);
         let (code, body) = super::enforce(&state, uid, &mut r).await.unwrap_err();
         assert_eq!(code, axum::http::StatusCode::FORBIDDEN);

@@ -115,11 +115,13 @@ pub async fn grants_dispatcher(
     .await
 }
 
-/// Dispatched sessions of `user_id` still alive: an unexpired, unrevoked
-/// ephemeral worker key whose session has not reached a terminal state.
+/// Forwarded dispatches of `user_id` still alive: an unexpired, unrevoked
+/// ephemeral worker key whose session has not reached a terminal state. Only
+/// recorded uses count, as a refused forward still minted a key.
 pub async fn live_dispatches(exec: impl PgExecutor<'_>, user_id: Uuid) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT count(*) FROM auth_keys k \
+        "SELECT count(DISTINCT k.session_id) FROM auth_keys k \
+         JOIN dispatch_policy_uses u ON u.session_id = k.session_id AND u.user_id = k.user_id \
          WHERE k.user_id = $1 AND k.kind = 'ephemeral' AND k.revoked_at IS NULL \
            AND (k.expires_at IS NULL OR k.expires_at > now()) \
            AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = k.session_id \
