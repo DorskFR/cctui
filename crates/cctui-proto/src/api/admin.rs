@@ -182,9 +182,11 @@ pub struct MintTokenResponse {
     pub expires_at: Option<chrono::DateTime<Utc>>,
 }
 
-/// A context pack a policy lets the user attach through `payload.env`
-/// (`CONTEXT_PACK_URL` / `CONTEXT_PACK_REF` / `CONTEXT_PACK_SUBDIR`). A pinned
-/// `git_ref` or `subdir` must match exactly; an unpinned one accepts any value.
+/// A context pack a policy lets the user attach through `payload.env`.
+///
+/// Matched against `CONTEXT_PACK_URL` / `CONTEXT_PACK_REF` / `CONTEXT_PACK_SUBDIR`.
+/// A pinned `git_ref` or `subdir` must match exactly; an unpinned one accepts
+/// any value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ContextPackGrant {
@@ -198,9 +200,10 @@ pub struct ContextPackGrant {
     pub subdir: Option<String>,
 }
 
-/// What a policy-bound user may dispatch. Every list restricts its dimension
-/// when non-empty and leaves it open when empty; every limit applies only when
-/// set.
+/// What a policy-bound user may dispatch.
+///
+/// Every list restricts its dimension when non-empty and leaves it open when
+/// empty; every limit applies only when set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DispatchPolicyRules {

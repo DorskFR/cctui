@@ -54,6 +54,7 @@ export const ROUTES = [
   { id: "get_admin_harness_autoupdate", method: "GET", path: "/admin/harness-autoupdate", summary: "Read the harness auto-update settings of every machine, or set the instance default (admin).", request: null, response: null },
   { id: "put_admin_harness_autoupdate", method: "PUT", path: "/admin/harness-autoupdate", summary: "Read the harness auto-update settings of every machine, or set the instance default (admin).", request: null, response: null },
   { id: "put_admin_harness_autoupdate_by_machine", method: "PUT", path: "/admin/harness-autoupdate/{machine_id}", summary: "Set or clear one machine's harness auto-update override (admin).", request: null, response: null },
+  { id: "post_admin_harness_autoupdate_by_machine_restart", method: "POST", path: "/admin/harness-autoupdate/{machine_id}/restart", summary: "Restart one harness's long-lived process on a machine once it is idle (admin).", request: null, response: null },
   { id: "delete_admin_users_by_id", method: "DELETE", path: "/admin/users/{id}", summary: "Revoke or update a user (admin).", request: null, response: null },
   { id: "patch_admin_users_by_id", method: "PATCH", path: "/admin/users/{id}", summary: "Revoke or update a user (admin).", request: null, response: null },
   { id: "delete_admin_users_by_id_purge", method: "DELETE", path: "/admin/users/{id}/purge", summary: "Hard-delete a user and all their data (admin).", request: null, response: null },

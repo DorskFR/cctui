@@ -503,12 +503,13 @@ mod tests {
     async fn seed_dispatcher(pool: &sqlx::PgPool, owner: uuid::Uuid, name: &str) -> uuid::Uuid {
         let id = uuid::Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO dispatchers (id, user_id, name, kind, config) \
-             VALUES ($1, $2, $3, 'http', '{}'::jsonb)",
+            "INSERT INTO dispatchers (id, user_id, name, kind, key_hash, key_preview) \
+             VALUES ($1, $2, $3, 'kubernetes', $4, 'dk…')",
         )
         .bind(id)
         .bind(owner)
         .bind(name)
+        .bind(format!("dk-{id}"))
         .execute(pool)
         .await
         .expect("seed dispatcher");

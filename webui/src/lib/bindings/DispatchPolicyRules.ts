@@ -2,9 +2,10 @@
 import type { ContextPackGrant } from "./ContextPackGrant";
 
 /**
- * What a policy-bound user may dispatch. Every list restricts its dimension
- * when non-empty and leaves it open when empty; every limit applies only when
- * set.
+ * What a policy-bound user may dispatch.
+ *
+ * Every list restricts its dimension when non-empty and leaves it open when
+ * empty; every limit applies only when set.
  */
 export type DispatchPolicyRules = { 
 /**
