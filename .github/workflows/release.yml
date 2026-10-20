@@ -160,25 +160,25 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: steps.fetch.outputs.found == 'true'
         with:
           name: cctui-bins-linux-amd64
           retention-days: 1
           path: ci-bins/release-bins-linux-amd64/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: steps.fetch.outputs.found == 'true'
         with:
           name: cctui-bins-linux-arm64
           retention-days: 1
           path: ci-bins/release-bins-linux-arm64/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: steps.fetch.outputs.found == 'true'
         with:
           name: image-bins
           retention-days: 1
           path: ci-bins/release-image-bins/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: steps.fetch.outputs.found == 'true'
         with:
           name: image-bins-server
@@ -281,7 +281,7 @@ jobs:
           SQLX_OFFLINE: "true"
         run: bash scripts/release-build-bins.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${{ matrix.target }}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: matrix.os == 'linux' && matrix.arch == 'amd64'
         with:
           name: image-bins
@@ -292,7 +292,7 @@ jobs:
       # the real binaries live on the published GitHub Release (unmetered
       # Releases storage). 1-day retention stops them piling up against the
       # 0.5 GB Actions-storage quota.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cctui-bins-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 1
@@ -335,7 +335,7 @@ jobs:
           codesign --force --sign - dist/*
           codesign --verify --verbose dist/*
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cctui-bins-darwin-arm64
           retention-days: 1
@@ -369,7 +369,7 @@ jobs:
           SQLX_OFFLINE: "true"
           CCTUI_GIT_HASH: ${{ needs.meta.outputs.sha }}
         run: bash scripts/release-build-server.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: image-bins-server
           retention-days: 1
@@ -503,7 +503,7 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: mkdir -p digest && echo "$DIGEST" > digest/cctui-ui
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: digest-cctui-ui
           retention-days: 1
@@ -599,7 +599,7 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: mkdir -p digest && echo "$DIGEST" > "digest/${{ matrix.image }}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: env.MODE != 'retag'
         with:
           name: digest-${{ matrix.image }}
