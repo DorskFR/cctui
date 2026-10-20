@@ -3,10 +3,10 @@
 //! A dispatched worker whose payload selects `adapter = "codex"` runs its task
 //! headlessly through `codex exec --json` — a one-shot, fire-and-report job,
 //! separate from the interactive app-server adapter in `adapters/codex/`. The
-//! JSONL event stream is reduced to the same `RESULT_FILE` verdict the claude
-//! path writes, so the entrypoint's result callback is shared. Rationale for
-//! `codex exec` over the Python SDK: `docs/worker-contract.md`
-//! (§ "Codex-native dispatch").
+//! JSONL event stream is reduced to the same `RESULT_FILE` verdict every
+//! dispatch writes (`crate::dispatch`), so the entrypoint's result callback is
+//! shared. Rationale for `codex exec` over the Python SDK:
+//! `docs/worker-contract.md` (§ "Codex-native dispatch").
 
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
@@ -14,10 +14,6 @@ use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context;
 use serde_json::{Value, json};
-
-/// Default result-file path the worker entrypoint's callback trap reads
-/// (`RESULT_FILE`, matching `deploy/worker-entrypoint.sh`).
-const DEFAULT_RESULT_FILE: &str = "/tmp/cctui-result.json";
 
 /// Map `codex-exec rollout thread id → dispatch SESSION_ID`. The codex adapters
 /// consult it so a dispatched exec thread's subagents nest under the registered
@@ -57,26 +53,6 @@ fn register_thread_started_line(session_id: Option<&str>, line: &str) {
     {
         register_dispatch_thread(tid, session_id);
     }
-}
-
-/// Adapter selectors that route a dispatch through this codex runner. Everything
-/// else (absent, `claude`, `claude-code`) stays on the claude-code path.
-#[must_use]
-pub fn is_codex_adapter(adapter: &str) -> bool {
-    matches!(adapter.trim(), "codex" | "codex-cli")
-}
-
-/// The adapter string a dispatch payload selects, defaulting to `claude-code`
-/// so a payload with no `adapter` key is backward-compatible.
-#[must_use]
-pub fn payload_adapter(payload: &Value) -> String {
-    payload
-        .get("adapter")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("claude-code")
-        .to_owned()
 }
 
 /// A parsed codex dispatch request: everything the runner needs to build and
@@ -119,13 +95,7 @@ impl CodexDispatch {
         let prompt = resolve_dispatch_prompt(payload)?;
         let workdir =
             std::env::var("CCTUI_DISPATCH_WORKDIR").unwrap_or_else(|_| "/workspace".to_owned());
-        let task_id = payload
-            .get("task_id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .or_else(|| std::env::var("TASK_ID").ok())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default();
+        let task_id = crate::dispatch::task_id(payload);
         let model = payload
             .get("model")
             .and_then(Value::as_str)
@@ -141,13 +111,8 @@ impl CodexDispatch {
         let service_tier = crate::adapters::codex::app_server::normalize_service_tier(
             payload.get("service_tier").and_then(Value::as_str),
         );
-        let result_file =
-            std::env::var("RESULT_FILE").unwrap_or_else(|_| DEFAULT_RESULT_FILE.to_owned());
-        let timeout_secs = std::env::var("CODEX_TIMEOUT")
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .filter(|&s| s > 0)
-            .unwrap_or(10_800);
+        let result_file = crate::dispatch::result_file();
+        let timeout_secs = crate::dispatch::timeout_secs(crate::dispatch::DispatchAdapter::Codex);
         Ok(Self {
             task_id,
             prompt,
@@ -486,24 +451,6 @@ mod tests {
             result_file: "/tmp/cctui-result.json".to_owned(),
             timeout_secs: 500,
         }
-    }
-
-    #[test]
-    fn adapter_selection() {
-        assert!(is_codex_adapter("codex"));
-        assert!(is_codex_adapter(" codex "));
-        assert!(is_codex_adapter("codex-cli"));
-        assert!(!is_codex_adapter("claude-code"));
-        assert!(!is_codex_adapter("claude"));
-        assert!(!is_codex_adapter(""));
-    }
-
-    #[test]
-    fn payload_adapter_defaults_to_claude() {
-        assert_eq!(payload_adapter(&json!({})), "claude-code");
-        assert_eq!(payload_adapter(&json!({"adapter": ""})), "claude-code");
-        assert_eq!(payload_adapter(&json!({"adapter": "codex"})), "codex");
-        assert_eq!(payload_adapter(&json!({"adapter": " codex "})), "codex");
     }
 
     #[test]

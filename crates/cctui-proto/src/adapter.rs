@@ -160,6 +160,17 @@ const HARNESS_ROWS: &[HarnessRow] = &[
         gateway_metered: true,
     },
     HarnessRow {
+        id: "gemini",
+        label: "Gemini CLI",
+        family: crate::provider::ProviderFamily::Google,
+        capabilities: ACP_CAPABILITIES,
+        default_enabled: false,
+        models_source: ModelsSource::Catalog,
+        permission_modes: ACP_PERMISSION_MODES,
+        needs_model: false,
+        gateway_metered: true,
+    },
+    HarnessRow {
         id: "qwen",
         label: "Qwen Code",
         family: crate::provider::ProviderFamily::Openai,
@@ -563,6 +574,14 @@ pub enum AdapterEvent {
         local_id: String,
         data: String,
     },
+    /// A slice of assistant text as the harness streams it, sent only while
+    /// [`AdapterCommand::WatchText`] is on. The final `Message` stays the
+    /// source of truth. Never persisted.
+    TextDelta {
+        local_id: String,
+        item_id: String,
+        delta: String,
+    },
     /// Transcript byte-offset high-water mark, returned as a resume mark on reconnect.
     TranscriptMark {
         local_id: String,
@@ -741,6 +760,12 @@ pub enum AdapterCommand {
         local_id: String,
         watch: bool,
     },
+    /// Start or stop relaying [`AdapterEvent::TextDelta`]. Adapters without
+    /// partial text (claude `bg`) stay silent and the final blocks carry it.
+    WatchText {
+        local_id: String,
+        watch: bool,
+    },
 }
 
 impl AdapterCommand {
@@ -758,7 +783,8 @@ impl AdapterCommand {
             | Self::Remove { local_id, .. }
             | Self::SetModel { local_id, .. }
             | Self::Diagnose { local_id, .. }
-            | Self::WatchPty { local_id, .. } => Some(local_id),
+            | Self::WatchPty { local_id, .. }
+            | Self::WatchText { local_id, .. } => Some(local_id),
             Self::Fork { parent_local_id, .. } => Some(parent_local_id),
             Self::Spawn { spec, .. } => spec.parent_local_id.as_deref(),
             Self::ResumeMarks { .. } | Self::AckMarks { .. } => None,
@@ -1012,7 +1038,7 @@ mod tests {
 
     #[test]
     fn known_adapters_are_the_table_ids_in_order() {
-        assert_eq!(KNOWN_ADAPTERS, ["claude-code", "codex", "opencode", "qwen", "goose"]);
+        assert_eq!(KNOWN_ADAPTERS, ["claude-code", "codex", "opencode", "gemini", "qwen", "goose"]);
         let ids: Vec<String> = harnesses().into_iter().map(|h| h.id).collect();
         assert_eq!(ids, KNOWN_ADAPTERS);
     }
@@ -1026,7 +1052,8 @@ mod tests {
             harness_for_adapter(" opencode-cli ").map(|h| h.id),
             Some("opencode".to_owned())
         );
-        for unknown in ["", "gemini", "codexx", "claude", "anthropic"] {
+        assert_eq!(harness_for_adapter("gemini-acp").map(|h| h.id), Some("gemini".to_owned()));
+        for unknown in ["", "kilo", "codexx", "claude", "anthropic", "google"] {
             assert_eq!(harness_for_adapter(unknown), None, "{unknown}");
         }
     }
@@ -1037,7 +1064,9 @@ mod tests {
         assert_eq!(harness_for_provider("anthropic-compatible"), Some("claude-code"));
         assert_eq!(harness_for_provider("openai-compatible"), Some("codex"));
         assert_eq!(harness_for_provider("fireworks"), Some("opencode"));
+        assert_eq!(harness_for_provider("google"), Some("gemini"));
         assert_eq!(harness_ids_in_family(crate::provider::ProviderFamily::Fireworks), ["opencode"]);
+        assert_eq!(harness_ids_in_family(crate::provider::ProviderFamily::Google), ["gemini"]);
         assert_eq!(
             harness_ids_in_family(crate::provider::ProviderFamily::Openai),
             ["codex", "qwen", "goose"]
@@ -1048,10 +1077,14 @@ mod tests {
     fn native_rows_are_enabled_by_default_and_acp_rows_are_opt_in() {
         assert_eq!(default_enabled_adapters(), ["claude-code", "codex", "opencode"]);
         assert!(is_default_enabled("opencode"));
-        for acp in ["qwen", "goose"] {
+        for (acp, family) in [
+            ("gemini", crate::provider::ProviderFamily::Google),
+            ("qwen", crate::provider::ProviderFamily::Openai),
+            ("goose", crate::provider::ProviderFamily::Openai),
+        ] {
             assert!(!is_default_enabled(acp), "{acp}");
             let row = harness(acp).expect(acp);
-            assert_eq!(row.family, crate::provider::ProviderFamily::Openai);
+            assert_eq!(row.family, family, "{acp}");
             assert_eq!(row.models_source, ModelsSource::Catalog);
             assert_eq!(
                 row.permission_modes,
@@ -1060,20 +1093,21 @@ mod tests {
             assert!(row.capabilities.resume && row.capabilities.set_model, "{acp}");
             assert!(!row.capabilities.fork && !row.capabilities.attach, "{acp}");
         }
-        assert!(!is_default_enabled("gemini"));
+        assert_eq!(harness("gemini").map(|h| h.label), Some("Gemini CLI".to_owned()));
     }
 
     /// The agents with no default model for the bound provider get one
-    /// resolved for them; only the Fireworks harness is metered by the gateway.
+    /// resolved for them; the harnesses on a pay-per-token family (Fireworks,
+    /// Google) are metered by the gateway.
     #[test]
     fn model_forcing_and_gateway_metering_are_row_flags() {
         for forced in ["opencode", "opencode-cli", "qwen", "goose", "goose-acp"] {
             assert!(needs_model(forced), "{forced}");
         }
-        for own_default in ["claude-code", "codex", "codex-app-server", "gemini", ""] {
+        for own_default in ["claude-code", "codex", "codex-app-server", "gemini", "kilo", ""] {
             assert!(!needs_model(own_default), "{own_default:?}");
         }
-        assert_eq!(gateway_metered_harness_ids(), ["opencode"]);
+        assert_eq!(gateway_metered_harness_ids(), ["opencode", "gemini"]);
     }
 
     #[test]
@@ -1600,6 +1634,33 @@ mod tests {
                 assert_eq!(data, "aGk=");
             }
             other => panic!("expected PtyChunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watch_text_command_and_text_delta_event_roundtrip() {
+        let cmd = AdapterCommand::WatchText { local_id: "s1".into(), watch: true };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""kind":"watch_text""#));
+        assert_eq!(cmd.local_id(), Some("s1"));
+        let back: AdapterCommand = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, AdapterCommand::WatchText { watch: true, .. }));
+
+        let evt = AdapterEvent::TextDelta {
+            local_id: "s1".into(),
+            item_id: "m:0".into(),
+            delta: "Hel".into(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains(r#""kind":"text_delta""#));
+        let back: AdapterEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            AdapterEvent::TextDelta { local_id, item_id, delta } => {
+                assert_eq!(local_id, "s1");
+                assert_eq!(item_id, "m:0");
+                assert_eq!(delta, "Hel");
+            }
+            other => panic!("expected TextDelta, got {other:?}"),
         }
     }
 

@@ -53,9 +53,10 @@
 	let credential = $state('');
 	let authScheme = $state<'bearer' | 'api_key'>('bearer');
 
-	// Fireworks shares the static-credential shape but its base URL is an
-	// optional override of a built-in upstream, so it is not required.
+	// Fireworks and Google share the static-credential shape but their base URL
+	// is an optional override of a built-in upstream, so it is not required.
 	const isFireworks = $derived(provider === 'fireworks');
+	const isGoogle = $derived(provider === 'google');
 	const isCompatible = $derived(isStaticCredential(provider));
 
 	// "Sign in with Claude" / "Sign in with ChatGPT" OAuth flow state.
@@ -177,9 +178,9 @@
 	}
 
 	function credentialSpec(): Partial<CreateProvider> | null {
-		if (isFireworks) {
+		if (isFireworks || isGoogle) {
 			return {
-				auth_scheme: authScheme,
+				auth_scheme: isGoogle ? 'api_key' : authScheme,
 				...(baseUrl.trim() ? { base_url: baseUrl.trim() } : {}),
 				...(credential.trim() ? { access_token: credential.trim() } : {})
 			};
@@ -323,6 +324,14 @@
 					</Field>
 					<Field label={m.accounts_field_base_url()}>
 						<Input bind:value={baseUrl} placeholder="https://api.fireworks.ai/inference/v1" />
+					</Field>
+				{:else if isGoogle}
+					<Field label={m.accounts_field_credential()}>
+						<Input type="password" bind:value={credential} placeholder="AIza..." />
+					</Field>
+					<Text size="xs">{m.accounts_google_key_help()}</Text>
+					<Field label={m.accounts_field_base_url()}>
+						<Input bind:value={baseUrl} placeholder="https://generativelanguage.googleapis.com" />
 					</Field>
 				{:else if isCompatible}
 					<Field label={m.accounts_field_base_url()}>

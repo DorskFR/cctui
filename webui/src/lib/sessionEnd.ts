@@ -42,6 +42,8 @@ export function endReasonLabel(reason: SessionEndReason): string {
 			return m.sessions_end_killed();
 		case 'crashed':
 			return m.sessions_end_crashed();
+		case 'oom_killed':
+			return m.sessions_end_oom_killed();
 		case 'daemon_lost':
 			return m.sessions_end_daemon_lost();
 		case 'machine_offline':

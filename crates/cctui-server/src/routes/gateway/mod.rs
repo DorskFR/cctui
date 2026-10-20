@@ -369,13 +369,126 @@ mod tests {
         let anthropic = env_for(Family::Anthropic);
         let openai = env_for(Family::Openai);
         let fireworks = env_for(Family::Fireworks);
+        let google = env_for(Family::Google);
         assert_eq!(
             fireworks.get("FIREWORKS_BASE_URL").map(String::as_str),
             Some("https://cctui.example/gateway/fireworks")
         );
         assert_eq!(fireworks.get("FIREWORKS_API_KEY").map(String::as_str), Some("cctui_s_tok"));
-        for other in [&anthropic, &openai] {
-            assert!(other.keys().all(|k| !fireworks.contains_key(k)));
+        assert_eq!(
+            google.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("https://cctui.example/gateway/google")
+        );
+        assert_eq!(google.get("GEMINI_API_KEY").map(String::as_str), Some("cctui_s_tok"));
+        let all = [&anthropic, &openai, &fireworks, &google];
+        for (i, env) in all.iter().enumerate() {
+            for (j, other) in all.iter().enumerate() {
+                assert!(i == j || other.keys().all(|k| !env.contains_key(k)), "{i} vs {j}");
+            }
+        }
+    }
+
+    /// DB-gated: migration 177's generated `family` column, replayed over one
+    /// row of every provider kind. The Rust derivation and the SQL `CASE` must
+    /// agree, and a `google` key must sit next to the other families on one
+    /// account without tripping the one-per-family index. Skips without a
+    /// database.
+    #[tokio::test]
+    async fn family_column_derives_every_provider_kind_including_google() {
+        let Some(url) = super::test_db_url("family_column_derives_every_provider_kind") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("family-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'family-acct')")
+            .bind(acct)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("seed account");
+
+        let kinds: Vec<String> =
+            cctui_proto::provider::provider_kinds().into_iter().map(|p| p.id).collect();
+        for provider in ["anthropic", "openai", "fireworks", "google"] {
+            assert!(kinds.contains(&provider.to_owned()), "{provider} is a picker kind");
+            let family: String = sqlx::query_scalar(
+                "INSERT INTO account_providers \
+                     (id, user_id, provider, encrypted_refresh_token, account_id) \
+                 VALUES ($1, $2, $3, 'x', $4) RETURNING family",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(uid)
+            .bind(provider)
+            .bind(acct)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("insert {provider}: {e}"));
+            assert_eq!(family, Family::from_provider(provider).label(), "{provider}");
+        }
+        let acct2 = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'family-acct-2')")
+            .bind(acct2)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("seed second account");
+        for (provider, expected) in
+            [("anthropic-compatible", "anthropic"), ("openai-compatible", "openai")]
+        {
+            let family: String = sqlx::query_scalar(
+                "INSERT INTO account_providers \
+                     (id, user_id, provider, encrypted_refresh_token, account_id) \
+                 VALUES ($1, $2, $3, 'x', $4) RETURNING family",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(uid)
+            .bind(provider)
+            .bind(acct2)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("insert {provider}: {e}"));
+            assert_eq!(family, expected, "{provider}");
+        }
+
+        let second_google = sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'google', 'x', $3)",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await;
+        assert!(
+            second_google.is_err_and(|e| e
+                .as_database_error()
+                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)),
+            "two google keys on one account must violate the family index"
+        );
+
+        let expr: String = sqlx::query_scalar(
+            "SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d \
+               JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum \
+              WHERE d.adrelid = 'account_providers'::regclass AND a.attname = 'family'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("generated column expression");
+        for label in ["fireworks", "google", "openai", "anthropic"] {
+            assert!(expr.contains(&format!("'{label}'")), "{label} missing from {expr}");
         }
     }
 
@@ -1032,8 +1145,9 @@ mod tests {
         .await
         .expect("seed token");
 
-        super::record_fireworks_usage(
+        super::record_metered_usage(
             pool.clone(),
+            Family::Fireworks,
             session_id.clone(),
             Some("accounts/fireworks/models/kimi-k3".to_owned()),
             crate::cost::CapturedUsage {

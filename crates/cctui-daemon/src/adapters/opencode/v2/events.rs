@@ -54,6 +54,18 @@ pub struct Text {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct TextDelta {
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    #[serde(default, rename = "assistantMessageID")]
+    pub message_id: String,
+    #[serde(default)]
+    pub ordinal: u64,
+    #[serde(default)]
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Tool {
     #[serde(rename = "sessionID")]
     pub session_id: String,
@@ -130,6 +142,7 @@ pub enum Event {
     StepStarted(Step),
     StepEnded(Step),
     StepFailed(Failure),
+    TextDelta(TextDelta),
     TextEnded(Text),
     ReasoningEnded(Text),
     ToolInputStarted(Tool),
@@ -170,6 +183,7 @@ impl Event {
             "session.step.started" => Self::StepStarted(de(data)?),
             "session.step.ended" => Self::StepEnded(de(data)?),
             "session.step.failed" => Self::StepFailed(de(data)?),
+            "session.text.delta" => Self::TextDelta(de(data)?),
             "session.text.ended" => Self::TextEnded(de(data)?),
             "session.reasoning.ended" => Self::ReasoningEnded(de(data)?),
             "session.tool.input.started" => Self::ToolInputStarted(de(data)?),
@@ -195,6 +209,7 @@ impl Event {
             Self::ExecutionInterrupted(e) => &e.session_id,
             Self::ExecutionFailed(e) | Self::StepFailed(e) => &e.session_id,
             Self::StepStarted(e) | Self::StepEnded(e) => &e.session_id,
+            Self::TextDelta(e) => &e.session_id,
             Self::TextEnded(e) | Self::ReasoningEnded(e) => &e.session_id,
             Self::ToolInputStarted(e)
             | Self::ToolCalled(e)
@@ -242,14 +257,24 @@ mod tests {
                 || kind == "session.created"
                 || kind == "session.forked"
                 || kind == "session.usage.updated"
-                || kind == "session.step.streamed"
-                || kind.strip_suffix("delta").is_some_and(|head| head.ends_with('.'));
+                || kind == "session.step.streamed";
             if ignored {
                 let evt = Event::decode(&raw).unwrap();
                 assert!(matches!(evt, Event::Other), "{kind} must be ignored");
                 assert_eq!(evt.session_id(), None);
             }
         }
+    }
+
+    #[test]
+    fn a_text_delta_carries_its_session_message_and_text() {
+        let raw = frames().into_iter().find(|f| f.contains("\"session.text.delta\"")).unwrap();
+        let evt = Event::decode(&raw).unwrap();
+        assert_eq!(evt.session_id(), Some("ses_ecd86c6adffeSeDX15STTLCF8s"));
+        let Event::TextDelta(delta) = evt else { panic!("{raw}") };
+        assert_eq!(delta.message_id, "msg_132796bc1001lR434V766SMvS9");
+        assert_eq!(delta.ordinal, 0);
+        assert_eq!(delta.delta, "All done.");
     }
 
     #[test]

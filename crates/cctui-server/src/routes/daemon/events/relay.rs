@@ -4,7 +4,8 @@ use super::session::{persist_failed_spawn, publish_session_ended};
 use crate::state::AppState;
 
 /// Replies relayed straight back to waiting callers: diagnose reports, live
-/// terminal chunks and command results.
+/// terminal chunks, streamed text and command results. Nothing here is
+/// persisted.
 pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
     match event {
         AdapterEvent::Diagnose { request_id, report, .. } => {
@@ -22,6 +23,13 @@ pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
             state.bus.publish_server(cctui_proto::ws::ServerEvent::PtyChunk {
                 session_id: local_id,
                 data,
+            });
+        }
+        AdapterEvent::TextDelta { local_id, item_id, delta } => {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::TextDelta {
+                session_id: local_id,
+                item_id,
+                delta,
             });
         }
         AdapterEvent::CommandResult { command_id, ok, error } => {
@@ -74,6 +82,43 @@ pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A streamed delta fans out to the bus as it is and leaves no row behind.
+    #[tokio::test]
+    async fn a_text_delta_is_relayed_and_never_persisted() {
+        let Some(url) = crate::routes::gateway::test_db_url("relay_text_delta") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let mut frames = state.bus.subscribe_server();
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        on_relay_event(
+            &state,
+            AdapterEvent::TextDelta {
+                local_id: session_id.clone(),
+                item_id: "msg_01:0".into(),
+                delta: "Hel".into(),
+            },
+        )
+        .await;
+
+        let frame = frames.try_recv().expect("the delta is on the bus");
+        assert!(frame.json.contains(r#""type":"text_delta""#), "{}", frame.json);
+        assert!(frame.json.contains(r#""delta":"Hel""#), "{}", frame.json);
+        let (rows,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM stream_events WHERE session_id = $1")
+                .bind(&session_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count rows");
+        assert_eq!(rows, 0, "a delta must never reach stream_events");
+    }
 
     /// A refused spawn's waiting request hears of it only once the failed row
     /// is on the list, so the caller and the session list agree.

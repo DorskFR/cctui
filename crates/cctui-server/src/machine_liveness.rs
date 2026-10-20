@@ -266,14 +266,7 @@ mod tests {
         for _ in 0..3 {
             sweep(&state).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let offline: Vec<(serde_json::Value,)> = sqlx::query_as(
-            "SELECT detail FROM events WHERE machine_id = $1 AND kind = 'machine.offline'",
-        )
-        .bind(machine)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let offline = events_once_recorded(&pool, machine).await;
         assert_eq!(offline.len(), 1, "one machine.offline, not one per sweep or per session");
         assert_eq!(offline[0].0["ended_sessions"], 2);
         for sid in [&a, &b] {
@@ -281,6 +274,32 @@ mod tests {
             let ended: Vec<_> = rows.iter().filter(|r| r.kind == "session.ended").collect();
             assert_eq!(ended.len(), 1);
             assert_eq!(ended[0].detail["end_reason"], "machine_offline");
+        }
+    }
+
+    /// The sweep records its events on detached tasks; wait, bounded, for the
+    /// machine's `machine.offline` plus one `session.ended` per session.
+    async fn events_once_recorded(pool: &sqlx::PgPool, machine: Uuid) -> Vec<(serde_json::Value,)> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let offline: Vec<(serde_json::Value,)> = sqlx::query_as(
+                "SELECT detail FROM events WHERE machine_id = $1 AND kind = 'machine.offline'",
+            )
+            .bind(machine)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+            let ended: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM events WHERE machine_id = $1 AND kind = 'session.ended'",
+            )
+            .bind(machine)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if (!offline.is_empty() && ended >= 2) || tokio::time::Instant::now() >= deadline {
+                return offline;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     }
 

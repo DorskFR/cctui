@@ -271,6 +271,7 @@ enum Wire {
     Anthropic,
     Responses,
     Chat,
+    Gemini,
 }
 
 struct SseEvent {
@@ -365,7 +366,7 @@ impl Call {
                 exempt_tool(&qualified_name(&self.name, namespace), &input)
             }
             Some(Wire::Chat) => exempt_tool(&self.name, &decoded()),
-            Some(Wire::Anthropic) | None => {
+            Some(Wire::Anthropic | Wire::Gemini) | None => {
                 let input = if self.input.is_empty() {
                     self.initial.clone().unwrap_or_default()
                 } else {
@@ -505,6 +506,9 @@ impl SseGuard {
         if let Some(choices) = v.get("choices").and_then(Value::as_array) {
             return self.classify_chat(choices, holding);
         }
+        if let Some(candidates) = v.get("candidates").and_then(Value::as_array) {
+            return self.classify_gemini(candidates, holding);
+        }
 
         match ty {
             "content_block_start" => {
@@ -619,6 +623,45 @@ impl SseGuard {
         }
     }
 
+    /// A Gemini chunk carries whole `functionCall` parts, never fragments, so a
+    /// call is complete the moment it is seen; the turn ends with
+    /// `finishReason`.
+    fn classify_gemini(&mut self, candidates: &[Value], holding: bool) -> Step {
+        let mut started = false;
+        let mut finished = false;
+        for (slot, candidate) in candidates.iter().enumerate() {
+            let ci = candidate
+                .get("index")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(|| i64::try_from(slot).unwrap_or(i64::MAX));
+            let parts = candidate.pointer("/content/parts").and_then(Value::as_array);
+            for part in parts.into_iter().flatten() {
+                let Some(call) = part.get("functionCall") else { continue };
+                let seq = i64::try_from(self.calls.len()).unwrap_or(i64::MAX);
+                let name = call.get("name").and_then(Value::as_str).unwrap_or("functionCall");
+                self.start_call(
+                    Wire::Gemini,
+                    Call {
+                        key: format!("{ci}:{seq}"),
+                        position: ci.saturating_mul(10_000).saturating_add(seq),
+                        name: name.to_owned(),
+                        initial: Some(call.get("args").cloned().unwrap_or(Value::Null)),
+                        ..Call::default()
+                    },
+                );
+                started = true;
+            }
+            if candidate.get("finishReason").is_some_and(|f| !f.is_null()) {
+                finished = true;
+            }
+        }
+        match (started || holding, finished) {
+            (true, true) => Step::End,
+            (true, false) => Step::Hold,
+            (false, _) => Step::Pass,
+        }
+    }
+
     fn resolve(&mut self, end: Option<SseEvent>, out: &mut Vec<u8>) {
         let mut calls = std::mem::take(&mut self.calls);
         calls.sort_by_key(|c| c.position);
@@ -653,6 +696,45 @@ impl SseGuard {
             Some(Wire::Chat) => {
                 let template = held.first().and_then(SseEvent::json);
                 chat_rewrite(out, template.as_ref(), &text, end.as_ref(), end_json);
+            }
+            Some(Wire::Gemini) => {
+                let template = held.first().and_then(SseEvent::json);
+                gemini_rewrite(out, template.as_ref(), &text, end.as_ref(), end_json);
+            }
+        }
+    }
+}
+
+fn gemini_blocked_candidate(text: &str) -> Value {
+    json!({"content": {"parts": [{"text": text}], "role": "model"}, "finishReason": "STOP", "index": 0})
+}
+
+fn gemini_rewrite(
+    out: &mut Vec<u8>,
+    template: Option<&Value>,
+    text: &str,
+    end: Option<&SseEvent>,
+    end_json: Option<Value>,
+) {
+    match end_json {
+        Some(mut v) if v.get("candidates").is_some() => {
+            v["candidates"] = json!([gemini_blocked_candidate(text)]);
+            out.extend(frame(None, &v));
+        }
+        _ => {
+            let mut base = serde_json::Map::new();
+            if let Some(Value::Object(t)) = template {
+                for k in ["modelVersion", "responseId", "usageMetadata"] {
+                    if let Some(v) = t.get(k) {
+                        base.insert(k.into(), v.clone());
+                    }
+                }
+            }
+            let mut v = Value::Object(base);
+            v["candidates"] = json!([gemini_blocked_candidate(text)]);
+            out.extend(frame(None, &v));
+            if let Some(e) = end {
+                out.extend_from_slice(&e.raw);
             }
         }
     }
@@ -816,12 +898,34 @@ fn chat_rewrite(
 
 // ---- non-streaming JSON ----
 
+/// The first non-exempt Gemini `functionCall` part the policy matches.
+fn gemini_json_hit(policy: &CompiledPolicy, candidates: &[Value]) -> Option<(String, Hit, String)> {
+    candidates
+        .iter()
+        .filter_map(|c| c.pointer("/content/parts").and_then(Value::as_array))
+        .flatten()
+        .find_map(|part| {
+            let call = part.get("functionCall")?;
+            let name = call.get("name").and_then(Value::as_str).unwrap_or("functionCall");
+            let args = call.get("args").cloned().unwrap_or(Value::Null);
+            if exempt_tool(name, &args) {
+                return None;
+            }
+            let hit = policy.scan_value(call)?;
+            Some((name.to_owned(), hit, args.to_string()))
+        })
+}
+
 /// Rewrite a complete JSON response. `None` = nothing matched; forward the
 /// original bytes.
 pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Block)> {
     let mut v: Value = serde_json::from_slice(body).ok()?;
     let block;
-    if let Some(content) = v.get("content").and_then(Value::as_array) {
+    if let Some(candidates) = v.get("candidates").and_then(Value::as_array) {
+        let (name, hit, input) = gemini_json_hit(policy, candidates)?;
+        block = Block::new(&name, &hit, &input);
+        v["candidates"] = json!([gemini_blocked_candidate(&explanation(&name, &hit))]);
+    } else if let Some(content) = v.get("content").and_then(Value::as_array) {
         let (first, name, hit, input) = content.iter().enumerate().find_map(|(i, b)| {
             let t = b.get("type").and_then(Value::as_str).unwrap_or("");
             if !ANTHROPIC_TOOL_BLOCKS.contains(&t) {
@@ -1684,6 +1788,146 @@ mod tests {
         assert_eq!(finish, "stop");
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].tool_name, "bash");
+    }
+
+    // ---- Gemini ----
+
+    /// `streamGenerateContent?alt=sse`: one chunk per text fragment, each
+    /// function call whole in its own chunk, cumulative `usageMetadata` on
+    /// every chunk and `finishReason` on the last.
+    fn gemini(text: &str, tools: &[(&str, Value)]) -> Vec<u8> {
+        let mut s = String::new();
+        let mut chunks: Vec<Value> = Vec::new();
+        if !text.is_empty() {
+            chunks.push(json!({"content":{"parts":[{"text":text}],"role":"model"}}));
+        }
+        for (name, args) in tools {
+            chunks.push(
+                json!({"content":{"parts":[{"functionCall":{"name":name,"args":args}}],"role":"model"}}),
+            );
+        }
+        if chunks.is_empty() {
+            chunks.push(json!({"content":{"parts":[{"text":""}],"role":"model"}}));
+        }
+        let last = chunks.len() - 1;
+        for (i, mut c) in chunks.into_iter().enumerate() {
+            if i == last {
+                c["finishReason"] = json!("STOP");
+            }
+            c["index"] = json!(0);
+            let v = json!({
+                "candidates": [c],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": i + 1, "totalTokenCount": 11 + i},
+                "modelVersion": "gemini-2.5-pro",
+                "responseId": "r1",
+            });
+            s.push_str(&ev(None, &v));
+        }
+        s.into_bytes()
+    }
+
+    /// The genai SDK's stream accumulator: text concatenated, function calls
+    /// collected, one `finishReason`, the last `usageMetadata`.
+    fn parse_gemini(body: &[u8]) -> (String, Vec<(String, Value)>, String, Value) {
+        let mut text = String::new();
+        let mut calls = Vec::new();
+        let mut finish = String::new();
+        let mut usage = Value::Null;
+        for (name, data) in events(body) {
+            assert!(name.is_none());
+            let v: Value = serde_json::from_str(&data).expect("chunk is JSON");
+            assert_eq!(v["responseId"], "r1");
+            if !v["usageMetadata"].is_null() {
+                usage = v["usageMetadata"].clone();
+            }
+            for c in v["candidates"].as_array().unwrap() {
+                for p in c["content"]["parts"].as_array().into_iter().flatten() {
+                    if let Some(t) = p["text"].as_str() {
+                        text.push_str(t);
+                    }
+                    if let Some(fc) = p.get("functionCall") {
+                        calls.push((fc["name"].as_str().unwrap().to_owned(), fc["args"].clone()));
+                    }
+                }
+                if let Some(f) = c["finishReason"].as_str() {
+                    assert!(finish.is_empty(), "one finishReason");
+                    finish = f.to_owned();
+                }
+            }
+        }
+        (text, calls, finish, usage)
+    }
+
+    #[test]
+    fn gemini_clean_function_call_passes_byte_for_byte() {
+        let body = gemini(
+            "AcmeCorp is fine in text",
+            &[("run_shell_command", json!({"command": "ls -la"}))],
+        );
+        for size in [body.len(), 10, 1] {
+            let (out, blocks) = run_chunked(&body, size);
+            assert_eq!(out, body, "chunk size {size}");
+            assert!(blocks.is_empty());
+        }
+        let (text, calls, finish, usage) = parse_gemini(&body);
+        assert_eq!(text, "AcmeCorp is fine in text");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(finish, "STOP");
+        assert_eq!(usage["candidatesTokenCount"], 2);
+    }
+
+    #[test]
+    fn gemini_match_in_a_function_call_is_rewritten() {
+        let body = gemini(
+            "ok",
+            &[
+                ("read_file", json!({"path": "/tmp/a"})),
+                ("run_shell_command", json!({"command": "echo internal-2024"})),
+            ],
+        );
+        for size in [body.len(), 7] {
+            let (out, blocks) = run_chunked(&body, size);
+            let (text, calls, finish, usage) = parse_gemini(&out);
+            assert!(calls.is_empty(), "no function call survives (chunk size {size})");
+            assert_eq!(finish, "STOP");
+            assert_eq!(usage["candidatesTokenCount"], 3, "the terminal chunk's tally is kept");
+            assert!(text.contains("⛔ cctui blocked a run_shell_command call"), "{text}");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "run_shell_command");
+            assert!(blocks[0].rule.starts_with("pattern:"));
+        }
+    }
+
+    #[test]
+    fn gemini_local_cctui_tools_are_exempt() {
+        let body = gemini("", &[("mcp__cctui__CctuiHistory", json!({"query": "AcmeCorp"}))]);
+        assert_eq!(stream_blocked(&body), None);
+        let body = gemini("", &[("run_shell_command", json!({"command": "grep AcmeCorp"}))]);
+        assert_eq!(stream_blocked(&body).as_deref(), Some("run_shell_command"));
+    }
+
+    #[test]
+    fn gemini_json_is_rewritten_only_on_a_tool_match() {
+        let p = policy();
+        let clean = json!({"candidates":[{"content":{"parts":[{"text":"AcmeCorp"},{"functionCall":{"name":"run_shell_command","args":{"command":"ls"}}}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2},"responseId":"r"});
+        assert!(rewrite_json(&p, clean.to_string().as_bytes()).is_none());
+
+        let hit = json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"/a"}}},{"functionCall":{"name":"run_shell_command","args":{"command":"gh pr view acme/secret#3"}}}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2},"responseId":"r"});
+        let (out, block) = rewrite_json(&p, hit.to_string().as_bytes()).expect("blocked");
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["usageMetadata"]["candidatesTokenCount"], 2);
+        assert_eq!(v["responseId"], "r");
+        let parts = v["candidates"][0]["content"]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].get("functionCall").is_none());
+        assert!(
+            parts[0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("⛔ cctui blocked a run_shell_command call")
+        );
+        assert_eq!(v["candidates"][0]["finishReason"], "STOP");
+        assert_eq!(block.tool_name, "run_shell_command");
     }
 
     // ---- non-streaming JSON ----

@@ -1710,6 +1710,11 @@ tui = "handled"
 module = "app/server_event.rs"
 
 [[ws_event]]
+name = "text_delta"
+tui = "waived"
+reason = "the TUI never watches streamed text"
+
+[[ws_event]]
 name = "scheduled_launch"
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"

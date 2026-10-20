@@ -503,6 +503,7 @@ impl ChildWatch {
             | AdapterEvent::Diagnose { .. }
             | AdapterEvent::HarnessModels { .. }
             | AdapterEvent::PtyChunk { .. }
+            | AdapterEvent::TextDelta { .. }
             | AdapterEvent::TranscriptMark { .. } => {}
             _ => {}
         }

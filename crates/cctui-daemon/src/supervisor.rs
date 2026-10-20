@@ -139,10 +139,9 @@ async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-type WsSink = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Message,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsSink = futures_util::stream::SplitSink<WsStream, Message>;
 
 /// Micro-batch buffer: adapter events accumulate here for up to
 /// `BATCH_WINDOW`, then flush as one compress+chunk frame.
@@ -324,6 +323,7 @@ impl Supervisor {
         // kill running work. The WS is only the transport.
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
         let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
+        crate::dispatch::register_event_sink(event_tx.clone());
 
         let mut backoff = Backoff::reconnect();
         loop {
@@ -362,20 +362,7 @@ impl Supervisor {
         event_tx: &mpsc::Sender<(String, AdapterEvent)>,
         event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     ) -> anyhow::Result<()> {
-        let url = self.client.daemon_ws_url();
-        tracing::info!(%url, "connecting to daemon WS");
-        let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
-        let (ws, _) =
-            match tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request))
-                .await
-            {
-                Ok(res) => res?,
-                Err(_) => anyhow::bail!(
-                    "daemon WS connect did not complete within {}s",
-                    CONNECT_TIMEOUT.as_secs()
-                ),
-            };
-        let (mut sink, mut stream) = ws.split();
+        let (mut sink, mut stream) = self.connect().await?.split();
 
         // Out-of-band frames the supervisor itself produces (currently the
         // `StageFilesResult` reply to a mid-chat attachment request),
@@ -480,7 +467,14 @@ impl Supervisor {
                         }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
-                        batch.push_event(adapter_id, event)?;
+                        match lane(&adapter_id, &event)? {
+                            Lane::Batch => batch.push_event(adapter_id, event)?,
+                            Lane::Immediate(payload) => {
+                                self.counters.add(Subsystem::Forward, payload.len() as u64);
+                                send_bounded(&mut sink, Message::Text(payload.into())).await?;
+                            }
+                            Lane::Drop => {}
+                        }
                     }
                 }
             }
@@ -490,6 +484,20 @@ impl Supervisor {
         crate::preview::set_uplink(None);
         self.park_transfer(active);
         outcome
+    }
+
+    async fn connect(&self) -> anyhow::Result<WsStream> {
+        let url = self.client.daemon_ws_url();
+        tracing::info!(%url, "connecting to daemon WS");
+        let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
+        let connect = tokio_tungstenite::connect_async(request);
+        match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+            Ok(res) => Ok(res?.0),
+            Err(_) => anyhow::bail!(
+                "daemon WS connect did not complete within {}s",
+                CONNECT_TIMEOUT.as_secs()
+            ),
+        }
     }
 
     /// The connection is healthy: remember it for the reconnect schedule and
@@ -680,6 +688,13 @@ impl Supervisor {
                             %adapter_id, %local_id, watch, %err, "pty watch dropped"
                         ),
                     }
+                    return;
+                }
+                if let cctui_proto::adapter::AdapterCommand::WatchText { local_id, watch } =
+                    command.as_ref()
+                {
+                    crate::text_deltas::set(local_id, *watch);
+                    tracing::info!(%adapter_id, %local_id, watch, "text watch toggled");
                     return;
                 }
                 if let cctui_proto::adapter::AdapterCommand::Interrupt { local_id, command_id } =
@@ -1366,6 +1381,28 @@ fn encode_event(
     serde_json::to_vec(&frame).map(Some)
 }
 
+/// Where an event goes out: the micro-batch, its own frame right now, or
+/// nowhere.
+enum Lane {
+    Batch,
+    Immediate(String),
+    Drop,
+}
+
+/// A text delta skips the batch window: it is worth nothing late. One whose
+/// watcher left while it was queued is dropped.
+fn lane(adapter_id: &str, event: &AdapterEvent) -> serde_json::Result<Lane> {
+    let watched = match event {
+        AdapterEvent::TextDelta { local_id, .. } => crate::text_deltas::wanted(local_id),
+        _ => return Ok(Lane::Batch),
+    };
+    if !watched {
+        return Ok(Lane::Drop);
+    }
+    let frame = DaemonFrameUp::Event { adapter_id: adapter_id.to_owned(), event: event.clone() };
+    serde_json::to_string(&frame).map(Lane::Immediate)
+}
+
 /// The one point every adapter's events pass through, so a `CctuiAgent`
 /// caller parked on its child's completion is fed here.
 fn observe_event(adapter_id: &str, event: &AdapterEvent) {
@@ -1394,6 +1431,7 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::AskResolved { local_id }
         | AdapterEvent::PlanRequest { local_id, .. }
         | AdapterEvent::PlanResolved { local_id }
+        | AdapterEvent::TextDelta { local_id, .. }
         | AdapterEvent::TurnEnd { local_id, .. } => local_id,
         _ => "",
     }
@@ -1410,6 +1448,7 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::AskResolved { .. } => "ask_resolved",
         AdapterEvent::PlanRequest { .. } => "plan_request",
         AdapterEvent::PlanResolved { .. } => "plan_resolved",
+        AdapterEvent::TextDelta { .. } => "text_delta",
         AdapterEvent::TurnEnd { .. } => "turn_end",
         _ => "other",
     }
@@ -1693,8 +1732,8 @@ mod tests {
     use cctui_proto::ws::DaemonFrameUp;
 
     use super::{
-        AdapterRunning, Duration, LIVENESS_TIMEOUT, PING_INTERVAL, PendingTransfer, Supervisor,
-        compile_scrub, is_textless_thinking, scrub_event,
+        AdapterRunning, Duration, LIVENESS_TIMEOUT, Lane, PING_INTERVAL, PendingTransfer,
+        Supervisor, compile_scrub, is_textless_thinking, lane, scrub_event,
     };
     use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
     use crate::client::ServerClient;
@@ -2705,6 +2744,29 @@ mod tests {
     }
 
     #[test]
+    fn text_delta_skips_the_batch_while_watched_and_is_dropped_otherwise() {
+        let delta = || cctui_proto::adapter::AdapterEvent::TextDelta {
+            local_id: "lane-s1".to_owned(),
+            item_id: "m:0".to_owned(),
+            delta: "Hel".to_owned(),
+        };
+        assert!(matches!(lane("claude-code", &delta()).unwrap(), Lane::Drop));
+        crate::text_deltas::set("lane-s1", true);
+        let Lane::Immediate(payload) = lane("claude-code", &delta()).unwrap() else {
+            panic!("a watched delta must go out on its own frame");
+        };
+        assert!(payload.contains(r#""kind":"text_delta""#), "{payload}");
+        assert!(payload.contains(r#""delta":"Hel""#), "{payload}");
+        crate::text_deltas::set("lane-s1", false);
+        let message = cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "lane-s1".to_owned(),
+            payload: serde_json::json!({"role": "assistant", "text": "Hello"}),
+            turn_id: None,
+        };
+        assert!(matches!(lane("claude-code", &message).unwrap(), Lane::Batch));
+    }
+
+    #[test]
     fn heartbeat_prepares_as_immediate_plain_frame() {
         // Heartbeats never enter the batch buffer (the ping arm sends them
         // directly); prepared, one is a small plain frame, proving the control
@@ -3132,9 +3194,9 @@ mod tests {
             assert_eq!(paths.len(), 1, "{adapter}");
             let _ = std::fs::remove_dir_all(crate::adapters::uploads::session_dir(&local_id));
         }
-        let up = super::stage_files_result(uuid::Uuid::new_v4(), "gemini", "test-x", &[file]);
+        let up = super::stage_files_result(uuid::Uuid::new_v4(), "kilo", "test-x", &[file]);
         let DaemonFrameUp::StageFilesResult { ok, .. } = up else { panic!() };
-        assert!(!ok);
+        assert!(!ok, "an adapter outside the harness table stages nothing");
     }
 
     #[tokio::test]

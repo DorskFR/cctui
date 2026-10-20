@@ -112,6 +112,7 @@ const fixtures = {
 	},
 	tool_call_blocked: { type: 'tool_call_blocked', session_id: SID, tool_name: 'Bash', rule: 'rm -rf' },
 	pty_chunk: { type: 'pty_chunk', session_id: SID, data: 'aGk=' },
+	text_delta: { type: 'text_delta', session_id: SID, item_id: 'msg_01:0', delta: 'Hel' },
 	scheduled_launch: {
 		type: 'scheduled_launch',
 		draft_id: SID,
@@ -414,6 +415,20 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		c.onToolBlock(SID, (v) => (b = v));
 		sock.deliver(fixtures.tool_call_blocked);
 		expect(b).toEqual({ tool_name: 'Bash', rule: 'rm -rf' });
+	});
+
+	it('text_delta reaches the per-session listener, which toggles the watch on and off', () => {
+		const { c, sock } = setup();
+		const deltas: unknown[] = [];
+		const off = c.onTextDelta(SID, (d) => deltas.push(d));
+		expect(sock.sent.at(-1)).toEqual({ type: 'watch_text', session_id: SID, watch: true });
+		sock.deliver(fixtures.text_delta);
+		sock.deliver({ ...fixtures.text_delta, session_id: 'other' });
+		expect(deltas).toEqual([{ item_id: 'msg_01:0', delta: 'Hel' }]);
+		off();
+		expect(sock.sent.at(-1)).toEqual({ type: 'watch_text', session_id: SID, watch: false });
+		sock.deliver(fixtures.text_delta);
+		expect(deltas).toHaveLength(1);
 	});
 
 	it('pty_chunk decodes base64 for terminal listeners', () => {

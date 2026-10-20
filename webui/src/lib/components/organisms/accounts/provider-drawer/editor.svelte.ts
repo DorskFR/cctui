@@ -38,6 +38,7 @@ const indexed = (list: AccountModel[]) =>
 export class ProviderEdit {
 	readonly provider: AccountProvider;
 	readonly isFireworks: boolean;
+	readonly isGoogle: boolean;
 	readonly isCompatible: boolean;
 	readonly isAnthropic: boolean;
 	readonly isOpenai: boolean;
@@ -64,6 +65,7 @@ export class ProviderEdit {
 	constructor(p: AccountProvider) {
 		this.provider = p;
 		this.isFireworks = p.provider === 'fireworks';
+		this.isGoogle = p.provider === 'google';
 		this.isCompatible = isStaticCredential(p.provider);
 		this.isAnthropic = p.family === 'anthropic';
 		this.isOpenai = p.family === 'openai';
@@ -167,12 +169,10 @@ export class ProviderEdit {
 			...(this.isAnthropic ? { settings_json: this.settings } : {}),
 			...(this.isAnthropic || this.isOpenai ? { provider_settings: this.providerSettingsOut() } : {})
 		};
-		if (this.isFireworks) {
-			out.models = fwModelList(this.models);
-			out.provider_settings = this.providerSettings;
-		} else {
-			out.models = modelList(this.models);
-		}
+		// The metered catalogs carry prices, which the plain list would strip.
+		out.models =
+			this.isFireworks || this.isGoogle ? fwModelList(this.models) : modelList(this.models);
+		if (this.isFireworks) out.provider_settings = this.providerSettings;
 		if (this.isFireworks || this.isCompatible) {
 			if (this.baseUrl.trim()) out.base_url = this.baseUrl.trim();
 			if (this.credential.trim()) out.access_token = this.credential.trim();

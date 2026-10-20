@@ -18,6 +18,7 @@ export const END_REASONS: EndReasonInfo[] = [
 	{ reason: 'completed', tone: 'ok', muted: false, failed_start: false },
 	{ reason: 'killed', tone: 'neutral', muted: false, failed_start: false },
 	{ reason: 'crashed', tone: 'danger', muted: false, failed_start: false },
+	{ reason: 'oom_killed', tone: 'danger', muted: false, failed_start: false },
 	{ reason: 'daemon_lost', tone: 'warn', muted: false, failed_start: false },
 	{ reason: 'machine_offline', tone: 'warn', muted: false, failed_start: false },
 	{ reason: 'reaped_inactive', tone: 'neutral', muted: true, failed_start: false },
@@ -60,6 +61,13 @@ export const PROVIDERS: ProviderInfo[] = [
 		label: 'Fireworks',
 		picker_label: 'Fireworks',
 		family: 'fireworks',
+		static_credential: true
+	},
+	{
+		id: 'google',
+		label: 'Gemini',
+		picker_label: 'Gemini (google)',
+		family: 'google',
 		static_credential: true
 	}
 ];
@@ -141,6 +149,15 @@ export const HARNESSES: HarnessDescriptor[] = [
 		default_enabled: true,
 		models_source: 'none',
 		permission_modes: PERMISSION_MODES
+	},
+	{
+		id: 'gemini',
+		label: 'Gemini CLI',
+		family: 'google',
+		capabilities: caps(false, false, true, true, true, false, true, true),
+		default_enabled: false,
+		models_source: 'catalog',
+		permission_modes: ACP_PERMISSION_MODES
 	},
 	{
 		id: 'qwen',

@@ -643,7 +643,7 @@ async fn codex_config_block(state: &AppState, account_id: Uuid, trust: Trust) ->
 }
 
 /// Insert the family's gateway routing keys over whatever the account env
-/// already carries. The three families emit DISJOINT key pairs, which is what
+/// already carries. The families emit DISJOINT key pairs, which is what
 /// lets one worker hold a claude + a codex + a Fireworks credential at once —
 /// `resume_env_for_session` merges every bound family's env blindly.
 pub fn apply_gateway_env(
@@ -665,6 +665,10 @@ pub fn apply_gateway_env(
         Family::Fireworks => {
             env.insert("FIREWORKS_BASE_URL".into(), format!("{base}/gateway/fireworks"));
             env.insert("FIREWORKS_API_KEY".into(), token);
+        }
+        Family::Google => {
+            env.insert("GOOGLE_GEMINI_BASE_URL".into(), format!("{base}/gateway/google"));
+            env.insert("GEMINI_API_KEY".into(), token);
         }
     }
 }

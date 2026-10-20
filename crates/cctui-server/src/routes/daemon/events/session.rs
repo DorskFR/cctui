@@ -50,6 +50,7 @@ pub(super) fn record_session_ended(
     let end_reason = reason.kind();
     let severity = match end_reason {
         SessionEndReason::Crashed
+        | SessionEndReason::OomKilled
         | SessionEndReason::ResumeFailed
         | SessionEndReason::SpawnFailed => Severity::Error,
         SessionEndReason::DaemonLost | SessionEndReason::MachineOffline => Severity::Warn,

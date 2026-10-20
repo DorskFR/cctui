@@ -15,8 +15,17 @@ pub fn is_reserved_env_key(name: &str) -> bool {
 
 const PLUGIN_DENIED_EXACT: [&str; 6] =
     ["HOME", "SHELL", "USER", "NODE_OPTIONS", "TMPDIR", "XDG_CONFIG_HOME"];
-const PLUGIN_DENIED_PREFIXES: [&str; 5] =
-    ["ANTHROPIC_", "CLAUDE_", "OPENAI_", "FIREWORKS_", "CODEX_"];
+const PLUGIN_DENIED_PREFIXES: [&str; 9] = [
+    "ANTHROPIC_",
+    "CLAUDE_",
+    "OPENAI_",
+    "FIREWORKS_",
+    "CODEX_",
+    "GEMINI_",
+    "GOOGLE_",
+    "QWEN_",
+    "GOOSE_",
+];
 
 /// Whether a plugin may declare `name` as the env var carrying one of its
 /// user settings: `^[A-Z][A-Z0-9_]{0,63}$`, and none of the names that steer
@@ -165,6 +174,10 @@ mod tests {
             "CCTUI_WEB_ORIGIN",
             "OPENAI_API_KEY",
             "FIREWORKS_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "QWEN_SANDBOX",
+            "GOOSE_PROVIDER",
             "HTTP_PROXY",
             "REPLY_URL",
             "SESSION_ID",

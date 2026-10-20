@@ -45,7 +45,11 @@
 	);
 
 	const active = $derived(
-		enabled && (provider === 'anthropic' || provider === 'openai' || provider === 'fireworks')
+		enabled &&
+			(provider === 'anthropic' ||
+				provider === 'openai' ||
+				provider === 'fireworks' ||
+				provider === 'google')
 	);
 	const q = useAccountUsage(
 		() => id,

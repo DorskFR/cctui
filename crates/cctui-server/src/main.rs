@@ -15,6 +15,7 @@ mod config;
 mod cost;
 mod crypto;
 mod db;
+mod dispatch_liveness;
 mod dispatchers;
 mod envelope_guard;
 mod error;
@@ -499,6 +500,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
         .route("/gateway/openai/{*path}", any(routes::gateway::openai))
         .route("/gateway/fireworks/{*path}", any(routes::gateway::fireworks))
+        .route("/gateway/google/{*path}", any(routes::gateway::google))
         // Pod-to-pod bus endpoints. Self-authenticating via the
         // cluster-internal shared secret (constant-time compare; user/machine
         // tokens never accepted), so they live outside the `api_router` auth
@@ -852,6 +854,7 @@ fn spawn_reaper_sweeps(state: &AppState) {
         machine_liveness::sweep(&state).await;
         machine_liveness::sweep_dispatchers(&state).await;
     });
+    spawn_sweep(state, |state| async move { dispatch_liveness::sweep(&state).await });
     spawn_sweep(state, |state| async move { auto_resume::sweep(&state).await });
     spawn_sweep(state, |state| async move { auto_redeem::sweep(&state).await });
     spawn_sweep(state, |state| async move { scheduled_messages::sweep(&state).await });

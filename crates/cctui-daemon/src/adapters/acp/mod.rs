@@ -11,6 +11,7 @@ pub mod connection;
 pub mod elicitation;
 pub mod modes;
 pub mod normalize;
+pub mod oneshot;
 pub mod persist;
 pub mod process;
 pub mod protocol;

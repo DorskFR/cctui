@@ -345,6 +345,14 @@ impl OpenCodeSession {
         self
     }
 
+    /// The session ends once its first turn has produced output, as a
+    /// `CctuiAgent` child does.
+    #[must_use]
+    pub const fn with_oneshot(mut self) -> Self {
+        self.oneshot = true;
+        self
+    }
+
     pub async fn run(mut self) {
         let command_id = self.params.command_id.take();
         let failure = match self.run_inner(command_id).await {
@@ -1122,6 +1130,16 @@ impl OpenCodeSession {
     async fn on_signal(&mut self, session_id: &str, signal: Signal) -> bool {
         match signal {
             Signal::Rows(rows) => self.emit_rows(session_id, rows).await,
+            Signal::TextDelta { item_id, delta } => {
+                let _ = self
+                    .events
+                    .send(AdapterEvent::TextDelta {
+                        local_id: session_id.to_owned(),
+                        item_id,
+                        delta,
+                    })
+                    .await;
+            }
             Signal::AssistantActive => self.saw_assistant = true,
             Signal::Usage(usage) => {
                 let _ = self.events.send(*usage).await;

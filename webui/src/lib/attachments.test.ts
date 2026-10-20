@@ -286,8 +286,9 @@ describe('prefixImageTokens', () => {
 
 describe('supportsAttachments', () => {
 	it('accepts every staging harness and refuses unknown ones', () => {
-		for (const a of ['claude-code', 'codex', 'opencode']) expect(supportsAttachments(a)).toBe(true);
-		expect(supportsAttachments('gemini')).toBe(false);
+		for (const a of ['claude-code', 'codex', 'opencode', 'gemini'])
+			expect(supportsAttachments(a)).toBe(true);
+		expect(supportsAttachments('kilo')).toBe(false);
 		expect(supportsAttachments(null)).toBe(false);
 	});
 });

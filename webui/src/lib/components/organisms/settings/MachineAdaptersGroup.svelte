@@ -56,6 +56,7 @@
 
 	const label = (a: MachineAdapterInfo) => harnessLabel(a.adapter_id, harnessTable());
 	const ABOUT: Record<string, () => string> = {
+		gemini: m.settings_machine_adapters_about_gemini,
 		qwen: m.settings_machine_adapters_about_qwen,
 		goose: m.settings_machine_adapters_about_goose
 	};

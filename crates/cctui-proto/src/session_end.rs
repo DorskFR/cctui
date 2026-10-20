@@ -44,6 +44,7 @@ pub fn end_reason_table() -> Vec<EndReasonInfo> {
         SessionEndReason::Completed,
         SessionEndReason::Killed,
         SessionEndReason::Crashed,
+        SessionEndReason::OomKilled,
         SessionEndReason::DaemonLost,
         SessionEndReason::MachineOffline,
         SessionEndReason::ReapedInactive,
@@ -66,7 +67,9 @@ impl SessionEndReason {
     pub const fn tone(self) -> EndTone {
         match self {
             Self::Completed => EndTone::Ok,
-            Self::Crashed | Self::ResumeFailed | Self::SpawnFailed => EndTone::Danger,
+            Self::Crashed | Self::OomKilled | Self::ResumeFailed | Self::SpawnFailed => {
+                EndTone::Danger
+            }
             Self::DaemonLost | Self::MachineOffline => EndTone::Warn,
             _ => EndTone::Neutral,
         }
@@ -114,6 +117,7 @@ mod tests {
         assert_eq!(SessionEndReason::Completed.tone(), EndTone::Ok);
         assert_eq!(SessionEndReason::Killed.tone(), EndTone::Neutral);
         assert_eq!(SessionEndReason::Crashed.tone(), EndTone::Danger);
+        assert_eq!(SessionEndReason::OomKilled.tone(), EndTone::Danger);
         assert_eq!(SessionEndReason::ResumeFailed.tone(), EndTone::Danger);
         assert_eq!(SessionEndReason::SpawnFailed.tone(), EndTone::Danger);
         assert_eq!(SessionEndReason::DaemonLost.tone(), EndTone::Warn);

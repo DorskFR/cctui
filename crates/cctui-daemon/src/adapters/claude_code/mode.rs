@@ -10,6 +10,11 @@
 //! - [`Mode::Legacy`] — the line-delimited [`AdapterEvent`](cctui_proto::adapter::AdapterEvent)
 //!   UDS listener.
 //!
+//! Streamed assistant text ([`AdapterEvent::TextDelta`](cctui_proto::adapter::AdapterEvent))
+//! exists only under [`Mode::Sdk`] and [`Mode::Oneshot`], which run claude
+//! with `--include-partial-messages`. [`Mode::Bg`] tails the transcript and
+//! has no partial text: a text watcher there gets the final blocks only.
+//!
 //! The `mode` values `"claude-daemon"` and `"legacy"` both resolve, and
 //! `CCTUI_ADAPTER_CLAUDE_DAEMON=0`/`false` forces [`Mode::Legacy`] when `mode`
 //! is unset.

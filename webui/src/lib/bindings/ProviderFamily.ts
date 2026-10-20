@@ -5,4 +5,4 @@
  *
  * Mirrors the server's generated `family` column.
  */
-export type ProviderFamily = "anthropic" | "openai" | "fireworks";
+export type ProviderFamily = "anthropic" | "openai" | "fireworks" | "google";

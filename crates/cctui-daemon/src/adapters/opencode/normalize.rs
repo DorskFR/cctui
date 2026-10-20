@@ -175,15 +175,15 @@ pub struct Tracker {
     roles: HashMap<String, String>,
     emitted_parts: HashSet<String>,
     emitted_usage: HashSet<String>,
+    /// Bytes of each streaming text part already forwarded as deltas.
+    streamed: HashMap<String, usize>,
 }
 
 impl Tracker {
     pub fn signals(&mut self, session_id: &str, evt: OcEvent) -> Vec<Signal> {
         match evt {
             OcEvent::MessageUpdated { properties } => self.message(session_id, &properties.info),
-            OcEvent::PartUpdated { properties } => {
-                self.part(&properties.part).into_iter().collect()
-            }
+            OcEvent::PartUpdated { properties } => self.part(session_id, &properties.part),
             OcEvent::SessionIdle { .. } => vec![Signal::TurnEnded],
             OcEvent::SessionStatus { properties } => {
                 status_kind(&properties.status).map(status_signal).into_iter().collect()
@@ -225,16 +225,38 @@ impl Tracker {
         out
     }
 
-    fn part(&mut self, part: &Part) -> Option<Signal> {
+    fn part(&mut self, session_id: &str, part: &Part) -> Vec<Signal> {
         let role = part
             .message_id()
             .and_then(|id| self.roles.get(id))
             .map_or("assistant", String::as_str)
             .to_owned();
-        if !is_final(part, &role) || !self.emitted_parts.insert(part.id().to_owned()) {
+        if !is_final(part, &role) {
+            return self.stream_delta(session_id, part, &role).into_iter().collect();
+        }
+        self.streamed.remove(part.id());
+        if !self.emitted_parts.insert(part.id().to_owned()) {
+            return Vec::new();
+        }
+        vec![Signal::Rows(part_payloads(part, &role))]
+    }
+
+    /// The text a streaming assistant part grew by since its last snapshot,
+    /// for a session with a text watcher. A snapshot that does not extend the
+    /// last one restarts the count without emitting.
+    fn stream_delta(&mut self, session_id: &str, part: &Part, role: &str) -> Option<Signal> {
+        let Part::Text { id, text, synthetic, .. } = part else { return None };
+        if role != "assistant" || *synthetic == Some(true) {
             return None;
         }
-        Some(Signal::Rows(part_payloads(part, &role)))
+        if !crate::text_deltas::wanted(session_id) {
+            self.streamed.remove(id);
+            return None;
+        }
+        let seen = self.streamed.entry(id.clone()).or_default();
+        let delta = text.get(*seen..).filter(|d| !d.is_empty());
+        *seen = text.len();
+        delta.map(|delta| Signal::TextDelta { item_id: id.clone(), delta: delta.to_owned() })
     }
 }
 
@@ -262,6 +284,58 @@ mod tests {
             time: Some(PartTime { start: 1, end }),
             synthetic: None,
         }
+    }
+
+    fn part_updated(session_id: &str, part: Part) -> OcEvent {
+        OcEvent::PartUpdated {
+            properties: super::super::events::PartUpdated {
+                session_id: session_id.to_owned(),
+                part,
+            },
+        }
+    }
+
+    #[test]
+    fn streaming_snapshots_become_deltas_only_for_a_text_watcher() {
+        let mut tracker = Tracker::default();
+        let unwatched =
+            tracker.signals("ses_v1_silent", part_updated("ses_v1_silent", text_part("Hel", None)));
+        assert!(unwatched.is_empty(), "no watcher, no delta: {unwatched:?}");
+
+        crate::text_deltas::set("ses_v1_voice", true);
+        let mut got = Vec::new();
+        for text in ["Hel", "Hello", "Hello", "Hello there"] {
+            got.extend(
+                tracker
+                    .signals("ses_v1_voice", part_updated("ses_v1_voice", text_part(text, None))),
+            );
+        }
+        let done = tracker.signals(
+            "ses_v1_voice",
+            part_updated("ses_v1_voice", text_part("Hello there", Some(9))),
+        );
+        crate::text_deltas::set("ses_v1_voice", false);
+
+        let deltas: Vec<(String, String)> = got
+            .into_iter()
+            .map(|s| match s {
+                Signal::TextDelta { item_id, delta } => (item_id, delta),
+                other => panic!("expected a delta, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            deltas,
+            vec![
+                ("prt_1".to_owned(), "Hel".to_owned()),
+                ("prt_1".to_owned(), "lo".to_owned()),
+                ("prt_1".to_owned(), " there".to_owned()),
+            ]
+        );
+        assert!(
+            matches!(done.as_slice(), [Signal::Rows(rows)] if rows.len() == 1),
+            "the final part is still a row: {done:?}"
+        );
+        assert!(tracker.streamed.is_empty(), "a finished part is forgotten");
     }
 
     #[test]

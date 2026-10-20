@@ -124,6 +124,7 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         ServerEvent::PtyChunk { session_id, data } => {
             vec![Action::Terminal(TerminalAction::Chunk { session_id, data })]
         }
+        ServerEvent::TextDelta { .. } => waived("the TUI never watches streamed text"),
         ServerEvent::ScheduledLaunch { .. } => {
             waived("a draft is a session row the list refresh carries")
         }

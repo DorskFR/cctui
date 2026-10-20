@@ -88,6 +88,7 @@ fn every_command(adapter: &str) -> Vec<AdapterCommand> {
         },
         AdapterCommand::Diagnose { local_id: GHOST.into(), request_id: DIAGNOSE },
         AdapterCommand::WatchPty { local_id: GHOST.into(), watch: true },
+        AdapterCommand::WatchText { local_id: GHOST.into(), watch: true },
     ]
 }
 

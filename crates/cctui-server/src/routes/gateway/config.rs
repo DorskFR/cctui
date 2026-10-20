@@ -79,12 +79,19 @@ pub fn fireworks_upstream() -> String {
         .unwrap_or_else(|_| "https://api.fireworks.ai/inference/v1".into())
 }
 
+/// Google's Gemini API base. A provider row's `base_url` still wins when set.
+pub fn google_upstream() -> String {
+    std::env::var("CCTUI_GOOGLE_UPSTREAM")
+        .unwrap_or_else(|_| "https://generativelanguage.googleapis.com".into())
+}
+
 /// Whether the response body must be teed, which forces the upstream call to be
 /// made without `accept-encoding`. reqwest is built without decompression
 /// features, so a gzip/zstd body reaches the tee as opaque bytes: Langfuse gets a
-/// trace with no usage, and Fireworks gets no metered usage at all.
-pub const fn tees_response(langfuse: bool, fireworks: bool) -> bool {
-    langfuse || fireworks
+/// trace with no usage, and a metered family (Fireworks, Google) gets no usage
+/// at all.
+pub const fn tees_response(langfuse: bool, metered: bool) -> bool {
+    langfuse || metered
 }
 
 /// Per-provider request-shaping settings for the `fireworks` family, resolved
@@ -229,11 +236,25 @@ const fn rules(family: Family) -> &'static [PathRule] {
         rule(&["POST"], "/embeddings", false),
         rule(&["GET"], "/models", true),
     ];
+    const GOOGLE: &[PathRule] = &[
+        rule(&["POST", "GET"], "/v1beta/models", true),
+        rule(&["POST", "GET"], "/v1/models", true),
+    ];
     match family {
         Family::Anthropic => ANTHROPIC,
         Family::Openai => OPENAI,
         Family::Fireworks => FIREWORKS,
+        Family::Google => GOOGLE,
     }
+}
+
+/// The model a Gemini call names in its path (`/v1beta/models/<model>:<rpc>`),
+/// which the request body never carries.
+pub fn google_path_model(tail: &str) -> Option<String> {
+    let rest = ["/v1beta/models/", "/v1/models/"].iter().find_map(|p| tail.strip_prefix(*p))?;
+    let model = rest.split(['?', '/']).next().unwrap_or_default();
+    let model = model.split(':').next().unwrap_or_default();
+    (!model.is_empty()).then(|| model.to_owned())
 }
 
 /// `CCTUI_GATEWAY_EXTRA_PATHS`: break-glass additions as `METHOD:/prefix`
@@ -341,6 +362,7 @@ pub enum Family {
     Anthropic,
     Openai,
     Fireworks,
+    Google,
 }
 
 /// An adapter id the harness table does not know.
@@ -357,10 +379,12 @@ impl std::error::Error for UnknownHarness {}
 
 impl Family {
     /// Derive the family from a stored `provider` value. Must agree with the
-    /// generated `family` column (migration 078).
+    /// generated `family` column (migration 177).
     pub fn from_provider(provider: &str) -> Self {
         if provider == "fireworks" {
             Self::Fireworks
+        } else if provider == "google" {
+            Self::Google
         } else if provider.contains("openai") {
             Self::Openai
         } else {
@@ -373,14 +397,21 @@ impl Family {
             "anthropic" => Some(Self::Anthropic),
             "openai" => Some(Self::Openai),
             "fireworks" => Some(Self::Fireworks),
+            "google" => Some(Self::Google),
             _ => None,
         }
+    }
+    /// Pay-per-token families: usage is metered from the responses the gateway
+    /// proxies and priced from the account's catalog.
+    pub const fn is_metered(self) -> bool {
+        matches!(self, Self::Fireworks | Self::Google)
     }
     pub const fn from_provider_family(family: cctui_proto::provider::ProviderFamily) -> Self {
         match family {
             cctui_proto::provider::ProviderFamily::Anthropic => Self::Anthropic,
             cctui_proto::provider::ProviderFamily::Openai => Self::Openai,
             cctui_proto::provider::ProviderFamily::Fireworks => Self::Fireworks,
+            cctui_proto::provider::ProviderFamily::Google => Self::Google,
         }
     }
     /// Derive the family from a spawn adapter id through the harness table.
@@ -407,6 +438,7 @@ impl Family {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
             Self::Fireworks => "fireworks",
+            Self::Google => "google",
         }
     }
 }
@@ -429,6 +461,11 @@ mod tests {
             (Family::Openai, "POST", "/chat/completions"),
             (Family::Fireworks, "POST", "/chat/completions"),
             (Family::Fireworks, "GET", "/models"),
+            (Family::Google, "POST", "/v1beta/models/gemini-2.5-pro:generateContent"),
+            (Family::Google, "POST", "/v1beta/models/gemini-2.5-pro:streamGenerateContent"),
+            (Family::Google, "POST", "/v1beta/models/gemini-2.5-flash:countTokens"),
+            (Family::Google, "GET", "/v1beta/models"),
+            (Family::Google, "GET", "/v1/models/gemini-2.5-pro"),
         ] {
             permitted(family, method, tail).unwrap_or_else(|e| panic!("{method} {tail}: {e}"));
         }
@@ -492,6 +529,9 @@ mod tests {
             (Family::Anthropic, "POST", "/responses"),
             (Family::Anthropic, "GET", "/v1/files"),
             (Family::Fireworks, "POST", "/v1/messages"),
+            (Family::Google, "POST", "/v1beta/cachedContents"),
+            (Family::Google, "GET", "/v1beta/files"),
+            (Family::Google, "POST", "/v1/messages"),
         ] {
             assert_eq!(
                 permitted(family, method, tail),
@@ -518,22 +558,61 @@ mod tests {
     }
 
     #[test]
+    fn the_gemini_model_is_read_from_the_path() {
+        use super::google_path_model as model;
+        assert_eq!(
+            model("/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse").as_deref(),
+            Some("gemini-2.5-pro")
+        );
+        assert_eq!(
+            model("/v1/models/gemini-2.5-flash:generateContent").as_deref(),
+            Some("gemini-2.5-flash")
+        );
+        assert_eq!(model("/v1beta/models/gemini-2.5-pro").as_deref(), Some("gemini-2.5-pro"));
+        for none in [
+            "/v1beta/models",
+            "/v1beta/models/",
+            "/v1beta/models/:generateContent",
+            "/chat/completions",
+        ] {
+            assert_eq!(model(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn google_is_a_metered_family_like_fireworks() {
+        assert_eq!(Family::from_provider("google"), Family::Google);
+        assert_eq!(Family::from_label("google"), Some(Family::Google));
+        assert_eq!(Family::Google.label(), "google");
+        assert_eq!(
+            Family::from_provider_family(cctui_proto::provider::ProviderFamily::Google),
+            Family::Google
+        );
+        assert!(Family::Google.is_metered());
+        assert!(Family::Fireworks.is_metered());
+        assert!(!Family::Anthropic.is_metered());
+        assert!(!Family::Openai.is_metered());
+    }
+
+    #[test]
     fn an_unknown_adapter_has_no_family() {
         assert_eq!(Family::try_from_adapter("claude-code"), Some(Family::Anthropic));
         assert_eq!(Family::try_from_adapter("codex-app-server"), Some(Family::Openai));
         assert_eq!(Family::try_from_adapter("opencode"), Some(Family::Fireworks));
-        for unknown in ["", "gemini", "aider", "cursor", "anthropic"] {
+        assert_eq!(Family::try_from_adapter("gemini"), Some(Family::Google));
+        for unknown in ["", "kilo", "aider", "cursor", "anthropic", "google"] {
             assert_eq!(Family::try_from_adapter(unknown), None, "{unknown}");
         }
     }
 
     #[test]
     fn from_adapter_is_an_error_for_an_unknown_harness() {
-        assert_eq!(Family::from_adapter("gemini"), Err(super::UnknownHarness("gemini".into())));
+        assert_eq!(Family::from_adapter("kilo"), Err(super::UnknownHarness("kilo".into())));
         assert_eq!(
-            Family::from_adapter("gemini").unwrap_err().to_string(),
-            "unknown harness \"gemini\""
+            Family::from_adapter("kilo").unwrap_err().to_string(),
+            "unknown harness \"kilo\""
         );
+        assert_eq!(Family::from_adapter("gemini"), Ok(Family::Google));
         assert_eq!(Family::from_adapter("claude-code"), Ok(Family::Anthropic));
     }
 

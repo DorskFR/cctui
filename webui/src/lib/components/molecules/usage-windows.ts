@@ -116,7 +116,7 @@ export function editorWindowKeys(
 	probed = false
 ): { key: string; label: string }[] {
 	const order =
-		family === 'fireworks'
+		family === 'fireworks' || family === 'google'
 			? [...USD_WINDOW_KEYS]
 			: ['session', 'weekly_all', ...(probed ? USD_WINDOW_KEYS : [])];
 	const labels: Record<string, string> = {};

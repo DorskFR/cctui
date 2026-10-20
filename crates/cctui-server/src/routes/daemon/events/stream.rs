@@ -133,9 +133,15 @@ mod tests {
     /// the daemon's model-NULL row for the same message must be a no-op, or
     /// budgets double-count. One row survives, and it carries a model.
     #[test]
-    fn the_gateway_metered_patterns_name_opencode_and_nothing_anthropic() {
+    fn the_gateway_metered_patterns_name_the_metered_harnesses_and_nothing_anthropic() {
         let patterns = super::gateway_metered_adapter_patterns();
-        assert_eq!(patterns, vec!["opencode%".to_owned()]);
+        assert_eq!(patterns, vec!["opencode%".to_owned(), "gemini%".to_owned()]);
+        for own_usage in ["claude-code", "codex", "qwen", "goose"] {
+            assert!(
+                !patterns.iter().any(|p| own_usage.starts_with(p.trim_end_matches('%'))),
+                "{own_usage}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -151,8 +157,9 @@ mod tests {
             .expect("connect test db");
         let (uid, session_id) = seed_session(&pool, "opencode", "fireworks").await;
 
-        crate::routes::gateway::record_fireworks_usage(
+        crate::routes::gateway::record_metered_usage(
             pool.clone(),
+            crate::routes::gateway::Family::Fireworks,
             session_id.clone(),
             Some("accounts/fireworks/models/kimi-k3".to_owned()),
             crate::cost::CapturedUsage {

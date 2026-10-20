@@ -19,6 +19,12 @@
       "failed_start": false
     },
     {
+      "reason": "oom_killed",
+      "tone": "danger",
+      "muted": false,
+      "failed_start": false
+    },
+    {
       "reason": "daemon_lost",
       "tone": "warn",
       "muted": false,
@@ -89,6 +95,13 @@
       "label": "Fireworks",
       "picker_label": "Fireworks",
       "family": "fireworks",
+      "static_credential": true
+    },
+    {
+      "id": "google",
+      "label": "Gemini",
+      "picker_label": "Gemini (google)",
+      "family": "google",
       "static_credential": true
     }
   ],
@@ -170,6 +183,24 @@
       "default_enabled": true,
       "models_source": "none",
       "permission_modes": ["ask", "auto", "yolo", "whip"]
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini CLI",
+      "family": "google",
+      "capabilities": {
+        "fork": false,
+        "rename": false,
+        "resume": true,
+        "set_model": true,
+        "live_view": true,
+        "attach": false,
+        "mid_chat_files": true,
+        "child_spawn": true
+      },
+      "default_enabled": false,
+      "models_source": "catalog",
+      "permission_modes": ["ask", "auto", "yolo"]
     },
     {
       "id": "qwen",

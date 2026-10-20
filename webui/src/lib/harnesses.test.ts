@@ -29,14 +29,14 @@ describe('harness picker options', () => {
 		expect(pickableHarnesses(table, [])).toEqual([]);
 	});
 
-	it('ships qwen and goose default-off, listed only where a machine enables them', () => {
+	it('ships the ACP agents default-off, listed only where a machine enables them', () => {
 		const ids = table.map((h) => h.id);
-		expect(ids).toEqual(['claude-code', 'codex', 'opencode', 'qwen', 'goose']);
+		expect(ids).toEqual(['claude-code', 'codex', 'opencode', 'gemini', 'qwen', 'goose']);
 		expect(pickableHarnesses(table, ['goose', 'codex']).map((h) => h.id)).toEqual([
 			'codex',
 			'goose'
 		]);
-		for (const acp of ['qwen', 'goose']) {
+		for (const acp of ['gemini', 'qwen', 'goose']) {
 			expect(harnessPermissionModes(acp, table)).toEqual(['ask', 'auto', 'yolo']);
 			expect(harnessCapabilities(acp, table).resume).toBe(true);
 			expect(harnessCapabilities(acp, table).fork).toBe(false);
@@ -44,19 +44,21 @@ describe('harness picker options', () => {
 	});
 
 	it('leaves a default-off row out until a machine enables it', () => {
-		const gemini: HarnessDescriptor = {
+		const kilo: HarnessDescriptor = {
 			...table[0],
-			id: 'gemini',
+			id: 'kilo',
 			default_enabled: false
 		};
-		const withGemini = [...table, gemini];
-		expect(pickableHarnesses(withGemini).map((h) => h.id)).not.toContain('gemini');
-		expect(pickableHarnesses(withGemini, ['gemini']).map((h) => h.id)).toEqual(['gemini']);
+		const withKilo = [...table, kilo];
+		expect(pickableHarnesses(withKilo).map((h) => h.id)).not.toContain('kilo');
+		expect(pickableHarnesses(withKilo, ['kilo']).map((h) => h.id)).toEqual(['kilo']);
+		expect(pickableHarnesses(table).map((h) => h.id)).not.toContain('gemini');
 	});
 
 	it('labels come from the descriptor and an unknown id stays itself', () => {
 		for (const h of table) expect(harnessLabel(h.id, table)).toBe(h.label);
-		expect(adapterLabel('gemini')).toBe('gemini');
+		expect(adapterLabel('gemini')).toBe('Gemini CLI');
+		expect(adapterLabel('kilo')).toBe('kilo');
 	});
 });
 
@@ -78,7 +80,7 @@ describe('capability gates', () => {
 	});
 
 	it('an unknown id can do nothing', () => {
-		expect(harnessCapabilities('gemini', table)).toEqual(NO_CAPABILITIES);
+		expect(harnessCapabilities('kilo', table)).toEqual(NO_CAPABILITIES);
 		expect(harnessCapabilities(null, table)).toEqual(NO_CAPABILITIES);
 		expect(harnessForAdapter('codexx', table)).toBeUndefined();
 		expect(harnessForAdapter('claude', table)).toBeUndefined();
@@ -92,6 +94,7 @@ describe('brand marks', () => {
 		expect(brandMark({ adapter: 'opencode' }, table)).toBe('fireworks');
 		expect(brandMark({ provider: 'openai-compatible' }, table)).toBe('openai');
 		expect(brandMark({ provider: 'fireworks' }, table)).toBe('fireworks');
+		expect(brandMark({ provider: 'google' }, table)).toBe('google');
 	});
 
 	it('an ACP agent with a mark of its own wears it, not the OpenAI blossom', () => {
@@ -102,7 +105,8 @@ describe('brand marks', () => {
 	});
 
 	it('an unknown id or no id wears the neutral glyph, never the claude logo', () => {
-		expect(brandMark({ adapter: 'gemini' }, table)).toBe('neutral');
+		expect(brandMark({ adapter: 'gemini' }, table)).toBe('google');
+		expect(brandMark({ adapter: 'kilo' }, table)).toBe('neutral');
 		expect(brandMark({ adapter: null }, table)).toBe('neutral');
 		expect(brandMark({}, table)).toBe('neutral');
 		expect(brandMark({ provider: 'nonesuch' }, table)).toBe('neutral');
@@ -112,7 +116,7 @@ describe('brand marks', () => {
 
 describe('models for an unknown harness', () => {
 	it('offer only the default, no claude models', () => {
-		expect(harnessModelsFallback('gemini').models.map((o) => o.v)).toEqual(['']);
+		expect(harnessModelsFallback('kilo').models.map((o) => o.v)).toEqual(['']);
 	});
 });
 
@@ -129,7 +133,7 @@ describe('permission modes', () => {
 	});
 
 	it('keep the full list for a harness the table does not know', () => {
-		expect(harnessPermissionModes('gemini', table)).toEqual(['ask', 'auto', 'yolo', 'whip']);
+		expect(harnessPermissionModes('kilo', table)).toEqual(['ask', 'auto', 'yolo', 'whip']);
 	});
 });
 

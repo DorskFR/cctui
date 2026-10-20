@@ -12,6 +12,8 @@ pub const CLAUDE_GATEWAY_KEYS: &[&str] = &["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH
 pub const OPENAI_GATEWAY_KEYS: &[&str] = &["OPENAI_BASE_URL", "OPENAI_API_KEY"];
 /// Fireworks (opencode) gateway routing keys.
 pub const FIREWORKS_GATEWAY_KEYS: &[&str] = &["FIREWORKS_BASE_URL", "FIREWORKS_API_KEY"];
+/// Google (gemini) gateway routing keys.
+pub const GOOGLE_GATEWAY_KEYS: &[&str] = &["GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY"];
 
 /// How one ACP agent reads the routing keys its family's gateway env mints.
 ///
@@ -46,8 +48,16 @@ pub const GOOSE_GATEWAY: GatewayAliases = GatewayAliases {
     fixed: &[("GOOSE_PROVIDER", "openai"), ("OPENAI_BASE_PATH", "chat/completions")],
 };
 
+/// gemini-cli reads the family's keys as minted.
+///
+/// `GOOGLE_GEMINI_BASE_URL` in the env is what selects its `gateway` auth
+/// type, and `GEMINI_API_KEY` is the key that type sends as `x-goog-api-key`
+/// (gemini-cli 0.64, `packages/core/src/core/contentGenerator.ts`).
+pub const GEMINI_GATEWAY: GatewayAliases =
+    GatewayAliases { agent: "gemini", required: GOOGLE_GATEWAY_KEYS, aliases: &[], fixed: &[] };
+
 /// Every ACP agent bound through a gateway family.
-pub const GATEWAY_ALIASES: &[GatewayAliases] = &[QWEN_GATEWAY, GOOSE_GATEWAY];
+pub const GATEWAY_ALIASES: &[GatewayAliases] = &[GEMINI_GATEWAY, QWEN_GATEWAY, GOOSE_GATEWAY];
 
 #[must_use]
 pub fn gateway_aliases(agent: &str) -> Option<&'static GatewayAliases> {
@@ -202,8 +212,8 @@ mod tests {
     use cctui_proto::api::GatewayEnvResponse;
 
     use super::{
-        CLAUDE_GATEWAY_KEYS, FIREWORKS_GATEWAY_KEYS, GATEWAY_ALIASES, OPENAI_GATEWAY_KEYS,
-        launch_env_decision, required_gateway_keys, resolve_env,
+        CLAUDE_GATEWAY_KEYS, FIREWORKS_GATEWAY_KEYS, GATEWAY_ALIASES, GOOGLE_GATEWAY_KEYS,
+        OPENAI_GATEWAY_KEYS, launch_env_decision, required_gateway_keys, resolve_env,
     };
 
     fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -347,8 +357,47 @@ mod tests {
             .unwrap_err();
             assert!(err.to_string().contains("OPENAI_API_KEY"), "{agent}: {err}");
         }
-        assert!(required_gateway_keys("gemini").is_empty());
         assert!(required_gateway_keys("fake-acp").is_empty());
+    }
+
+    /// An account-bound gemini launch carries the Google pair as minted: the
+    /// base URL alone selects gemini-cli's `gateway` auth type, so no selector
+    /// env is added, and either key missing refuses the launch.
+    #[test]
+    fn gemini_takes_the_google_pair_as_minted() {
+        let resp = bound(&[
+            ("GOOGLE_GEMINI_BASE_URL", "https://gw/gateway/google"),
+            ("GEMINI_API_KEY", "tok"),
+        ]);
+        let hint = env_of(&[("GEMINI_API_KEY", "own-key"), ("GEMINI_MODEL", "gemini-2.5-pro")]);
+        let got =
+            launch_env_decision("gemini", "s1", &resp, &hint, required_gateway_keys("gemini"))
+                .unwrap();
+        assert_eq!(
+            got.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
+            Some("https://gw/gateway/google")
+        );
+        assert_eq!(got.get("GEMINI_API_KEY").map(String::as_str), Some("tok"));
+        assert_eq!(got.get("GEMINI_MODEL").map(String::as_str), Some("gemini-2.5-pro"));
+        assert_eq!(got.len(), 3, "nothing beyond the pair and the hint: {got:?}");
+        assert_eq!(required_gateway_keys("gemini"), GOOGLE_GATEWAY_KEYS);
+
+        let partial = bound(&[("GEMINI_API_KEY", "tok")]);
+        let err = launch_env_decision(
+            "gemini",
+            "s1",
+            &partial,
+            &BTreeMap::new(),
+            required_gateway_keys("gemini"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("GOOGLE_GEMINI_BASE_URL"), "got: {err}");
+        let unbound = GatewayEnvResponse { account_bound: false, ..Default::default() };
+        assert_eq!(
+            launch_env_decision("gemini", "s1", &unbound, &hint, required_gateway_keys("gemini"))
+                .unwrap(),
+            hint
+        );
     }
 
     #[test]

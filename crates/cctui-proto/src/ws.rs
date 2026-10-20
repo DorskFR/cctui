@@ -583,6 +583,12 @@ pub enum TuiCommand {
         session_id: String,
         watch: bool,
     },
+    /// The daemon forwards assistant text deltas only while at least one
+    /// client watches; the voice loop is the intended watcher.
+    WatchText {
+        session_id: String,
+        watch: bool,
+    },
     /// `client_msg_id` requests a [`ServerEvent::MessageAck`].
     Message {
         session_id: String,
@@ -766,6 +772,13 @@ pub enum ServerEvent {
     PtyChunk {
         session_id: String,
         data: String,
+    },
+    /// A slice of streamed assistant text, relayed only to sockets watching
+    /// the session's text. Not persisted; the final `Stream` block wins.
+    TextDelta {
+        session_id: String,
+        item_id: String,
+        delta: String,
     },
     /// A scheduled draft launch changed state. `launch_at` is the schedule the
     /// draft now carries, absent once it is gone.
@@ -1560,6 +1573,24 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains(r#""type":"pty_chunk""#));
         assert!(json.contains(r#""data":"aGk=""#));
+        let _back: ServerEvent = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn watch_text_command_and_text_delta_event_roundtrip() {
+        let cmd = TuiCommand::WatchText { session_id: "s1".into(), watch: true };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""type":"watch_text""#));
+        let _back: TuiCommand = serde_json::from_str(&json).unwrap();
+
+        let ev = ServerEvent::TextDelta {
+            session_id: "s1".into(),
+            item_id: "m:0".into(),
+            delta: "Hel".into(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""type":"text_delta""#));
+        assert!(json.contains(r#""delta":"Hel""#));
         let _back: ServerEvent = serde_json::from_str(&json).unwrap();
     }
 

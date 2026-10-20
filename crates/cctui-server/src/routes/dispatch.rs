@@ -706,6 +706,7 @@ async fn apply_model_aliases(
             crate::routes::gateway::Family::Anthropic,
             crate::routes::gateway::Family::Openai,
             crate::routes::gateway::Family::Fireworks,
+            crate::routes::gateway::Family::Google,
         ] {
             let mapped = crate::routes::gateway::resolve_account_model(
                 state,
@@ -1420,7 +1421,8 @@ mod tests {
         assert_eq!(binding_family(None, "codex").unwrap(), Family::Openai);
         assert_eq!(binding_family(Some("  "), "codex").unwrap(), Family::Openai);
         assert_eq!(binding_family(None, "claude-code").unwrap(), Family::Anthropic);
-        assert!(binding_family(None, "gemini").is_err());
+        assert_eq!(binding_family(None, "gemini").unwrap(), Family::Google);
+        assert!(binding_family(None, "kilo").is_err());
     }
 
     #[test]

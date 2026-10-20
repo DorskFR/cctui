@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use cctui_proto::adapter::AdapterEvent;
 use serde_json::{Value, json};
 
-use super::events::{Event, Inbox, Step, Text, Tool};
+use super::events::{Event, Inbox, Step, Text, TextDelta, Tool};
 use crate::adapters::opencode::backend::Signal;
 use crate::adapters::opencode::normalize::{self as v1, Kind};
 
@@ -42,6 +42,7 @@ impl Tracker {
                 let text = failure_text(retry.error.as_ref());
                 vec![working(Some(format!("provider retry {}: {text}", retry.attempt)))]
             }
+            Event::TextDelta(delta) => delta_signal(session_id, &delta).into_iter().collect(),
             Event::TextEnded(text) => self.text(&text, false).into_iter().collect(),
             Event::ReasoningEnded(text) => self.text(&text, true).into_iter().collect(),
             Event::ToolInputStarted(tool) | Event::ToolCalled(tool) => {
@@ -85,7 +86,7 @@ impl Tracker {
 
     fn text(&mut self, text: &Text, reasoning: bool) -> Option<Signal> {
         let kind = if reasoning { "reasoning" } else { "text" };
-        let id = format!("{kind}:{}:{}", text.message_id, text.ordinal);
+        let id = text_id(kind, &text.message_id, text.ordinal);
         if text.text.trim().is_empty() || !self.emitted.insert(id.clone()) {
             return None;
         }
@@ -144,6 +145,21 @@ fn working(detail: Option<String>) -> Signal {
     Signal::Tempo { tempo: "working".to_owned(), detail }
 }
 
+fn text_id(kind: &str, message_id: &str, ordinal: u64) -> String {
+    format!("{kind}:{message_id}:{ordinal}")
+}
+
+/// A delta for a watched session, named like the row its `text.ended` makes.
+fn delta_signal(session_id: &str, delta: &TextDelta) -> Option<Signal> {
+    if delta.delta.is_empty() || !crate::text_deltas::wanted(session_id) {
+        return None;
+    }
+    Some(Signal::TextDelta {
+        item_id: text_id("text", &delta.message_id, delta.ordinal),
+        delta: delta.delta.clone(),
+    })
+}
+
 fn content_text(content: &[Value]) -> String {
     content
         .iter()
@@ -188,6 +204,7 @@ mod tests {
     const fn label(signal: &Signal) -> &'static str {
         match signal {
             Signal::Rows(_) => "rows",
+            Signal::TextDelta { .. } => "delta",
             Signal::AssistantActive => "assistant",
             Signal::Usage(_) => "usage",
             Signal::Tempo { .. } => "tempo",
@@ -205,6 +222,31 @@ mod tests {
             .filter_map(|s| if let Signal::Rows(rows) = s { Some(rows.clone()) } else { None })
             .flatten()
             .collect()
+    }
+
+    #[test]
+    fn a_text_delta_is_a_signal_only_for_a_text_watcher() {
+        const VOICE: &str = "ses_v2_voice";
+        let raw = |session: &str| {
+            format!(
+                r#"{{"type":"session.text.delta","data":{{"sessionID":"{session}","assistantMessageID":"msg_1","ordinal":0,"delta":"All "}}}}"#
+            )
+        };
+        let mut tracker = Tracker::default();
+        let silent =
+            tracker.signals("ses_v2_silent", Event::decode(&raw("ses_v2_silent")).unwrap());
+        assert!(silent.is_empty(), "no watcher, no delta: {silent:?}");
+
+        crate::text_deltas::set(VOICE, true);
+        let got = tracker.signals(VOICE, Event::decode(&raw(VOICE)).unwrap());
+        crate::text_deltas::set(VOICE, false);
+        match got.as_slice() {
+            [Signal::TextDelta { item_id, delta }] => {
+                assert_eq!(item_id, "text:msg_1:0", "named like the final row");
+                assert_eq!(delta, "All ");
+            }
+            other => panic!("expected one delta, got {other:?}"),
+        }
     }
 
     /// Three turns: a tool call behind a permission then a text answer, a

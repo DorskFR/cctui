@@ -440,6 +440,55 @@ fn reconstruct_sse(text: &str) -> (Option<String>, Option<Value>) {
     ((!out.is_empty()).then_some(out), usage)
 }
 
+/// Reconstruct the completion text + token usage from a Gemini
+/// `generateContent` body or a `streamGenerateContent?alt=sse` stream.
+///
+/// Text is the concatenation of every candidate `text` part that is not a
+/// `thought`; usage is the last chunk's cumulative `usageMetadata`, mapped like
+/// the other families: `input` = prompt minus cached, `cache_read_input_tokens`
+/// = cached, `output` = candidates plus thoughts.
+pub fn reconstruct_gemini(body: &[u8]) -> (Option<String>, Option<Value>) {
+    let text = String::from_utf8_lossy(body);
+    let chunks: Vec<Value> = match serde_json::from_str::<Value>(text.trim()) {
+        Ok(v) if v.get("candidates").is_some() || v.get("usageMetadata").is_some() => vec![v],
+        _ => text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
+            .collect(),
+    };
+    if chunks.is_empty() {
+        return (None, None);
+    }
+    let out: String = chunks.iter().filter_map(gemini_text).collect();
+    let usage = chunks.iter().rev().find_map(|c| c.get("usageMetadata")).map(gemini_usage);
+    ((!out.is_empty()).then_some(out), usage)
+}
+
+fn gemini_text(chunk: &Value) -> Option<String> {
+    let candidates = chunk.get("candidates")?.as_array()?;
+    let s: String = candidates
+        .iter()
+        .filter_map(|c| c.pointer("/content/parts").and_then(Value::as_array))
+        .flatten()
+        .filter(|p| p.get("thought").and_then(Value::as_bool) != Some(true))
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect();
+    (!s.is_empty()).then_some(s)
+}
+
+fn gemini_usage(u: &Value) -> Value {
+    let num = |k: &str| u.get(k).and_then(Value::as_u64);
+    let prompt = num("promptTokenCount").map(|p| p + num("toolUsePromptTokenCount").unwrap_or(0));
+    let cached = num("cachedContentTokenCount");
+    let input = prompt.map(|p| p.saturating_sub(cached.unwrap_or(0)));
+    let output = match (num("candidatesTokenCount"), num("thoughtsTokenCount")) {
+        (None, None) => None,
+        (c, t) => Some(c.unwrap_or(0) + t.unwrap_or(0)),
+    };
+    usage_details(input, output, cached, None)
+}
+
 /// Reconstruct the completion text + token usage from an `OpenAI` Responses API
 /// response body (what codex speaks), handling both the buffered single-JSON
 /// shape and the SSE stream (`data: {...}` lines). Returns `(output_text,
@@ -683,6 +732,45 @@ mod tests {
     #[test]
     fn reconstruct_openai_garbage_is_empty() {
         let (out, usage) = reconstruct_openai(b"not json, not sse");
+        assert!(out.is_none());
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn reconstruct_gemini_sse_stream() {
+        let sse = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plan\",\"thought\":true}],\"role\":\"model\"}}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":0,\"thoughtsTokenCount\":3}}\r\n\r\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hel\"}],\"role\":\"model\"}}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":1,\"thoughtsTokenCount\":3}}\r\n\r\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lo\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":100,\"cachedContentTokenCount\":40,\"candidatesTokenCount\":2,\"thoughtsTokenCount\":3,\"totalTokenCount\":105}}\r\n\r\n",
+        );
+        let (out, usage) = reconstruct_gemini(sse.as_bytes());
+        assert_eq!(out.as_deref(), Some("Hello"));
+        let u = usage.unwrap();
+        assert_eq!(u["input"], json!(60));
+        assert_eq!(u["output"], json!(5));
+        assert_eq!(u["cache_read_input_tokens"], json!(40));
+        assert!(u.get("cache_creation_input_tokens").is_none());
+    }
+
+    #[test]
+    fn reconstruct_gemini_non_streaming() {
+        let body = serde_json::to_vec(&json!({
+            "candidates": [{
+                "content": {"parts": [{"text": "hello "}, {"text": "world"}], "role": "model"},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 5, "totalTokenCount": 35},
+        }))
+        .unwrap();
+        let (out, usage) = reconstruct_gemini(&body);
+        assert_eq!(out.as_deref(), Some("hello world"));
+        let u = usage.unwrap();
+        assert_eq!(u, json!({"input": 30, "output": 5}));
+    }
+
+    #[test]
+    fn reconstruct_gemini_garbage_is_empty() {
+        let (out, usage) = reconstruct_gemini(b"not json, not sse");
         assert!(out.is_none());
         assert!(usage.is_none());
     }

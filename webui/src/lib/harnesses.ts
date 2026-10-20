@@ -115,4 +115,6 @@ export const familyAccent = (mark: BrandMark): string =>
 				? 'var(--c-violet, var(--c-blue))'
 				: mark === 'goose'
 					? 'var(--c-green, var(--c-blue))'
-					: 'var(--c-fg-muted, currentColor)';
+					: mark === 'google'
+						? 'var(--c-teal, var(--c-blue))'
+						: 'var(--c-fg-muted, currentColor)';

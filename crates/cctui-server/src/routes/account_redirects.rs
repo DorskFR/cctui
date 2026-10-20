@@ -49,7 +49,7 @@ pub async fn put_redirect(
 ) -> Result<Json<AccountRedirect>, ApiErr> {
     let owner = resolve_owner(&ctx, req.user_id)?;
 
-    if !matches!(req.family.as_str(), "anthropic" | "openai" | "fireworks") {
+    if crate::routes::gateway::Family::from_label(&req.family).is_none() {
         return Err(err(StatusCode::BAD_REQUEST, "unknown provider family"));
     }
     let to_model = req.to_model.as_deref().map(str::trim).filter(|m| !m.is_empty());

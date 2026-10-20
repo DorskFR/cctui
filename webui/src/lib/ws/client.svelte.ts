@@ -43,6 +43,9 @@ export interface CctuiverseChangedEvent {
 const LIST_EVENT_KINDS = new Set(['session.archived', 'session.unarchived']);
 
 type PtyCb = (data: Uint8Array) => void;
+/** A slice of streamed assistant text; the final stream block is the truth. */
+export type TextDelta = { item_id: string; delta: string };
+type TextDeltaCb = (delta: TextDelta) => void;
 type GithubCb = (ev: GithubEvent) => void;
 
 /**
@@ -67,6 +70,8 @@ export class WsClient {
 			// re-arm live-terminal watches so the daemon PTY stream resumes
 			for (const id of this.ptyWatched)
 				this.send({ type: 'watch_terminal', session_id: id, watch: true });
+			for (const id of this.textWatched)
+				this.send({ type: 'watch_text', session_id: id, watch: true });
 			this.delivery.redispatchParked();
 		},
 		onFrame: (raw) => this.onFrame(raw)
@@ -86,6 +91,12 @@ export class WsClient {
 	/** Sessions this client is watching the live terminal of, re-sent on
 	 * reconnect so the daemon stream resumes after a drop. */
 	private ptyWatched = new Set<string>();
+	/** Streamed assistant text listeners keyed by session id; the voice loop
+	 * is the intended consumer. Never buffered: a late listener waits for the
+	 * final block like everyone else. */
+	private textCbs = new KeyedListeners<TextDelta>();
+	/** Sessions whose streamed text this client asked for, re-sent on reconnect. */
+	private textWatched = new Set<string>();
 	/** GitHub inbox listeners; not session-keyed — one
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
 	private githubCbs = new Set<GithubCb>();
@@ -159,6 +170,10 @@ export class WsClient {
 			}
 			case 'pty_chunk': {
 				if (this.ptyCbs.has(msg.session_id)) this.ptyCbs.emit(msg.session_id, decodeBase64(msg.data));
+				break;
+			}
+			case 'text_delta': {
+				this.textCbs.emit(msg.session_id, { item_id: msg.item_id, delta: msg.delta });
 				break;
 			}
 			case 'message_ack': {
@@ -397,6 +412,23 @@ export class WsClient {
 	 * unsubscribe fn. Bytes are raw terminal output to feed straight into xterm. */
 	onPty(id: string, cb: PtyCb): () => void {
 		return this.ptyCbs.add(id, cb);
+	}
+
+	/** Receive a session's assistant text as it streams. The first listener
+	 * turns the daemon's delta forwarding on, the last one off; the returned
+	 * fn unsubscribes. */
+	onTextDelta(id: string, cb: TextDeltaCb): () => void {
+		const off = this.textCbs.add(id, cb);
+		if (!this.textWatched.has(id)) {
+			this.textWatched.add(id);
+			this.send({ type: 'watch_text', session_id: id, watch: true });
+		}
+		return () => {
+			off();
+			if (!this.textCbs.has(id) && this.textWatched.delete(id)) {
+				this.send({ type: 'watch_text', session_id: id, watch: false });
+			}
+		};
 	}
 
 	onStream(id: string, cb: StreamCb): () => void {
