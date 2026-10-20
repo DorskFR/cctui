@@ -1,10 +1,12 @@
 use super::{
     REFRESH_SKEW_SECS, anthropic_client_id, anthropic_token_url, openai_client_id, openai_token_url,
 };
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use chrono::Utc;
+use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -190,6 +192,10 @@ pub async fn refresh_account(state: &AppState, acct: &Account) -> Result<String,
     let Some(refresh_token) = acct.refresh_token.as_deref() else {
         return Err(StatusCode::BAD_GATEWAY);
     };
+    let fingerprint = crate::auth::sha256_hex(refresh_token);
+    if REFRESH_REJECTIONS.recently_rejected(acct.id, &fingerprint, Instant::now()) {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
     // Anthropic refreshes with a JSON body; OpenAI/Codex with a form-encoded
     // body (matches the codex CLI + CLIProxyAPI).
     let request = match acct.provider.as_str() {
@@ -217,7 +223,29 @@ pub async fn refresh_account(state: &AppState, acct: &Account) -> Result<String,
         StatusCode::BAD_GATEWAY
     })?;
     if !resp.status().is_success() {
-        tracing::error!(account = %acct.id, status = %resp.status(), "oauth refresh rejected");
+        let status = resp.status();
+        // Only the OAuth error code is read from the body, never echoed whole.
+        let error = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|b| b.get("error").and_then(|e| e.as_str()).map(str::to_owned));
+        let error = error.as_deref().unwrap_or("unknown");
+        tracing::error!(account = %acct.id, %status, error, "oauth refresh rejected");
+        if refresh_rejection_is_terminal(status.as_u16()) {
+            // The provider refused this refresh token: it will refuse it again,
+            // so flag the account for a human reconnect and stop re-sending it
+            // until the backoff lapses or a new token is stored.
+            REFRESH_REJECTIONS.record(acct.id, fingerprint, Instant::now());
+            super::flag_account_reauth(
+                state,
+                acct.id,
+                &format!(
+                    "OAuth refresh rejected (HTTP {}, {error}): reconnect the account",
+                    status.as_u16()
+                ),
+            );
+        }
         return Err(StatusCode::BAD_GATEWAY);
     }
     let tok: TokenResponse = resp.json().await.map_err(|e| {
@@ -261,6 +289,36 @@ pub async fn refresh_account(state: &AppState, acct: &Account) -> Result<String,
     }
     tracing::info!(account = %acct.id, "refreshed oauth access token");
     Ok(tok.access_token)
+}
+
+/// How long a refresh token the provider refused is not sent again. An idle
+/// account is still polled for usage every few seconds; without this every poll
+/// replays the same dead token against the provider's token endpoint.
+const REFRESH_REJECTION_BACKOFF: Duration = Duration::from_mins(10);
+
+static REFRESH_REJECTIONS: LazyLock<RefreshRejections> = LazyLock::new(RefreshRejections::default);
+
+/// A 400 (`invalid_grant`: revoked, rotated elsewhere or expired) or 401 from
+/// the token endpoint will not heal on retry; a 429 or 5xx might.
+pub const fn refresh_rejection_is_terminal(status: u16) -> bool {
+    matches!(status, 400 | 401)
+}
+
+/// Refresh tokens the provider refused, by account, keyed on the token's
+/// fingerprint so a reconnect (a new token) is tried at once.
+#[derive(Default)]
+pub struct RefreshRejections(DashMap<Uuid, (String, Instant)>);
+
+impl RefreshRejections {
+    pub fn record(&self, account: Uuid, fingerprint: String, at: Instant) {
+        self.0.insert(account, (fingerprint, at));
+    }
+
+    pub fn recently_rejected(&self, account: Uuid, fingerprint: &str, now: Instant) -> bool {
+        self.0.get(&account).is_some_and(|r| {
+            r.0 == fingerprint && now.saturating_duration_since(r.1) < REFRESH_REJECTION_BACKOFF
+        })
+    }
 }
 
 /// Persist the organization uuid a token or profile payload named. Best-effort.
@@ -358,6 +416,44 @@ pub async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
         provider_settings: None,
         rate_limits: crate::routes::gateway::RateLimits::default(),
     })
+}
+
+#[cfg(test)]
+mod refresh_rejection_tests {
+    use std::time::{Duration, Instant};
+
+    use uuid::Uuid;
+
+    use super::{REFRESH_REJECTION_BACKOFF, RefreshRejections, refresh_rejection_is_terminal};
+
+    #[test]
+    fn only_bad_request_and_unauthorized_are_terminal() {
+        assert!(refresh_rejection_is_terminal(400));
+        assert!(refresh_rejection_is_terminal(401));
+        for transient in [403, 408, 429, 500, 502, 503] {
+            assert!(!refresh_rejection_is_terminal(transient), "{transient}");
+        }
+    }
+
+    #[test]
+    fn a_rejected_token_is_held_back_until_the_backoff_lapses() {
+        let rejections = RefreshRejections::default();
+        let account = Uuid::new_v4();
+        let at = Instant::now();
+        rejections.record(account, "dead".into(), at);
+        assert!(rejections.recently_rejected(account, "dead", at + Duration::from_secs(5)));
+        assert!(!rejections.recently_rejected(account, "dead", at + REFRESH_REJECTION_BACKOFF));
+    }
+
+    #[test]
+    fn a_new_token_or_another_account_is_tried_at_once() {
+        let rejections = RefreshRejections::default();
+        let account = Uuid::new_v4();
+        let at = Instant::now();
+        rejections.record(account, "dead".into(), at);
+        assert!(!rejections.recently_rejected(account, "reconnected", at));
+        assert!(!rejections.recently_rejected(Uuid::new_v4(), "dead", at));
+    }
 }
 
 #[cfg(test)]

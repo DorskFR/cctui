@@ -277,6 +277,7 @@ pub async fn fetch_openai_usage(state: &AppState, acct: &Account) -> Option<serd
         .map_err(|e| tracing::warn!(account = %acct.id, "openai usage decode error: {e}"))
         .ok()?;
     let mut usage = map_wham_usage(&body)?;
+    super::clear_account_reauth(state, acct.id);
     if usage.get("reset_credits").is_none()
         && let Some(credits) = fetch_openai_reset_credits(state, acct, &access_token).await
     {
@@ -433,6 +434,9 @@ async fn usage_for_account(
         tracing::warn!(account = %account_id, "usage decode error: {e}");
         StatusCode::BAD_GATEWAY
     })?;
+    // A measured window proves the credential works, even on an idle account
+    // the gateway never proxies for.
+    super::clear_account_reauth(state, account_id);
     if let Some(status) = reset_status(state, &acct, &access_token, false).await {
         merge_reset_status(&mut json, &status);
     }
