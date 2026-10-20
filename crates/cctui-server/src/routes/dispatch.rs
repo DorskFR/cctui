@@ -867,12 +867,7 @@ async fn resolve_account_routing(
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    let payload_adapter = req
-        .payload
-        .get("adapter_id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("claude-code")
-        .to_owned();
+    let payload_adapter = payload_adapter(&req.payload).unwrap_or("claude-code").to_owned();
     let (accounts, bound_pool) =
         resolve_routed_accounts(state, req, uid, requested_model.as_deref(), &payload_adapter)
             .await?;
@@ -1124,6 +1119,17 @@ async fn context_record_is_callers(pool: &sqlx::PgPool, session_id: &str, uid: u
 /// The coordinates a dispatched worker's rules resolve against. No human
 /// watches a worker, so everything it saves through `CctuiContext` waits for
 /// approval.
+/// The harness a dispatch payload names. The daemon reads `adapter`;
+/// `adapter_id` is the older spelling and still honoured when `adapter` is
+/// absent or blank.
+fn payload_adapter(payload: &serde_json::Value) -> Option<&str> {
+    ["adapter", "adapter_id"]
+        .into_iter()
+        .filter_map(|key| payload.get(key).and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+}
+
 fn dispatch_context_scope(
     uid: uuid::Uuid,
     payload: &serde_json::Value,
@@ -1142,7 +1148,7 @@ fn dispatch_context_scope(
             machine_id: None,
             working_dir: text("working_dir").or_else(|| text("cwd")),
             label_ids: Vec::new(),
-            adapter: Some(text("adapter_id").unwrap_or_else(|| "claude-code".to_owned())),
+            adapter: Some(payload_adapter(payload).unwrap_or("claude-code").to_owned()),
         },
         dispatched: true,
     }
@@ -1152,8 +1158,8 @@ fn dispatch_context_scope(
 mod tests {
     use super::{
         DefaultBinding, binding_family, colliding_family, context_record_is_callers,
-        default_binding, dispatch_ceiling, dispatch_context_scope, resolve_dispatch_account,
-        resolve_dispatch_session_id, rewrite_model_if_aliased,
+        default_binding, dispatch_ceiling, dispatch_context_scope, payload_adapter,
+        resolve_dispatch_account, resolve_dispatch_session_id, rewrite_model_if_aliased,
     };
     use crate::routes::gateway::Family;
     use cctui_proto::adapter::PermissionMode;
@@ -1238,6 +1244,28 @@ mod tests {
         let bare = dispatch_context_scope(uid, &serde_json::json!({"cwd": "/srv"}));
         assert_eq!(bare.coords.adapter.as_deref(), Some("claude-code"));
         assert_eq!(bare.coords.working_dir.as_deref(), Some("/srv"));
+    }
+
+    /// The daemon reads `payload.adapter`; the server used to read only
+    /// `adapter_id`, so a codex dispatch could be routed to an anthropic
+    /// account. Both spellings are read, `adapter` first.
+    #[test]
+    fn the_payload_adapter_prefers_adapter_over_adapter_id() {
+        let cases = [
+            (serde_json::json!({"adapter": "codex"}), Some("codex")),
+            (serde_json::json!({"adapter_id": "codex"}), Some("codex")),
+            (serde_json::json!({"adapter": "opencode", "adapter_id": "codex"}), Some("opencode")),
+            (serde_json::json!({"adapter": "", "adapter_id": "codex"}), Some("codex")),
+            (serde_json::json!({"adapter": " codex "}), Some("codex")),
+            (serde_json::json!({"adapter": 7}), None),
+            (serde_json::json!({}), None),
+        ];
+        for (payload, want) in cases {
+            assert_eq!(payload_adapter(&payload), want, "payload {payload}");
+        }
+        let scope =
+            dispatch_context_scope(uuid::Uuid::new_v4(), &serde_json::json!({"adapter": "codex"}));
+        assert_eq!(scope.coords.adapter.as_deref(), Some("codex"));
     }
 
     #[test]

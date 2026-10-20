@@ -236,6 +236,7 @@ export const ROUTES = [
   { id: "get_sessions_by_id", method: "GET", path: "/sessions/{id}", summary: "Get one session's details.", request: null, response: null },
   { id: "patch_sessions_by_id", method: "PATCH", path: "/sessions/{id}", summary: "Rename a session.", request: null, response: null },
   { id: "get_sessions_by_id_conversation", method: "GET", path: "/sessions/{id}/conversation", summary: "Fetch a session's normalized conversation transcript.", request: null, response: null },
+  { id: "get_sessions_by_id_result", method: "GET", path: "/sessions/{id}/result", summary: "Completion state and final assistant text of a session.", request: null, response: "SessionResult" },
   { id: "get_sessions_by_id_search", method: "GET", path: "/sessions/{id}/search", summary: "Find-in-conversation hit list for one session's transcript.", request: null, response: null },
   { id: "get_sessions_by_id_images_by_image", method: "GET", path: "/sessions/{id}/images/{image_id}", summary: "Fetch an agent-posted image blob.", request: null, response: null },
   { id: "get_sessions_by_id_blobs_by_hash", method: "GET", path: "/sessions/{id}/blobs/{hash}", summary: "Resolve a content-addressed embedded-attachment blob.", request: null, response: null },

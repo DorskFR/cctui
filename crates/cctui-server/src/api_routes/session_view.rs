@@ -112,6 +112,17 @@ pub(super) fn register(r: Routes) -> Routes {
         )
 }
 
+pub(super) fn register_result(r: Routes) -> Routes {
+    r.add(
+        &[GET],
+        "/sessions/{id}/result",
+        "Completion state and final assistant text of a session.",
+        get(routes::sessions::get_result),
+        Authn::Bearer,
+        sess_read(),
+    )
+}
+
 pub(super) fn register_voice_notes(r: Routes) -> Routes {
     r.add(
         &[GET],

@@ -544,6 +544,25 @@ blocked. The array is consumed by the PR renderer (one section per surface) and,
 longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
 attachments) — the not-yet-built crate is the natural home for richer rendering.
 
+## Polling for the result
+
+A dispatcher that does not use `REPLY_URL` reads the outcome from the server
+instead: `GET /api/v1/sessions/{id}/result` (session read policy, the same key
+that dispatched). It answers `404` until the worker registers the session, then:
+
+```jsonc
+{
+  "done":                 true,          // sessions.ended_at is set
+  "end_reason":           "completed",   // null while running
+  "final_assistant_text": "…",           // trailing visible text rows of the last assistant message, joined; thinking excluded
+  "message_id":           "msg_…",       // null for a harness that does not stamp one (codex)
+  "token_usage":          { "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "cache_read_tokens": 0, "cache_creation_tokens": 0 }
+}
+```
+
+Poll until `done`; `final_assistant_text` is already populated while the
+session runs (the latest completed message), so a service can show progress.
+
 ## Codex-native dispatch
 
 A dispatch payload carries an optional **`adapter`** key selecting which harness
@@ -552,6 +571,8 @@ the worker runs:
 - `adapter` absent, `"claude"`, or `"claude-code"` (the default — backward
   compatible) → the claude worker path: `cctui-daemon` self-issues a `dispatch`
   on the `claude daemon` control socket and observes the session.
+- The server reads the same key to pick the gateway family and the context
+  scope (`adapter` first, the older `adapter_id` when it is absent).
 - `adapter: "codex"` → the **codex dispatch runner** (`crates/cctui-daemon/src/
   dispatch_codex.rs`): the daemon runs one headless `codex exec --json` in
   `/workspace`, parses its JSONL event stream, and writes the verdict to

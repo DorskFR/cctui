@@ -1960,6 +1960,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_sessions_by_id_result",
+        method: Method::Get,
+        path: "/sessions/{id}/result",
+        summary: "Completion state and final assistant text of a session.",
+        request: None,
+        response: Some("SessionResult"),
+    },
+    Route {
         id: "get_sessions_by_id_search",
         method: Method::Get,
         path: "/sessions/{id}/search",

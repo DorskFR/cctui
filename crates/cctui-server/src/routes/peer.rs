@@ -155,8 +155,16 @@ pub fn envelope(sender: &SessionNode, body: &str) -> String {
 /// Record a marker turn on `session_id` so the human sees what an agent did on
 /// their behalf. Best-effort: losing the audit row must not fail the call it
 /// describes, but it is logged loudly when it does.
+///
+/// The row has no `turn_id`, so `stream_events_dedup_turn_idx` keys it on the
+/// payload hash alone; `audit_id` keeps a repeated identical action from
+/// colliding with the previous one.
 async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
-    let payload = json!({ "role": "system_marker", "text": text });
+    let payload = json!({
+        "role": "system_marker",
+        "text": text,
+        "audit_id": uuid::Uuid::new_v4().to_string(),
+    });
     if let Err(err) = sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, 'message', $2)",
     )
@@ -822,6 +830,8 @@ mod tests {
     async fn cleanup(pool: &sqlx::PgPool, uid: Uuid) {
         for sql in [
             "DELETE FROM rooms WHERE user_id = $1",
+            "DELETE FROM stream_events WHERE session_id IN \
+             (SELECT id FROM sessions WHERE user_id = $1)",
             "DELETE FROM sessions WHERE user_id = $1",
             "DELETE FROM machines WHERE user_id = $1",
             "DELETE FROM users WHERE id = $1",
@@ -1008,6 +1018,33 @@ mod tests {
         .await
         .expect("audit row");
         assert_eq!(marker.as_deref(), Some("consulted history of the parent"));
+        cleanup(&pool, uid).await;
+    }
+
+    /// DB-gated: audit rows carry no `turn_id`, so two identical actions used to
+    /// hash the same and the second was rejected by the dedup index.
+    #[tokio::test]
+    async fn repeated_identical_audits_both_land() {
+        let Some(pool) = test_pool("peer_audit_repeat").await else { return };
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        seed_owner(&pool, uid, &[machine]).await;
+        let sid = format!("peer-audit-{uid}");
+        seed_session(&pool, &sid, None, uid, machine, "active").await;
+
+        audit(&pool, &sid, "sent a message to peer-x").await;
+        audit(&pool, &sid, "sent a message to peer-x").await;
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM stream_events \
+             WHERE session_id = $1 AND payload->>'role' = 'system_marker' \
+             AND payload->>'text' = 'sent a message to peer-x'",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .expect("count audit rows");
+        assert_eq!(count, 2, "identical audits must not collide on the dedup index");
         cleanup(&pool, uid).await;
     }
 }
