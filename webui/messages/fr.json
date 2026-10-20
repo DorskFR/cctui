@@ -558,6 +558,8 @@
 	"diagnose_row_alive": "vivant",
 	"diagnose_row_daemon": "démon",
 	"diagnose_row_last_event": "dernier événement",
+	"diagnose_row_owner": "propriétaire",
+	"diagnose_row_spawned_by": "lancée par",
 	"diagnose_short_alive": "vivant",
 	"diagnose_short_ambient": "identifiants ambiants",
 	"diagnose_short_down": "arrêté",

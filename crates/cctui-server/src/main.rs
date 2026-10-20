@@ -1230,7 +1230,7 @@ mod tests {
             "POST /sessions/register Bearer Authenticated",
             "GET /sessions/search Bearer Authenticated",
             "GET /sessions/search/values Bearer Authenticated",
-            "POST /sessions/spawn Bearer Authenticated",
+            "POST /sessions/spawn Bearer Scope(Dispatch)",
             "GET /sessions/stats Bearer Authenticated",
             "GET /sessions/stats/cache-busts Bearer Authenticated",
             "GET /sessions/stats/tokens Bearer Authenticated",

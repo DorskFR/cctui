@@ -558,6 +558,8 @@
 	"diagnose_row_alive": "alive",
 	"diagnose_row_daemon": "daemon",
 	"diagnose_row_last_event": "last event",
+	"diagnose_row_owner": "owner",
+	"diagnose_row_spawned_by": "spawned by",
 	"diagnose_short_alive": "alive",
 	"diagnose_short_ambient": "ambient credentials",
 	"diagnose_short_down": "down",

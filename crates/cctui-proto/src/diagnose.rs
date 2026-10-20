@@ -467,6 +467,13 @@ pub struct ServerDiagnose {
     /// `machines.last_seen_at` as unix ms — the daemon heartbeat freshness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_last_seen_ms: Option<i64>,
+    /// Name of the session's owner: the user owning its machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Name of the user who spawned the session, when the server launched it.
+    /// Differs from `owner` for a spawn through a machine share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
 }
 
 /// Body of `GET /api/v1/sessions/{id}/diagnose`. Fail-soft: when the daemon
@@ -696,6 +703,8 @@ mod tests {
             accounts: vec!["main".into()],
             machine_id: Some(uuid::Uuid::nil().to_string()),
             machine_last_seen_ms: Some(1_700_000_000_000),
+            owner: Some("tonbo".into()),
+            spawned_by: Some("dorsk".into()),
         };
         let with = SessionDiagnoseResponse {
             session_id: "s1".into(),

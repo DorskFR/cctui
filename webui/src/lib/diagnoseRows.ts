@@ -267,6 +267,14 @@ export function diagnoseRows(
 	];
 }
 
+export type DiagnoseOwnership = { owner: string; spawnedBy: string };
+
+/** Who owns the session (its machine's owner) and who spawned it; `null` until the report names an owner. */
+export function diagnoseOwnership(report: SessionDiagnoseResponse | null): DiagnoseOwnership | null {
+	if (!report?.server.owner) return null;
+	return { owner: report.server.owner, spawnedBy: report.server.spawned_by ?? '—' };
+}
+
 /** First and last line of a detail: an end reason keeps the last stderr line next to it. */
 export function trimDetail(detail: string | undefined): string {
 	const lines = (detail ?? '')
