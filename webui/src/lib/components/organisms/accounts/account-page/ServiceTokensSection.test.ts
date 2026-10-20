@@ -85,7 +85,7 @@ describe('ServiceTokensSection', () => {
 
 	it('mints with the typed label on the account provider and reveals the secret once', async () => {
 		render();
-		click(button('service_tokens_new'));
+		click(button(m.service_tokens_new()));
 		flushSync();
 		const input = document.querySelector<HTMLInputElement>('dialog input');
 		expect(input).not.toBeNull();
@@ -93,7 +93,7 @@ describe('ServiceTokensSection', () => {
 		input.value = 'kusaritoi';
 		input.dispatchEvent(new Event('input', { bubbles: true }));
 		flushSync();
-		click(button('service_tokens_create'));
+		click(button(m.service_tokens_create()));
 		await flush();
 		flushSync();
 
@@ -105,12 +105,12 @@ describe('ServiceTokensSection', () => {
 	it('revokes only after the confirm modal', async () => {
 		state.rows = [token];
 		render();
-		click(document.querySelector<HTMLButtonElement>('[title="service_tokens_revoke"]'));
+		click(document.querySelector<HTMLButtonElement>(`[title="${m.service_tokens_revoke()}"]`));
 		flushSync();
 		expect(state.revoke).not.toHaveBeenCalled();
 		expect(document.querySelector('dialog')).not.toBeNull();
 
-		click(button('service_tokens_revoke'));
+		click(button(m.service_tokens_revoke()));
 		await flush();
 		expect(state.revoke).toHaveBeenCalledWith('a1', 't1');
 	});
