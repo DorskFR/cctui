@@ -10,13 +10,14 @@
 	import NewPoolZone from './NewPoolZone.svelte';
 	import PoolEditorModal from './PoolEditorModal.svelte';
 	import PoolZone from './PoolZone.svelte';
-	import { groupAccounts, membershipAfterMove } from './pools.logic';
+	import { groupAccounts, membershipAfterMove, newPoolOwner } from './pools.logic';
 
 	let {
 		accounts,
 		pools,
 		loading = false,
 		owners = [],
+		selfId = null,
 		drafting = $bindable(false),
 		card
 	}: {
@@ -25,6 +26,8 @@
 		loading?: boolean;
 		/** Admin only: users a pool may belong to; also labels each pool's owner. */
 		owners?: { id: string; name: string }[];
+		/** The signed-in user, the default owner of a pool an admin creates empty. */
+		selfId?: string | null;
 		/** The empty "+ Add pool" zone, first so its name field is in reach on a phone. */
 		drafting?: boolean;
 		card: Snippet<[OAuthAccount, AccountPoolView | null, (to: AccountPoolView | null) => void]>;
@@ -66,7 +69,7 @@
 				strategy: 'headroom',
 				failover: false,
 				accounts: account ? [account.id] : [],
-				user_id: owners.length > 0 ? (account?.user_id ?? owners[0]?.id ?? null) : null
+				user_id: newPoolOwner(owners, account?.user_id, selfId)
 			});
 			toasts.ok(m.pools_created());
 			drafting = false;

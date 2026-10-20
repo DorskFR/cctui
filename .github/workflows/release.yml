@@ -196,7 +196,7 @@ jobs:
         with:
           ref: ${{ needs.meta.outputs.sha }}
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Keep only the pinned toolchain
@@ -237,7 +237,7 @@ jobs:
           ref: ${{ needs.meta.outputs.sha }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
@@ -269,7 +269,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - name: Install cargo-zigbuild (linux)
         if: matrix.os == 'linux'
-        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2
         with:
           tool: cargo-zigbuild
 
@@ -354,7 +354,7 @@ jobs:
         with:
           ref: ${{ needs.meta.outputs.sha }}
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Keep only the pinned toolchain

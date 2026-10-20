@@ -98,6 +98,7 @@
 		pools={poolList}
 		loading={accounts.isLoading}
 		owners={isAdmin ? activeUsers : []}
+		selfId={me.data?.user_id ?? null}
 		bind:drafting
 	>
 		{#snippet card(a, pool, onmovepool)}
