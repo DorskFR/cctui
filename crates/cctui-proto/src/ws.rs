@@ -300,6 +300,11 @@ pub enum DaemonFrameDown {
     HarnessUpdatePolicy {
         policy: crate::harness::HarnessUpdatePolicy,
     },
+    /// Restart `harness`'s long-lived process onto the installed CLI as soon
+    /// as it has no live worker; never while one runs.
+    DrainRestart {
+        harness: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -773,6 +778,11 @@ pub enum ServerEvent {
         session_id: String,
         data: String,
     },
+    /// The session's workflow-guard step changed (or was first reported).
+    GuardStepState {
+        session_id: String,
+        state: crate::guard_step::GuardStepState,
+    },
     /// A slice of streamed assistant text, relayed only to sockets watching
     /// the session's text. Not persisted; the final `Stream` block wins.
     TextDelta {
@@ -1241,6 +1251,17 @@ mod tests {
         match serde_json::from_str::<DaemonFrameDown>(&json).unwrap() {
             DaemonFrameDown::HarnessUpdatePolicy { policy } => assert!(policy.enabled),
             _ => panic!("expected HarnessUpdatePolicy"),
+        }
+    }
+
+    #[test]
+    fn drain_restart_roundtrips() {
+        let f = DaemonFrameDown::DrainRestart { harness: "claude-code".to_owned() };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"drain_restart""#), "{json}");
+        match serde_json::from_str::<DaemonFrameDown>(&json).unwrap() {
+            DaemonFrameDown::DrainRestart { harness } => assert_eq!(harness, "claude-code"),
+            _ => panic!("expected DrainRestart"),
         }
     }
 

@@ -32,6 +32,9 @@ pub(super) async fn on_relay_event(state: &AppState, event: AdapterEvent) {
                 delta,
             });
         }
+        AdapterEvent::GuardStepState { local_id, state: step } => {
+            crate::guard_step::record_and_broadcast(&state.bus, local_id, step);
+        }
         AdapterEvent::CommandResult { command_id, ok, error } => {
             if !ok {
                 tracing::warn!(%command_id, ?error, "command failed on daemon");

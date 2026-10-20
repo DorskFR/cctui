@@ -112,13 +112,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
     let mode = crate::app::controls::permission_badge(&session)
         .map_or_else(String::new, |m| format!(" ── {m}"));
+    let guard = crate::app::session_live::guard_step_badge(app, &session.id)
+        .map_or_else(String::new, |g| format!(" ── ⛨ {g}"));
     let effort = session.effort.as_deref().filter(|e| !e.is_empty()).unwrap_or_default();
     let dials = if effort.is_empty() { model.to_owned() } else { format!("{model}·{effort}") };
     let header_text = if branch.is_empty() {
-        format!(" {project} on {machine} ── {dials} ── {cost}{mode}{auto}{pins}{waiting}")
+        format!(" {project} on {machine} ── {dials} ── {cost}{mode}{guard}{auto}{pins}{waiting}")
     } else {
         format!(
-            " {project} ({branch}) on {machine} ── {dials} ── {cost}{mode}{auto}{pins}{waiting}"
+            " {project} ({branch}) on {machine} ── {dials} ── {cost}{mode}{guard}{auto}{pins}{waiting}"
         )
     };
     let mut header_spans = vec![Span::styled(header_text, theme::header_bg())];

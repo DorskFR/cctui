@@ -278,6 +278,9 @@ async fn apply_server_event(state: &AppState, event: &cctui_proto::ws::ServerEve
         ServerEvent::PlanResolved { session_id } => {
             state.permission_store.write().await.remove_plan(session_id);
         }
+        ServerEvent::GuardStepState { session_id, state: step } => {
+            crate::guard_step::record(session_id.clone(), step.clone());
+        }
         _ => {}
     }
 }

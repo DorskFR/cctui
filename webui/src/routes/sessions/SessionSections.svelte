@@ -8,6 +8,7 @@
 	import SessionGroupHeader from './SessionGroupHeader.svelte';
 	import SessionRows from './SessionRows.svelte';
 	import DraftRows from './DraftRows.svelte';
+	import PendingSpawnRows from './PendingSpawnRows.svelte';
 
 	// The session list body: live buckets (or group-by sections), drafts, and
 	// the paged archive browse / search results, each under a group header.
@@ -116,6 +117,7 @@
 {/snippet}
 
 {#snippet liveSections()}
+		<PendingSpawnRows {sp} />
 		{#if sp.sessionsLoading}
 			<div class="placeholder"><Spinner label={m.common_loading()} /></div>
 		{:else if !sp.list.hasLiveRows && !sp.showArchived && !sp.sections.has('drafts')}

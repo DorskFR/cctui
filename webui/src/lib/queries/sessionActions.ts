@@ -7,6 +7,8 @@ import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
+import type { GuardStepState } from "@bindings/GuardStepState";
+import type { GuardTransitionRequest } from "@bindings/GuardTransitionRequest";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { Label } from "@bindings/Label";
 import type { LabelOwner } from "../labels";
@@ -188,6 +190,14 @@ export function useSessionActions() {
      *  accepted the interrupt instead of firing-and-forgetting. */
     interrupt: async (id: string) =>
       api.post<SpawnResponse>(`/sessions/${id}/interrupt`),
+    /** The session's mirrored workflow-guard step; null without a guard. */
+    guardStep: async (id: string) =>
+      api.get<GuardStepState | null>(`/sessions/${id}/guard`),
+    /** Ask the pod's guard to move to `step` (a number or `exit`). The
+     *  guard decides: await the returned `command_id` on the ws for its
+     *  verdict; the new step arrives as a `guard_step_state` frame. */
+    guardTransition: async (id: string, step: string) =>
+      api.post<SpawnResponse>(`/sessions/${id}/guard/transition`, { step } satisfies GuardTransitionRequest),
     // In-place model/effort switch. Codex carries it on the next
     // turn/start and echoes the resolved values back via Status; claude rejects
     // it (the UI offers fork-to-change-model for claude instead). Returns a

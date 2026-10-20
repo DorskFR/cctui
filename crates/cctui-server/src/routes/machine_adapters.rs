@@ -70,21 +70,27 @@ async fn rows(
         .map_err(AppError::from)
 }
 
+/// The machine's display name and what its daemon last reported.
+pub async fn machine_report(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+) -> Result<(String, Option<HarnessReport>), AppError> {
+    let row: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT COALESCE(display_name, name), harness_report FROM machines WHERE id = $1",
+    )
+    .bind(machine_id)
+    .fetch_optional(pool)
+    .await?;
+    let (name, report) = row.unwrap_or_default();
+    Ok((name, report.and_then(|v| serde_json::from_value::<HarnessReport>(v).ok())))
+}
+
 /// What the machine's daemon last reported for its enabled harnesses' binaries.
 pub async fn reported_binaries(
     pool: &sqlx::PgPool,
     machine_id: Uuid,
 ) -> Result<Binaries, AppError> {
-    let report: Option<serde_json::Value> =
-        sqlx::query_scalar("SELECT harness_report FROM machines WHERE id = $1")
-            .bind(machine_id)
-            .fetch_optional(pool)
-            .await?
-            .flatten();
-    Ok(report
-        .and_then(|v| serde_json::from_value::<HarnessReport>(v).ok())
-        .map(|r| r.binaries)
-        .unwrap_or_default())
+    Ok(machine_report(pool, machine_id).await?.1.map(|r| r.binaries).unwrap_or_default())
 }
 
 /// The refusal for a spawn whose harness binary the daemon reports missing.
@@ -92,6 +98,24 @@ pub async fn reported_binaries(
 #[must_use]
 pub fn missing_binary(binaries: &Binaries, adapter_id: &str) -> Option<String> {
     binaries.get(adapter_id).and_then(|b| b.refusal(adapter_id))
+}
+
+/// The refusal for a spawn on a machine whose daemon reports a dropped
+/// privacy grant. A daemon that does not probe refuses nothing.
+#[must_use]
+pub fn denied_health(report: Option<&HarnessReport>, machine: &str) -> Option<String> {
+    report?.health.as_ref()?.refusal(machine)
+}
+
+/// Every spawn refusal the stored report implies, missing binary first.
+#[must_use]
+pub fn spawn_refusal(
+    report: Option<&HarnessReport>,
+    machine: &str,
+    adapter_id: &str,
+) -> Option<String> {
+    let binaries = report.map(|r| &r.binaries);
+    binaries.and_then(|b| missing_binary(b, adapter_id)).or_else(|| denied_health(report, machine))
 }
 
 async fn machine_exists(pool: &sqlx::PgPool, machine_id: Uuid) -> Result<(), AppError> {
@@ -254,6 +278,28 @@ mod tests {
         assert_eq!(find("codex").binary, Some(binary("codex", None)));
         assert_eq!(find("claude-code").binary, None, "an unprobed harness reports nothing");
         assert!(find("gemini").binary.as_ref().is_some_and(AdapterBinary::installed));
+    }
+
+    #[test]
+    fn a_denied_grant_refuses_every_spawn_and_names_the_machine() {
+        use cctui_proto::harness::MachineHealth;
+        let healthy = HarnessReport { health: Some(MachineHealth::Ok), ..Default::default() };
+        assert_eq!(spawn_refusal(Some(&healthy), "m2pro", "claude-code"), None);
+        assert_eq!(spawn_refusal(None, "m2pro", "claude-code"), None, "no report: no refusal");
+        let unprobed = HarnessReport::default();
+        assert_eq!(spawn_refusal(Some(&unprobed), "m2pro", "codex"), None);
+
+        let denied = HarnessReport {
+            health: Some(MachineHealth::NetworkDenied { detail: "connect: EHOSTUNREACH".into() }),
+            binaries: Binaries::from([("codex".to_owned(), binary("codex", None))]),
+            ..Default::default()
+        };
+        let refusal = spawn_refusal(Some(&denied), "m2pro", "claude-code").unwrap();
+        assert!(refusal.contains("on m2pro"), "{refusal}");
+        assert!(refusal.contains("doctor --grant"), "{refusal}");
+        assert!(refusal.contains("EHOSTUNREACH"), "{refusal}");
+        let missing = spawn_refusal(Some(&denied), "m2pro", "codex").unwrap();
+        assert!(missing.contains("codex is not installed"), "the missing binary is named first");
     }
 
     #[test]

@@ -1,13 +1,13 @@
 {
   "name": "cctui-webui",
   "private": true,
-  "version": "0.25.6",
+  "version": "0.25.7",
   "type": "module",
   "packageManager": "npm@10.9.8",
   "scripts": {
     "preinstall": "case \"$npm_config_user_agent\" in npm/*) exit 0 ;; esac; echo '' >&2; echo 'webui is an npm project (package-lock.json).' >&2; echo 'Run: npm ci' >&2; echo '' >&2; exit 1",
-    "dev": "vite dev",
-    "build": "npm run codegen:ensure && vite build",
+    "dev": "node scripts/copy-vad-assets.mjs && vite dev",
+    "build": "npm run codegen:ensure && node scripts/copy-vad-assets.mjs && vite build",
     "preview": "vite preview --host",
     "paraglide": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide",
     "prepare": "npm run codegen && (svelte-kit sync || echo '')",
@@ -49,6 +49,7 @@
   "dependencies": {
     "@dorsk/journey": "^0.8.2",
     "@dorsk/tsumikit": "^0.67.1",
+    "@ricky0123/vad-web": "^0.0.31",
     "@tanstack/query-async-storage-persister": "^5.104.2",
     "@tanstack/svelte-query": "^6.3.2",
     "@tanstack/svelte-query-persist-client": "^6.3.2",

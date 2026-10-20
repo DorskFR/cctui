@@ -17,6 +17,7 @@ pub mod daemon;
 pub mod device_auth;
 pub mod diagnose;
 pub mod dispatch;
+pub mod dispatch_policy;
 pub mod dispatcher;
 pub mod dispatchers;
 pub mod drafts;

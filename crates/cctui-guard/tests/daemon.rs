@@ -812,6 +812,34 @@ transitions: [{to: 2, gate: \"false\"}, {to: 3, gate: \"true\"}]
 }
 
 #[test]
+fn state_reports_the_valid_transitions() {
+    let prompt = "\
+# Step 1: Research
+[allowed]: all-read
+[transition]: 2, 3, Exit
+
+# Step 2: Implement
+[transition]: 3
+
+# Step 3: Ship
+[transition]: Exit
+";
+    let t = make_engine("", prompt);
+    let state = t.engine.get_state();
+    assert_eq!(state["title"], json!("Research"));
+    assert_eq!(state["transitions"], json!([2, 3]));
+    assert_eq!(state["exit"], json!(true));
+    assert_eq!(t.engine.transition(&json!(2))["ok"], json!(true));
+    let state = t.engine.get_state();
+    assert_eq!(state["transitions"], json!([3]));
+    assert_eq!(state["exit"], json!(false), "Exit stays accepted but is not listed");
+    assert_eq!(t.engine.transition(&json!("exit"))["ok"], json!(true));
+    let state = t.engine.get_state();
+    assert_eq!(state["step"], json!(-1));
+    assert_eq!(state["transitions"], json!([]));
+}
+
+#[test]
 fn step_gate_and_transition_gate_both_run() {
     let prompt = "\
 # Step 1

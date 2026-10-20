@@ -582,6 +582,12 @@ pub enum AdapterEvent {
         item_id: String,
         delta: String,
     },
+    /// The pod's workflow-guard step, relayed on registration and on every
+    /// change. The guard in the pod stays authoritative; this is a mirror.
+    GuardStepState {
+        local_id: String,
+        state: crate::guard_step::GuardStepState,
+    },
     /// Transcript byte-offset high-water mark, returned as a resume mark on reconnect.
     TranscriptMark {
         local_id: String,
@@ -766,6 +772,15 @@ pub enum AdapterCommand {
         local_id: String,
         watch: bool,
     },
+    /// Ask the pod's workflow guard to move to `step` (a number or `exit`).
+    /// The guard decides; the outcome comes back as [`AdapterEvent::CommandResult`]
+    /// and the new state as [`AdapterEvent::GuardStepState`].
+    GuardTransition {
+        local_id: String,
+        step: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<Uuid>,
+    },
 }
 
 impl AdapterCommand {
@@ -784,7 +799,8 @@ impl AdapterCommand {
             | Self::SetModel { local_id, .. }
             | Self::Diagnose { local_id, .. }
             | Self::WatchPty { local_id, .. }
-            | Self::WatchText { local_id, .. } => Some(local_id),
+            | Self::WatchText { local_id, .. }
+            | Self::GuardTransition { local_id, .. } => Some(local_id),
             Self::Fork { parent_local_id, .. } => Some(parent_local_id),
             Self::Spawn { spec, .. } => spec.parent_local_id.as_deref(),
             Self::ResumeMarks { .. } | Self::AckMarks { .. } => None,
@@ -799,7 +815,8 @@ impl AdapterCommand {
             | Self::Reply { command_id, .. }
             | Self::Interrupt { command_id, .. }
             | Self::Remove { command_id, .. }
-            | Self::SetModel { command_id, .. } => *command_id,
+            | Self::SetModel { command_id, .. }
+            | Self::GuardTransition { command_id, .. } => *command_id,
             _ => None,
         }
     }

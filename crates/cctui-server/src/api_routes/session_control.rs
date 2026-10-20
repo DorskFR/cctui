@@ -60,44 +60,63 @@ pub(super) fn register(r: Routes) -> Routes {
             Authn::Bearer,
             sess_write(),
         )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/interrupt",
-            "Interrupt a session's current turn.",
-            post(routes::sessions::interrupt_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/resume",
-            "Resume an exited session.",
-            post(routes::sessions::resume_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/set-model",
-            "Change a session's model.",
-            post(routes::sessions::set_model),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/switch-account",
-            "Switch the account backing a session.",
-            post(routes::sessions::switch_account),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/bindings",
-            "List a session's per-family account bindings.",
-            get(routes::sessions::session_bindings),
-            Authn::Bearer,
-            sess_read(),
-        )
+}
+
+pub(super) fn register_control(r: Routes) -> Routes {
+    r.add(
+        &[Method::POST],
+        "/sessions/{id}/interrupt",
+        "Interrupt a session's current turn.",
+        post(routes::sessions::interrupt_session),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
+        &[GET],
+        "/sessions/{id}/guard",
+        "The session's mirrored workflow-guard step, if the pod reported one.",
+        get(crate::guard_step::guard_step),
+        Authn::Bearer,
+        sess_read(),
+    )
+    .add(
+        &[Method::POST],
+        "/sessions/{id}/guard/transition",
+        "Ask the session's workflow guard to move to a step.",
+        post(crate::guard_step::guard_transition),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
+        &[Method::POST],
+        "/sessions/{id}/resume",
+        "Resume an exited session.",
+        post(routes::sessions::resume_session),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
+        &[Method::POST],
+        "/sessions/{id}/set-model",
+        "Change a session's model.",
+        post(routes::sessions::set_model),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
+        &[Method::POST],
+        "/sessions/{id}/switch-account",
+        "Switch the account backing a session.",
+        post(routes::sessions::switch_account),
+        Authn::Bearer,
+        sess_write(),
+    )
+    .add(
+        &[GET],
+        "/sessions/{id}/bindings",
+        "List a session's per-family account bindings.",
+        get(routes::sessions::session_bindings),
+        Authn::Bearer,
+        sess_read(),
+    )
 }

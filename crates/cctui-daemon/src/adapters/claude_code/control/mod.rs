@@ -1484,6 +1484,10 @@ impl SessionDriver for Driver {
         command_id: Option<uuid::Uuid>,
         session_id: Option<uuid::Uuid>,
     ) -> CommandOutcome {
+        if let Some(refusal) = crate::machine_health::spawn_refusal() {
+            tracing::error!(%refusal, "claude spawn: refusing on a machine with denied grants");
+            anyhow::bail!("{refusal}");
+        }
         let sock = self.ensure_socket().await?;
         let dispatch =
             self.prepare_spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;

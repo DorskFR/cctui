@@ -48,7 +48,7 @@ describe('a tile composer is one line until focused', () => {
 	it('hides the extra rows while folded, keeping the input and send', () => {
 		expect(composer).toContain('class:hidden={folded}');
 		expect(composer).toContain('{#if coldOffer && !folded}');
-		expect(composer).toContain('leading={supportsAttachments && !folded ? attach : undefined}');
+		expect(composer).toContain('leading={(supportsAttachments || voiceEnabled) && !folded ? leadingTools : undefined}');
 		expect(composer).toContain('rows={1}');
 	});
 });

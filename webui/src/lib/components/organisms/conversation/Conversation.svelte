@@ -47,6 +47,8 @@
 		onbookmark,
 		isBookmarked,
 		pluginActionsFor,
+		onspeak,
+		speakingKey = null,
 		onpluginaction,
 		onquote
 	}: {
@@ -91,6 +93,10 @@
 		onpluginaction?: (a: PluginActionButton) => void;
 		/** Quote a line into the composer; omit to hide the action. */
 		onquote?: (ln: Line, selection: string | null) => void;
+		/** Read an assistant line aloud; omit to hide the action. */
+		onspeak?: (ln: Line) => void;
+		/** `lineKey` of the line being read aloud, if any. */
+		speakingKey?: string | null;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -185,6 +191,8 @@
 		pluginActions={pluginActionsFor?.(ln) ?? []}
 		{onpluginaction}
 		{onquote}
+		{onspeak}
+		speaking={speakingKey !== null && speakingKey === ln.key}
 	/>
 {/snippet}
 

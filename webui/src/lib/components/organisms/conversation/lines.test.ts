@@ -1504,3 +1504,27 @@ describe("voice notes", () => {
     expect(roles([speakCall, speakResult(true)])).toEqual(["result"]);
   });
 });
+
+describe("spoken turns", () => {
+  const spoken =
+    '▷ User: <cctui-session-context voice="spoken">\nThe user spoke this message aloud.\n</cctui-session-context>\n\nwhat time is it';
+
+  it("marks the user line and hides the spoken-style wrapper", () => {
+    const lines = buildLines([text(spoken, 1)], ctx());
+    expect(lines.map((l) => [l.role, l.voice ?? false])).toEqual([
+      ["user", true],
+    ]);
+    expect(lines[0].text).toBe("what time is it");
+  });
+
+  it("keeps other injected blocks as context lines", () => {
+    const both = `▷ User: <cctui-previous-conversation session="a" id="s1">\nbrief\n</cctui-previous-conversation>\n\n${spoken.slice("▷ User: ".length)}`;
+    const lines = buildLines([text(both, 1)], ctx());
+    expect(lines.map((l) => l.role)).toEqual(["context", "user"]);
+    expect(lines[1].voice).toBe(true);
+  });
+
+  it("leaves a typed turn unmarked", () => {
+    expect(buildLines([text("▷ User: hi", 1)], ctx())[0].voice).toBeUndefined();
+  });
+});

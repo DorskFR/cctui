@@ -11,6 +11,7 @@
 	import type { HarnessVersion } from '@bindings/HarnessVersion';
 	import type { HarnessVersions } from '@bindings/HarnessVersions';
 	import type { MachineHarnessInfo } from '@bindings/MachineHarnessInfo';
+	import { DRAIN_RESTARTABLE, deniedHealth, versionSkew } from '$lib/harnessHealth';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -77,6 +78,20 @@
 		const base = info?.instance ?? DEFAULT_POLICY;
 		const policy = value === 'inherit' ? null : { ...base, enabled: value === 'on' };
 		run(() => endpoints.setMachineHarnessAutoupdate(row.machine_id, policy));
+	}
+
+	let restarting = $state<string | null>(null);
+
+	async function restartWhenIdle(row: MachineHarnessInfo, harness: string) {
+		restarting = `${row.machine_id}:${harness}`;
+		try {
+			await endpoints.restartHarness(row.machine_id, harness);
+			toasts.ok(m.settings_harness_restart_requested({ harness, name: row.name }));
+		} catch (e) {
+			toasts.error(e instanceof Error ? e.message : String(e));
+		} finally {
+			restarting = null;
+		}
 	}
 
 	function brokenSandbox(
@@ -153,6 +168,31 @@
 							{#if row.report.managed_by_image}
 								<Badge>{m.settings_harness_update_managed_by_image()}</Badge>
 							{/if}
+							{#if deniedHealth(row.report)}
+								{@const denied = deniedHealth(row.report)!}
+								<Badge tone="danger" size="sm" border>
+									{m.settings_machine_health_denied({ name: row.name })}
+								</Badge>
+								<Text size="xs" tone="faint" variant="code">{denied.detail}</Text>
+							{/if}
+							{#each versionSkew(row.report.versions) as skew (skew.harness)}
+								<Badge tone="warn" size="sm" border>
+									{m.settings_harness_skew({
+										harness: harnessLabel(skew.harness, harnessTable()),
+										daemon: skew.daemon,
+										cli: skew.cli
+									})}
+								</Badge>
+								{#if DRAIN_RESTARTABLE.has(skew.harness)}
+									<Button
+										size="sm"
+										disabled={saving || restarting !== null}
+										onclick={() => restartWhenIdle(row, skew.harness)}
+									>
+										{m.settings_harness_restart_when_idle()}
+									</Button>
+								{/if}
+							{/each}
 							{#if brokenSandbox(row.report.codex_sandbox)}
 								{@const sandbox = brokenSandbox(row.report.codex_sandbox)!}
 								<Badge tone="danger" size="sm" border>

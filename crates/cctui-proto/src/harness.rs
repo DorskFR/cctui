@@ -172,6 +172,74 @@ pub const CODEX_SANDBOX_FIX: &str = "codex's sandbox (bubblewrap) cannot start o
      namespaces for bwrap. Install an AppArmor profile for bwrap, or set \
      kernel.apparmor_restrict_unprivileged_userns=0. See docs/codex-sandbox.md";
 
+/// Result of the daemon's machine-health probe: list a privacy-gated folder
+/// and open a TCP connection to the server, in the context the harness child
+/// runs in.
+///
+/// macOS ties folder and Local Network grants to the binary's code signature,
+/// so a harness auto-update or a cctui-daemon self-update drops them and the
+/// next worker is denied with no output cctui can see. The probe runs after
+/// every such update so the machine card warns before a spawn hangs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum MachineHealth {
+    Ok,
+    /// Listing a folder failed with `EPERM`/`EACCES`.
+    FolderDenied {
+        detail: String,
+    },
+    /// Connecting to the server's address failed with `EHOSTUNREACH`/`ENETUNREACH`.
+    NetworkDenied {
+        detail: String,
+    },
+}
+
+impl MachineHealth {
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Ok => None,
+            Self::FolderDenied { detail } | Self::NetworkDenied { detail } => Some(detail),
+        }
+    }
+
+    /// Why a spawn on this machine must not start, naming the fix. `None`
+    /// lets it proceed.
+    #[must_use]
+    pub fn refusal(&self, machine: &str) -> Option<String> {
+        let detail = self.detail()?;
+        Some(format!("{}\n{detail}", machine_health_fix(machine)))
+    }
+}
+
+/// The message a user needs when a spawn is refused or a badge is shown.
+#[must_use]
+pub fn machine_health_fix(machine: &str) -> String {
+    format!(
+        "macOS needs permission approvals on {machine}: open a terminal there and run \
+         `cctui-daemon doctor --grant`"
+    )
+}
+
+/// `(harness, cli, daemon)` for every harness whose long-lived process runs
+/// a different version than the CLI on disk.
+#[must_use]
+pub fn version_skew(versions: &HarnessVersions) -> Vec<(&str, &str, &str)> {
+    versions
+        .iter()
+        .filter_map(|(harness, v)| match (v.cli.as_deref(), v.daemon.as_deref()) {
+            (Some(cli), Some(daemon)) if cli != daemon => Some((harness, cli, daemon)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct AdapterBinary {
@@ -225,6 +293,10 @@ pub struct HarnessReport {
     /// Keyed by enabled adapter id; empty from a daemon too old to probe.
     #[serde(default)]
     pub binaries: BTreeMap<String, AdapterBinary>,
+    /// Last machine-health probe. `None` from a daemon that does not probe,
+    /// or before the first probe has run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<MachineHealth>,
 }
 
 impl HarnessReport {
@@ -343,6 +415,41 @@ mod tests {
             report.versions.get(HARNESS_CLAUDE_CODE).and_then(|v| v.cli.as_deref()),
             Some("2.1.280")
         );
+    }
+
+    #[test]
+    fn a_health_verdict_round_trips_and_only_a_denial_refuses() {
+        let denied = MachineHealth::FolderDenied { detail: "~/Documents: EPERM".to_owned() };
+        let json = serde_json::to_string(&denied).unwrap();
+        assert!(json.contains(r#""state":"folder_denied""#), "{json}");
+        assert_eq!(serde_json::from_str::<MachineHealth>(&json).unwrap(), denied);
+        assert_eq!(serde_json::to_string(&MachineHealth::Ok).unwrap(), r#"{"state":"ok"}"#);
+
+        assert!(MachineHealth::Ok.refusal("m2pro").is_none());
+        let refusal = denied.refusal("m2pro").unwrap();
+        assert!(refusal.contains("on m2pro"), "{refusal}");
+        assert!(refusal.contains("`cctui-daemon doctor --grant`"), "{refusal}");
+        assert!(refusal.ends_with("~/Documents: EPERM"), "{refusal}");
+
+        let old: HarnessReport = serde_json::from_str(r#"{"outcomes":[]}"#).unwrap();
+        assert!(old.health.is_none(), "a daemon that does not probe is not unhealthy");
+        assert!(!serde_json::to_string(&old).unwrap().contains("health"));
+    }
+
+    #[test]
+    fn version_skew_names_only_a_daemon_behind_its_cli() {
+        let mut versions = HarnessVersions::default();
+        versions.insert(
+            HARNESS_CLAUDE_CODE,
+            HarnessVersion { cli: Some("2.1.286".into()), daemon: Some("2.1.285".into()) },
+        );
+        versions.insert(
+            HARNESS_CODEX,
+            HarnessVersion { cli: Some("0.155.0".into()), daemon: Some("0.155.0".into()) },
+        );
+        versions.insert("gemini", HarnessVersion { cli: Some("0.62.0".into()), daemon: None });
+        assert_eq!(version_skew(&versions), vec![(HARNESS_CLAUDE_CODE, "2.1.286", "2.1.285")]);
+        assert!(version_skew(&HarnessVersions::default()).is_empty());
     }
 
     #[test]

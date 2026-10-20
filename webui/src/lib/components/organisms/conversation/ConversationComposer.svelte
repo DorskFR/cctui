@@ -17,6 +17,7 @@
 	import ScheduleCustomModal from './ScheduleCustomModal.svelte';
 	import ScheduledMessages from './ScheduledMessages.svelte';
 	import SendButton from './SendButton.svelte';
+	import VoiceControls from './VoiceControls.svelte';
 	import { CacheColdClock } from './cacheCold.svelte';
 	import { PromptAttachments } from '$lib/promptAttachments.svelte';
 	import { scheduleBody } from './scheduleBody';
@@ -43,7 +44,10 @@
 		onFork,
 		onResume,
 		onFollowup,
-		compact = false
+		compact = false,
+		voiceEnabled = false,
+		voiceLive = false,
+		onvoicelive
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -60,6 +64,10 @@
 		onFollowup?: (instruction?: string) => void;
 		/** Tile chrome: one line of input until it takes focus. */
 		compact?: boolean;
+		/** The instance has a speech service: show dictation and voice mode. */
+		voiceEnabled?: boolean;
+		voiceLive?: boolean;
+		onvoicelive?: () => void;
 	} = $props();
 
 	let focused = $state(false);
@@ -229,6 +237,12 @@
 		el.setSelectionRange(next.caret, next.caret);
 	}
 
+	/** A finished dictation: into the draft, or straight out when the pref says so. */
+	function dictated(text: string) {
+		if (settings.voice.autoSend) sendText(text);
+		else void insertText(text);
+	}
+
 	/** Quote a message into the draft as a Markdown blockquote, keeping whatever
 	 *  is already typed and leaving the caret under the quote. */
 	export async function insertQuote(text: string) {
@@ -343,19 +357,24 @@
 				/>
 			</div>
 		{/if}
-		{#snippet attach()}
-			<FileButton
-				label={m.composer_attach_files()}
-				multiple
-				box="sm"
-				iconOnly
-				variant="ghost"
-				onfiles={addFiles}
-			/>
+		{#snippet leadingTools()}
+			{#if supportsAttachments}
+				<FileButton
+					label={m.composer_attach_files()}
+					multiple
+					box="sm"
+					iconOnly
+					variant="ghost"
+					onfiles={addFiles}
+				/>
+			{/if}
+			{#if voiceEnabled && onvoicelive}
+				<VoiceControls live={voiceLive} ontogglelive={onvoicelive} ondictated={dictated} />
+			{/if}
 		{/snippet}
 		<!-- The `#` session-mention panel opens as a dropup above the field
 		     (the composer is pinned to the bottom of the drawer). -->
-		<InputGroup leading={supportsAttachments && !folded ? attach : undefined}>
+		<InputGroup leading={(supportsAttachments || voiceEnabled) && !folded ? leadingTools : undefined}>
 			<PromptField
 				att={supportsAttachments ? att : undefined}
 				bind:value={input}

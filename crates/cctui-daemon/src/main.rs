@@ -123,6 +123,18 @@ enum Cmd {
     /// Check for a newer release, swap the binary in place, and have the
     /// running daemon re-exec onto it (same process, live sessions kept).
     Update,
+    /// Probe this machine's health in the foreground: folder and network
+    /// access as the daemon sees them, plus the `claude` CLI / `claude daemon`
+    /// version split.
+    Doctor {
+        /// macOS only: relaunch `claude daemon` (when idle) and, with `--yes`,
+        /// cctui-daemon, so every dropped privacy grant is asked for again.
+        #[arg(long)]
+        grant: bool,
+        /// Also relaunch cctui-daemon, ending live codex and opencode sessions.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Exercise start-up paths that `--version` skips (TLS client setup) and
     /// exit 0; release builds run it before publishing.
     Selfcheck,
@@ -290,6 +302,7 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     // into the supervisor; both flow to the server-routed updater.
     let update_server_url = cfg.server_url.clone();
     let update_machine_key = cfg.machine_key.clone();
+    let health_server_url = cfg.server_url.clone();
     let update_channel = cfg.update_channel();
     let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
     if auto_update_enabled(no_auto_update) {
@@ -307,6 +320,7 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
         tracing::info!("auto-update disabled");
     }
     cctui_daemon::harness_update::spawn_loop(shutdown.clone());
+    cctui_daemon::machine_health::spawn_loop(shutdown.clone(), health_server_url);
     supervisor.run(shutdown).await;
     Ok(())
 }
@@ -503,6 +517,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Update => run_update(&path).await,
+        Cmd::Doctor { grant, yes } => {
+            cctui_daemon::doctor::run_doctor(&path, cctui_daemon::doctor::Opts { grant, yes }).await
+        }
         Cmd::Service { cmd } => match cmd {
             ServiceCmd::Install => service::install(),
             ServiceCmd::Uninstall => service::uninstall(),
