@@ -15,6 +15,7 @@ pub enum ProviderFamily {
     Anthropic,
     Openai,
     Fireworks,
+    Google,
 }
 
 /// One selectable provider kind, in the order the pickers list them.
@@ -43,6 +44,8 @@ pub struct UsageProbeInfo {
 pub fn provider_family(id: &str) -> ProviderFamily {
     if id == "fireworks" {
         ProviderFamily::Fireworks
+    } else if id == "google" {
+        ProviderFamily::Google
     } else if id.starts_with("openai") {
         ProviderFamily::Openai
     } else {
@@ -50,10 +53,11 @@ pub fn provider_family(id: &str) -> ProviderFamily {
     }
 }
 
-/// The `*-compatible` endpoints and Fireworks authenticate with a static key.
+/// The `*-compatible` endpoints, Fireworks and Google authenticate with a
+/// static key.
 #[must_use]
 pub fn is_static_credential(id: &str) -> bool {
-    id.ends_with("-compatible") || id == "fireworks"
+    id.ends_with("-compatible") || matches!(id, "fireworks" | "google")
 }
 
 #[must_use]
@@ -64,6 +68,7 @@ pub fn provider_label(id: &str) -> String {
         "anthropic-compatible" => "Anthropic-compatible",
         "openai-compatible" => "OpenAI-compatible",
         "fireworks" => "Fireworks",
+        "google" => "Gemini",
         other => other,
     }
     .to_owned()
@@ -87,6 +92,7 @@ pub fn provider_kinds() -> Vec<ProviderInfo> {
         info("anthropic-compatible", "Anthropic-compatible endpoint"),
         info("openai-compatible", "OpenAI-compatible endpoint"),
         info("fireworks", "Fireworks"),
+        info("google", "Gemini (google)"),
     ]
 }
 
@@ -101,6 +107,7 @@ mod tests {
         assert_eq!(provider_label("anthropic-compatible"), "Anthropic-compatible");
         assert_eq!(provider_label("openai-compatible"), "OpenAI-compatible");
         assert_eq!(provider_label("fireworks"), "Fireworks");
+        assert_eq!(provider_label("google"), "Gemini");
         assert_eq!(provider_label("something-else"), "something-else");
     }
 
@@ -111,6 +118,7 @@ mod tests {
         assert_eq!(provider_family("openai"), ProviderFamily::Openai);
         assert_eq!(provider_family("openai-compatible"), ProviderFamily::Openai);
         assert_eq!(provider_family("fireworks"), ProviderFamily::Fireworks);
+        assert_eq!(provider_family("google"), ProviderFamily::Google);
         assert_eq!(provider_family("mystery"), ProviderFamily::Anthropic);
     }
 
@@ -119,6 +127,7 @@ mod tests {
         assert!(is_static_credential("anthropic-compatible"));
         assert!(is_static_credential("openai-compatible"));
         assert!(is_static_credential("fireworks"));
+        assert!(is_static_credential("google"));
         assert!(!is_static_credential("anthropic"));
         assert!(!is_static_credential("openai"));
     }
@@ -127,7 +136,14 @@ mod tests {
     fn the_picker_order_is_stable() {
         assert_eq!(
             provider_kinds().iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-            vec!["anthropic", "openai", "anthropic-compatible", "openai-compatible", "fireworks"]
+            vec![
+                "anthropic",
+                "openai",
+                "anthropic-compatible",
+                "openai-compatible",
+                "fireworks",
+                "google"
+            ]
         );
     }
 }

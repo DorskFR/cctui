@@ -10,6 +10,7 @@ const fn family_label(family: ProviderFamily) -> &'static str {
         ProviderFamily::Anthropic => "anthropic",
         ProviderFamily::Openai => "openai",
         ProviderFamily::Fireworks => "fireworks",
+        ProviderFamily::Google => "google",
     }
 }
 

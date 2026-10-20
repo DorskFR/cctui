@@ -223,7 +223,7 @@ mod tests {
         let got = merge(
             vec![
                 ("opencode".to_owned(), json!({"bin": "/opt/opencode"}), false),
-                ("gemini".to_owned(), json!({}), true),
+                ("kilo".to_owned(), json!({}), true),
             ],
             &Binaries::new(),
         );
@@ -231,7 +231,7 @@ mod tests {
         assert!(opencode.pinned && !opencode.enabled && opencode.default_enabled);
         assert_eq!(opencode.config, json!({"bin": "/opt/opencode"}));
         let last = got.last().unwrap();
-        assert_eq!(last.adapter_id, "gemini");
+        assert_eq!(last.adapter_id, "kilo");
         assert!(last.pinned && last.enabled && !last.default_enabled);
     }
 

@@ -62,6 +62,13 @@ export const PROVIDERS: ProviderInfo[] = [
 		picker_label: 'Fireworks',
 		family: 'fireworks',
 		static_credential: true
+	},
+	{
+		id: 'google',
+		label: 'Gemini',
+		picker_label: 'Gemini (google)',
+		family: 'google',
+		static_credential: true
 	}
 ];
 
@@ -142,6 +149,15 @@ export const HARNESSES: HarnessDescriptor[] = [
 		default_enabled: true,
 		models_source: 'none',
 		permission_modes: PERMISSION_MODES
+	},
+	{
+		id: 'gemini',
+		label: 'Gemini CLI',
+		family: 'google',
+		capabilities: caps(false, false, true, true, true, false, true, true),
+		default_enabled: false,
+		models_source: 'catalog',
+		permission_modes: ACP_PERMISSION_MODES
 	},
 	{
 		id: 'qwen',

@@ -1431,8 +1431,9 @@ mod tests {
     use axum::http::StatusCode;
     use base64::Engine;
 
-    /// An enabled ACP agent is not a family the server can launch, so the
-    /// default capability must not advertise it to `CctuiAgent`.
+    /// An enabled adapter outside the harness table is not a family the server
+    /// can launch, so the default capability must not advertise it to
+    /// `CctuiAgent`.
     #[test]
     fn the_default_capability_advertises_only_spawnable_adapters() {
         let ids = ["claude-code", "gemini", "codex", "opencode", "qwen", "goose", "custom-acp"]
@@ -1440,7 +1441,7 @@ mod tests {
             .to_vec();
         assert_eq!(
             super::spawnable_adapters(ids),
-            ["claude-code", "codex", "opencode", "qwen", "goose"]
+            ["claude-code", "gemini", "codex", "opencode", "qwen", "goose"]
         );
         assert!(super::spawnable_adapters(Vec::new()).is_empty());
     }
@@ -1617,10 +1618,10 @@ mod tests {
     fn spawn_refuses_an_adapter_with_no_family() {
         assert_eq!(super::spawn_adapter(None).unwrap(), "claude-code");
         assert_eq!(super::spawn_adapter(Some(" ")).unwrap(), "claude-code");
-        for adapter in ["claude-code", "codex", "opencode", "qwen", "goose"] {
+        for adapter in ["claude-code", "codex", "opencode", "gemini", "qwen", "goose"] {
             assert_eq!(super::spawn_adapter(Some(adapter)).unwrap(), adapter);
         }
-        assert!(super::spawn_adapter(Some("gemini")).is_err());
+        assert!(super::spawn_adapter(Some("kilo")).is_err());
     }
 
     #[test]

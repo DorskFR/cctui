@@ -135,6 +135,43 @@ pub fn parse_fireworks_usage(
     Some(CapturedUsage { message_id: parsed.and_then(|b| b.id), usage })
 }
 
+/// Parse the `usageMetadata` a Gemini response reports.
+///
+/// Handles a `generateContent` JSON body and a `streamGenerateContent?alt=sse`
+/// stream, whose every chunk carries the cumulative tally: the last chunk with
+/// one wins. `cachedContentTokenCount` is the cached share of
+/// `promptTokenCount`; `thoughtsTokenCount` is billed as output on top of
+/// `candidatesTokenCount`. Returns `None` when nothing was reported.
+pub fn parse_gemini_usage(body: &[u8]) -> Option<CapturedUsage> {
+    let chunk = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .filter(|v| v.get("usageMetadata").is_some())
+        .or_else(|| {
+            let text = std::str::from_utf8(body).ok()?;
+            text.lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .filter_map(|payload| {
+                    serde_json::from_str::<serde_json::Value>(payload.trim()).ok()
+                })
+                .filter(|v| v.get("usageMetadata").is_some())
+                .last()
+        })?;
+    let meta = chunk.get("usageMetadata")?;
+    let num = |k: &str| meta.get(k).and_then(serde_json::Value::as_i64).unwrap_or(0).max(0);
+    let prompt = num("promptTokenCount") + num("toolUsePromptTokenCount");
+    let cached_input = num("cachedContentTokenCount").min(prompt);
+    let usage = TokenUsage {
+        input: prompt - cached_input,
+        cached_input,
+        output: num("candidatesTokenCount") + num("thoughtsTokenCount"),
+    };
+    if usage.is_empty() {
+        return None;
+    }
+    let message_id = chunk.get("responseId").and_then(serde_json::Value::as_str).map(str::to_owned);
+    Some(CapturedUsage { message_id, usage })
+}
+
 fn parse_count(s: &str) -> Option<i64> {
     s.trim().parse::<i64>().ok().filter(|n| *n >= 0)
 }
@@ -289,5 +326,46 @@ mod tests {
         assert_eq!(got.usage, TokenUsage { input: 0, cached_input: 100, output: 0 });
         assert!(parse_fireworks_usage(b"not json", None, None).is_none());
         assert!(parse_fireworks_usage(b"{\"usage\":null}", None, None).is_none());
+    }
+
+    #[test]
+    fn gemini_json_body_splits_cached_prompt_and_bills_thoughts_as_output() {
+        let body = json!({
+            "candidates": [{"content": {"parts": [{"text": "hi"}], "role": "model"}, "finishReason": "STOP"}],
+            "usageMetadata": {
+                "promptTokenCount": 1000,
+                "cachedContentTokenCount": 400,
+                "candidatesTokenCount": 200,
+                "thoughtsTokenCount": 50,
+                "totalTokenCount": 1250,
+            },
+            "modelVersion": "gemini-2.5-pro",
+            "responseId": "resp-1",
+        })
+        .to_string();
+        let got = parse_gemini_usage(body.as_bytes()).unwrap();
+        assert_eq!(got.message_id.as_deref(), Some("resp-1"));
+        assert_eq!(got.usage, TokenUsage { input: 600, cached_input: 400, output: 250 });
+    }
+
+    #[test]
+    fn gemini_sse_takes_the_last_cumulative_tally() {
+        let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}],\"role\":\"model\"}}],\
+                   \"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":1,\"totalTokenCount\":101},\
+                   \"responseId\":\"r1\"}\r\n\r\n\
+                   data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"llo\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\
+                   \"usageMetadata\":{\"promptTokenCount\":100,\"cachedContentTokenCount\":30,\"candidatesTokenCount\":7,\
+                   \"toolUsePromptTokenCount\":10,\"totalTokenCount\":117},\"responseId\":\"r1\"}\r\n\r\n";
+        let got = parse_gemini_usage(sse.as_bytes()).unwrap();
+        assert_eq!(got.message_id.as_deref(), Some("r1"));
+        assert_eq!(got.usage, TokenUsage { input: 80, cached_input: 30, output: 7 });
+    }
+
+    #[test]
+    fn gemini_nothing_reported_is_none() {
+        assert!(parse_gemini_usage(b"not json").is_none());
+        assert!(parse_gemini_usage(b"{\"candidates\":[]}").is_none());
+        assert!(parse_gemini_usage(b"{\"usageMetadata\":{\"totalTokenCount\":0}}").is_none());
+        assert!(parse_gemini_usage(b"data: {\"candidates\":[]}\n\n").is_none());
     }
 }

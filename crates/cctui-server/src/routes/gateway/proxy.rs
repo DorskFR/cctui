@@ -1,10 +1,11 @@
 use super::{
     Family, FireworksSettings, anthropic_upstream, clear_account_reauth, clear_soft_limit_block,
     clear_soft_limit_block_for_token, current_access_token, durable_block_key, fireworks_upstream,
-    flag_account_reauth, guard_stream, guardable, mark_soft_limit_block, note_orphan_401,
-    note_token_used, openai_upstream, orphan_is_blocked, record_fireworks_usage, resolve_account,
-    session_and_account_name_for_token, session_budget_limits, session_id_for_token,
-    session_spend_usd_cached, tees_response, usage_for_soft_limit,
+    flag_account_reauth, google_path_model, google_upstream, guard_stream, guardable,
+    mark_soft_limit_block, note_orphan_401, note_token_used, openai_upstream, orphan_is_blocked,
+    record_metered_usage, resolve_account, session_and_account_name_for_token,
+    session_budget_limits, session_id_for_token, session_spend_usd_cached, tees_response,
+    usage_for_soft_limit,
 };
 
 use axum::body::{Body, Bytes};
@@ -201,13 +202,35 @@ pub async fn fireworks(
     passthrough(state, req, Family::Fireworks, "/gateway/fireworks", &fireworks_upstream()).await
 }
 
+/// `/gateway/google/*path` — passthrough to the Gemini API. The worker's
+/// session token arrives as `x-goog-api-key`, the only header the Gemini SDK
+/// carries a key in, and leaves as the account's key under the same name.
+pub async fn google(State(state): State<AppState>, req: Request) -> Result<Response, StatusCode> {
+    passthrough(state, req, Family::Google, "/gateway/google", &google_upstream()).await
+}
+
 pub fn skip_request_header(lower_name: &str) -> bool {
     // `x-openai-actor-authorization` is a dummy the codex provider config carries
     // purely to unlock the built-in image_gen tool; it must never reach upstream.
     matches!(
         lower_name,
-        "authorization" | "host" | "content-length" | "connection" | "x-openai-actor-authorization"
+        "authorization"
+            | "x-goog-api-key"
+            | "host"
+            | "content-length"
+            | "connection"
+            | "x-openai-actor-authorization"
     )
+}
+
+/// The worker's session token: a bearer, or the Gemini SDK's `x-goog-api-key`.
+pub fn session_token_from(headers: &HeaderMap) -> Option<String> {
+    let bearer = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let goog = || headers.get("x-goog-api-key").and_then(|v| v.to_str().ok());
+    bearer.or_else(goog).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned)
 }
 
 pub fn skip_response_header(lower_name: &str) -> bool {
@@ -266,6 +289,8 @@ struct UpstreamTarget {
 /// Everything that wants to read the request or response.
 struct Observers {
     fireworks: Option<FireworksSettings>,
+    /// Usage is read from the Gemini responses this account's calls return.
+    google: bool,
     affinity_session: Option<String>,
     langfuse: Option<std::sync::Arc<crate::langfuse::LangfuseClient>>,
     trace_session_id: Option<String>,
@@ -287,12 +312,7 @@ async fn authenticate(
     headers: &HeaderMap,
     is_anthropic: bool,
 ) -> Result<Authenticated, Reply> {
-    let Some(session_token) = headers
-        .get(http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::to_string)
-    else {
+    let Some(session_token) = session_token_from(headers) else {
         return Err(Ok(auth_error(AuthStage::SessionToken, is_anthropic)));
     };
 
@@ -501,9 +521,12 @@ fn forward_headers(
             headers.insert(hn, hv);
         }
     }
-    // Anthropic API keys authenticate through `x-api-key`; every other
-    // scheme is a bearer.
-    let (name, value) = if acct.auth_scheme == "api_key" {
+    // Gemini keys travel as `x-goog-api-key`, Anthropic API keys as `x-api-key`;
+    // every other scheme is a bearer.
+    let family = Family::from_provider(&acct.provider);
+    let (name, value) = if family == Family::Google {
+        (reqwest::header::HeaderName::from_static("x-goog-api-key"), access_token.to_owned())
+    } else if acct.auth_scheme == "api_key" {
         (reqwest::header::HeaderName::from_static("x-api-key"), access_token.to_owned())
     } else {
         (reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
@@ -516,7 +539,7 @@ fn forward_headers(
     // ChatGPT-backed Codex requests must carry the account id upstream. Other
     // families store an unrelated id in this column (Fireworks: the billing
     // account slug), so the header is scoped rather than sent on every request.
-    if Family::from_provider(&acct.provider) == Family::Openai
+    if family == Family::Openai
         && let Some(account_id) = acct.provider_account_id.as_deref()
         && let Ok(hv) = reqwest::header::HeaderValue::from_str(account_id)
     {
@@ -535,8 +558,10 @@ async fn observers(
     let Authenticated { session_token, acct } = auth;
     // Fireworks: the account's settings shape the request here, where the real
     // key lives — a worker can neither supply nor defeat them.
-    let fireworks = (Family::from_provider(&acct.provider) == Family::Fireworks)
+    let family = Family::from_provider(&acct.provider);
+    let fireworks = (family == Family::Fireworks)
         .then(|| FireworksSettings::resolve(acct.provider_settings.as_ref()));
+    let google = family == Family::Google;
     let affinity_session = match fireworks.as_ref() {
         Some(fw) if fw.session_affinity => session_id_for_token(state, session_token).await,
         _ => None,
@@ -561,16 +586,17 @@ async fn observers(
         tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
-    if tees_response(langfuse.is_some(), fireworks.is_some()) || tool_guard.is_some() {
+    if tees_response(langfuse.is_some(), fireworks.is_some() || google) || tool_guard.is_some() {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
     }
-    Ok(Observers { fireworks, affinity_session, langfuse, trace_session_id, tool_guard })
+    Ok(Observers { fireworks, google, affinity_session, langfuse, trace_session_id, tool_guard })
 }
 
 /// Stream the request body through without buffering (default), OR buffer it
 /// once when something needs to read or reshape it. A body that isn't JSON
 /// falls through to the original bytes, so non-`/v1/messages` calls are
-/// untouched either way.
+/// untouched either way. `path_model` is the model a Gemini call names in its
+/// path instead of its body.
 async fn prepare_body(
     state: &AppState,
     auth: &Authenticated,
@@ -578,6 +604,7 @@ async fn prepare_body(
     obs: &Observers,
     req: Request,
     is_anthropic: bool,
+    path_model: Option<String>,
 ) -> Result<(reqwest::Body, RequestInfo), Reply> {
     let Authenticated { session_token, acct } = auth;
     let Admission { effective_limits, model_gate } = admission;
@@ -585,7 +612,7 @@ async fn prepare_body(
         let body_stream = req.into_body().into_data_stream();
         return Ok((
             reqwest::Body::wrap_stream(body_stream),
-            RequestInfo { traced_request: None, request_model: None, rewrote_body: false },
+            RequestInfo { traced_request: None, request_model: path_model, rewrote_body: false },
         ));
     }
     let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
@@ -596,7 +623,8 @@ async fn prepare_body(
         .as_ref()
         .and_then(|r| r.get("model"))
         .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .or(path_model);
     // The deferred half of the soft limit: a `weekly_model:` cap gates only
     // the model it names, so a spent weekly Fable budget must let an Opus
     // request through. Same `window_applies` the account election uses, so
@@ -762,20 +790,20 @@ async fn relay_response(
             builder = builder.header(hn, hv);
         }
     }
-    // Fireworks meters per token, so its usage must be recorded from the
-    // response itself: the `usage` object (JSON body or terminal SSE frame) plus
-    // the two headers, which are what the provider bills against. Read the
-    // headers now, before the body is consumed.
-    let usage_session = match (&obs.fireworks, status.is_success()) {
-        (Some(_), true) => {
-            match obs.affinity_session.clone().or_else(|| obs.trace_session_id.clone()) {
-                Some(sid) => Some(sid),
-                None => session_id_for_token(state, session_token).await,
-            }
+    // A metered family (Fireworks, Google) bills per token, so its usage must
+    // be recorded from the response itself: the usage object (JSON body or
+    // terminal SSE frame) plus, for Fireworks, the two headers the provider
+    // bills against. Read the headers now, before the body is consumed.
+    let metered = obs.fireworks.is_some() || obs.google;
+    let usage_session = if metered && status.is_success() {
+        match obs.affinity_session.clone().or_else(|| obs.trace_session_id.clone()) {
+            Some(sid) => Some(sid),
+            None => session_id_for_token(state, session_token).await,
         }
-        _ => None,
+    } else {
+        None
     };
-    let usage_headers = usage_session.as_ref().map(|_| {
+    let usage_headers = usage_session.as_ref().filter(|_| obs.fireworks.is_some()).map(|_| {
         let header = |name: &str| {
             upstream.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
         };
@@ -847,12 +875,11 @@ fn spawn_observer(
         account_id: Some(acct.id.to_string()),
         model: request_model.clone(),
     };
-    // Fireworks speaks the OpenAI wire protocol, so it reconstructs as openai.
-    let is_openai = Family::from_provider(&acct.provider) != Family::Anthropic;
+    let family = Family::from_provider(&acct.provider);
     let pool = state.pool.clone();
     let bust_pool = state.pool.clone();
     // TPM accounting rides the same per-response usage the metering path captures
-    // (Fireworks): the running window total the next request gates against.
+    // (Fireworks, Google): the running window total the next request gates against.
     let rate_windows = acct.rate_limits.tpm.is_some().then(|| state.gateway_rate_windows.clone());
     let rate_provider = acct.id;
     let langfuse = obs.langfuse;
@@ -862,13 +889,19 @@ fn spawn_observer(
         while let Some(chunk) = rx.recv().await {
             buf.extend_from_slice(&chunk);
         }
-        if let (Some(session_id), Some((prompt_hdr, cached_hdr))) = (usage_session, usage_headers)
-            && let Some(captured) = crate::cost::parse_fireworks_usage(
-                &buf,
-                prompt_hdr.as_deref(),
-                cached_hdr.as_deref(),
-            )
-        {
+        let captured = match family {
+            Family::Google => crate::cost::parse_gemini_usage(&buf),
+            Family::Fireworks => {
+                let (prompt_hdr, cached_hdr) = usage_headers.unwrap_or_default();
+                crate::cost::parse_fireworks_usage(
+                    &buf,
+                    prompt_hdr.as_deref(),
+                    cached_hdr.as_deref(),
+                )
+            }
+            Family::Anthropic | Family::Openai => None,
+        };
+        if let (Some(session_id), Some(captured)) = (usage_session, captured) {
             if let Some(windows) = &rate_windows {
                 let u = &captured.usage;
                 let total = u64::try_from(u.input).unwrap_or(0)
@@ -876,13 +909,15 @@ fn spawn_observer(
                     + u64::try_from(u.output).unwrap_or(0);
                 super::note_tokens(windows, rate_provider, total);
             }
-            record_fireworks_usage(pool, session_id, request_model, captured, rewrote_body).await;
+            record_metered_usage(pool, family, session_id, request_model, captured, rewrote_body)
+                .await;
         }
         if let Some(langfuse) = langfuse {
-            let (output, usage) = if is_openai {
-                crate::langfuse::reconstruct_openai(&buf)
-            } else {
-                crate::langfuse::reconstruct_anthropic(&buf)
+            // Fireworks speaks the OpenAI wire protocol, so it reconstructs as openai.
+            let (output, usage) = match family {
+                Family::Anthropic => crate::langfuse::reconstruct_anthropic(&buf),
+                Family::Google => crate::langfuse::reconstruct_gemini(&buf),
+                Family::Openai | Family::Fireworks => crate::langfuse::reconstruct_openai(&buf),
             };
             let (level, status_message) = crate::cache_bust::trace_annotation(
                 &bust_pool,
@@ -944,10 +979,14 @@ pub async fn passthrough(
     };
     let mut headers = forward_headers(req.headers(), &auth.acct, &target.access_token)?;
     let obs = observers(&state, &auth, &mut headers).await?;
-    let (body, info) = match prepare_body(&state, &auth, admission, &obs, req, is_anthropic).await {
-        Ok(prepared) => prepared,
-        Err(reply) => return reply,
-    };
+    let path_model = (family == Family::Google)
+        .then(|| uri.path().strip_prefix(prefix).and_then(google_path_model))
+        .flatten();
+    let (body, info) =
+        match prepare_body(&state, &auth, admission, &obs, req, is_anthropic, path_model).await {
+            Ok(prepared) => prepared,
+            Err(reply) => return reply,
+        };
     let UpstreamTarget { client, url, method, .. } = target;
     let request = client.request(method, &url).headers(headers).body(body);
     let (upstream, status) =
@@ -962,7 +1001,7 @@ pub async fn passthrough(
 mod tests {
     use super::{
         FireworksSettings, MAX_BUFFERED_BODY, declared_body_len, forward_headers,
-        skip_request_header, upstream_payload,
+        session_token_from, skip_request_header, upstream_payload,
     };
     use axum::http::HeaderMap;
 
@@ -1018,6 +1057,39 @@ mod tests {
 
         let out = forward_headers(&inbound, &static_account("bearer"), "tok").unwrap();
         assert_eq!(out.get(reqwest::header::AUTHORIZATION).unwrap(), "Bearer tok");
+    }
+
+    /// The Gemini SDK carries the session token as `x-goog-api-key`; the
+    /// gateway reads it from there, strips it, and sends the account's key
+    /// upstream under the same name with no bearer and no `x-api-key`.
+    #[test]
+    fn google_accounts_swap_the_goog_api_key_header() {
+        let mut inbound = HeaderMap::new();
+        inbound.insert("x-goog-api-key", "cctui_s_tok".parse().unwrap());
+        inbound.insert("x-goog-api-client", "google-genai-sdk/1.0".parse().unwrap());
+        assert_eq!(session_token_from(&inbound).as_deref(), Some("cctui_s_tok"));
+        assert!(skip_request_header("x-goog-api-key"));
+
+        let mut acct = static_account("api_key");
+        acct.provider = "google".into();
+        acct.base_url = None;
+        let out = forward_headers(&inbound, &acct, "AIza-real").unwrap();
+        assert_eq!(out.get("x-goog-api-key").unwrap(), "AIza-real");
+        assert!(out.get("x-api-key").is_none());
+        assert!(out.get(reqwest::header::AUTHORIZATION).is_none());
+        assert_eq!(out.get("x-goog-api-client").unwrap(), "google-genai-sdk/1.0");
+    }
+
+    #[test]
+    fn the_bearer_wins_over_a_goog_key_and_blanks_are_no_token() {
+        let mut both = HeaderMap::new();
+        both.insert(axum::http::header::AUTHORIZATION, "Bearer tok".parse().unwrap());
+        both.insert("x-goog-api-key", "other".parse().unwrap());
+        assert_eq!(session_token_from(&both).as_deref(), Some("tok"));
+        let mut blank = HeaderMap::new();
+        blank.insert("x-goog-api-key", "".parse().unwrap());
+        assert_eq!(session_token_from(&blank), None);
+        assert_eq!(session_token_from(&HeaderMap::new()), None);
     }
 
     /// A body whose `tool_use.input` keys are not alphabetical, carried through

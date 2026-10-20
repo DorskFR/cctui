@@ -22,6 +22,10 @@
       "out": "opencode"
     },
     {
+      "provider": "google",
+      "out": "gemini"
+    },
+    {
       "provider": "",
       "out": "claude-code"
     }
@@ -54,6 +58,14 @@
     {
       "providers": ["anthropic", "fireworks"],
       "out": ["claude-code", "opencode"]
+    },
+    {
+      "providers": ["google"],
+      "out": ["gemini"]
+    },
+    {
+      "providers": ["anthropic", "google"],
+      "out": ["claude-code", "gemini"]
     }
   ],
   "accountBacksAdapter": [

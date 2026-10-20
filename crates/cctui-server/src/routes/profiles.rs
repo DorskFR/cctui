@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn clean_spec_rejects_unknown_vocabulary() {
         assert_eq!(
-            clean_spec(spec("gemini", None)).unwrap_err().into_response().status(),
+            clean_spec(spec("kilo", None)).unwrap_err().into_response().status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(

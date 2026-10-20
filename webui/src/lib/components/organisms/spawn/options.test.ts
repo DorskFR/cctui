@@ -44,7 +44,8 @@ describe('adapterLabel', () => {
 		expect(adapterLabel('claude-code')).toBe('Claude Code');
 		expect(adapterLabel('codex')).toBe('Codex');
 		expect(adapterLabel('opencode')).toBe('OpenCode');
-		expect(adapterLabel('gemini')).toBe('gemini');
+		expect(adapterLabel('gemini')).toBe('Gemini CLI');
+		expect(adapterLabel('kilo')).toBe('kilo');
 	});
 });
 

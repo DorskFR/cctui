@@ -147,6 +147,7 @@ describe('dollar windows', () => {
 	it('offers the dollar windows to a fireworks editor instead of the percent ones', () => {
 		const keys = editorWindowKeys([], null, 'fireworks').map((k) => k.key);
 		expect(keys).toEqual(['session_usd', 'usd_5h', 'usd_7d', 'usd_monthly']);
+		expect(editorWindowKeys([], null, 'google').map((k) => k.key)).toEqual(keys);
 		expect(editorWindowKeys([], null, 'anthropic').map((k) => k.key)).toEqual([
 			'session',
 			'weekly_all'

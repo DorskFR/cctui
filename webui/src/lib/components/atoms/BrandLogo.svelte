@@ -94,6 +94,18 @@
 		<path d="M7 20c-1.5-4 0-8 4-9.5V8a3 3 0 1 1 6 0v3l3 1-3 1.5" />
 		<path d="M11 10.5c4 0 7 2.5 7 6.5" />
 	</svg>
+{:else if mark === 'google'}
+	<!-- Gemini: the four-point spark -->
+	<svg
+		width={size}
+		height={size}
+		viewBox="0 0 24 24"
+		fill="currentColor"
+		aria-label="Google / Gemini"
+		role="img"
+	>
+		<path d="M12 2c.6 5.6 4.4 9.4 10 10-5.6.6-9.4 4.4-10 10-.6-5.6-4.4-9.4-10-10 5.6-.6 9.4-4.4 10-10z" />
+	</svg>
 {:else if mark === 'openai'}
 	<!-- OpenAI blossom -->
 	<svg

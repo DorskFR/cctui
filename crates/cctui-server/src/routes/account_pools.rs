@@ -73,7 +73,7 @@ pub async fn pools_usage(
             "SELECT p.id AS provider_id, p.account_id, p.family, a.name, a.emoji, a.pool_weight \
                FROM account_providers p JOIN accounts a ON a.id = p.account_id \
               WHERE p.account_id = ANY($1) \
-                AND p.provider IN ('anthropic', 'openai', 'fireworks') \
+                AND p.provider IN ('anthropic', 'openai', 'fireworks', 'google') \
               ORDER BY p.family, lower(a.name)",
         )
         .bind(&ids)

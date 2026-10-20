@@ -3,7 +3,7 @@
 //! An **account** is an identity (e.g. `personal`, `enterprise`): a name, an
 //! owner, optional extra environment, and sharing grants. Each account holds
 //! zero or more **providers** (`account_providers`, née `oauth_accounts`):
-//! one credential per provider family (anthropic | openai | fireworks) — a
+//! one credential per provider family (anthropic | openai | fireworks | google) — a
 //! native OAuth subscription, a compatible endpoint, or a static provider key.
 //! OAuth refresh tokens
 //! are encrypted at rest with the vault key (`crate::crypto`, same as
@@ -192,6 +192,25 @@ fn fireworks_default_models() -> serde_json::Value {
     }])
 }
 
+/// Seed catalog for a new `google` provider: data on the row, fully editable.
+fn google_default_models() -> serde_json::Value {
+    serde_json::json!([{
+        "model": "gemini-2.5-pro",
+        "label": "Gemini 2.5 Pro",
+        "price_input_per_mtok": 1.25,
+        "price_cached_input_per_mtok": 0.31,
+        "price_output_per_mtok": 10.0,
+        "context_length": 1_048_576,
+    }, {
+        "model": "gemini-2.5-flash",
+        "label": "Gemini 2.5 Flash",
+        "price_input_per_mtok": 0.3,
+        "price_cached_input_per_mtok": 0.075,
+        "price_output_per_mtok": 2.5,
+        "context_length": 1_048_576,
+    }])
+}
+
 /// Identity-row projection (`accounts` + owner name); providers are attached
 /// separately from [`PROVIDER_SELECT`].
 #[derive(Debug, sqlx::FromRow)]
@@ -250,7 +269,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
              + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
               AS total_tokens, \
             (CASE \
-               WHEN p.family = 'fireworks' THEN COALESCE(fw.usd, 0) * 1000000.0 \
+               WHEN p.family IN ('fireworks', 'google') THEN COALESCE(fw.usd, 0) * 1000000.0 \
                WHEN p.provider = 'openai' THEN \
                  COALESCE(t.input_tokens,0)*1.25 + COALESCE(t.output_tokens,0)*10 \
                  + COALESCE(t.cache_read_tokens,0)*0.125 + COALESCE(t.cache_creation_tokens,0)*1.25 \
@@ -283,7 +302,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
                 CASE WHEN jsonb_typeof(p.models) = 'array' THEN p.models ELSE '[]'::jsonb END \
               ) m ON m.value->>'model' = stu.model \
          WHERE st.account_id = p.id \
-     ) fw ON p.family = 'fireworks'";
+     ) fw ON p.family IN ('fireworks', 'google')";
 
 /// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
 const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.emoji, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
@@ -681,18 +700,26 @@ async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, Ap
     };
     if !matches!(
         provider,
-        "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible" | "fireworks"
+        "anthropic"
+            | "openai"
+            | "anthropic-compatible"
+            | "openai-compatible"
+            | "fireworks"
+            | "google"
     ) {
         return Err(AppError::new(
             StatusCode::BAD_REQUEST,
-            "provider must be anthropic|openai|anthropic-compatible|openai-compatible|fireworks",
+            "provider must be anthropic|openai|anthropic-compatible|openai-compatible|fireworks|google",
         ));
     }
     let fireworks = provider == "fireworks";
-    // `fireworks` carries a static `fw_...` bearer like a compatible endpoint,
-    // but its upstream is built in — a base URL is an override, not a
-    // requirement.
-    let compatible = fireworks || matches!(provider, "anthropic-compatible" | "openai-compatible");
+    let google = provider == "google";
+    // `fireworks` carries a static `fw_...` bearer and `google` a static API
+    // key like a compatible endpoint, but their upstream is built in — a base
+    // URL is an override, not a requirement.
+    let builtin_upstream = fireworks || google;
+    let compatible =
+        builtin_upstream || matches!(provider, "anthropic-compatible" | "openai-compatible");
 
     let (enc_refresh, enc_access, base_url, auth_scheme): (
         Option<String>,
@@ -704,7 +731,7 @@ async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, Ap
         let base = spec.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let base = match base {
             Some(b) => Some(b),
-            None if fireworks => None,
+            None if builtin_upstream => None,
             None => {
                 return Err(AppError::new(
                     StatusCode::BAD_REQUEST,
@@ -716,7 +743,7 @@ async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, Ap
             check_base_url(b).await?;
         }
         let scheme = spec.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let scheme = scheme.unwrap_or("bearer");
+        let scheme = scheme.unwrap_or(if google { "api_key" } else { "bearer" });
         if !matches!(scheme, "bearer" | "api_key") {
             return Err(AppError::new(
                 StatusCode::BAD_REQUEST,
@@ -753,7 +780,8 @@ async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, Ap
         .as_ref()
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
-        .or_else(|| fireworks.then(fireworks_default_models));
+        .or_else(|| fireworks.then(fireworks_default_models))
+        .or_else(|| google.then(google_default_models));
     // Alias map: an empty map stores NULL (no remapping).
     let model_aliases = spec
         .model_aliases
@@ -1277,8 +1305,7 @@ pub async fn update_provider(
     let Some(provider) = provider else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"));
     };
-    let compatible =
-        matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible" | "fireworks");
+    let compatible = cctui_proto::provider::is_static_credential(&provider);
 
     // Endpoint fields are rejected for native providers so the edit form can't
     // silently no-op against a subscription credential.
@@ -2141,7 +2168,7 @@ pub async fn all_accounts_usage(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountUsageEntry>>, AppError> {
     let rows: Vec<UsageProviderRow> = sqlx::query_as(
-        "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND (p.provider IN ('anthropic', 'openai', 'fireworks') OR p.usage_probe IS NOT NULL)          ORDER BY a.name, p.family",
+        "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND (p.provider IN ('anthropic', 'openai', 'fireworks', 'google') OR p.usage_probe IS NOT NULL)          ORDER BY a.name, p.family",
     )
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)

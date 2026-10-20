@@ -118,12 +118,14 @@ mod tests {
         assert_eq!(row("opencode"), None, "opencode stays native");
     }
 
-    /// The OpenAI-wire agents are the registered ones: the harness table lists
-    /// them, default-off, and the launch model travels in the env each reads.
+    /// Every row is registered: the harness table lists them, default-off.
+    /// The OpenAI-wire agents read their launch model from the env; gemini
+    /// has a default of its own.
     #[test]
-    fn the_openai_wire_agents_are_registered_and_name_their_model_env() {
+    fn every_agent_is_registered_and_the_openai_wire_ones_name_their_model_env() {
         let ids: Vec<&str> = registered().iter().map(|r| r.id).collect();
-        assert_eq!(ids, ["qwen", "goose"]);
+        assert_eq!(ids, ["gemini", "qwen", "goose"]);
+        assert_eq!(GEMINI.model_env, None);
         assert_eq!(QWEN.model_env, Some("OPENAI_MODEL"));
         assert_eq!(GOOSE.model_env, Some("GOOSE_MODEL"));
         for r in registered() {

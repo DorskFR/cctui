@@ -15,6 +15,8 @@ export function familyLabel(family: string): string {
 			return 'Codex';
 		case 'fireworks':
 			return 'Fireworks';
+		case 'google':
+			return 'Gemini';
 		default:
 			return family;
 	}

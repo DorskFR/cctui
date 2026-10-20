@@ -313,15 +313,16 @@ pub fn pick_in_order(candidates: &[Candidate], model: Option<&str>, now: DateTim
 /// label). With no model named the harness would send its own default, a
 /// model the catalog does not list either, so it is no candidate then.
 ///
-/// The fireworks family is exempt: its harness has no model list of its own,
-/// and spawn resolves every model, absent or unknown, through the catalog.
+/// The metered families are exempt: their catalog is a price list, not the
+/// harness's model list (opencode resolves every model through it, gemini
+/// ships its own defaults).
 pub fn serves_model(
     family: crate::routes::gateway::Family,
     catalog: Option<&serde_json::Value>,
     aliases: Option<&serde_json::Value>,
     model: Option<&str>,
 ) -> bool {
-    if family == crate::routes::gateway::Family::Fireworks {
+    if family.is_metered() {
         return true;
     }
     let Some(entries) = catalog.and_then(serde_json::Value::as_array).filter(|a| !a.is_empty())

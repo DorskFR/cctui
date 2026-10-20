@@ -39,6 +39,7 @@ describe('familyLabel', () => {
 		expect(familyLabel('anthropic')).toBe('Claude');
 		expect(familyLabel('openai')).toBe('Codex');
 		expect(familyLabel('fireworks')).toBe('Fireworks');
+		expect(familyLabel('google')).toBe('Gemini');
 	});
 	it('passes an unknown family through', () => {
 		expect(familyLabel('mistral')).toBe('mistral');

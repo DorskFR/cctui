@@ -385,7 +385,7 @@ async fn usage_for_account(
     let account_id = acct.id;
     // Pay-per-token: dollars, not percent of a subscription window. Metered
     // locally, then reconciled upward against the provider's billing API.
-    if Family::from_provider(&acct.provider) == Family::Fireworks {
+    if Family::from_provider(&acct.provider).is_metered() {
         return fireworks_usd_windows(state, &acct).await;
     }
     // A compatible endpoint measures itself only if the operator named a probe;
@@ -865,19 +865,22 @@ pub async fn fireworks_usd_windows(
     Ok(Some(serde_json::Value::Object(out)))
 }
 
-/// Persist one Fireworks response's usage. Idempotent on
+/// Persist one metered response's usage (Fireworks, Google). Idempotent on
 /// `(session_id, message_id)`; a response without an upstream id gets a
 /// synthetic one, so a retry of the same call is counted once per response, not
 /// per attempt.
-pub async fn record_fireworks_usage(
+pub async fn record_metered_usage(
     pool: sqlx::PgPool,
+    family: Family,
     session_id: String,
     model: Option<String>,
     captured: crate::cost::CapturedUsage,
     gateway_rewrote_body: bool,
 ) {
-    let message_id =
-        captured.message_id.unwrap_or_else(|| format!("fw-{}", uuid::Uuid::new_v4().simple()));
+    let family = family.label();
+    let message_id = captured
+        .message_id
+        .unwrap_or_else(|| format!("{family}-{}", uuid::Uuid::new_v4().simple()));
     let u = captured.usage;
     if let Err(e) = sqlx::query(
         "INSERT INTO session_token_usage \
@@ -905,11 +908,11 @@ pub async fn record_fireworks_usage(
         if unmetered {
             tracing::error!(
                 session = %session_id,
-                "fireworks usage record rejected — session is unknown to the sessions table, \
+                "{family} usage record rejected — session is unknown to the sessions table, \
                  so its spend will never be metered: {e}"
             );
         } else {
-            tracing::warn!(session = %session_id, "fireworks usage record failed: {e}");
+            tracing::warn!(session = %session_id, "{family} usage record failed: {e}");
         }
     }
 }

@@ -60,7 +60,7 @@
 	const catalog = useSettingsCatalog(() => p.family ?? 'anthropic');
 	const usage = useAccountUsage(
 		() => p.id,
-		() => kind === 'anthropic' || kind === 'openai' || kind === 'fireworks'
+		() => kind === 'anthropic' || kind === 'openai' || kind === 'fireworks' || kind === 'google'
 	);
 	const windows = $derived(usage.data?.windows ?? []);
 	const softRows = $derived(
