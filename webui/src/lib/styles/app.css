@@ -31,6 +31,11 @@
   overscroll-behavior: none;
 }
 
+/* The kit reset pins code to --fs-xs; app code follows its surrounding text. */
+code {
+  font-size: inherit;
+}
+
 .muted {
   color: var(--text-muted);
 }

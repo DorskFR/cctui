@@ -119,10 +119,13 @@ describe('every token the kit reads resolves from the imported stylesheets', () 
 	for (const css of [tokens, themes, variables])
 		for (const m of css.matchAll(/(--[\w-]+):/g)) declared.add(m[1]);
 	const kitFiles = walk(`node_modules/@dorsk/tsumikit/dist/components`);
-	// Set on the element by the component itself (style:--x / inline style).
+	// Set by the component itself (style:--x / inline style / setProperty).
 	const local = new Set<string>();
-	for (const f of kitFiles)
-		for (const m of readFileSync(f, 'utf8').matchAll(/(?:style:|style="|`|;\s*|^\s*)(--[\w-]+)\s*[:=]/gm)) local.add(m[1]);
+	for (const f of kitFiles) {
+		const src = readFileSync(f, 'utf8');
+		for (const m of src.matchAll(/(?:style:|style="|`|;\s*|^\s*)(--[\w-]+)\s*[:=]/gm)) local.add(m[1]);
+		for (const m of src.matchAll(/setProperty\(\s*['"](--[\w-]+)['"]/g)) local.add(m[1]);
+	}
 	// Consumer-provided geometry; the kit reads them without a fallback on
 	// purpose so the shell owner can size the docks.
 	const consumer = new Set(['--dock-left-w', '--dock-right-w']);

@@ -45,7 +45,7 @@ describe('AttachmentList', () => {
 		const chips = list.querySelectorAll('li.chip');
 		(chips[1].querySelector('button.open') as HTMLButtonElement).click();
 		expect(previewFile).toHaveBeenCalledWith(files[1]);
-		(chips[0].querySelector('button[aria-label="Remove"]') as HTMLButtonElement).click();
+		(chips[0].querySelector('button[aria-label="Remove a.txt"]') as HTMLButtonElement).click();
 		expect(removed).toEqual(['a.txt']);
 	});
 });
