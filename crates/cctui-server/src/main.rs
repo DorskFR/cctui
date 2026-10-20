@@ -1273,6 +1273,7 @@ mod tests {
             r#"GET /sessions/{id}/previews Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/result Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
             r#"DELETE /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,
             r#"PUT /sessions/{id}/room Bearer Resource(Session, Write, Path("id"))"#,

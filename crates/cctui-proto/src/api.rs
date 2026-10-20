@@ -411,6 +411,23 @@ impl SessionOrigin {
     }
 }
 
+/// What a dispatcher polls for: whether the session has ended and the text of
+/// its last assistant message. `final_assistant_text` joins the trailing
+/// visible assistant text rows of one message (thinking excluded).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionResult {
+    pub done: bool,
+    #[serde(default)]
+    pub end_reason: Option<String>,
+    #[serde(default)]
+    pub final_assistant_text: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub token_usage: Option<TokenUsage>,
+}
+
 // Public wire/data shape mirrored to TS bindings; the bool fields are independent
 // session flags, not a state machine, so refactoring them into enums would churn the API.
 #[allow(clippy::struct_excessive_bools)]

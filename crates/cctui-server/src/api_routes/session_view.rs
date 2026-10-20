@@ -40,6 +40,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/{id}/result",
+            "Completion state and final assistant text of a session.",
+            get(routes::sessions::get_result),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
             "/sessions/{id}/search",
             "Find-in-conversation hit list for one session's transcript.",
             get(routes::sessions::search_conversation),

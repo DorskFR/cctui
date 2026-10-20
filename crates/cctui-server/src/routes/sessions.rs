@@ -9,7 +9,7 @@ use serde::Deserialize;
 use cctui_proto::adapter::{RemoveInitiator, SessionChild};
 use cctui_proto::api::{
     Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest, SessionListItem,
-    SessionListResponse, SpawnRequest, SpawnResponse,
+    SessionListResponse, SessionResult, SpawnRequest, SpawnResponse,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
@@ -2076,6 +2076,83 @@ pub async fn get_conversation(
     Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
 }
 
+/// Newest renderable rows scanned for the final assistant message; one
+/// message never spans more.
+const RESULT_SCAN_LIMIT: i64 = 200;
+
+/// A visible assistant line: claude-code rows carry a `message_id` and no
+/// `role`, codex rows a `role` of `Assistant` and no `message_id`. Thinking
+/// and markers carry a `kind`; user lines carry neither key.
+fn is_final_text_candidate(v: &serde_json::Value) -> bool {
+    let str_at = |k: &str| v.get(k).and_then(serde_json::Value::as_str);
+    str_at("type") == Some("text")
+        && str_at("kind").is_none()
+        && v.get("meta").and_then(serde_json::Value::as_bool) != Some(true)
+        && (str_at("message_id").is_some() || str_at("role") == Some("Assistant"))
+}
+
+/// `(message_id, text)` of the last assistant message in `newest_first`:
+/// its trailing visible text rows joined in seq order. Rows of the same
+/// message that are not visible text (thinking) are skipped; any other row
+/// ends the message.
+fn final_assistant_text(newest_first: &[RenderableRow]) -> (Option<String>, Option<String>) {
+    fn message_id_of(v: &serde_json::Value) -> Option<&str> {
+        v.get("message_id").and_then(serde_json::Value::as_str)
+    }
+    let mut rows =
+        newest_first.iter().map(|(_, v, _, _)| v).skip_while(|v| !is_final_text_candidate(v));
+    let Some(anchor) = rows.next() else {
+        return (None, None);
+    };
+    let message_id = message_id_of(anchor).map(str::to_owned);
+    let mut parts: Vec<&str> = vec![anchor["content"].as_str().unwrap_or_default()];
+    for v in rows {
+        let same_message = message_id.is_some() && message_id_of(v) == message_id.as_deref();
+        if is_final_text_candidate(v) && message_id_of(v) == message_id.as_deref() {
+            parts.push(v["content"].as_str().unwrap_or_default());
+        } else if !same_message {
+            break;
+        }
+    }
+    parts.reverse();
+    (message_id, Some(parts.join("\n\n")))
+}
+
+pub async fn get_result(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionResult>, AppError> {
+    let row: Option<(Option<String>, Option<String>, Option<DateTime<Utc>>)> =
+        sqlx::query_as("SELECT adapter_id, end_reason, ended_at FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some((adapter, end_reason, ended_at)) = row else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
+    };
+    let params = ConversationQuery { limit: Some(RESULT_SCAN_LIMIT), ..Default::default() };
+    let rows = renderable_rows(
+        &state.pool,
+        &session_id,
+        adapter.as_deref().unwrap_or("claude-code"),
+        &params,
+    )
+    .await?;
+    let (message_id, final_assistant_text) = final_assistant_text(&rows);
+    let mut token_usage = None;
+    if let Some(id) = &message_id {
+        token_usage =
+            message_usage(&state, &session_id, std::slice::from_ref(id)).await?.remove(id);
+    }
+    Ok(Json(SessionResult {
+        done: ended_at.is_some(),
+        end_reason,
+        final_assistant_text,
+        message_id,
+        token_usage,
+    }))
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct ConversationSearchParams {
     #[serde(default)]
@@ -3545,6 +3622,8 @@ mod tests {
         bucket_from_signals, cap_unread, compile_node, derive_liveness, field_values_sql,
         make_snippet, normalize_last_message, remove_command, snippet_sql,
     };
+    use crate::auth::AuthContext;
+    use axum::http::StatusCode;
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{DateTime, Duration, Utc};
 
@@ -3616,6 +3695,229 @@ mod tests {
             .unwrap();
         }
         Some((pool, sid))
+    }
+
+    fn renderable(v: serde_json::Value) -> super::RenderableRow {
+        (0, v, Utc::now(), None)
+    }
+
+    /// The final message is read off newest-first rows: its visible text
+    /// rows join in seq order, its thinking rows are skipped, and the first
+    /// row of anything else (a tool call, an older message, a user line)
+    /// ends it.
+    #[test]
+    fn final_assistant_text_joins_the_last_message_and_skips_thinking() {
+        let newest_first = [
+            renderable(serde_json::json!({
+                "type": "text", "content": "Session ended: completed", "meta": true,
+                "kind": "system_marker",
+            })),
+            renderable(serde_json::json!({"type": "text", "content": "tail", "message_id": "m2"})),
+            renderable(serde_json::json!({
+                "type": "text", "content": "mulling", "kind": "thinking", "message_id": "m2",
+            })),
+            renderable(serde_json::json!({"type": "text", "content": "head", "message_id": "m2"})),
+            renderable(serde_json::json!({"type": "tool_call", "tool": "Bash", "input": {}})),
+            renderable(serde_json::json!({"type": "text", "content": "draft", "message_id": "m1"})),
+            renderable(serde_json::json!({"type": "text", "content": "▷ User: go", "meta": false})),
+        ];
+        assert_eq!(
+            super::final_assistant_text(&newest_first),
+            (Some("m2".to_owned()), Some("head\n\ntail".to_owned()))
+        );
+
+        let codex = [
+            renderable(serde_json::json!({"type": "text", "content": "why", "role": "Reasoning"})),
+            renderable(serde_json::json!({"type": "text", "content": "done", "role": "Assistant"})),
+            renderable(serde_json::json!({"type": "tool_call", "tool": "shell", "input": {}})),
+            renderable(
+                serde_json::json!({"type": "text", "content": "first", "role": "Assistant"}),
+            ),
+        ];
+        assert_eq!(super::final_assistant_text(&codex), (None, Some("done".to_owned())));
+
+        let only_user = [renderable(serde_json::json!({"type": "text", "content": "▷ User: hi"}))];
+        assert_eq!(super::final_assistant_text(&only_user), (None, None));
+        assert_eq!(super::final_assistant_text(&[]), (None, None));
+    }
+
+    /// A user with one machine and one live session, plus the state the
+    /// result route reads it through.
+    async fn result_session(
+        test_name: &str,
+    ) -> Option<(crate::state::AppState, uuid::Uuid, String)> {
+        let url = crate::routes::gateway::test_db_url(test_name)?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        let sid = uuid::Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("u-{uid}"))
+            .bind(format!("k-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mk-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
+             VALUES ($1, $2, $2, $3, '/w', 'active')",
+        )
+        .bind(&sid)
+        .bind(machine)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        Some((crate::state::AppState::for_test(pool), uid, sid))
+    }
+
+    async fn store_rows(pool: &sqlx::PgPool, sid: &str, rows: &[(&str, serde_json::Value)]) {
+        for (event_type, payload) in rows {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) VALUES ($1, $2, $3)",
+            )
+            .bind(sid)
+            .bind(*event_type)
+            .bind(payload)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    async fn result_of(
+        state: &crate::state::AppState,
+        sid: &str,
+    ) -> Result<cctui_proto::api::SessionResult, crate::error::AppError> {
+        super::get_result(axum::extract::State(state.clone()), axum::extract::Path(sid.to_owned()))
+            .await
+            .map(|j| j.0)
+    }
+
+    #[tokio::test]
+    async fn a_live_session_reports_its_latest_message_as_not_done() {
+        let Some((state, _, sid)) =
+            result_session("a_live_session_reports_its_latest_message_as_not_done").await
+        else {
+            return;
+        };
+        store_rows(
+            &state.pool,
+            &sid,
+            &[
+                ("message", serde_json::json!({"role": "user", "text": "go"})),
+                ("message", serde_json::json!({"role": "assistant", "text": "draft", "message_id": "m1"})),
+                ("tool_use", serde_json::json!({"kind": "tool_use", "name": "Bash", "input": {}})),
+                ("message", serde_json::json!({"role": "assistant_thinking", "text": "hmm", "message_id": "m2"})),
+                ("message", serde_json::json!({"role": "assistant", "text": "head", "message_id": "m2"})),
+                ("message", serde_json::json!({"role": "assistant", "text": "tail", "message_id": "m2"})),
+            ],
+        )
+        .await;
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(!result.done);
+        assert_eq!(result.end_reason, None);
+        assert_eq!(result.message_id.as_deref(), Some("m2"));
+        assert_eq!(result.final_assistant_text.as_deref(), Some("head\n\ntail"));
+        assert!(result.token_usage.is_none(), "no usage row was stored for m2");
+    }
+
+    #[tokio::test]
+    async fn an_ended_session_reports_done_with_its_final_text_and_usage() {
+        let Some((state, _, sid)) =
+            result_session("an_ended_session_reports_done_with_its_final_text_and_usage").await
+        else {
+            return;
+        };
+        store_rows(
+            &state.pool,
+            &sid,
+            &[
+                ("message", serde_json::json!({"role": "assistant", "text": "old", "message_id": "m1"})),
+                ("message", serde_json::json!({"role": "user", "text": "and then?"})),
+                ("message", serde_json::json!({"role": "assistant_thinking", "text": "x", "message_id": "m2"})),
+                ("message", serde_json::json!({"role": "assistant", "text": "answer", "message_id": "m2"})),
+                ("session_ended", serde_json::json!({"reason": {"kind": "completed"}})),
+            ],
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO session_token_usage (session_id, message_id, input_tokens, output_tokens) \
+             VALUES ($1, 'm2', 120, 7)",
+        )
+        .bind(&sid)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE sessions SET ended_at = now(), end_reason = 'completed' WHERE id = $1")
+            .bind(&sid)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(result.done);
+        assert_eq!(result.end_reason.as_deref(), Some("completed"));
+        assert_eq!(result.message_id.as_deref(), Some("m2"));
+        assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
+        let usage = result.token_usage.expect("usage of m2");
+        assert_eq!((usage.tokens_in, usage.tokens_out), (120, 7));
+    }
+
+    /// The route sits behind the session read guard: the owner reads it,
+    /// another user is refused, and an id nobody owns is unknown — the same
+    /// 404 the handler itself returns for a session that never registered.
+    #[tokio::test]
+    async fn the_result_route_is_owner_only_and_unknown_ids_are_404() {
+        let Some((state, owner, sid)) =
+            result_session("the_result_route_is_owner_only_and_unknown_ids_are_404").await
+        else {
+            return;
+        };
+        let other = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(other)
+            .bind(format!("u-{other}"))
+            .bind(format!("k-{other}"))
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let ctx = |user_id| AuthContext {
+            user_id,
+            key_id: uuid::Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::collections::BTreeSet::new(),
+        };
+        assert_eq!(
+            crate::authz::authorize_session_read(&ctx(owner), &sid, &state.pool).await,
+            Ok(())
+        );
+        assert_eq!(
+            crate::authz::authorize_session_read(&ctx(other), &sid, &state.pool).await,
+            Err(StatusCode::FORBIDDEN)
+        );
+        let unknown = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            crate::authz::authorize_session_read(&ctx(owner), &unknown, &state.pool).await,
+            Err(StatusCode::NOT_FOUND)
+        );
+        let err = result_of(&state, &unknown).await.expect_err("unknown session");
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+
+        let empty = result_of(&state, &sid).await.unwrap();
+        assert!(!empty.done);
+        assert_eq!(empty.final_assistant_text, None);
+        assert_eq!(empty.message_id, None);
     }
 
     fn contents(rows: &[super::RenderableRow]) -> Vec<String> {

@@ -257,6 +257,7 @@ export type * from './SessionOrigin';
 export type * from './SessionProfile';
 export type * from './SessionRebind';
 export type * from './SessionStats';
+export type * from './SessionResult';
 export type * from './SessionStatus';
 export type * from './SessionThreadResponse';
 export type * from './SetAclsRequest';

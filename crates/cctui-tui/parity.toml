@@ -1339,6 +1339,12 @@ tui = "handled"
 module = "app/effects.rs"
 
 [[route]]
+id = "get_sessions_by_id_result"
+# GET /sessions/{id}/result — Completion state and final assistant text of a session.
+tui = "waived"
+reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
 id = "get_sessions_by_id_search"
 # GET /sessions/{id}/search — Find-in-conversation hit list for one session's transcript.
 tui = "waived"
