@@ -427,6 +427,7 @@ async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u
 async fn child_account_env(
     state: &AppState,
     parent: &Parent,
+    adapter: &str,
     family: crate::routes::gateway::Family,
     requested_model: Option<&str>,
     child_key: &str,
@@ -465,7 +466,7 @@ async fn child_account_env(
         };
 
         let mut model = wanted.clone();
-        if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
+        if model.is_some() || cctui_proto::adapter::needs_model(adapter) {
             let resolved = crate::routes::gateway::resolve_account_model(
                 state,
                 parent.user_id,
@@ -649,14 +650,22 @@ pub async fn spawn_child(
             return Err(deny(StatusCode::BAD_REQUEST, e.to_string()));
         }
     };
-    let (mut env, model) =
-        match child_account_env(&state, &parent, family, req.model.as_deref(), &child_key).await {
-            Ok(v) => v,
-            Err(e) => {
-                release_child(&state.pool, &child_key).await;
-                return Err(e);
-            }
-        };
+    let (mut env, model) = match child_account_env(
+        &state,
+        &parent,
+        &authorized.adapter,
+        family,
+        req.model.as_deref(),
+        &child_key,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            release_child(&state.pool, &child_key).await;
+            return Err(e);
+        }
+    };
     if let Some(profile) = req.agent_profile.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         env.insert(AGENT_PROFILE_ENV.to_owned(), profile.to_owned());
     }
@@ -1038,9 +1047,9 @@ mod tests {
     }
 
     #[test]
-    fn machine_default_authorizes_every_known_adapter() {
+    fn machine_default_authorizes_every_default_on_adapter() {
         let cap = SpawnCapability::machine_default();
-        for adapter in cctui_proto::adapter::KNOWN_ADAPTERS {
+        for adapter in cctui_proto::adapter::default_enabled_adapters() {
             let ok = authorize(Some(&cap), &req(adapter, None), &usage(0)).unwrap();
             assert_eq!(
                 ok,
@@ -1141,6 +1150,7 @@ mod tests {
         let minted = child_account_env(
             &state,
             &parent,
+            "codex",
             crate::routes::gateway::Family::Openai,
             None,
             &child_key,
@@ -1166,6 +1176,7 @@ mod tests {
         let (env, _) = child_account_env(
             &state,
             &parent,
+            "claude-code",
             crate::routes::gateway::Family::Anthropic,
             None,
             &same_family_key,
@@ -1228,6 +1239,63 @@ mod tests {
         out
     }
 
+    /// A parent session bound to `uid`'s own claude account, with a colleague's
+    /// codex account shared to `uid`. Returns the parent's session id.
+    async fn seed_parent_with_shared_colleague_account(
+        pool: &sqlx::PgPool,
+        uid: Uuid,
+        colleague: Uuid,
+    ) -> String {
+        let mine = seed_accounts(pool, uid, "owner", &[("parent-claude", "anthropic")]).await;
+        let theirs =
+            seed_accounts(pool, colleague, "colleague", &[("their-codex", "openai")]).await;
+        sqlx::query(
+            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+             VALUES ('account', $1, $2)",
+        )
+        .bind(theirs[0].0)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .expect("share the colleague's account with the parent's owner");
+        let parent_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("th-{parent_id}"))
+        .bind(&parent_id)
+        .bind(mine[0].1)
+        .execute(pool)
+        .await
+        .expect("bind parent");
+        parent_id
+    }
+
+    /// An openai provider row on an account `uid` owns; returns the provider id.
+    async fn seed_own_openai_provider(pool: &sqlx::PgPool, uid: Uuid) -> Uuid {
+        let account = Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(account)
+            .bind(uid)
+            .bind(format!("my-codex-{account}"))
+            .execute(pool)
+            .await
+            .expect("seed own openai account");
+        let own_openai = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO account_providers \
+               (id, user_id, account_id, provider, auth_scheme, encrypted_access_token) \
+             VALUES ($1, $2, $3, 'openai', 'api_key', 'x')",
+        )
+        .bind(own_openai)
+        .bind(uid)
+        .bind(account)
+        .execute(pool)
+        .await
+        .expect("seed own provider");
+        own_openai
+    }
+
     /// DB-gated R3: an election the operator never asked for must not reach a
     /// colleague's account and spend their allocation, even though the parent's
     /// owner may legitimately launch on it when they name it.
@@ -1246,30 +1314,7 @@ mod tests {
 
         let uid = Uuid::new_v4();
         let colleague = Uuid::new_v4();
-        let mine = seed_accounts(&pool, uid, "owner", &[("parent-claude", "anthropic")]).await;
-        let theirs =
-            seed_accounts(&pool, colleague, "colleague", &[("their-codex", "openai")]).await;
-
-        sqlx::query(
-            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
-             VALUES ('account', $1, $2)",
-        )
-        .bind(theirs[0].0)
-        .bind(uid)
-        .execute(&pool)
-        .await
-        .expect("share the colleague's account with the parent's owner");
-
-        let parent_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
-        )
-        .bind(format!("th-{parent_id}"))
-        .bind(&parent_id)
-        .bind(mine[0].1)
-        .execute(&pool)
-        .await
-        .expect("bind parent");
+        let parent_id = seed_parent_with_shared_colleague_account(&pool, uid, colleague).await;
 
         let state = crate::state::AppState::for_test(pool.clone());
         let parent = Parent {
@@ -1284,6 +1329,7 @@ mod tests {
         let refused = child_account_env(
             &state,
             &parent,
+            "codex",
             crate::routes::gateway::Family::Openai,
             None,
             &child_key,
@@ -1300,33 +1346,19 @@ mod tests {
 
         // The same shape with an openai account the owner OWNS does provision,
         // so the refusal above is about ownership and not about the wiring.
-        let own = seed_accounts(&pool, Uuid::new_v4(), "ignored", &[]).await;
-        drop(own);
-        let account = Uuid::new_v4();
-        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
-            .bind(account)
-            .bind(uid)
-            .bind(format!("my-codex-{account}"))
-            .execute(&pool)
-            .await
-            .expect("seed own openai account");
-        let own_openai = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO account_providers \
-               (id, user_id, account_id, provider, auth_scheme, encrypted_access_token) \
-             VALUES ($1, $2, $3, 'openai', 'api_key', 'x')",
-        )
-        .bind(own_openai)
-        .bind(uid)
-        .bind(account)
-        .execute(&pool)
-        .await
-        .expect("seed own provider");
+        let own_openai = seed_own_openai_provider(&pool, uid).await;
 
         let ok_key = Uuid::new_v4().to_string();
-        child_account_env(&state, &parent, crate::routes::gateway::Family::Openai, None, &ok_key)
-            .await
-            .expect("a child on the owner's own openai account");
+        child_account_env(
+            &state,
+            &parent,
+            "codex",
+            crate::routes::gateway::Family::Openai,
+            None,
+            &ok_key,
+        )
+        .await
+        .expect("a child on the owner's own openai account");
         let bound: Uuid =
             sqlx::query_scalar("SELECT account_id FROM session_tokens WHERE session_id = $1")
                 .bind(&ok_key)
@@ -1414,6 +1446,7 @@ mod tests {
         child_account_env(
             &state,
             &parent,
+            "codex",
             crate::routes::gateway::Family::Openai,
             None,
             &child_key,

@@ -29,6 +29,20 @@ describe('harness picker options', () => {
 		expect(pickableHarnesses(table, [])).toEqual([]);
 	});
 
+	it('ships qwen and goose default-off, listed only where a machine enables them', () => {
+		const ids = table.map((h) => h.id);
+		expect(ids).toEqual(['claude-code', 'codex', 'opencode', 'qwen', 'goose']);
+		expect(pickableHarnesses(table, ['goose', 'codex']).map((h) => h.id)).toEqual([
+			'codex',
+			'goose'
+		]);
+		for (const acp of ['qwen', 'goose']) {
+			expect(harnessPermissionModes(acp, table)).toEqual(['ask', 'auto', 'yolo']);
+			expect(harnessCapabilities(acp, table).resume).toBe(true);
+			expect(harnessCapabilities(acp, table).fork).toBe(false);
+		}
+	});
+
 	it('leaves a default-off row out until a machine enables it', () => {
 		const gemini: HarnessDescriptor = {
 			...table[0],
@@ -78,6 +92,13 @@ describe('brand marks', () => {
 		expect(brandMark({ adapter: 'opencode' }, table)).toBe('fireworks');
 		expect(brandMark({ provider: 'openai-compatible' }, table)).toBe('openai');
 		expect(brandMark({ provider: 'fireworks' }, table)).toBe('fireworks');
+	});
+
+	it('an ACP agent with a mark of its own wears it, not the OpenAI blossom', () => {
+		expect(brandMark({ adapter: 'qwen' }, table)).toBe('qwen');
+		expect(brandMark({ adapter: 'goose-acp' }, table)).toBe('goose');
+		expect(familyAccent('qwen')).not.toBe(familyAccent('neutral'));
+		expect(familyAccent('goose')).not.toBe(familyAccent('neutral'));
 	});
 
 	it('an unknown id or no id wears the neutral glyph, never the claude logo', () => {

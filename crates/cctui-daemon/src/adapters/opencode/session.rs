@@ -17,13 +17,13 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::client::{
-    CreateSession, OpenCodeClient, Part, PartInput, PromptModelRef, PromptRequest, SessionModelRef,
-};
+use super::backend::{Generation, Incoming, NewSession, Signal};
+use super::client::OpenCodeClient;
 use super::config::{ModelRef, SessionHome, session_config};
-use super::events::{OcEvent, SseDecoder, StatusKind, status_kind};
+use super::events::{OcEvent, SseDecoder};
 use super::normalize::{self, Kind};
 use super::persist::{self, SessionStore};
+use super::v2;
 use crate::adapter_runtime::InterruptQueue;
 use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TRANSPORT_SSE, TrafficRings};
 
@@ -59,7 +59,7 @@ fn live_interrupts() -> std::sync::MutexGuard<'static, HashMap<String, LiveInter
 pub async fn interrupt_live(local_id: &str) -> bool {
     let entry = live_interrupts().get(local_id).map(|l| (Arc::clone(&l.client), l.queue.clone()));
     let Some((client, queue)) = entry else { return false };
-    if let Err(err) = client.abort(local_id).await {
+    if let Err(err) = client.interrupt(local_id).await {
         tracing::warn!(%err, session = %local_id, "opencode abort failed");
     }
     queue.push(local_id, std::iter::empty());
@@ -118,6 +118,7 @@ pub struct OpenCodeLiveSnapshot {
     pub server_url: Option<String>,
     pub server_pid: Option<u32>,
     pub server_version: Option<String>,
+    pub api_generation: Option<Generation>,
     pub owned_sessions: Vec<String>,
     pub in_flight: bool,
     pub sse_connected: bool,
@@ -278,9 +279,8 @@ pub struct OpenCodeSession {
     commands: mpsc::Receiver<SessionCommand>,
     commands_tx: mpsc::Sender<SessionCommand>,
     owned: HashSet<String>,
-    roles: HashMap<String, String>,
-    emitted_parts: HashSet<String>,
-    emitted_usage: HashSet<String>,
+    v1: normalize::Tracker,
+    v2: v2::normalize::Tracker,
     /// `CctuiAgent` child: `opencode serve` never exits on its own, so idle
     /// after assistant output — and any terminal error — must end the session.
     oneshot: bool,
@@ -319,9 +319,8 @@ impl OpenCodeSession {
             commands,
             commands_tx,
             owned: HashSet::new(),
-            roles: HashMap::new(),
-            emitted_parts: HashSet::new(),
-            emitted_usage: HashSet::new(),
+            v1: normalize::Tracker::default(),
+            v2: v2::normalize::Tracker::default(),
             oneshot,
             saw_assistant: false,
             in_flight: false,
@@ -390,11 +389,12 @@ impl OpenCodeSession {
         anyhow::ensure!(cwd.is_dir(), "working_dir does not exist: {}", self.params.cwd);
 
         let version = probe_version(&self.params.cfg.bin).await?;
-        if !version.contains(super::client::OPENCODE_PINNED_VERSION) {
+        if ![Generation::V1, Generation::V2].iter().any(|g| version.contains(g.pinned())) {
             tracing::warn!(
                 %version,
-                pinned = super::client::OPENCODE_PINNED_VERSION,
-                "opencode version differs from the pinned one"
+                pinned_v1 = Generation::V1.pinned(),
+                pinned_v2 = Generation::V2.pinned(),
+                "opencode version differs from the pinned ones"
             );
         }
 
@@ -445,13 +445,16 @@ impl OpenCodeSession {
 
         let base = format!("http://{}:{port}", self.params.cfg.hostname);
         self.server_url = Some(base.clone());
-        let client =
-            Arc::new(OpenCodeClient::new(base, password).observed(Arc::clone(&self.rings)));
-        self.client = Some(Arc::clone(&client));
-        if let Err(err) = self.await_health(&client).await {
-            shutdown_serve(&mut child).await;
-            return Err(err);
+        let mut client = OpenCodeClient::new(base, password).observed(Arc::clone(&self.rings));
+        match self.await_health(&client).await {
+            Ok(generation) => client.set_generation(generation),
+            Err(err) => {
+                shutdown_serve(&mut child).await;
+                return Err(err);
+            }
         }
+        let client = Arc::new(client);
+        self.client = Some(Arc::clone(&client));
 
         let created = if self.params.resume.is_empty() {
             match self.create(&client, model.as_ref(), command_id).await {
@@ -527,7 +530,7 @@ impl OpenCodeSession {
                 }
                 evt = evt_rx.recv() => {
                     let Some(evt) = evt else { break };
-                    if !self.on_event(&client, evt).await {
+                    if !self.on_incoming(&client, evt).await {
                         break;
                     }
                 }
@@ -563,19 +566,17 @@ impl OpenCodeSession {
         model: Option<&ModelRef>,
         command_id: Option<Uuid>,
     ) -> Result<String> {
-        let session = client
-            .create_session(&CreateSession {
-                title: self.params.name.clone(),
-                agent: self.agent(),
-                model: model.map(|m| SessionModelRef {
-                    id: m.model_id.clone(),
-                    provider_id: m.provider_id.clone(),
-                }),
-                parent_id: None,
+        let agent = self.agent();
+        let session_id = client
+            .open_session(&NewSession {
+                title: self.params.name.as_deref(),
+                agent: agent.as_deref(),
+                model,
+                directory: &self.params.cwd,
             })
             .await?;
         let parent = self.params.parent_local_id.clone();
-        self.register(&session.id, parent, Some(self.params.cwd.clone())).await;
+        self.register(&session_id, parent, Some(self.params.cwd.clone())).await;
         if let Some(command_id) = command_id {
             crate::adapters::emit(
                 &self.events,
@@ -583,16 +584,16 @@ impl OpenCodeSession {
             )
             .await;
         }
-        self.announce_model(&session.id, model).await;
-        Ok(session.id)
+        self.announce_model(&session_id, model).await;
+        Ok(session_id)
     }
 
     /// Re-register the sessions a previous daemon process drove on this key.
     /// One opencode no longer knows ends here rather than lingering as live.
     async fn reattach(&mut self, client: &OpenCodeClient, model: Option<&ModelRef>) {
         for (local_id, record) in self.params.resume.clone() {
-            match client.messages(&local_id).await {
-                Ok(_) => {
+            match client.session_exists(&local_id).await {
+                Ok(()) => {
                     self.register(&local_id, record.parent_local_id, Some(record.cwd)).await;
                     self.announce_model(&local_id, model).await;
                     tracing::info!(%local_id, "opencode: session re-attached after daemon restart");
@@ -671,7 +672,7 @@ impl OpenCodeSession {
     /// keeps spending.
     async fn abort_owned(&self, client: &OpenCodeClient) {
         for id in &self.owned {
-            if let Err(err) = client.abort(id).await {
+            if let Err(err) = client.interrupt(id).await {
                 tracing::warn!(%err, session = %id, "opencode abort failed");
             }
         }
@@ -702,19 +703,23 @@ impl OpenCodeSession {
         crate::preamble::merge(preamble, (!body.is_empty()).then_some(body))
     }
 
-    async fn await_health(&mut self, client: &OpenCodeClient) -> Result<()> {
+    async fn await_health(&mut self, client: &OpenCodeClient) -> Result<Generation> {
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_millis(self.params.cfg.startup_timeout_ms);
         let mut last: Option<String> = None;
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, client.health()).await {
-                Ok(Ok(h)) if h.healthy => {
-                    if !h.version.is_empty() {
-                        self.server_version = Some(h.version);
+            match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, client.detect()).await {
+                Ok(Ok(info)) => {
+                    tracing::info!(
+                        generation = info.generation.label(),
+                        version = %info.version,
+                        "opencode serve is up"
+                    );
+                    if !info.version.is_empty() {
+                        self.server_version = Some(info.version);
                     }
-                    return Ok(());
+                    return Ok(info.generation);
                 }
-                Ok(Ok(h)) => last = Some(format!("unhealthy (version {})", h.version)),
                 Ok(Err(err)) => last = Some(err.to_string()),
                 Err(_) => last = Some("health probe timed out".to_owned()),
             }
@@ -803,15 +808,7 @@ impl OpenCodeSession {
         text: &str,
         model: Option<&ModelRef>,
     ) -> Option<String> {
-        let body = PromptRequest {
-            model: model.map(|m| PromptModelRef {
-                provider_id: m.provider_id.clone(),
-                model_id: m.model_id.clone(),
-            }),
-            agent: self.agent(),
-            parts: vec![PartInput::Text { text: text.to_owned() }],
-        };
-        match client.prompt_async(session_id, &body).await {
+        match client.send_prompt(session_id, text, model, self.agent()).await {
             Ok(()) => {
                 self.in_flight = true;
                 None
@@ -941,7 +938,7 @@ impl OpenCodeSession {
                 return self.prompt_or_crash(client, &session_id, &text, model, command_id).await;
             }
             SessionCommand::Kill { session_id } => {
-                if let Err(err) = client.abort(&session_id).await {
+                if let Err(err) = client.interrupt(&session_id).await {
                     tracing::warn!(%err, %session_id, "opencode abort failed");
                 }
                 self.in_flight = false;
@@ -960,10 +957,7 @@ impl OpenCodeSession {
                 self.on_fork(client, &parent, prompt, name, command_id, model).await;
             }
             SessionCommand::Permission { session_id, request_id, allow } => {
-                let response = if allow { "once" } else { "reject" };
-                if let Err(err) =
-                    client.respond_permission(&session_id, &request_id, response).await
-                {
+                if let Err(err) = client.reply_permission(&session_id, &request_id, allow).await {
                     tracing::warn!(%err, %session_id, "opencode permission response failed");
                 }
                 self.pending_permissions.remove(&request_id);
@@ -989,6 +983,7 @@ impl OpenCodeSession {
             server_url: self.server_url.clone(),
             server_pid: self.server_pid,
             server_version: self.server_version.clone(),
+            api_generation: self.client.as_deref().map(OpenCodeClient::generation),
             owned_sessions,
             in_flight: self.in_flight,
             sse_connected: self.sse.connected(),
@@ -1009,12 +1004,12 @@ impl OpenCodeSession {
         command_id: Option<Uuid>,
         model: Option<&ModelRef>,
     ) {
-        match client.fork(parent).await {
+        let agent = self.agent();
+        match client.fork_session(parent, model, agent.as_deref()).await {
             Ok(child) => {
-                self.register(&child.id, Some(parent.to_owned()), Some(self.params.cwd.clone()))
-                    .await;
+                self.register(&child, Some(parent.to_owned()), Some(self.params.cwd.clone())).await;
                 if let Some(name) = name {
-                    let _ = self.events.send(status(&child.id, None, None, Some(name))).await;
+                    let _ = self.events.send(status(&child, None, None, Some(name))).await;
                 }
                 if let Some(command_id) = command_id {
                     crate::adapters::emit(
@@ -1024,7 +1019,7 @@ impl OpenCodeSession {
                     .await;
                 }
                 if let Some(text) = prompt.filter(|p| !p.trim().is_empty()) {
-                    self.prompt(client, &child.id, &text, model).await;
+                    self.prompt(client, &child, &text, model).await;
                 }
             }
             Err(err) => {
@@ -1044,10 +1039,9 @@ impl OpenCodeSession {
         }
     }
 
-    /// Returns `false` when the driver should stop.
-    /// `session.idle` is where opencode knows the turn is over. Returns whether
-    /// the session lives on: a oneshot child that has produced its output is
-    /// done, since `opencode serve` never exits on its own.
+    /// The turn is over (`session.idle` on v1, `session.execution.*` on v2).
+    /// Returns whether the session lives on: a oneshot child that has produced
+    /// its output is done, since `opencode serve` never exits on its own.
     async fn on_idle(&mut self, session_id: &str) -> bool {
         self.in_flight = false;
         self.check_version().await;
@@ -1090,97 +1084,94 @@ impl OpenCodeSession {
         }
     }
 
-    async fn on_event(&mut self, client: &OpenCodeClient, evt: OcEvent) -> bool {
+    async fn on_incoming(&mut self, client: &OpenCodeClient, evt: Incoming) -> bool {
+        match evt {
+            Incoming::V1(evt) => self.on_event(client, evt).await,
+            Incoming::V2(evt) => self.on_v2_event(evt).await,
+        }
+    }
+
+    async fn on_event(&mut self, _client: &OpenCodeClient, evt: OcEvent) -> bool {
         let Some(session_id) = evt.session_id().map(str::to_owned) else { return true };
         if !self.owned.contains(&session_id) {
             return true;
         }
-        match evt {
-            OcEvent::MessageUpdated { properties } => {
-                let info = properties.info;
-                if info.role == "assistant" {
-                    self.saw_assistant = true;
-                }
-                self.roles.insert(info.id.clone(), info.role.clone());
-                if let Some(usage) = normalize::token_usage(&session_id, &info)
-                    && self.emitted_usage.insert(info.id.clone())
-                {
-                    let _ = self.events.send(usage).await;
-                }
-                if let Some(error) = info.error.as_ref() {
-                    let text = normalize::error_text(error);
-                    self.in_flight = false;
-                    self.emit_error(&session_id, &text).await;
-                    if self.oneshot {
-                        return self.end_crashed(session_id, text).await;
-                    }
-                }
+        let signals = self.v1.signals(&session_id, evt);
+        self.on_signals(&session_id, signals).await
+    }
+
+    async fn on_v2_event(&mut self, evt: v2::events::Event) -> bool {
+        let Some(session_id) = evt.session_id().map(str::to_owned) else { return true };
+        if !self.owned.contains(&session_id) {
+            return true;
+        }
+        let signals = self.v2.signals(&session_id, evt);
+        self.on_signals(&session_id, signals).await
+    }
+
+    /// Returns `false` when the driver should stop.
+    async fn on_signals(&mut self, session_id: &str, signals: Vec<Signal>) -> bool {
+        for signal in signals {
+            if !self.on_signal(session_id, signal).await {
+                return false;
             }
-            OcEvent::PartUpdated { properties } => {
-                self.emit_part(&session_id, &properties.part).await;
+        }
+        true
+    }
+
+    async fn on_signal(&mut self, session_id: &str, signal: Signal) -> bool {
+        match signal {
+            Signal::Rows(rows) => self.emit_rows(session_id, rows).await,
+            Signal::AssistantActive => self.saw_assistant = true,
+            Signal::Usage(usage) => {
+                let _ = self.events.send(*usage).await;
             }
-            OcEvent::SessionIdle { .. } => return self.on_idle(&session_id).await,
-            OcEvent::SessionStatus { properties } => {
-                if let Some(kind) = status_kind(&properties.status) {
-                    let (tempo, detail) = match kind {
-                        StatusKind::Busy => ("working".to_owned(), None),
-                        StatusKind::Retry { attempt, message } => (
-                            "working".to_owned(),
-                            Some(format!("provider retry {attempt}: {message}")),
-                        ),
-                        StatusKind::Other(other) => (other, None),
-                    };
-                    let _ = self.events.send(status(&session_id, Some(tempo), detail, None)).await;
-                }
+            Signal::Tempo { tempo, detail } => {
+                let _ = self.events.send(status(session_id, Some(tempo), detail, None)).await;
             }
-            OcEvent::SessionError { properties } => {
-                let text = properties
-                    .error
-                    .as_ref()
-                    .map_or_else(|| "session error".to_owned(), normalize::error_text);
+            Signal::TurnEnded => return self.on_idle(session_id).await,
+            Signal::Failed(text) => {
                 self.in_flight = false;
-                self.emit_error(&session_id, &text).await;
+                self.emit_error(session_id, &text).await;
                 if self.oneshot {
-                    return self.end_crashed(session_id, text).await;
+                    return self.end_crashed(session_id.to_owned(), text).await;
                 }
             }
-            OcEvent::SessionDeleted { .. } => {
-                self.owned.remove(&session_id);
-                self.unlist(&session_id).await;
+            Signal::Deleted => {
+                self.owned.remove(session_id);
+                self.unlist(session_id).await;
                 crate::adapters::emit(
                     &self.events,
                     AdapterEvent::SessionEnded {
-                        local_id: session_id,
+                        local_id: session_id.to_owned(),
                         reason: EndReason::Completed,
                     },
                 )
                 .await;
             }
-            OcEvent::PermissionAsked { properties } => {
-                self.pending_permissions.insert(properties.id.clone());
+            Signal::PermissionAsked { request_id, tool, input } => {
+                self.pending_permissions.insert(request_id.clone());
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionRequest {
-                        local_id: session_id,
-                        request_id: properties.id.clone(),
-                        tool: properties.permission.clone(),
-                        input: properties.metadata.clone(),
+                        local_id: session_id.to_owned(),
+                        request_id,
+                        tool,
+                        input,
                         options: Vec::new(),
                     })
                     .await;
-                let _ = client;
             }
-            OcEvent::PermissionReplied { properties } => {
-                self.pending_permissions.remove(&properties.id);
+            Signal::PermissionReplied { request_id } => {
+                self.pending_permissions.remove(&request_id);
                 let _ = self
                     .events
                     .send(AdapterEvent::PermissionResolved {
-                        local_id: session_id,
-                        request_id: properties.id,
+                        local_id: session_id.to_owned(),
+                        request_id,
                     })
                     .await;
             }
-            OcEvent::Other => {}
         }
         true
     }
@@ -1199,16 +1190,8 @@ impl OpenCodeSession {
         false
     }
 
-    async fn emit_part(&mut self, session_id: &str, part: &Part) {
-        let role = part
-            .message_id()
-            .and_then(|id| self.roles.get(id))
-            .map_or("assistant", String::as_str)
-            .to_owned();
-        if !normalize::is_final(part, &role) || !self.emitted_parts.insert(part.id().to_owned()) {
-            return;
-        }
-        for (kind, payload) in normalize::part_payloads(part, &role) {
+    async fn emit_rows(&self, session_id: &str, rows: Vec<(Kind, serde_json::Value)>) {
+        for (kind, payload) in rows {
             let event = match kind {
                 Kind::Message => AdapterEvent::Message {
                     local_id: session_id.to_owned(),
@@ -1291,7 +1274,7 @@ fn status(
 #[allow(clippy::cognitive_complexity)]
 async fn pump_sse(
     client: Arc<OpenCodeClient>,
-    out: mpsc::Sender<OcEvent>,
+    out: mpsc::Sender<Incoming>,
     shutdown: CancellationToken,
     sse: Arc<SseStatus>,
 ) {
@@ -1301,7 +1284,7 @@ async fn pump_sse(
         if shutdown.is_cancelled() {
             return;
         }
-        match client.events().await {
+        match client.event_stream().await {
             Ok(resp) => {
                 sse.set_connected(true);
                 let mut decoder = SseDecoder::new();
@@ -1325,7 +1308,7 @@ async fn pump_sse(
                                         &data,
                                     );
                                 }
-                                match serde_json::from_str::<OcEvent>(&data) {
+                                match client.decode_event(&data) {
                                     Ok(evt) => {
                                         if out.send(evt).await.is_err() {
                                             sse.set_connected(false);
@@ -2545,5 +2528,137 @@ mod tests {
             }
             other => panic!("expected Status, got {other:?}"),
         }
+    }
+
+    fn v2_event(raw: &str) -> v2::events::Event {
+        v2::events::Event::decode(raw).unwrap()
+    }
+
+    fn v2_bare(kind: &str) -> v2::events::Event {
+        v2_event(&format!(r#"{{"type":"{kind}","data":{{"sessionID":"ses_1"}}}}"#))
+    }
+
+    const V2_STEP: &str = r#"{"type":"session.step.started",
+        "data":{"sessionID":"ses_1","assistantMessageID":"msg_1"}}"#;
+
+    #[tokio::test]
+    async fn a_v2_execution_end_closes_the_turn() {
+        let (mut session, mut rx, _client) = test_session(None);
+        session.in_flight = true;
+        assert!(session.on_v2_event(v2_bare("session.execution.succeeded")).await);
+        assert!(!session.in_flight, "the watchdog must stand down");
+        let mut saw_idle = false;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::Status { tempo, .. } = evt {
+                saw_idle |= tempo.as_deref() == Some("idle");
+            }
+        }
+        assert!(saw_idle);
+    }
+
+    #[tokio::test]
+    async fn a_v2_oneshot_child_ends_when_its_execution_ends_after_output() {
+        let (mut session, _rx, _client) = test_session(Some("parent-1".to_owned()));
+        assert!(session.on_v2_event(v2_bare("session.execution.succeeded")).await, "no output yet");
+        assert!(session.on_v2_event(v2_event(V2_STEP)).await);
+        assert!(!session.on_v2_event(v2_bare("session.execution.interrupted")).await);
+    }
+
+    #[tokio::test]
+    async fn a_v2_provider_failure_crashes_a_oneshot_child() {
+        let (mut session, mut rx, _client) = test_session(Some("parent-1".to_owned()));
+        let failed = r#"{"type":"session.execution.failed","data":{"sessionID":"ses_1",
+            "error":{"type":"provider.invalid-request","message":"model not found: mock","status":400}}}"#;
+        assert!(!session.on_v2_event(v2_event(failed)).await);
+        let ended = ended_events(&mut rx);
+        match &ended[..] {
+            [(local_id, EndReason::Crashed { detail })] => {
+                assert_eq!(local_id, "ses_1");
+                assert!(detail.contains("model not found: mock"), "{detail}");
+            }
+            other => panic!("expected one crash, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_v2_retry_keeps_the_turn_in_flight_and_says_why() {
+        let (mut session, mut rx, _client) = test_session(None);
+        session.in_flight = true;
+        let retry = r#"{"type":"session.retry.scheduled","data":{"sessionID":"ses_1","attempt":3,
+            "at":1,"error":{"type":"provider.transport","message":"ConnectionRefused"}}}"#;
+        assert!(session.on_v2_event(v2_event(retry)).await);
+        assert!(session.in_flight);
+        match rx.try_recv().unwrap() {
+            AdapterEvent::Status { tempo, detail, .. } => {
+                assert_eq!(tempo.as_deref(), Some("working"));
+                assert_eq!(
+                    detail.as_deref(),
+                    Some("provider retry 3: provider.transport: ConnectionRefused")
+                );
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_v2_permission_ask_is_pending_until_its_reply() {
+        let (mut session, mut rx, _client) = test_session(None);
+        let ask = r#"{"type":"permission.asked","data":{"id":"per_1","sessionID":"ses_1",
+            "action":"shell","resources":["ls -la"],"save":["ls *"],
+            "source":{"type":"tool","messageID":"msg_1","id":"call_1"}}}"#;
+        let replied = r#"{"type":"permission.replied",
+            "data":{"sessionID":"ses_1","requestID":"per_1","reply":"once"}}"#;
+        assert!(session.on_v2_event(v2_event(ask)).await);
+        assert!(session.pending_permissions.contains("per_1"));
+        match rx.try_recv().unwrap() {
+            AdapterEvent::PermissionRequest { request_id, tool, input, .. } => {
+                assert_eq!(request_id, "per_1");
+                assert_eq!(tool, "shell");
+                assert_eq!(input["resources"][0], "ls -la");
+            }
+            other => panic!("expected PermissionRequest, got {other:?}"),
+        }
+        assert!(session.on_v2_event(v2_event(replied)).await);
+        assert!(session.pending_permissions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_v2_event_for_a_session_this_driver_does_not_own_is_ignored() {
+        let (mut session, mut rx, _client) = test_session(Some("parent-1".to_owned()));
+        let other = r#"{"type":"session.execution.failed","data":{"sessionID":"ses_other"}}"#;
+        assert!(session.on_v2_event(v2_event(other)).await);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn the_recorded_v2_stream_drives_an_interactive_session() {
+        let (mut session, mut rx, _client) = test_session(None);
+        session.owned = HashSet::from(["ses_ecd86c6adffeSeDX15STTLCF8s".to_owned()]);
+        session.in_flight = true;
+        for raw in SseDecoder::new().push(include_str!("fixtures/v2_events.sse")) {
+            assert!(session.on_v2_event(v2_event(&raw)).await, "{raw}");
+        }
+        assert!(!session.in_flight);
+        assert!(session.saw_assistant);
+        assert!(session.pending_permissions.is_empty());
+
+        let (mut users, mut tools, mut usage, mut idles, mut errors) = (0, 0, 0, 0, 0);
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                AdapterEvent::Message { payload, .. } if payload["role"] == "user" => users += 1,
+                AdapterEvent::Message { payload, .. } => {
+                    errors += usize::from(
+                        payload["text"].as_str().unwrap_or_default().contains("model not found"),
+                    );
+                }
+                AdapterEvent::ToolUse { .. } => tools += 1,
+                AdapterEvent::TokenUsage { .. } => usage += 1,
+                AdapterEvent::Status { tempo, .. } if tempo.as_deref() == Some("idle") => {
+                    idles += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!((users, tools, usage, idles, errors), (3, 2, 2, 3, 1));
     }
 }

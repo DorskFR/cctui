@@ -29,11 +29,11 @@
   "accountAdapters": [
     {
       "providers": ["anthropic", "openai"],
-      "out": ["claude-code", "codex"]
+      "out": ["claude-code", "codex", "qwen", "goose"]
     },
     {
       "providers": ["openai", "anthropic-compatible"],
-      "out": ["claude-code", "codex"]
+      "out": ["claude-code", "codex", "qwen", "goose"]
     },
     {
       "providers": ["anthropic"],
@@ -41,7 +41,7 @@
     },
     {
       "providers": ["openai-compatible"],
-      "out": ["codex"]
+      "out": ["codex", "qwen", "goose"]
     },
     {
       "providers": [],
@@ -98,6 +98,16 @@
       "out": false
     },
     {
+      "providers": ["openai"],
+      "adapter": "qwen",
+      "out": true
+    },
+    {
+      "providers": ["anthropic"],
+      "adapter": "goose",
+      "out": false
+    },
+    {
       "providers": ["fireworks"],
       "adapter": "opencode",
       "out": true
@@ -144,6 +154,11 @@
     {
       "providers": ["anthropic", "openai"],
       "adapter": "codex",
+      "out": "openai"
+    },
+    {
+      "providers": ["anthropic", "openai"],
+      "adapter": "qwen",
       "out": "openai"
     },
     {

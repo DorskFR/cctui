@@ -13,6 +13,69 @@ pub const OPENAI_GATEWAY_KEYS: &[&str] = &["OPENAI_BASE_URL", "OPENAI_API_KEY"];
 /// Fireworks (opencode) gateway routing keys.
 pub const FIREWORKS_GATEWAY_KEYS: &[&str] = &["FIREWORKS_BASE_URL", "FIREWORKS_API_KEY"];
 
+/// How one ACP agent reads the routing keys its family's gateway env mints.
+///
+/// The server mints one key pair per family (`OPENAI_BASE_URL` +
+/// `OPENAI_API_KEY` for the `OpenAI` family). An agent that spells them
+/// differently gets a copy under its own names, plus the fixed env that
+/// selects the provider on its side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatewayAliases {
+    pub agent: &'static str,
+    /// The family's routing keys, all required for a launch.
+    pub required: &'static [&'static str],
+    /// `(family key, agent key)` copies.
+    pub aliases: &'static [(&'static str, &'static str)],
+    /// Env the binding needs beyond the routing keys, inserted only when not
+    /// already set.
+    pub fixed: &'static [(&'static str, &'static str)],
+}
+
+/// qwen-code reads the `OpenAI` SDK names as they are; `OPENAI_API_KEY` in the
+/// env is what selects its `openai` auth type.
+pub const QWEN_GATEWAY: GatewayAliases =
+    GatewayAliases { agent: "qwen", required: OPENAI_GATEWAY_KEYS, aliases: &[], fixed: &[] };
+
+/// goose's openai provider is picked by `GOOSE_PROVIDER` and addressed as a
+/// host plus a base path; the gateway base already carries the family prefix,
+/// so the path is the bare chat-completions route.
+pub const GOOSE_GATEWAY: GatewayAliases = GatewayAliases {
+    agent: "goose",
+    required: OPENAI_GATEWAY_KEYS,
+    aliases: &[("OPENAI_BASE_URL", "OPENAI_HOST")],
+    fixed: &[("GOOSE_PROVIDER", "openai"), ("OPENAI_BASE_PATH", "chat/completions")],
+};
+
+/// Every ACP agent bound through a gateway family.
+pub const GATEWAY_ALIASES: &[GatewayAliases] = &[QWEN_GATEWAY, GOOSE_GATEWAY];
+
+#[must_use]
+pub fn gateway_aliases(agent: &str) -> Option<&'static GatewayAliases> {
+    GATEWAY_ALIASES.iter().find(|a| a.agent == agent)
+}
+
+/// The routing keys an account-bound launch of `agent` must hold; empty for
+/// an agent with no gateway binding, which never fails closed on a partial env.
+#[must_use]
+pub fn required_gateway_keys(agent: &str) -> &'static [&'static str] {
+    gateway_aliases(agent).map_or(&[], |a| a.required)
+}
+
+impl GatewayAliases {
+    /// Copy the family's keys under the agent's names and add the fixed env.
+    /// A hint that already names a key keeps its value.
+    pub fn apply(&self, env: &mut BTreeMap<String, String>) {
+        for (family_key, agent_key) in self.aliases {
+            if let Some(value) = env.get(*family_key).cloned() {
+                env.entry((*agent_key).to_owned()).or_insert(value);
+            }
+        }
+        for (key, value) in self.fixed {
+            env.entry((*key).to_owned()).or_insert_with(|| (*value).to_owned());
+        }
+    }
+}
+
 /// Decide a worker's launch env from the server's `GatewayEnvResponse`.
 ///
 /// Fail-closed for an account-bound session: refuse the launch when the resolved
@@ -60,6 +123,9 @@ pub fn launch_env_decision(
             "refusing to launch {adapter} {local_id}: account-bound session resolved a gateway \
              env missing {missing} — launching would route unauthenticated and 401"
         );
+    }
+    if let Some(aliases) = gateway_aliases(adapter) {
+        aliases.apply(&mut merged);
     }
     Ok(merged)
 }
@@ -136,8 +202,8 @@ mod tests {
     use cctui_proto::api::GatewayEnvResponse;
 
     use super::{
-        CLAUDE_GATEWAY_KEYS, FIREWORKS_GATEWAY_KEYS, OPENAI_GATEWAY_KEYS, launch_env_decision,
-        resolve_env,
+        CLAUDE_GATEWAY_KEYS, FIREWORKS_GATEWAY_KEYS, GATEWAY_ALIASES, OPENAI_GATEWAY_KEYS,
+        launch_env_decision, required_gateway_keys, resolve_env,
     };
 
     fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -207,6 +273,94 @@ mod tests {
         let err = launch_env_decision("claude", "s1", &resp, &BTreeMap::new(), CLAUDE_GATEWAY_KEYS)
             .unwrap_err();
         assert!(err.to_string().contains("ANTHROPIC_AUTH_TOKEN"), "got: {err}");
+    }
+
+    /// An account-bound qwen launch carries the `OpenAI` SDK names as minted;
+    /// a goose launch gets its provider selector, host and base path derived
+    /// from the same pair. Either refuses an empty or half-minted env.
+    #[test]
+    fn qwen_takes_the_openai_pair_as_minted() {
+        let resp =
+            bound(&[("OPENAI_BASE_URL", "https://gw/gateway/openai"), ("OPENAI_API_KEY", "tok")]);
+        let hint = env_of(&[("QWEN_LOG", "1")]);
+        let got =
+            launch_env_decision("qwen", "s1", &resp, &hint, required_gateway_keys("qwen")).unwrap();
+        assert_eq!(
+            got.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("https://gw/gateway/openai")
+        );
+        assert_eq!(got.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
+        assert_eq!(got.get("QWEN_LOG").map(String::as_str), Some("1"));
+        assert!(!got.contains_key("GOOSE_PROVIDER"));
+    }
+
+    #[test]
+    fn goose_gets_its_provider_host_and_base_path_from_the_openai_pair() {
+        let resp =
+            bound(&[("OPENAI_BASE_URL", "https://gw/gateway/openai"), ("OPENAI_API_KEY", "tok")]);
+        let got = launch_env_decision(
+            "goose",
+            "s1",
+            &resp,
+            &BTreeMap::new(),
+            required_gateway_keys("goose"),
+        )
+        .unwrap();
+        assert_eq!(got.get("GOOSE_PROVIDER").map(String::as_str), Some("openai"));
+        assert_eq!(got.get("OPENAI_HOST").map(String::as_str), Some("https://gw/gateway/openai"));
+        assert_eq!(got.get("OPENAI_BASE_PATH").map(String::as_str), Some("chat/completions"));
+        assert_eq!(got.get("OPENAI_API_KEY").map(String::as_str), Some("tok"));
+    }
+
+    #[test]
+    fn an_unbound_acp_launch_gets_no_gateway_aliases() {
+        let resp = GatewayEnvResponse { account_bound: false, ..Default::default() };
+        let hint = env_of(&[("OPENAI_BASE_URL", "https://api.openai.com/v1")]);
+        let got = launch_env_decision("goose", "s1", &resp, &hint, required_gateway_keys("goose"))
+            .unwrap();
+        assert_eq!(got, hint, "an agent on its own login keeps its own env untouched");
+    }
+
+    #[test]
+    fn a_bound_acp_launch_fails_closed_on_an_empty_or_partial_env() {
+        for agent in ["qwen", "goose"] {
+            let empty = GatewayEnvResponse { account_bound: true, ..Default::default() };
+            let err = launch_env_decision(
+                agent,
+                "s1",
+                &empty,
+                &env_of(&[("OPENAI_API_KEY", "stale")]),
+                required_gateway_keys(agent),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("account-bound"), "{agent}: {err}");
+            assert!(err.to_string().contains(agent), "{agent}: {err}");
+
+            let partial = bound(&[("OPENAI_BASE_URL", "gw")]);
+            let err = launch_env_decision(
+                agent,
+                "s1",
+                &partial,
+                &BTreeMap::new(),
+                required_gateway_keys(agent),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("OPENAI_API_KEY"), "{agent}: {err}");
+        }
+        assert!(required_gateway_keys("gemini").is_empty());
+        assert!(required_gateway_keys("fake-acp").is_empty());
+    }
+
+    #[test]
+    fn every_alias_row_requires_the_family_pair_it_copies_from() {
+        for row in GATEWAY_ALIASES {
+            assert!(!row.required.is_empty(), "{}", row.agent);
+            for (family_key, agent_key) in row.aliases {
+                assert!(row.required.contains(family_key), "{}: {family_key}", row.agent);
+                assert_ne!(family_key, agent_key, "{}", row.agent);
+            }
+            assert_eq!(required_gateway_keys(row.agent), row.required);
+        }
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
-//! Typed client for the `opencode serve` HTTP API.
+//! Typed client for the `opencode serve` HTTP API: the transport both API
+//! generations share, and the v1 endpoints.
 //!
 //! Hand-rolled against the server's `OpenAPI` document (`GET /doc`, opencode
 //! 1.19.3). Response types tolerate unknown fields so a schema-growing release
@@ -7,9 +8,10 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::backend::Generation;
 use crate::adapters::traffic_rings::{TRANSPORT_HTTP, TrafficRings};
 
-/// Version the worker image bakes and the adapter is written against.
+/// v1 version the worker image bakes and the adapter is written against.
 pub const OPENCODE_PINNED_VERSION: &str = "1.19.3";
 
 /// Basic-auth username `opencode serve` expects when `OPENCODE_SERVER_PASSWORD`
@@ -258,6 +260,7 @@ pub struct OpenCodeClient {
     password: String,
     http: reqwest::Client,
     rings: Option<std::sync::Arc<TrafficRings>>,
+    generation: Generation,
 }
 
 impl OpenCodeClient {
@@ -272,6 +275,7 @@ impl OpenCodeClient {
                 .build()
                 .unwrap_or_default(),
             rings: None,
+            generation: Generation::V1,
         }
     }
 
@@ -293,10 +297,21 @@ impl OpenCodeClient {
         self.rings.as_ref()
     }
 
+    #[must_use]
+    pub const fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    /// Set once the server answered the detection probe; until then every
+    /// call speaks v1.
+    pub const fn set_generation(&mut self, generation: Generation) {
+        self.generation = generation;
+    }
+
     /// Send a request, recording the call and its outcome on the rings. The
     /// response body is *not* logged: `GET /session/{id}/message` returns the
     /// whole transcript, and a ring full of one reply is worse than no ring.
-    async fn send(
+    pub(super) async fn send(
         &self,
         request: reqwest::RequestBuilder,
         method: &str,
@@ -328,18 +343,18 @@ impl OpenCodeClient {
         }
     }
 
-    fn get(&self, path: &str) -> reqwest::RequestBuilder {
+    pub(super) fn get(&self, path: &str) -> reqwest::RequestBuilder {
         self.stream_get(path).timeout(REQUEST_TIMEOUT)
     }
 
     /// Unbounded GET, for the event stream only.
-    fn stream_get(&self, path: &str) -> reqwest::RequestBuilder {
+    pub(super) fn stream_get(&self, path: &str) -> reqwest::RequestBuilder {
         self.http
             .get(format!("{}{path}", self.base))
             .basic_auth(SERVER_USERNAME, Some(&self.password))
     }
 
-    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+    pub(super) fn post(&self, path: &str) -> reqwest::RequestBuilder {
         self.http
             .post(format!("{}{path}", self.base))
             .basic_auth(SERVER_USERNAME, Some(&self.password))

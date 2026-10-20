@@ -411,7 +411,7 @@ impl Pump {
             self.machine_key.as_ref(),
             &key,
             &spec.env,
-            &[],
+            crate::adapters::gateway_env::required_gateway_keys(self.row.id),
         )
         .await
         {
@@ -421,6 +421,9 @@ impl Pump {
                 return;
             }
         };
+        if let Some(missing) = own_login_missing(self.row, &launch.env) {
+            tracing::warn!(agent = self.row.id, %key, "{missing}");
+        }
         let attachments = match crate::adapters::uploads::stage_bootstrap(&key, &spec.bootstrap) {
             Ok(paths) => paths,
             Err(err) => {
@@ -493,7 +496,7 @@ impl Pump {
             self.machine_key.as_ref(),
             local_id,
             &hint,
-            &[],
+            crate::adapters::gateway_env::required_gateway_keys(self.row.id),
         );
         tokio::time::timeout(RESTORE_LAUNCH_TIMEOUT, pull).await.unwrap_or_else(|_| {
             tracing::warn!(%local_id, agent = self.row.id, "acp: launch env pull timed out");
@@ -546,6 +549,29 @@ impl Pump {
             claim: Some(claim),
         });
     }
+}
+
+/// A launch that is neither gateway-routed nor carrying any of the agent's
+/// own login env will most likely fail at `session/new`; name what is missing.
+/// `None` when the agent lists no login env or one is set.
+fn own_login_missing(
+    row: &AgentRow,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let routed = crate::adapters::gateway_env::required_gateway_keys(row.id);
+    let has = |k: &&str| env.contains_key(*k) || std::env::var_os(k).is_some();
+    if row.auth_env.is_empty() || (!routed.is_empty() && routed.iter().all(has)) {
+        return None;
+    }
+    if row.auth_env.iter().any(has) {
+        return None;
+    }
+    Some(format!(
+        "{} launches with no account bound and none of {} set: it will run on whatever login \
+         its own config holds",
+        row.id,
+        row.auth_env.join(", ")
+    ))
 }
 
 async fn route(live: &LiveRegistry, local_id: &str, cmd: SessionCommand) -> bool {
@@ -728,6 +754,25 @@ mod tests {
             assert!(f.pty_watch(&serde_json::Value::Null), "{}", f.id());
             assert!(!cctui_proto::adapter::is_default_enabled(f.id()), "{}", f.id());
         }
+    }
+
+    #[test]
+    fn an_unbound_launch_without_the_agent_login_env_is_flagged_not_refused() {
+        let empty = std::collections::BTreeMap::new();
+        let bound = [("OPENAI_BASE_URL", "gw"), ("OPENAI_API_KEY", "tok")]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        let own = std::iter::once(("GOOSE_PROVIDER", "anthropic"))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        assert!(own_login_missing(&rows::GOOSE, &bound).is_none());
+        assert!(own_login_missing(&rows::GOOSE, &own).is_none());
+        let silent = rows::AgentRow { auth_env: &[], ..rows::GOOSE };
+        assert!(own_login_missing(&silent, &empty).is_none());
+        let probe = rows::AgentRow { auth_env: &["CCTUI_TEST_NO_SUCH_LOGIN_VAR"], ..rows::GOOSE };
+        let msg = own_login_missing(&probe, &empty).expect("flagged");
+        assert!(msg.contains("goose") && msg.contains("CCTUI_TEST_NO_SUCH_LOGIN_VAR"), "{msg}");
     }
 
     #[test]

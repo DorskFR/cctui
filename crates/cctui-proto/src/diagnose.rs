@@ -321,10 +321,14 @@ pub struct OpenCodeDiagnose {
     /// `opencode serve` child PID, when a live session owns one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_pid: Option<u32>,
-    /// Version the adapter is written against.
+    /// Version the adapter is written against, for the detected API
+    /// generation (v1 until one is detected).
     pub pinned_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_version: Option<String>,
+    /// Server API generation the running server was detected as: `v1` or `v2`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_generation: Option<String>,
     /// Whether the running server matches [`Self::pinned_version`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_matches: Option<bool>,

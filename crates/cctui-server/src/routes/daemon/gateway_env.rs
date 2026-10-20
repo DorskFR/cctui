@@ -118,14 +118,14 @@ pub async fn session_gateway_env(
     // `--settings` file (that daemon-side merge is).
     let mut settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
     // Codex defaults to the `priority` tier, so a relaunch with no opinion is the
-    // expensive one. Serve a concrete tier whenever an openai account is bound.
-    if crate::routes::gateway::session_has_family(
-        &state,
-        &session_id,
-        crate::routes::gateway::Family::Openai,
-    )
-    .await
-    {
+    // expensive one. Serve a concrete tier to a codex session, and only to one:
+    // the OpenAI-wire ACP agents share the family but cannot use the key.
+    let adapter = crate::store::sessions::adapter_id(&state.pool, &session_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if crate::settings_catalog::codex::adapter_takes_service_tier(&adapter) {
         settings = crate::settings_catalog::codex::overlay_service_tier(settings);
     }
     // This pull only happens when the daemon is actually (re)launching the

@@ -1058,13 +1058,13 @@ fn spawn_body_parity() {
 #[test]
 fn spawn_accounts_parity() {
     use cctui_clientcore::spawn_accounts::{
-        ALL_ADAPTERS, PoolMembers, UsageWindow, account_adapters, account_backs_adapter,
-        adapter_for_provider, compatible_pools, effective_adapter_for, env_key_valid, headline_pct,
+        PoolMembers, UsageWindow, account_adapters, account_backs_adapter, adapter_for_provider,
+        all_adapters, compatible_pools, effective_adapter_for, env_key_valid, headline_pct,
         provider_for_adapter, stale_account_pick,
     };
 
     let fx = fixture("spawnAccounts");
-    assert_eq!(strings(&fx["allAdapters"]), ALL_ADAPTERS);
+    assert_eq!(strings(&fx["allAdapters"]), all_adapters());
 
     for c in cases(&fx, "adapterForProvider") {
         assert_eq!(adapter_for_provider(&s(c, "provider")), s(c, "out"), "adapter {c}");

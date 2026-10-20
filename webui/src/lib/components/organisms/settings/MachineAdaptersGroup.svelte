@@ -55,6 +55,11 @@
 	}
 
 	const label = (a: MachineAdapterInfo) => harnessLabel(a.adapter_id, harnessTable());
+	const ABOUT: Record<string, () => string> = {
+		qwen: m.settings_machine_adapters_about_qwen,
+		goose: m.settings_machine_adapters_about_goose
+	};
+	const about = (a: MachineAdapterInfo) => ABOUT[a.adapter_id]?.();
 </script>
 
 <SettingGroup title={m.settings_machine_adapters_label()}>
@@ -76,7 +81,7 @@
 						<Text size="sm" weight="semibold">{machine.display_name ?? machine.name}</Text>
 						<ul class="adapters">
 							{#each list as a (a.adapter_id)}
-								<li class="adapter">
+								<li class="adapter" title={about(a)}>
 									<BrandLogo adapter={a.adapter_id} size={14} />
 									<Switch
 										checked={a.enabled}

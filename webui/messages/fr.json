@@ -1698,6 +1698,8 @@
 	"settings_machine_adapters_config_help": "Un objet JSON transmis au démon : le binaire à utiliser (claude_bin, codex_bin ou bin), les arguments, l'environnement, le répertoire d'état. L'enregistrement reconstruit l'adaptateur ; les sessions en cours ne sont pas touchées.",
 	"settings_machine_adapters_config_syntax": "JSON invalide : {detail}",
 	"settings_machine_adapters_config_not_object": "La config doit être un objet JSON, pas un tableau, une chaîne, un nombre ni null.",
+	"settings_machine_adapters_about_qwen": "Qwen Code via l'Agent Client Protocol (`qwen --acp`). En opt-in. Se lie à un compte de la famille OpenAI via la passerelle ; s'installe avec `npm install -g @qwen-code/qwen-code`.",
+	"settings_machine_adapters_about_goose": "Goose via l'Agent Client Protocol (`goose acp`). En opt-in. Se lie à un compte de la famille OpenAI via la passerelle ; ne reprend que par chargement de session. Installez la CLI goose depuis ses releases.",
 	"settings_session_emoji_help": "Préfixe les noms générés par l'agent d'un emoji adapté au sujet. Les noms que vous avez saisis ne sont pas modifiés.",
 	"settings_session_emoji_label": "Emoji dans les noms de session",
 	"settings_sessions_desc": "Liste, lancement et comportement des conversations. Le tri par section et le filtre par étiquette se règlent",

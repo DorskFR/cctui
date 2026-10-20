@@ -13,10 +13,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn the_three_harnesses_are_served_in_table_order() {
+    async fn the_harnesses_are_served_in_table_order() {
         let Json(rows) = list_harnesses().await;
         let ids: Vec<&str> = rows.iter().map(|h| h.id.as_str()).collect();
-        assert_eq!(ids, ["claude-code", "codex", "opencode"]);
-        assert!(rows.iter().all(|h| h.default_enabled));
+        assert_eq!(ids, ["claude-code", "codex", "opencode", "qwen", "goose"]);
+        let enabled: Vec<&str> =
+            rows.iter().filter(|h| h.default_enabled).map(|h| h.id.as_str()).collect();
+        assert_eq!(enabled, ["claude-code", "codex", "opencode"]);
     }
 }

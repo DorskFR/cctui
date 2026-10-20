@@ -16,9 +16,14 @@ server_url?: string | null,
  */
 server_pid?: number | null, 
 /**
- * Version the adapter is written against.
+ * Version the adapter is written against, for the detected API
+ * generation (v1 until one is detected).
  */
 pinned_version: string, server_version?: string | null, 
+/**
+ * Server API generation the running server was detected as: `v1` or `v2`.
+ */
+api_generation?: string | null, 
 /**
  * Whether the running server matches [`Self::pinned_version`].
  */

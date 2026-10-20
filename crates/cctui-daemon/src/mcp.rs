@@ -87,6 +87,15 @@ const SOCKET_PROTO: u64 = 2;
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 const MAX_TIMEOUT_SECS: u64 = 7200;
 
+/// Every ACP agent row id, each wrapped in `quote`, comma-separated.
+fn acp_agent_ids(quote: &str) -> String {
+    crate::adapters::acp::rows::ROWS
+        .iter()
+        .map(|r| format!("{quote}{}{quote}", r.id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The `CctuiAgent` input schema, as advertised to the model.
 #[must_use]
 pub fn tool_schema() -> Value {
@@ -103,9 +112,12 @@ pub fn tool_schema() -> Value {
             "properties": {
                 "adapter": {
                     "type": "string",
-                    "description": "Harness to run the child under, e.g. \"opencode\", \
-    \"codex\", \"claude_code\", or an ACP agent such as \"gemini\". Only the adapters this session is permitted to spawn are \
-    accepted. Ignored when session_id is set.",
+                    "description": format!(
+                        "Harness to run the child under, e.g. \"opencode\", \"codex\", \
+                         \"claude_code\", or an ACP agent: {}. Only the adapters this session \
+                         is permitted to spawn are accepted. Ignored when session_id is set.",
+                        acp_agent_ids("\"")
+                    ),
                 },
                 "prompt": {
                     "type": "string",
@@ -252,13 +264,17 @@ pub fn archive_tool_schema() -> Value {
 pub fn peers_tool_schema() -> Value {
     json!({
         "name": PEERS_TOOL_NAME,
-        "description": "List the cctui sessions this session is allowed to talk to: its parent, \
-    its children, its siblings, and any session explicitly shared with it — across machines and \
-    across harnesses (claude_code, codex, opencode, ACP agents such as gemini). Each entry gives session_id, name, adapter, \
-    machine, state (live / ended / archived) and the relation. A session on ANOTHER cctui that \
-    its owner linked to yours appears as `remote:<id>` with relation `remote` (`remote-room` for \
-    a room hosted elsewhere): someone else's agent, not yours. Use it before CctuiSend or \
-    CctuiHistory: an id not on this list is refused.",
+        "description": format!(
+            "List the cctui sessions this session is allowed to talk to: its parent, its \
+             children, its siblings, and any session explicitly shared with it — across machines \
+             and across harnesses (claude_code, codex, opencode, ACP agents: {}). Each entry \
+             gives session_id, name, adapter, machine, state (live / ended / archived) and the \
+             relation. A session on ANOTHER cctui that its owner linked to yours appears as \
+             `remote:<id>` with relation `remote` (`remote-room` for a room hosted elsewhere): \
+             someone else's agent, not yours. Use it before CctuiSend or CctuiHistory: an id \
+             not on this list is refused.",
+            acp_agent_ids("")
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {},

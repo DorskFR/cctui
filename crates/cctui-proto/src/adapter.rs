@@ -75,6 +75,12 @@ struct HarnessRow {
     default_enabled: bool,
     models_source: ModelsSource,
     permission_modes: &'static [PermissionMode],
+    /// A launch needs a resolved model: the harness has no default of its own
+    /// for the provider it is bound to.
+    needs_model: bool,
+    /// The gateway meters the harness's usage from the responses it proxies,
+    /// so what the agent reports itself would double count.
+    gateway_metered: bool,
 }
 
 impl HarnessRow {
@@ -110,6 +116,8 @@ const HARNESS_ROWS: &[HarnessRow] = &[
         default_enabled: true,
         models_source: ModelsSource::Static,
         permission_modes: &PermissionMode::ALL,
+        needs_model: false,
+        gateway_metered: false,
     },
     HarnessRow {
         id: "codex",
@@ -128,6 +136,8 @@ const HARNESS_ROWS: &[HarnessRow] = &[
         default_enabled: true,
         models_source: ModelsSource::Catalog,
         permission_modes: &PermissionMode::ALL,
+        needs_model: false,
+        gateway_metered: false,
     },
     HarnessRow {
         id: "opencode",
@@ -146,8 +156,51 @@ const HARNESS_ROWS: &[HarnessRow] = &[
         default_enabled: true,
         models_source: ModelsSource::None,
         permission_modes: &PermissionMode::ALL,
+        needs_model: true,
+        gateway_metered: true,
+    },
+    HarnessRow {
+        id: "qwen",
+        label: "Qwen Code",
+        family: crate::provider::ProviderFamily::Openai,
+        capabilities: ACP_CAPABILITIES,
+        default_enabled: false,
+        models_source: ModelsSource::Catalog,
+        permission_modes: ACP_PERMISSION_MODES,
+        needs_model: true,
+        gateway_metered: false,
+    },
+    HarnessRow {
+        id: "goose",
+        label: "Goose",
+        family: crate::provider::ProviderFamily::Openai,
+        capabilities: ACP_CAPABILITIES,
+        default_enabled: false,
+        models_source: ModelsSource::Catalog,
+        permission_modes: ACP_PERMISSION_MODES,
+        needs_model: true,
+        gateway_metered: false,
     },
 ];
+
+/// What every agent behind the ACP adapter can do: the adapter re-attaches
+/// through `session/resume` or `session/load`, switches models through
+/// config options, serves the traffic rings as its live view and relays
+/// `CctuiAgent`. Fork waits on the spec, and ACP has no attach channel.
+const ACP_CAPABILITIES: HarnessCapabilities = HarnessCapabilities {
+    fork: false,
+    rename: false,
+    resume: true,
+    set_model: true,
+    live_view: true,
+    attach: false,
+    mid_chat_files: true,
+    child_spawn: true,
+};
+
+/// Whip is yolo plus hooks an ACP agent cannot run.
+const ACP_PERMISSION_MODES: &[PermissionMode] =
+    &[PermissionMode::Ask, PermissionMode::Auto, PermissionMode::Yolo];
 
 const fn known_adapter_ids() -> [&'static str; HARNESS_ROWS.len()] {
     let mut out = [""; HARNESS_ROWS.len()];
@@ -191,11 +244,27 @@ pub fn harness(id: &str) -> Option<HarnessDescriptor> {
 /// (`codex-app-server`, `opencode-cli`). Fail-closed: anything else is `None`.
 #[must_use]
 pub fn harness_for_adapter(adapter_id: &str) -> Option<HarnessDescriptor> {
+    row_for_adapter(adapter_id).map(HarnessRow::descriptor)
+}
+
+fn row_for_adapter(adapter_id: &str) -> Option<&'static HarnessRow> {
     let id = adapter_id.trim();
     HARNESS_ROWS
         .iter()
         .find(|r| id == r.id || id.strip_prefix(r.id).is_some_and(|rest| rest.starts_with('-')))
-        .map(HarnessRow::descriptor)
+}
+
+/// Whether a spawn on `adapter_id` must carry a resolved model: the harness
+/// has no default for the provider it is bound to. An unknown id never does.
+#[must_use]
+pub fn needs_model(adapter_id: &str) -> bool {
+    row_for_adapter(adapter_id).is_some_and(|r| r.needs_model)
+}
+
+/// The harness ids whose usage the gateway meters itself, in table order.
+#[must_use]
+pub fn gateway_metered_harness_ids() -> Vec<&'static str> {
+    HARNESS_ROWS.iter().filter(|r| r.gateway_metered).map(|r| r.id).collect()
 }
 
 /// The harness ids whose family is `family`, in table order.
@@ -943,7 +1012,7 @@ mod tests {
 
     #[test]
     fn known_adapters_are_the_table_ids_in_order() {
-        assert_eq!(KNOWN_ADAPTERS, ["claude-code", "codex", "opencode"]);
+        assert_eq!(KNOWN_ADAPTERS, ["claude-code", "codex", "opencode", "qwen", "goose"]);
         let ids: Vec<String> = harnesses().into_iter().map(|h| h.id).collect();
         assert_eq!(ids, KNOWN_ADAPTERS);
     }
@@ -969,13 +1038,42 @@ mod tests {
         assert_eq!(harness_for_provider("openai-compatible"), Some("codex"));
         assert_eq!(harness_for_provider("fireworks"), Some("opencode"));
         assert_eq!(harness_ids_in_family(crate::provider::ProviderFamily::Fireworks), ["opencode"]);
+        assert_eq!(
+            harness_ids_in_family(crate::provider::ProviderFamily::Openai),
+            ["codex", "qwen", "goose"]
+        );
     }
 
     #[test]
-    fn every_row_is_enabled_by_default_today() {
-        assert_eq!(default_enabled_adapters(), KNOWN_ADAPTERS);
+    fn native_rows_are_enabled_by_default_and_acp_rows_are_opt_in() {
+        assert_eq!(default_enabled_adapters(), ["claude-code", "codex", "opencode"]);
         assert!(is_default_enabled("opencode"));
+        for acp in ["qwen", "goose"] {
+            assert!(!is_default_enabled(acp), "{acp}");
+            let row = harness(acp).expect(acp);
+            assert_eq!(row.family, crate::provider::ProviderFamily::Openai);
+            assert_eq!(row.models_source, ModelsSource::Catalog);
+            assert_eq!(
+                row.permission_modes,
+                [PermissionMode::Ask, PermissionMode::Auto, PermissionMode::Yolo]
+            );
+            assert!(row.capabilities.resume && row.capabilities.set_model, "{acp}");
+            assert!(!row.capabilities.fork && !row.capabilities.attach, "{acp}");
+        }
         assert!(!is_default_enabled("gemini"));
+    }
+
+    /// The agents with no default model for the bound provider get one
+    /// resolved for them; only the Fireworks harness is metered by the gateway.
+    #[test]
+    fn model_forcing_and_gateway_metering_are_row_flags() {
+        for forced in ["opencode", "opencode-cli", "qwen", "goose", "goose-acp"] {
+            assert!(needs_model(forced), "{forced}");
+        }
+        for own_default in ["claude-code", "codex", "codex-app-server", "gemini", ""] {
+            assert!(!needs_model(own_default), "{own_default:?}");
+        }
+        assert_eq!(gateway_metered_harness_ids(), ["opencode"]);
     }
 
     #[test]

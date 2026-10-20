@@ -36,8 +36,13 @@ What differs from the spike:
 
 One `AcpAdapter` type, one factory per **agent row**
 (`crates/cctui-daemon/src/adapters/acp/rows.rs`). A row is the launch command
-(`gemini --acp`), a permission-mode table, an update command and whether the
-agent speaks the legacy model pair. A row becomes a running factory only
+(`gemini --acp`, `qwen --acp`, `goose acp`), a permission-mode table, an
+update command, whether the agent speaks the legacy model pair, its context
+file, the env it logs in from on its own and the env var that names a launch
+model. An agent bound through a gateway family also has an alias row in
+`adapters/gateway_env.rs`, which copies the family's minted routing keys
+under the names the agent reads (`OPENAI_BASE_URL` → goose's `OPENAI_HOST`)
+and adds its provider selector. A row becomes a running factory only
 when the harness table in `cctui-proto` lists its id, with
 `default_enabled = false`; everything in the daemon keys on the adapter id,
 so gateway family, spawn capabilities, usage accounting and the webui picker
