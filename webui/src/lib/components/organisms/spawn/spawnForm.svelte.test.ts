@@ -8,7 +8,18 @@ import { SpawnForm, type SpawnFormOptions } from './spawnForm.svelte';
 import { saveDraft, spawnOnMachine } from './spawnSubmit';
 import { NO_ACCOUNT } from './options';
 
-const machineList = [{ id: 'm-uuid-1', name: 'box', display_name: 'box', kind: 'persistent', hue: null }];
+const machineList = [
+	{
+		machine_id: 'm-uuid-1',
+		name: 'box',
+		display_name: 'box',
+		hue: null,
+		liveness: 'online',
+		last_seen_at: '2026-01-01T00:00:00Z',
+		resources: null,
+		updated_at: null
+	}
+];
 let dispatcherList: string[] = [];
 const spawn = vi.fn();
 const updateDraft = vi.fn();
@@ -19,7 +30,7 @@ const discardDraft = vi.fn();
 vi.mock('$lib/queries', () => {
 	const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
 	return {
-		useAllMachines: () => q(machineList),
+		useMachineResources: () => q(machineList),
 		useDispatchers: () => q(dispatcherList),
 		useSessions: () => q({ sessions: [] }),
 		useRecentDirs: () => q([]),

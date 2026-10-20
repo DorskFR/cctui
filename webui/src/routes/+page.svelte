@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { useAccounts, useAllMachines, useSessionStats, useTokenStats } from '$lib/queries';
+	import { useAccounts, useMachineResources, useSessionStats, useTokenStats } from '$lib/queries';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import { m } from '$lib/paraglide/messages';
 	import SessionPeriodSummary from '$lib/components/organisms/overview/SessionPeriodSummary.svelte';
@@ -12,7 +12,7 @@
 
 	const stats = useSessionStats();
 	const tokens = useTokenStats();
-	const machines = useAllMachines(() => true);
+	const machines = useMachineResources(() => true);
 	const accounts = useAccounts();
 
 	const machineRows = $derived(machines.data ?? []);

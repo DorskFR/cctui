@@ -2,6 +2,7 @@
 	// Machine picker: a badge-shaped trigger tinted with the selected machine's
 	// hue (same recipe as MachineBadge) with a native <Select variant="ghost">
 	// laid over it, so the platform popup, keyboard and focus stay native.
+	import type { MachineResourcesRow } from '@bindings/MachineResourcesRow';
 	import type { MachineRow } from '@bindings/MachineRow';
 	import { hashHue } from '$lib/format';
 	import { Dot, Icon, Select, type SelectOption } from '@dorsk/tsumikit';
@@ -13,13 +14,15 @@
 		label
 	}: {
 		value: string;
-		machines: MachineRow[];
+		machines: (MachineResourcesRow | MachineRow)[];
 		label: string;
 	} = $props();
 
-	const nameOf = (mc: MachineRow) => mc.display_name || mc.name;
-	const hueOf = (mc: MachineRow) => mc.hue ?? hashHue(nameOf(mc));
-	const selected = $derived(machines.find((mc) => mc.id === value));
+	const idOf = (mc: MachineResourcesRow | MachineRow) =>
+		'machine_id' in mc ? mc.machine_id : mc.id;
+	const nameOf = (mc: MachineResourcesRow | MachineRow) => mc.display_name || mc.name;
+	const hueOf = (mc: MachineResourcesRow | MachineRow) => mc.hue ?? hashHue(nameOf(mc));
+	const selected = $derived(machines.find((mc) => idOf(mc) === value));
 	const triggerTint = $derived(
 		selected
 			? `--mh:${hueOf(selected)};` +
@@ -29,7 +32,7 @@
 			: ''
 	);
 
-	const liveLabel = (l: MachineRow['liveness']): string =>
+	const liveLabel = (l: MachineResourcesRow['liveness'] | MachineRow['liveness']): string =>
 		l === 'online'
 			? m.dispatch_liveness_online()
 			: l === 'stale'
@@ -41,7 +44,7 @@
 	const selectId = $props.id();
 
 	const options = $derived<SelectOption[]>(
-		machines.map((mc) => ({ value: mc.id, label: nameOf(mc), hint: liveLabel(mc.liveness) }))
+		machines.map((mc) => ({ value: idOf(mc), label: nameOf(mc), hint: liveLabel(mc.liveness) }))
 	);
 </script>
 
