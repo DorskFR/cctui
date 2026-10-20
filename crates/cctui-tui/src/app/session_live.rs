@@ -1,6 +1,7 @@
 //! Live session-list updates: websocket events edit rows in place, and the
 //! REST refresh becomes a slow safety net rather than the source of truth.
 
+use cctui_proto::guard_step::GuardStepState;
 use cctui_proto::models::{Liveness, MachineLiveness};
 
 use super::action::Effect;
@@ -23,6 +24,11 @@ pub enum SessionLiveAction {
     MachineLiveness {
         machine_id: String,
         liveness: MachineLiveness,
+    },
+    /// The pod's workflow guard reported its step.
+    GuardStep {
+        session_id: String,
+        state: GuardStepState,
     },
     /// Whether the socket is delivering; a dead socket shortens the poll.
     WsHealth(bool),
@@ -51,6 +57,10 @@ pub fn reduce_session_live(app: &mut App, action: SessionLiveAction) -> Vec<Effe
             // to land there as well or it would wait for a refetch.
             let live = app.machine_liveness.clone();
             app.machines.apply_liveness(&live);
+            Vec::new()
+        }
+        SessionLiveAction::GuardStep { session_id, state } => {
+            app.guard_steps.insert(session_id, state);
             Vec::new()
         }
         SessionLiveAction::WsHealth(healthy) => {
@@ -153,6 +163,22 @@ pub fn poll_if_due(app: &mut App) -> Vec<Effect> {
 /// The machine dot for a row: the live tier the socket reported, else what the
 /// refresh last said about the session itself.
 #[must_use]
+/// The header's read-only view of a session's guard step: `step N: title`,
+/// `step N` when untitled, `guard exited` once the workflow is over.
+#[must_use]
+pub fn guard_step_badge(app: &App, session_id: &str) -> Option<String> {
+    let state = app.guard_steps.get(session_id)?;
+    if state.exited() {
+        return Some("guard exited".to_owned());
+    }
+    let title = state.title.trim();
+    Some(if title.is_empty() || title == "unknown" {
+        format!("step {}", state.step)
+    } else {
+        format!("step {}: {title}", state.step)
+    })
+}
+
 pub fn machine_dot(app: &App, machine_id: &str) -> Option<MachineLiveness> {
     app.machine_liveness.get(machine_id).copied()
 }
@@ -197,6 +223,35 @@ mod tests {
 
     fn refreshed(effects: &[Effect]) -> bool {
         effects.iter().any(|e| matches!(e, Effect::RefreshSessions))
+    }
+
+    #[test]
+    fn a_guard_step_report_lands_in_the_header_badge() {
+        let mut app = app();
+        assert_eq!(super::guard_step_badge(&app, "s-a"), None, "no guard, no badge");
+        let state = cctui_proto::guard_step::GuardStepState {
+            step: 2,
+            title: "Implement".into(),
+            transitions: vec![3],
+            ..Default::default()
+        };
+        let effects =
+            live(&mut app, SessionLiveAction::GuardStep { session_id: "s-a".into(), state });
+        assert!(effects.is_empty(), "a mirror update needs no refetch");
+        assert_eq!(super::guard_step_badge(&app, "s-a").as_deref(), Some("step 2: Implement"));
+        assert_eq!(super::guard_step_badge(&app, "s-b"), None);
+
+        let untitled = cctui_proto::guard_step::GuardStepState { step: 3, ..Default::default() };
+        live(&mut app, SessionLiveAction::GuardStep { session_id: "s-a".into(), state: untitled });
+        assert_eq!(super::guard_step_badge(&app, "s-a").as_deref(), Some("step 3"));
+
+        let exited = cctui_proto::guard_step::GuardStepState {
+            step: -1,
+            title: "unknown".into(),
+            ..Default::default()
+        };
+        live(&mut app, SessionLiveAction::GuardStep { session_id: "s-a".into(), state: exited });
+        assert_eq!(super::guard_step_badge(&app, "s-a").as_deref(), Some("guard exited"));
     }
 
     #[test]

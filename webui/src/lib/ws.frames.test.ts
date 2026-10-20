@@ -112,6 +112,18 @@ const fixtures = {
 	},
 	tool_call_blocked: { type: 'tool_call_blocked', session_id: SID, tool_name: 'Bash', rule: 'rm -rf' },
 	pty_chunk: { type: 'pty_chunk', session_id: SID, data: 'aGk=' },
+	guard_step_state: {
+		type: 'guard_step_state',
+		session_id: SID,
+		state: {
+			step: 2,
+			title: 'Implement',
+			allowed: 'all-read, Bash',
+			disallowed: 'remote-write',
+			transitions: [3],
+			exit: true
+		}
+	},
 	text_delta: { type: 'text_delta', session_id: SID, item_id: 'msg_01:0', delta: 'Hel' },
 	scheduled_launch: {
 		type: 'scheduled_launch',
@@ -415,6 +427,20 @@ describe('onFrame, one fixture per ServerEvent variant', () => {
 		c.onToolBlock(SID, (v) => (b = v));
 		sock.deliver(fixtures.tool_call_blocked);
 		expect(b).toEqual({ tool_name: 'Bash', rule: 'rm -rf' });
+	});
+
+	it('guard_step_state reaches the per-session listener and is kept for late readers', () => {
+		const { c, sock } = setup();
+		expect(c.guardStep(SID)).toBeNull();
+		const seen: unknown[] = [];
+		const off = c.onGuardStep(SID, (ev) => seen.push(ev));
+		sock.deliver(fixtures.guard_step_state);
+		expect(seen).toEqual([{ session_id: SID, state: fixtures.guard_step_state.state }]);
+		expect(c.guardStep(SID)).toEqual(fixtures.guard_step_state.state);
+		off();
+		sock.deliver({ ...fixtures.guard_step_state, state: { ...fixtures.guard_step_state.state, step: 3 } });
+		expect(seen).toHaveLength(1);
+		expect(c.guardStep(SID)?.step).toBe(3);
 	});
 
 	it('text_delta reaches the per-session listener, which toggles the watch on and off', () => {

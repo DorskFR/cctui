@@ -46,7 +46,7 @@ file or the proxy policy.
 | ------ | ------------- | ------------------------------------------------------------------ |
 | POST   | `/check`      | Pre-tool payload → allow/deny verdict in the caller's dialect.     |
 | POST   | `/transition` | Request a step transition. Body: `{"step": N}` or `{"step":"exit"}`. |
-| GET    | `/state`      | Current step number, title, and allowed/disallowed strings.        |
+| GET    | `/state`      | Current step number, title, allowed/disallowed strings, `transitions` (valid next steps) and `exit`. |
 | POST   | `/state`      | `SessionStart`/compact hook — returns context text for re-injection. |
 | GET    | `/health`     | `{"status":"ok"}`.                                                 |
 

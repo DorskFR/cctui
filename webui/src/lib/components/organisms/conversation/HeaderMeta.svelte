@@ -19,10 +19,16 @@
 	import {
 		useCapabilities,
 		useHarnessModels,
+		useSessionActions,
 		useSessionLangfuse
 	} from '$lib/queries';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
+	import GuardStepChip from '$lib/components/molecules/GuardStepChip.svelte';
+	import type { GuardStepState } from '@bindings/GuardStepState';
+	import { ws } from '$lib/ws.svelte';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -90,6 +96,38 @@
 	const codexEffortOptions = $derived(
 		codexModels.data?.efforts ?? harnessModelsFallback('codex').efforts
 	);
+
+	// Workflow-guard step: seeded by one HTTP read, then live off the socket.
+	// The pod's guard stays authoritative; a request is answered by its verdict.
+	const sessionActions = useSessionActions();
+	let guardStep = $state<GuardStepState | null>(null);
+	let guardBusy = $state(false);
+	$effect(() => {
+		const id = session.id;
+		guardStep = ws.guardStep(id);
+		const off = ws.onGuardStep(id, (ev) => (guardStep = ev.state));
+		void sessionActions.guardStep(id).then(
+			(res) => {
+				if (res) ws.setGuardStep(id, res);
+			},
+			() => {}
+		);
+		return off;
+	});
+	async function requestGuardTransition(step: string) {
+		guardBusy = true;
+		try {
+			const res = await sessionActions.guardTransition(session.id, step);
+			const ack = await ws.awaitCommand(res.command_id, 30_000);
+			if (ack.ok) toasts.ok(m.guard_step_moved({ step }));
+			else if (ack.timedOut) toasts.info(m.guard_step_unconfirmed());
+			else toasts.error(m.guard_step_refused({ error: ack.error ?? '?' }));
+		} catch (e) {
+			toasts.error(errMessage(e));
+		} finally {
+			guardBusy = false;
+		}
+	}
 
 	function openModelEditor() {
 		pendingModel = session.model ?? '';
@@ -187,6 +225,13 @@
 				<span class="ellipsis">{branch}</span>
 			</Badge>
 		</span>
+	{/if}
+	{#if guardStep}
+		<GuardStepChip
+			step={guardStep}
+			disabled={guardBusy}
+			ontransition={archived ? undefined : requestGuardTransition}
+		/>
 	{/if}
 	<div class="meta-trail">
 	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>

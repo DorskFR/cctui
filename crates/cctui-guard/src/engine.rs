@@ -309,6 +309,8 @@ impl WorkflowEngine {
             "title": step.map_or("unknown", |s| s.title.as_str()),
             "allowed": step.map_or_else(String::new, |s| s.allowed.to_raw()),
             "disallowed": step.map_or_else(String::new, |s| s.disallowed.to_raw()),
+            "transitions": step.map_or_else(Vec::new, |s| s.transition.to.clone()),
+            "exit": step.is_some_and(|s| s.transition.exit),
         })
     }
 

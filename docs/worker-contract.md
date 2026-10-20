@@ -173,6 +173,13 @@ Egress is always gated by `cctui-guard-proxy` (uid 1337), deny-default. The
 policy is seeded at boot to always-allow the `CCTUI_URL` + `REPLY_URL` hosts;
 `cctui-guard` rewrites it per workflow step when a guarded prompt runs.
 
+When a guard runs, the entrypoint exports `CCTUI_GUARD_URL` and the daemon
+mirrors the guard's `GET /state` (step, title, allowed/disallowed, valid
+transitions) up to the server on registration and on every change; the webui
+header shows it and can request a move, which the server relays back down as
+a `POST /transition`. The guard stays the only authority: cctui mirrors and
+asks, it never decides a step.
+
 ### Built-in guard default (no `guard-rules.md`)
 
 A pack's `guard-rules.md` is optional. When none is present — a manual job with

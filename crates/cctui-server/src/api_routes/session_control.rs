@@ -69,6 +69,22 @@ pub(super) fn register(r: Routes) -> Routes {
             sess_write(),
         )
         .add(
+            &[GET],
+            "/sessions/{id}/guard",
+            "The session's mirrored workflow-guard step, if the pod reported one.",
+            get(crate::guard_step::guard_step),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/guard/transition",
+            "Ask the session's workflow guard to move to a step.",
+            post(crate::guard_step::guard_transition),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/resume",
             "Resume an exited session.",

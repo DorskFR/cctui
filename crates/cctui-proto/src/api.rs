@@ -12,6 +12,7 @@ pub mod device_auth;
 pub mod dispatchers;
 pub mod events;
 pub mod gateway;
+pub mod guard_step;
 pub mod harness_update;
 pub mod instance;
 pub mod langfuse;

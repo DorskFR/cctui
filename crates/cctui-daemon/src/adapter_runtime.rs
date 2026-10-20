@@ -413,6 +413,11 @@ pub async fn dispatch_command<D: SessionDriver + ?Sized>(
             tracing::warn!(%local_id, watch, "watch_text reached the command loop");
             Ok(Handled::Done)
         }
+        // Served against the pod's guard by the supervisor.
+        AdapterCommand::GuardTransition { local_id, step, .. } => {
+            tracing::warn!(%local_id, %step, "guard_transition reached the command loop");
+            Ok(Handled::Done)
+        }
     };
     report_outcome(driver.adapter_id(), events, command_id, outcome).await;
 }

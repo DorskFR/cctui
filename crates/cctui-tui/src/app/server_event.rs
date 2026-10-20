@@ -76,6 +76,9 @@ pub fn to_actions(event: ServerEvent) -> Vec<Action> {
         }
         ServerEvent::LimitResetRedeemed { .. } => limit_reset_redeemed(event),
         ServerEvent::ToolCallBlocked { .. } => tool_call_blocked(event),
+        ServerEvent::GuardStepState { session_id, state } => {
+            vec![Action::SessionLive(SessionLiveAction::GuardStep { session_id, state })]
+        }
         ServerEvent::MachineLiveness { machine_id, liveness } => {
             vec![Action::SessionLive(SessionLiveAction::MachineLiveness {
                 machine_id: machine_id.to_string(),

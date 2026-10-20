@@ -1640,6 +1640,22 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_sessions_by_id_guard",
+        method: Method::Get,
+        path: "/sessions/{id}/guard",
+        summary: "The session's mirrored workflow-guard step, if the pod reported one.",
+        request: None,
+        response: None,
+    },
+    Route {
+        id: "post_sessions_by_id_guard_transition",
+        method: Method::Post,
+        path: "/sessions/{id}/guard/transition",
+        summary: "Ask the session's workflow guard to move to a step.",
+        request: Some("GuardTransitionRequest"),
+        response: Some("SpawnResponse"),
+    },
+    Route {
         id: "post_sessions_by_id_resume",
         method: Method::Post,
         path: "/sessions/{id}/resume",

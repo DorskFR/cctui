@@ -29,6 +29,7 @@ pub mod kind {
     pub const SESSION_AUTO_RESUMED: &str = "session.auto_resumed";
     pub const SESSION_KILLED: &str = "session.killed";
     pub const SESSION_INTERRUPTED: &str = "session.interrupted";
+    pub const SESSION_GUARD_TRANSITION: &str = "session.guard_transition";
     pub const SESSION_RENAMED: &str = "session.renamed";
     pub const SESSION_MODEL_CHANGED: &str = "session.model_changed";
     pub const SESSION_ACCOUNT_SWITCHED: &str = "session.account_switched";
@@ -258,6 +259,9 @@ pub fn render_summary(kind_name: &str, event: &Event) -> String {
         }
         kind::SESSION_KILLED => format!("{} killed", session()),
         kind::SESSION_INTERRUPTED => format!("{} interrupted", session()),
+        kind::SESSION_GUARD_TRANSITION => {
+            format!("{} asked to move to step {}", session(), str_of(d, "step").unwrap_or("?"))
+        }
         kind::SESSION_RENAMED => format!(
             "{} renamed from \"{}\"",
             str_of(d, "to").unwrap_or("untitled"),

@@ -196,6 +196,8 @@ export const ROUTES = [
   { id: "put_sessions_by_id_draft", method: "PUT", path: "/sessions/{id}/draft", summary: "Replace a draft session's stored spawn payload in place.", request: null, response: null },
   { id: "put_sessions_by_id_draft_attachments", method: "PUT", path: "/sessions/{id}/draft-attachments", summary: "Replace a draft session's stored attachments.", request: null, response: null },
   { id: "post_sessions_by_id_interrupt", method: "POST", path: "/sessions/{id}/interrupt", summary: "Interrupt a session's current turn.", request: null, response: null },
+  { id: "get_sessions_by_id_guard", method: "GET", path: "/sessions/{id}/guard", summary: "The session's mirrored workflow-guard step, if the pod reported one.", request: null, response: null },
+  { id: "post_sessions_by_id_guard_transition", method: "POST", path: "/sessions/{id}/guard/transition", summary: "Ask the session's workflow guard to move to a step.", request: "GuardTransitionRequest", response: "SpawnResponse" },
   { id: "post_sessions_by_id_resume", method: "POST", path: "/sessions/{id}/resume", summary: "Resume an exited session.", request: null, response: null },
   { id: "post_sessions_by_id_set_model", method: "POST", path: "/sessions/{id}/set-model", summary: "Change a session's model.", request: null, response: null },
   { id: "post_sessions_by_id_switch_account", method: "POST", path: "/sessions/{id}/switch-account", summary: "Switch the account backing a session.", request: null, response: null },

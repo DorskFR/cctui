@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::Action;
 use crate::app::server_event::to_actions;
 
-const VARIANT_COUNT: usize = 33;
+const VARIANT_COUNT: usize = 34;
 
 fn uuid() -> Uuid {
     Uuid::nil()
@@ -167,6 +167,17 @@ fn fleet_samples() -> Vec<ServerEvent> {
             rule: "no-curl".to_owned(),
         },
         ServerEvent::PtyChunk { session_id: "s-1".to_owned(), data: "AAAA".to_owned() },
+        ServerEvent::GuardStepState {
+            session_id: "s-1".to_owned(),
+            state: cctui_proto::guard_step::GuardStepState {
+                step: 2,
+                title: "Implement".to_owned(),
+                allowed: "all-read".to_owned(),
+                disallowed: "remote-write".to_owned(),
+                transitions: vec![3],
+                exit: true,
+            },
+        },
         ServerEvent::TextDelta {
             session_id: "s-1".to_owned(),
             item_id: "m:0".to_owned(),
@@ -232,6 +243,7 @@ fn variant_name(event: &ServerEvent) -> &'static str {
         ServerEvent::LimitResetRedeemed { .. } => "limit_reset_redeemed",
         ServerEvent::ToolCallBlocked { .. } => "tool_call_blocked",
         ServerEvent::PtyChunk { .. } => "pty_chunk",
+        ServerEvent::GuardStepState { .. } => "guard_step_state",
         ServerEvent::TextDelta { .. } => "text_delta",
         ServerEvent::ScheduledLaunch { .. } => "scheduled_launch",
         ServerEvent::RoomMembers { .. } => "room_members",

@@ -96,6 +96,8 @@ export type SoftLimitBlock = Omit<EventOf<'soft_limit_reached'>, 'session_id'>;
  * matched the account's tool-call policy; the turn ended with an explanation. */
 export type ToolBlock = Omit<EventOf<'tool_call_blocked'>, 'session_id'>;
 export type MachineResourcesEvent = EventOf<'machine_resources'>;
+/** The session's pod reported its workflow-guard step; the pod stays authoritative. */
+export type GuardStepEvent = EventOf<'guard_step_state'>;
 /** A lifecycle row the server just recorded, for live prepend on the events
  * surfaces. Same row shape as the REST list. */
 export type LifecycleEvent = EventOf<'event'>['event'];
