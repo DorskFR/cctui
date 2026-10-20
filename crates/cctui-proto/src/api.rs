@@ -30,6 +30,7 @@ pub mod prompts;
 pub mod provider_status;
 pub mod routes;
 pub mod self_update;
+pub mod service_tokens;
 pub mod session_bindings;
 pub mod settings;
 pub mod settings_catalog;
@@ -895,7 +896,9 @@ pub struct UsageBucket {
     pub cache_read: u64,
     pub cache_creation: u64,
     /// Dollars, priced from each session's account catalog like the session
-    /// list's cost; tokens of an unpriced model add nothing.
+    /// list's cost; tokens of an unpriced model add nothing. Absent from a
+    /// server that predates pricing.
+    #[serde(default)]
     pub cost_usd: f64,
 }
 
@@ -1146,6 +1149,23 @@ pub struct ForkResponse {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ThreadSession {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub working_dir: String,
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The follow-up thread through a session, oldest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionThreadResponse {
+    pub sessions: Vec<ThreadSession>,
+}
+
 /// User/assistant transcript as markdown, oldest turns elided past the caps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
@@ -1240,7 +1260,18 @@ pub struct SkillIndexEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::DaemonAuthResponse;
+    use super::{DaemonAuthResponse, UsageBucket};
+
+    /// A server that predates pricing sends buckets without `cost_usd`; a newer
+    /// client reads them as unpriced rather than failing the whole response.
+    #[test]
+    fn an_older_servers_usage_bucket_decodes_with_no_cost() {
+        let legacy = r#"{"bucket":"2026-01-01T00:00:00Z","input":1,"output":2,
+                         "cache_read":3,"cache_creation":4}"#;
+        let bucket: UsageBucket = serde_json::from_str(legacy).expect("legacy bucket");
+        assert!(bucket.cost_usd.abs() < f64::EPSILON, "{}", bucket.cost_usd);
+        assert_eq!((bucket.input, bucket.output), (1, 2));
+    }
 
     /// A server that predates capability advertising answers without the field;
     /// a newer daemon must read that as "no new event kinds".

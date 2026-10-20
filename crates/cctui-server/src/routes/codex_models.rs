@@ -45,7 +45,7 @@ pub fn openai_models_url() -> String {
 
 /// Last resort: used only when npm is unreachable and nothing was ever
 /// resolved. Goes stale at the next codex release.
-pub const BUNDLED_CODEX_CLIENT_VERSION: &str = "0.162.1";
+pub const BUNDLED_CODEX_CLIENT_VERSION: &str = "0.163.0";
 
 pub const LATEST_VERSION_TTL: chrono::Duration = chrono::Duration::hours(1);
 

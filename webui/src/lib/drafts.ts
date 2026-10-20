@@ -253,6 +253,10 @@ export function nextSessionName(last: string): string {
 	return `${m[1]}-${next.padStart(m[2].length, '0')}`;
 }
 export const VIEW_OPTS = 'cctui_view_opts';
+// Last session shown in the docked conversation panel, so coming back to the
+// Sessions screen reopens it instead of an empty column. Device-local; an
+// explicit close clears it.
+export const LAST_DOCKED_SESSION = 'cctui_last_docked_session';
 export const LIST_DENSITY = 'cctui_list_density';
 // Main session list layout: 'list' (rows, default), 'card' (responsive grid of
 // detailed cards) or 'tiles' (live conversation panes filling the window).

@@ -52,6 +52,7 @@ pub mod rooms;
 pub mod scheduled_messages;
 pub mod self_update;
 pub mod server_settings;
+pub mod service_tokens;
 pub mod session_limits;
 pub mod session_plugins;
 pub mod sessions;

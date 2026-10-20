@@ -21,7 +21,8 @@ emoji?: string, env_json?: Record<string, string>,
  */
 env_remove?: string[], 
 /**
- * Owner-only: whether grantees may enrol this account in their pools.
+ * Owner-only: whether any election may bind this account (see
+ * `OAuthAccount::pool_eligible`); false leaves it to launches that name it.
  */
 pool_eligible?: boolean, 
 /**

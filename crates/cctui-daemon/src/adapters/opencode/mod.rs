@@ -24,6 +24,9 @@ pub const ADAPTER_ID: &str = "opencode";
 /// Dispatch-payload env key naming the opencode agent profile to run under.
 pub const AGENT_ENV: &str = "CCTUI_OPENCODE_AGENT";
 
+/// A restore's launch-env pull that outlasts this falls back like a failed one.
+const RESTORE_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Pull + decide the opencode launch env, keeping the `CctuiAgent` capability
 /// the same pull serves: fail-closed on a missing/partial gateway env for an
 /// account-bound session (see [`crate::adapters::gateway_env`]).
@@ -104,7 +107,7 @@ async fn pump(
         tokio::spawn(pump.run(watches))
     });
     let mut pump = Pump { cfg, events, shutdown, server, machine_key, live, store };
-    pump.restore_sessions().await;
+    pump.restore_sessions();
     let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut connect_closed = false;
 
@@ -146,6 +149,7 @@ impl crate::adapter_runtime::Interrupter for OpenCodeInterrupter {
 }
 
 /// Everything the command loop needs besides the channels it selects on.
+#[derive(Clone)]
 struct Pump {
     cfg: OpenCodeConfig,
     events: mpsc::Sender<AdapterEvent>,
@@ -394,10 +398,17 @@ impl Pump {
     }
 
     /// Bring back every session a previous daemon process recorded: one
-    /// `opencode serve` per launch key, re-attaching its sessions.
-    async fn restore_sessions(&self) {
+    /// `opencode serve` per launch key, re-attaching its sessions. Off the
+    /// command loop: each restore pulls its launch env over HTTP.
+    fn restore_sessions(&self) {
         for (key, sessions) in persist::by_key(self.store.snapshot()) {
-            self.restore_key(key, sessions).await;
+            let pump = self.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    () = pump.shutdown.cancelled() => {}
+                    () = pump.restore_key(key, sessions) => {}
+                }
+            });
         }
     }
 
@@ -473,8 +484,12 @@ async fn resolve_restore(
         .find(|(_, r)| r.parent_local_id.is_none())
         .or_else(|| sessions.first())
         .map_or(key, |(id, _)| id.as_str());
-    let launch =
-        resolve_launch(server, machine_key, lookup, &std::collections::BTreeMap::new()).await?;
+    let hint = std::collections::BTreeMap::new();
+    let pull = resolve_launch(server, machine_key, lookup, &hint);
+    let launch = tokio::time::timeout(RESTORE_LAUNCH_TIMEOUT, pull).await.unwrap_or_else(|_| {
+        tracing::warn!(%key, session_id = lookup, "opencode: launch env pull timed out");
+        Ok(crate::adapters::gateway_env::LaunchEnv::default())
+    })?;
     if sessions.iter().any(|(_, r)| r.account_bound)
         && !launch.env.contains_key(crate::adapters::gateway_env::FIREWORKS_GATEWAY_KEYS[1])
     {
@@ -948,7 +963,7 @@ mod tests {
             store,
         };
 
-        pump.restore_sessions().await;
+        pump.restore_sessions();
 
         let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(evt) = rx.recv().await {
@@ -963,6 +978,106 @@ mod tests {
         assert_eq!(ended.0, "ses_old");
         assert!(matches!(ended.1, cctui_proto::adapter::EndReason::Crashed { .. }));
         assert!(persist::load_from(&path).is_empty());
+    }
+
+    /// Accepts every connection and never answers.
+    async fn silent_server() -> ServerClient {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _held = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        ServerClient::new(url)
+    }
+
+    fn restorable(dir: &std::path::Path) -> std::sync::Arc<SessionStore> {
+        let store = std::sync::Arc::new(SessionStore::at(dir.join("opencode-sessions.json")));
+        store.upsert(
+            "ses_old",
+            persist::Record {
+                key: "k1".to_owned(),
+                cwd: dir.to_string_lossy().into_owned(),
+                agent: None,
+                model: None,
+                permission_mode: None,
+                parent_local_id: None,
+                account_bound: false,
+                started_at_ms: 1,
+            },
+        );
+        store
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_launch_env_pull_that_never_answers_falls_back_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let groups = persist::by_key(restorable(dir.path()).snapshot());
+        let server = silent_server().await;
+        let launch = tokio::time::timeout(
+            RESTORE_LAUNCH_TIMEOUT * 4,
+            resolve_restore(Some(&server), Some(&"mk".to_owned()), "k1", &groups["k1"]),
+        )
+        .await
+        .expect("the pull is bounded")
+        .expect("a timed-out pull falls back");
+        assert!(launch.env.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_hung_restore_does_not_hold_the_command_loop() {
+        use crate::adapter_runtime::AdapterCtx;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (events, mut rx) = mpsc::channel(16);
+        let (commands_tx, commands) = mpsc::channel(8);
+        let (_connect_tx, connected) = tokio::sync::broadcast::channel(1);
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let ctx = AdapterCtx {
+            events,
+            commands,
+            pty_watch: None,
+            interrupts: None,
+            shutdown: shutdown.clone(),
+            config: serde_json::Value::Null,
+            server: Some(silent_server().await),
+            machine_key: Some("mk".to_owned()),
+            connected,
+        };
+        let cfg = OpenCodeConfig {
+            bin: "/definitely/not/a/binary".to_owned(),
+            state_root: dir.path().join("state"),
+            ..OpenCodeConfig::default()
+        };
+        let pump =
+            tokio::spawn(super::pump(cfg, ctx, LiveRegistry::default(), restorable(dir.path())));
+
+        let request_id = Uuid::new_v4();
+        commands_tx
+            .send(cctui_proto::adapter::AdapterCommand::Diagnose {
+                local_id: "nobody".to_owned(),
+                request_id,
+            })
+            .await
+            .unwrap();
+        let answered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(evt) = rx.recv().await {
+                if matches!(evt, AdapterEvent::Diagnose { request_id: id, .. } if id == request_id)
+                {
+                    return;
+                }
+            }
+            panic!("events closed without the diagnose");
+        })
+        .await;
+        assert!(answered.is_ok(), "a command waited behind the restore");
+
+        shutdown.cancel();
+        pump.await.expect("pump panicked");
     }
 
     #[test]

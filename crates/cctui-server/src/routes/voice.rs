@@ -16,6 +16,10 @@ use crate::speech::SpeechConfig;
 use crate::state::AppState;
 
 pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
+/// Body ceiling for `/voice/transcribe`: the audio cap plus multipart framing
+/// headroom, so an over-cap recording reaches the handler's 413 instead of
+/// axum's 2 MB default tripping mid-stream as a malformed part.
+pub const TRANSCRIBE_BODY_LIMIT: usize = MAX_AUDIO_BYTES + 64 * 1024;
 
 pub fn audio_mime(format: &str) -> String {
     match format {
@@ -44,11 +48,15 @@ pub async fn config(
     Ok(Json(config_info(read_speech(&state.pool).await?.0)))
 }
 
-pub async fn transcribe(
-    State(state): State<AppState>,
-    Extension(_ctx): Extension<AuthContext>,
-    mut multipart: Multipart,
-) -> Result<Json<VoiceTranscript>, AppError> {
+struct AudioForm {
+    audio: Bytes,
+    mime: String,
+    language: Option<String>,
+}
+
+/// The `file` and `language` parts of a transcribe request, the audio capped
+/// at [`MAX_AUDIO_BYTES`].
+async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError> {
     let bad = |msg: &str| AppError::new(StatusCode::BAD_REQUEST, msg);
     let (mut audio, mut mime, mut language) = (None, None, None);
     while let Some(mut field) =
@@ -82,9 +90,20 @@ pub async fn transcribe(
         .ok_or_else(|| bad("a non-empty `file` part is required"))?;
     let mime = mime.unwrap_or_else(|| "audio/webm".to_owned());
     let language = language.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
+    Ok(AudioForm { audio, mime, language })
+}
+
+pub async fn transcribe(
+    State(state): State<AppState>,
+    Extension(_ctx): Extension<AuthContext>,
+    multipart: Multipart,
+) -> Result<Json<VoiceTranscript>, AppError> {
+    let form = read_audio_form(multipart).await?;
     let client = speech_client(&state).await?;
-    let text =
-        client.transcribe(audio, &mime, language.as_deref()).await.map_err(|e| speech_error(&e))?;
+    let text = client
+        .transcribe(form.audio, &form.mime, form.language.as_deref())
+        .await
+        .map_err(|e| speech_error(&e))?;
     Ok(Json(VoiceTranscript { text }))
 }
 
@@ -111,6 +130,66 @@ pub async fn speak(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BOUNDARY: &str = "----cctui-voice-test";
+
+    fn audio_request(size: usize) -> axum::http::Request<Body> {
+        let mut body = format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"a.webm\"\r\nContent-Type: audio/webm\r\n\r\n"
+        )
+        .into_bytes();
+        body.resize(body.len() + size, b'x');
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/t")
+            .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
+            .body(Body::from(body))
+            .expect("request")
+    }
+
+    /// `(status, body)` of the audio-reading half of `transcribe` behind
+    /// `limit`, as the real route layers it.
+    async fn read_behind(limit: Option<usize>, size: usize) -> (StatusCode, String) {
+        use tower::ServiceExt;
+
+        let route = axum::routing::post(|mp: Multipart| async move {
+            match read_audio_form(mp).await {
+                Ok(form) => (StatusCode::OK, form.audio.len().to_string()).into_response(),
+                Err(e) => e.into_response(),
+            }
+        });
+        let route = match limit {
+            Some(max) => route.layer(axum::extract::DefaultBodyLimit::max(max)),
+            None => route,
+        };
+        let app = axum::Router::new().route("/t", route);
+        let res = app.oneshot(audio_request(size)).await.expect("infallible");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1024).await.expect("response body");
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// axum's 2 MB default used to trip mid-stream on any longer recording,
+    /// reported as a malformed part; behind the route's limit the whole
+    /// 10 MB cap is reachable and an over-cap recording gets the 413.
+    #[tokio::test]
+    async fn transcribe_accepts_recordings_up_to_the_audio_cap() {
+        let three_mb = 3 * 1024 * 1024;
+        let (status, _) = read_behind(None, three_mb).await;
+        assert_ne!(status, StatusCode::OK, "the default limit is the regression");
+
+        let (status, body) = read_behind(Some(TRANSCRIBE_BODY_LIMIT), three_mb).await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "3145728"));
+
+        let (status, body) = read_behind(Some(TRANSCRIBE_BODY_LIMIT), MAX_AUDIO_BYTES).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, body) = read_behind(Some(TRANSCRIBE_BODY_LIMIT), MAX_AUDIO_BYTES + 1).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+        assert!(body.contains("audio is larger than"), "{body}");
+    }
 
     #[test]
     fn config_hides_the_url_and_needs_one_to_be_enabled() {

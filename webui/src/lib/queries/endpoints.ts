@@ -11,6 +11,9 @@ import type { PluginInstanceSettingsRequest } from "@bindings/PluginInstanceSett
 import type { PluginProxySecret } from "@bindings/PluginProxySecret";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
+import type { MintServiceTokenRequest } from "@bindings/MintServiceTokenRequest";
+import type { MintServiceTokenResponse } from "@bindings/MintServiceTokenResponse";
+import type { ServiceTokenRow } from "@bindings/ServiceTokenRow";
 import type { PoolUsageView } from "@bindings/PoolUsageView";
 import type { SessionStats } from "@bindings/SessionStats";
 import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
@@ -37,6 +40,7 @@ import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
 import type { BriefResponse } from "@bindings/BriefResponse";
+import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
@@ -501,6 +505,8 @@ export const endpoints = {
    *  Returns a `command_id` to await on the ws like spawn. */
   fork: (sessionId: string, body: ForkRequest) =>
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
+  sessionThread: (sessionId: string) =>
+    api.get<SessionThreadResponse>(path("get_sessions_by_id_thread", { id: sessionId })),
   brief: (sessionId: string, maxBytes?: number) =>
     api.get<BriefResponse>(
       `/sessions/${sessionId}/brief${maxBytes ? `?max_bytes=${maxBytes}` : ""}`,
@@ -567,6 +573,17 @@ export const endpoints = {
     api.get<ToolPolicy>(`/accounts/${accountId}/tool-policy`),
   putToolPolicy: (accountId: string, body: ToolPolicy) =>
     api.put<ToolPolicy>(`/accounts/${accountId}/tool-policy`, body),
+  serviceTokens: (accountId: string) =>
+    api.get<ServiceTokenRow[]>(path("get_accounts_by_id_service_tokens", { id: accountId })),
+  mintServiceToken: (accountId: string, body: MintServiceTokenRequest) =>
+    api.post<MintServiceTokenResponse>(
+      path("post_accounts_by_id_service_tokens", { id: accountId }),
+      body,
+    ),
+  revokeServiceToken: (accountId: string, tokenId: string) =>
+    api.del<void>(
+      path("delete_accounts_by_id_service_tokens_by_token", { id: accountId, token_id: tokenId }),
+    ),
   /** The caller's account pools with their membership. */
   accountPools: () => api.get<AccountPoolView[]>("/account-pools"),
   /** Every pool's usage, aggregated per provider family (level, pace, wall). */

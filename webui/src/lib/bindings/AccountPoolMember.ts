@@ -12,7 +12,8 @@ export type AccountPoolMember = { account_id: string, name: string, position: nu
  */
 owned: boolean, 
 /**
- * The owner's veto. A shared member with this false is kept in the row
- * (so the UI can say why it stopped counting) but never elected.
+ * The owner's veto. A member with this false, shared or owned, is kept
+ * in the row (so the UI can say why it stopped counting) but never
+ * elected.
  */
 pool_eligible: boolean, };

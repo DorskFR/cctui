@@ -122,9 +122,9 @@ pub async fn resolve_account(
     }))
 }
 
-/// A live session token's account, unless the session's owner is revoked or
-/// disabled, or the token was minted for a user who may no longer use the
-/// account — a share revoked since the mint.
+/// A live session token's account, unless the session's owner or the user the
+/// token was minted for is revoked or disabled, or that user may no longer use
+/// the account — a share revoked since the mint.
 async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
@@ -140,6 +140,9 @@ async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRo
                  JOIN users u ON u.id = COALESCE(s.user_id, m.user_id) \
                  WHERE s.id = t.session_id \
                    AND (u.revoked_at IS NOT NULL OR u.disabled_at IS NOT NULL)) \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM users tu WHERE tu.id = t.user_id \
+                   AND (tu.revoked_at IS NOT NULL OR tu.disabled_at IS NOT NULL)) \
                AND (t.user_id IS NULL OR EXISTS ( \
                  SELECT 1 FROM accounts acc \
                   WHERE acc.id = a.account_id \
@@ -449,6 +452,69 @@ mod owner_revocation_tests {
             .await
             .ok();
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&session).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// A service token has no session row: the disabled-user check must follow
+    /// the user the token was minted for.
+    #[tokio::test]
+    async fn disabled_user_service_token_is_not_resolved() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("disabled_user_service_token_is_not_resolved")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let uid = Uuid::new_v4();
+        let acct = Uuid::new_v4();
+        let prov = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("svc-gw-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'svc-gw')")
+            .bind(acct)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        let (token, row) =
+            crate::store::tokens::mint_service(&pool, uid, prov, "svc").await.unwrap();
+        let hash = crate::auth::sha256_hex(&token);
+
+        assert!(account_row(&pool, &hash).await.unwrap().is_some(), "live service token resolves");
+
+        sqlx::query("UPDATE users SET disabled_at = now() WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "disabled user is refused");
+
+        sqlx::query("UPDATE users SET disabled_at = NULL WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(account_row(&pool, &hash).await.unwrap().is_some(), "re-enabled user resolves");
+
+        assert!(crate::store::tokens::revoke_service(&pool, acct, row.id).await.unwrap());
+        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "revoked token is refused");
+
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 }

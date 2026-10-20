@@ -20,9 +20,11 @@ user_id: string,
  */
 user_name: string | null, created_at: string, updated_at: string, providers: Array<AccountProvider>, 
 /**
- * The owner's veto on pool membership: with this false, only the owner
- * may enrol this account in an account pool. Grantees can still launch on
- * it by name — they just cannot make it a silent overflow target.
+ * The owner's veto on automatic election: with this false, no election
+ * ever binds this account (`auto_account`, a pool, gateway failover, a
+ * `CctuiAgent` child crossing families), and only the owner may enrol it
+ * in an account pool, where it is kept but never elected. It is used only
+ * when a launch names it.
  */
 pool_eligible: boolean, 
 /**

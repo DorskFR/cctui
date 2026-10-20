@@ -82,6 +82,7 @@ const NOTIFICATION_DISPOSITIONS: &[(&str, Disposition)] = &[
     ("app/list/updated", Disposition::Stream("high-volume inventory churn")),
     ("skills/changed", Disposition::Stream("high-volume inventory churn")),
     ("thread/queue/changed", Disposition::Stream("high-volume inventory churn")),
+    ("thread/readState/changed", Disposition::Stream("unread markers cctui does not render")),
     ("thread/prediction/updated", Disposition::Stream("turn prediction cctui does not render")),
     ("mcpServer/event/stream/notification", Disposition::Stream("opaque MCP passthrough")),
     ("warning", Disposition::Notice("warning")),

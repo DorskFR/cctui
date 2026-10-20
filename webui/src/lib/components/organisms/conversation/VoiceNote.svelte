@@ -28,8 +28,10 @@
 
 	function toggle() {
 		if (!audio) return;
-		if (audio.paused) void audio.play().catch(() => (playing = false));
-		else audio.pause();
+		if (audio.paused) {
+			audio.playbackRate = settings.voice.speed;
+			void audio.play().catch(() => (playing = false));
+		} else audio.pause();
 	}
 
 	function seek(e: MouseEvent) {

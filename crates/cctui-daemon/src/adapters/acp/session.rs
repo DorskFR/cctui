@@ -117,6 +117,38 @@ pub struct SpawnParams {
     pub preflight: Option<crate::preflight::Preflight>,
     pub context: Vec<cctui_proto::api::SessionContextItem>,
     pub resume: Option<Resume>,
+    /// Held until the session is live or gone, so a second restore of the
+    /// same id is refused meanwhile.
+    pub claim: Option<RestoreClaim>,
+}
+
+pub type Restoring = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+/// One in-flight restore of a session id; released on drop.
+pub struct RestoreClaim {
+    restoring: Restoring,
+    local_id: String,
+}
+
+impl RestoreClaim {
+    /// `None` while another restore of `local_id` holds it.
+    #[must_use]
+    pub fn take(restoring: &Restoring, local_id: &str) -> Option<Self> {
+        let fresh = restoring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(local_id.to_owned());
+        fresh.then(|| Self { restoring: Arc::clone(restoring), local_id: local_id.to_owned() })
+    }
+}
+
+impl Drop for RestoreClaim {
+    fn drop(&mut self) {
+        self.restoring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.local_id);
+    }
 }
 
 /// An agent session a previous daemon process started, to re-attach instead
@@ -324,6 +356,7 @@ impl AcpSession {
             tracing::warn!(%err, "acp: launch model not applied");
         }
         self.register(session_id.clone()).await;
+        self.params.claim = None;
         if let Some(preflight) = self.params.preflight.take() {
             preflight.run_bound(&session_id).await;
         }
@@ -602,7 +635,9 @@ impl AcpSession {
             SessionCommand::Interrupt { command_id } => {
                 self.close_form(super::elicitation::Action::Cancel).await;
                 let outcome = if self.turn.is_some() {
-                    self.notify("session/cancel", protocol::cancel_params(&local_id))
+                    let sent = self.notify("session/cancel", protocol::cancel_params(&local_id));
+                    self.cancel_permissions().await;
+                    sent
                 } else {
                     Ok(())
                 };
@@ -753,6 +788,19 @@ impl AcpSession {
             .events
             .send(AdapterEvent::PermissionResolved { local_id, request_id: request_id.to_owned() })
             .await;
+    }
+
+    /// A cancelled turn ends only once every open permission request is
+    /// answered; a dropped reply answers `cancelled`.
+    async fn cancel_permissions(&mut self) {
+        let local_id = self.local_id();
+        for (request_id, pending) in std::mem::take(&mut self.pending) {
+            drop(pending.reply);
+            let _ = self
+                .events
+                .send(AdapterEvent::PermissionResolved { local_id: local_id.clone(), request_id })
+                .await;
+        }
     }
 
     async fn on_elicitation(
@@ -1064,8 +1112,26 @@ impl AcpSession {
         self.live.lock().await.remove(&local_id);
     }
 
+    /// Commands outrank the inbox in `serve`, so updates the agent already
+    /// sent can still be queued when the session ends.
+    async fn flush_streamed(&mut self, local_id: &str) {
+        while let Ok(incoming) = self.inbox_rx.try_recv() {
+            if let Incoming::Notification { method, params } = incoming
+                && method == "session/update"
+            {
+                self.on_update(local_id, &params).await;
+            }
+        }
+        for out in self.coalescer.flush() {
+            self.emit_out(local_id, out).await;
+        }
+    }
+
     async fn kill(&mut self, reason: EndReason) {
         let local_id = self.local_id();
+        if !local_id.is_empty() {
+            self.flush_streamed(&local_id).await;
+        }
         self.turn = None;
         self.teardown().await;
         if !local_id.is_empty() {

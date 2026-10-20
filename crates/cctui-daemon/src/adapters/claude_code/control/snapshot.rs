@@ -260,6 +260,7 @@ impl Driver {
             return;
         }
         self.clear_permission(short).await;
+        self.drop_stale_ask(local_id).await;
         if state_on_disk {
             self.emit(AdapterEvent::Status {
                 local_id: local_id.to_owned(),
@@ -287,6 +288,7 @@ impl Driver {
                 m.remove(short);
             }
             crate::configsweep::remove_session_files(short);
+            self.deferred_peer.remove(local_id);
         }
         // Drop the cached status so a later revive (worker reports
         // alive again) is detected as a change and re-emitted.
@@ -533,7 +535,12 @@ impl Driver {
             // Skip if we already emitted this short's dead transition while
             // it was still listed (`dead_shorts`) — the hibernated
             // Status already went out; re-emitting it here is redundant.
-            if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
+            let hibernated = StateJson::read(&self.cfg.jobs_root, short).is_some();
+            self.drop_stale_ask(&loc.local_id).await;
+            if !hibernated {
+                self.deferred_peer.remove(&loc.local_id);
+            }
+            if !was_dead && hibernated {
                 self.emit(AdapterEvent::Status {
                     local_id: loc.local_id.clone(),
                     tempo: Some("hibernated".to_owned()),

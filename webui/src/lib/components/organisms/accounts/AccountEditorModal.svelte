@@ -36,8 +36,8 @@
 
 	// Step one only: an identity plus the credential needed to reach the
 	// provider. Everything tunable (models, aliases, limits, settings, env) is
-	// edited afterwards on the account page and in the provider drawer, so this
-	// modal stays a single short form.
+	// edited afterwards on the account page, so this modal stays a single short
+	// form.
 	type EditorMode = 'create' | 'add-provider' | 'reauth';
 	let editor = $state<{ mode: EditorMode; accountId?: string; providerId?: string } | null>(null);
 

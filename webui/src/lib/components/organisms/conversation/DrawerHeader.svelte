@@ -417,7 +417,7 @@
 		</div>
 	{/if}
 	{#if !compact}
-		<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {onsetmodel} {onfork} />
+		<HeaderMeta {session} {archived} {isCodexSession} {showStatusBadge} {box} {onsetmodel} {onfork} />
 	{/if}
 </div>
 

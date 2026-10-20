@@ -969,7 +969,95 @@ mod scenarios {
         scenario!(an_agent_that_cannot_resume_ends_the_session_as_not_resumable),
         scenario!(the_agent_calls_cctui_agent_through_the_declared_relay),
         scenario!(a_reattached_session_redeclares_the_relay),
+        scenario!(interrupt_answers_an_open_permission_request_cancelled),
+        scenario!(a_kill_mid_turn_flushes_the_buffered_assistant_text),
+        scenario!(concurrent_resumes_of_one_session_start_one_agent),
+        scenario!(a_hung_server_does_not_hold_commands_behind_restores),
     ];
+
+    pub async fn concurrent_resumes_of_one_session_start_one_agent() -> anyhow::Result<()> {
+        super::restores::concurrent_resumes().await
+    }
+
+    pub async fn a_hung_server_does_not_hold_commands_behind_restores() -> anyhow::Result<()> {
+        super::restores::hung_server().await
+    }
+
+    pub async fn interrupt_answers_an_open_permission_request_cancelled() -> anyhow::Result<()> {
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("permission");
+        h.spawn(&script, Some(PermissionMode::Ask), "do it").await;
+        let events = h
+            .until(|e| matches!(e, AdapterEvent::PermissionRequest { .. }), Duration::from_secs(30))
+            .await?;
+        let local_id =
+            started(&events).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        h.send(AdapterCommand::Interrupt {
+            local_id: local_id.clone(),
+            command_id: Some(INTERRUPT),
+        })
+        .await;
+        let rest = h.until(is_idle, Duration::from_secs(30)).await?;
+        anyhow::ensure!(
+            command_result(&rest, INTERRUPT) == Some((true, None)),
+            "interrupt acked: {rest:#?}"
+        );
+        anyhow::ensure!(
+            rest.iter().any(|e| matches!(e, AdapterEvent::PermissionResolved { request_id, .. } if request_id == "call-1")),
+            "the permission card drops: {rest:#?}"
+        );
+        let answer = answered(&rest).ok_or_else(|| anyhow::anyhow!("no echo: {rest:#?}"))?;
+        anyhow::ensure!(
+            answer == json!({ "outcome": { "outcome": "cancelled" } }),
+            "the open request is answered cancelled: {answer}"
+        );
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok(())
+    }
+
+    pub async fn a_kill_mid_turn_flushes_the_buffered_assistant_text() -> anyhow::Result<()> {
+        let mut h = start(&FAKE_ROW, &exe());
+        let mut script = full_script();
+        script["turn"] = json!("stall");
+        h.spawn(&script, None, "hang").await;
+        let events = h
+            .until(
+                |e| matches!(e, AdapterEvent::Status { tempo: Some(t), .. } if t == "active"),
+                Duration::from_secs(30),
+            )
+            .await?;
+        let local_id =
+            started(&events).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let report = h.diagnose(&local_id).await?;
+            let streamed = report.acp.as_ref().map_or(0, |a| {
+                a.rpc_tail
+                    .iter()
+                    .filter(|f| f.label == "session/update" && f.direction == "in")
+                    .count()
+            });
+            if streamed >= 2 {
+                break;
+            }
+            anyhow::ensure!(tokio::time::Instant::now() < deadline, "the agent never streamed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        h.send(AdapterCommand::Kill { local_id, signal: None }).await;
+        let rest = h
+            .until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        anyhow::ensure!(
+            messages(&rest, "assistant").iter().any(|m| m["content"] == "Hello world: hang"),
+            "the streamed text reaches the transcript before the end: {rest:#?}"
+        );
+        h.finish().await;
+        Ok(())
+    }
 
     fn exe() -> String {
         std::env::current_exe().unwrap().display().to_string()
@@ -2041,6 +2129,106 @@ mod relay {
         }
         h.finish().await;
         stop.cancel();
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Restores racing each other and a server that never answers
+// ---------------------------------------------------------------------------
+
+mod restores {
+    use super::{
+        AdapterCommand, AdapterEvent, BTreeMap, DIAGNOSE, Duration, ServerClient, SessionStore,
+        argv_row, full_script, json, start_in,
+    };
+    use cctui_daemon::adapters::acp::persist::Record;
+    use std::sync::Arc;
+
+    const RECORDED: &str = "fake-session-1";
+
+    fn recorded_store(adapter: &str, tmp: &tempfile::TempDir) -> Arc<SessionStore> {
+        let store = Arc::new(SessionStore::at(tmp.path().join("acp-sessions.json")));
+        store.upsert(
+            RECORDED,
+            Record {
+                adapter: adapter.to_owned(),
+                key: String::new(),
+                cwd: tmp.path().display().to_string(),
+                model: None,
+                effort: None,
+                permission_mode: None,
+                parent_local_id: None,
+                started_at_ms: 1,
+                spawn_relay: false,
+            },
+        );
+        store
+    }
+
+    fn resume() -> AdapterCommand {
+        AdapterCommand::Resume {
+            local_id: RECORDED.to_owned(),
+            working_dir: None,
+            env: BTreeMap::new(),
+        }
+    }
+
+    pub async fn concurrent_resumes() -> anyhow::Result<()> {
+        let mut script = full_script();
+        script["capabilities"] = json!({ "resume": true });
+        let row = argv_row(&script);
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let tmp = tempfile::tempdir()?;
+        let store = recorded_store(row.id, &tmp);
+        let mut h = start_in(row, &exe, tmp, store, None);
+        h.send(resume()).await;
+        h.send(resume()).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionStarted { .. }), Duration::from_secs(30))
+            .await?;
+        while let Ok(Some(evt)) =
+            tokio::time::timeout(Duration::from_secs(3), h.events.recv()).await
+        {
+            anyhow::ensure!(
+                !matches!(evt, AdapterEvent::SessionStarted { .. }),
+                "one restore at a time, not one per resume: {evt:#?}"
+            );
+        }
+        let report = h.diagnose(RECORDED).await?;
+        anyhow::ensure!(report.acp.as_ref().is_some_and(|a| a.live), "{report:#?}");
+        h.send(AdapterCommand::Kill { local_id: RECORDED.to_owned(), signal: None }).await;
+        h.until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))
+            .await?;
+        h.finish().await;
+        Ok(())
+    }
+
+    /// Accepts every connection and never answers.
+    async fn silent_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _held = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        url
+    }
+
+    pub async fn hung_server() -> anyhow::Result<()> {
+        let row = argv_row(&full_script());
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let tmp = tempfile::tempdir()?;
+        let store = recorded_store(row.id, &tmp);
+        let server = ServerClient::new(silent_server().await);
+        let mut h = start_in(row, &exe, tmp, store, Some(server));
+        h.send(AdapterCommand::Diagnose { local_id: "nobody".to_owned(), request_id: DIAGNOSE })
+            .await;
+        h.until(|e| matches!(e, AdapterEvent::Diagnose { .. }), Duration::from_secs(5)).await?;
+        h.finish().await;
         Ok(())
     }
 }

@@ -134,6 +134,24 @@ tui = "waived"
 reason = "the tool-policy editor is a webui form; no TUI ticket in this epic"
 
 [[route]]
+id = "get_accounts_by_id_service_tokens"
+# GET /accounts/{id}/service-tokens — List or mint the account's service tokens.
+tui = "waived"
+reason = "service tokens are managed from the webui account page; no TUI ticket"
+
+[[route]]
+id = "post_accounts_by_id_service_tokens"
+# POST /accounts/{id}/service-tokens — List or mint the account's service tokens.
+tui = "waived"
+reason = "service tokens are managed from the webui account page; no TUI ticket"
+
+[[route]]
+id = "delete_accounts_by_id_service_tokens_by_token"
+# DELETE /accounts/{id}/service-tokens/{token_id} — Revoke a service token.
+tui = "waived"
+reason = "service tokens are managed from the webui account page; no TUI ticket"
+
+[[route]]
 id = "get_redirects"
 # GET /redirects — The caller's live account/model redirect rules.
 tui = "waived"
@@ -1241,6 +1259,12 @@ id = "get_sessions_by_id_brief"
 # GET /sessions/{id}/brief — Render a session's user/assistant transcript as a capped markdown brief.
 tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
+
+[[route]]
+id = "get_sessions_by_id_thread"
+# GET /sessions/{id}/thread — List the follow-up thread a session belongs to, oldest first.
+tui = "waived"
+reason = "follow-up thread navigation lives in the webui drawer header"
 
 [[route]]
 id = "post_sessions_by_id_fork"

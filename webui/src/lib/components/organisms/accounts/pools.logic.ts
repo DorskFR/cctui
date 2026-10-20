@@ -82,3 +82,21 @@ export function exhaustedWindow(
 	}
 	return null;
 }
+
+/**
+ * Owner sent with a new pool. A non-admin sends none (`owners` is empty) and
+ * the server takes the caller. An admin's pool belongs to the account dropped
+ * on it, else to the admin themself when they are a listed user, and only
+ * then to the first listed user: defaulting to the list head handed pools to
+ * whoever sorted first, typically the technical `admin` user.
+ */
+export function newPoolOwner(
+	owners: { id: string }[],
+	accountOwner: string | null | undefined,
+	selfId: string | null | undefined
+): string | null {
+	if (owners.length === 0) return null;
+	if (accountOwner) return accountOwner;
+	if (selfId && owners.some((u) => u.id === selfId)) return selfId;
+	return owners[0]?.id ?? null;
+}

@@ -3,9 +3,15 @@
 //! labels and auto-archive) and claimed when the worker registers, after the
 //! daemon's own `relation: "root"` metadata has landed, so the claim wins.
 
+use axum::Json;
+use axum::extract::{Path, State};
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use cctui_proto::api::SpawnRequest;
+use cctui_proto::api::{SessionThreadResponse, SpawnRequest, ThreadSession};
+
+use crate::error::AppError;
+use crate::state::AppState;
 
 pub const RELATION: &str = "followup";
 
@@ -37,6 +43,52 @@ pub async fn next_of(pool: &PgPool, id: &str) -> Result<Option<String>, sqlx::Er
             .fetch_optional(pool)
             .await?;
     Ok(next.flatten())
+}
+
+/// Follow-up ancestors up, then the latest follow-up down as in
+/// `next_session_sql!`. No status filter: archived sessions stay in the thread.
+const THREAD_SQL: &str = "WITH RECURSIVE up AS ( \
+        SELECT id, parent_id, metadata->>'relation' AS relation, 0 AS depth \
+          FROM sessions WHERE id = $1 \
+        UNION ALL \
+        SELECT p.id, p.parent_id, p.metadata->>'relation', up.depth - 1 \
+          FROM up JOIN sessions p ON p.id = up.parent_id \
+         WHERE up.relation = 'followup' AND up.depth > -500 \
+    ), down AS ( \
+        SELECT id, 0 AS depth FROM sessions WHERE id = $1 \
+        UNION ALL \
+        SELECT n.id, down.depth + 1 FROM down CROSS JOIN LATERAL ( \
+            SELECT f.id FROM sessions f \
+             WHERE f.parent_id = down.id AND f.metadata->>'relation' = 'followup' \
+             ORDER BY f.registered_at DESC LIMIT 1) n \
+         WHERE down.depth < 500 \
+    ) \
+    SELECT s.id, s.session_name, s.working_dir, s.registered_at \
+      FROM (SELECT id, depth FROM up UNION SELECT id, depth FROM down) t \
+      JOIN sessions s ON s.id = t.id \
+     ORDER BY t.depth";
+
+/// The follow-up thread through `id`, oldest first; empty when `id` is unknown.
+pub async fn thread_of(pool: &PgPool, id: &str) -> Result<Vec<ThreadSession>, sqlx::Error> {
+    let rows: Vec<(String, Option<String>, String, DateTime<Utc>)> =
+        sqlx::query_as(THREAD_SQL).bind(id).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, working_dir, registered_at)| ThreadSession {
+            id,
+            name,
+            working_dir,
+            registered_at,
+        })
+        .collect())
+}
+
+/// `GET /sessions/{id}/thread`.
+pub async fn session_thread(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionThreadResponse>, AppError> {
+    Ok(Json(SessionThreadResponse { sessions: thread_of(&state.pool, &session_id).await? }))
 }
 
 /// Unclaimed intents older than this are dropped: the spawn never registered.
@@ -120,8 +172,9 @@ pub async fn sweep(pool: &PgPool) {
 
 #[cfg(test)]
 mod tests {
-    use super::parent_of;
+    use super::{next_of, parent_of, thread_of};
     use cctui_proto::api::SpawnRequest;
+    use uuid::Uuid;
 
     fn req(relation: Option<&str>, parent: Option<&str>) -> SpawnRequest {
         let mut r: SpawnRequest =
@@ -151,5 +204,105 @@ mod tests {
             serde_json::from_value(serde_json::json!({"machine_id": "m", "working_dir": "/w"}))
                 .unwrap();
         assert!(r.relation.is_none() && r.parent_session_id.is_none());
+    }
+
+    async fn seed(pool: &sqlx::PgPool, uid: Uuid, mid: Uuid, status: &str) -> String {
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, working_dir, status, user_id, adapter_id) \
+             VALUES ($1, $2, $3, '/w', $4, $5, 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(mid.to_string())
+        .bind(mid)
+        .bind(status)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        sid
+    }
+
+    async fn link(pool: &sqlx::PgPool, id: &str, parent: &str, relation: &str, age: i32) {
+        sqlx::query(
+            "UPDATE sessions SET parent_id = $2, metadata = jsonb_build_object('relation', $3::text), \
+             registered_at = now() - make_interval(mins => $4) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(parent)
+        .bind(relation)
+        .bind(age)
+        .execute(pool)
+        .await
+        .expect("link");
+    }
+
+    #[tokio::test]
+    async fn an_archived_session_keeps_its_previous_and_next() {
+        let Some(url) = crate::routes::gateway::test_db_url("followup_thread_archived") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("thread-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        let root = seed(&pool, uid, mid, "archived").await;
+        let older = seed(&pool, uid, mid, "archived").await;
+        let fork = seed(&pool, uid, mid, "active").await;
+        let middle = seed(&pool, uid, mid, "archived").await;
+        let subagent = seed(&pool, uid, mid, "active").await;
+        let latest = seed(&pool, uid, mid, "active").await;
+        sqlx::query("UPDATE sessions SET registered_at = now() - interval '1 hour' WHERE id = $1")
+            .bind(&root)
+            .execute(&pool)
+            .await
+            .expect("age root");
+        link(&pool, &older, &root, "followup", 50).await;
+        link(&pool, &fork, &root, "fork", 45).await;
+        link(&pool, &middle, &root, "followup", 40).await;
+        link(&pool, &subagent, &middle, "subagent", 35).await;
+        link(&pool, &latest, &middle, "followup", 30).await;
+
+        let ids = |t: Vec<cctui_proto::api::ThreadSession>| {
+            t.into_iter().map(|s| s.id).collect::<Vec<_>>()
+        };
+        let full = vec![root.clone(), middle.clone(), latest.clone()];
+        for id in [&root, &middle, &latest] {
+            assert_eq!(ids(thread_of(&pool, id).await.expect("thread")), full, "from {id}");
+        }
+        assert_eq!(next_of(&pool, &middle).await.expect("next"), Some(latest.clone()));
+        assert_eq!(
+            ids(thread_of(&pool, &older).await.expect("thread")),
+            vec![root.clone(), older.clone()],
+            "an earlier follow-up leads back to its source only"
+        );
+        assert_eq!(ids(thread_of(&pool, &fork).await.expect("thread")), vec![fork.clone()]);
+        assert!(thread_of(&pool, "no-such-session").await.expect("thread").is_empty());
+
+        let all = [root, older, fork, middle, subagent, latest];
+        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)")
+            .bind(&all[..])
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(mid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 }

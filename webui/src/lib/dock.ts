@@ -1,5 +1,5 @@
 // Pure layout math for the panels docked to the edges of the Sessions screen
-// (the spawn form and the stats panel). No Svelte state here so it can be unit
+// (the spawn form, the stats panel and the conversation). No Svelte state here so it can be unit
 // tested; `spawnDock.svelte.ts` feeds it the settings and the media queries.
 import type { SpawnDockSide } from './settings.svelte';
 
@@ -11,6 +11,7 @@ export type DockSide = SpawnDockSide;
 // in px in the settings blob and wins over the default.
 export const SPAWN_DOCK_WIDTH = '30rem';
 export const STATS_DOCK_WIDTH = '24rem';
+export const CONVERSATION_DOCK_WIDTH = '40rem';
 
 // Bounds for a dragged width. The floor keeps the form usable; the ceiling is
 // a sanity clamp on a stored value (the drag itself also stops at a share of
@@ -40,6 +41,8 @@ export function storedDockWidth(raw: string | null): number | undefined {
 }
 
 export interface DockLayout {
+	/** Edge the conversation is pinned to, or `null` for the overlay drawer. */
+	conversation: DockSide | null;
 	/** Edge the spawn form is pinned to, or `null` for the "+ New" button + modal. */
 	spawn: DockSide | null;
 	/** Edge the stats panel is pinned to, or `null` when hidden. */
@@ -52,9 +55,17 @@ export interface DockLayout {
 	right: string | null;
 }
 
+export interface DockRequest {
+	enabled: boolean;
+	side: DockSide;
+	width?: number;
+}
+
 export interface DockInputs {
-	spawn: { enabled: boolean; side: DockSide; width?: number };
-	stats: { enabled: boolean; side: DockSide; width?: number };
+	spawn: DockRequest;
+	stats: DockRequest;
+	/** Conversation pinned beside the list instead of the overlay drawer. */
+	conversation?: DockRequest;
 	/** Viewport wide enough for one docked column beside the list. */
 	wide: boolean;
 	/** Viewport wide enough for a docked column on each edge. */
@@ -67,12 +78,39 @@ export interface DockInputs {
  *  panels drops them rather than squeezing the list: below `wide` nothing
  *  docks, and two panels on opposite edges need `veryWide` (the stats panel
  *  yields first since the spawn form is the one you type into). Tiles drop
- *  both, leaving the settings untouched so list/grid get them back unchanged. */
-export function resolveDocks({ spawn, stats, wide, veryWide, tiles }: DockInputs): DockLayout {
-	const none: DockLayout = { spawn: null, stats: null, stacked: false, left: null, right: null };
+ *  every panel, leaving the settings untouched so list/grid get them back
+ *  unchanged.
+ *
+ *  A docked conversation owns its edge outright: a spawn form or stats panel
+ *  asked for the same edge moves to the opposite one, where the two stack as
+ *  usual. The conversation is the one you came for, so below `veryWide` it is
+ *  the other panels that yield and the "+ New" button comes back. */
+export function resolveDocks({
+	spawn,
+	stats,
+	conversation,
+	wide,
+	veryWide,
+	tiles
+}: DockInputs): DockLayout {
+	const none: DockLayout = {
+		conversation: null,
+		spawn: null,
+		stats: null,
+		stacked: false,
+		left: null,
+		right: null
+	};
 	if (tiles || !wide) return none;
-	const spawnSide = spawn.enabled ? spawn.side : null;
-	let statsSide = stats.enabled ? stats.side : null;
+	const convSide = conversation?.enabled ? conversation.side : null;
+	const awayFromConv = (side: DockSide): DockSide =>
+		side === convSide ? (side === 'left' ? 'right' : 'left') : side;
+	let spawnSide = spawn.enabled ? awayFromConv(spawn.side) : null;
+	let statsSide = stats.enabled ? awayFromConv(stats.side) : null;
+	if (convSide && !veryWide) {
+		spawnSide = null;
+		statsSide = null;
+	}
 	if (spawnSide && statsSide && spawnSide !== statsSide && !veryWide) statsSide = null;
 	const stacked = spawnSide !== null && spawnSide === statsSide;
 	const px = (w: number | undefined, fallback: string) => {
@@ -81,9 +119,17 @@ export function resolveDocks({ spawn, stats, wide, veryWide, tiles }: DockInputs
 	};
 	// A stacked column is sized by the spawn panel (the one you type into).
 	const widthOn = (side: DockSide): string | null => {
+		if (convSide === side) return px(conversation?.width, CONVERSATION_DOCK_WIDTH);
 		if (spawnSide === side) return px(spawn.width, SPAWN_DOCK_WIDTH);
 		if (statsSide === side) return px(stats.width, STATS_DOCK_WIDTH);
 		return null;
 	};
-	return { spawn: spawnSide, stats: statsSide, stacked, left: widthOn('left'), right: widthOn('right') };
+	return {
+		conversation: convSide,
+		spawn: spawnSide,
+		stats: statsSide,
+		stacked,
+		left: widthOn('left'),
+		right: widthOn('right')
+	};
 }

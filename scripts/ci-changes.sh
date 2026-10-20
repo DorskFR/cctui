@@ -59,6 +59,7 @@ while IFS= read -r f; do
       fi
       ;;
     crates/* | migrations/* | rust-toolchain.toml | rustfmt.toml | .cargo/* \
+      | keys/* | packaging/* | plugins/* | fixtures/* | deploy/examples/* \
       | webui/src/lib/bindings/* | webui/src/lib/scrubDetectors.generated.ts \
       | webui/scripts/gen-bindings.sh | webui/scripts/gen-scrub-detectors.mjs)
       rust=true

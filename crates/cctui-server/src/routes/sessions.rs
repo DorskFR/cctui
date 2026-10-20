@@ -2462,6 +2462,17 @@ pub async fn kill_session(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    // Recorded before dispatch so the recovery reaper cannot revive the same
+    // failed turn while the native worker is stopping.
+    if let Err(err) = events::record_now(
+        &state,
+        Event::new(kind::SESSION_KILLED, Actor::User(ctx.user_id)).session(&session_id),
+    )
+    .await
+    {
+        tracing::warn!(%err, session_id = %session_id, "lifecycle event insert failed");
+    }
+
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
@@ -2480,10 +2491,6 @@ pub async fn kill_session(
     }
     state.bus.deregister_session_stream(&session_id);
     tracing::info!(session_id = %session_id, "session killed");
-    events::record(
-        &state,
-        Event::new(kind::SESSION_KILLED, Actor::User(ctx.user_id)).session(&session_id),
-    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2506,6 +2513,18 @@ pub async fn interrupt_session(
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
     let command_id = uuid::Uuid::new_v4();
+    // Recorded before dispatch so the recovery reaper cannot revive the same
+    // failed turn while the native worker is stopping.
+    if let Err(err) = events::record_now(
+        &state,
+        Event::new(kind::SESSION_INTERRUPTED, Actor::User(ctx.user_id))
+            .session(&session_id)
+            .detail(serde_json::json!({ "command_id": command_id })),
+    )
+    .await
+    {
+        tracing::warn!(%err, session_id = %session_id, "lifecycle event insert failed");
+    }
     crate::state::track_command(
         &state.pending_commands,
         command_id,
@@ -2537,12 +2556,6 @@ pub async fn interrupt_session(
         return Err(AppError::new(status, message));
     }
     tracing::info!(session_id = %session_id, %command_id, "session interrupted");
-    events::record(
-        &state,
-        Event::new(kind::SESSION_INTERRUPTED, Actor::User(ctx.user_id))
-            .session(&session_id)
-            .detail(serde_json::json!({ "command_id": command_id })),
-    );
     Ok((
         StatusCode::ACCEPTED,
         Json(cctui_proto::api::SpawnResponse {

@@ -19,17 +19,21 @@
 
 	let rows = $state<Record<string, MachineAdapterInfo[]>>({});
 	let busy = $state<string | null>(null);
+	const requested = new Set<string>();
 
 	async function load(machine: MachineRow) {
+		requested.add(machine.id);
+		let list: MachineAdapterInfo[];
 		try {
-			rows[machine.id] = await endpoints.machineAdapters(machine.id);
+			list = await endpoints.machineAdapters(machine.id);
 		} catch {
-			rows[machine.id] = [];
+			list = [];
 		}
+		if (!(machine.id in rows)) rows[machine.id] = list;
 	}
 
 	$effect(() => {
-		for (const machine of machines.data ?? []) if (!(machine.id in rows)) void load(machine);
+		for (const machine of machines.data ?? []) if (!requested.has(machine.id)) void load(machine);
 	});
 
 	async function run(
