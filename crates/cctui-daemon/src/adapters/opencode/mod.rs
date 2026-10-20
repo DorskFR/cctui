@@ -1,12 +1,20 @@
 //! `OpenCode` adapter: drives `opencode serve` over its HTTP API + SSE bus.
+//!
+//! The server API exists in two generations: v1 (`client`, `events`,
+//! `normalize`) and v2 (`v2`). `backend` detects which one a server speaks and
+//! routes every call there.
 
+pub mod backend;
 pub mod client;
 pub mod config;
 pub mod events;
+#[cfg(test)]
+mod fake_serve;
 pub mod normalize;
 pub mod persist;
 mod pty_view;
 pub mod session;
+pub mod v2;
 
 use cctui_proto::adapter::AdapterEvent;
 use tokio::sync::mpsc;
@@ -59,7 +67,12 @@ impl Adapter for OpenCodeAdapter {
         let cfg = OpenCodeConfig::from_value(&ctx.config);
         match session::probe_version(&cfg.bin).await {
             Ok(version) => {
-                tracing::info!(%version, pinned = client::OPENCODE_PINNED_VERSION, "opencode adapter ready");
+                tracing::info!(
+                    %version,
+                    pinned_v1 = client::OPENCODE_PINNED_VERSION,
+                    pinned_v2 = v2::client::PINNED_VERSION,
+                    "opencode adapter ready"
+                );
             }
             Err(err) => tracing::error!(
                 %err,
@@ -680,13 +693,17 @@ fn opencode_section(
     snapshot: Option<&session::OpenCodeLiveSnapshot>,
     live_present: bool,
 ) -> cctui_proto::diagnose::OpenCodeDiagnose {
-    let pinned = client::OPENCODE_PINNED_VERSION.to_owned();
+    let generation = snapshot.and_then(|s| s.api_generation);
+    let pinned =
+        generation.map_or(client::OPENCODE_PINNED_VERSION, backend::Generation::pinned).to_owned();
+    let api_generation = generation.map(|g| g.label().to_owned());
     let Some(snap) = snapshot else {
         return cctui_proto::diagnose::OpenCodeDiagnose {
             server_url: None,
             server_pid: None,
             pinned_version: pinned,
             server_version: None,
+            api_generation,
             version_matches: None,
             live: live_present,
             owned_sessions: Vec::new(),
@@ -705,6 +722,7 @@ fn opencode_section(
         version_matches: snap.server_version.as_ref().map(|v| v.contains(&pinned)),
         pinned_version: pinned,
         server_version: snap.server_version.clone(),
+        api_generation,
         live: live_present,
         owned_sessions: snap.owned_sessions.clone(),
         turn_status: if snap.in_flight { "working" } else { "idle" }.to_owned(),
@@ -1146,6 +1164,7 @@ mod reconnect_tests {
             server_url: Some("http://127.0.0.1:41234".to_owned()),
             server_pid: Some(4242),
             server_version: Some(client::OPENCODE_PINNED_VERSION.to_owned()),
+            api_generation: None,
             owned_sessions: vec!["ses_live".to_owned()],
             in_flight: true,
             sse_connected: true,
@@ -1200,6 +1219,22 @@ mod reconnect_tests {
         assert_eq!(oc.turn_status, "unknown");
         assert_eq!(oc.pinned_version, client::OPENCODE_PINNED_VERSION);
         assert!(oc.rpc_tail.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_report_names_the_detected_generation_and_its_pin() {
+        let snapshot = session::OpenCodeLiveSnapshot {
+            server_version: Some("2.0.27".to_owned()),
+            api_generation: Some(super::backend::Generation::V2),
+            ..snapshot_with_traffic()
+        };
+        let live = registry_answering_diagnose("ses_live", snapshot).await;
+
+        let oc = diagnose(&live, "ses_live", None, None).await.opencode.expect("no section");
+
+        assert_eq!(oc.api_generation.as_deref(), Some("v2"));
+        assert_eq!(oc.pinned_version, super::v2::client::PINNED_VERSION);
+        assert_eq!(oc.version_matches, Some(true));
     }
 
     /// A watch must produce `PtyChunk` text; opencode has no PTY, so the rings

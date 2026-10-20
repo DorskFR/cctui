@@ -216,6 +216,7 @@ mod tests {
             server_pid: None,
             pinned_version: "1.19.3".into(),
             server_version: Some("1.19.3".into()),
+            api_generation: Some("v1".into()),
             version_matches: Some(true),
             live: true,
             owned_sessions: vec!["ses_1".into()],

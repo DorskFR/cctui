@@ -6,10 +6,14 @@
 //! the server's live broadcast (`to_agent_event`) understands. Emitting only
 //! one of the two renders the session as "No events yet" on the other path.
 
+use std::collections::{HashMap, HashSet};
+
 use cctui_proto::adapter::AdapterEvent;
 use serde_json::{Value, json};
 
+use super::backend::Signal;
 use super::client::{MessageInfo, Part, ToolState};
+use super::events::{OcEvent, StatusKind, status_kind};
 
 const TOOL_OUTPUT_CAP: usize = 4000;
 
@@ -78,7 +82,12 @@ pub fn part_payloads(part: &Part, role: &str) -> Vec<(Kind, Value)> {
 /// `digest(payload)` — without the part id the same prose sent twice in one
 /// session is silently dropped. The id comes from the part so a replay of the
 /// same part still hashes identically.
-fn text_payload(role: &str, text: &str, message_id: Option<&str>, part_id: &str) -> Value {
+pub(super) fn text_payload(
+    role: &str,
+    text: &str,
+    message_id: Option<&str>,
+    part_id: &str,
+) -> Value {
     if role == "user" {
         return json!({
             "type": "text",
@@ -98,7 +107,7 @@ fn text_payload(role: &str, text: &str, message_id: Option<&str>, part_id: &str)
     })
 }
 
-fn reasoning_payload(text: &str, message_id: Option<&str>) -> Value {
+pub(super) fn reasoning_payload(text: &str, message_id: Option<&str>) -> Value {
     json!({
         "type": "text",
         "content": text,
@@ -108,11 +117,11 @@ fn reasoning_payload(text: &str, message_id: Option<&str>) -> Value {
     })
 }
 
-fn tool_call_payload(tool: &str, input: &Value, call_id: &str) -> Value {
+pub(super) fn tool_call_payload(tool: &str, input: &Value, call_id: &str) -> Value {
     json!({ "type": "tool_call", "tool": tool, "input": input, "id": call_id, "tool_use_id": call_id })
 }
 
-fn tool_result_payload(output: &str, error: bool, call_id: &str) -> Value {
+pub(super) fn tool_result_payload(output: &str, error: bool, call_id: &str) -> Value {
     let capped: String = output.chars().take(TOOL_OUTPUT_CAP).collect();
     json!({
         "type": "tool_result",
@@ -157,6 +166,87 @@ pub fn error_text(error: &Value) -> String {
         .or_else(|| error.get("message").and_then(Value::as_str))
         .unwrap_or_default();
     if message.is_empty() { name.to_owned() } else { format!("{name}: {message}") }
+}
+
+/// v1 re-sends whole snapshots: a part needs its message's role, and what was
+/// already emitted must not be emitted again.
+#[derive(Debug, Default)]
+pub struct Tracker {
+    roles: HashMap<String, String>,
+    emitted_parts: HashSet<String>,
+    emitted_usage: HashSet<String>,
+}
+
+impl Tracker {
+    pub fn signals(&mut self, session_id: &str, evt: OcEvent) -> Vec<Signal> {
+        match evt {
+            OcEvent::MessageUpdated { properties } => self.message(session_id, &properties.info),
+            OcEvent::PartUpdated { properties } => {
+                self.part(&properties.part).into_iter().collect()
+            }
+            OcEvent::SessionIdle { .. } => vec![Signal::TurnEnded],
+            OcEvent::SessionStatus { properties } => {
+                status_kind(&properties.status).map(status_signal).into_iter().collect()
+            }
+            OcEvent::SessionError { properties } => {
+                let text = properties
+                    .error
+                    .as_ref()
+                    .map_or_else(|| "session error".to_owned(), error_text);
+                vec![Signal::Failed(text)]
+            }
+            OcEvent::SessionDeleted { .. } => vec![Signal::Deleted],
+            OcEvent::PermissionAsked { properties } => vec![Signal::PermissionAsked {
+                request_id: properties.id,
+                tool: properties.permission,
+                input: properties.metadata,
+            }],
+            OcEvent::PermissionReplied { properties } => {
+                vec![Signal::PermissionReplied { request_id: properties.id }]
+            }
+            OcEvent::Other => Vec::new(),
+        }
+    }
+
+    fn message(&mut self, session_id: &str, info: &MessageInfo) -> Vec<Signal> {
+        let mut out = Vec::new();
+        if info.role == "assistant" {
+            out.push(Signal::AssistantActive);
+        }
+        self.roles.insert(info.id.clone(), info.role.clone());
+        if let Some(usage) = token_usage(session_id, info)
+            && self.emitted_usage.insert(info.id.clone())
+        {
+            out.push(Signal::Usage(Box::new(usage)));
+        }
+        if let Some(error) = info.error.as_ref() {
+            out.push(Signal::Failed(error_text(error)));
+        }
+        out
+    }
+
+    fn part(&mut self, part: &Part) -> Option<Signal> {
+        let role = part
+            .message_id()
+            .and_then(|id| self.roles.get(id))
+            .map_or("assistant", String::as_str)
+            .to_owned();
+        if !is_final(part, &role) || !self.emitted_parts.insert(part.id().to_owned()) {
+            return None;
+        }
+        Some(Signal::Rows(part_payloads(part, &role)))
+    }
+}
+
+fn status_signal(kind: StatusKind) -> Signal {
+    let (tempo, detail) = match kind {
+        StatusKind::Busy => ("working".to_owned(), None),
+        StatusKind::Retry { attempt, message } => {
+            ("working".to_owned(), Some(format!("provider retry {attempt}: {message}")))
+        }
+        StatusKind::Other(other) => (other, None),
+    };
+    Signal::Tempo { tempo, detail }
 }
 
 #[cfg(test)]
