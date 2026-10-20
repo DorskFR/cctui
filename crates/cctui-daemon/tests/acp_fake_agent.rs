@@ -1032,6 +1032,21 @@ mod scenarios {
             .await?;
         let local_id =
             started(&events).ok_or_else(|| anyhow::anyhow!("no SessionStarted"))?.to_owned();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let report = h.diagnose(&local_id).await?;
+            let streamed = report.acp.as_ref().map_or(0, |a| {
+                a.rpc_tail
+                    .iter()
+                    .filter(|f| f.label == "session/update" && f.direction == "in")
+                    .count()
+            });
+            if streamed >= 2 {
+                break;
+            }
+            anyhow::ensure!(tokio::time::Instant::now() < deadline, "the agent never streamed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         h.send(AdapterCommand::Kill { local_id, signal: None }).await;
         let rest = h
             .until(|e| matches!(e, AdapterEvent::SessionEnded { .. }), Duration::from_secs(15))

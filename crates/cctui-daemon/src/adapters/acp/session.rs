@@ -1112,12 +1112,25 @@ impl AcpSession {
         self.live.lock().await.remove(&local_id);
     }
 
+    /// Commands outrank the inbox in `serve`, so updates the agent already
+    /// sent can still be queued when the session ends.
+    async fn flush_streamed(&mut self, local_id: &str) {
+        while let Ok(incoming) = self.inbox_rx.try_recv() {
+            if let Incoming::Notification { method, params } = incoming
+                && method == "session/update"
+            {
+                self.on_update(local_id, &params).await;
+            }
+        }
+        for out in self.coalescer.flush() {
+            self.emit_out(local_id, out).await;
+        }
+    }
+
     async fn kill(&mut self, reason: EndReason) {
         let local_id = self.local_id();
         if !local_id.is_empty() {
-            for out in self.coalescer.flush() {
-                self.emit_out(&local_id, out).await;
-            }
+            self.flush_streamed(&local_id).await;
         }
         self.turn = None;
         self.teardown().await;
