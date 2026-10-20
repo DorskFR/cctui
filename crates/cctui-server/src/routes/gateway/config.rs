@@ -251,7 +251,7 @@ const fn rules(family: Family) -> &'static [PathRule] {
 /// The model a Gemini call names in its path (`/v1beta/models/<model>:<rpc>`),
 /// which the request body never carries.
 pub fn google_path_model(tail: &str) -> Option<String> {
-    let rest = ["/v1beta/models/", "/v1/models/"].iter().find_map(|p| tail.strip_prefix(p))?;
+    let rest = ["/v1beta/models/", "/v1/models/"].iter().find_map(|p| tail.strip_prefix(*p))?;
     let model = rest.split(['?', '/']).next().unwrap_or_default();
     let model = model.split(':').next().unwrap_or_default();
     (!model.is_empty()).then(|| model.to_owned())

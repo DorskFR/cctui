@@ -344,6 +344,7 @@ impl Reducer {
                 | EndReason::SpawnFailed { detail }
                 | EndReason::Other { detail },
             ) => Some(error.unwrap_or(detail)),
+            Some(_) => Some(error.unwrap_or_else(|| "the session ended abnormally".to_owned())),
         };
         let mut outcome = failure.map_or_else(|| Outcome::success(String::new()), Outcome::failed);
         outcome.message = message;

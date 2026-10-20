@@ -151,8 +151,9 @@ mod tests {
             .expect("connect test db");
         let (uid, session_id) = seed_session(&pool, "opencode", "fireworks").await;
 
-        crate::routes::gateway::record_fireworks_usage(
+        crate::routes::gateway::record_metered_usage(
             pool.clone(),
+            crate::routes::gateway::Family::Fireworks,
             session_id.clone(),
             Some("accounts/fireworks/models/kimi-k3".to_owned()),
             crate::cost::CapturedUsage {

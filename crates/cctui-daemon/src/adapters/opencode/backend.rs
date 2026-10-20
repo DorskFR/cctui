@@ -78,15 +78,27 @@ impl Incoming {
 pub enum Signal {
     Rows(Vec<(Kind, Value)>),
     /// Streamed assistant text for a watched session; the final row wins.
-    TextDelta { item_id: String, delta: String },
+    TextDelta {
+        item_id: String,
+        delta: String,
+    },
     AssistantActive,
     Usage(Box<AdapterEvent>),
-    Tempo { tempo: String, detail: Option<String> },
+    Tempo {
+        tempo: String,
+        detail: Option<String>,
+    },
     TurnEnded,
     Failed(String),
     Deleted,
-    PermissionAsked { request_id: String, tool: String, input: Value },
-    PermissionReplied { request_id: String },
+    PermissionAsked {
+        request_id: String,
+        tool: String,
+        input: Value,
+    },
+    PermissionReplied {
+        request_id: String,
+    },
 }
 
 fn session_model(m: &ModelRef) -> SessionModelRef {
