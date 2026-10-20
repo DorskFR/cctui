@@ -2119,25 +2119,58 @@ fn final_assistant_text(newest_first: &[RenderableRow]) -> (Option<String>, Opti
     (message_id, Some(parts.join("\n\n")))
 }
 
-type ResultRow = (Option<String>, Option<String>, Option<DateTime<Utc>>);
+#[derive(sqlx::FromRow)]
+struct ResultRow {
+    adapter_id: Option<String>,
+    end_reason: Option<String>,
+    ended_at: Option<DateTime<Utc>>,
+    status: String,
+    tempo: Option<String>,
+    agent_state: Option<String>,
+    activity: Option<String>,
+    soft_limit_reason: Option<String>,
+}
+
+impl ResultRow {
+    /// Ended, archived, or idle after a finished turn: the bucket the list
+    /// files as `Done`, never while the adapter still reports the turn busy.
+    fn done(&self) -> bool {
+        let busy = matches!(self.tempo.as_deref(), Some("active" | "blocked"))
+            || matches!(self.agent_state.as_deref(), Some("working" | "running"));
+        let bucket = bucket_from_signals(
+            self.tempo.as_deref(),
+            self.agent_state.as_deref(),
+            self.activity.as_deref(),
+            self.soft_limit_reason.as_deref(),
+            &[],
+            &HashMap::new(),
+        );
+        self.ended_at.is_some()
+            || self.status == SessionRowStatus::Archived.as_str()
+            || (bucket == Bucket::Done && !busy)
+    }
+}
 
 pub async fn get_result(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionResult>, AppError> {
-    let row: Option<ResultRow> =
-        sqlx::query_as("SELECT adapter_id, end_reason, ended_at FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    let Some((adapter, end_reason, ended_at)) = row else {
+    let row: Option<ResultRow> = sqlx::query_as(
+        "SELECT adapter_id, end_reason, ended_at, status, tempo, agent_state, activity, \
+                soft_limit_reason \
+         FROM sessions WHERE id = $1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = row else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
     };
     let params = ConversationQuery { limit: Some(RESULT_SCAN_LIMIT), ..Default::default() };
     let rows = renderable_rows(
         &state.pool,
         &session_id,
-        adapter.as_deref().unwrap_or("claude-code"),
+        row.adapter_id.as_deref().unwrap_or("claude-code"),
         &params,
     )
     .await?;
@@ -2145,8 +2178,8 @@ pub async fn get_result(
     let token_usage =
         message_usage(&state, &session_id, message_id.as_slice()).await?.into_values().next();
     Ok(Json(SessionResult {
-        done: ended_at.is_some(),
-        end_reason,
+        done: row.done(),
+        end_reason: row.end_reason,
         final_assistant_text,
         message_id,
         token_usage,
@@ -3881,6 +3914,96 @@ mod tests {
         assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
         let usage = result.token_usage.expect("usage of m2");
         assert_eq!((usage.tokens_in, usage.tokens_out), (120, 7));
+    }
+
+    async fn set_signals(pool: &sqlx::PgPool, sid: &str, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE sessions SET {sql} WHERE id = $1")))
+            .bind(sid)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn store_answer(pool: &sqlx::PgPool, sid: &str) {
+        store_rows(
+            pool,
+            sid,
+            &[
+                ("message", serde_json::json!({"role": "user", "text": "go"})),
+                ("message", serde_json::json!({"role": "assistant", "text": "answer", "message_id": "m1"})),
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_running_turn_is_not_done_even_with_a_stale_success_activity() {
+        let Some((state, _, sid)) =
+            result_session("a_running_turn_is_not_done_even_with_a_stale_success_activity").await
+        else {
+            return;
+        };
+        store_answer(&state.pool, &sid).await;
+        set_signals(
+            &state.pool,
+            &sid,
+            "tempo = 'active', agent_state = 'working', activity = 'success'",
+        )
+        .await;
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(!result.done);
+        assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
+    }
+
+    #[tokio::test]
+    async fn a_finished_turn_on_a_live_session_is_done() {
+        let Some((state, _, sid)) =
+            result_session("a_finished_turn_on_a_live_session_is_done").await
+        else {
+            return;
+        };
+        store_answer(&state.pool, &sid).await;
+        set_signals(&state.pool, &sid, "tempo = 'idle', agent_state = 'done'").await;
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(result.done);
+        assert_eq!(result.end_reason, None);
+        assert_eq!(result.message_id.as_deref(), Some("m1"));
+        assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
+    }
+
+    #[tokio::test]
+    async fn a_turn_waiting_on_input_is_not_done() {
+        let Some((state, _, sid)) = result_session("a_turn_waiting_on_input_is_not_done").await
+        else {
+            return;
+        };
+        set_signals(&state.pool, &sid, "tempo = 'blocked', agent_state = 'done'").await;
+        assert!(!result_of(&state, &sid).await.unwrap().done);
+    }
+
+    /// Archiving clears the classifier signals and leaves `ended_at` unset,
+    /// so a session archived mid-turn is done on its status alone and
+    /// reports whatever text it had produced.
+    #[tokio::test]
+    async fn an_archived_session_is_done_with_the_text_it_had() {
+        let Some((state, _, sid)) =
+            result_session("an_archived_session_is_done_with_the_text_it_had").await
+        else {
+            return;
+        };
+        store_answer(&state.pool, &sid).await;
+        set_signals(&state.pool, &sid, "tempo = 'active', agent_state = 'working'").await;
+        set_signals(
+            &state.pool,
+            &sid,
+            "status = 'archived', tempo = NULL, agent_state = NULL, activity = NULL, \
+             archived_by = 'automatic'",
+        )
+        .await;
+        let result = result_of(&state, &sid).await.unwrap();
+        assert!(result.done);
+        assert_eq!(result.end_reason, None);
+        assert_eq!(result.final_assistant_text.as_deref(), Some("answer"));
     }
 
     /// The route sits behind the session read guard: the owner reads it,
