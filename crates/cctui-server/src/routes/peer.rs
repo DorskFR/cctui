@@ -156,7 +156,7 @@ pub fn envelope(sender: &SessionNode, body: &str) -> String {
 /// their behalf. Best-effort: losing the audit row must not fail the call it
 /// describes, but it is logged loudly when it does.
 ///
-/// The row has no turn_id, so `stream_events_dedup_turn_idx` keys it on the
+/// The row has no `turn_id`, so `stream_events_dedup_turn_idx` keys it on the
 /// payload hash alone; `audit_id` keeps a repeated identical action from
 /// colliding with the previous one.
 async fn audit(pool: &sqlx::PgPool, session_id: &str, text: &str) {
@@ -1021,7 +1021,7 @@ mod tests {
         cleanup(&pool, uid).await;
     }
 
-    /// DB-gated: audit rows carry no turn_id, so two identical actions used to
+    /// DB-gated: audit rows carry no `turn_id`, so two identical actions used to
     /// hash the same and the second was rejected by the dedup index.
     #[tokio::test]
     async fn repeated_identical_audits_both_land() {

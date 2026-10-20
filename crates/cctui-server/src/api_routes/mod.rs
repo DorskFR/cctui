@@ -64,6 +64,7 @@ pub fn register(r: Routes) -> Routes {
     let r = session_bulk::register(r);
     let r = session_list::register(r);
     let r = session_view::register(r);
+    let r = session_view::register_result(r);
     let r = session_view::register_voice_notes(r);
     let r = previews::register(r);
     let r = session_messages::register(r);

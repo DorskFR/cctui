@@ -2118,11 +2118,13 @@ fn final_assistant_text(newest_first: &[RenderableRow]) -> (Option<String>, Opti
     (message_id, Some(parts.join("\n\n")))
 }
 
+type ResultRow = (Option<String>, Option<String>, Option<DateTime<Utc>>);
+
 pub async fn get_result(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionResult>, AppError> {
-    let row: Option<(Option<String>, Option<String>, Option<DateTime<Utc>>)> =
+    let row: Option<ResultRow> =
         sqlx::query_as("SELECT adapter_id, end_reason, ended_at FROM sessions WHERE id = $1")
             .bind(&session_id)
             .fetch_optional(&state.pool)
@@ -2139,11 +2141,8 @@ pub async fn get_result(
     )
     .await?;
     let (message_id, final_assistant_text) = final_assistant_text(&rows);
-    let mut token_usage = None;
-    if let Some(id) = &message_id {
-        token_usage =
-            message_usage(&state, &session_id, std::slice::from_ref(id)).await?.remove(id);
-    }
+    let token_usage =
+        message_usage(&state, &session_id, message_id.as_slice()).await?.into_values().next();
     Ok(Json(SessionResult {
         done: ended_at.is_some(),
         end_reason,

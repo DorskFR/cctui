@@ -2,8 +2,9 @@
 import type { TokenUsage } from "./TokenUsage";
 
 /**
- * What a dispatcher polls for: whether the session has ended and the text of
- * its last assistant message. `final_assistant_text` joins the trailing
- * visible assistant text rows of one message (thinking excluded).
+ * What a dispatcher polls for once a session should be done.
+ *
+ * `final_assistant_text` joins the trailing visible assistant text rows of
+ * the last message, thinking excluded.
  */
 export type SessionResult = { done: boolean, end_reason: string | null, final_assistant_text: string | null, message_id: string | null, token_usage: TokenUsage | null, };
