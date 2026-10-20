@@ -160,9 +160,6 @@ pub fn poll_if_due(app: &mut App) -> Vec<Effect> {
     Vec::new()
 }
 
-/// The machine dot for a row: the live tier the socket reported, else what the
-/// refresh last said about the session itself.
-#[must_use]
 /// The header's read-only view of a session's guard step: `step N: title`,
 /// `step N` when untitled, `guard exited` once the workflow is over.
 #[must_use]
@@ -179,6 +176,9 @@ pub fn guard_step_badge(app: &App, session_id: &str) -> Option<String> {
     })
 }
 
+/// The machine dot for a row: the live tier the socket reported, else what the
+/// refresh last said about the session itself.
+#[must_use]
 pub fn machine_dot(app: &App, machine_id: &str) -> Option<MachineLiveness> {
     app.machine_liveness.get(machine_id).copied()
 }

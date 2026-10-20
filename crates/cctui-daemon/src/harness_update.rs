@@ -396,9 +396,11 @@ async fn run(bin: &str, args: &[&str], timeout: Duration) -> anyhow::Result<std:
         .map_err(Into::into)
 }
 
-/// Background ticker. Versions are refreshed at start and every
-/// [`VERSION_REFRESH`] whatever the policy; updates run only once an enabled
-/// policy arrives. Worker pods refresh nothing: their image fixes the versions.
+/// Background ticker.
+///
+/// Versions are refreshed at start and every [`VERSION_REFRESH`] whatever the
+/// policy; updates run only once an enabled policy arrives. Worker pods
+/// refresh nothing: their image fixes the versions.
 pub fn spawn_loop(shutdown: CancellationToken) {
     let busy: BusyProbe = Arc::new(|| Box::pin(crate::adapters::codex::turns_in_flight()));
     let mut runner = Runner::new("claude".to_owned(), "codex".to_owned(), busy);

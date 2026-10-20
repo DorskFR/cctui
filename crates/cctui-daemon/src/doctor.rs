@@ -1,6 +1,8 @@
 //! `cctui-daemon doctor`: the machine-health probe and the harness version
-//! split, run in the foreground. `--grant` relaunches the launchd agents so
-//! macOS re-asks for the privacy grants their last binary change dropped.
+//! split, run in the foreground.
+//!
+//! `--grant` relaunches the launchd agents so macOS re-asks for the privacy
+//! grants their last binary change dropped.
 
 use std::path::Path;
 use std::time::Duration;

@@ -558,6 +558,8 @@ mod tests {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
         let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() });
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::Transcript { .. })))
+            .await;
         h.signals.send(Signal::Text("Alpha. Beta.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Alpha."))).await;
 
@@ -580,6 +582,8 @@ mod tests {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
         let mut h = start(mock, Prefs::default());
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::Transcript { .. })))
+            .await;
         h.signals.send(Signal::Text("Alpha.".into())).await.unwrap();
         h.collect_until(|f| *f == Outbound::Audio(Bytes::from_static(b"Alpha."))).await;
         h.inbound.send(Inbound::Control(VoiceClientMsg::Interrupt {})).await.unwrap();

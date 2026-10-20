@@ -30,17 +30,6 @@ pub fn request_drain_restart() {
     tracing::info!("drain restart of the claude daemon requested");
 }
 
-/// Whether a drain restart is waiting for the daemon to go idle.
-#[must_use]
-pub fn drain_pending() -> bool {
-    DRAIN_REQUESTED.load(Ordering::SeqCst)
-}
-
-#[cfg(test)]
-pub(crate) fn reset_drain_for_test() {
-    DRAIN_REQUESTED.store(false, Ordering::SeqCst);
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CycleMethod {
     ManagedService,

@@ -1,7 +1,9 @@
-//! Mirror of the pod's workflow guard (`cctui-guard`). Polls `GET /state` and
-//! relays every change up as [`AdapterEvent::GuardStepState`]; forwards a
-//! server-requested [`AdapterCommand::GuardTransition`] to `POST /transition`.
-//! The guard stays authoritative: nothing here decides a step.
+//! Mirror of the pod's workflow guard (`cctui-guard`).
+//!
+//! Polls `GET /state` and relays every change up as
+//! [`AdapterEvent::GuardStepState`]; forwards a server-requested
+//! [`AdapterCommand::GuardTransition`] to `POST /transition`. The guard stays
+//! authoritative: nothing here decides a step.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -64,12 +66,14 @@ impl GuardWatch {
 
     /// The events to send for `state`: one per live session when it differs
     /// from the last relayed state or `force` is set, none otherwise.
-    pub fn relay(&self, state: GuardStepState, force: bool) -> Vec<(String, AdapterEvent)> {
-        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
-        if !force && last.as_ref() == Some(&state) {
-            return Vec::new();
+    pub fn relay(&self, state: &GuardStepState, force: bool) -> Vec<(String, AdapterEvent)> {
+        {
+            let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+            if !force && last.as_ref() == Some(state) {
+                return Vec::new();
+            }
+            *last = Some(state.clone());
         }
-        *last = Some(state.clone());
         self.sessions
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -116,7 +120,7 @@ pub fn start(event_tx: mpsc::Sender<(String, AdapterEvent)>, shutdown: Cancellat
             };
             match fetch_state(&client, &url).await {
                 Ok(state) => {
-                    for pair in global().relay(state, nudged) {
+                    for pair in global().relay(&state, nudged) {
                         if event_tx.send(pair).await.is_err() {
                             return;
                         }
@@ -169,6 +173,7 @@ pub fn transition_outcome(body: &serde_json::Value) -> Result<(), String> {
 /// Serve a [`AdapterCommand::GuardTransition`] off the transport loop: the
 /// verdict goes back as a `CommandResult`, then the fresh state is relayed.
 /// Returns `false` for any other command.
+#[must_use]
 pub fn handle_command(
     adapter_id: &str,
     command: &AdapterCommand,
@@ -185,7 +190,7 @@ pub fn handle_command(
             (Some(url), Some(client)) => {
                 let result = transition(&client, &url, &step).await;
                 if let Ok(state) = fetch_state(&client, &url).await {
-                    for pair in global().relay(state, true) {
+                    for pair in global().relay(&state, true) {
                         let _ = event_tx.send(pair).await;
                     }
                 }
@@ -228,7 +233,7 @@ mod tests {
     #[test]
     fn relays_only_changes_to_every_live_session_and_forces_on_demand() {
         let w = GuardWatch::default();
-        assert!(w.relay(state(1), false).is_empty(), "no live session, nothing to relay");
+        assert!(w.relay(&state(1), false).is_empty(), "no live session, nothing to relay");
 
         w.observe(
             "claude-code",
@@ -238,9 +243,9 @@ mod tests {
             "codex",
             &AdapterEvent::SessionStarted { local_id: "s2".into(), meta: SessionMeta::default() },
         );
-        assert!(w.relay(state(1), false).is_empty(), "same state as last relayed");
+        assert!(w.relay(&state(1), false).is_empty(), "same state as last relayed");
 
-        let mut out = w.relay(state(2), false);
+        let mut out = w.relay(&state(2), false);
         out.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0, "claude-code");
@@ -251,13 +256,13 @@ mod tests {
             }
             other => panic!("expected GuardStepState, got {other:?}"),
         }
-        assert_eq!(w.relay(state(2), true).len(), 2, "forced: a new session needs the mirror");
+        assert_eq!(w.relay(&state(2), true).len(), 2, "forced: a new session needs the mirror");
 
         w.observe(
             "codex",
             &AdapterEvent::SessionEnded { local_id: "s2".into(), reason: EndReason::Completed },
         );
-        assert_eq!(w.relay(state(3), false).len(), 1);
+        assert_eq!(w.relay(&state(3), false).len(), 1);
     }
 
     #[test]

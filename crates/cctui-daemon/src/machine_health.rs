@@ -1,3 +1,5 @@
+//! Probes the macOS privacy grants that a binary change silently drops.
+//!
 //! macOS ties folder and Local Network grants to a binary's code signature:
 //! a harness auto-update or an ad-hoc-signed self-update drops them and the
 //! next worker is denied with no output cctui can see, so the daemon probes
@@ -35,6 +37,8 @@ pub fn spawn_refusal() -> Option<String> {
     last()?.refusal("this machine")
 }
 
+/// Only an explicit refusal is a denial.
+///
 /// A folder listing refused with `EPERM`/`EACCES` is a dropped grant; a
 /// connect refused with `EHOSTUNREACH`/`ENETUNREACH` is a Local Network
 /// denial. Anything else (a missing folder, a closed port, a timeout) says
@@ -89,10 +93,12 @@ async fn resolve(server_url: &str) -> Option<SocketAddr> {
 }
 
 async fn connect(addr: SocketAddr) -> io::Result<()> {
-    match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
-        Ok(res) => res.map(|_| ()),
-        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timed out")),
-    }
+    tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
+        .await
+        .map_or_else(
+            |_| Err(io::Error::new(io::ErrorKind::TimedOut, "connect timed out")),
+            |res| res.map(|_| ()),
+        )
 }
 
 async fn probe_network(server_url: Option<&str>) -> Option<Observation<SocketAddr>> {
@@ -120,7 +126,7 @@ pub async fn probe(folders: Vec<PathBuf>, server_url: Option<&str>) -> MachineHe
         match &verdict {
             MachineHealth::Ok => tracing::info!("machine health probe ok"),
             other => {
-                tracing::warn!(detail = ?other.detail(), "machine health probe found a denial")
+                tracing::warn!(detail = ?other.detail(), "machine health probe found a denial");
             }
         }
         crate::harness_update::bump_revision();
