@@ -411,9 +411,10 @@ impl SessionOrigin {
     }
 }
 
-/// What a dispatcher polls for: whether the session has ended and the text of
-/// its last assistant message. `final_assistant_text` joins the trailing
-/// visible assistant text rows of one message (thinking excluded).
+/// What a dispatcher polls for once a session should be done.
+///
+/// `final_assistant_text` joins the trailing visible assistant text rows of
+/// the last message, thinking excluded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionResult {

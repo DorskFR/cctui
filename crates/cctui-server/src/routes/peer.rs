@@ -1030,7 +1030,7 @@ mod tests {
         let machine = Uuid::new_v4();
         seed_owner(&pool, uid, &[machine]).await;
         let sid = format!("peer-audit-{uid}");
-        seed_session(&pool, &sid, None, uid, machine, "working").await;
+        seed_session(&pool, &sid, None, uid, machine, "active").await;
 
         audit(&pool, &sid, "sent a message to peer-x").await;
         audit(&pool, &sid, "sent a message to peer-x").await;
