@@ -3,6 +3,7 @@ import {
 	blankPack,
 	formFromRules,
 	incompletePacks,
+	invalidLimits,
 	parseLimit,
 	parseList,
 	rulesFromForm
@@ -66,5 +67,29 @@ describe('form round trip', () => {
 		expect(incompletePacks(form)).toBe(true);
 		form.packs[0].url = 'https://x';
 		expect(incompletePacks(form)).toBe(false);
+	});
+});
+
+describe('invalidLimits', () => {
+	const form = (limits: Partial<Record<'maxTimeout' | 'maxConcurrent' | 'dailyCap', string>>) => ({
+		...formFromRules(null),
+		...limits
+	});
+	it('accepts positive integers', () => {
+		expect(invalidLimits(form({ maxTimeout: '30', maxConcurrent: ' 2 ', dailyCap: '100' }))).toEqual([]);
+	});
+	it('treats blank as no limit', () => {
+		expect(invalidLimits(form({ maxTimeout: '', maxConcurrent: '   ', dailyCap: '' }))).toEqual([]);
+	});
+	it.each(['10m', '1.5', '-3', '0', 'abc'])('flags %s in every limit field', (bad) => {
+		expect(invalidLimits(form({ maxTimeout: bad }))).toEqual(['maxTimeout']);
+		expect(invalidLimits(form({ maxConcurrent: bad }))).toEqual(['maxConcurrent']);
+		expect(invalidLimits(form({ dailyCap: bad }))).toEqual(['dailyCap']);
+	});
+	it('lists every offending field', () => {
+		expect(invalidLimits(form({ maxTimeout: '0', maxConcurrent: '4', dailyCap: '1.5' }))).toEqual([
+			'maxTimeout',
+			'dailyCap'
+		]);
 	});
 });

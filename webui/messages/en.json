@@ -69,6 +69,7 @@
 	"access_policy_max_concurrent": "Max concurrent sessions",
 	"access_policy_daily_cap": "Daily cap",
 	"access_policy_limit_hint": "Blank means no limit.",
+	"access_policy_limit_invalid": "Use a positive whole number, or leave it blank.",
 	"access_policy_save": "Save policy",
 	"access_policy_remove": "Remove policy…",
 	"access_policy_remove_confirm": "Remove",
