@@ -27,6 +27,7 @@
 	import EnvSection from '$lib/components/organisms/accounts/account-page/EnvSection.svelte';
 	import ProvidersSection from '$lib/components/organisms/accounts/account-page/ProvidersSection.svelte';
 	import ToolPolicySection from '$lib/components/organisms/accounts/account-page/ToolPolicySection.svelte';
+	import ServiceTokensSection from '$lib/components/organisms/accounts/account-page/ServiceTokensSection.svelte';
 	import DangerSection from '$lib/components/organisms/accounts/account-page/DangerSection.svelte';
 	import ProviderSettingsSection from '$lib/components/organisms/accounts/account-page/ProviderSettingsSection.svelte';
 
@@ -142,6 +143,7 @@
 			<EnvSection {account} />
 			{#if !managed}
 				<ToolPolicySection {account} />
+				<ServiceTokensSection {account} />
 			{/if}
 			<DangerSection {account} disabled={managed} ondelete={removeAccount} />
 		</div>

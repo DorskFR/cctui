@@ -30,6 +30,7 @@ pub mod prompts;
 pub mod provider_status;
 pub mod routes;
 pub mod self_update;
+pub mod service_tokens;
 pub mod session_bindings;
 pub mod settings;
 pub mod settings_catalog;
