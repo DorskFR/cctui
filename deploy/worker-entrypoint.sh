@@ -517,7 +517,14 @@ phase_workspace() {
     #. The lowerdir is already worker-readable and writes copy-up into
     # /overlay/upper (chowned below), so the overlay needs no recursive chown —
     # only the root-created fallbacks (rsync/clone/empty) do.
-    if [ "$_ws_overlay" = 0 ]; then
+    # A warm-baked image ships /workspace as worker-owned image-layer files: a
+    # recursive chown would copy every one up into the container's writable
+    # layer and blow the ephemeral-storage limit. Fix only what isn't the
+    # worker's (a fresh clone, the dir itself), which touches metadata alone.
+    if [ -f /workspace/.warm-baked ]; then
+        find /workspace -xdev ! -uid "${WORKER_UID}" \
+            -exec chown "${WORKER_UID}:${WORKER_UID}" {} + 2>/dev/null || true
+    elif [ "$_ws_overlay" = 0 ]; then
         chown -R "${WORKER_UID}:${WORKER_UID}" /workspace 2>/dev/null || true
     fi
     [ -d /overlay/upper ] && chown -R "${WORKER_UID}:${WORKER_UID}" /overlay/upper 2>/dev/null || true
