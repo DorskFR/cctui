@@ -659,6 +659,7 @@
 	"drawer_details_usage": "Tokens",
 	"drawer_details_model": "Model",
 	"drawer_details_in": "Input",
+	"drawer_thread_menu": "Sessions in this thread",
 	"drawer_details_out": "Output",
 	"drawer_details_cache_read": "Cache read",
 	"drawer_details_cache_write": "Cache write",

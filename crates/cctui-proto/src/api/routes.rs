@@ -1832,6 +1832,14 @@ pub const ROUTES: &[Route] = &[
         response: None,
     },
     Route {
+        id: "get_sessions_by_id_thread",
+        method: Method::Get,
+        path: "/sessions/{id}/thread",
+        summary: "List the follow-up thread a session belongs to, oldest first.",
+        request: None,
+        response: Some("SessionThreadResponse"),
+    },
+    Route {
         id: "post_sessions_by_id_fork",
         method: Method::Post,
         path: "/sessions/{id}/fork",

@@ -220,6 +220,7 @@ export const ROUTES = [
   { id: "delete_sessions_by_id_pins_by_seq", method: "DELETE", path: "/sessions/{id}/pins/{seq}", summary: "Unpin a message in a session.", request: null, response: null },
   { id: "post_sessions_by_id_seen", method: "POST", path: "/sessions/{id}/seen", summary: "Mark this session's messages seen for the caller.", request: null, response: null },
   { id: "get_sessions_by_id_brief", method: "GET", path: "/sessions/{id}/brief", summary: "Render a session's user/assistant transcript as a capped markdown brief.", request: null, response: null },
+  { id: "get_sessions_by_id_thread", method: "GET", path: "/sessions/{id}/thread", summary: "List the follow-up thread a session belongs to, oldest first.", request: null, response: "SessionThreadResponse" },
   { id: "post_sessions_by_id_fork", method: "POST", path: "/sessions/{id}/fork", summary: "Fork a session into a new one.", request: null, response: null },
   { id: "post_sessions_by_id_auto_approve", method: "POST", path: "/sessions/{id}/auto-approve", summary: "Toggle auto-approval of tool-use for a session.", request: null, response: null },
   { id: "post_sessions_by_id_archive", method: "POST", path: "/sessions/{id}/archive", summary: "Archive a single session.", request: null, response: null },

@@ -1148,6 +1148,23 @@ pub struct ForkResponse {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ThreadSession {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub working_dir: String,
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The follow-up thread through a session, oldest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct SessionThreadResponse {
+    pub sessions: Vec<ThreadSession>,
+}
+
 /// User/assistant transcript as markdown, oldest turns elided past the caps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]

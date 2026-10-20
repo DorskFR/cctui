@@ -1243,6 +1243,12 @@ tui = "waived"
 reason = "administration, spawn drafts, profiles, bookmarks and dispatch live in the webui; the TUI keeps the operator loop"
 
 [[route]]
+id = "get_sessions_by_id_thread"
+# GET /sessions/{id}/thread — List the follow-up thread a session belongs to, oldest first.
+tui = "waived"
+reason = "follow-up thread navigation lives in the webui drawer header"
+
+[[route]]
 id = "post_sessions_by_id_fork"
 # POST /sessions/{id}/fork — Fork a session into a new one.
 tui = "handled"

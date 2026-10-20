@@ -37,6 +37,7 @@ import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
 import type { BriefResponse } from "@bindings/BriefResponse";
+import type { SessionThreadResponse } from "@bindings/SessionThreadResponse";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
@@ -501,6 +502,8 @@ export const endpoints = {
    *  Returns a `command_id` to await on the ws like spawn. */
   fork: (sessionId: string, body: ForkRequest) =>
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
+  sessionThread: (sessionId: string) =>
+    api.get<SessionThreadResponse>(path("get_sessions_by_id_thread", { id: sessionId })),
   brief: (sessionId: string, maxBytes?: number) =>
     api.get<BriefResponse>(
       `/sessions/${sessionId}/brief${maxBytes ? `?max_bytes=${maxBytes}` : ""}`,
