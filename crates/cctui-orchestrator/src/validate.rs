@@ -14,8 +14,8 @@
 
 use crate::envelope::{
     GUARD_PROXY_CONTAINER, NET_INIT_CONTAINER, PROXY_UID, VOL_GPG_AGENT, VOL_GUARD_PROXY_CA,
-    VOL_GUARD_PROXY_INJECT, VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY, VOL_PROXY_POLICY,
-    WORKER_ADDED_CAPS, WORKER_ENVELOPE_MOUNTS,
+    VOL_GUARD_PROXY_INJECT, VOL_GUARD_PROXY_SA_TOKEN, VOL_GUARD_STATE, VOL_HOME, VOL_OVERLAY,
+    VOL_PROXY_POLICY, WORKER_ADDED_CAPS, WORKER_ENVELOPE_MOUNTS,
 };
 use crate::{
     ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER,
@@ -230,6 +230,13 @@ pub fn check_template_conformance(
     profile: &WorkerProfileSpec,
 ) -> Result<(), String> {
     let worker_name = worker.name.as_str();
+    if spec.automount_service_account_token != Some(false) {
+        return Err(
+            "pod does not set automountServiceAccountToken: false — the worker must not receive \
+             the service-account token (the guard-proxy gets its own projection)"
+                .to_owned(),
+        );
+    }
     if spec.service_account_name != profile.service_account_name {
         return Err(format!(
             "serviceAccountName `{}` does not match the profile's `{}` — the dispatch must not \
@@ -367,6 +374,7 @@ fn check_volumes(spec: &PodSpec, profile: &WorkerProfileSpec) -> Result<(), Stri
         VOL_PROXY_POLICY,
         VOL_GUARD_PROXY_INJECT,
         VOL_GUARD_PROXY_CA,
+        VOL_GUARD_PROXY_SA_TOKEN,
     ]
     .into_iter()
     .collect();
@@ -524,6 +532,7 @@ mod tests {
 
         let mut pod_spec = serde_json::Map::new();
         pod_spec.insert("restartPolicy".into(), serde_json::json!("Never"));
+        pod_spec.insert("automountServiceAccountToken".into(), serde_json::json!(false));
         pod_spec.insert("containers".into(), serde_json::Value::Array(containers));
         if let Some(init) = &profile.init_containers {
             pod_spec.insert("initContainers".into(), serde_json::to_value(init).unwrap());
@@ -593,6 +602,15 @@ mod tests {
         let pod = dispatched_pod("lean", &lean_profile());
         let src = source("lean", lean_profile());
         assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn a_pod_that_automounts_the_sa_token_is_denied() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        pod.spec.as_mut().unwrap().automount_service_account_token = None;
+        let src = source("lean", lean_profile());
+        let msg = deny_msg(decide(&pod, &src).await);
+        assert!(msg.contains("automountServiceAccountToken"), "{msg}");
     }
 
     #[tokio::test]

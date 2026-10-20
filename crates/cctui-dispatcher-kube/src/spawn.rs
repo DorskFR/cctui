@@ -380,6 +380,7 @@ impl Spawner {
 
         let mut pod_spec = serde_json::Map::new();
         pod_spec.insert("restartPolicy".into(), json!("Never"));
+        pod_spec.insert("automountServiceAccountToken".into(), json!(false));
         pod_spec.insert("containers".into(), Value::Array(containers));
         if let Some(init) = &profile.init_containers {
             pod_spec.insert("initContainers".into(), serde_json::to_value(init)?);
@@ -1385,6 +1386,11 @@ mod tests {
 
         assert_eq!(v.pointer("/spec/template/spec/restartPolicy"), Some(&json!("Never")));
         assert_eq!(
+            v.pointer("/spec/template/spec/automountServiceAccountToken"),
+            Some(&json!(false)),
+            "the agent container must never see the pod's service-account token"
+        );
+        assert_eq!(
             v.pointer("/spec/template/spec/serviceAccountName"),
             Some(&json!("worker-lean"))
         );
@@ -1745,6 +1751,31 @@ mod tests {
                 Some(&json!("sess-fields"))
             );
         }
+    }
+
+    #[test]
+    fn a_queued_job_still_mounting_the_sa_token_drifts_and_is_rebuilt_without_it() {
+        let s = spec("sess-sa", json!({}));
+        let profile = lean_profile();
+        let mut job = queued_job("lean", &profile, &s);
+        job.spec
+            .as_mut()
+            .unwrap()
+            .template
+            .spec
+            .as_mut()
+            .unwrap()
+            .automount_service_account_token = None;
+        assert!(
+            drift_of(&job, &profile).is_some(),
+            "a template that lets the kubelet mount the SA token strands the queued Job"
+        );
+        let rebuilt = Spawner::rebuild_job(&job, &profile).unwrap();
+        assert!(drift_of(&rebuilt, &profile).is_none());
+        assert_eq!(
+            rebuilt.spec.unwrap().template.spec.unwrap().automount_service_account_token,
+            Some(false)
+        );
     }
 
     #[test]
