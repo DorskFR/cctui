@@ -160,6 +160,19 @@ url_host() {
     printf '%s' "$(url_hostport "$1")" | sed 's,:.*$,,'
 }
 
+# host:port of every model-gateway base URL the dispatch minted, one per line,
+# deduped. Pod env wins over the payload's env (docker/apple leave it there).
+gateway_hostports() {
+    for _k in ANTHROPIC_BASE_URL OPENAI_BASE_URL FIREWORKS_BASE_URL GOOGLE_GEMINI_BASE_URL; do
+        eval "_u=\${$_k:-}"
+        if [ -z "$_u" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+            _u=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$_k" '.env[$k] // empty' 2>/dev/null || true)
+        fi
+        url_hostport "$_u"
+        printf '\n'
+    done | sed '/^$/d' | sort -u
+}
+
 # Trust the guard-proxy sidecar's per-pod CA alongside the public roots.
 # Best-effort with a bounded wait; transparent-external only.
 GUARD_CA_FILE="${GUARD_PROXY_CA_FILE:-/var/run/guard-proxy-ca/ca.pem}"
@@ -260,7 +273,28 @@ wire_gpg_forwarding() {
 # ── Phase 1: Network mode + guard proxy ─────────────────────────────────────
 # transparent: iptables REDIRECT to an in-container proxy. forward: proxy env
 # only. transparent-external: sidecar proxy, REDIRECT installed by net-init.
-# Every mode seeds a deny-default policy allowing the CCTUI_URL + REPLY_URL hosts.
+# Every mode seeds a deny-default policy: the structural hosts (server, callback,
+# every minted model-gateway base), the boot-only pack host and WORKER_NET_ALLOW.
+seed_policy() {
+    mkdir -p "$(dirname "$POLICY_FILE")"
+
+    # WORKER_NET_ALLOW permits a host through the proxy by SNI; WORKER_NET_EXEMPT
+    # bypasses the proxy for one boot-resolved IP, so only for IP-stable hosts.
+    _cctui_hp=$(url_hostport "$CCTUI_BASE_URL")
+    _reply_hp=$(url_hostport "${REPLY_URL:-}")
+    _gw_hps=$(gateway_hostports)
+    # Boot-only: the pack host is deliberately NOT --always-allow'ed in
+    # phase_guard, so the first per-step rewrite closes it again.
+    _pack_hp=$(url_hostport "${CONTEXT_PACK_URL:-}")
+    _net_allow=$(printf '%s' "${WORKER_NET_ALLOW:-}" | tr ',' '\n' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d')
+    _allowed=$(printf '%s\n%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_gw_hps" "$_pack_hp" "$_net_allow" \
+        | sed '/^$/d' | jq -R . | jq -cs 'unique')
+    printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
+    _gw_log=$(printf '%s' "$_gw_hps" | tr '\n' ',' | sed 's/,$//;s/,/, /g')
+    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_gw_log:+, $_gw_log}${_pack_hp:+, $_pack_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
+}
+
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
@@ -274,21 +308,7 @@ phase_network() {
         fi
     fi
 
-    mkdir -p "$(dirname "$POLICY_FILE")"
-
-    # WORKER_NET_ALLOW permits a host through the proxy by SNI; WORKER_NET_EXEMPT
-    # bypasses the proxy for one boot-resolved IP, so only for IP-stable hosts.
-    _cctui_hp=$(url_hostport "$CCTUI_BASE_URL")
-    _reply_hp=$(url_hostport "${REPLY_URL:-}")
-    # Boot-only: the pack host is deliberately NOT --always-allow'ed in
-    # phase_guard, so the first per-step rewrite closes it again.
-    _pack_hp=$(url_hostport "${CONTEXT_PACK_URL:-}")
-    _net_allow=$(printf '%s' "${WORKER_NET_ALLOW:-}" | tr ',' '\n' \
-        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d')
-    _allowed=$(printf '%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_pack_hp" "$_net_allow" \
-        | sed '/^$/d' | jq -R . | jq -cs 'unique')
-    printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
-    log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_pack_hp:+, $_pack_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
+    seed_policy
 
     if [ "$NET_MODE" = transparent-external ]; then
         # Nothing to start and no iptables here. The sidecar proxy is deny-all
@@ -1066,6 +1086,9 @@ phase_guard() {
     [ -n "$_cctui_hp" ] && set -- "$@" --always-allow "$_cctui_hp"
     _reply_hp=$(url_hostport "${REPLY_URL:-}")
     [ -n "$_reply_hp" ] && set -- "$@" --always-allow "$_reply_hp"
+    for _gw_hp in $(gateway_hostports); do
+        set -- "$@" --always-allow "$_gw_hp"
+    done
     # Operator-plane SNI allow-list (CDN/multi-IP hosts) must survive every
     # per-step rewrite too, mirroring the seeded policy in phase_network.
     if [ -n "${WORKER_NET_ALLOW:-}" ]; then

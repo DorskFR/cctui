@@ -170,8 +170,11 @@ the resolved pod env.
 ## Network modes & capability requirements
 
 Egress is always gated by `cctui-guard-proxy` (uid 1337), deny-default. The
-policy is seeded at boot to always-allow the `CCTUI_URL` + `REPLY_URL` hosts;
-`cctui-guard` rewrites it per workflow step when a guarded prompt runs.
+policy is seeded at boot to always-allow the `CCTUI_URL` + `REPLY_URL` hosts and
+the host of every model-gateway base URL the dispatch minted (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, `FIREWORKS_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`); `cctui-guard`
+rewrites it per workflow step when a guarded prompt runs, keeping those same hosts
+via `--always-allow`.
 
 When a guard runs, the entrypoint exports `CCTUI_GUARD_URL` and the daemon
 mirrors the guard's `GET /state` (step, title, allowed/disallowed, valid
@@ -191,8 +194,8 @@ applies a **documented built-in default**, logged loudly at boot
   the agent can invoke is allowed. Per-tool gating exists only when a pack ships
   `guard-rules.md` **and** the prompt carries `# Step N` + `[allowed]` blocks.
 - **Network = deny-default + seeded structural hosts.** Egress stays the boot
-  `policy.json`: deny-default with only `CCTUI_URL`, `REPLY_URL`, and any
-  `WORKER_NET_ALLOW`/`CONTEXT_PACK_URL` host allowed. The sandbox floor holds
+  `policy.json`: deny-default with only `CCTUI_URL`, `REPLY_URL`, the minted
+  model-gateway hosts, and any `WORKER_NET_ALLOW`/`CONTEXT_PACK_URL` host allowed. The sandbox floor holds
   even with no rules file — an unguarded run is never an *open* run.
 
 To gate tools per workflow step, ship a `guard-rules.md` in the pack and give the
