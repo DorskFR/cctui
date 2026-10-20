@@ -17,14 +17,13 @@ fn strip_inline(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
     while !rest.is_empty() {
-        if let Some(after) = rest.strip_prefix("![").or_else(|| rest.strip_prefix('[')) {
-            if let Some(close) = after.find("](")
-                && let Some(end) = after[close..].find(')')
-            {
-                out.push_str(&after[..close]);
-                rest = &after[close + end + 1..];
-                continue;
-            }
+        if let Some(after) = rest.strip_prefix("![").or_else(|| rest.strip_prefix('['))
+            && let Some(close) = after.find("](")
+            && let Some(end) = after[close..].find(')')
+        {
+            out.push_str(&after[..close]);
+            rest = &after[close + end + 1..];
+            continue;
         }
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -184,7 +183,7 @@ impl SentenceBuffer {
         self.raw.push_str(delta);
     }
 
-    #[must_use]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.raw.trim().is_empty()
     }

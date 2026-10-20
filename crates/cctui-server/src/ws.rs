@@ -17,7 +17,7 @@ use crate::state::AppState;
 /// pass; everyone else must own the session (resolved via
 /// `machine_uuid -> machines.user_id`). A session whose owner can't be resolved
 /// is denied for non-admins rather than leaked. Returns `true` when permitted.
-pub(crate) async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) -> bool {
+pub async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) -> bool {
     if ctx.is_admin() {
         return true;
     }
@@ -76,10 +76,7 @@ pub async fn tui_ws(
 
 /// A present `Origin` must be in the allowlist; an absent one is a non-browser
 /// client (TUI/daemon) and is allowed. An unparseable `Origin` is rejected.
-pub(crate) fn origin_permitted(
-    config: &crate::config::Config,
-    headers: &axum::http::HeaderMap,
-) -> bool {
+pub fn origin_permitted(config: &crate::config::Config, headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(axum::http::header::ORIGIN)
         .is_none_or(|value| value.to_str().is_ok_and(|o| config.origin_allowed(o)))
@@ -215,7 +212,7 @@ async fn handle_message(
 /// The id is tracked before dispatch: a successful dispatch only means the
 /// frame was queued, the adapter's `CommandResult` under it is the delivery
 /// proof.
-pub(crate) async fn dispatch_reply(
+pub async fn dispatch_reply(
     state: &AppState,
     session_id: &str,
     content: String,
@@ -533,7 +530,7 @@ async fn handle_watch_text(state: &AppState, session_id: &str, watch: bool, watc
     }
 }
 
-pub(crate) async fn set_daemon_text_watch(state: &AppState, session_id: &str, watch: bool) {
+pub async fn set_daemon_text_watch(state: &AppState, session_id: &str, watch: bool) {
     let dispatch = crate::bus::dispatch(
         state,
         session_id,

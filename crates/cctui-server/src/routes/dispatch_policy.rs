@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn normalize_trims_dedups_and_rejects_nameless_packs_and_zero_limits() {
         let mut rules = DispatchPolicyRules {
-            dispatchers: vec![" b ".into(), "a".into(), "b".into(), "".into()],
+            dispatchers: vec![" b ".into(), "a".into(), "b".into(), String::new()],
             context_packs: vec![pack("p", " https://x ", Some(" "), None)],
             ..Default::default()
         };

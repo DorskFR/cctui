@@ -81,11 +81,6 @@ pub fn changes() -> watch::Receiver<u64> {
     REVISION.subscribe()
 }
 
-#[cfg(test)]
-fn revision() -> u64 {
-    *REVISION.borrow()
-}
-
 /// `CCTUI_HARNESS_AUTOUPDATE=0` forces the feature off on this machine,
 /// whatever the server says.
 #[must_use]
@@ -624,7 +619,7 @@ esac
         let relaunched = HarnessVersion { cli: Some("1.0.0".into()), daemon: Some("1.0.0".into()) };
         assert!(state.record_version("probe", relaunched), "a relaunched daemon is");
 
-        let mut rx = changes();
+        let rx = changes();
         assert!(!rx.has_changed().unwrap(), "a fresh subscriber starts caught up");
         record_version(
             "revision-probe",

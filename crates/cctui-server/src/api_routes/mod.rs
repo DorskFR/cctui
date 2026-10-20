@@ -69,6 +69,7 @@ pub fn register(r: Routes) -> Routes {
     let r = previews::register(r);
     let r = session_messages::register(r);
     let r = session_control::register(r);
+    let r = session_control::register_control(r);
     let r = session_state::register(r);
     let r = labels::register(r);
     let r = daemon::register(r);

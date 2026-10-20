@@ -33,7 +33,7 @@ pub enum Inbound {
     Control(VoiceClientMsg),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outbound {
     Control(VoiceServerMsg),
     Audio(Bytes),
@@ -245,10 +245,11 @@ impl<B: VoiceBackend> Engine<B> {
         self.speaking = false;
         self.dropping = self.turn_active;
         let cut = self.prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).barge_in;
-        if self.turn_active && cut {
-            if let Err(message) = self.backend.interrupt().await {
-                self.send(VoiceServerMsg::Error { message }).await;
-            }
+        if self.turn_active
+            && cut
+            && let Err(message) = self.backend.interrupt().await
+        {
+            self.send(VoiceServerMsg::Error { message }).await;
         }
         self.emit_state().await;
     }
