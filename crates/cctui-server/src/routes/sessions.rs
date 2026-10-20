@@ -3279,6 +3279,10 @@ pub async fn archive_one(
             registry.deregister(child);
         }
     }
+    crate::guard_step::forget(session_id);
+    for child in &children {
+        crate::guard_step::forget(child);
+    }
     state.bus.deregister_session_stream(session_id);
     for child in &children {
         state.bus.deregister_session_stream(child);
@@ -5488,5 +5492,32 @@ mod tests {
             assert_eq!(command_id, Some(id));
             assert_eq!(got, initiator);
         }
+    }
+
+    #[tokio::test]
+    async fn archiving_forgets_the_guard_step_mirror() {
+        let Some(url) = crate::routes::gateway::test_db_url("archiving_forgets_the_guard_step")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = crate::state::AppState::for_test(pool.clone());
+        let (uid, machine) = crate::events::tests::seed_user_machine(&pool, "arch-guard").await;
+        let sid = crate::events::tests::seed_session(&pool, uid, machine, Some("g")).await;
+        crate::guard_step::record(
+            sid.clone(),
+            cctui_proto::guard_step::GuardStepState { step: 2, ..Default::default() },
+        );
+        let outcome = super::archive_one(
+            &state,
+            &sid,
+            true,
+            RemoveInitiator::User,
+            crate::events::Actor::User(uid),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, super::ArchiveOutcome::Archived);
+        assert_eq!(crate::guard_step::get(&sid), None);
     }
 }

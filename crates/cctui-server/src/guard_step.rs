@@ -25,8 +25,13 @@ fn mirror() -> &'static DashMap<String, GuardStepState> {
 
 /// Store the pod's snapshot and tell every client watching the session.
 pub fn record_and_broadcast(bus: &Bus, session_id: String, state: GuardStepState) {
-    mirror().insert(session_id.clone(), state.clone());
+    record(session_id.clone(), state.clone());
     bus.publish_server(ServerEvent::GuardStepState { session_id, state });
+}
+
+/// Peer-ingest half of [`record_and_broadcast`]: must not re-publish.
+pub fn record(session_id: String, state: GuardStepState) {
+    mirror().insert(session_id, state);
 }
 
 #[must_use]
@@ -148,5 +153,13 @@ mod tests {
         assert_eq!(get("guard-s1").unwrap().step, 3, "the newest report wins");
         forget("guard-s1");
         assert_eq!(get("guard-s1"), None);
+    }
+
+    #[test]
+    fn a_peer_report_is_stored() {
+        record("guard-peer".into(), snapshot(4));
+        assert_eq!(get("guard-peer"), Some(snapshot(4)));
+        forget("guard-peer");
+        assert_eq!(get("guard-peer"), None);
     }
 }
