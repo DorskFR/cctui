@@ -923,13 +923,14 @@ async fn register_completion_webhook(
 /// `payload.spawn_capability` declares what the dispatched worker may spawn
 /// through `CctuiAgent`. It is read here, server-side, and never forwarded —
 /// the worker must not be able to read or restate its own capability. A
-/// policy-bound worker may spawn no children: they would escape the policy.
+/// policy-bound worker may spawn no children: they would escape the policy,
+/// so its dispatch is refused when that ceiling cannot be persisted.
 async fn persist_spawn_capability(
     state: &AppState,
     session_id: &str,
     forwarded_payload: &mut serde_json::Value,
     policy_bound: bool,
-) {
+) -> DispatchResult<()> {
     let declared = forwarded_payload
         .as_object_mut()
         .and_then(|obj| obj.remove("spawn_capability"))
@@ -951,8 +952,15 @@ async fn persist_spawn_capability(
             error = %e,
             "spawn-capability persist failed — CctuiAgent will be lost on server restart"
         );
+        if policy_bound {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not record the worker's spawn capability".into() }),
+            ));
+        }
     }
     state.spawn_capabilities.insert(session_id.to_owned(), cap);
+    Ok(())
 }
 
 /// Child posture ceiling when the dispatcher names none: the worker's own
@@ -1101,7 +1109,7 @@ pub async fn dispatch(
 
     register_completion_webhook(&state, &ctx, &req, &v.session_id).await;
     persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload, policy.is_some())
-        .await;
+        .await?;
     if let Some(uid) = real_user {
         if context_record_is_callers(&state.pool, &v.session_id, uid).await {
             let scope = dispatch_context_scope(uid, &req.payload);
@@ -1546,7 +1554,9 @@ mod tests {
             let state = state.clone();
             async move {
                 let mut payload = payload;
-                super::persist_spawn_capability(&state, &sid, &mut payload, bound).await;
+                super::persist_spawn_capability(&state, &sid, &mut payload, bound)
+                    .await
+                    .expect("persisted");
                 assert!(payload.get("spawn_capability").is_none(), "never forwarded");
                 let cached =
                     state.spawn_capabilities.get(&sid).map(|c| c.value().clone()).unwrap();
@@ -1591,6 +1601,31 @@ mod tests {
                 ..default
             }
         );
+    }
+
+    /// A policy-bound dispatch whose capability cannot be stored is refused
+    /// before it is forwarded; without a policy it still goes out.
+    #[tokio::test]
+    async fn a_policy_bound_dispatch_is_refused_when_its_capability_is_not_stored() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let state = crate::state::AppState::for_test(pool);
+        let payload = serde_json::json!({"spawn_capability": {"adapters": ["claude-code"]}});
+
+        let sid = format!("dispatch-cap-{}", uuid::Uuid::new_v4());
+        let (code, _) =
+            super::persist_spawn_capability(&state, &sid, &mut payload.clone(), true)
+                .await
+                .unwrap_err();
+        assert_eq!(code, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.spawn_capabilities.get(&sid).is_none());
+
+        let sid = format!("dispatch-cap-{}", uuid::Uuid::new_v4());
+        let mut unbound = payload;
+        super::persist_spawn_capability(&state, &sid, &mut unbound, false)
+            .await
+            .expect("no policy: a persist failure does not block the dispatch");
+        assert!(state.spawn_capabilities.get(&sid).is_some());
     }
 
     #[test]

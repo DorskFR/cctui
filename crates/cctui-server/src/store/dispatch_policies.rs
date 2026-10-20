@@ -115,6 +115,23 @@ pub async fn grants_dispatcher(
     .await
 }
 
+/// Whether the user owning `session_id` has a dispatch policy: the registered
+/// session's user, or the one its dispatch key was minted for.
+pub async fn session_is_policy_bound(
+    exec: impl PgExecutor<'_>,
+    session_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM dispatch_policies WHERE user_id IN ( \
+             SELECT user_id FROM sessions WHERE id = $1 \
+             UNION ALL \
+             SELECT user_id FROM auth_keys WHERE session_id = $1 AND kind = 'ephemeral'))",
+    )
+    .bind(session_id)
+    .fetch_one(exec)
+    .await
+}
+
 /// Forwarded dispatches of `user_id` still alive: an unexpired, unrevoked
 /// ephemeral worker key whose session has not reached a terminal state. Only
 /// recorded uses count, as a refused forward still minted a key.
