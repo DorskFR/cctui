@@ -64,6 +64,7 @@ PROXY_PORT=15001
 PROXY_HEALTH_PORT=15002
 GUARD_PORT=9999
 POLICY_FILE=/var/run/guard-proxy/policy.json
+PRIVATE_ALLOW_FILE=/var/run/guard-proxy/private-allow
 GUARD_STATE=/var/run/workflow-guard/state
 CONTEXT_DIR=/opt/context
 
@@ -160,17 +161,40 @@ url_host() {
     printf '%s' "$(url_hostport "$1")" | sed 's,:.*$,,'
 }
 
-# host:port of every model-gateway base URL the dispatch minted, one per line,
-# deduped. Pod env wins over the payload's env (docker/apple leave it there).
+GATEWAY_URL_KEYS="ANTHROPIC_BASE_URL OPENAI_BASE_URL FIREWORKS_BASE_URL GOOGLE_GEMINI_BASE_URL"
+
+# A model-gateway base URL the dispatch minted. Pod env wins over the payload's
+# env (docker/apple leave it there).
+gateway_url() {
+    eval "_gu=\${$1:-}"
+    if [ -z "$_gu" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+        _gu=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$1" '.env[$k] // empty' 2>/dev/null || true)
+    fi
+    printf '%s' "$_gu"
+}
+
+# host:port of every model-gateway base URL, one per line, deduped.
 gateway_hostports() {
-    for _k in ANTHROPIC_BASE_URL OPENAI_BASE_URL FIREWORKS_BASE_URL GOOGLE_GEMINI_BASE_URL; do
-        eval "_u=\${$_k:-}"
-        if [ -z "$_u" ] && [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
-            _u=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$_k" '.env[$k] // empty' 2>/dev/null || true)
-        fi
-        url_hostport "$_u"
+    for _k in $GATEWAY_URL_KEYS; do
+        url_hostport "$(gateway_url "$_k")"
         printf '\n'
     done | sed '/^$/d' | sort -u
+}
+
+# `host:port VAR` per control-plane URL: the hosts the guard-proxy may reach on
+# a private IP (bound to their own DNS answer). A file, because the sidecar
+# cannot read this env.
+private_allow_lines() {
+    for _k in CCTUI_URL CCTUI_SERVER_URL REPLY_URL $GATEWAY_URL_KEYS; do
+        case " $GATEWAY_URL_KEYS " in
+            *" $_k "*) _u=$(gateway_url "$_k") ;;
+            *) eval "_u=\${$_k:-}" ;;
+        esac
+        _hp=$(url_hostport "$_u")
+        if [ -n "$_hp" ]; then
+            printf '%s %s\n' "$_hp" "$_k"
+        fi
+    done
 }
 
 # Trust the guard-proxy sidecar's per-pod CA alongside the public roots.
@@ -291,6 +315,9 @@ seed_policy() {
     _allowed=$(printf '%s\n%s\n%s\n%s\n%s\n' "$_cctui_hp" "$_reply_hp" "$_gw_hps" "$_pack_hp" "$_net_allow" \
         | sed '/^$/d' | jq -R . | jq -cs 'unique')
     printf '{"allowed_hosts":%s,"default":"deny"}\n' "$_allowed" > "$POLICY_FILE"
+    private_allow_lines > "${PRIVATE_ALLOW_FILE}.tmp"
+    chmod 644 "${PRIVATE_ALLOW_FILE}.tmp"
+    mv -f "${PRIVATE_ALLOW_FILE}.tmp" "$PRIVATE_ALLOW_FILE"
     _gw_log=$(printf '%s' "$_gw_hps" | tr '\n' ',' | sed 's/,$//;s/,/, /g')
     log "seeded guard-proxy policy (allow: ${_cctui_hp}${_reply_hp:+, $_reply_hp}${_gw_log:+, $_gw_log}${_pack_hp:+, $_pack_hp}${WORKER_NET_ALLOW:+, $WORKER_NET_ALLOW}; default deny)"
 }

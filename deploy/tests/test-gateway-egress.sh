@@ -14,17 +14,21 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected [$2] got [$3]"
 
 log() { :; }
 POLICY_FILE="$TMP/policy.json"
-for fn in url_hostport url_host gateway_hostports seed_policy; do
+PRIVATE_ALLOW_FILE="$TMP/private-allow"
+eval "$(grep '^GATEWAY_URL_KEYS=' "$ENTRY")"
+for fn in url_hostport url_host gateway_url gateway_hostports private_allow_lines seed_policy; do
   eval "$(awk "/^${fn}\\(\\)/,/^}/" "$ENTRY")"
 done
 
 reset() {
-  unset REPLY_URL CONTEXT_PACK_URL WORKER_NET_ALLOW TASK_PAYLOAD_JSON \
+  unset REPLY_URL CONTEXT_PACK_URL WORKER_NET_ALLOW TASK_PAYLOAD_JSON CCTUI_URL CCTUI_SERVER_URL \
         ANTHROPIC_BASE_URL OPENAI_BASE_URL FIREWORKS_BASE_URL GOOGLE_GEMINI_BASE_URL
   CCTUI_BASE_URL="http://cctui.cctui.svc:8700"
   : > "$POLICY_FILE"
+  rm -f "$PRIVATE_ALLOW_FILE"
 }
 allowed() { jq -r '.allowed_hosts | sort | join(" ")' "$POLICY_FILE"; }
+private_allow() { sort "$PRIVATE_ALLOW_FILE" | tr '\n' ',' | sed 's/,$//'; }
 
 echo "== 1. no gateway env: server + reply hosts only =="
 reset
@@ -72,6 +76,26 @@ CONTEXT_PACK_URL="https://github.com/org/pack.git"
 WORKER_NET_ALLOW=" youtrack.example:443 , api.github.com:443 "
 seed_policy
 check "allowed_hosts" "api.github.com:443 cctui.cctui.svc:8700 cctui.dorsk.dev:443 github.com:443 youtrack.example:443" "$(allowed)"
+
+echo "== 6b. private allow-list: control-plane hosts only, labelled by source =="
+reset
+CCTUI_SERVER_URL="http://cctui.cctui.svc:8700"
+export ANTHROPIC_BASE_URL="https://cctui.dorsk.dev/gateway/anthropic"
+REPLY_URL="https://n8n.internal:5678/webhook/abc"
+CONTEXT_PACK_URL="https://github.com/org/pack.git"
+WORKER_NET_ALLOW="youtrack.example:443"
+seed_policy
+check "private-allow" "cctui.cctui.svc:8700 CCTUI_SERVER_URL,cctui.dorsk.dev:443 ANTHROPIC_BASE_URL,n8n.internal:5678 REPLY_URL" "$(private_allow)"
+check "private-allow mode" "644" "$(stat -c %a "$PRIVATE_ALLOW_FILE")"
+
+reset
+TASK_PAYLOAD_JSON='{"env":{"OPENAI_BASE_URL":"http://gw.internal:8080/v1"}}'
+seed_policy
+check "private-allow payload gateway" "gw.internal:8080 OPENAI_BASE_URL" "$(private_allow)"
+
+reset
+seed_policy
+check "private-allow empty without control-plane env" "" "$(private_allow)"
 
 echo "== 7. url_hostport parses the authority only =="
 check "empty" "" "$(url_hostport "")"
