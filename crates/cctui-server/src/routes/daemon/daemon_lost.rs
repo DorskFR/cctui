@@ -1,5 +1,5 @@
-use std::future::Future;
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -621,12 +621,9 @@ mod tests {
             .expect("seed presence");
         }
 
-        let mut marked = super::mark_daemon_lost(
-            &pool,
-            mid,
-            &[moved.clone(), stale.clone(), lost.clone()],
-        )
-        .await;
+        let mut marked =
+            super::mark_daemon_lost(&pool, mid, &[moved.clone(), stale.clone(), lost.clone()])
+                .await;
         marked.sort();
         let mut want = vec![stale.clone(), lost.clone()];
         want.sort();

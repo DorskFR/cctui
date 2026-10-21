@@ -678,11 +678,7 @@ mod tests {
         );
         assert_eq!(
             status(&pool, &crashed).await,
-            (
-                "ended".into(),
-                Some("daemon_lost".into()),
-                Some("daemon connection closed".into())
-            ),
+            ("ended".into(), Some("daemon_lost".into()), Some("daemon connection closed".into())),
             "only a completed end is evidence"
         );
         forget_user(&pool, uid).await;
