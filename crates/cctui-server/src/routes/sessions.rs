@@ -239,13 +239,15 @@ pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
     }
 }
 
-/// Newest `message` event per listed session.
+/// Newest `message` event per listed session that is not a turn annotation or
+/// a system marker (queue operations included): those never preview a row.
 ///
 /// `event_type = 'message'` must stay character-identical to the predicate of
-/// `idx_stream_events_latest_message` (migration 118); narrowing it here (a
-/// role filter, say) without narrowing the index costs the single probe. The
-/// per-session `LIMIT 1` is the other half: any shape that groups or sorts the
-/// whole fan-out instead reads every message row of every listed session.
+/// `idx_stream_events_latest_message` (migration 118). The role filter rides
+/// on top as a residual, so the backward walk only steps past the few
+/// bookkeeping rows that trail a turn. The per-session `LIMIT 1` is the other
+/// half: any shape that groups or sorts the whole fan-out instead reads every
+/// message row of every listed session.
 ///
 /// Ships only the first 400 chars of the string `text` (else `content`), twice
 /// what [`normalize_last_message`] keeps, plus whether it was cut; never the
@@ -262,6 +264,7 @@ const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e
                 se.created_at \
          FROM stream_events se \
          WHERE se.session_id = s.session_id AND se.event_type = 'message' \
+           AND se.payload->>'role' NOT IN ('turn_annotation', 'system_marker') \
          ORDER BY se.created_at DESC \
          LIMIT 1 \
      ) e ON true";
@@ -4470,8 +4473,11 @@ mod tests {
             "DISTINCT ON reads every message row of every listed session"
         );
         assert!(
-            !sql.contains("role"),
-            "a role filter here without the same filter in migration 118 loses the index"
+            sql.contains(
+                "event_type = 'message' \
+                 AND se.payload->>'role' NOT IN ('turn_annotation', 'system_marker')"
+            ),
+            "the role filter must stay a residual ANDed onto the index predicate"
         );
     }
 
@@ -4553,6 +4559,45 @@ mod tests {
                 assert_eq!(body, want);
             }
         }
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn turn_annotations_and_markers_never_become_the_preview() {
+        let Some((pool, sid)) = seeded_session("last_message_skips_annotations").await else {
+            return;
+        };
+        let annotation = |name: &str, text: &str| {
+            serde_json::json!({"role": "turn_annotation", "annotation": name, "text": text})
+        };
+        let marker = |name: &str, text: &str| {
+            serde_json::json!({"role": "system_marker", "marker": name, "text": text})
+        };
+        for payload in [
+            serde_json::json!({"role": "assistant", "text": "the real reply"}),
+            annotation("turn_duration", "turn_duration:3752"),
+            annotation("stop_hook_summary", "stop_hook_summary"),
+            annotation("file_history", "file_history:snapshot"),
+            marker("permission-mode", "mode: normal"),
+            marker("queue-operation", "enqueue: next"),
+        ] {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'message', $2)",
+            )
+            .bind(&sid)
+            .bind(&payload)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
+            .bind(vec![sid.clone()])
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].1.as_deref(), Some("the real reply"));
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }

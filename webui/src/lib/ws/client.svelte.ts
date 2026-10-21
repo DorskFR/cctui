@@ -10,10 +10,9 @@ import type { QueryClient } from '@tanstack/svelte-query';
 import {
 	KeyedListeners,
 	decodeBase64,
-	lastMessageExcerpt,
 	scheduledLaunchPatch,
 	spawnOutcomeFromEnd,
-	userMsgKey,
+	streamListPatch,
 	type AccountUsageEvent,
 	type CommandOutcome,
 	type GithubEvent,
@@ -165,15 +164,8 @@ export class WsClient {
 				const { session_id: sid, data } = msg;
 				this.commands.settleSpawn(sid, { ok: true });
 				this.streams.appendEvent(sid, data);
-				// The list's last-message column tracks USER messages only
-				// (server: event_type='message'); assistant text must not patch it.
-				if (userMsgKey(data) !== null && (data.type === 'text' || data.type === 'reply')) {
-					this.emitListPatch({
-						session_id: sid,
-						last_message_text: lastMessageExcerpt(data.content),
-						last_message_at: new Date(data.ts).toISOString()
-					});
-				}
+				const patch = streamListPatch(sid, data);
+				if (patch) this.emitListPatch(patch);
 				break;
 			}
 			case 'pty_chunk': {
