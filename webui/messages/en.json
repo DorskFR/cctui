@@ -2339,6 +2339,8 @@
 	"voice_dictation_empty": "Nothing was heard",
 	"voice_live_toggle": "Voice",
 	"voice_live_toggle_title": "Voice mode: talk with the session hands-free",
+	"voice_dictate_hint": "Dictate into the message box (push to talk)",
+	"voice_live_hint": "Live voice conversation with this session",
 	"voice_live_connecting": "Connecting",
 	"voice_live_listening": "Listening",
 	"voice_live_thinking": "Thinking",

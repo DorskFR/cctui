@@ -2339,6 +2339,8 @@
 	"voice_dictation_empty": "Rien n'a été entendu",
 	"voice_live_toggle": "Voix",
 	"voice_live_toggle_title": "Mode vocal : parler avec la session en mains libres",
+	"voice_dictate_hint": "Dicter dans la zone de message (maintenir pour parler)",
+	"voice_live_hint": "Conversation vocale en direct avec cette session",
 	"voice_live_connecting": "Connexion",
 	"voice_live_listening": "À l'écoute",
 	"voice_live_thinking": "Réflexion",

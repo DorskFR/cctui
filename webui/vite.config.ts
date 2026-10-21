@@ -104,6 +104,9 @@ const MIME: Record<string, string> = {
 	'.woff': 'font/woff',
 	'.woff2': 'font/woff2',
 	'.map': 'application/json',
+	'.wasm': 'application/wasm',
+	'.onnx': 'application/octet-stream',
+	'.webmanifest': 'application/manifest+json',
 	'.txt': 'text/plain;charset=utf-8'
 };
 
