@@ -54,6 +54,8 @@ const RELAY_BATCH: usize = 64;
 const RELAY_QUEUE: usize = 4096;
 /// How long a fetched peer-pod list is reused before re-querying `pods`.
 const PEER_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Timeout for one auth-cache purge POST to one peer.
+const AUTH_PURGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 // ---- wire types (shared with `crate::routes::internal`) ----
 
@@ -599,6 +601,70 @@ async fn peer_relay(
     }
 }
 
+/// Sends auth-cache purges straight to every live peer's `/internal/auth/purge`.
+///
+/// Bypasses the batched event relay so a revocation is never queued behind an
+/// event backlog.
+pub struct PeerAuthPurge {
+    pool: PgPool,
+    client: reqwest::Client,
+    pod: String,
+    port: u16,
+    secret: String,
+}
+
+impl PeerAuthPurge {
+    pub const fn new(
+        pool: PgPool,
+        client: reqwest::Client,
+        pod: String,
+        port: u16,
+        secret: String,
+    ) -> Self {
+        Self { pool, client, pod, port, secret }
+    }
+}
+
+impl crate::auth::PurgeRelay for PeerAuthPurge {
+    fn relay(&self, purge: crate::auth::CachePurge) {
+        let pool = self.pool.clone();
+        let client = self.client.clone();
+        let pod = self.pod.clone();
+        let port = self.port;
+        let secret = self.secret.clone();
+        tokio::spawn(async move {
+            let peers = presence::live_peer_pods(&pool, &pod).await;
+            let bases: Vec<String> = peers.iter().map(|ip| peer_base(ip, port)).collect();
+            send_auth_purge(&client, &bases, &secret, &purge).await;
+        });
+    }
+}
+
+/// POST `purge` to every peer in `bases` concurrently. Failures are logged
+/// only: the peer's entry then lives out its TTL.
+async fn send_auth_purge(
+    client: &reqwest::Client,
+    bases: &[String],
+    secret: &str,
+    purge: &crate::auth::CachePurge,
+) {
+    futures_util::future::join_all(bases.iter().map(|base| async move {
+        let sent = client
+            .post(format!("{base}/internal/auth/purge"))
+            .bearer_auth(secret)
+            .timeout(AUTH_PURGE_TIMEOUT)
+            .json(purge)
+            .send()
+            .await;
+        match sent {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => tracing::warn!(peer = %base, status = %r.status(), "peer auth purge rejected"),
+            Err(err) => tracing::warn!(peer = %base, %err, "peer auth purge failed"),
+        }
+    }))
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -817,5 +883,92 @@ mod tests {
         assert!(allowed_folders.is_empty());
         let back = decode_error(code, message, allowed_folders, Uuid::new_v4());
         assert!(matches!(back, BusError::ReadFile(r) if r.message == "no"));
+    }
+
+    fn cached_ctx() -> crate::auth::AuthContext {
+        crate::auth::AuthContext {
+            user_id: Uuid::new_v4(),
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::iter::once(crate::auth::Scope::Read).collect(),
+        }
+    }
+
+    /// A replica serving the real `/internal/auth/purge` handler, with `hash`
+    /// cached as live. Returns its state and base URL.
+    async fn replica_with_cached(hash: &str) -> (crate::state::AppState, String) {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let mut state = crate::state::AppState::for_test(pool);
+        state.internal_secret = Some(Arc::from("shared"));
+        state.auth_config.seed_cache(hash, cached_ctx());
+        let app = axum::Router::new()
+            .route(
+                "/internal/auth/purge",
+                axum::routing::post(crate::routes::internal::auth_purge),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (state, format!("http://{addr}"))
+    }
+
+    struct DirectPeers {
+        client: reqwest::Client,
+        bases: Vec<String>,
+    }
+
+    impl crate::auth::PurgeRelay for DirectPeers {
+        fn relay(&self, purge: crate::auth::CachePurge) {
+            let client = self.client.clone();
+            let bases = self.bases.clone();
+            tokio::spawn(async move { send_auth_purge(&client, &bases, "shared", &purge).await });
+        }
+    }
+
+    #[tokio::test]
+    async fn a_revoke_on_one_replica_drops_the_key_from_the_other() {
+        let (replica_b, base) = replica_with_cached("revoked").await;
+        replica_b.auth_config.seed_cache("other", cached_ctx());
+
+        let replica_a = crate::state::AppState::for_test(
+            PgPool::connect_lazy("postgres://invalid").unwrap(),
+        );
+        replica_a
+            .auth_config
+            .set_peers(Arc::new(DirectPeers { client: reqwest::Client::new(), bases: vec![base] }));
+        replica_a.auth_config.purge("revoked");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while replica_b.auth_config.is_cached("revoked") {
+            assert!(tokio::time::Instant::now() < deadline, "peer purge never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(replica_b.auth_config.is_cached("other"), "only the revoked hash is dropped");
+
+        replica_a.auth_config.purge_all();
+        while replica_b.auth_config.is_cached("other") {
+            assert!(tokio::time::Instant::now() < deadline, "peer purge-all never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_purge_with_the_wrong_secret_is_refused() {
+        let (replica, base) = replica_with_cached("h").await;
+        let purge = crate::auth::CachePurge::Key { key_hash: "h".into() };
+        send_auth_purge(&reqwest::Client::new(), &[base], "wrong", &purge).await;
+        assert!(replica.auth_config.is_cached("h"));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_peer_does_not_stall_the_others() {
+        let (replica, base) = replica_with_cached("h").await;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let purge = crate::auth::CachePurge::Key { key_hash: "h".into() };
+        send_auth_purge(&reqwest::Client::new(), &[dead, base], "shared", &purge).await;
+        assert!(!replica.auth_config.is_cached("h"));
     }
 }

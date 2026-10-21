@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::Request;
@@ -10,8 +11,25 @@ use axum::response::Response;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Cache TTL for positive auth lookups. Bounds revocation latency.
+/// Cache TTL for positive auth lookups. Bounds revocation latency when a
+/// peer replica misses the purge broadcast.
 const CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// What to drop from an auth cache: one token hash, or everything (scope edits,
+/// user revoke/disable, where the affected hashes aren't tracked).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum CachePurge {
+    Key { key_hash: String },
+    All,
+}
+
+/// Carries a local purge to the other replicas.
+///
+/// Best-effort: a peer that misses it serves its entry until the cache TTL.
+pub trait PurgeRelay: Send + Sync {
+    fn relay(&self, purge: CachePurge);
+}
 
 /// The deliberately small scope set. Split later if needed; can't
 /// easily un-split. `admin` implies the cross-user god-view; the rest are
@@ -121,12 +139,29 @@ pub struct AuthConfig {
     admin_token_hashes: Vec<String>,
     pub pool: PgPool,
     cache: Arc<Mutex<HashMap<String, CacheEntry>>>,
+    /// Bumped by every purge so a lookup that raced it doesn't re-cache the
+    /// pre-revoke answer.
+    epoch: Arc<AtomicU64>,
+    peers: Arc<OnceLock<Arc<dyn PurgeRelay>>>,
 }
 
 impl AuthConfig {
     pub fn new(admin_tokens: Vec<String>, pool: PgPool) -> Self {
         let admin_token_hashes = admin_tokens.iter().map(|t| sha256_hex(t)).collect();
-        Self { admin_tokens, admin_token_hashes, pool, cache: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            admin_tokens,
+            admin_token_hashes,
+            pool,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            epoch: Arc::new(AtomicU64::new(0)),
+            peers: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Broadcast every purge to the other replicas. Shared by all clones; a
+    /// second call is ignored.
+    pub fn set_peers(&self, relay: Arc<dyn PurgeRelay>) {
+        let _ = self.peers.set(relay);
     }
 
     /// Resolve `CCTUI_ADMIN_TOKENS` to a seeded admin **user** with `{admin}`
@@ -185,20 +220,36 @@ impl AuthConfig {
         tracing::info!(count = self.admin_tokens.len(), "seeded admin user + env keys");
     }
 
-    /// Purge a cached entry by its key hash. Call after revoke/rotate/scope-edit
-    /// so the change takes effect immediately rather than after TTL.
+    /// Purge a cached entry by its key hash, here and on every peer replica.
+    /// Call after revoke/rotate so the change takes effect immediately.
     pub fn purge(&self, key_hash: &str) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.remove(key_hash);
+        self.purge_everywhere(CachePurge::Key { key_hash: key_hash.to_owned() });
+    }
+
+    /// Drop the entire cache, here and on every peer replica. Used after an
+    /// ACL edit or a user-wide revoke, since cached hashes aren't indexed by
+    /// key or user.
+    pub fn purge_all(&self) {
+        self.purge_everywhere(CachePurge::All);
+    }
+
+    fn purge_everywhere(&self, purge: CachePurge) {
+        self.purge_local(&purge);
+        if let Some(peers) = self.peers.get() {
+            peers.relay(purge);
         }
     }
 
-    /// Drop the entire cache. Used after an ACL edit (user or key scope change)
-    /// since we don't track which token hashes a given key/user owns in cache;
-    /// the cache repopulates within one request and TTL is short anyway.
-    pub fn purge_all(&self) {
+    /// Apply a purge to this replica only; the receiving end of a peer relay.
+    pub fn purge_local(&self, purge: &CachePurge) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut cache) = self.cache.lock() {
-            cache.clear();
+            match purge {
+                CachePurge::Key { key_hash } => {
+                    cache.remove(key_hash);
+                }
+                CachePurge::All => cache.clear(),
+            }
         }
     }
 
@@ -213,8 +264,22 @@ impl AuthConfig {
         None
     }
 
-    fn cache_put(&self, hash: String, ctx: AuthContext) {
-        if let Ok(mut cache) = self.cache.lock() {
+    #[cfg(test)]
+    pub fn seed_cache(&self, hash: &str, ctx: AuthContext) {
+        self.cache_put(hash.to_owned(), ctx, self.epoch.load(Ordering::SeqCst));
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_cached(&self, hash: &str) -> bool {
+        self.cache_get(hash).is_some()
+    }
+
+    /// Cache `ctx` unless a purge landed since `epoch` was read.
+    fn cache_put(&self, hash: String, ctx: AuthContext, epoch: u64) {
+        if let Ok(mut cache) = self.cache.lock()
+            && self.epoch.load(Ordering::SeqCst) == epoch
+        {
             cache.insert(hash, CacheEntry { ctx, expires: Instant::now() + CACHE_TTL });
         }
     }
@@ -238,13 +303,14 @@ impl AuthConfig {
             return Some(ctx);
         }
 
+        let epoch = self.epoch.load(Ordering::SeqCst);
         let mut resolved = self.resolve(&hash).await;
         if matches!(resolved, Ok(None)) && self.admin_token_hashes.contains(&hash) {
             resolved = self.reseed_env_admin(&hash).await;
         }
         match resolved {
             Ok(Some(ctx)) => {
-                self.cache_put(hash, ctx.clone());
+                self.cache_put(hash, ctx.clone(), epoch);
                 Some(ctx)
             }
             Ok(None) => None,
@@ -802,9 +868,86 @@ mod tests {
             machine_id: None,
             scopes: std::iter::once(Scope::Read).collect(),
         };
-        cfg.cache_put("h".into(), ctx);
+        cfg.cache_put("h".into(), ctx, 0);
         assert!(cfg.cache_get("h").is_some());
         cfg.purge("h");
         assert!(cfg.cache_get("h").is_none());
+    }
+
+    fn read_ctx() -> AuthContext {
+        AuthContext {
+            user_id: Uuid::nil(),
+            key_id: Uuid::nil(),
+            machine_id: None,
+            scopes: std::iter::once(Scope::Read).collect(),
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingRelay(Mutex<Vec<CachePurge>>);
+
+    impl PurgeRelay for RecordingRelay {
+        fn relay(&self, purge: CachePurge) {
+            self.0.lock().unwrap().push(purge);
+        }
+    }
+
+    #[tokio::test]
+    async fn purges_are_relayed_to_peers_from_every_clone() {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let cfg = AuthConfig::new(vec![], pool);
+        let early_clone = cfg.clone();
+        let relay = Arc::new(RecordingRelay::default());
+        cfg.set_peers(relay.clone());
+
+        early_clone.purge("h");
+        cfg.purge_all();
+        assert_eq!(
+            *relay.0.lock().unwrap(),
+            vec![CachePurge::Key { key_hash: "h".into() }, CachePurge::All]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relayed_purge_drops_the_entry_without_rebroadcasting() {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let cfg = AuthConfig::new(vec![], pool);
+        let relay = Arc::new(RecordingRelay::default());
+        cfg.set_peers(relay.clone());
+        cfg.cache_put("a".into(), read_ctx(), 0);
+        cfg.cache_put("b".into(), read_ctx(), 0);
+
+        cfg.purge_local(&CachePurge::Key { key_hash: "a".into() });
+        assert!(cfg.cache_get("a").is_none());
+        assert!(cfg.cache_get("b").is_some());
+
+        cfg.purge_local(&CachePurge::All);
+        assert!(cfg.cache_get("b").is_none());
+        assert!(relay.0.lock().unwrap().is_empty(), "a peer's purge must not loop back");
+    }
+
+    #[tokio::test]
+    async fn a_lookup_racing_a_purge_is_not_cached() {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        let cfg = AuthConfig::new(vec![], pool);
+        let epoch = cfg.epoch.load(Ordering::SeqCst);
+        cfg.purge_local(&CachePurge::Key { key_hash: "h".into() });
+        cfg.cache_put("h".into(), read_ctx(), epoch);
+        assert!(cfg.cache_get("h").is_none());
+    }
+
+    #[test]
+    fn cache_ttl_fallback_is_unchanged() {
+        assert_eq!(CACHE_TTL, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn cache_purge_wire_shape() {
+        let key = CachePurge::Key { key_hash: "abc".into() };
+        assert_eq!(
+            serde_json::to_value(&key).unwrap(),
+            serde_json::json!({"op": "key", "key_hash": "abc"})
+        );
+        assert_eq!(serde_json::to_value(CachePurge::All).unwrap(), serde_json::json!({"op": "all"}));
     }
 }
