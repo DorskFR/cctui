@@ -1,6 +1,6 @@
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -165,8 +165,10 @@ pub async fn cancel(
 
 pub async fn send_now(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path((session_id, queue_id)): Path<(String, uuid::Uuid)>,
 ) -> ApiResult<StatusCode> {
+    crate::routes::sessions::authorize_reply(&state, &ctx, &session_id).await?;
     let row = claim_one(&state.pool, &session_id, queue_id).await?.ok_or_else(not_pending)?;
     deliver(&state, row).await.map_err(|e| AppError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     Ok(StatusCode::ACCEPTED)
