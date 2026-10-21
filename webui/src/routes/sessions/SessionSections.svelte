@@ -3,7 +3,8 @@
 	import type { Snippet } from 'svelte';
 	import { Button, Callout, Container, Spinner, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { nest, idsForSection } from './sessions.logic';
+	import type { SessionListItem } from '@bindings/SessionListItem';
+	import { nest, idsForSection, machineGroupLiveness } from './sessions.logic';
 	import type { SessionsPage } from './sessionsPage.svelte';
 	import SessionGroupHeader from './SessionGroupHeader.svelte';
 	import SessionRows from './SessionRows.svelte';
@@ -102,7 +103,13 @@
 	key: string,
 	label: string,
 	count: number,
-	opts: { hue?: number | null; bucket?: string | null; machine?: string | null; archiveIds?: string[] }
+	opts: {
+		hue?: number | null;
+		bucket?: string | null;
+		machine?: string | null;
+		sessions?: SessionListItem[];
+		archiveIds?: string[];
+	}
 )}
 	<SessionGroupHeader
 		{sp}
@@ -112,7 +119,9 @@
 		hue={opts.hue}
 		bucket={opts.bucket}
 		machine={opts.machine}
-		liveness={opts.machine ? machineLiveness(opts.machine) : null}
+		liveness={opts.machine
+			? machineGroupLiveness(machineLiveness(opts.machine), opts.sessions ?? [])
+			: null}
 		archiveIds={opts.archiveIds}
 	/>
 {/snippet}
@@ -133,6 +142,7 @@
 					{@render groupHeader(key, g.label, g.sessions.length, {
 						hue: g.hue,
 						machine: sp.groupBy === 'machine' && g.hue !== null ? g.label : null,
+						sessions: g.sessions,
 						archiveIds: idsForSection(g.sessions, sp.childGroupsOf)
 					})}
 					{#if !sp.hiddenSections.has(key)}
