@@ -518,6 +518,9 @@ impl Driver {
                     self.server_marks.insert(loc.offset_key.clone(), new_off);
                     dirty = true;
                 }
+                if events.iter().any(dispatch_done::is_reply) {
+                    self.note_dispatch_reply(&loc.offset_key);
+                }
                 if let Some(last) = events.last() {
                     // "Last parsed event" for diagnose.
                     self.last_parsed.insert(
@@ -657,6 +660,15 @@ impl Driver {
                     );
                 }
             }
+        }
+    }
+
+    fn note_dispatch_reply(&self, offset_key: &str) {
+        let Ok(mut guard) = self.dispatch_done.lock() else { return };
+        let Some(tracker) = guard.as_mut() else { return };
+        let Some(loc) = self.transcript_locations.get(tracker.short()) else { return };
+        if loc.offset_key == offset_key {
+            tracker.note_reply();
         }
     }
 
@@ -1342,6 +1354,82 @@ mod tests {
             ),
             "the dispatch_done marker is completion evidence on its own"
         );
+    }
+
+    fn dispatch_with_transcript(d: &mut Driver, lines: &[&str]) -> std::path::PathBuf {
+        let sid = "abcd1234-5678-90ab-cdef-000000000000";
+        *d.dispatch_done.lock().unwrap() =
+            Some(DispatchDoneTracker::new(sid, &d.cfg.jobs_root, std::time::Duration::ZERO));
+        std::fs::create_dir_all(&d.cfg.projects_root).unwrap();
+        let path = d.cfg.projects_root.join(format!("{sid}.jsonl"));
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        d.transcript_locations.insert(
+            "abcd1234".into(),
+            TranscriptLocation {
+                path,
+                local_id: sid.into(),
+                cwd: "/tmp".into(),
+                offset_key: sid.into(),
+            },
+        );
+        d.cfg.jobs_root.join("abcd1234/dispatch_done")
+    }
+
+    const PROMPT: &str =
+        r#"{"type":"user","message":{"role":"user","content":"What is 17 times 23?"}}"#;
+
+    #[tokio::test]
+    async fn a_dispatch_answered_before_any_busy_poll_settles_and_ends_completed() {
+        let (mut d, mut rx) = driver();
+        let answer = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"391"}]}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, answer]);
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        d.tick_dispatch_done(std::slice::from_ref(&idle));
+        assert!(marker.exists(), "the reply is evidence of work, so settled idle marks it done");
+
+        while rx.try_recv().is_ok() {}
+        d.end_finished_dispatch(Path::new("/nonexistent/result.json"), false).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AdapterEvent::SessionEnded { reason: EndReason::Completed, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_with_only_its_prompt_is_not_finished() {
+        let (mut d, mut rx) = driver();
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT]);
+        let mut idle = snap("abcd1234", "done", None);
+        idle.tempo = Some("idle".into());
+
+        d.tail_transcripts().await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&idle));
+        }
+        assert!(!marker.exists(), "a cold start that has not answered yet is not done");
+        while rx.try_recv().is_ok() {}
+        d.end_finished_dispatch(Path::new("/nonexistent/result.json"), false).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_blocked_on_a_permission_after_replying_is_not_finished() {
+        let (mut d, _rx) = driver();
+        let tool = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let marker = dispatch_with_transcript(&mut d, &[PROMPT, tool]);
+        let mut blocked = snap("abcd1234", "done", None);
+        blocked.tempo = Some("blocked".into());
+        blocked.needs = Some("approve Bash: ls".into());
+
+        d.tail_transcripts().await;
+        for _ in 0..3 {
+            d.tick_dispatch_done(std::slice::from_ref(&blocked));
+        }
+        assert!(!marker.exists());
     }
 
     #[tokio::test]
