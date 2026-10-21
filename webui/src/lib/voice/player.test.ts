@@ -77,6 +77,43 @@ describe('SpeechPlayer', () => {
 		expect(made).toHaveLength(1);
 	});
 
+	it('starts the first sentence while later ones render, then plays them in order', () => {
+		const { p, made } = player();
+		const line = (id: string, size: number) => {
+			p.begin(id);
+			p.chunk(new Uint8Array(size));
+			p.end(id);
+		};
+		line('1-1', 1);
+		expect(made.map((a) => a.src)).toEqual(['blob:1']);
+		line('1-2', 2);
+		line('1-3', 3);
+		expect(made).toHaveLength(1);
+		made[0].onended?.();
+		made[1].onerror?.();
+		made[2].onended?.();
+		expect(made.map((a) => a.src)).toEqual(['blob:1', 'blob:2', 'blob:3']);
+		expect(p.playing).toBe(false);
+	});
+
+	it('stop drops every queued sentence and the one still rendering', () => {
+		const { p, made, idle } = player();
+		for (const id of ['1-1', '1-2', '1-3']) {
+			p.begin(id);
+			p.chunk(new Uint8Array([1]));
+			p.end(id);
+		}
+		p.begin('1-4');
+		p.chunk(new Uint8Array([1]));
+		p.stop();
+		p.chunk(new Uint8Array([2]));
+		p.end('1-4');
+		made[0].onended?.();
+		expect(made).toHaveLength(1);
+		expect(p.playing).toBe(false);
+		expect(idle.at(-1)).toBe(true);
+	});
+
 	it('plays the first line after an unlock', async () => {
 		const { p, made } = player();
 		await p.unlock();

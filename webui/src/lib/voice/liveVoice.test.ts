@@ -2,7 +2,7 @@ import { flushSync } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_VOICE } from '$lib/settings.svelte';
 import { LiveVoice, voiceSocketUrl, type SocketLike } from './liveVoice.svelte';
-import type { SpeechPlayer } from './player';
+import { type AudioLike, SpeechPlayer } from './player';
 import type { VadCallbacks, VadHandle } from './vad';
 
 vi.mock('$lib/config', () => ({ wsBase: () => 'ws://x/api/v1' }));
@@ -213,6 +213,65 @@ describe('LiveVoice', () => {
 		h.socket?.frame({ type: 'speak_start', line_id: '3-1', text: 'Fresh.' });
 		expect(h.player.begin).toHaveBeenCalledTimes(2);
 		expect(h.player.begin).toHaveBeenLastCalledWith('3-1');
+	});
+
+	it('a barge-in empties the real player queue and the cut reply never resumes', async () => {
+		const played: string[] = [];
+		const audios: AudioLike[] = [];
+		const player = new SpeechPlayer({
+			mime: () => 'audio/ogg',
+			createAudio: () => {
+				const a: AudioLike = {
+					src: '',
+					playbackRate: 1,
+					onended: null,
+					onerror: null,
+					play: async () => {
+						if (a.src.startsWith('blob:')) played.push(a.src);
+					},
+					pause: vi.fn()
+				};
+				audios.push(a);
+				return a;
+			},
+			createUrl: (blob) => `blob:${blob.size}`,
+			revokeUrl: () => {}
+		});
+		let socket: FakeSocket | null = null;
+		let cb: VadCallbacks | null = null;
+		const voice = new LiveVoice({
+			connect: (url) => (socket = new FakeSocket(url)),
+			vad: async (c) => {
+				cb = c;
+				return { start: vi.fn(), pause: vi.fn(), destroy: vi.fn() };
+			},
+			player,
+			wakeLock: async () => () => {},
+			prefs: () => ({ ...DEFAULT_VOICE, bargeIn: true })
+		});
+		await voice.start('sess');
+		const sock = socket as unknown as FakeSocket;
+		sock.open();
+		for (let i = 0; i < 4; i++) await Promise.resolve();
+		const line = (id: string, size: number) => {
+			sock.frame({ type: 'speak_start', line_id: id, text: id });
+			sock.frame(new Uint8Array(size).buffer);
+			sock.frame({ type: 'speak_end', line_id: id });
+		};
+		line('1-1', 1);
+		line('1-2', 2);
+		line('1-3', 3);
+		expect(played).toEqual(['blob:1']);
+
+		(cb as unknown as VadCallbacks).onSpeechStart();
+		expect(player.playing).toBe(false);
+		line('1-4', 4);
+		audios[0].onended?.();
+		expect(played).toEqual(['blob:1']);
+
+		line('2-1', 5);
+		expect(played).toEqual(['blob:1', 'blob:5']);
+		voice.stop();
 	});
 
 	it('mute pauses the vad and drops utterances', async () => {

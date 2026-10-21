@@ -6,6 +6,11 @@ use cctui_proto::voice::SpokenStyle;
 
 /// Longer sentences are cut at a space so one TTS request stays short.
 const MAX_SENTENCE_CHARS: usize = 300;
+/// Streamed sentences shorter than this wait to be spoken with the next one.
+const MIN_STREAMED_CHARS: usize = 40;
+/// Words whose trailing period does not end a sentence.
+const ABBREVIATIONS: [&str; 10] =
+    ["e.g", "i.e", "etc", "vs", "cf", "mr", "mrs", "ms", "dr", "approx"];
 pub const UTTERANCE_SAMPLE_RATE: u32 = 16_000;
 
 fn is_rule(line: &str) -> bool {
@@ -109,6 +114,11 @@ pub fn strip_markdown(text: &str) -> String {
     out.trim().to_owned()
 }
 
+fn is_abbreviation(text: &str, dot: usize) -> bool {
+    let word = text[..dot].rsplit(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("");
+    ABBREVIATIONS.iter().any(|a| word.eq_ignore_ascii_case(a))
+}
+
 /// Byte offset just past the first sentence end in `text`, if one is complete:
 /// terminal punctuation (plus closing quotes or emphasis) followed by
 /// whitespace, or a newline.
@@ -118,7 +128,7 @@ fn sentence_end(text: &str) -> Option<usize> {
         if c == '\n' {
             return Some(i + 1);
         }
-        if !matches!(c, '.' | '!' | '?' | '…') {
+        if !matches!(c, '.' | '!' | '?' | '…') || (c == '.' && is_abbreviation(text, i)) {
             continue;
         }
         let mut end = i + c.len_utf8();
@@ -170,13 +180,20 @@ pub fn split_sentences(text: &str) -> Vec<String> {
     out
 }
 
+fn fences_closed(text: &str) -> bool {
+    ["```", "~~~"].into_iter().all(|m| text.matches(m).count() % 2 == 0)
+}
+
 /// Accumulates streamed markdown and yields sentences as they complete, so
 /// speech can start before the block ends.
 ///
-/// Text inside an open code fence is held back until the fence closes.
+/// Text inside an open code fence is held back until the fence closes, and
+/// a sentence under [`MIN_STREAMED_CHARS`] waits for the next one.
 #[derive(Debug, Default)]
 pub struct SentenceBuffer {
     raw: String,
+    /// Complete sentences too short to speak alone yet.
+    held: String,
 }
 
 impl SentenceBuffer {
@@ -186,34 +203,72 @@ impl SentenceBuffer {
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.raw.trim().is_empty()
+        self.raw.trim().is_empty() && self.held.is_empty()
     }
 
-    /// Every sentence that is complete so far; the tail stays buffered.
-    pub fn drain(&mut self) -> Vec<String> {
-        let scan_end = ["```", "~~~"]
+    /// Where an open code fence starts, or the end of the buffer.
+    fn scan_end(&self) -> usize {
+        ["```", "~~~"]
             .into_iter()
             .filter(|m| self.raw.matches(m).count() % 2 == 1)
             .filter_map(|m| self.raw.rfind(m))
             .min()
-            .unwrap_or(self.raw.len());
-        let mut consumed = 0;
-        while let Some(end) = sentence_end(&self.raw[consumed..scan_end]) {
-            consumed += end;
+            .unwrap_or(self.raw.len())
+    }
+
+    /// Text a [`Self::pause`] would speak.
+    pub fn has_pending(&self) -> bool {
+        !self.held.is_empty() || !self.raw[..self.scan_end()].trim().is_empty()
+    }
+
+    /// Every sentence that is complete so far; the tail stays buffered.
+    pub fn drain(&mut self) -> Vec<String> {
+        let scan_end = self.scan_end();
+        let (mut at, mut cut) = (0, 0);
+        while let Some(end) = sentence_end(&self.raw[at..scan_end]) {
+            at += end;
+            if fences_closed(&self.raw[..at]) {
+                cut = at;
+            }
         }
-        let head = self.raw[..consumed].to_owned();
-        self.raw.drain(..consumed);
-        split_sentences(&strip_markdown(&head))
+        let head: String = self.raw.drain(..cut).collect();
+        let mut out = Vec::new();
+        for sentence in split_sentences(&strip_markdown(&head)) {
+            if !self.held.is_empty() {
+                self.held.push(' ');
+            }
+            self.held.push_str(&sentence);
+            if self.held.chars().count() >= MIN_STREAMED_CHARS {
+                out.push(std::mem::take(&mut self.held));
+            }
+        }
+        out
+    }
+
+    /// Everything buffered outside an open code fence, complete or not: the
+    /// stream paused.
+    pub fn pause(&mut self) -> Vec<String> {
+        let head: String = self.raw.drain(..self.scan_end()).collect();
+        self.after_held(split_sentences(&strip_markdown(&head)))
     }
 
     /// Everything buffered, complete or not.
     pub fn flush(&mut self) -> Vec<String> {
         let raw = std::mem::take(&mut self.raw);
-        split_sentences(&strip_markdown(&raw))
+        self.after_held(split_sentences(&strip_markdown(&raw)))
+    }
+
+    fn after_held(&mut self, sentences: Vec<String>) -> Vec<String> {
+        let held = std::mem::take(&mut self.held);
+        if held.is_empty() {
+            return sentences;
+        }
+        std::iter::once(held).chain(sentences).collect()
     }
 
     pub fn clear(&mut self) {
         self.raw.clear();
+        self.held.clear();
     }
 }
 
@@ -308,15 +363,18 @@ mod tests {
         assert_eq!(parts.concat().replace(' ', ""), long.replace(' ', ""));
     }
 
+    const LONG_A: &str = "The first sentence is long enough to speak.";
+    const LONG_B: &str = "The second one is also long enough to go.";
+
     #[test]
     fn buffer_yields_complete_sentences_and_holds_open_fences() {
         let mut buf = SentenceBuffer::default();
-        buf.push("First one. Sec");
-        assert_eq!(buf.drain(), vec!["First one."]);
-        buf.push("ond one! ```rust\nlet x = 1. ");
-        assert_eq!(buf.drain(), vec!["Second one!"]);
-        buf.push("\n```\nafter the code. tail");
-        assert_eq!(buf.drain(), vec!["after the code."]);
+        buf.push(&format!("{LONG_A} Sec"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push("ond one is also long enough to go now! ```rust\nlet x = 1. ");
+        assert_eq!(buf.drain(), vec!["Second one is also long enough to go now!"]);
+        buf.push(&format!("\n```\n{LONG_B} tail"));
+        assert_eq!(buf.drain(), vec![LONG_B]);
         assert_eq!(buf.flush(), vec!["tail"]);
         assert!(buf.is_empty());
     }
@@ -324,10 +382,60 @@ mod tests {
     #[test]
     fn buffer_holds_open_tilde_fences() {
         let mut buf = SentenceBuffer::default();
-        buf.push("Intro.\n~~~\ncode line one.\n");
-        assert_eq!(buf.drain(), vec!["Intro."]);
-        buf.push("more code.\n~~~\nAfter. tail");
-        assert_eq!(buf.drain(), vec!["After."]);
+        buf.push(&format!("{LONG_A}\n~~~\ncode line one.\n"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push(&format!("more code.\n~~~\n{LONG_B} tail"));
+        assert_eq!(buf.drain(), vec![LONG_B]);
+    }
+
+    #[test]
+    fn a_fence_closer_streamed_without_its_newline_still_closes() {
+        let mut buf = SentenceBuffer::default();
+        buf.push(&format!("{LONG_A}\n```\ncode line.\n```"));
+        assert_eq!(buf.drain(), vec![LONG_A]);
+        buf.push(&format!("\n{LONG_B} tail"));
+        assert_eq!(buf.drain(), vec![LONG_B]);
+        assert_eq!(buf.flush(), vec!["tail"]);
+    }
+
+    #[test]
+    fn short_streamed_sentences_wait_for_the_next_one() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Sure. Okay. ");
+        assert!(buf.drain().is_empty());
+        assert!(buf.has_pending());
+        buf.push(&format!("{LONG_A} Done. "));
+        assert_eq!(buf.drain(), vec![format!("Sure. Okay. {LONG_A}")]);
+        assert_eq!(buf.flush(), vec!["Done."]);
+    }
+
+    #[test]
+    fn abbreviations_and_decimals_do_not_end_a_sentence() {
+        assert_eq!(
+            split_sentences("Use a tool, e.g. a hammer. Or i.e. this one vs. that. Done"),
+            vec!["Use a tool, e.g. a hammer.", "Or i.e. this one vs. that.", "Done"]
+        );
+        let mut buf = SentenceBuffer::default();
+        buf.push("Version 3.");
+        assert!(buf.drain().is_empty());
+        buf.push("5 shipped with a few fixes, e.g. ");
+        assert!(buf.drain().is_empty());
+        buf.push("the voice one. Next");
+        assert_eq!(buf.drain(), vec!["Version 3.5 shipped with a few fixes, e.g. the voice one."]);
+    }
+
+    #[test]
+    fn a_pause_speaks_the_tail_but_not_an_open_fence() {
+        let mut buf = SentenceBuffer::default();
+        buf.push("Short. And a half");
+        assert!(buf.drain().is_empty());
+        assert_eq!(buf.pause(), vec!["Short.", "And a half"]);
+        assert!(!buf.has_pending());
+        buf.push("See https://example.com/x for it:\n```sh\nrm -rf build.\n");
+        assert_eq!(buf.pause(), vec!["See for it:"]);
+        assert!(!buf.has_pending(), "an open fence is not pending speech");
+        buf.push("```\nAfter the code.");
+        assert_eq!(buf.pause(), vec!["After the code."]);
     }
 
     #[test]
@@ -338,8 +446,8 @@ mod tests {
     #[test]
     fn buffer_treats_bold_closers_as_part_of_the_sentence() {
         let mut buf = SentenceBuffer::default();
-        buf.push("**Done.** Next");
-        assert_eq!(buf.drain(), vec!["Done."]);
+        buf.push("**Done, and the whole build is green again.** Next");
+        assert_eq!(buf.drain(), vec!["Done, and the whole build is green again."]);
         assert_eq!(buf.flush(), vec!["Next"]);
     }
 

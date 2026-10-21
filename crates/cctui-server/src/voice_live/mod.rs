@@ -22,6 +22,7 @@ use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::auth::{AuthContext, Scope};
 use crate::speech::SpeechClient;
@@ -220,8 +221,10 @@ async fn relay_signals(
             () = cancel.cancelled() => break,
             frame = server_rx.recv() => match frame {
                 Ok(frame) => match &*frame.event {
-                    ServerEvent::TextDelta { session_id: sid, delta, .. } if *sid == session_id => {
-                        Some(Signal::Delta(delta.clone()))
+                    ServerEvent::TextDelta { session_id: sid, item_id, delta }
+                        if *sid == session_id =>
+                    {
+                        Some(Signal::Delta { item: item_id.clone(), text: delta.clone() })
                     }
                     ServerEvent::Stream { session_id: sid, data } if *sid == session_id => {
                         signal_of(data)
@@ -280,7 +283,9 @@ async fn handle_voice_ws(
     });
 
     let prefs = Prefs { barge_in: true, language, ..Prefs::default() };
-    run_voice_loop(backend, prefs, in_rx, sig_rx, out_tx).await;
+    run_voice_loop(backend, prefs, in_rx, sig_rx, out_tx)
+        .instrument(tracing::info_span!("voice", session = %session_id))
+        .await;
 
     reader.abort();
     cancel.cancel();

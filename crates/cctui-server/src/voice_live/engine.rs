@@ -9,6 +9,8 @@ use cctui_proto::voice::{SpokenStyle, VoiceClientMsg, VoiceServerMsg, VoiceState
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use tokio::sync::mpsc;
+use tokio::time::{Instant, sleep_until};
+use tracing::Instrument;
 
 use super::text::{SentenceBuffer, spoken_prompt};
 
@@ -56,7 +58,8 @@ pub enum Outbound {
 pub enum Signal {
     /// A prompt reached the agent: a new turn starts.
     TurnStart,
-    Delta(String),
+    /// Streamed text of the block `item`.
+    Delta { item: String, text: String },
     /// A final assistant prose block.
     Text(String),
     TurnEnd,
@@ -76,6 +79,37 @@ type SharedPrefs = Arc<Mutex<Prefs>>;
 const UTTERANCE_QUEUE: usize = 8;
 /// Under the speech router's 90 s idle unload.
 const STT_KEEPALIVE: Duration = Duration::from_mins(1);
+/// A stream quiet this long speaks what it has buffered.
+const PAUSE_FLUSH: Duration = Duration::from_millis(700);
+
+/// Milestones of the turn a spoken prompt started, for its time-to-first-audio
+/// log line.
+#[derive(Debug, Clone, Copy)]
+struct Probe {
+    sent: Instant,
+    first_text: Option<(Instant, &'static str)>,
+    first_sentence: Option<Instant>,
+}
+
+impl Probe {
+    fn start() -> Self {
+        Self { sent: Instant::now(), first_text: None, first_sentence: None }
+    }
+}
+
+type SharedProbe = Arc<Mutex<Option<Probe>>>;
+
+fn log_first_audio(p: &Probe) {
+    let ms = |t: Instant| u64::try_from(t.duration_since(p.sent).as_millis()).unwrap_or(u64::MAX);
+    let (first_text_ms, source) = p.first_text.map_or((None, "none"), |(t, s)| (Some(ms(t)), s));
+    tracing::info!(
+        ttfa_ms = ms(Instant::now()),
+        first_text_ms,
+        first_sentence_ms = p.first_sentence.map(ms),
+        source,
+        "voice: time to first audio"
+    );
+}
 
 #[derive(Debug)]
 struct Notice {
@@ -99,29 +133,34 @@ impl Drop for Synth {
 fn spawn_synth<B: VoiceBackend>(
     backend: Arc<B>,
     prefs: SharedPrefs,
+    probe: SharedProbe,
     out: mpsc::Sender<Outbound>,
     notices: mpsc::UnboundedSender<Notice>,
     generation: u64,
 ) -> Synth {
     let (tx, mut rx) = mpsc::channel::<String>(64);
-    let task = tokio::spawn(async move {
-        let mut n = 0u64;
-        while let Some(text) = rx.recv().await {
-            n += 1;
-            let _ = notices.send(Notice { generation, busy: true });
-            let line_id = format!("{generation}-{n}");
-            speak_one(&*backend, &prefs, &out, &line_id, &text).await;
-            if rx.is_empty() {
-                let _ = notices.send(Notice { generation, busy: false });
+    let task = tokio::spawn(
+        async move {
+            let mut n = 0u64;
+            while let Some(text) = rx.recv().await {
+                n += 1;
+                let _ = notices.send(Notice { generation, busy: true });
+                let line_id = format!("{generation}-{n}");
+                speak_one(&*backend, &prefs, &probe, &out, &line_id, &text).await;
+                if rx.is_empty() {
+                    let _ = notices.send(Notice { generation, busy: false });
+                }
             }
         }
-    });
+        .in_current_span(),
+    );
     Synth { tx, task }
 }
 
 async fn speak_one<B: VoiceBackend>(
     backend: &B,
     prefs: &SharedPrefs,
+    probe: &SharedProbe,
     out: &mpsc::Sender<Outbound>,
     line_id: &str,
     text: &str,
@@ -140,6 +179,10 @@ async fn speak_one<B: VoiceBackend>(
     let start = VoiceServerMsg::SpeakStart { line_id: line_id.to_owned(), text: text.to_owned() };
     if out.send(Outbound::Control(start)).await.is_err() {
         return;
+    }
+    let first = probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some(p) = first {
+        log_first_audio(&p);
     }
     while let Some(chunk) = stream.next().await {
         let frame = match chunk {
@@ -350,9 +393,15 @@ struct Engine<B: VoiceBackend> {
     /// Utterances handed to the listener and not yet reported back.
     hearing: usize,
     generation: u64,
+    probe: SharedProbe,
     sentences: SentenceBuffer,
-    /// Streamed text of the block in progress, so its final copy is not read twice.
-    delta_acc: String,
+    /// Streamed text no final block has accounted for yet, so a block is not
+    /// read twice.
+    streamed: String,
+    /// The block the last delta belonged to.
+    delta_item: Option<String>,
+    /// When a quiet stream speaks its buffered tail.
+    pause_at: Option<Instant>,
     turn_active: bool,
     speaking: bool,
     /// A warm-up is in flight.
@@ -370,7 +419,15 @@ impl<B: VoiceBackend> Engine<B> {
         heard_tx: mpsc::Sender<Heard>,
     ) -> Self {
         let prefs = Arc::new(Mutex::new(prefs));
-        let synth = spawn_synth(backend.clone(), prefs.clone(), out.clone(), notice_tx.clone(), 1);
+        let probe = SharedProbe::default();
+        let synth = spawn_synth(
+            backend.clone(),
+            prefs.clone(),
+            probe.clone(),
+            out.clone(),
+            notice_tx.clone(),
+            1,
+        );
         let listener = spawn_listener(backend.clone(), prefs.clone(), out.clone(), heard_tx);
         Self {
             backend,
@@ -381,8 +438,11 @@ impl<B: VoiceBackend> Engine<B> {
             listener,
             hearing: 0,
             generation: 1,
+            probe,
             sentences: SentenceBuffer::default(),
-            delta_acc: String::new(),
+            streamed: String::new(),
+            delta_item: None,
+            pause_at: None,
             turn_active: false,
             speaking: false,
             warming: true,
@@ -433,8 +493,8 @@ impl<B: VoiceBackend> Engine<B> {
                 return;
             }
             Heard::Sending => {
-                self.delta_acc.clear();
-                self.sentences.clear();
+                self.reset_stream();
+                *self.probe() = Some(Probe::start());
                 self.turns.sent();
                 self.turn_active = true;
             }
@@ -449,17 +509,43 @@ impl<B: VoiceBackend> Engine<B> {
         self.emit_state().await;
     }
 
+    fn probe(&self) -> std::sync::MutexGuard<'_, Option<Probe>> {
+        self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn reset_stream(&mut self) {
+        self.sentences.clear();
+        self.streamed.clear();
+        self.delta_item = None;
+        self.pause_at = None;
+    }
+
+    fn mark_text(&self, source: &'static str) {
+        let mut probe = self.probe();
+        if let Some(p) = probe.as_mut() {
+            p.first_text.get_or_insert_with(|| (Instant::now(), source));
+        }
+    }
+
+    fn mark_sentence(&self) {
+        let mut probe = self.probe();
+        if let Some(p) = probe.as_mut() {
+            p.first_sentence.get_or_insert_with(Instant::now);
+        }
+    }
+
     async fn barge_in(&mut self) {
         self.generation += 1;
         self.synth = spawn_synth(
             self.backend.clone(),
             self.prefs.clone(),
+            self.probe.clone(),
             self.out.clone(),
             self.notice_tx.clone(),
             self.generation,
         );
-        self.sentences.clear();
-        self.delta_acc.clear();
+        self.reset_stream();
+        *self.probe() = None;
         self.speaking = false;
         if self.turn_active {
             self.turns.cut();
@@ -496,6 +582,7 @@ impl<B: VoiceBackend> Engine<B> {
             if s.trim().is_empty() {
                 continue;
             }
+            self.mark_sentence();
             self.speaking = true;
             if self.synth.tx.send(s).await.is_err() {
                 break;
@@ -513,38 +600,70 @@ impl<B: VoiceBackend> Engine<B> {
                     self.emit_state().await;
                 }
             }
-            Signal::Delta(delta) => {
+            Signal::Delta { item, text } => {
                 let id = self.turns.text();
-                if self.turns.is_cut(id) {
-                    return;
+                if !self.turns.is_cut(id) {
+                    self.delta(item, &text).await;
                 }
-                self.delta_acc.push_str(&delta);
-                self.sentences.push(&delta);
-                let ready = self.sentences.drain();
-                self.enqueue(ready).await;
             }
             Signal::Text(content) => {
                 let id = self.turns.text();
-                if self.turns.is_cut(id) {
-                    return;
+                if !self.turns.is_cut(id) {
+                    self.block(&content).await;
                 }
-                let streamed = std::mem::take(&mut self.delta_acc);
-                let streamed = streamed.trim();
-                if streamed.is_empty() {
-                    self.sentences.push(&content);
-                } else if let Some(rest) = content.trim().strip_prefix(streamed) {
-                    self.sentences.push(rest);
-                }
-                let ready = self.sentences.flush();
-                self.enqueue(ready).await;
             }
             Signal::TurnEnd => self.turn_end().await,
         }
     }
 
+    async fn delta(&mut self, item: String, text: &str) {
+        self.mark_text("delta");
+        if self.delta_item.as_ref().is_some_and(|last| *last != item) {
+            self.sentences.push("\n\n");
+            self.streamed.push('\n');
+            let ready = self.sentences.pause();
+            self.enqueue(ready).await;
+        }
+        self.delta_item = Some(item);
+        self.streamed.push_str(text);
+        self.sentences.push(text);
+        let ready = self.sentences.drain();
+        self.enqueue(ready).await;
+        self.pause_at = self.sentences.has_pending().then(|| Instant::now() + PAUSE_FLUSH);
+    }
+
+    /// A final block: spoken whole when nothing streamed, otherwise only
+    /// what its deltas missed.
+    async fn block(&mut self, content: &str) {
+        self.mark_text("block");
+        if self.streamed.trim().is_empty() {
+            self.sentences.push(content);
+        } else {
+            let (later, missed) = reconcile(&self.streamed, content);
+            self.streamed = later;
+            self.sentences.push(&missed);
+            if !self.streamed.is_empty() {
+                let ready = self.sentences.drain();
+                self.enqueue(ready).await;
+                return;
+            }
+        }
+        self.pause_at = None;
+        let ready = self.sentences.flush();
+        self.enqueue(ready).await;
+    }
+
+    async fn pause(&mut self) {
+        self.pause_at = None;
+        let ready = self.sentences.pause();
+        self.enqueue(ready).await;
+    }
+
     async fn turn_end(&mut self) {
         let id = self.turns.end();
-        self.delta_acc.clear();
+        self.streamed.clear();
+        self.delta_item = None;
+        self.pause_at = None;
         if self.turns.is_cut(id) {
             self.turn_active = self.turns.pending > 0;
         } else {
@@ -552,6 +671,12 @@ impl<B: VoiceBackend> Engine<B> {
             self.enqueue(ready).await;
             self.turns.pending = 0;
             self.turn_active = false;
+        }
+        {
+            let mut probe = self.probe();
+            if probe.is_some_and(|p| p.first_sentence.is_none()) {
+                *probe = None;
+            }
         }
         self.emit_state().await;
     }
@@ -562,6 +687,27 @@ impl<B: VoiceBackend> Engine<B> {
             self.emit_state().await;
         }
     }
+}
+
+fn squash(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Splits a final block against the text streamed ahead of it: the streamed
+/// text later blocks still account for, and the part of the block its
+/// deltas never carried.
+fn reconcile(streamed: &str, block: &str) -> (String, String) {
+    let (streamed, block) = (squash(streamed), squash(block));
+    if let Some(later) = streamed.strip_prefix(block.as_str()) {
+        return (later.trim_start().to_owned(), String::new());
+    }
+    if let Some(missed) = block.strip_prefix(streamed.as_str()) {
+        return (String::new(), missed.to_owned());
+    }
+    if block.ends_with(streamed.as_str()) {
+        return (String::new(), String::new());
+    }
+    (streamed, block)
 }
 
 /// Applies a `mode` frame; true when the spoken language changed.
@@ -611,6 +757,7 @@ pub async fn run_voice_loop<B: VoiceBackend>(
     let mut engine = Engine::new(backend, prefs, out, notice_tx, heard_tx);
     engine.emit_state().await;
     loop {
+        let pause = engine.pause_at;
         tokio::select! {
             msg = inbound.recv() => match msg {
                 Some(Inbound::Audio(audio)) => engine.utterance(audio).await,
@@ -627,6 +774,9 @@ pub async fn run_voice_loop<B: VoiceBackend>(
             },
             Some(n) = notices.recv() => engine.notice(n).await,
             Some(h) = heard.recv() => engine.heard(h).await,
+            () = sleep_until(pause.unwrap_or_else(Instant::now)), if pause.is_some() => {
+                engine.pause().await;
+            }
         }
     }
 }
@@ -791,6 +941,14 @@ mod tests {
         Outbound::Control(VoiceServerMsg::State { state: s })
     }
 
+    fn delta(item: &str, text: &str) -> Signal {
+        Signal::Delta { item: item.into(), text: text.into() }
+    }
+
+    fn is_speak_start(f: &Outbound) -> bool {
+        matches!(f, Outbound::Control(VoiceServerMsg::SpeakStart { .. }))
+    }
+
     fn is_transcript(f: &Outbound) -> bool {
         matches!(f, Outbound::Control(VoiceServerMsg::Transcript { .. }))
     }
@@ -816,7 +974,7 @@ mod tests {
     #[tokio::test]
     async fn a_cut_turns_leftovers_never_play_in_the_next_turn() {
         let mut h = cut_a_turn_with_a_new_utterance().await;
-        h.signals.send(Signal::Delta("Late del".into())).await.unwrap();
+        h.signals.send(delta("m:0", "Late del")).await.unwrap();
         h.signals.send(Signal::Text("Late delta. Leftover.".into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
         let frames = h.quiet().await;
@@ -1026,16 +1184,111 @@ mod tests {
     #[tokio::test]
     async fn streamed_deltas_start_speech_early_and_the_final_block_is_not_repeated() {
         let mut h = start(Mock::default(), Prefs::default()).await;
-        h.signals.send(Signal::Delta("First sen".into())).await.unwrap();
-        h.signals.send(Signal::Delta("tence. Second".into())).await.unwrap();
+        h.signals.send(delta("m:0", "The first sentence is long enough to sp")).await.unwrap();
+        h.signals.send(delta("m:0", "eak. Second")).await.unwrap();
         h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { .. }))).await;
-        h.signals.send(Signal::Text("First sentence. Second half.".into())).await.unwrap();
+        let block = "The first sentence is long enough to speak. Second half.";
+        h.signals.send(Signal::Text(block.into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
-        h.collect_until(|f| {
-            matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { line_id }) if line_id == "1-2")
-        })
-        .await;
-        assert_eq!(Mock::log(&h.mock.synthesized), vec!["First sentence.", "Second half."]);
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(
+            Mock::log(&h.mock.synthesized),
+            vec!["The first sentence is long enough to speak.", "Second half."]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_final_block_is_not_spoken_again_over_the_next_blocks_deltas() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        let first = "The first block opens with a long sentence. Its tail";
+        h.signals.send(delta("a", first)).await.unwrap();
+        let opening = "The second block starts streaming right away. More";
+        h.signals.send(delta("b", opening)).await.unwrap();
+        h.signals.send(Signal::Text(first.into())).await.unwrap();
+        h.signals.send(delta("b", " to come.")).await.unwrap();
+        let second = "The second block starts streaming right away. More to come.";
+        h.signals.send(Signal::Text(second.into())).await.unwrap();
+        h.signals.send(Signal::TurnEnd).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(
+            Mock::log(&h.mock.synthesized),
+            vec![
+                "The first block opens with a long sentence.",
+                "Its tail",
+                "The second block starts streaming right away.",
+                "More to come."
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn deltas_that_miss_a_blocks_end_speak_only_the_missing_part() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        let streamed = "The reply starts streaming with this sentence. And then";
+        h.signals.send(delta("m:0", streamed)).await.unwrap();
+        let block = format!("{streamed} it ends here.");
+        h.signals.send(Signal::Text(block)).await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(
+            Mock::log(&h.mock.synthesized),
+            vec!["The reply starts streaming with this sentence.", "And then it ends here."]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_stream_speaks_its_short_tail_after_a_pause() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        let t0 = Instant::now();
+        h.signals.send(delta("m:0", "Sure. Let me")).await.unwrap();
+        tokio::time::sleep(PAUSE_FLUSH.checked_sub(Duration::from_millis(100)).unwrap()).await;
+        assert!(h.out.try_recv().is_err(), "nothing spoken before the pause");
+        h.collect_until(is_speak_start).await;
+        assert!(t0.elapsed() >= PAUSE_FLUSH, "{:?}", t0.elapsed());
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(Mock::log(&h.mock.synthesized), vec!["Sure.", "Let me"]);
+    }
+
+    const REPLY: &str = "The sky looks blue because air scatters short waves. Sunlight holds \
+        every colour, but blue light bounces off gas molecules the most. That scattered blue \
+        reaches your eyes from every direction. At sunset the light crosses more air, so the \
+        blue is scattered away. What is left is the red and orange you see.";
+
+    /// Time to the first `speak_start` and to the end of the reply, for a reply
+    /// arriving 8 characters every 20 ms, streamed as deltas or as one block.
+    async fn first_audio(stream: bool) -> (Duration, Duration) {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        let signals = h.signals.clone();
+        let t0 = Instant::now();
+        let feeder = tokio::spawn(async move {
+            for chunk in REPLY.as_bytes().chunks(8) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                if stream {
+                    let text = std::str::from_utf8(chunk).unwrap();
+                    signals.send(delta("m:0", text)).await.unwrap();
+                }
+            }
+            let done = t0.elapsed();
+            signals.send(Signal::Text(REPLY.into())).await.unwrap();
+            signals.send(Signal::TurnEnd).await.unwrap();
+            done
+        });
+        h.collect_until(is_speak_start).await;
+        let first = t0.elapsed();
+        let done = feeder.await.unwrap();
+        h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        let spoken = Mock::log(&h.mock.synthesized).concat().replace(' ', "");
+        assert_eq!(spoken, REPLY.replace(' ', ""));
+        (first, done)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_streamed_reply_reaches_first_audio_at_its_first_sentence_not_its_end() {
+        let (streamed, done) = first_audio(true).await;
+        let (block, _) = first_audio(false).await;
+        eprintln!("first audio: streamed {streamed:?}, block {block:?}, reply done {done:?}");
+        assert_eq!(streamed, Duration::from_millis(140), "the chunk after the first 52 chars");
+        assert!(block >= done, "{block:?} < {done:?}");
+        assert!(streamed * 5 < done, "{streamed:?} vs {done:?}");
     }
 
     #[tokio::test]
