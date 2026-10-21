@@ -30,6 +30,13 @@ pub enum SessionLiveAction {
         session_id: String,
         state: GuardStepState,
     },
+    /// The HTTP read of the guard step answered. `frames` is the session's
+    /// live frame count when it went out: a frame since then is fresher and wins.
+    GuardStepRead {
+        session_id: String,
+        frames: u64,
+        state: Option<GuardStepState>,
+    },
     /// Whether the socket is delivering; a dead socket shortens the poll.
     WsHealth(bool),
     /// Fold the selected row's subagent groups, or the group it sits in.
@@ -60,7 +67,16 @@ pub fn reduce_session_live(app: &mut App, action: SessionLiveAction) -> Vec<Effe
             Vec::new()
         }
         SessionLiveAction::GuardStep { session_id, state } => {
+            *app.guard_step_frames.entry(session_id.clone()).or_default() += 1;
             app.guard_steps.insert(session_id, state);
+            Vec::new()
+        }
+        SessionLiveAction::GuardStepRead { session_id, frames, state } => {
+            if let Some(state) = state
+                && guard_step_frames(app, &session_id) == frames
+            {
+                app.guard_steps.insert(session_id, state);
+            }
             Vec::new()
         }
         SessionLiveAction::WsHealth(healthy) => {
@@ -160,6 +176,19 @@ pub fn poll_if_due(app: &mut App) -> Vec<Effect> {
     Vec::new()
 }
 
+/// Read a session's guard step as its conversation opens: the socket only
+/// pushes changes, so a step reported before then would never show.
+pub fn fetch_guard_step(app: &App, session_id: &str) -> Effect {
+    Effect::FetchGuardStep {
+        session_id: session_id.to_owned(),
+        frames: guard_step_frames(app, session_id),
+    }
+}
+
+fn guard_step_frames(app: &App, session_id: &str) -> u64 {
+    app.guard_step_frames.get(session_id).copied().unwrap_or_default()
+}
+
 /// The header's read-only view of a session's guard step: `step N: title`,
 /// `step N` when untitled, `guard exited` once the workflow is over.
 #[must_use]
@@ -252,6 +281,70 @@ mod tests {
         };
         live(&mut app, SessionLiveAction::GuardStep { session_id: "s-a".into(), state: exited });
         assert_eq!(super::guard_step_badge(&app, "s-a").as_deref(), Some("guard exited"));
+    }
+
+    fn step(n: i64) -> cctui_proto::guard_step::GuardStepState {
+        cctui_proto::guard_step::GuardStepState {
+            step: n,
+            title: format!("Step{n}"),
+            ..Default::default()
+        }
+    }
+
+    /// Opens the conversation and returns the frame count its guard read carries.
+    fn opened_read(app: &mut App, id: &str) -> u64 {
+        crate::app::conversation::open(app, id.to_owned())
+            .into_iter()
+            .find_map(|e| match e {
+                Effect::FetchGuardStep { session_id, frames } if session_id == id => Some(frames),
+                _ => None,
+            })
+            .expect("opening a conversation reads its guard step")
+    }
+
+    fn answer(app: &mut App, frames: u64, state: Option<cctui_proto::guard_step::GuardStepState>) {
+        live(app, SessionLiveAction::GuardStepRead { session_id: "s-a".into(), frames, state });
+    }
+
+    fn frame(app: &mut App, n: i64) {
+        live(app, SessionLiveAction::GuardStep { session_id: "s-a".into(), state: step(n) });
+    }
+
+    #[test]
+    fn opening_a_session_seeds_the_badge_from_the_guard_read() {
+        let mut app = app();
+        assert_eq!(super::guard_step_badge(&app, "s-a"), None);
+        let frames = opened_read(&mut app, "s-a");
+        answer(&mut app, frames, Some(step(2)));
+        assert_eq!(super::guard_step_badge(&app, "s-a").as_deref(), Some("step 2: Step2"));
+    }
+
+    #[test]
+    fn a_frame_landing_during_the_guard_read_wins_over_its_answer() {
+        let mut app = app();
+        frame(&mut app, 1);
+        let frames = opened_read(&mut app, "s-a");
+        frame(&mut app, 3);
+        answer(&mut app, frames, Some(step(2)));
+        assert_eq!(super::guard_step_badge(&app, "s-a").as_deref(), Some("step 3: Step3"));
+
+        frame(&mut app, 1);
+        let frames = opened_read(&mut app, "s-a");
+        answer(&mut app, frames, Some(step(4)));
+        assert_eq!(
+            super::guard_step_badge(&app, "s-a").as_deref(),
+            Some("step 4: Step4"),
+            "with no frame in between, the read refreshes the held step"
+        );
+    }
+
+    #[test]
+    fn a_session_without_a_guard_shows_no_badge() {
+        let mut app = app();
+        let frames = opened_read(&mut app, "s-a");
+        answer(&mut app, frames, None);
+        assert_eq!(super::guard_step_badge(&app, "s-a"), None);
+        assert!(!app.guard_steps.contains_key("s-a"));
     }
 
     #[test]
