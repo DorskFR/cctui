@@ -1490,9 +1490,9 @@ mod tests {
 
     async fn stream_short(h: &Harness, upto: &str) {
         for part in ["Thanks", ". I'll keep doing that", ": drafts stay here until you"] {
-            h.signals.send(delta("gw:r:0", part)).await.unwrap();
+            h.signals.send(delta("m:0", part)).await.unwrap();
         }
-        h.signals.send(delta("gw:r:0", upto)).await.unwrap();
+        h.signals.send(delta("m:0", upto)).await.unwrap();
     }
 
     #[tokio::test]
@@ -1535,11 +1535,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_pause_in_the_middle_of_a_short_reply_does_not_repeat_it() {
         let mut h = start(Mock::default(), Prefs::default()).await;
-        h.signals.send(delta("gw:r:0", "Thanks. I'll keep doing that")).await.unwrap();
+        h.signals.send(delta("m:0", "Thanks. I'll keep doing that")).await.unwrap();
         let first = Bytes::from_static(b"I'll keep doing that");
         h.collect_until(|f| *f == Outbound::Audio(first.clone())).await;
         let rest = ": drafts stay here until you explicitly ask me to post.";
-        h.signals.send(delta("gw:r:0", rest)).await.unwrap();
+        h.signals.send(delta("m:0", rest)).await.unwrap();
         h.signals.send(Signal::Text(SHORT.into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Listening)).await;
@@ -1552,7 +1552,7 @@ mod tests {
         let mut h = start(Mock::default(), Prefs::default()).await;
         stream_short(&h, " explicitly ask me").await;
         h.signals.send(Signal::Text(SHORT.into())).await.unwrap();
-        h.signals.send(delta("gw:r:0", " to post.")).await.unwrap();
+        h.signals.send(delta("m:0", " to post.")).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Listening)).await;
         h.quiet().await;
