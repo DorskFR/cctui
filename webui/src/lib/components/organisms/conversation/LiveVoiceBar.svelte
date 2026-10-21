@@ -1,14 +1,20 @@
 <script lang="ts">
 	// The live voice strip above the composer: what the loop is doing, the
-	// mic level, the last thing it heard, mute and leave.
-	import { Badge, IconButton, Meter, Text } from '@dorsk/tsumikit';
-	import type { LiveVoice } from '$lib/voice/liveVoice.svelte';
+	// mic level, the last thing it heard, the spoken language, mute and leave.
+	import { Badge, IconButton, Meter, Select, Text } from '@dorsk/tsumikit';
+	import {
+		SPOKEN_LANGUAGES,
+		type LiveVoice,
+		type SpokenLanguage
+	} from '$lib/voice/liveVoice.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let { voice, onstop }: { voice: LiveVoice; onstop: () => void } = $props();
 
 	const label = $derived.by(() => {
 		switch (voice.status) {
+			case 'warming':
+				return m.voice_live_warming();
 			case 'listening':
 				return m.voice_live_listening();
 			case 'thinking':
@@ -22,10 +28,16 @@
 	const color = $derived(
 		voice.status === 'speaking'
 			? 'var(--role-assistant)'
-			: voice.status === 'thinking'
+			: voice.status === 'thinking' || voice.status === 'warming'
 				? 'var(--warn)'
 				: 'var(--ok)'
 	);
+	const languageLabel: Record<SpokenLanguage, () => string> = {
+		auto: m.voice_live_language_auto,
+		en: m.voice_live_language_en,
+		fr: m.voice_live_language_fr
+	};
+	const languages = SPOKEN_LANGUAGES.map((value) => ({ value, label: languageLabel[value]() }));
 </script>
 
 <div class="live-bar" class:muted={voice.muted} data-journey="voice-live" role="status">
@@ -36,6 +48,16 @@
 	{#if voice.transcript}
 		<span class="transcript"><Text size="sm" tone="muted">🎙 {voice.transcript}</Text></span>
 	{/if}
+	<Select
+		size="sm"
+		width="auto"
+		options={languages}
+		value={voice.language}
+		aria-label={m.voice_live_language()}
+		title={m.voice_live_language()}
+		onchange={(e: Event) =>
+			voice.setLanguage((e.currentTarget as HTMLSelectElement).value as SpokenLanguage)}
+	/>
 	<IconButton
 		emoji={voice.muted ? '🔇' : '🎙'}
 		box="sm"

@@ -9,7 +9,18 @@ import { floatToPcm16 } from './pcm';
 import type { SpeechPlayer } from './player';
 import type { VadFactory, VadHandle } from './vad';
 
-export type LiveStatus = 'off' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
+export type LiveStatus =
+	| 'off'
+	| 'connecting'
+	| 'warming'
+	| 'listening'
+	| 'thinking'
+	| 'speaking'
+	| 'error';
+
+/** The spoken language for speech-to-text; `auto` keeps the instance default. */
+export type SpokenLanguage = 'auto' | 'en' | 'fr';
+export const SPOKEN_LANGUAGES: readonly SpokenLanguage[] = ['auto', 'en', 'fr'];
 
 export interface SocketLike {
 	binaryType: BinaryType;
@@ -30,8 +41,9 @@ export interface LiveVoiceDeps {
 	prefs: () => VoiceSettings;
 }
 
-export function voiceSocketUrl(sessionId: string): string {
-	return `${wsBase()}/ws/voice?session=${encodeURIComponent(sessionId)}`;
+export function voiceSocketUrl(sessionId: string, language: SpokenLanguage = 'auto'): string {
+	const lang = language === 'auto' ? '' : `&language=${language}`;
+	return `${wsBase()}/ws/voice?session=${encodeURIComponent(sessionId)}${lang}`;
 }
 
 export class LiveVoice {
@@ -40,6 +52,7 @@ export class LiveVoice {
 	muted = $state(false);
 	transcript = $state('');
 	error = $state<string | null>(null);
+	language = $state<SpokenLanguage>('auto');
 
 	private socket: SocketLike | null = null;
 	private vad: VadHandle | null = null;
@@ -67,7 +80,7 @@ export class LiveVoice {
 		this.minGen = 1;
 		this.lineGen = 0;
 		void this.deps.player.unlock();
-		const sock = this.deps.connect(voiceSocketUrl(sessionId));
+		const sock = this.deps.connect(voiceSocketUrl(sessionId, this.language));
 		sock.binaryType = 'arraybuffer';
 		this.socket = sock;
 		sock.onopen = () => {
@@ -105,6 +118,13 @@ export class LiveVoice {
 		} else void this.vad?.start();
 	}
 
+	/** Applies to the open conversation and the next ones from this pane. */
+	setLanguage(language: SpokenLanguage) {
+		if (language === this.language) return;
+		this.language = language;
+		this.send({ type: 'mode', language });
+	}
+
 	/** The user interrupted by hand (the stop button while speaking). */
 	interrupt() {
 		this.deps.player.stop();
@@ -119,7 +139,8 @@ export class LiveVoice {
 			barge_in: p.bargeIn,
 			spoken_style: p.spokenStyle,
 			voice: p.voice ?? null,
-			speed: p.speed
+			speed: p.speed,
+			language: this.language
 		});
 	}
 

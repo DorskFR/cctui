@@ -101,7 +101,14 @@ describe('LiveVoice', () => {
 		h.socket?.open();
 		await h.settle();
 		expect(h.socket?.texts()).toEqual([
-			{ type: 'mode', barge_in: true, spoken_style: 'brief', voice: 'af_sky', speed: 1 }
+			{
+				type: 'mode',
+				barge_in: true,
+				spoken_style: 'brief',
+				voice: 'af_sky',
+				speed: 1,
+				language: 'auto'
+			}
 		]);
 		expect(h.vad.start).toHaveBeenCalled();
 		expect(h.voice.status).toBe('listening');
@@ -110,6 +117,40 @@ describe('LiveVoice', () => {
 		expect(h.voice.status).toBe('thinking');
 		h.socket?.frame({ type: 'transcript', text: 'hello there' });
 		expect(h.voice.transcript).toBe('hello there');
+	});
+
+	it('shows warming up while the model loads and still sends an early utterance', async () => {
+		const h = harness();
+		await h.voice.start('sess');
+		h.socket?.open();
+		h.socket?.frame({ type: 'state', state: 'warming' });
+		await h.settle();
+		expect(h.voice.status).toBe('warming');
+		expect(h.vad.start).toHaveBeenCalled();
+		h.cb?.onSpeechEnd(new Float32Array([0.1, 0.2]));
+		expect(h.socket?.sent.some((s) => s instanceof ArrayBuffer)).toBe(true);
+		h.socket?.frame({ type: 'state', state: 'listening' });
+		expect(h.voice.status).toBe('listening');
+	});
+
+	it('opens with the picked language and switches it live', async () => {
+		expect(voiceSocketUrl('s', 'fr')).toBe('ws://x/api/v1/ws/voice?session=s&language=fr');
+		expect(voiceSocketUrl('s', 'auto')).toBe('ws://x/api/v1/ws/voice?session=s');
+		const h = harness();
+		h.voice.setLanguage('fr');
+		await h.voice.start('sess');
+		expect(h.socket?.url).toBe('ws://x/api/v1/ws/voice?session=sess&language=fr');
+		h.socket?.open();
+		await h.settle();
+		expect(h.socket?.texts()).toMatchObject([{ type: 'mode', language: 'fr' }]);
+
+		h.voice.setLanguage('fr');
+		h.voice.setLanguage('en');
+		h.voice.setLanguage('auto');
+		expect(h.socket?.texts().slice(1)).toEqual([
+			{ type: 'mode', language: 'en' },
+			{ type: 'mode', language: 'auto' }
+		]);
 	});
 
 	it('sends an utterance as pcm16 and routes spoken replies to the player', async () => {

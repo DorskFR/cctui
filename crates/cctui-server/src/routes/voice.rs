@@ -52,13 +52,14 @@ struct AudioForm {
     audio: Bytes,
     mime: String,
     language: Option<String>,
+    model: Option<String>,
 }
 
-/// The `file` and `language` parts of a transcribe request, the audio capped
-/// at [`MAX_AUDIO_BYTES`].
+/// The `file`, `language` and `model` parts of a transcribe request, the
+/// audio capped at [`MAX_AUDIO_BYTES`].
 async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError> {
     let bad = |msg: &str| AppError::new(StatusCode::BAD_REQUEST, msg);
-    let (mut audio, mut mime, mut language) = (None, None, None);
+    let (mut audio, mut mime, mut language, mut model) = (None, None, None, None);
     while let Some(mut field) =
         multipart.next_field().await.map_err(|_| bad("malformed multipart body"))?
     {
@@ -82,6 +83,9 @@ async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError
             Some("language") => {
                 language = Some(field.text().await.map_err(|_| bad("malformed language"))?);
             }
+            Some("model") => {
+                model = Some(field.text().await.map_err(|_| bad("malformed model"))?);
+            }
             _ => {}
         }
     }
@@ -89,8 +93,8 @@ async fn read_audio_form(mut multipart: Multipart) -> Result<AudioForm, AppError
         .filter(|a| !a.is_empty())
         .ok_or_else(|| bad("a non-empty `file` part is required"))?;
     let mime = mime.unwrap_or_else(|| "audio/webm".to_owned());
-    let language = language.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
-    Ok(AudioForm { audio, mime, language })
+    let trimmed = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    Ok(AudioForm { audio, mime, language: trimmed(language), model: trimmed(model) })
 }
 
 pub async fn transcribe(
@@ -101,7 +105,7 @@ pub async fn transcribe(
     let form = read_audio_form(multipart).await?;
     let client = speech_client(&state).await?;
     let text = client
-        .transcribe(form.audio, &form.mime, form.language.as_deref())
+        .transcribe(form.audio, &form.mime, form.language.as_deref(), form.model.as_deref())
         .await
         .map_err(|e| speech_error(&e))?;
     Ok(Json(VoiceTranscript { text }))

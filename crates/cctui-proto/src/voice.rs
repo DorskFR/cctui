@@ -23,6 +23,8 @@ pub enum VoiceState {
     Listening,
     Thinking,
     Speaking,
+    /// The speech-to-text model is loading; utterances wait for it.
+    Warming,
 }
 
 /// Browser → server.
@@ -43,6 +45,9 @@ pub enum VoiceClientMsg {
         voice: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         speed: Option<f32>,
+        /// Spoken language, e.g. `fr`; empty or `auto` for the instance default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
     },
 }
 
@@ -88,7 +93,8 @@ mod tests {
                 barge_in: Some(false),
                 spoken_style: Some(SpokenStyle::Verbose),
                 voice: None,
-                speed: None
+                speed: None,
+                language: None
             }
         );
         let state =
