@@ -18,6 +18,7 @@ mod health;
 mod inject;
 mod peek;
 mod policy;
+mod private_allow;
 mod secrets;
 mod transparent;
 
@@ -32,6 +33,7 @@ use crate::forward::ForwardListener;
 use crate::ghapp::{GhAppConfig, GhAppMinter};
 use crate::inject::{InjectionPolicy, InjectionRule, Injector, PerPodCa};
 use crate::policy::PolicyManager;
+use crate::private_allow::PrivateAllow;
 use crate::secrets::{
     Engines, K8sClient, RefResolver as _, SecretRef, SecretSource, VaultClient, render_identity,
 };
@@ -66,6 +68,15 @@ struct Args {
     /// Path to the JSON policy file.
     #[arg(long, default_value = "/var/run/guard-proxy/policy.json", env = "GUARD_PROXY_POLICY")]
     policy: String,
+
+    /// Extra `host[:port] [label]` lines whose private addresses may be dialed,
+    /// seeded by the worker entrypoint. Absent ⇒ none; re-read on change.
+    #[arg(
+        long,
+        default_value = "/var/run/guard-proxy/private-allow",
+        env = "GUARD_PROXY_PRIVATE_ALLOW_FILE"
+    )]
+    private_allow_file: PathBuf,
 
     /// Append every egress verdict as a JSON line here — the same file the guard
     /// writes its `/check` + `/transition` decisions to, so the end-of-run report
@@ -297,7 +308,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let rules = build_rules(&args)?;
+    let inject_hosts: Vec<String> = rules.iter().map(|r| r.host.clone()).collect();
     let injection = build_injection(&args, rules)?;
+    let private =
+        Arc::new(PrivateAllow::from_env(Some(args.private_allow_file.clone()), &inject_hosts));
 
     let decision_log = Arc::new(cctui_guard::decision_log::DecisionLog::new(args.decision_log));
     let policy = Arc::new(PolicyManager::new(&args.policy).with_decision_log(Some(decision_log)));
@@ -322,12 +336,13 @@ async fn main() -> anyhow::Result<()> {
 
     match args.mode {
         Mode::Transparent => {
-            let listener = TransparentListener::bind(&args.listen, policy, injection).await?;
+            let listener =
+                TransparentListener::bind(&args.listen, policy, injection, private).await?;
             tracing::info!("transparent proxy listening on {}", args.listen);
             listener.serve().await?;
         }
         Mode::Forward => {
-            let listener = ForwardListener::bind(&args.listen, policy, injection).await?;
+            let listener = ForwardListener::bind(&args.listen, policy, injection, private).await?;
             tracing::info!("forward proxy listening on {}", args.listen);
             listener.serve().await?;
         }
@@ -348,6 +363,7 @@ mod tests {
     #[test]
     fn injection_defaults() {
         let args = parse(&[]);
+        assert_eq!(args.private_allow_file, PathBuf::from("/var/run/guard-proxy/private-allow"));
         assert_eq!(args.secret_ttl_secs, 120);
         assert_eq!(args.inject_config, PathBuf::from("/etc/guard-proxy/inject.json"));
     }

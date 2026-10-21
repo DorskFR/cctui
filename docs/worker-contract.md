@@ -261,6 +261,36 @@ be exercised in unit tests):
   from the worker fails to obtain any identity (no IMDS/IRSA reach). The worker
   carries a non-secret `AWS_REGION` only — a region hint, not a credential.
 
+### Private destinations
+
+Loopback, RFC1918/ULA and CGNAT destinations are refused unless the requested
+host (SNI, `Host`, or `CONNECT` target) is on the proxy's **private allow-list**
+for that port, and the address dialed is one that host resolves to in the proxy.
+In transparent mode a private `SO_ORIGINAL_DST` must also be one of those
+addresses, so a forged SNI/Host, a rebinding answer or another private IP cannot
+ride an allowed name. The hostname allow-list (`policy.json`) still applies on top;
+being on `policy.json` alone never opens a private address.
+
+The list is built from:
+
+| Source | Port |
+| --- | --- |
+| `CCTUI_URL` / `CCTUI_SERVER_URL` / `CCTUI_BASE_URL`, `REPLY_URL`, and the minted `*_BASE_URL` gateways (`ANTHROPIC`, `OPENAI`, `FIREWORKS`, `GOOGLE_GEMINI`) in the proxy's env | the URL's |
+| `/var/run/guard-proxy/private-allow` (`GUARD_PROXY_PRIVATE_ALLOW_FILE`): one `host:port VAR` line per control-plane URL above, seeded root-owned next to `policy.json` by the worker entrypoint, because the sidecar cannot read the worker's env; re-read on change | the URL's |
+| Every injection-rule host (`inject.json`) | any |
+| `GUARD_PROXY_PRIVATE_ALLOW`: comma-separated `host`, `host:port` or `host:*`, for operator extras (internal git, registries, a private `WORKER_NET_ALLOW` or context-pack host) | as written |
+
+The proxy's own Vault/OpenBao address is deliberately not derived: the sidecar
+reaches it directly, and the worker must not reach the credential backend. A
+Secrets Manager VPC endpoint used through SigV4 injection is covered as an
+injection host. Link-local (`169.254/16`, `fe80::/10`) stays denied whatever the
+list says. Each private allow or deny is logged once per host and reason
+(`private egress ALLOW <host:port> (rule: <source>)` /
+`private egress DENY <host:port>: <reason>`).
+
+`GUARD_PROXY_ALLOW_PRIVATE_IPS=1` is the legacy blanket opt-out: every private
+destination is reachable without binding, and the proxy logs a warning at start.
+
 ### Sidecar mode (`transparent-external`)
 
 Promotes the guard-proxy out of the worker container so its memory, env, and

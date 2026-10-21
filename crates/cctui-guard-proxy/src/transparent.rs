@@ -12,10 +12,11 @@ use nix::sys::socket::sockopt::OriginalDst;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::denylist::{host_is_denied, ip_is_denied, resolve_allowed};
+use crate::denylist::{host_is_denied, ip_is_denied};
 use crate::inject::Injector;
 use crate::peek::{extract_http_host, extract_sni};
 use crate::policy::PolicyManager;
+use crate::private_allow::PrivateAllow;
 
 /// Recovers the pre-`DNAT` destination of a `REDIRECT`ed socket via the
 /// `SO_ORIGINAL_DST` getsockopt. Uses the safe `nix` wrapper (no `unsafe`).
@@ -32,7 +33,7 @@ pub struct TransparentListener {
     listener: TcpListener,
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
-    allow_private: bool,
+    private: Arc<PrivateAllow>,
 }
 
 impl TransparentListener {
@@ -40,10 +41,10 @@ impl TransparentListener {
         addr: &str,
         policy: Arc<PolicyManager>,
         injection: Option<Arc<Injector>>,
+        private: Arc<PrivateAllow>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        let allow_private = crate::denylist::allow_private_ips_from_env();
-        Ok(Self { listener, policy, injection, allow_private })
+        Ok(Self { listener, policy, injection, private })
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
@@ -51,9 +52,9 @@ impl TransparentListener {
             let (stream, _peer) = self.listener.accept().await?;
             let policy = self.policy.clone();
             let injection = self.injection.clone();
-            let allow_private = self.allow_private;
+            let private = self.private.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy, injection, allow_private).await {
+                if let Err(e) = handle_connection(stream, policy, injection, private).await {
                     tracing::debug!("transparent connection ended: {e}");
                 }
             });
@@ -61,54 +62,51 @@ impl TransparentListener {
     }
 }
 
-// Linear name-recovery (SNI/Host) → fail-closed policy check → dial → splice
-// flow; complexity is the per-step timeout/error branches, not nesting. Splitting
-// would scatter the security-critical fail-closed control flow across helpers.
-#[allow(clippy::cognitive_complexity)]
-async fn handle_connection(
-    mut conn: TcpStream,
-    policy: Arc<PolicyManager>,
-    injection: Option<Arc<Injector>>,
-    allow_private: bool,
-) -> anyhow::Result<()> {
-    let dst = original_dst(&conn)?;
-    let host_port = dst.to_string();
-    let port = dst.port();
+/// The first bytes of a redirected connection and the name they carry.
+struct Peeked {
+    buf: Vec<u8>,
+    sni: Option<String>,
+    http_host: Option<String>,
+}
 
-    // Peek the first bytes to recover the intended hostname. The policy is a
-    // hostname allow-list, so matching on the SO_ORIGINAL_DST IP would never
-    // hit — we must enforce against the name.
+/// Peeks the first bytes to recover the intended hostname: the policy is a
+/// hostname allow-list, so matching on the `SO_ORIGINAL_DST` IP would never hit.
+async fn peek_name(conn: &mut TcpStream) -> anyhow::Result<Peeked> {
     let mut buf = vec![0u8; 4096];
     let n = match tokio::time::timeout(Duration::from_secs(2), conn.read(&mut buf)).await {
         Ok(Ok(n)) => n,
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => 0, // read timed out: no name recovered, fall through to deny
     };
+    buf.truncate(n);
+    let sni = extract_sni(&buf);
+    let http_host = if sni.is_none() { extract_http_host(&buf) } else { None };
+    Ok(Peeked { buf, sni, http_host })
+}
 
-    let mut sni = None;
-    let mut http_host = None;
-    if n > 0 {
-        sni = extract_sni(&buf[..n]);
-        if sni.is_none() {
-            http_host = extract_http_host(&buf[..n]);
-        }
-    }
+// Linear name-recovery → fail-closed policy check → dial → splice flow; the
+// complexity is the per-step error branches, not nesting.
+#[allow(clippy::cognitive_complexity)]
+async fn handle_connection(
+    mut conn: TcpStream,
+    policy: Arc<PolicyManager>,
+    injection: Option<Arc<Injector>>,
+    private: Arc<PrivateAllow>,
+) -> anyhow::Result<()> {
+    let dst = original_dst(&conn)?;
+    let host_port = dst.to_string();
+    let port = dst.port();
+    let dst_ip = IpAddr::V4(*dst.ip());
+    let Peeked { buf, sni, http_host } = peek_name(&mut conn).await?;
 
-    // Build the policy target from the recovered name, falling back to the
-    // original-destination IP:port when no name is available (which then fails
-    // a hostname allow-list — fail closed).
+    // Without a recovered name the target is the original-destination IP:port,
+    // which then fails a hostname allow-list: fail closed.
     let name = sni.as_deref().or(http_host.as_deref());
-    let policy_target = name.map_or_else(|| host_port.clone(), |n| format!("{n}:{port}"));
+    let host = name.map_or_else(|| dst.ip().to_string(), str::to_owned);
+    let policy_target = format!("{host}:{port}");
 
-    // Private-range exemption is bounded to EXPLICITLY allow-listed names (never a
-    // worker-supplied original-dst IP, never a permissive default); link-local/
-    // metadata stays denied in ip_is_denied/host_is_denied regardless.
-    let allow_private =
-        allow_private || (name.is_some() && policy.is_explicitly_listed(&policy_target));
-
-    if ip_is_denied(IpAddr::V4(*dst.ip()), allow_private)
-        || name.is_some_and(|n| host_is_denied(n, allow_private))
-    {
+    let exempt = private.exempts(&host, port);
+    if ip_is_denied(dst_ip, exempt) || name.is_some_and(|n| host_is_denied(n, exempt)) {
         tracing::warn!(
             "DENY (builtin) transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
         );
@@ -129,21 +127,9 @@ async fn handle_connection(
     );
     policy.record(&policy_target, true, "");
 
-    // TLS-terminating credential injection for allowlisted hosts. Only
-    // a real TLS ClientHello (SNI recovered) is intercepted; everything else
-    // keeps the passthrough splice below.
-    if let (Some(injector), Some(name)) = (injection.as_ref(), sni.as_deref())
-        && injector.should_inject(name)
-    {
-        tracing::info!("INJECT transparent {name}:{port}");
-        return Box::pin(injector.handle(conn, buf[..n].to_vec(), name, port)).await;
-    }
-
-    // Resolve the allow-listed target IN THE PROXY and dial an address we just
-    // validated against the denylist — NOT the worker-supplied SO_ORIGINAL_DST.
-    // A forged name can then only reach the host it actually names, and a name
-    // resolving into a denied range is refused.
-    let addrs = match resolve_allowed(&policy_target, allow_private).await {
+    // Dial the proxy's own resolution of the name, never the worker-supplied
+    // SO_ORIGINAL_DST; a private original destination must be one of its addresses.
+    let addrs = match private.resolve(&host, port, Some(dst_ip)).await {
         Ok(addrs) => addrs,
         Err(e) => {
             tracing::warn!("resolve {policy_target} failed (orig={host_port}): {e}");
@@ -151,6 +137,15 @@ async fn handle_connection(
             return Ok(());
         }
     };
+
+    // Only a real TLS ClientHello (SNI recovered) is intercepted for injection.
+    if let (Some(injector), Some(name)) = (injection.as_ref(), sni.as_deref())
+        && injector.should_inject(name)
+    {
+        tracing::info!("INJECT transparent {name}:{port}");
+        return Box::pin(injector.handle(conn, buf, name, &addrs)).await;
+    }
+
     let mut upstream =
         match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs.as_slice()))
             .await
@@ -167,8 +162,8 @@ async fn handle_connection(
         };
 
     // Replay the peeked bytes, then splice bidirectionally.
-    if n > 0 {
-        upstream.write_all(&buf[..n]).await?;
+    if !buf.is_empty() {
+        upstream.write_all(&buf).await?;
     }
     tokio::io::copy_bidirectional(&mut conn, &mut upstream).await?;
     Ok(())
@@ -218,7 +213,9 @@ mod tests {
         let policy = Arc::new(PolicyManager::new(&path));
         policy.load().unwrap();
 
-        let listener = TransparentListener::bind("127.0.0.1:0", policy, None).await.unwrap();
+        let private = Arc::new(PrivateAllow::for_tests(false, ""));
+        let listener =
+            TransparentListener::bind("127.0.0.1:0", policy, None, private).await.unwrap();
         let addr = listener.listener.local_addr().unwrap();
         tokio::spawn(async move { listener.serve().await });
 

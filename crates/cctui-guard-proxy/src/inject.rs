@@ -12,6 +12,7 @@
 #![allow(clippy::large_futures)]
 
 use std::collections::{BTreeMap, HashMap};
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -442,14 +443,15 @@ impl Injector {
     }
 
     /// Terminates TLS on `conn`, injects credentials per request, and forwards
-    /// upstream. `prefix` is the bytes already peeked off `conn` (the
-    /// `ClientHello`) that must be replayed into the TLS handshake.
+    /// upstream to `addrs` (already checked by the caller; never re-resolved).
+    /// `prefix` is the bytes already peeked off `conn` (the `ClientHello`) that
+    /// must be replayed into the TLS handshake.
     pub async fn handle(
         &self,
         conn: TcpStream,
         prefix: Vec<u8>,
         host: &str,
-        port: u16,
+        addrs: &[SocketAddr],
     ) -> anyhow::Result<()> {
         let host = host.to_ascii_lowercase();
         let rules: Vec<InjectionRule> = self.policy.rules_for(&host).into_iter().cloned().collect();
@@ -457,11 +459,8 @@ impl Injector {
 
         let mut client = self.acceptor.accept(PrefixedStream::new(conn, prefix)).await?;
         let server_name = ServerName::try_from(host.clone())?;
-        let upstream = tokio::time::timeout(
-            Duration::from_secs(10),
-            TcpStream::connect((host.as_str(), port)),
-        )
-        .await??;
+        let upstream =
+            tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs)).await??;
         let mut upstream = self.connector.connect(server_name, upstream).await?;
 
         self.pump(&mut client, &mut upstream, &host, &rules).await
@@ -1776,7 +1775,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (sock, _) = listener.accept().await.unwrap();
-            inj.handle(sock, Vec::new(), "localhost", upstream_port).await.unwrap();
+            let upstream = [SocketAddr::from(([127, 0, 0, 1], upstream_port))];
+            inj.handle(sock, Vec::new(), "localhost", &upstream).await.unwrap();
         });
 
         let mut roots = RootCertStore::empty();
