@@ -1076,6 +1076,7 @@ async fn forward_dispatch(
             // misleading `dispatched`. Older dispatchers omit it →
             // preserve the historical `dispatched`.
             status: handle.status.unwrap_or_else(|| "dispatched".into()),
+            queue_position: handle.queue_position,
         }),
     ))
 }
@@ -1133,9 +1134,19 @@ pub async fn dispatch(
         forward_recorded(&state, &req, &v, &record)
     })
     .await
+    .map(shown_queued)
 }
 
 type Forwarded = (StatusCode, Json<DispatchResponse>);
+
+/// A re-send that joined a run still held in the queue answers `queued`, so a
+/// retrying caller sees it waits; policy and records saw `deduplicated`.
+fn shown_queued((code, Json(mut r)): Forwarded) -> Forwarded {
+    if r.status == "deduplicated" && r.queue_position.is_some() {
+        r.status = "queued".into();
+    }
+    (code, Json(r))
+}
 
 /// A `deduplicated` dispatch joined a run that is still going and already
 /// counted; every other outcome, `redispatched` included, starts a fresh run.
@@ -1225,7 +1236,12 @@ async fn forward_recorded(
         Ok((_, r)) if !counts_as_use(&r.status) && v.dedup_key.as_deref() != Some(sid) => {
             records::delete(&state.pool, sid).await
         }
-        Ok(_) => records::set_outcome(&state.pool, sid, "forwarded", None).await,
+        Ok((_, r)) => match records::set_outcome(&state.pool, sid, "forwarded", None).await {
+            Ok(()) if r.status == "queued" => {
+                records::set_queued(&state.pool, sid, true).await.map(drop)
+            }
+            other => other,
+        },
         Err((_, e)) => {
             records::set_outcome(&state.pool, sid, "refused", Some(e.error.as_str())).await
         }
@@ -1738,8 +1754,29 @@ mod tests {
                 handle: "h".into(),
                 namespace: None,
                 status: status.into(),
+                queue_position: None,
             }),
         ))
+    }
+
+    fn shown(status: &str, queue_position: Option<u32>) -> (String, Option<u32>) {
+        let (_, axum::Json(mut r)) = forwarded(status).unwrap();
+        r.queue_position = queue_position;
+        let (_, axum::Json(r)) =
+            super::shown_queued((axum::http::StatusCode::ACCEPTED, axum::Json(r)));
+        (r.status, r.queue_position)
+    }
+
+    #[test]
+    fn a_resend_onto_a_queued_run_answers_queued_with_its_position() {
+        assert_eq!(shown("deduplicated", Some(2)), ("queued".into(), Some(2)));
+        assert_eq!(shown("queued", Some(1)), ("queued".into(), Some(1)));
+        assert_eq!(
+            shown("deduplicated", None),
+            ("deduplicated".into(), None),
+            "joined a running run"
+        );
+        assert_eq!(shown("dispatched", None), ("dispatched".into(), None));
     }
 
     async fn uses(pool: &sqlx::PgPool, uid: uuid::Uuid) -> i64 {
@@ -1887,6 +1924,7 @@ mod tests {
                 handle: format!("jobs/{}", spec.session_id),
                 namespace: None,
                 status: None,
+                queue_position: None,
             })
         }
     }

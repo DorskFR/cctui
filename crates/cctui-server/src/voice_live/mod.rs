@@ -26,18 +26,25 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::{AuthContext, Scope};
 use crate::speech::SpeechClient;
 use crate::state::AppState;
-pub use engine::{AudioStream, Inbound, Outbound, Prefs, Signal, VoiceBackend, run_voice_loop};
+pub use engine::{
+    AudioStream, Inbound, Outbound, Prefs, Signal, VoiceBackend, picked_language, run_voice_loop,
+};
 use text::{UTTERANCE_SAMPLE_RATE, pcm16_to_wav};
 
 /// Longest utterance accepted (one minute of 16 kHz PCM16).
 const MAX_UTTERANCE_BYTES: usize = 2 * 16_000 * 60;
 const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
+/// Half a second of silence: enough for the speech service to load its model.
+const WARM_UP_SILENCE: [u8; 16_000] = [0; 16_000];
 /// How the session stream renders a prompt the agent received.
 const USER_PREFIX: &str = "▷ User:";
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceQuery {
     pub session: String,
+    /// Spoken language, as a `mode` frame's `language`.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// The principal gate shared with the main socket: a human key with `read`.
@@ -70,7 +77,8 @@ pub async fn voice_ws(
     crate::routes::sessions::authorize_reply(&state, &ctx, &session_id)
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
-    Ok(ws.on_upgrade(move |socket| handle_voice_ws(socket, state, ctx, session_id)))
+    let language = query.language.as_deref().and_then(picked_language);
+    Ok(ws.on_upgrade(move |socket| handle_voice_ws(socket, state, ctx, session_id, language)))
 }
 
 /// Speech through the instance speech service, the session through the same
@@ -83,9 +91,18 @@ struct ServerBackend {
 }
 
 impl VoiceBackend for ServerBackend {
-    async fn transcribe(&self, audio: Bytes) -> Result<String, String> {
+    async fn transcribe(&self, audio: Bytes, language: Option<&str>) -> Result<String, String> {
         let wav = Bytes::from(pcm16_to_wav(&audio, UTTERANCE_SAMPLE_RATE));
-        self.client.transcribe(wav, "audio/wav", None).await.map_err(|e| e.to_string())
+        self.client.transcribe(wav, "audio/wav", language, None).await.map_err(|e| e.to_string())
+    }
+
+    async fn warm_up(&self, language: Option<&str>) -> Result<(), String> {
+        let wav = Bytes::from(pcm16_to_wav(&WARM_UP_SILENCE, UTTERANCE_SAMPLE_RATE));
+        self.client
+            .transcribe(wav, "audio/wav", language, None)
+            .await
+            .map(drop)
+            .map_err(|e| e.to_string())
     }
 
     async fn synthesize(
@@ -226,7 +243,13 @@ async fn relay_signals(
     }
 }
 
-async fn handle_voice_ws(socket: WebSocket, state: AppState, ctx: AuthContext, session_id: String) {
+async fn handle_voice_ws(
+    socket: WebSocket,
+    state: AppState,
+    ctx: AuthContext,
+    session_id: String,
+    language: Option<String>,
+) {
     let (sink, stream) = socket.split();
     let (out_tx, out_rx) = mpsc::channel::<Outbound>(256);
     let writer = spawn_writer(sink, out_rx);
@@ -256,8 +279,8 @@ async fn handle_voice_ws(socket: WebSocket, state: AppState, ctx: AuthContext, s
         client,
     });
 
-    run_voice_loop(backend, Prefs { barge_in: true, ..Prefs::default() }, in_rx, sig_rx, out_tx)
-        .await;
+    let prefs = Prefs { barge_in: true, language, ..Prefs::default() };
+    run_voice_loop(backend, prefs, in_rx, sig_rx, out_tx).await;
 
     reader.abort();
     cancel.cancel();

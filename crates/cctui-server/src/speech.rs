@@ -10,6 +10,10 @@ use serde::Deserialize;
 pub use cctui_proto::api::settings::SpeechConfig;
 
 pub const MAX_TTS_INPUT_CHARS: usize = 4096;
+/// Takes over from an English-first instance model when another language is
+/// picked: parakeet drifts into English words on French speech.
+pub const MULTILINGUAL_STT_MODEL: &str = "whisper";
+const ENGLISH_FIRST_STT_MODELS: &[&str] = &["parakeet"];
 const AUDIO_TIMEOUT: Duration = Duration::from_mins(1);
 const META_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -139,21 +143,42 @@ impl SpeechClient {
         })
     }
 
+    /// The model and language a transcription uses. An explicit `model` wins;
+    /// a picked non-English `language` moves an English-first instance model
+    /// to [`MULTILINGUAL_STT_MODEL`]; with neither, the instance setting.
+    pub fn stt_route<'a>(
+        &'a self,
+        language: Option<&'a str>,
+        model: Option<&'a str>,
+    ) -> (&'a str, Option<&'a str>) {
+        let instance = self.config.stt_model.as_str();
+        let english = |l: &str| {
+            l.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("en"))
+                && matches!(l.as_bytes().get(2), None | Some(b'-' | b'_'))
+        };
+        let reroute =
+            language.is_some_and(|l| !english(l)) && ENGLISH_FIRST_STT_MODELS.contains(&instance);
+        let model = model.unwrap_or(if reroute { MULTILINGUAL_STT_MODEL } else { instance });
+        (model, language.or(self.config.stt_language.as_deref()))
+    }
+
     pub async fn transcribe(
         &self,
         audio: Bytes,
         mime: &str,
         language: Option<&str>,
+        model: Option<&str>,
     ) -> Result<String, SpeechError> {
+        let (model, language) = self.stt_route(language, model);
         let part = reqwest::multipart::Part::stream(audio)
             .file_name(format!("audio.{}", extension(mime)))
             .mime_str(mime)
             .map_err(|_| SpeechError::Decode(format!("invalid audio type `{mime}`")))?;
         let mut form = reqwest::multipart::Form::new()
             .part("file", part)
-            .text("model", self.config.stt_model.clone())
+            .text("model", model.to_owned())
             .text("response_format", "json");
-        if let Some(lang) = language.or(self.config.stt_language.as_deref()) {
+        if let Some(lang) = language {
             form = form.text("language", lang.to_owned());
         }
         let req = self
@@ -319,7 +344,8 @@ mod tests {
     async fn transcribe_posts_multipart_with_model_language_and_key() {
         let (base, seen) = mock(serde_json::json!([])).await;
         let c = client(&base, Some("sk-secret"));
-        let text = c.transcribe(Bytes::from_static(b"OggS"), "audio/ogg", None).await.unwrap();
+        let text =
+            c.transcribe(Bytes::from_static(b"OggS"), "audio/ogg", None, None).await.unwrap();
         assert_eq!(text, "hello there");
         let (auth, fields) = {
             let mut s = seen.lock().unwrap();
@@ -331,8 +357,52 @@ mod tests {
         assert_eq!(field("model"), Some("parakeet"));
         assert_eq!(field("language"), Some("en"));
         assert_eq!(field("response_format"), Some("json"));
-        c.transcribe(Bytes::from_static(b"x"), "audio/webm", Some("fr")).await.unwrap();
-        assert!(seen.lock().unwrap().fields.contains(&("language".into(), "fr".into())));
+        c.transcribe(Bytes::from_static(b"x"), "audio/webm", Some("fr"), Some("custom"))
+            .await
+            .unwrap();
+        let fields = std::mem::take(&mut seen.lock().unwrap().fields);
+        assert!(fields.contains(&("language".into(), "fr".into())));
+        assert!(fields.contains(&("model".into(), "custom".into())));
+    }
+
+    #[tokio::test]
+    async fn a_picked_language_routes_between_parakeet_and_whisper() {
+        let (base, seen) = mock(serde_json::json!([])).await;
+        let mut c = client(&base, None);
+        c.config.stt_language = None;
+        let c = &c;
+        let model_of = move |language: Option<&'static str>| {
+            let seen = seen.clone();
+            async move {
+                c.transcribe(Bytes::from_static(b"x"), "audio/wav", language, None).await.unwrap();
+                let fields = std::mem::take(&mut seen.lock().unwrap().fields);
+                let field = |n: &str| fields.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+                (field("model").unwrap(), field("language"))
+            }
+        };
+        assert_eq!(model_of(None).await, ("parakeet".into(), None));
+        assert_eq!(model_of(Some("en")).await, ("parakeet".into(), Some("en".into())));
+        assert_eq!(model_of(Some("en-GB")).await, ("parakeet".into(), Some("en-GB".into())));
+        assert_eq!(model_of(Some("fr")).await, ("whisper".into(), Some("fr".into())));
+        assert_eq!(model_of(Some("de")).await, ("whisper".into(), Some("de".into())));
+    }
+
+    #[test]
+    fn only_an_english_first_instance_model_is_rerouted() {
+        let c = |stt_model: &str, stt_language: Option<&str>| {
+            let config = SpeechConfig {
+                stt_model: stt_model.into(),
+                stt_language: stt_language.map(str::to_owned),
+                ..SpeechConfig::default()
+            };
+            SpeechClient::new(reqwest::Client::new(), config, None)
+        };
+        let gpt = c("gpt-4o-transcribe", None);
+        assert_eq!(gpt.stt_route(Some("fr"), None), ("gpt-4o-transcribe", Some("fr")));
+        let fr_default = c("parakeet", Some("fr"));
+        assert_eq!(fr_default.stt_route(None, None), ("parakeet", Some("fr")));
+        assert_eq!(fr_default.stt_route(Some("fr"), None), ("whisper", Some("fr")));
+        assert_eq!(fr_default.stt_route(Some("fr"), Some("parakeet")), ("parakeet", Some("fr")));
     }
 
     #[tokio::test]

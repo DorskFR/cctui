@@ -226,11 +226,18 @@ impl Dispatcher for EnrolledDispatcher {
             dispatch_held(&self.state.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD)
                 .await?;
         match reply {
-            DispatcherFrameUp::DispatchResult { handle, namespace, status, error, .. } => {
+            DispatcherFrameUp::DispatchResult {
+                handle,
+                namespace,
+                status,
+                queue_position,
+                error,
+                ..
+            } => {
                 if let Some(err) = error {
                     return Err(DispatchError::Backend(err));
                 }
-                Ok(DispatchHandle { handle, namespace, status })
+                Ok(DispatchHandle { handle, namespace, status, queue_position })
             }
             other => Err(DispatchError::Backend(format!("unexpected dispatcher reply: {other:?}"))),
         }
@@ -261,9 +268,10 @@ impl Dispatcher for EnrolledDispatcher {
                     Some(ReportedState::Complete) => Ok((HandleStatus::Complete, None)),
                     Some(ReportedState::Failed) => Ok((HandleStatus::Failed(error), worker_exit)),
                     Some(ReportedState::Gone) => Ok((HandleStatus::Gone, None)),
-                    Some(
-                        ReportedState::Running | ReportedState::Queued | ReportedState::Unknown,
-                    ) => Ok((HandleStatus::Running, None)),
+                    Some(ReportedState::Queued) => Ok((HandleStatus::Queued, None)),
+                    Some(ReportedState::Running | ReportedState::Unknown) => {
+                        Ok((HandleStatus::Running, None))
+                    }
                     None => Err(DispatchError::Backend(
                         error.unwrap_or_else(|| "dispatcher returned no status".into()),
                     )),
@@ -346,6 +354,7 @@ mod tests {
                     handle: "container/worker-1".into(),
                     namespace: None,
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));
@@ -414,6 +423,7 @@ mod tests {
                     handle: "job/worker-1".into(),
                     namespace: Some("cctui".into()),
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));
@@ -495,6 +505,7 @@ mod tests {
                     handle: "job/worker-2".into(),
                     namespace: None,
                     status: Some("dispatched".into()),
+                    queue_position: None,
                     error: None,
                 },
             ));

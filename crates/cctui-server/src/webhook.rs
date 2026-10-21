@@ -240,7 +240,7 @@ async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
         }
         // Still running, or the dispatcher can't introspect (http) / a transient
         // error — wait.
-        Ok(HandleStatus::Running) | Err(_) => Outcome::Wait,
+        Ok(HandleStatus::Running | HandleStatus::Queued) | Err(_) => Outcome::Wait,
     }
 }
 

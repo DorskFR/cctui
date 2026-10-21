@@ -7,4 +7,8 @@ import type { TokenUsage } from "./TokenUsage";
  * `final_assistant_text` joins the trailing visible assistant text rows of
  * the last message, thinking excluded.
  */
-export type SessionResult = { done: boolean, end_reason: string | null, final_assistant_text: string | null, message_id: string | null, token_usage: TokenUsage | null, };
+export type SessionResult = { done: boolean, end_reason: string | null, final_assistant_text: string | null, message_id: string | null, token_usage: TokenUsage | null, 
+/**
+ * The dispatch waits in its dispatcher's queue; no session exists yet.
+ */
+queued?: boolean, queue_position?: number | null, };

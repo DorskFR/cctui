@@ -193,6 +193,26 @@ pub async fn delete(exec: impl PgExecutor<'_>, session_id: &str) -> Result<(), s
     Ok(())
 }
 
+/// Whether a forwarded, unregistered worker waits in its dispatcher's queue.
+///
+/// Leaving the queue starts its registration clock.
+pub async fn set_queued(
+    exec: impl PgExecutor<'_>,
+    session_id: &str,
+    queued: bool,
+) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query(
+        "UPDATE dispatch_records \
+         SET queued = $2, started_at = CASE WHEN $2 THEN started_at ELSE now() END \
+         WHERE session_id = $1 AND outcome = 'forwarded' AND queued <> $2",
+    )
+    .bind(session_id)
+    .bind(queued)
+    .execute(exec)
+    .await?;
+    Ok(done.rows_affected() > 0)
+}
+
 /// A forwarded worker that never registered and whose dispatcher reports the
 /// workload dead.
 pub async fn mark_failed(
@@ -395,8 +415,9 @@ pub struct Listing {
 
 /// Failed dispatches of the last week.
 ///
-/// Those the dispatcher refused, whose worker never registered, or whose
-/// session died of a start or kill failure; records already re-run are left
+/// Those the dispatcher refused, whose worker did not register in time once
+/// out of the dispatcher's queue, or whose session died of a start or kill
+/// failure before its workflow guard exited; records already re-run are left
 /// out. Each names the later run of the same work (same caller, name and
 /// prompt file) that registered and did not fail.
 pub async fn list(
@@ -431,9 +452,11 @@ pub async fn list(
            AND r.created_at > now() - interval '7 days' \
            AND ($6 OR d.session_id IS NULL) \
            AND (r.outcome IN ('refused', 'failed') \
-                OR (r.outcome IN ('pending', 'forwarded') AND s.id IS NULL \
-                    AND r.created_at < now() - make_interval(mins => $2)) \
-                OR s.end_reason = ANY($3)) \
+                OR (r.outcome IN ('pending', 'forwarded') AND s.id IS NULL AND NOT r.queued \
+                    AND COALESCE(r.started_at, r.created_at) < now() - make_interval(mins => $2)) \
+                OR (s.end_reason = ANY($3) AND NOT EXISTS ( \
+                    SELECT 1 FROM guard_steps g \
+                    WHERE g.session_id = r.session_id AND (g.state->>'step')::bigint < 0))) \
          ORDER BY r.created_at DESC \
          LIMIT $4",
     )
@@ -905,5 +928,82 @@ mod tests {
         assert_eq!(sup(&crashed), Some(None));
         assert_eq!(sup(&ok), None, "a running session is no failure");
         cleanup(&pool, &[uid, other]).await;
+    }
+
+    async fn age_start(pool: &sqlx::PgPool, sid: &str, minutes: i32) {
+        sqlx::query(
+            "UPDATE dispatch_records SET started_at = now() - make_interval(mins => $2) \
+             WHERE session_id = $1",
+        )
+        .bind(sid)
+        .bind(minutes)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Time in the dispatcher's queue is not time to register: the clock
+    /// starts when the worker leaves the queue.
+    #[tokio::test]
+    async fn a_queued_dispatch_is_late_only_once_it_left_the_queue() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_records_queued") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let sid = |tag: &str| format!("{tag}-{}", Uuid::new_v4());
+        let (waiting, resumed, late) = (sid("waiting"), sid("resumed"), sid("late"));
+        let r = req(&serde_json::json!({ "prompt": "go" }));
+        for s in [&waiting, &resumed, &late] {
+            super::insert(&pool, &NewRecord::from_request(s, Some(uid), &r, None, None))
+                .await
+                .unwrap();
+            super::set_outcome(&pool, s, "forwarded", None).await.unwrap();
+            assert!(super::set_queued(&pool, s, true).await.unwrap());
+            age(&pool, s, 3 * super::REGISTER_TIMEOUT_MINUTES).await;
+        }
+        assert!(!super::set_queued(&pool, &waiting, true).await.unwrap(), "already queued");
+        for s in [&resumed, &late] {
+            assert!(super::set_queued(&pool, s, false).await.unwrap());
+        }
+        age_start(&pool, &late, super::REGISTER_TIMEOUT_MINUTES + 1).await;
+
+        let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
+        let ids: Vec<&str> = listed.iter().map(|f| f.session_id.as_str()).collect();
+        assert_eq!(ids, [late.as_str()]);
+        assert_eq!(listed[0].reason, FailedDispatchReason::NeverRegistered);
+        cleanup(&pool, &[uid]).await;
+    }
+
+    /// A session ended as a crash after its workflow guard exited did its
+    /// work: no failure card, even for a verdict recorded before that was known.
+    #[tokio::test]
+    async fn a_crash_after_the_guard_exited_is_not_listed() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_records_guard_exit") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect");
+        let uid = seed_user(&pool).await;
+        let (done, lost) = (format!("done-{}", Uuid::new_v4()), format!("lost-{}", Uuid::new_v4()));
+        let r = req(&serde_json::json!({ "prompt": "go" }));
+        for (s, step) in [(&done, -1_i64), (&lost, 3)] {
+            super::insert(&pool, &NewRecord::from_request(s, Some(uid), &r, None, None))
+                .await
+                .unwrap();
+            super::set_outcome(&pool, s, "registered", None).await.unwrap();
+            seed_session(&pool, s, uid, Some("crashed")).await;
+            let guard = cctui_proto::guard_step::GuardStepState { step, ..Default::default() };
+            sqlx::query("INSERT INTO guard_steps (session_id, state) VALUES ($1, $2)")
+                .bind(s)
+                .bind(sqlx::types::Json(&guard))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let listed = super::list_failed(&pool, Some(uid)).await.unwrap();
+        let ids: Vec<&str> = listed.iter().map(|f| f.session_id.as_str()).collect();
+        assert_eq!(ids, [lost.as_str()]);
+        assert_eq!(listed[0].reason, FailedDispatchReason::Crashed);
+        cleanup(&pool, &[uid]).await;
     }
 }

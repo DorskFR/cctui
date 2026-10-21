@@ -16,6 +16,8 @@ pub struct DispatchHandle {
     /// `None` falls back to `"dispatched"`. Also `deduplicated` (an in-flight
     /// Job will call back) and `redispatched` (a terminal Job was recreated).
     pub status: Option<String>,
+    /// 1-based place in the dispatcher's queue while held back.
+    pub queue_position: Option<u32>,
 }
 
 /// Built by the route from a [`cctui_proto::api::DispatchRequest`].
@@ -47,6 +49,8 @@ pub enum DispatchError {
 #[derive(Debug, Clone)]
 pub enum HandleStatus {
     Running,
+    /// Created but held back by the dispatcher's concurrency cap.
+    Queued,
     Complete,
     /// Carries the dispatcher's human reason, surfaced in the webhook `error`.
     Failed(Option<String>),

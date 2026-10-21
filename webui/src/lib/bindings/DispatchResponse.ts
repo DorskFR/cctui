@@ -6,6 +6,10 @@ export type DispatchResponse = { session_id: string, dispatcher: string,
  */
 handle: string, namespace?: string | null, 
 /**
- * `dispatched`, `deduplicated` or `redispatched`.
+ * `dispatched`, `deduplicated`, `redispatched` or `queued`.
  */
-status: string, };
+status: string, 
+/**
+ * 1-based place among the profile's queued workers while `queued`.
+ */
+queue_position?: number | null, };

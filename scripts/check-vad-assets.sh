@@ -49,4 +49,9 @@ if [ -z "$script_src" ] || [[ "$script_src" == *"'wasm-unsafe-eval'"* || "$scrip
   ok "page CSP allows WebAssembly"
 else bad "page CSP script-src lacks 'wasm-unsafe-eval': $script_src"; fi
 
+media_src="$(printf '%s' "$csp" | tr ';' '\n' | grep -E '^ *media-src ' || true)"
+if [ -z "$csp" ] || [[ "$media_src" == *"data:"* && "$media_src" == *"blob:"* ]]; then
+  ok "page CSP lets voice audio play (media-src data: blob:)"
+else bad "page CSP media-src must allow data: and blob: for spoken replies: ${media_src:-<none>}"; fi
+
 exit "$fail"

@@ -587,10 +587,92 @@ pub(super) fn managed_settings(
     serde_json::Value::Object(managed)
 }
 
+pub(super) const BG_ISOLATION_ENV: &str = "CLAUDE_BG_ISOLATION";
+
+/// Claude Code's background edit guard reads only the process env's
+/// [`BG_ISOLATION_ENV`], never the `--settings` file, so mirror the account's
+/// choice into the launch env. Precedence: the launch env, this daemon's own
+/// env (a worker pod's profile), the account's `env` entry, then its
+/// `worktree.bgIsolation`.
+pub(super) fn with_bg_isolation(
+    env: &mut std::collections::BTreeMap<String, String>,
+    inherited: Option<String>,
+    settings: Option<&serde_json::Value>,
+) {
+    if env.contains_key(BG_ISOLATION_ENV) {
+        return;
+    }
+    let from_settings = || {
+        ["/env/CLAUDE_BG_ISOLATION", "/worktree/bgIsolation"]
+            .into_iter()
+            .find_map(|key| {
+                settings?.pointer(key)?.as_str().filter(|v| matches!(*v, "none" | "worktree"))
+            })
+            .map(str::to_owned)
+    };
+    if let Some(value) = inherited.filter(|v| !v.trim().is_empty()).or_else(from_settings) {
+        env.insert(BG_ISOLATION_ENV.to_owned(), value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
     use super::*;
+
+    fn isolation(
+        env: &[(&str, &str)],
+        inherited: Option<&str>,
+        settings: Option<&serde_json::Value>,
+    ) -> Option<String> {
+        let mut env = env_of(env);
+        with_bg_isolation(&mut env, inherited.map(str::to_owned), settings);
+        env.get(BG_ISOLATION_ENV).cloned()
+    }
+
+    #[test]
+    fn the_account_isolation_setting_reaches_the_launch_env() {
+        let none = json!({"worktree": {"bgIsolation": "none"}});
+        let worktree = json!({"worktree": {"bgIsolation": "worktree"}});
+        assert_eq!(isolation(&[], None, Some(&none)).as_deref(), Some("none"));
+        assert_eq!(isolation(&[], None, Some(&worktree)).as_deref(), Some("worktree"));
+        let both = json!({
+            "env": {"CLAUDE_BG_ISOLATION": "none"},
+            "worktree": {"bgIsolation": "worktree"},
+        });
+        assert_eq!(
+            isolation(&[], None, Some(&both)).as_deref(),
+            Some("none"),
+            "the env knob first"
+        );
+        let bad_knob = json!({
+            "env": {"CLAUDE_BG_ISOLATION": "off"},
+            "worktree": {"bgIsolation": "worktree"},
+        });
+        assert_eq!(isolation(&[], None, Some(&bad_knob)).as_deref(), Some("worktree"));
+    }
+
+    #[test]
+    fn an_explicit_isolation_env_wins_over_the_account_setting() {
+        let worktree = json!({"worktree": {"bgIsolation": "worktree"}});
+        assert_eq!(
+            isolation(&[(BG_ISOLATION_ENV, "none")], Some("worktree"), Some(&worktree)).as_deref(),
+            Some("none"),
+            "launch env first"
+        );
+        assert_eq!(
+            isolation(&[], Some("none"), Some(&worktree)).as_deref(),
+            Some("none"),
+            "a worker profile's env beats the account setting"
+        );
+    }
+
+    #[test]
+    fn no_isolation_anywhere_leaves_the_env_untouched() {
+        assert_eq!(isolation(&[], None, None), None);
+        assert_eq!(isolation(&[], Some(" "), Some(&json!({"theme": "dark"}))), None);
+        assert_eq!(isolation(&[], None, Some(&json!({"worktree": {"bgIsolation": "off"}}))), None);
+    }
 
     #[test]
     fn only_the_matching_gateway_session_settings_authorize_a_respawn_repair() {

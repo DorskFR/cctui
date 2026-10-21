@@ -2,6 +2,7 @@
 //! upstream: utterances in, control frames and synthesized sentences out.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use cctui_proto::voice::{SpokenStyle, VoiceClientMsg, VoiceServerMsg, VoiceState};
@@ -15,7 +16,16 @@ pub type AudioStream = BoxStream<'static, Result<Bytes, String>>;
 
 /// What the loop needs from the server: speech both ways and the session.
 pub trait VoiceBackend: Send + Sync + 'static {
-    fn transcribe(&self, audio: Bytes) -> impl Future<Output = Result<String, String>> + Send;
+    /// `language` is the spoken language picked for the session, `None` for
+    /// the instance default.
+    fn transcribe(
+        &self,
+        audio: Bytes,
+        language: Option<&str>,
+    ) -> impl Future<Output = Result<String, String>> + Send;
+    /// Loads the speech-to-text model `language` routes to, so the next
+    /// utterance does not pay for the load.
+    fn warm_up(&self, language: Option<&str>) -> impl Future<Output = Result<(), String>> + Send;
     fn synthesize(
         &self,
         text: &str,
@@ -58,11 +68,14 @@ pub struct Prefs {
     pub spoken_style: Option<SpokenStyle>,
     pub voice: Option<String>,
     pub speed: Option<f32>,
+    pub language: Option<String>,
 }
 
 type SharedPrefs = Arc<Mutex<Prefs>>;
 
 const UTTERANCE_QUEUE: usize = 8;
+/// Under the speech router's 90 s idle unload.
+const STT_KEEPALIVE: Duration = Duration::from_mins(1);
 
 #[derive(Debug)]
 struct Notice {
@@ -151,12 +164,24 @@ enum Heard {
     Failed,
     /// Nothing to send: no speech, or transcription failed.
     Idle,
+    /// A warm-up finished, loaded or not.
+    Warm,
+    /// Relayed by the loop so it follows the state the loop emits first.
+    Transcript(String),
+}
+
+#[derive(Debug)]
+enum Job {
+    Hear(Bytes),
+    Warm,
 }
 
 /// Transcribes and sends utterances one at a time, in arrival order, off
-/// the loop. Dropping it aborts whatever was in flight.
+/// the loop. It warms the model before the first utterance and keeps it warm
+/// while idle; utterances arriving meanwhile wait in its queue. Dropping it
+/// aborts whatever was in flight.
 struct Listener {
-    tx: mpsc::Sender<Bytes>,
+    tx: mpsc::Sender<Job>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -172,16 +197,52 @@ fn spawn_listener<B: VoiceBackend>(
     out: mpsc::Sender<Outbound>,
     heard: mpsc::Sender<Heard>,
 ) -> Listener {
-    let (tx, mut rx) = mpsc::channel::<Bytes>(UTTERANCE_QUEUE);
+    let (tx, mut rx) = mpsc::channel::<Job>(UTTERANCE_QUEUE);
     let task = tokio::spawn(async move {
-        while let Some(audio) = rx.recv().await {
-            let outcome = hear_one(&*backend, &prefs, &out, &heard, audio).await;
+        let mut job = Job::Warm;
+        loop {
+            let outcome = match job {
+                Job::Hear(audio) => hear_one(&*backend, &prefs, &out, &heard, audio).await,
+                Job::Warm => {
+                    warm_up(&*backend, &prefs).await;
+                    Heard::Warm
+                }
+            };
             if heard.send(outcome).await.is_err() {
                 break;
+            }
+            match next_job(&mut rx, &*backend, &prefs).await {
+                Some(next) => job = next,
+                None => break,
             }
         }
     });
     Listener { tx, task }
+}
+
+/// Waits for the next job, warming the model every [`STT_KEEPALIVE`] of
+/// silence.
+async fn next_job<B: VoiceBackend>(
+    rx: &mut mpsc::Receiver<Job>,
+    backend: &B,
+    prefs: &SharedPrefs,
+) -> Option<Job> {
+    loop {
+        tokio::select! {
+            next = rx.recv() => return next,
+            () = tokio::time::sleep(STT_KEEPALIVE) => warm_up(backend, prefs).await,
+        }
+    }
+}
+
+fn language(prefs: &SharedPrefs) -> Option<String> {
+    prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).language.clone()
+}
+
+async fn warm_up<B: VoiceBackend>(backend: &B, prefs: &SharedPrefs) {
+    if let Err(err) = backend.warm_up(language(prefs).as_deref()).await {
+        tracing::debug!(%err, "voice: speech-to-text warm-up failed");
+    }
 }
 
 async fn hear_one<B: VoiceBackend>(
@@ -192,7 +253,7 @@ async fn hear_one<B: VoiceBackend>(
     audio: Bytes,
 ) -> Heard {
     let error = |message| Outbound::Control(VoiceServerMsg::Error { message });
-    let text = match backend.transcribe(audio).await {
+    let text = match backend.transcribe(audio, language(prefs).as_deref()).await {
         Ok(text) => text.trim().to_owned(),
         Err(message) => {
             let _ = out.send(error(message)).await;
@@ -202,7 +263,7 @@ async fn hear_one<B: VoiceBackend>(
     if text.is_empty() {
         return Heard::Idle;
     }
-    let _ = out.send(Outbound::Control(VoiceServerMsg::Transcript { text: text.clone() })).await;
+    let _ = heard.send(Heard::Transcript(text.clone())).await;
     let style = prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).spoken_style;
     let _ = heard.send(Heard::Sending).await;
     match backend.send_message(spoken_prompt(&text, style)).await {
@@ -294,6 +355,8 @@ struct Engine<B: VoiceBackend> {
     delta_acc: String,
     turn_active: bool,
     speaking: bool,
+    /// A warm-up is in flight.
+    warming: bool,
     turns: Turns,
     state: Option<VoiceState>,
 }
@@ -322,6 +385,7 @@ impl<B: VoiceBackend> Engine<B> {
             delta_acc: String::new(),
             turn_active: false,
             speaking: false,
+            warming: true,
             turns: Turns::default(),
             state: None,
         }
@@ -334,7 +398,11 @@ impl<B: VoiceBackend> Engine<B> {
     async fn emit_state(&mut self) {
         let next = if self.speaking {
             VoiceState::Speaking
-        } else if self.turn_active || self.hearing > 0 {
+        } else if self.turn_active {
+            VoiceState::Thinking
+        } else if self.warming {
+            VoiceState::Warming
+        } else if self.hearing > 0 {
             VoiceState::Thinking
         } else {
             VoiceState::Listening
@@ -349,7 +417,7 @@ impl<B: VoiceBackend> Engine<B> {
         if self.speaking {
             self.barge_in().await;
         }
-        if self.listener.tx.try_send(audio).is_err() {
+        if self.listener.tx.try_send(Job::Hear(audio)).is_err() {
             let message = "utterance dropped: still transcribing".to_owned();
             self.send(VoiceServerMsg::Error { message }).await;
             return;
@@ -360,6 +428,10 @@ impl<B: VoiceBackend> Engine<B> {
 
     async fn heard(&mut self, heard: Heard) {
         match heard {
+            Heard::Transcript(text) => {
+                self.send(VoiceServerMsg::Transcript { text }).await;
+                return;
+            }
             Heard::Sending => {
                 self.delta_acc.clear();
                 self.sentences.clear();
@@ -367,6 +439,7 @@ impl<B: VoiceBackend> Engine<B> {
                 self.turn_active = true;
             }
             Heard::Sent | Heard::Idle => self.hearing = self.hearing.saturating_sub(1),
+            Heard::Warm => self.warming = false,
             Heard::Failed => {
                 self.hearing = self.hearing.saturating_sub(1);
                 self.turns.unsent();
@@ -404,19 +477,15 @@ impl<B: VoiceBackend> Engine<B> {
     async fn control(&mut self, msg: VoiceClientMsg) {
         match msg {
             VoiceClientMsg::Interrupt {} => self.barge_in().await,
-            VoiceClientMsg::Mode { barge_in, spoken_style, voice, speed } => {
-                let mut p = self.prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(b) = barge_in {
-                    p.barge_in = b;
-                }
-                if let Some(s) = spoken_style {
-                    p.spoken_style = Some(s);
-                }
-                if let Some(v) = voice {
-                    p.voice = Some(v).filter(|v| !v.trim().is_empty());
-                }
-                if let Some(s) = speed.filter(|s| (0.25..=4.0).contains(s)) {
-                    p.speed = Some(s);
+            VoiceClientMsg::Mode { barge_in, spoken_style, voice, speed, language } => {
+                let rewarm = {
+                    let mut p =
+                        self.prefs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    apply_mode(&mut p, barge_in, spoken_style, voice, speed, language.as_deref())
+                };
+                if rewarm && self.listener.tx.try_send(Job::Warm).is_ok() {
+                    self.warming = true;
+                    self.emit_state().await;
                 }
             }
         }
@@ -495,6 +564,39 @@ impl<B: VoiceBackend> Engine<B> {
     }
 }
 
+/// Applies a `mode` frame; true when the spoken language changed.
+fn apply_mode(
+    p: &mut Prefs,
+    barge_in: Option<bool>,
+    spoken_style: Option<SpokenStyle>,
+    voice: Option<String>,
+    speed: Option<f32>,
+    language: Option<&str>,
+) -> bool {
+    if let Some(b) = barge_in {
+        p.barge_in = b;
+    }
+    if let Some(s) = spoken_style {
+        p.spoken_style = Some(s);
+    }
+    if let Some(v) = voice {
+        p.voice = Some(v).filter(|v| !v.trim().is_empty());
+    }
+    if let Some(s) = speed.filter(|s| (0.25..=4.0).contains(s)) {
+        p.speed = Some(s);
+    }
+    let Some(lang) = language else { return false };
+    let lang = picked_language(lang);
+    let changed = p.language != lang;
+    p.language = lang;
+    changed
+}
+
+/// A language pick as the speech service takes it; `None` for auto.
+pub fn picked_language(raw: &str) -> Option<String> {
+    Some(raw.trim().to_ascii_lowercase()).filter(|l| !l.is_empty() && l != "auto")
+}
+
 /// Runs until the browser side closes. `signals` is the session's bus as
 /// the glue reads it; `out` carries control frames and audio back.
 pub async fn run_voice_loop<B: VoiceBackend>(
@@ -551,6 +653,10 @@ mod tests {
         /// The transcript is the utterance's bytes.
         echo: bool,
         stt_dropped: Arc<AtomicBool>,
+        /// Each warm-up waits for a permit.
+        warm_gate: Option<Arc<Semaphore>>,
+        /// `warm <lang>` and `hear <lang>` in call order.
+        stt_calls: Mutex<Vec<String>>,
     }
 
     /// Flags a transcription dropped before it finished.
@@ -568,10 +674,19 @@ mod tests {
         fn log<T: Clone>(m: &Mutex<T>) -> T {
             m.lock().unwrap().clone()
         }
+
+        fn stt(&self, what: &str, language: Option<&str>) {
+            self.stt_calls.lock().unwrap().push(format!("{what} {}", language.unwrap_or("-")));
+        }
+
+        fn warms(&self) -> usize {
+            Self::log(&self.stt_calls).iter().filter(|c| c.starts_with("warm")).count()
+        }
     }
 
     impl VoiceBackend for Mock {
-        async fn transcribe(&self, audio: Bytes) -> Result<String, String> {
+        async fn transcribe(&self, audio: Bytes, language: Option<&str>) -> Result<String, String> {
+            self.stt("hear", language);
             let mut unfinished = Unfinished(Some(self.stt_dropped.clone()));
             if let Some(gate) = &self.stt_gate {
                 gate.acquire().await.unwrap().forget();
@@ -581,6 +696,13 @@ mod tests {
                 return Ok(String::from_utf8_lossy(&audio).into_owned());
             }
             Ok(Self::log(&self.transcript))
+        }
+        async fn warm_up(&self, language: Option<&str>) -> Result<(), String> {
+            self.stt("warm", language);
+            if let Some(gate) = &self.warm_gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            Ok(())
         }
         async fn synthesize(
             &self,
@@ -619,13 +741,21 @@ mod tests {
         _task: tokio::task::JoinHandle<()>,
     }
 
-    fn start(mock: Mock, prefs: Prefs) -> Harness {
+    fn start_cold(mock: Mock, prefs: Prefs) -> Harness {
         let mock = Arc::new(mock);
         let (inbound, in_rx) = mpsc::channel(8);
         let (signals, sig_rx) = mpsc::channel(8);
         let (out_tx, out) = mpsc::channel(64);
         let task = tokio::spawn(run_voice_loop(mock.clone(), prefs, in_rx, sig_rx, out_tx));
         Harness { mock, inbound, signals, out, _task: task }
+    }
+
+    /// A loop past its opening warm-up.
+    async fn start(mock: Mock, prefs: Prefs) -> Harness {
+        let mut h = start_cold(mock, prefs);
+        let frames = h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(frames, vec![state(VoiceState::Warming), state(VoiceState::Listening)]);
+        h
     }
 
     impl Harness {
@@ -668,7 +798,7 @@ mod tests {
     /// A reply being spoken, then a new utterance barging in on it.
     async fn cut_a_turn_with_a_new_utterance() -> Harness {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
-        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() });
+        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(is_transcript).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -721,7 +851,7 @@ mod tests {
     #[tokio::test]
     async fn a_barge_in_before_the_prompt_echo_cuts_that_prompts_turn() {
         let mock = Mock { transcript: Mutex::new("go".into()), ..Mock::default() };
-        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() });
+        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(is_transcript).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -747,7 +877,7 @@ mod tests {
             send_gate: Some(gate.clone()),
             ..Mock::default()
         };
-        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() });
+        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(is_transcript).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -773,7 +903,7 @@ mod tests {
             stt_gate: Some(gate.clone()),
             ..Mock::default()
         };
-        let mut h = start(mock, Prefs::default());
+        let mut h = start(mock, Prefs::default()).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Thinking)).await;
         h.signals.send(Signal::Text("Alpha.".into())).await.unwrap();
@@ -789,7 +919,7 @@ mod tests {
     async fn utterances_are_sent_in_the_order_they_were_spoken() {
         let gate = Arc::new(Semaphore::new(0));
         let mock = Mock { echo: true, stt_gate: Some(gate.clone()), ..Mock::default() };
-        let mut h = start(mock, Prefs::default());
+        let mut h = start(mock, Prefs::default()).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(b"one"))).await.unwrap();
         h.inbound.send(Inbound::Audio(Bytes::from_static(b"two"))).await.unwrap();
         gate.add_permits(2);
@@ -806,7 +936,7 @@ mod tests {
     #[tokio::test]
     async fn closing_the_socket_aborts_an_in_flight_transcription() {
         let mock = Mock { stt_gate: Some(Arc::new(Semaphore::new(0))), ..Mock::default() };
-        let mut h = start(mock, Prefs::default());
+        let mut h = start(mock, Prefs::default()).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(|f| *f == state(VoiceState::Thinking)).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -826,7 +956,7 @@ mod tests {
     async fn an_utterance_is_transcribed_and_sent_in_spoken_style() {
         let mock = Mock { transcript: Mutex::new("what time is it".into()), ..Mock::default() };
         let mut h =
-            start(mock, Prefs { spoken_style: Some(SpokenStyle::Brief), ..Prefs::default() });
+            start(mock, Prefs { spoken_style: Some(SpokenStyle::Brief), ..Prefs::default() }).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         let frames = h
             .collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::Transcript { .. })))
@@ -834,7 +964,6 @@ mod tests {
         assert_eq!(
             frames,
             vec![
-                state(VoiceState::Listening),
                 state(VoiceState::Thinking),
                 Outbound::Control(VoiceServerMsg::Transcript { text: "what time is it".into() }),
             ]
@@ -849,23 +978,16 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_transcript_goes_back_to_listening_without_a_message() {
-        let mut h = start(Mock::default(), Prefs::default());
+        let mut h = start(Mock::default(), Prefs::default()).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         let frames = h.quiet().await;
-        assert_eq!(
-            frames,
-            vec![
-                state(VoiceState::Listening),
-                state(VoiceState::Thinking),
-                state(VoiceState::Listening)
-            ]
-        );
+        assert_eq!(frames, vec![state(VoiceState::Thinking), state(VoiceState::Listening)]);
         assert!(Mock::log(&h.mock.sent).is_empty());
     }
 
     #[tokio::test]
     async fn a_reply_is_spoken_sentence_by_sentence_then_listening_resumes() {
-        let mut h = start(Mock::default(), Prefs::default());
+        let mut h = start(Mock::default(), Prefs::default()).await;
         h.signals.send(Signal::Text("**Sure.** Here is `one`.\n\n- two".into())).await.unwrap();
         h.signals.send(Signal::TurnEnd).await.unwrap();
         let mut frames = h
@@ -875,7 +997,7 @@ mod tests {
             .await;
         frames.extend(h.quiet().await);
         assert_eq!(
-            frames[1..].to_vec(),
+            frames,
             vec![
                 state(VoiceState::Speaking),
                 Outbound::Control(VoiceServerMsg::SpeakStart {
@@ -903,7 +1025,7 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_deltas_start_speech_early_and_the_final_block_is_not_repeated() {
-        let mut h = start(Mock::default(), Prefs::default());
+        let mut h = start(Mock::default(), Prefs::default()).await;
         h.signals.send(Signal::Delta("First sen".into())).await.unwrap();
         h.signals.send(Signal::Delta("tence. Second".into())).await.unwrap();
         h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::SpeakEnd { .. }))).await;
@@ -918,7 +1040,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_block_longer_than_both_queues_is_spoken_to_the_end() {
-        let mut h = start(Mock::default(), Prefs::default());
+        let mut h = start(Mock::default(), Prefs::default()).await;
         let block = (1..=200).map(|i| format!("Line {i}.")).collect::<Vec<_>>().join(" ");
         h.signals.send(Signal::Text(block)).await.unwrap();
         h.collect_until(|f| {
@@ -930,7 +1052,7 @@ mod tests {
     #[tokio::test]
     async fn barge_in_cancels_synthesis_and_interrupts_a_running_turn() {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
-        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() });
+        let mut h = start(mock, Prefs { barge_in: true, ..Prefs::default() }).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::Transcript { .. })))
             .await;
@@ -954,7 +1076,7 @@ mod tests {
     #[tokio::test]
     async fn barge_in_without_the_pref_only_stops_playback() {
         let mock = Mock { transcript: Mutex::new("go".into()), stall: true, ..Mock::default() };
-        let mut h = start(mock, Prefs::default());
+        let mut h = start(mock, Prefs::default()).await;
         h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
         h.collect_until(|f| matches!(f, Outbound::Control(VoiceServerMsg::Transcript { .. })))
             .await;
@@ -967,13 +1089,14 @@ mod tests {
 
     #[tokio::test]
     async fn mode_updates_apply_to_later_sentences() {
-        let mut h = start(Mock::default(), Prefs::default());
+        let mut h = start(Mock::default(), Prefs::default()).await;
         h.inbound
             .send(Inbound::Control(VoiceClientMsg::Mode {
                 barge_in: None,
                 spoken_style: Some(SpokenStyle::Verbose),
                 voice: Some("bf_emma".into()),
                 speed: Some(1.5),
+                language: None,
             }))
             .await
             .unwrap();
@@ -987,13 +1110,14 @@ mod tests {
 
     #[tokio::test]
     async fn an_out_of_range_speed_keeps_the_previous_one() {
-        let mut h = start(Mock::default(), Prefs::default());
+        let mut h = start(Mock::default(), Prefs::default()).await;
         for speed in [1.5, 9.0, f32::NAN] {
             let mode = VoiceClientMsg::Mode {
                 barge_in: None,
                 spoken_style: None,
                 voice: None,
                 speed: Some(speed),
+                language: None,
             };
             h.inbound.send(Inbound::Control(mode)).await.unwrap();
         }
@@ -1005,16 +1129,89 @@ mod tests {
 
     #[tokio::test]
     async fn an_oversized_utterance_is_reported() {
-        let mut h = start(Mock::default(), Prefs::default());
+        let mut h = start(Mock::default(), Prefs::default()).await;
         h.inbound.send(Inbound::TooLong).await.unwrap();
         let frames = h.quiet().await;
         assert_eq!(
             frames,
-            vec![
-                state(VoiceState::Listening),
-                Outbound::Control(VoiceServerMsg::Error { message: "utterance too long".into() }),
-            ]
+            vec![Outbound::Control(VoiceServerMsg::Error { message: "utterance too long".into() })]
         );
         assert!(Mock::log(&h.mock.sent).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_model_warms_on_open_and_an_early_utterance_waits_for_it() {
+        let gate = Arc::new(Semaphore::new(0));
+        let mock = Mock {
+            transcript: Mutex::new("hello".into()),
+            warm_gate: Some(gate.clone()),
+            ..Mock::default()
+        };
+        let mut h = start_cold(mock, Prefs::default());
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        let frames = h.quiet().await;
+        assert_eq!(frames, vec![state(VoiceState::Warming)]);
+        assert_eq!(Mock::log(&h.mock.stt_calls), vec!["warm -"]);
+        gate.add_permits(1);
+        let frames = h.collect_until(is_transcript).await;
+        assert_eq!(
+            frames,
+            vec![
+                state(VoiceState::Thinking),
+                Outbound::Control(VoiceServerMsg::Transcript { text: "hello".into() }),
+            ]
+        );
+        assert_eq!(Mock::log(&h.mock.stt_calls), vec!["warm -", "hear -"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_model_is_kept_warm_every_keepalive() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        let step = |d: Duration| async move {
+            tokio::time::sleep(d).await;
+            tokio::task::yield_now().await;
+        };
+        step(STT_KEEPALIVE.checked_sub(Duration::from_secs(1)).unwrap()).await;
+        assert_eq!(h.mock.warms(), 1);
+        step(Duration::from_secs(2)).await;
+        assert_eq!(h.mock.warms(), 2);
+        step(STT_KEEPALIVE).await;
+        assert_eq!(h.mock.warms(), 3);
+
+        step(Duration::from_secs(30)).await;
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.quiet().await;
+        step(STT_KEEPALIVE.checked_sub(Duration::from_secs(5)).unwrap()).await;
+        assert_eq!(h.mock.warms(), 3, "an utterance counts as use");
+        step(Duration::from_secs(10)).await;
+        assert_eq!(h.mock.warms(), 4);
+        assert!(!h.quiet().await.contains(&state(VoiceState::Warming)), "keepalives stay silent");
+    }
+
+    #[tokio::test]
+    async fn a_language_pick_rewarms_and_routes_later_utterances() {
+        let mut h = start(Mock::default(), Prefs::default()).await;
+        let pick = |language: &str| {
+            Inbound::Control(VoiceClientMsg::Mode {
+                barge_in: None,
+                spoken_style: None,
+                voice: None,
+                speed: None,
+                language: Some(language.into()),
+            })
+        };
+        h.inbound.send(pick("FR")).await.unwrap();
+        let frames = h.collect_until(|f| *f == state(VoiceState::Listening)).await;
+        assert_eq!(frames, vec![state(VoiceState::Warming), state(VoiceState::Listening)]);
+        h.inbound.send(pick("fr")).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.quiet().await;
+        h.inbound.send(pick("auto")).await.unwrap();
+        h.inbound.send(Inbound::Audio(Bytes::from_static(&[0, 0]))).await.unwrap();
+        h.quiet().await;
+        assert_eq!(
+            Mock::log(&h.mock.stt_calls),
+            vec!["warm -", "warm fr", "hear fr", "warm -", "hear -"]
+        );
     }
 }

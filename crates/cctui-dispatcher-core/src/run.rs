@@ -139,12 +139,19 @@ impl<D: Dispatcher> Runner<D> {
                 match self.spawner.dispatch(&spec).await {
                     Ok(out) => {
                         tracing::info!(%session_id, handle = %out.handle, status = %out.status, "dispatched worker");
+                        let queue_position = match out.status.as_str() {
+                            "queued" | "deduplicated" => {
+                                self.spawner.queue_position(&out.handle).await
+                            }
+                            _ => None,
+                        };
                         DispatcherFrameUp::DispatchResult {
                             request_id,
                             session_id,
                             handle: out.handle,
                             namespace: out.namespace,
                             status: Some(out.status),
+                            queue_position,
                             error: None,
                         }
                     }
@@ -156,6 +163,7 @@ impl<D: Dispatcher> Runner<D> {
                             handle: String::new(),
                             namespace: None,
                             status: None,
+                            queue_position: None,
                             error: Some(err.to_string()),
                         }
                     }

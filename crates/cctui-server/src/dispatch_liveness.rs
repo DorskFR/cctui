@@ -105,30 +105,32 @@ pub async fn sweep(state: &AppState) {
     }
 }
 
-/// The dispatcher's failure reason, once the worker's exit is kept on the
-/// dispatch record; `None` while the workload is not failed.
-async fn failure_of(
+/// The dispatcher's view of the workload, a failed worker's exit kept on the
+/// dispatch record; `None` when the dispatcher cannot be asked.
+async fn status_of(
     state: &AppState,
     user_id: Option<Uuid>,
     dispatcher_name: &str,
     session_id: &str,
     handle: &str,
-) -> Option<String> {
+) -> Option<HandleStatus> {
     let Ok(Some(dispatcher)) =
         crate::routes::dispatch::resolve_dispatcher(state, user_id, dispatcher_name).await
     else {
         return None;
     };
-    let Ok((HandleStatus::Failed(reason), exit)) = dispatcher.status_detail(handle).await else {
-        return None;
-    };
+    let (status, exit) = dispatcher.status_detail(handle).await.ok()?;
     if let Some(exit) = exit {
         let exit = dispatch_records::scrub_worker_exit(&exit);
         if let Err(err) = dispatch_records::set_worker_exit(&state.pool, session_id, &exit).await {
             tracing::warn!(%err, %session_id, "worker exit not stored");
         }
     }
-    Some(reason.unwrap_or_else(|| "workload failed".to_owned()))
+    Some(status)
+}
+
+fn failure_text(reason: Option<String>) -> String {
+    reason.unwrap_or_else(|| "workload failed".to_owned())
 }
 
 /// Whether the session's workflow guard reached its exit, read from this
@@ -166,11 +168,12 @@ async fn verdict(
 }
 
 async fn probe(state: &AppState, row: LiveHandle) {
-    let Some(failure) =
-        failure_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await
+    let Some(HandleStatus::Failed(reason)) =
+        status_of(state, row.user_id, &row.dispatcher_name, &row.session_id, &row.handle).await
     else {
         return;
     };
+    let failure = failure_text(reason);
     let (end_reason, detail) = verdict(&state.pool, &row.session_id, failure).await;
     if !end_session(&state.pool, &row.session_id, end_reason, &detail).await {
         return;
@@ -204,16 +207,35 @@ async fn probe(state: &AppState, row: LiveHandle) {
 }
 
 /// A worker that died before registering has no session to end: its
-/// dispatch record carries the cause instead.
+/// dispatch record carries the cause instead. One still in the dispatcher's
+/// queue is not yet late.
 async fn probe_unregistered(state: &AppState, row: dispatch_records::UnregisteredHandle) {
     let dispatch_records::UnregisteredHandle { session_id, user_id, dispatcher_name, handle } = row;
-    let Some(detail) = failure_of(state, user_id, &dispatcher_name, &session_id, &handle).await
-    else {
-        return;
+    let status = status_of(state, user_id, &dispatcher_name, &session_id, &handle).await;
+    let queued = match status {
+        Some(HandleStatus::Failed(reason)) => {
+            mark_failed(state, &session_id, &dispatcher_name, &handle, &failure_text(reason)).await;
+            return;
+        }
+        Some(HandleStatus::Queued) => true,
+        Some(HandleStatus::Running) => false,
+        Some(HandleStatus::Complete | HandleStatus::Gone) | None => return,
     };
-    let end_reason = end_reason_for(&detail);
+    if let Err(err) = dispatch_records::set_queued(&state.pool, &session_id, queued).await {
+        tracing::warn!(%err, %session_id, "dispatch record queue state not stored");
+    }
+}
+
+async fn mark_failed(
+    state: &AppState,
+    session_id: &str,
+    dispatcher_name: &str,
+    handle: &str,
+    detail: &str,
+) {
+    let end_reason = end_reason_for(detail);
     let marked =
-        dispatch_records::mark_failed(&state.pool, &session_id, end_reason.as_str(), &detail).await;
+        dispatch_records::mark_failed(&state.pool, session_id, end_reason.as_str(), detail).await;
     match marked {
         Ok(true) => tracing::warn!(
             %session_id,
@@ -552,6 +574,63 @@ mod tests {
             !log.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"),
             "a token reached the card: {log}"
         );
+        forget_user(&pool, uid).await;
+    }
+
+    async fn queue_state(pool: &sqlx::PgPool, sid: &str) -> (bool, bool) {
+        sqlx::query_as(
+            "SELECT queued, started_at IS NOT NULL FROM dispatch_records WHERE session_id = $1",
+        )
+        .bind(sid)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The sweep follows the dispatcher's queue: a suspended Job is queued,
+    /// and its registration clock starts when the dispatcher runs it.
+    #[tokio::test]
+    async fn an_unregistered_worker_follows_the_dispatchers_queue() {
+        let Some(url) = crate::routes::gateway::test_db_url("dispatch_liveness_queued") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, _machine) = crate::events::tests::seed_user_machine(&pool, "dl-queued").await;
+        let name = format!("k8s-{uid}");
+        let dispatcher = seed_dispatcher(&pool, uid, &name).await;
+        let sid = Uuid::new_v4().to_string();
+        let req: cctui_proto::api::DispatchRequest = serde_json::from_value(
+            serde_json::json!({"dispatcher": name, "payload": {"prompt": "go"}}),
+        )
+        .unwrap();
+        let record = dispatch_records::NewRecord::from_request(&sid, Some(uid), &req, None, None);
+        dispatch_records::insert(&pool, &record).await.unwrap();
+        dispatch_records::set_outcome(&pool, &sid, "forwarded", None).await.unwrap();
+        seed_handle(&pool, &sid, &name, "jobs/cctui-worker-queued").await;
+        sqlx::query(
+            "UPDATE dispatch_records SET created_at = now() - interval '1 hour' \
+             WHERE session_id = $1",
+        )
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let fake = fake_dispatcher(&state, dispatcher, (Some("queued"), None));
+        sweep(&state).await;
+        fake.abort();
+        assert_eq!(queue_state(&pool, &sid).await, (true, false));
+        assert!(
+            dispatch_records::list_failed(&pool, Some(uid)).await.unwrap().is_empty(),
+            "an hour in the queue is not a worker that never started"
+        );
+
+        let fake = fake_dispatcher(&state, dispatcher, (Some("running"), None));
+        sweep(&state).await;
+        fake.abort();
+        assert_eq!(queue_state(&pool, &sid).await, (false, true), "the clock starts on resume");
+        assert!(dispatch_records::list_failed(&pool, Some(uid)).await.unwrap().is_empty());
         forget_user(&pool, uid).await;
     }
 
