@@ -43,11 +43,8 @@ fn exit_of(pods: &[Pod]) -> Option<(WorkerExit, LogTarget)> {
     let pod = pods.iter().max_by_key(|p| p.metadata.creation_timestamp.as_ref().map(|t| t.0))?;
     let pod_name = pod.metadata.name.clone()?;
     let worker = worker_container(pod);
-    let statuses = pod
-        .status
-        .as_ref()
-        .and_then(|s| s.container_statuses.as_deref())
-        .unwrap_or_default();
+    let statuses =
+        pod.status.as_ref().and_then(|s| s.container_statuses.as_deref()).unwrap_or_default();
     let worker_end = statuses.iter().find(|cs| cs.name == worker).and_then(termination);
     let culprit = if worker_end.is_some_and(|(t, _)| t.exit_code == 0) {
         statuses.iter().find_map(|cs| {

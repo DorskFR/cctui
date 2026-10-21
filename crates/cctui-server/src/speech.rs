@@ -152,8 +152,10 @@ impl SpeechClient {
         model: Option<&'a str>,
     ) -> (&'a str, Option<&'a str>) {
         let instance = self.config.stt_model.as_str();
-        let english = |l: &str| l.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("en"))
-            && matches!(l.as_bytes().get(2), None | Some(b'-' | b'_'));
+        let english = |l: &str| {
+            l.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("en"))
+                && matches!(l.as_bytes().get(2), None | Some(b'-' | b'_'))
+        };
         let reroute =
             language.is_some_and(|l| !english(l)) && ENGLISH_FIRST_STT_MODELS.contains(&instance);
         let model = model.unwrap_or(if reroute { MULTILINGUAL_STT_MODEL } else { instance });

@@ -485,7 +485,6 @@ impl<B: VoiceBackend> Engine<B> {
         }
     }
 
-
     async fn enqueue(&mut self, sentences: Vec<String>) {
         for s in sentences {
             if s.trim().is_empty() {
@@ -1180,10 +1179,7 @@ mod tests {
         assert_eq!(h.mock.warms(), 3, "an utterance counts as use");
         step(Duration::from_secs(10)).await;
         assert_eq!(h.mock.warms(), 4);
-        assert!(
-            !h.quiet().await.contains(&state(VoiceState::Warming)),
-            "keepalives stay silent"
-        );
+        assert!(!h.quiet().await.contains(&state(VoiceState::Warming)), "keepalives stay silent");
     }
 
     #[tokio::test]
