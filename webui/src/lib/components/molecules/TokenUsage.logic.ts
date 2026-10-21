@@ -35,8 +35,8 @@ export function tokenUsageLayout(
 }
 
 /** Reason code → the i18n key naming it. Unrecognised codes read as unknown. */
-export function bustReasonKey(reason: string): 'ttl_expired' | 'gateway_rewrote_body' | 'unknown' {
-	return reason === 'ttl_expired' || reason === 'gateway_rewrote_body' ? reason : 'unknown';
+export function bustReasonKey(reason: string): 'ttl_expired' | 'provider_miss' | 'unknown' {
+	return reason === 'ttl_expired' || reason === 'provider_miss' ? reason : 'unknown';
 }
 
 export function tokenUsageTitle(

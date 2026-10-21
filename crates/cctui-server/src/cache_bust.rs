@@ -34,11 +34,19 @@ pub struct Turn {
     pub cache_read: i64,
     pub cache_creation: i64,
     pub created_at: DateTime<Utc>,
-    /// The gateway re-serialized this request before forwarding it.
+    /// Set only on Fireworks turns, from when the gateway still reshaped their
+    /// bodies; it now forwards every body verbatim and records `false`.
     pub gateway_rewrote_body: bool,
 }
 
 impl Turn {
+    /// Served by Fireworks, whose prompt cache is best-effort: a miss there is
+    /// the provider's, not ours. Fireworks model ids are `accounts/<owner>/…`.
+    fn provider_cached(&self) -> bool {
+        self.gateway_rewrote_body
+            || self.model.as_deref().is_some_and(|m| m.starts_with("accounts/"))
+    }
+
     /// Full context this turn carried: what its successor should be able to read
     /// back out of the cache.
     fn context(&self) -> i64 {
@@ -56,7 +64,7 @@ pub struct Bust {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     TtlExpired,
-    GatewayRewroteBody,
+    ProviderMiss,
     Unknown,
 }
 
@@ -64,7 +72,7 @@ impl Reason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TtlExpired => "ttl_expired",
-            Self::GatewayRewroteBody => "gateway_rewrote_body",
+            Self::ProviderMiss => "provider_miss",
             Self::Unknown => "unknown",
         }
     }
@@ -90,10 +98,10 @@ fn judge(prev: &Turn, turn: &Turn) -> Option<(u64, Reason)> {
         return None;
     }
     let lost = u64::try_from(expected - turn.cache_read.max(0)).unwrap_or(0);
-    let reason = if turn.gateway_rewrote_body {
-        Reason::GatewayRewroteBody
-    } else if turn.created_at - prev.created_at > ttl_window() {
+    let reason = if turn.created_at - prev.created_at > ttl_window() {
         Reason::TtlExpired
+    } else if turn.provider_cached() {
+        Reason::ProviderMiss
     } else {
         Reason::Unknown
     };
@@ -207,7 +215,6 @@ pub async fn trace_annotation(
     session_id: Option<&str>,
     model: Option<&str>,
     usage: Option<&serde_json::Value>,
-    gateway_rewrote_body: bool,
 ) -> (Option<&'static str>, Option<String>) {
     let (Some(session_id), Some(usage)) = (session_id, usage) else { return (None, None) };
     let field = |key: &str| {
@@ -222,7 +229,7 @@ pub async fn trace_annotation(
         cache_read,
         cache_creation: field("cache_creation_input_tokens"),
         created_at: Utc::now(),
-        gateway_rewrote_body,
+        gateway_rewrote_body: false,
     };
     judge_latest(pool, session_id, turn)
         .await
@@ -285,22 +292,47 @@ mod tests {
         assert_eq!(compute(&turns, None)["b"].reason, Reason::TtlExpired);
     }
 
-    #[test]
-    fn a_recorded_rewrite_names_the_gateway() {
-        let mut bust = turn("bust", 100, 28_977, 172_992, 2);
-        bust.gateway_rewrote_body = true;
-        let turns = [turn("a", 266, 200_968, 266, 0), bust];
-        assert_eq!(compute(&turns, None)["bust"].reason, Reason::GatewayRewroteBody);
+    fn fireworks(id: &str, input: i64, cr: i64, mins: i64) -> Turn {
+        Turn {
+            model: Some("accounts/fireworks/models/kimi-k3".into()),
+            ..turn(id, input, cr, 0, mins)
+        }
     }
 
-    /// A rewrite outranks the clock: a >1h gap that ALSO went through a
-    /// re-serialized body is the gateway's doing, not the TTL's.
     #[test]
-    fn a_rewrite_outranks_a_long_gap() {
-        let mut bust = turn("bust", 100, 0, 201_000, 75);
-        bust.gateway_rewrote_body = true;
-        let turns = [turn("a", 266, 200_968, 266, 0), bust];
-        assert_eq!(compute(&turns, None)["bust"].reason, Reason::GatewayRewroteBody);
+    fn a_fireworks_miss_is_the_providers() {
+        let turns = [fireworks("a", 500, 40_000, 0), fireworks("miss", 40_600, 0, 2)];
+        let b = &compute(&turns, None)["miss"];
+        assert_eq!(b.reason, Reason::ProviderMiss);
+        assert_eq!(b.lost_tokens, 40_500);
+    }
+
+    #[test]
+    fn a_fireworks_hit_is_no_bust() {
+        let turns = [fireworks("a", 500, 40_000, 0), fireworks("hit", 600, 40_500, 2)];
+        assert!(compute(&turns, None).is_empty());
+    }
+
+    /// Rows written while the gateway still reshaped Fireworks bodies carry the
+    /// flag; the reshape was identical every turn, so the miss was the provider's.
+    #[test]
+    fn a_historically_rewritten_turn_is_a_provider_miss() {
+        let mut miss = turn("miss", 100, 28_977, 172_992, 2);
+        miss.gateway_rewrote_body = true;
+        let turns = [turn("a", 266, 200_968, 266, 0), miss];
+        assert_eq!(compute(&turns, None)["miss"].reason, Reason::ProviderMiss);
+    }
+
+    #[test]
+    fn a_long_gap_outranks_the_provider() {
+        let turns = [fireworks("a", 500, 40_000, 0), fireworks("late", 40_600, 0, 75)];
+        assert_eq!(compute(&turns, None)["late"].reason, Reason::TtlExpired);
+    }
+
+    #[test]
+    fn an_anthropic_miss_stays_unknown() {
+        let turns = [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
+        assert_eq!(compute(&turns, None)["bust"].reason, Reason::Unknown);
     }
 
     /// A subagent's small turns interleave with the parent's large ones under
@@ -355,7 +387,7 @@ mod tests {
     #[test]
     fn reason_labels_match_the_api_contract() {
         assert_eq!(Reason::TtlExpired.as_str(), "ttl_expired");
-        assert_eq!(Reason::GatewayRewroteBody.as_str(), "gateway_rewrote_body");
+        assert_eq!(Reason::ProviderMiss.as_str(), "provider_miss");
         assert_eq!(Reason::Unknown.as_str(), "unknown");
     }
 }

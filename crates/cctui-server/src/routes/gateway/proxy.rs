@@ -1,11 +1,11 @@
 use super::{
-    Family, FireworksSettings, anthropic_upstream, clear_account_reauth, clear_soft_limit_block,
-    clear_soft_limit_block_for_token, current_access_token, durable_block_key, fireworks_upstream,
-    flag_account_reauth, google_path_model, google_upstream, guard_stream, guardable,
-    mark_soft_limit_block, note_orphan_401, note_token_used, openai_upstream, orphan_is_blocked,
-    record_metered_usage, resolve_account, session_and_account_name_for_token,
-    session_budget_limits, session_id_for_token, session_spend_usd_cached, tees_response,
-    usage_for_soft_limit,
+    Family, FireworksSettings, SESSION_AFFINITY_HEADER, anthropic_upstream, clear_account_reauth,
+    clear_soft_limit_block, clear_soft_limit_block_for_token, current_access_token,
+    durable_block_key, fireworks_upstream, flag_account_reauth, google_path_model, google_upstream,
+    guard_stream, guardable, mark_soft_limit_block, note_orphan_401, note_token_used,
+    openai_upstream, orphan_is_blocked, record_metered_usage, resolve_account,
+    session_and_account_name_for_token, session_budget_limits, session_id_for_token,
+    session_spend_usd_cached, tees_response, usage_for_soft_limit,
 };
 
 use axum::body::{Body, Bytes};
@@ -193,8 +193,9 @@ pub async fn openai(State(state): State<AppState>, req: Request) -> Result<Respo
 ///
 /// A sibling route rather than a branch inside [`openai`]: the two differ in
 /// upstream, in the worker env pair they are reached by, and in that this one
-/// mutates the request (per-account [`FireworksSettings`]). Sharing the openai
-/// route would put a per-account conditional on codex's hot path for nothing.
+/// meters usage and sets the session-affinity header (per-account
+/// [`FireworksSettings`]). Sharing the openai route would put a per-account
+/// conditional on codex's hot path for nothing.
 pub async fn fireworks(
     State(state): State<AppState>,
     req: Request,
@@ -237,30 +238,29 @@ pub fn skip_response_header(lower_name: &str) -> bool {
     matches!(lower_name, "connection" | "transfer-encoding" | "content-length")
 }
 
-/// The exact bytes to forward upstream, and whether they differ from what the
-/// client sent.
+/// The body to forward upstream and the model it names, from a buffered body.
 ///
-/// Re-serializing a parsed body re-emits every JSON object with its keys sorted
-/// (workspace `serde_json` has no `preserve_order`), which reorders
-/// `tool_use.input` and changes every token after the first tool call — the
-/// whole prompt cache is lost. So only a provider that must be reshaped gets a
-/// re-serialized body, and Anthropic never does: its bytes are forwarded
-/// verbatim no matter which features are on.
-fn upstream_payload(
-    original: &axum::body::Bytes,
-    parsed: Option<&serde_json::Value>,
-    fireworks: Option<&FireworksSettings>,
-    affinity_session: Option<&str>,
-) -> (axum::body::Bytes, bool) {
-    let (Some(fw), Some(json)) = (fireworks, parsed) else {
-        return (original.clone(), false);
-    };
-    let mut reshaped = json.clone();
-    fw.apply_body(&mut reshaped, affinity_session);
-    if reshaped == *json {
-        return (original.clone(), false);
-    }
-    (axum::body::Bytes::from(reshaped.to_string()), true)
+/// The forwarded body is always the client's bytes, never a re-serialization:
+/// `serde_json` re-emits objects with sorted keys, which moves every token after
+/// the first reordered object and loses the provider's prompt cache. The parsed
+/// copy is only read.
+fn buffered_payload(
+    bytes: Bytes,
+    path_model: Option<String>,
+) -> (reqwest::Body, Option<serde_json::Value>, Option<String>) {
+    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+    let request_model = parsed
+        .as_ref()
+        .and_then(|r| r.get("model"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or(path_model);
+    (reqwest::Body::from(bytes), parsed, request_model)
+}
+
+/// Whether requests on this account carry [`SESSION_AFFINITY_HEADER`].
+fn wants_affinity(family: Family, provider_settings: Option<&serde_json::Value>) -> bool {
+    family == Family::Fireworks && FireworksSettings::resolve(provider_settings).session_affinity
 }
 
 type Reply = Result<Response, StatusCode>;
@@ -288,7 +288,8 @@ struct UpstreamTarget {
 
 /// Everything that wants to read the request or response.
 struct Observers {
-    fireworks: Option<FireworksSettings>,
+    /// Fireworks usage is metered from the responses, priced by request model.
+    fireworks: bool,
     /// Usage is read from the Gemini responses this account's calls return.
     google: bool,
     affinity_session: Option<String>,
@@ -301,7 +302,6 @@ struct Observers {
 struct RequestInfo {
     traced_request: Option<serde_json::Value>,
     request_model: Option<String>,
-    rewrote_body: bool,
 }
 
 /// Map the worker's bearer (the session token) to an account. A missing
@@ -556,20 +556,18 @@ async fn observers(
     headers: &mut HeaderMap,
 ) -> Result<Observers, StatusCode> {
     let Authenticated { session_token, acct } = auth;
-    // Fireworks: the account's settings shape the request here, where the real
-    // key lives — a worker can neither supply nor defeat them.
     let family = Family::from_provider(&acct.provider);
-    let fireworks = (family == Family::Fireworks)
-        .then(|| FireworksSettings::resolve(acct.provider_settings.as_ref()));
+    let fireworks = family == Family::Fireworks;
     let google = family == Family::Google;
-    let affinity_session = match fireworks.as_ref() {
-        Some(fw) if fw.session_affinity => session_id_for_token(state, session_token).await,
-        _ => None,
+    let affinity_session = if wants_affinity(family, acct.provider_settings.as_ref()) {
+        session_id_for_token(state, session_token).await
+    } else {
+        None
     };
     if let Some(sid) = affinity_session.as_deref()
         && let Ok(hv) = reqwest::header::HeaderValue::from_str(sid)
     {
-        headers.insert("x-session-affinity", hv);
+        headers.insert(SESSION_AFFINITY_HEADER, hv);
     }
 
     // Langfuse tracing sink: only when configured AND this call is
@@ -586,17 +584,16 @@ async fn observers(
         tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
-    if tees_response(langfuse.is_some(), fireworks.is_some() || google) || tool_guard.is_some() {
+    if tees_response(langfuse.is_some(), fireworks || google) || tool_guard.is_some() {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
     }
     Ok(Observers { fireworks, google, affinity_session, langfuse, trace_session_id, tool_guard })
 }
 
 /// Stream the request body through without buffering (default), OR buffer it
-/// once when something needs to read or reshape it. A body that isn't JSON
-/// falls through to the original bytes, so non-`/v1/messages` calls are
-/// untouched either way. `path_model` is the model a Gemini call names in its
-/// path instead of its body.
+/// once when something needs to read it. Either way the client's bytes are what
+/// goes upstream. `path_model` is the model a Gemini call names in its path
+/// instead of its body.
 async fn prepare_body(
     state: &AppState,
     auth: &Authenticated,
@@ -608,23 +605,17 @@ async fn prepare_body(
 ) -> Result<(reqwest::Body, RequestInfo), Reply> {
     let Authenticated { session_token, acct } = auth;
     let Admission { effective_limits, model_gate } = admission;
-    if !(obs.langfuse.is_some() || obs.fireworks.is_some() || model_gate.is_some()) {
+    if !(obs.langfuse.is_some() || obs.fireworks || model_gate.is_some()) {
         let body_stream = req.into_body().into_data_stream();
         return Ok((
             reqwest::Body::wrap_stream(body_stream),
-            RequestInfo { traced_request: None, request_model: path_model, rewrote_body: false },
+            RequestInfo { traced_request: None, request_model: path_model },
         ));
     }
     let bytes = axum::body::to_bytes(req.into_body(), MAX_BUFFERED_BODY)
         .await
         .map_err(|_| Err(StatusCode::PAYLOAD_TOO_LARGE))?;
-    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-    let request_model = parsed
-        .as_ref()
-        .and_then(|r| r.get("model"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .or(path_model);
+    let (payload, parsed, request_model) = buffered_payload(bytes, path_model);
     // The deferred half of the soft limit: a `weekly_model:` cap gates only
     // the model it names, so a spent weekly Fable budget must let an Opus
     // request through. Same `window_applies` the account election uses, so
@@ -656,19 +647,9 @@ async fn prepare_body(
         )
         .await);
     }
-    let (payload, rewrote_body) = upstream_payload(
-        &bytes,
-        parsed.as_ref(),
-        obs.fireworks.as_ref(),
-        obs.affinity_session.as_deref(),
-    );
     Ok((
-        reqwest::Body::from(payload),
-        RequestInfo {
-            traced_request: parsed.filter(|_| obs.langfuse.is_some()),
-            request_model,
-            rewrote_body,
-        },
+        payload,
+        RequestInfo { traced_request: parsed.filter(|_| obs.langfuse.is_some()), request_model },
     ))
 }
 
@@ -794,7 +775,7 @@ async fn relay_response(
     // be recorded from the response itself: the usage object (JSON body or
     // terminal SSE frame) plus, for Fireworks, the two headers the provider
     // bills against. Read the headers now, before the body is consumed.
-    let metered = obs.fireworks.is_some() || obs.google;
+    let metered = obs.fireworks || obs.google;
     let usage_session = if metered && status.is_success() {
         match obs.affinity_session.clone().or_else(|| obs.trace_session_id.clone()) {
             Some(sid) => Some(sid),
@@ -803,7 +784,7 @@ async fn relay_response(
     } else {
         None
     };
-    let usage_headers = usage_session.as_ref().filter(|_| obs.fireworks.is_some()).map(|_| {
+    let usage_headers = usage_session.as_ref().filter(|_| obs.fireworks).map(|_| {
         let header = |name: &str| {
             upstream.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
         };
@@ -869,7 +850,7 @@ fn spawn_observer(
     usage_session: Option<String>,
     usage_headers: Option<(Option<String>, Option<String>)>,
 ) -> tokio::sync::mpsc::Sender<Vec<u8>> {
-    let RequestInfo { traced_request, request_model, rewrote_body } = info;
+    let RequestInfo { traced_request, request_model } = info;
     let ctx = crate::langfuse::TraceContext {
         session_id: obs.trace_session_id,
         account_id: Some(acct.id.to_string()),
@@ -909,8 +890,7 @@ fn spawn_observer(
                     + u64::try_from(u.output).unwrap_or(0);
                 super::note_tokens(windows, rate_provider, total);
             }
-            record_metered_usage(pool, family, session_id, request_model, captured, rewrote_body)
-                .await;
+            record_metered_usage(pool, family, session_id, request_model, captured).await;
         }
         if let Some(langfuse) = langfuse {
             // Fireworks speaks the OpenAI wire protocol, so it reconstructs as openai.
@@ -924,7 +904,6 @@ fn spawn_observer(
                 ctx.session_id.as_deref(),
                 ctx.model.as_deref(),
                 usage.as_ref(),
-                rewrote_body,
             )
             .await;
             langfuse.trace(crate::langfuse::TracePayload {
@@ -1000,9 +979,10 @@ pub async fn passthrough(
 #[cfg(test)]
 mod tests {
     use super::{
-        FireworksSettings, MAX_BUFFERED_BODY, declared_body_len, forward_headers,
-        session_token_from, skip_request_header, upstream_payload,
+        Family, MAX_BUFFERED_BODY, SESSION_AFFINITY_HEADER, buffered_payload, declared_body_len,
+        forward_headers, session_token_from, skip_request_header, wants_affinity,
     };
+    use axum::body::Bytes;
     use axum::http::HeaderMap;
 
     #[test]
@@ -1092,49 +1072,79 @@ mod tests {
         assert_eq!(session_token_from(&HeaderMap::new()), None);
     }
 
-    /// A body whose `tool_use.input` keys are not alphabetical, carried through
-    /// the buffered anthropic path with tracing on. Re-serializing would sort
-    /// them and invalidate the cached prefix from the first tool call onward.
-    const fn unsorted_body() -> axum::body::Bytes {
-        axum::body::Bytes::from_static(
-            br#"{"model": "claude-opus-5", "messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a","old_string":"x","new_string":"y"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"thinking":{"type":"adaptive","display":"omitted"}}"#,
-        )
+    /// Per family, a body as its harness sends it, with key order and
+    /// whitespace a re-serialization would not reproduce.
+    fn family_bodies() -> [(Family, Option<&'static str>, &'static [u8]); 4] {
+        [
+            (
+                Family::Anthropic,
+                None,
+                br#"{"model": "claude-opus-5", "messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a","old_string":"x","new_string":"y"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"thinking":{"type":"adaptive","display":"omitted"}}"#,
+            ),
+            (
+                Family::Openai,
+                None,
+                br#"{"model":"gpt-5.5","stream":true,"input":[{"type":"function_call","name":"shell","arguments":"{\"cmd\":\"ls\"}","call_id":"c1"}],  "tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"z":{},"a":{}}}}]}"#,
+            ),
+            (
+                Family::Fireworks,
+                None,
+                b"{\"model\":\"accounts/fireworks/models/kimi-k3\",\n \"messages\":[{\"role\":\"system\",\"content\":\"s\"},{\"role\":\"user\",\"content\":\"q\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"read\",\"parameters\":{\"properties\":{\"path\":{},\"limit\":{}}}}}],\"stream\":true}",
+            ),
+            (
+                Family::Google,
+                Some("gemini-2.5-pro"),
+                br#"{"contents":[{"role":"user","parts":[{"text":"q"}]}], "systemInstruction":{"parts":[{"text":"s"}]},"generationConfig":{"topP":1,"maxOutputTokens":8}}"#,
+            ),
+        ]
+    }
+
+    /// Every family forwards the client's bytes unchanged, even when the body
+    /// is buffered and parsed for metering, tracing or a model gate.
+    #[test]
+    fn every_family_forwards_the_request_bytes_verbatim() {
+        for (family, path_model, raw) in family_bodies() {
+            let original = Bytes::from_static(raw);
+            let parsed = serde_json::from_slice::<serde_json::Value>(&original)
+                .unwrap_or_else(|e| panic!("{family:?} fixture is not JSON: {e}"));
+            assert_ne!(
+                Bytes::from(parsed.to_string()),
+                original,
+                "{family:?} fixture must not survive a re-serialization"
+            );
+            let (payload, traced, model) =
+                buffered_payload(original, path_model.map(str::to_owned));
+            assert_eq!(payload.as_bytes(), Some(raw), "{family:?} body was rewritten");
+            assert_eq!(traced, Some(parsed), "{family:?}");
+            assert!(model.is_some(), "{family:?} request model");
+        }
     }
 
     #[test]
-    fn anthropic_forwards_the_client_bytes_verbatim() {
-        let original = unsorted_body();
-        let parsed = serde_json::from_slice::<serde_json::Value>(&original).unwrap();
-        let (payload, rewritten) = upstream_payload(&original, Some(&parsed), None, None);
-        assert!(!rewritten);
-        assert_eq!(payload, original);
-        // The trace may read the parsed copy; it is never what is forwarded.
-        assert_ne!(
-            axum::body::Bytes::from(parsed.to_string()),
-            original,
-            "test body must not survive a re-serialization"
+    fn the_body_model_wins_over_the_path_model() {
+        let (_, _, model) = buffered_payload(
+            Bytes::from_static(br#"{"model":"kimi"}"#),
+            Some("gemini-2.5-pro".into()),
         );
-    }
-
-    #[test]
-    fn fireworks_may_reshape_and_reports_it() {
-        let original = axum::body::Bytes::from_static(br#"{"model":"kimi","messages":[]}"#);
-        let parsed = serde_json::from_slice::<serde_json::Value>(&original).unwrap();
-        let fw = FireworksSettings::resolve(None);
-        let (payload, rewritten) =
-            upstream_payload(&original, Some(&parsed), Some(&fw), Some("s1"));
-        assert!(rewritten);
-        let out = serde_json::from_slice::<serde_json::Value>(&payload).unwrap();
-        assert_eq!(out["context_length_exceeded_behavior"], "error");
-        assert_eq!(out["user"], "s1");
+        assert_eq!(model.as_deref(), Some("kimi"));
     }
 
     #[test]
     fn a_non_json_body_is_forwarded_untouched() {
-        let original = axum::body::Bytes::from_static(b"not json");
-        let fw = FireworksSettings::resolve(None);
-        let (payload, rewritten) = upstream_payload(&original, None, Some(&fw), None);
-        assert!(!rewritten);
-        assert_eq!(payload, original);
+        let (payload, traced, model) = buffered_payload(Bytes::from_static(b"not json"), None);
+        assert_eq!(payload.as_bytes(), Some(&b"not json"[..]));
+        assert!(traced.is_none());
+        assert!(model.is_none());
+    }
+
+    #[test]
+    fn only_fireworks_carries_the_session_affinity_header() {
+        let off = serde_json::json!({ "session_affinity": false });
+        for family in [Family::Anthropic, Family::Openai, Family::Google] {
+            assert!(!wants_affinity(family, None), "{family:?}");
+        }
+        assert!(wants_affinity(Family::Fireworks, None));
+        assert!(!wants_affinity(Family::Fireworks, Some(&off)));
+        assert_eq!(SESSION_AFFINITY_HEADER, "x-session-affinity");
     }
 }

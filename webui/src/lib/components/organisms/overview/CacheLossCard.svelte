@@ -20,8 +20,8 @@
 	const reasonLabel = (r: CacheLossReason) =>
 		r === 'ttl_expired'
 			? m.home_cache_loss_ttl_expired()
-			: r === 'gateway_rewrote_body'
-				? m.home_cache_loss_gateway_rewrote_body()
+			: r === 'provider_miss'
+				? m.home_cache_loss_provider_miss()
 				: m.home_cache_loss_unknown();
 </script>
 
@@ -96,8 +96,8 @@
 	.ttl_expired {
 		background: var(--warn);
 	}
-	.gateway_rewrote_body {
-		background: var(--danger);
+	.provider_miss {
+		background: var(--accent);
 	}
 	.unknown {
 		background: var(--text-faint);

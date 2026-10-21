@@ -180,7 +180,7 @@ impl Default for TokenUsage {
 }
 
 /// What a turn lost when its prompt cache did not match.
-/// `reason` is `ttl_expired` | `gateway_rewrote_body` | `unknown`.
+/// `reason` is `ttl_expired` | `provider_miss` | `unknown`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CacheBust {

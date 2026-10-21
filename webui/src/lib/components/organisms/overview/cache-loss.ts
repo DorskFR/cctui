@@ -2,7 +2,7 @@ import type { DailyCacheLoss } from '$lib/queries';
 
 export const CACHE_LOSS_DAYS = 7;
 
-export const CACHE_LOSS_REASONS = ['ttl_expired', 'gateway_rewrote_body', 'unknown'] as const;
+export const CACHE_LOSS_REASONS = ['ttl_expired', 'provider_miss', 'unknown'] as const;
 export type CacheLossReason = (typeof CACHE_LOSS_REASONS)[number];
 
 const tokensOf = (d: DailyCacheLoss, r: CacheLossReason): number => d[`${r}_tokens`];
@@ -40,7 +40,7 @@ export interface CacheLossTotals {
 
 /** Range totals: lost tokens per reason and overall, dollars, bust count. */
 export function cacheLossTotals(days: DailyCacheLoss[]): CacheLossTotals {
-	const tokens = { ttl_expired: 0, gateway_rewrote_body: 0, unknown: 0, total: 0 };
+	const tokens = { ttl_expired: 0, provider_miss: 0, unknown: 0, total: 0 };
 	let usd = 0;
 	let busts = 0;
 	for (const d of days) {

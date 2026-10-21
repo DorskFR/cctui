@@ -171,11 +171,13 @@
         {
           "day": "2026-09-29",
           "ttl_expired": 1.5,
-          "gateway_rewrote_body": 0.25,
+          "gateway_rewrote_body": 0.0,
+          "provider_miss": 0.25,
           "unknown": 0.0,
           "total": 1.75,
           "ttl_expired_tokens": 1000,
-          "gateway_rewrote_body_tokens": 200,
+          "gateway_rewrote_body_tokens": 0,
+          "provider_miss_tokens": 200,
           "unknown_tokens": 0,
           "lost_tokens": 1200,
           "busts": 3
@@ -184,10 +186,12 @@
           "day": "2026-09-30",
           "ttl_expired": 0.5,
           "gateway_rewrote_body": 0.0,
+          "provider_miss": 0.0,
           "unknown": 0.1,
           "total": 0.6,
           "ttl_expired_tokens": 400,
           "gateway_rewrote_body_tokens": 0,
+          "provider_miss_tokens": 0,
           "unknown_tokens": 80,
           "lost_tokens": 480,
           "busts": 2
