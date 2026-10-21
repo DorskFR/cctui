@@ -161,6 +161,33 @@ pub struct WorkerProfileSpec {
     /// `None`/`0` ⇒ unlimited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inflight: Option<u32>,
+
+    /// Per-profile guard-proxy settings, layered over the global
+    /// `guard-proxy-env` `ConfigMap`. `None` renders the sidecar unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<GuardSpec>,
+}
+
+/// Guard-proxy sidecar env for one profile, so a guard setting can be canaried
+/// on a single profile before it reaches the global `ConfigMap`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardSpec {
+    /// Extra `ConfigMap`/`Secret` env sources, rendered after the global
+    /// `guard-proxy-env`, so a key here overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_from: Option<Vec<EnvFromSource>>,
+
+    /// `GUARD_PROXY_*` overrides. Container env wins over every `envFrom`
+    /// source, the global one included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<EnvVar>>,
+
+    /// Required for [`env`](Self::env) to widen private egress
+    /// (`GUARD_PROXY_ALLOW_PRIVATE_IPS` truthy, a non-empty
+    /// `GUARD_PROXY_PRIVATE_ALLOW`), so the widening is explicit in review.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_private_egress: bool,
 }
 
 impl WorkerProfileSpec {
@@ -278,6 +305,42 @@ containers:
                 .map(String::as_str),
             Some("worker")
         );
+    }
+
+    #[test]
+    fn checked_in_crd_matches_the_generated_schema() {
+        let checked_in: serde_json::Value =
+            serde_norway::from_str(include_str!("../../../deploy/workerprofile-crd.yaml")).unwrap();
+        assert_eq!(
+            checked_in,
+            serde_json::to_value(WorkerProfile::crd()).unwrap(),
+            "deploy/workerprofile-crd.yaml is stale: regenerate it with the crdgen binary"
+        );
+    }
+
+    #[test]
+    fn guard_profile_deserializes() {
+        let yaml = r#"
+image: registry.example.com/worker:latest
+guard:
+  allowPrivateEgress: true
+  envFrom:
+    - configMapRef:
+        name: guard-proxy-env-canary
+  env:
+    - name: GUARD_PROXY_ALLOW_PRIVATE_IPS
+      value: "0"
+"#;
+        let spec: WorkerProfileSpec = serde_norway::from_str(yaml).expect("guard profile parses");
+        let guard = spec.guard.expect("spec.guard");
+        assert!(guard.allow_private_egress);
+        assert_eq!(guard.env_from.as_ref().map(Vec::len), Some(1));
+        assert_eq!(guard.env.as_ref().unwrap()[0].name, "GUARD_PROXY_ALLOW_PRIVATE_IPS");
+
+        let lean: WorkerProfileSpec =
+            serde_norway::from_str("image: registry.example.com/worker:latest\n").unwrap();
+        assert!(lean.guard.is_none());
+        assert!(serde_json::to_value(&lean).unwrap().get("guard").is_none());
     }
 
     #[test]
