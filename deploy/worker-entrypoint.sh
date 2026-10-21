@@ -1215,7 +1215,14 @@ derive_task_env() {
     [ -z "${TASK_REPO_REF:-}" ] && { _v=$(_pj '.context.head_sha'); [ -n "$_v" ] && export TASK_REPO_REF="$_v"; }
     return 0
 }
+# Each worker owns an ephemeral checkout, so Claude Code's background
+# worktree-isolation guard only deadlocks it. The env var is the only isolation
+# channel a worker honors; a profile or payload value wins.
+default_bg_isolation() {
+    export CLAUDE_BG_ISOLATION="${CLAUDE_BG_ISOLATION:-none}"
+}
 derive_task_env
+default_bg_isolation
 phase_network
 phase_workspace
 # The CLI grants edit-in-place only when the session cwd IS a git repo,
